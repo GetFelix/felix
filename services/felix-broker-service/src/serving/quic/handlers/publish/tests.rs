@@ -7,6 +7,7 @@ mod admission;
 mod control_batch;
 mod control_binary;
 mod control_message;
+mod group_commit;
 mod idempotent_acks;
 mod ingress;
 mod lease_headroom;
