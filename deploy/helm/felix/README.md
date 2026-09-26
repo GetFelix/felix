@@ -54,6 +54,11 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 | `controlplane.storage.backend` | `postgres` | `memory`, `postgres` or `raft`. |
 | `controlplane.storage.postgres.existingSecret` | — | Secret holding the connection URL under `urlKey` (`url`). Required for `postgres`. |
 | `controlplane.storage.raft.volume` | `1Gi` | The volume each Raft member keeps its log and snapshots on. |
+| `controlplane.storage.raft.peerToken.existingSecret` | — | Secret holding the Raft peer token (32+ characters) under `tokenKey` (`token`). Required for `raft`: whoever holds the token can replace the metadata store. |
+| `controlplane.storage.raft.peerPort` | `8444` | The members' Raft peer listener, on the headless Service only. Must differ from the API port. |
+| `controlplane.storage.raft.clusterId` | full name | Names the group; each member's volume records it and refuses another. |
+| `controlplane.storage.raft.initialClusterState` | — | `new` lets empty members form a group, `existing` never does. Empty renders `new` on `helm install` and `existing` on upgrades, so lost volumes never start an empty control plane after day 0. |
+| `controlplane.storage.raft.insecurePeers` | `false` | Run Raft with no peer token. Throwaway clusters only. |
 | `controlplane.bootstrap.enabled` | `false` | The day-0 listener, on its own ClusterIP Service. Turn it off after use. |
 | `controlplane.bootstrap.existingSecret` | — | Secret holding the bootstrap token under `tokenKey`, and the previous one under `previousTokenKey` while rotating. |
 | `controlplane.shutdown.predrainMs` / `drainTimeoutMs` | `2000` / `10000` | Readiness fails, the instance keeps serving for the predrain, then drains. The grace period is derived. |
@@ -82,7 +87,7 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 `helm template` fails, with the reason, when:
 
 - `postgres` has no `existingSecret`, or `bootstrap` is on without one.
-- `raft` has fewer than three members, or an even number.
+- `raft` has fewer than three members, or an even number, or no peer token Secret, or a peer port equal to the API port.
 - `memory` has more than one replica.
 - brokers are enabled with no credential Secret, or with no control plane and no `controlplaneUrl`.
 - the client and internal ports are the same.

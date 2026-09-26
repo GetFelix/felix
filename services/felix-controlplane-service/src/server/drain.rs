@@ -24,6 +24,8 @@ pub(super) struct Running {
     pub(super) bootstrap_task: Option<JoinHandle<()>>,
     pub(super) raft_metrics_task: Option<JoinHandle<()>>,
     pub(super) raft_handle: Option<RaftHandle>,
+    pub(super) raft_peer_task: Option<JoinHandle<()>>,
+    pub(super) peer_shutdown: CancellationToken,
     pub(super) metrics_task: JoinHandle<std::io::Result<()>>,
 }
 
@@ -40,6 +42,8 @@ impl Running {
             bootstrap_task,
             raft_metrics_task,
             raft_handle,
+            raft_peer_task,
+            peer_shutdown,
             metrics_task,
         } = self;
 
@@ -130,6 +134,16 @@ impl Running {
             {
                 tracing::warn!("raft node did not shut down within the drain budget");
             }
+        }
+        peer_shutdown.cancel();
+        if let Some(mut task) = raft_peer_task
+            && !budget
+                .drain("raft_peer_server", async {
+                    let _ = (&mut task).await;
+                })
+                .await
+        {
+            task.abort();
         }
 
         // Step 3: metrics last, so `/ready` keeps reporting "draining" and `/metrics`

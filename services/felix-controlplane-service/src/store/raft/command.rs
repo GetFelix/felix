@@ -17,9 +17,14 @@
 //! to be the leader's, and [`restamp`] is how it becomes so.
 //!
 //! The wire form is a versioned JSON envelope. A follower that does not
-//! understand a command must fail loudly rather than misparse it: skipping a
-//! committed command it cannot read would silently fork its state from the
-//! leader's.
+//! understand a command must not misparse it: it records an `Unsupported`
+//! response instead, logs an error and counts
+//! `felix_meta_raft_unsupported_commands_total`. That keeps members on the
+//! same build identical, but a newer leader applied the command, so in a
+//! mixed-version group the older member's state falls behind the leader's.
+//! A release that adds a variant must therefore finish rolling every member
+//! before anything proposes it; `docs/metadata-raft-design.md` ("Upgrading")
+//! has the order and the recovery if the counter moves.
 use serde::{Deserialize, Serialize};
 
 use crate::auth::felix_token::TenantSigningKeys;
@@ -36,8 +41,9 @@ use crate::store::{StoreError, TenantAuthSeed};
 /// The newest envelope version this build can apply.
 ///
 /// Bump only when an existing variant's meaning changes; *adding* a variant
-/// is not a version bump, because an old follower rejects the unknown `op`
-/// on deserialization, which is the failure we want.
+/// is not a version bump, because an old follower already rejects the
+/// unknown `op` on deserialization (see the module docs for what that
+/// costs in a mixed-version group).
 pub const COMMAND_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

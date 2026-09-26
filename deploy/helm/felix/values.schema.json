@@ -54,7 +54,19 @@
                 "volume": { "$ref": "#/definitions/volume" },
                 "heartbeatMs": { "$ref": "#/definitions/optionalPositiveInteger" },
                 "electionTimeoutMinMs": { "$ref": "#/definitions/optionalPositiveInteger" },
-                "electionTimeoutMaxMs": { "$ref": "#/definitions/optionalPositiveInteger" }
+                "electionTimeoutMaxMs": { "$ref": "#/definitions/optionalPositiveInteger" },
+                "peerPort": { "$ref": "#/definitions/port" },
+                "clusterId": { "type": "string" },
+                "peerToken": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "existingSecret": { "type": "string" },
+                    "tokenKey": { "type": "string", "minLength": 1 }
+                  }
+                },
+                "insecurePeers": { "type": "boolean" },
+                "initialClusterState": { "type": "string", "enum": ["", "new", "existing"] }
               }
             }
           }

@@ -9,10 +9,15 @@
 //! - some peer's log is past the initial membership entry: the group exists.
 //!   This member follows it without a vote until it has applied everything
 //!   the confirmed leader held when asked, then votes again;
-//! - a majority, this member included, answers and is empty: first boot.
-//!   Every such member initializes with the same configured group, which
-//!   openraft documents as safe;
+//! - a majority, this member included, answers and is empty: first boot,
+//!   but only if the operator said so (`InitialClusterState::New`). Every
+//!   such member initializes with the same configured group, which openraft
+//!   documents as safe. Without that, a majority of lost volumes would
+//!   quietly become a fresh, empty group, so the member waits instead;
 //! - otherwise it asks again.
+//!
+//! Peers answer only requests carrying this cluster's id and peer token, so
+//! a member of some other group is never counted either way.
 //!
 //! The withheld vote is persisted, so a crash part-way through catching up
 //! does not turn a half-filled log into a voter. The argument is in
@@ -24,7 +29,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use super::{NodeId, RaftHandle, store};
+use super::{InitialClusterState, NodeId, RaftHandle, store};
 
 /// What a member reports to one deciding how to enter the group.
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,6 +48,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// A target can be a tail a deposed leader never commits; past this, ask
 /// again rather than wait for it forever.
 const CATCH_UP_WAIT: Duration = Duration::from_secs(30);
+/// How often a member that may not form the group says why it is waiting.
+const WAITING_LOG_INTERVAL: Duration = Duration::from_secs(10);
 
 impl RaftHandle {
     /// Take this member's place in the group, in the background.
@@ -50,10 +57,13 @@ impl RaftHandle {
     /// A member that kept its state has nothing to do. One that starts empty,
     /// or was still catching up when it stopped, withholds its vote and works
     /// out whether to form the group or catch up with it, per the module
-    /// docs. Call before the RPC routes serve, so no vote leaks out first.
+    /// docs. It forms a new group only when `initial` is
+    /// [`InitialClusterState::New`]. Call before the RPC routes serve, so no
+    /// vote leaks out first.
     pub fn enter_group(
         &self,
         peers: BTreeMap<NodeId, String>,
+        initial: InitialClusterState,
         shutdown: CancellationToken,
     ) -> anyhow::Result<()> {
         if self.may_vote.load(Ordering::SeqCst) {
@@ -69,22 +79,26 @@ impl RaftHandle {
         tokio::spawn(async move {
             tokio::select! {
                 _ = shutdown.cancelled() => {}
-                () = handle.decide_and_join(peers) => {}
+                () = handle.decide_and_join(peers, initial) => {}
             }
         });
         Ok(())
     }
 
-    async fn decide_and_join(&self, peers: BTreeMap<NodeId, String>) {
-        let client = reqwest::Client::builder()
-            .timeout(PROBE_TIMEOUT)
-            .build()
-            .expect("build raft join client");
+    async fn decide_and_join(&self, peers: BTreeMap<NodeId, String>, initial: InitialClusterState) {
+        let client = match self.security.client(PROBE_TIMEOUT) {
+            Ok(client) => client,
+            Err(err) => {
+                tracing::error!(error = %err, "cannot build the raft join client");
+                return;
+            }
+        };
         let others: Vec<String> = peers
             .iter()
             .filter(|(id, _)| **id != self.id)
-            .map(|(_, addr)| addr.clone())
+            .filter_map(|(id, addr)| self.peer_url(Some(*id), Some(addr)))
             .collect();
+        let mut last_waiting_log: Option<tokio::time::Instant> = None;
 
         // Holding state while withholding the vote means an earlier catch-up
         // was interrupted; the group exists, so there is nothing to decide.
@@ -96,8 +110,8 @@ impl RaftHandle {
             loop {
                 let mut empty = 1; // this member
                 let mut exists = false;
-                for addr in &others {
-                    let url = format!("http://{addr}/internal/raft/standing");
+                for base in &others {
+                    let url = format!("{base}/internal/raft/standing");
                     let standing = match client.get(url).send().await {
                         Ok(response) => response.json::<Standing>().await.ok(),
                         Err(_) => None,
@@ -114,8 +128,21 @@ impl RaftHandle {
                     break;
                 }
                 if empty > peers.len() / 2 {
-                    self.form_group(peers).await;
-                    return;
+                    if initial == InitialClusterState::New {
+                        self.form_group(peers).await;
+                        return;
+                    }
+                    if last_waiting_log.is_none_or(|at| at.elapsed() >= WAITING_LOG_INTERVAL) {
+                        tracing::warn!(
+                            empty,
+                            members = peers.len(),
+                            "a majority of raft members is empty and none holds the group; \
+                             not forming a new one. If this is the cluster's first start, set \
+                             FELIX_RAFT_INITIAL_CLUSTER_STATE=new; if volumes were lost, restore \
+                             them or recover from an export"
+                        );
+                        last_waiting_log = Some(tokio::time::Instant::now());
+                    }
                 }
                 tokio::time::sleep(RETRY_INTERVAL).await;
             }
@@ -145,8 +172,8 @@ impl RaftHandle {
     async fn catch_up(&self, client: &reqwest::Client, others: &[String]) {
         loop {
             let mut target = None;
-            for addr in others {
-                let url = format!("http://{addr}/internal/raft/catch-up-target");
+            for base in others {
+                let url = format!("{base}/internal/raft/catch-up-target");
                 if let Ok(response) = client.get(url).send().await
                     && response.status().is_success()
                     && let Ok(answer) = response.json::<CatchUpTarget>().await

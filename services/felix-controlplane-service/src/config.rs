@@ -11,6 +11,7 @@ mod storage;
 pub use bootstrap::{BootstrapConfig, BootstrapTlsConfig};
 pub use liveness::NodeLivenessConfig;
 pub use storage::{PostgresConfig, RaftBackendConfig, StorageBackend};
+pub(crate) use storage::{insecure_peers_from_env, peer_security_from_env};
 
 use std::fs;
 use std::net::SocketAddr;

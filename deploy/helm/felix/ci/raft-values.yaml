@@ -9,6 +9,8 @@ controlplane:
       volume:
         size: 2Gi
         storageClassName: fast-ssd
+      peerToken:
+        existingSecret: felix-raft-peer
   antiAffinity: hard
 broker:
   replicas: 3

@@ -116,6 +116,33 @@ async fn a_newer_command_version_is_refused_not_skipped() {
     );
 }
 
+/// A variant added by a newer build arrives at the current version with an
+/// `op` this build has never heard of. It is refused the same way and leaves
+/// the snapshot byte-identical, so every member on this build still agrees.
+#[tokio::test]
+async fn an_unknown_command_variant_is_refused_without_touching_state() {
+    let machine = machine();
+    let before = crate::raft::AppStateMachine::snapshot(&machine).await;
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "v": COMMAND_VERSION,
+        "op": "some_future_operation",
+        "tenant_id": "t1"
+    }))
+    .expect("bytes");
+
+    let response = crate::raft::AppStateMachine::apply(&machine, &bytes).await;
+    let result = decode_result(&response).expect("decodes");
+    assert!(
+        matches!(result, Err(MetaError::Unsupported(_))),
+        "{result:?}"
+    );
+    assert_eq!(
+        crate::raft::AppStateMachine::snapshot(&machine).await,
+        before,
+        "a refused command must change nothing"
+    );
+}
+
 /// The import command is the migration cutover: refused against a store
 /// with any history unless the operator explicitly overwrites, and exact
 /// when it lands — including the sequence positions broker watches resume

@@ -54,6 +54,28 @@ controlplane:
       volume:
         size: 1Gi
         storageClassName: ""
+      # The members' Raft peer listener. Only the other members need to reach
+      # it; it is on the headless Service and never on the API Service.
+      peerPort: 8444
+      # Names the group; recorded in each member's volume, which then refuses
+      # to start under another id. Defaults to the control plane's full name.
+      clusterId: ""
+      # A Secret holding the shared peer token (32+ characters) under
+      # `tokenKey`, e.g.
+      #   kubectl create secret generic felix-raft-peer \
+      #     --from-literal=token="$(openssl rand -hex 32)"
+      # Every Raft request carries it, and whoever holds it can replace the
+      # metadata store: give it to the members and the migration tool only.
+      peerToken:
+        existingSecret: ""
+        tokenKey: token
+      # Run without a peer token. For a throwaway cluster only.
+      insecurePeers: false
+      # `new` lets empty members form a brand-new group; `existing` never
+      # does, so members that lost their volumes wait instead of starting an
+      # empty control plane. Empty renders `new` on `helm install` and
+      # `existing` on every upgrade.
+      initialClusterState: ""
       # Tuning; empty means the control plane's own defaults.
       heartbeatMs: ""
       electionTimeoutMinMs: ""

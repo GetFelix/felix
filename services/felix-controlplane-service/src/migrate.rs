@@ -5,6 +5,10 @@
 //! the API serves), and the import is one `ImportState` command proposed to
 //! the running group (so it is atomic, replicated, and refused by a group
 //! that already holds state unless the operator says `--overwrite`). The
+//! import speaks to a member's Raft peer listener as a peer, so it needs the
+//! cluster's `FELIX_RAFT_CLUSTER_ID` and `FELIX_RAFT_PEER_TOKEN` (and the
+//! `FELIX_RAFT_TLS_*` files under peer mTLS): replacing the store is a
+//! cluster-admin act, and that token is the cluster-admin credential. The
 //! ceremony that wraps these — freeze, export, import, verify, retire — is
 //! documented in `docs/metadata-raft-design.md#migration-from-postgres`.
 //!
@@ -36,13 +40,13 @@ pub async fn run(args: Vec<String>) -> Result<()> {
             import(file, target, overwrite).await
         }
         _ => bail!(
-            "usage: felix-controlplane migrate <export-postgres <out.json> | import <file.json> <http://controlplane-addr> [--overwrite]>"
+            "usage: felix-controlplane migrate <export-postgres <out.json> | import <file.json> <http(s)://raft-peer-addr> [--overwrite]>"
         ),
     }
 }
 
-const IMPORT_USAGE: &str =
-    "usage: felix-controlplane migrate import <file.json> <http://controlplane-addr> [--overwrite]";
+const IMPORT_USAGE: &str = "usage: felix-controlplane migrate import <file.json> <http(s)://raft-peer-addr> [--overwrite] \
+     (with FELIX_RAFT_CLUSTER_ID and FELIX_RAFT_PEER_TOKEN set)";
 
 /// Read everything from Postgres — through the same store traits the API
 /// serves from — and write the state machine's snapshot format.
@@ -82,7 +86,7 @@ async fn export_postgres(out: &str) -> Result<()> {
 
 /// Propose the snapshot to a running group as one `ImportState` command.
 ///
-/// Any member's address works — the propose route forwards to the leader —
+/// Any member's peer address works — the propose route forwards to the leader —
 /// and the group refuses a non-empty store unless `--overwrite`, so pointing
 /// this at the wrong cluster is an error message, not a catastrophe.
 async fn import(file: &str, target: &str, overwrite: bool) -> Result<()> {
@@ -95,8 +99,18 @@ async fn import(file: &str, target: &str, overwrite: bool) -> Result<()> {
         state: Box::new(state),
         overwrite,
     });
+    let security = crate::config::peer_security_from_env()?;
+    anyhow::ensure!(
+        !security.cluster_id.is_empty(),
+        "set FELIX_RAFT_CLUSTER_ID to the target group's cluster id"
+    );
+    anyhow::ensure!(
+        security.token.is_some() || crate::config::insecure_peers_from_env(),
+        "set FELIX_RAFT_PEER_TOKEN to the target group's peer token"
+    );
     let url = format!("{}/internal/raft/propose", target.trim_end_matches('/'));
-    let response = reqwest::Client::new()
+    let response = security
+        .client(std::time::Duration::from_secs(60))?
         .post(&url)
         .body(command)
         .send()

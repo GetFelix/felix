@@ -16,7 +16,15 @@ async fn single_node_store(dir: &std::path::Path) -> Arc<RaftStore> {
         change_retention_max_rows: Some(1_000),
     }));
     let machine = Arc::new(MetadataStateMachine::new(inner));
-    let mut settings = RaftSettings::new(1, dir.into());
+    let mut settings = RaftSettings::new(
+        1,
+        dir.into(),
+        crate::raft::PeerSecurity {
+            cluster_id: "test-cluster".to_string(),
+            token: Some("0123456789abcdef0123456789abcdef".to_string()),
+            tls: None,
+        },
+    );
     settings.heartbeat_interval = Duration::from_millis(50);
     settings.election_timeout = (Duration::from_millis(150), Duration::from_millis(300));
     let handle = RaftHandle::start(settings, Arc::clone(&machine) as Arc<dyn AppStateMachine>)

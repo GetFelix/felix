@@ -285,7 +285,7 @@ fn audit_rejected(tenant_id: &str, reason: &'static str) {
     metrics::counter!(ATTEMPTS, "outcome" => "rejected", "reason" => reason).increment(1);
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

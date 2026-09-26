@@ -50,6 +50,8 @@ const KEY_SNAPSHOT_DATA: &str = "snapshot_data";
 /// Set while this member must not vote: from the moment it started empty
 /// until it has formed the group or caught up with it (`super::join`).
 const KEY_VOTE_WITHHELD: &str = "vote_withheld";
+/// The cluster this data dir belongs to (`FELIX_RAFT_CLUSTER_ID`).
+const KEY_CLUSTER_ID: &str = "cluster_id";
 
 /// The committed index this store had persisted when it last ran — what a
 /// restarting node must re-apply before it is fit to serve.
@@ -89,6 +91,27 @@ pub(super) fn vote_withheld(db: &Database) -> Result<bool> {
 pub(super) fn set_vote_withheld(db: &Database, withheld: bool) -> Result<()> {
     write_meta(db, KEY_VOTE_WITHHELD, &withheld)
         .map_err(|err| anyhow::anyhow!("write vote flag: {err}"))
+}
+
+/// Record that this data dir belongs to `cluster_id`, or refuse if it
+/// already belongs to another cluster.
+///
+/// A store without a recorded id takes the configured one, whether it is
+/// empty or predates the id: either way this is the first start that knows
+/// it. After that, a member pointed at the wrong group's peers, or a volume
+/// mounted into the wrong cluster, fails here instead of mixing two logs.
+pub(super) fn claim_cluster_id(db: &Database, cluster_id: &str) -> Result<()> {
+    let recorded = read_meta::<String>(db, KEY_CLUSTER_ID)
+        .map_err(|err| anyhow::anyhow!("read cluster id: {err}"))?;
+    match recorded {
+        Some(recorded) if recorded == cluster_id => Ok(()),
+        Some(recorded) => anyhow::bail!(
+            "raft data dir belongs to cluster '{recorded}', not the configured \
+             FELIX_RAFT_CLUSTER_ID '{cluster_id}'"
+        ),
+        None => write_meta(db, KEY_CLUSTER_ID, &cluster_id.to_string())
+            .map_err(|err| anyhow::anyhow!("write cluster id: {err}")),
+    }
 }
 
 /// Open (or create) the store file and make sure both tables exist, so
