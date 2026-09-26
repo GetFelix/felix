@@ -7,8 +7,11 @@ use axum::http::HeaderMap;
 use super::require_node_manage;
 use crate::api::AppState;
 use crate::api::error::{ApiError, api_conflict, api_internal, api_not_found};
-use crate::api::types::{NodeHeartbeatRequest, NodeHeartbeatResponse, ReplicaStatusRequest};
-use crate::store::StoreError;
+use crate::api::types::{
+    NodeHeartbeatRequest, NodeHeartbeatResponse, ReplicaStatusRequest, ReplicaStatusResponse,
+    ReportOutcome, ShardReplicaStatus, ShardReportOutcome,
+};
+use crate::store::{ReportWrite, StoreError};
 
 #[utoipa::path(
     post,
@@ -73,8 +76,9 @@ pub(crate) async fn report_health(
     params(("node_id" = String, Path, description = "Broker node identifier")),
     request_body = ReplicaStatusRequest,
     responses(
-        (status = 204, description = "Report recorded"),
-        (status = 404, description = "Node is not registered", body = crate::api::types::ErrorResponse)
+        (status = 200, description = "Every shard's report was stored", body = ReplicaStatusResponse),
+        (status = 404, description = "Node is not registered", body = crate::api::types::ErrorResponse),
+        (status = 409, description = "At least one shard's report was not stored; `shards` says which and why", body = ReplicaStatusResponse)
     )
 )]
 /// Record which replicas a leader believes hold each of its shards.
@@ -89,6 +93,12 @@ pub(crate) async fn report_health(
 /// second matters just as much: speaking for yourself about someone else's
 /// shard is still nominating yourself for promotion.
 ///
+/// The answer is per shard, because the leader moves its quorum mark on it: a
+/// `Quorum` write is acknowledged only once a report naming its replicas is
+/// the one failover will read, so a report that was not stored must not read
+/// as one that was. 409 when any shard was refused, so a broker that only
+/// looks at the status holds its marks rather than trusting the batch.
+///
 /// # Errors
 /// - 404 when the node is not registered.
 pub(crate) async fn report_replica_status(
@@ -96,7 +106,7 @@ pub(crate) async fn report_replica_status(
     headers: HeaderMap,
     Path(node_id): Path<String>,
     Json(request): Json<ReplicaStatusRequest>,
-) -> Result<axum::http::StatusCode, ApiError> {
+) -> Result<(axum::http::StatusCode, Json<ReplicaStatusResponse>), ApiError> {
     require_node_manage(&state, &headers, &node_id).await?;
     // The store's clock, like a heartbeat, and for the same reason: the
     // report is judged by the placement pass, which may run on a different
@@ -114,86 +124,135 @@ pub(crate) async fn report_replica_status(
     // report from the same broker's previous life.
     let _ = request.incarnation;
 
+    let mut outcomes = Vec::with_capacity(request.shards.len());
     for shard in request.shards {
-        let key = crate::model::ShardKey {
-            tenant_id: shard.tenant_id.clone(),
-            namespace: shard.namespace.clone(),
-            stream: shard.stream.clone(),
+        let outcome = record_one(&state, &node_id, now, &shard).await?;
+        if !outcome.accepted() {
+            metrics::counter!(
+                "felix_replica_status_rejected_total",
+                "reason" => rejection_label(outcome)
+            )
+            .increment(1);
+        }
+        outcomes.push(ShardReportOutcome {
+            tenant_id: shard.tenant_id,
+            namespace: shard.namespace,
+            stream: shard.stream,
             shard: shard.shard,
-            kind: shard.kind.into(),
-        };
+            kind: shard.kind,
+            generation: shard.generation,
+            outcome,
+        });
+    }
+    let status = if outcomes.iter().all(|shard| shard.outcome.accepted()) {
+        axum::http::StatusCode::OK
+    } else {
+        axum::http::StatusCode::CONFLICT
+    };
+    Ok((status, Json(ReplicaStatusResponse { shards: outcomes })))
+}
 
-        // Being authorised to speak for yourself is not the same as leading
-        // this shard. Without this, any node credential can list itself as
-        // caught up for any shard and nominate itself for promotion.
-        let assignment = match state.store.get_shard_assignment(&key).await {
-            Ok(assignment) => assignment,
-            // An unplaced shard has no leader, so nobody can report on it.
-            Err(StoreError::NotFound(_)) => continue,
-            Err(ref other) => return Err(api_internal("read shard assignment", other)),
-        };
-        if assignment.leader != node_id {
-            tracing::warn!(
-                node_id = %node_id,
-                leader = %assignment.leader,
-                stream = %key.stream,
-                shard = key.shard,
-                "a broker reported replica positions for a shard it does not lead",
-            );
-            metrics::counter!("felix_replica_status_rejected_total", "reason" => "not_leader")
-                .increment(1);
-            continue;
-        }
-        // A generation past the assignment's cannot be one the broker read, and
-        // accepting it would wedge the shard: `record` drops everything older,
-        // so one report claiming u64::MAX blocks every real one after it.
-        if shard.generation > assignment.generation {
-            tracing::warn!(
-                node_id = %node_id,
-                reported = shard.generation,
-                assigned = assignment.generation,
-                stream = %key.stream,
-                shard = key.shard,
-                "a broker reported a generation ahead of the assignment",
-            );
-            metrics::counter!("felix_replica_status_rejected_total", "reason" => "future_generation")
-                .increment(1);
-            continue;
-        }
+/// Judge one shard's report and, if it passes, store it.
+async fn record_one(
+    state: &AppState,
+    node_id: &str,
+    now: u64,
+    shard: &ShardReplicaStatus,
+) -> Result<ReportOutcome, ApiError> {
+    let key = crate::model::ShardKey {
+        tenant_id: shard.tenant_id.clone(),
+        namespace: shard.namespace.clone(),
+        stream: shard.stream.clone(),
+        shard: shard.shard,
+        kind: shard.kind.into(),
+    };
 
-        let advances = advances_move(
-            &assignment,
-            &shard,
-            state.placement_wakes.fence_max_lag_records(),
+    // Being authorised to speak for yourself is not the same as leading
+    // this shard. Without this, any node credential can list itself as
+    // caught up for any shard and nominate itself for promotion.
+    let assignment = match state.store.get_shard_assignment(&key).await {
+        Ok(assignment) => assignment,
+        // An unplaced shard has no leader, so nobody can report on it.
+        Err(StoreError::NotFound(_)) => return Ok(ReportOutcome::Unassigned),
+        Err(ref other) => return Err(api_internal("read shard assignment", other)),
+    };
+    if assignment.leader != node_id {
+        tracing::warn!(
+            node_id = %node_id,
+            leader = %assignment.leader,
+            stream = %key.stream,
+            shard = key.shard,
+            "a broker reported replica positions for a shard it does not lead",
         );
-        match state
-            .store
-            .record_replica_report(crate::model::ReplicaReport {
-                key,
-                generation: shard.generation,
-                caught_up: shard.caught_up.into_iter().collect(),
-                drained: shard.drained,
-                offsets: shard
-                    .replica_offsets
-                    .into_iter()
-                    .map(|replica| (replica.node_id, replica.durable_offset))
-                    .collect(),
-                reported_at_millis: now,
-                leader_offset: shard.leader_offset,
-            })
-            .await
-        {
+        return Ok(ReportOutcome::NotLeader);
+    }
+    // A generation past the assignment's cannot be one the broker read, and
+    // accepting it would wedge the shard: `record` drops everything older,
+    // so one report claiming u64::MAX blocks every real one after it.
+    if shard.generation > assignment.generation {
+        tracing::warn!(
+            node_id = %node_id,
+            reported = shard.generation,
+            assigned = assignment.generation,
+            stream = %key.stream,
+            shard = key.shard,
+            "a broker reported a generation ahead of the assignment",
+        );
+        return Ok(ReportOutcome::FutureGeneration);
+    }
+    // Behind the assignment: the broker has not caught up with its own
+    // leadership, and the replica set it measured may not be this one.
+    if shard.generation < assignment.generation {
+        return Ok(ReportOutcome::Stale);
+    }
+
+    let advances = advances_move(
+        &assignment,
+        shard,
+        state.placement_wakes.fence_max_lag_records(),
+    );
+    match state
+        .store
+        .record_replica_report(crate::model::ReplicaReport {
+            key,
+            generation: shard.generation,
+            caught_up: shard.caught_up.iter().cloned().collect(),
+            drained: shard.drained,
+            offsets: shard
+                .replica_offsets
+                .iter()
+                .map(|replica| (replica.node_id.clone(), replica.durable_offset))
+                .collect(),
+            reported_at_millis: now,
+            leader_offset: shard.leader_offset,
+        })
+        .await
+    {
+        Ok(ReportWrite::Stored) => {
             // The next step of a move waits on exactly this report, so
             // placement runs now rather than at its next tick.
-            Ok(()) if advances => state.placement_wakes.request_pass(),
-            Ok(()) => {}
-            // The assignment went between the read above and the write: the
-            // shard is nobody's to report on any more.
-            Err(StoreError::NotFound(_)) => continue,
-            Err(ref err) => return Err(api_internal("record replica report", err)),
+            if advances {
+                state.placement_wakes.request_pass();
+            }
+            Ok(ReportOutcome::Accepted)
         }
+        Ok(ReportWrite::Stale) => Ok(ReportOutcome::Stale),
+        // The assignment went between the read above and the write: the
+        // shard is nobody's to report on any more.
+        Err(StoreError::NotFound(_)) => Ok(ReportOutcome::Unassigned),
+        Err(ref err) => Err(api_internal("record replica report", err)),
     }
-    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+/// The `reason` label a refused shard is counted under.
+fn rejection_label(outcome: ReportOutcome) -> &'static str {
+    match outcome {
+        ReportOutcome::NotLeader => "not_leader",
+        ReportOutcome::FutureGeneration => "future_generation",
+        ReportOutcome::Stale => "stale",
+        ReportOutcome::Unassigned => "unassigned",
+        ReportOutcome::Accepted | ReportOutcome::Unknown => "other",
+    }
 }
 
 /// Whether a report is the one a move in progress is waiting for: a

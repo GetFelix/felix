@@ -113,5 +113,61 @@ pub struct ReplicaStatusRequest {
     pub shards: Vec<ShardReplicaStatus>,
 }
 
+/// What the control plane did with each shard of a [`ReplicaStatusRequest`].
+///
+/// One entry per requested shard, in request order. A leader may count a
+/// report toward its quorum mark only when its entry is `accepted`: that is
+/// the report failover will read. Sent with 200 when every shard was accepted
+/// and 409 when any was not, so a broker that predates this body still holds
+/// its marks when something was refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+pub struct ReplicaStatusResponse {
+    pub shards: Vec<ShardReportOutcome>,
+}
+
+/// The control plane's answer for one shard of a replica report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+pub struct ShardReportOutcome {
+    pub tenant_id: String,
+    pub namespace: String,
+    pub stream: String,
+    pub shard: u32,
+    #[serde(default)]
+    pub kind: ShardKind,
+    /// The generation the report was made at.
+    pub generation: u64,
+    pub outcome: ReportOutcome,
+}
+
+/// Whether a shard's report was stored, and if not, why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ReportOutcome {
+    /// Stored. Failover will read it until a newer one replaces it.
+    Accepted,
+    /// Older than what is held: an earlier generation than the assignment's,
+    /// or behind the report already stored for this generation.
+    Stale,
+    /// The reporting broker does not lead the shard.
+    NotLeader,
+    /// Nobody leads the shard.
+    Unassigned,
+    /// A generation the assignment has not reached.
+    FutureGeneration,
+    /// An outcome this build does not know. Read as not accepted.
+    #[serde(other)]
+    Unknown,
+}
+
+impl ReportOutcome {
+    /// Whether the report was stored.
+    pub fn accepted(self) -> bool {
+        self == Self::Accepted
+    }
+}
+
 #[cfg(test)]
 mod tests;

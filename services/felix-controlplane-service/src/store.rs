@@ -215,9 +215,11 @@ pub trait ControlPlaneStore: Send + Sync {
 
     /// Record what a shard's leader reports about its replicas.
     ///
-    /// A report at an older generation than the one held is dropped, not an
-    /// error: leadership moved on, and the old leader's view is about a
-    /// replica set that may no longer exist. `NotFound` when the shard has no
+    /// A report that does not supersede the one held is dropped and answered
+    /// [`ReportWrite::Stale`], not an error: an older generation's view is
+    /// about a replica set that may no longer exist, and an older report in
+    /// the same generation would roll the positions back. The caller must
+    /// not treat a stale report as recorded. `NotFound` when the shard has no
     /// assignment -- nobody leads it, so nobody can report on it -- and a
     /// deleted assignment takes its report with it, so a shard that is
     /// removed and recreated does not inherit the old one's promotability.
@@ -226,7 +228,7 @@ pub trait ControlPlaneStore: Send + Sync {
     /// against that same clock by whichever instance runs placement, which
     /// is the whole reason the report is in the store. Under Raft the leader
     /// overwrites the stamp as it accepts the proposal, as for a heartbeat.
-    async fn record_replica_report(&self, report: ReplicaReport) -> StoreResult<()>;
+    async fn record_replica_report(&self, report: ReplicaReport) -> StoreResult<ReportWrite>;
     /// Every report held, fresh or not; the reader judges freshness.
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>>;
 
@@ -448,6 +450,16 @@ pub enum AssignmentWrite {
         /// The token now.
         token: u64,
     },
+}
+
+/// What [`ControlPlaneStore::record_replica_report`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportWrite {
+    /// The report is now the one held for its shard.
+    Stored,
+    /// The store holds a report this one does not supersede (see
+    /// [`ReplicaReport::supersedes`]), and kept it.
+    Stale,
 }
 
 /// What [`ControlPlaneStore::acquire_placement_lease`] granted.

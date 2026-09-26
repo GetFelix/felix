@@ -4,7 +4,9 @@ use crate::model::{
     CacheKey, ReplicaReport, ShardAssignment, ShardAssignmentChange, ShardAssignmentChangeOp,
     ShardKey, ShardKind, StreamKey,
 };
-use crate::store::{AssignmentWrite, ChangeSet, PlacementLease, Snapshot, StoreError, StoreResult};
+use crate::store::{
+    AssignmentWrite, ChangeSet, PlacementLease, ReportWrite, Snapshot, StoreError, StoreResult,
+};
 
 pub(super) async fn put_shard_assignment(
     store: &InMemoryStore,
@@ -227,7 +229,7 @@ pub(super) async fn shard_assignment_changes(
 pub(super) async fn record_replica_report(
     store: &InMemoryStore,
     report: ReplicaReport,
-) -> StoreResult<()> {
+) -> StoreResult<ReportWrite> {
     // Held across the existence check so a concurrent delete either sees
     // the report and removes it, or runs after this and finds nothing.
     let shards = store.shards.read().await;
@@ -236,12 +238,12 @@ pub(super) async fn record_replica_report(
     }
     let mut reports = store.replica_reports.write().await;
     if let Some(held) = reports.get(&report.key)
-        && held.generation > report.generation
+        && !report.supersedes(held)
     {
-        return Ok(());
+        return Ok(ReportWrite::Stale);
     }
     reports.insert(report.key.clone(), report);
-    Ok(())
+    Ok(ReportWrite::Stored)
 }
 
 pub(super) async fn list_replica_reports(store: &InMemoryStore) -> StoreResult<Vec<ReplicaReport>> {

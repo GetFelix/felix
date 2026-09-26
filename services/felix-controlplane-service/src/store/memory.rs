@@ -47,7 +47,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 
-use super::{AuthStore, ChangeSet, ControlPlaneStore, Snapshot, StoreConfig, StoreResult};
+use super::{
+    AuthStore, ChangeSet, ControlPlaneStore, ReportWrite, Snapshot, StoreConfig, StoreResult,
+};
 use crate::auth::felix_token::TenantSigningKeys;
 use crate::auth::idp_registry::IdpIssuerConfig;
 use crate::auth::rbac::policy_store::{GroupingRule, PolicyRule};
@@ -414,7 +416,7 @@ impl ControlPlaneStore for InMemoryStore {
         shards::shard_assignment_changes(self, since).await
     }
 
-    async fn record_replica_report(&self, report: ReplicaReport) -> StoreResult<()> {
+    async fn record_replica_report(&self, report: ReplicaReport) -> StoreResult<ReportWrite> {
         shards::record_replica_report(self, report).await
     }
 
