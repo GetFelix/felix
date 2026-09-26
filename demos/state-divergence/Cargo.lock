@@ -942,7 +942,9 @@ dependencies = [
 name = "felix-common"
 version = "0.6.0-preview"
 dependencies = [
+ "arc-swap",
  "metrics",
+ "rustls",
  "serde",
  "thiserror 2.0.20",
  "tokio",
