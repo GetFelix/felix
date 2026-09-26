@@ -44,7 +44,7 @@ use super::{
     AuthStore, ChangeSet, ControlPlaneStore, ReportWrite, Snapshot, StoreConfig, StoreError,
     StoreResult,
 };
-use crate::auth::felix_token::TenantSigningKeys;
+use crate::auth::felix_token::{SigningKey, TenantSigningKeys};
 use crate::auth::idp_registry::IdpIssuerConfig;
 use crate::auth::rbac::policy_store::{GroupingRule, PolicyRule};
 use crate::auth::refresh_token::{RefreshToken, RefreshTokenTake};
@@ -463,8 +463,44 @@ impl AuthStore for PostgresStore {
         auth::add_rbac_grouping(self, tenant_id, grouping).await
     }
 
+    async fn remove_rbac_policy(&self, tenant_id: &str, policy: PolicyRule) -> StoreResult<()> {
+        auth::remove_rbac_policy(self, tenant_id, &policy).await
+    }
+
+    async fn remove_rbac_grouping(
+        &self,
+        tenant_id: &str,
+        grouping: GroupingRule,
+    ) -> StoreResult<()> {
+        auth::remove_rbac_grouping(self, tenant_id, &grouping).await
+    }
+
     async fn get_tenant_signing_keys(&self, tenant_id: &str) -> StoreResult<TenantSigningKeys> {
         auth::get_tenant_signing_keys(self, tenant_id).await
+    }
+
+    async fn stage_signing_key(
+        &self,
+        tenant_id: &str,
+        key: SigningKey,
+    ) -> StoreResult<TenantSigningKeys> {
+        auth::stage_signing_key(self, tenant_id, key).await
+    }
+
+    async fn activate_signing_key(
+        &self,
+        tenant_id: &str,
+        kid: &str,
+    ) -> StoreResult<TenantSigningKeys> {
+        auth::activate_signing_key(self, tenant_id, kid).await
+    }
+
+    async fn retire_signing_key(
+        &self,
+        tenant_id: &str,
+        kid: &str,
+    ) -> StoreResult<TenantSigningKeys> {
+        auth::retire_signing_key(self, tenant_id, kid).await
     }
 
     async fn set_tenant_signing_keys(

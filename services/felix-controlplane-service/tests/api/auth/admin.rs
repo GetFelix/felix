@@ -46,7 +46,7 @@ fn build_state(store: Arc<InMemoryStore>) -> AppState {
     }
 }
 
-async fn setup() -> (
+pub(super) async fn setup() -> (
     axum::routing::RouterIntoService<Body, ()>,
     Arc<InMemoryStore>,
     TenantSigningKeys,
@@ -81,7 +81,7 @@ async fn setup() -> (
     (app, store, keys)
 }
 
-fn token(keys: &TenantSigningKeys, perms: Vec<&str>) -> String {
+pub(super) fn token(keys: &TenantSigningKeys, perms: Vec<&str>) -> String {
     token_for_tenant(keys, "t1", perms)
 }
 
@@ -454,7 +454,7 @@ async fn add_grouping_enforces_scope_and_role_policies() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
-fn add_auth(mut request: Request<Body>, token: &str) -> Request<Body> {
+pub(super) fn add_auth(mut request: Request<Body>, token: &str) -> Request<Body> {
     request.headers_mut().insert(
         axum::http::header::AUTHORIZATION,
         format!("Bearer {token}").parse().expect("auth header"),

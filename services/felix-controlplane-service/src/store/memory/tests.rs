@@ -30,6 +30,13 @@ async fn satisfies_the_signing_key_contract() {
 
 /// The same suite Postgres runs.
 #[tokio::test]
+async fn satisfies_the_rbac_contract() {
+    let store = std::sync::Arc::new(store_with_limits(100, 1000));
+    crate::store::contract::rbac::run_rbac_contract(store).await;
+}
+
+/// The same suite Postgres runs.
+#[tokio::test]
 async fn satisfies_the_shard_store_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
     crate::store::contract::shards::run_shard_contract(store.clone()).await;

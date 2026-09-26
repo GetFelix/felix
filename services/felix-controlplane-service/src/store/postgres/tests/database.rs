@@ -407,7 +407,8 @@ async fn satisfies_the_shard_store_contract() -> anyhow::Result<()> {
     let store = std::sync::Arc::new(store);
     crate::store::contract::shards::run_shard_contract(store.clone()).await;
     crate::store::contract::shards::run_shard_concurrency_contract(store.clone()).await;
-    crate::store::contract::refresh_tokens::run_refresh_contract(store).await;
+    crate::store::contract::refresh_tokens::run_refresh_contract(store.clone()).await;
+    crate::store::contract::rbac::run_rbac_contract(store).await;
     Ok(())
 }
 

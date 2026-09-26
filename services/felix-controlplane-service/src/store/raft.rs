@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::auth::felix_token::TenantSigningKeys;
+use crate::auth::felix_token::{SigningKey, TenantSigningKeys};
 use crate::auth::idp_registry::IdpIssuerConfig;
 use crate::auth::rbac::policy_store::{GroupingRule, PolicyRule};
 use crate::auth::refresh_token::{RefreshToken, RefreshTokenTake};
@@ -65,6 +65,13 @@ impl RaftStore {
             .map_err(StoreError::Unexpected)?;
         let result = decode_result(&bytes).map_err(StoreError::from)?;
         result.map_err(StoreError::from)
+    }
+
+    async fn propose_for_keys(&self, command: MetaCommand) -> StoreResult<TenantSigningKeys> {
+        match self.propose(command).await? {
+            MetaResponse::SigningKeys { keys } => Ok(keys),
+            _ => Err(unexpected_shape("signing keys")),
+        }
     }
 }
 
@@ -514,8 +521,66 @@ impl AuthStore for RaftStore {
         .map(|_| ())
     }
 
+    async fn remove_rbac_policy(&self, tenant_id: &str, policy: PolicyRule) -> StoreResult<()> {
+        self.propose(MetaCommand::RemoveRbacPolicy {
+            tenant_id: tenant_id.to_string(),
+            policy,
+        })
+        .await
+        .map(|_| ())
+    }
+
+    async fn remove_rbac_grouping(
+        &self,
+        tenant_id: &str,
+        grouping: GroupingRule,
+    ) -> StoreResult<()> {
+        self.propose(MetaCommand::RemoveRbacGrouping {
+            tenant_id: tenant_id.to_string(),
+            grouping,
+        })
+        .await
+        .map(|_| ())
+    }
+
     async fn get_tenant_signing_keys(&self, tenant_id: &str) -> StoreResult<TenantSigningKeys> {
         self.local().get_tenant_signing_keys(tenant_id).await
+    }
+
+    async fn stage_signing_key(
+        &self,
+        tenant_id: &str,
+        key: SigningKey,
+    ) -> StoreResult<TenantSigningKeys> {
+        self.propose_for_keys(MetaCommand::StageSigningKey {
+            tenant_id: tenant_id.to_string(),
+            key,
+        })
+        .await
+    }
+
+    async fn activate_signing_key(
+        &self,
+        tenant_id: &str,
+        kid: &str,
+    ) -> StoreResult<TenantSigningKeys> {
+        self.propose_for_keys(MetaCommand::ActivateSigningKey {
+            tenant_id: tenant_id.to_string(),
+            kid: kid.to_string(),
+        })
+        .await
+    }
+
+    async fn retire_signing_key(
+        &self,
+        tenant_id: &str,
+        kid: &str,
+    ) -> StoreResult<TenantSigningKeys> {
+        self.propose_for_keys(MetaCommand::RetireSigningKey {
+            tenant_id: tenant_id.to_string(),
+            kid: kid.to_string(),
+        })
+        .await
     }
 
     async fn set_tenant_signing_keys(

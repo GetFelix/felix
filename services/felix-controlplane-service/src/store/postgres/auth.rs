@@ -296,6 +296,46 @@ pub(super) async fn add_rbac_grouping(
     PostgresStore::insert_rbac_grouping_on(&mut conn, tenant_id, &grouping).await
 }
 
+pub(super) async fn remove_rbac_policy(
+    store: &PostgresStore,
+    tenant_id: &str,
+    policy: &PolicyRule,
+) -> StoreResult<()> {
+    let result = sqlx::query(
+        "DELETE FROM rbac_policies \
+         WHERE tenant_id = $1 AND subject = $2 AND object = $3 AND action = $4",
+    )
+    .bind(tenant_id)
+    .bind(&policy.subject)
+    .bind(&policy.object)
+    .bind(&policy.action)
+    .execute(&store.pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(StoreError::NotFound("policy".into()));
+    }
+    Ok(())
+}
+
+pub(super) async fn remove_rbac_grouping(
+    store: &PostgresStore,
+    tenant_id: &str,
+    grouping: &GroupingRule,
+) -> StoreResult<()> {
+    let result = sqlx::query(
+        "DELETE FROM rbac_groupings WHERE tenant_id = $1 AND user_id = $2 AND role = $3",
+    )
+    .bind(tenant_id)
+    .bind(&grouping.user)
+    .bind(&grouping.role)
+    .execute(&store.pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(StoreError::NotFound("grouping".into()));
+    }
+    Ok(())
+}
+
 pub(super) async fn get_tenant_signing_keys(
     store: &PostgresStore,
     tenant_id: &str,
@@ -326,6 +366,120 @@ pub(super) async fn set_tenant_signing_keys(
     // Invalidate derived key cache so new keys take effect immediately.
     crate::auth::felix_token::invalidate_tenant_cache(tenant_id);
     Ok(())
+}
+
+/// Open a transaction holding the tenant row, the lock every signing-key
+/// write takes: two rotations interleaving could otherwise leave the tenant
+/// with no current key, or two.
+async fn lock_tenant_keys(
+    store: &PostgresStore,
+    tenant_id: &str,
+) -> StoreResult<(sqlx::Transaction<'static, sqlx::Postgres>, TenantSigningKeys)> {
+    let mut tx = store.pool.begin().await?;
+    let tenant: Option<String> =
+        sqlx::query_scalar("SELECT tenant_id FROM tenants WHERE tenant_id = $1 FOR UPDATE")
+            .bind(tenant_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if tenant.is_none() {
+        return Err(StoreError::NotFound("tenant".into()));
+    }
+    let keys = PostgresStore::load_signing_keys_on(&mut tx, tenant_id)
+        .await?
+        .ok_or_else(|| StoreError::NotFound("signing keys".into()))?;
+    Ok((tx, keys))
+}
+
+/// Commit, then read back what is stored. The cache is dropped only after
+/// the commit, so an uncommitted key never enters it.
+async fn finish_key_change(
+    store: &PostgresStore,
+    tx: sqlx::Transaction<'static, sqlx::Postgres>,
+    tenant_id: &str,
+) -> StoreResult<TenantSigningKeys> {
+    tx.commit().await?;
+    crate::auth::felix_token::invalidate_tenant_cache(tenant_id);
+    get_tenant_signing_keys(store, tenant_id).await
+}
+
+pub(super) async fn stage_signing_key(
+    store: &PostgresStore,
+    tenant_id: &str,
+    key: SigningKey,
+) -> StoreResult<TenantSigningKeys> {
+    key.validate()
+        .map_err(|err| StoreError::Unexpected(anyhow!(err)))?;
+    let (mut tx, keys) = lock_tenant_keys(store, tenant_id).await?;
+    if keys.all_keys().any(|existing| existing.kid == key.kid) {
+        return Err(StoreError::Conflict("kid already in use".into()));
+    }
+    sqlx::query(
+        "INSERT INTO tenant_signing_keys (tenant_id, kid, alg, private_pem, public_pem, status) \
+         VALUES ($1, $2, $3, $4, $5, 'previous')",
+    )
+    .bind(tenant_id)
+    .bind(&key.kid)
+    .bind(algorithm_to_str(key.alg))
+    .bind(key.private_key.as_slice())
+    .bind(key.public_key.as_slice())
+    .execute(&mut *tx)
+    .await?;
+    finish_key_change(store, tx, tenant_id).await
+}
+
+pub(super) async fn activate_signing_key(
+    store: &PostgresStore,
+    tenant_id: &str,
+    kid: &str,
+) -> StoreResult<TenantSigningKeys> {
+    let (mut tx, keys) = lock_tenant_keys(store, tenant_id).await?;
+    if keys.current.kid == kid {
+        return Ok(keys);
+    }
+    if !keys.previous.iter().any(|key| key.kid == kid) {
+        return Err(StoreError::NotFound("signing key".into()));
+    }
+    sqlx::query(
+        "UPDATE tenant_signing_keys SET status = 'previous' \
+         WHERE tenant_id = $1 AND status = 'current'",
+    )
+    .bind(tenant_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE tenant_signing_keys SET status = 'current' \
+         WHERE tenant_id = $1 AND kid = $2 AND status = 'previous'",
+    )
+    .bind(tenant_id)
+    .bind(kid)
+    .execute(&mut *tx)
+    .await?;
+    finish_key_change(store, tx, tenant_id).await
+}
+
+pub(super) async fn retire_signing_key(
+    store: &PostgresStore,
+    tenant_id: &str,
+    kid: &str,
+) -> StoreResult<TenantSigningKeys> {
+    let (mut tx, keys) = lock_tenant_keys(store, tenant_id).await?;
+    if keys.current.kid == kid {
+        return Err(StoreError::Conflict(
+            "the current signing key cannot be retired".into(),
+        ));
+    }
+    let result = sqlx::query(
+        "DELETE FROM tenant_signing_keys \
+         WHERE tenant_id = $1 AND kid = $2 AND status = 'previous'",
+    )
+    .bind(tenant_id)
+    .bind(kid)
+    .execute(&mut *tx)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(StoreError::NotFound("signing key".into()));
+    }
+    finish_key_change(store, tx, tenant_id).await
 }
 
 pub(super) async fn tenant_auth_is_bootstrapped(

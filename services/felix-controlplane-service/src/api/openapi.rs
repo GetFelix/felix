@@ -20,11 +20,14 @@ use crate::api::{
     },
 };
 use crate::auth::admin;
-use crate::auth::admin::{GroupingRequest, PolicyRequest};
+use crate::auth::admin::{
+    GroupingRequest, PolicyRequest, RevokeRefreshTokensRequest, RevokeRefreshTokensResponse,
+};
 use crate::auth::exchange::{self, TokenExchangeRequest, TokenExchangeResponse};
 use crate::auth::idp_registry::IdpIssuerConfig;
 use crate::auth::jwks::{self, JwksResponse};
 use crate::auth::rbac::policy_store::{GroupingRule, PolicyRule};
+use crate::auth::signing_keys::{self, SigningKeysResponse};
 use crate::model::{
     Cache, CacheChange, CacheChangeOp, CacheKey, CachePatchRequest, ConsistencyLevel,
     DeliveryGuarantee, MoveReason, Namespace, NamespaceChange, NamespaceChangeOp, NamespaceKey,
@@ -52,6 +55,13 @@ use crate::model::{
         admin::delete_idp_issuer,
         admin::add_policy,
         admin::add_grouping,
+        admin::remove_policy,
+        admin::remove_grouping,
+        admin::revoke_principal_refresh_tokens,
+        signing_keys::list_signing_keys,
+        signing_keys::stage_signing_key,
+        signing_keys::activate_signing_key,
+        signing_keys::retire_signing_key,
         tenants::list_tenants,
         tenants::create_tenant,
         tenants::delete_tenant,
@@ -177,6 +187,9 @@ use crate::model::{
         IdpIssuerConfig,
         PolicyRequest,
         GroupingRequest,
+        RevokeRefreshTokensRequest,
+        RevokeRefreshTokensResponse,
+        SigningKeysResponse,
         PolicyRule,
         GroupingRule,
         JwksResponse

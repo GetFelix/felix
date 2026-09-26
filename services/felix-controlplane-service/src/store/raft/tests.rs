@@ -70,6 +70,13 @@ async fn satisfies_the_signing_key_contract() {
 }
 
 #[tokio::test]
+async fn satisfies_the_rbac_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    crate::store::contract::rbac::run_rbac_contract(store).await;
+}
+
+#[tokio::test]
 async fn satisfies_the_placement_contract() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = single_node_store(dir.path()).await;

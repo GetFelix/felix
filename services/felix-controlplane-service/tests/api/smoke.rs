@@ -1190,6 +1190,42 @@ impl AuthStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
+    async fn remove_rbac_policy(&self, _tenant_id: &str, _policy: PolicyRule) -> StoreResult<()> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn remove_rbac_grouping(
+        &self,
+        _tenant_id: &str,
+        _grouping: GroupingRule,
+    ) -> StoreResult<()> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn stage_signing_key(
+        &self,
+        _tenant_id: &str,
+        _key: felix_controlplane_service::auth::felix_token::SigningKey,
+    ) -> StoreResult<TenantSigningKeys> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn activate_signing_key(
+        &self,
+        _tenant_id: &str,
+        _kid: &str,
+    ) -> StoreResult<TenantSigningKeys> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn retire_signing_key(
+        &self,
+        _tenant_id: &str,
+        _kid: &str,
+    ) -> StoreResult<TenantSigningKeys> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
     async fn get_tenant_signing_keys(&self, _tenant_id: &str) -> StoreResult<TenantSigningKeys> {
         self.signing_keys
             .clone()
