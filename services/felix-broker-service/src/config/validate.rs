@@ -46,7 +46,30 @@ impl BrokerConfig {
         }
         self.validate_io_runtime_covers_every_listener()?;
         self.validate_credential_can_outlive_itself()?;
+        self.validate_peers_are_authenticated()?;
+        self.client_tls.validate()?;
+        super::tls::validate_controlplane_ca(
+            self.controlplane_ca.as_deref(),
+            self.controlplane_url.as_deref(),
+        )?;
         Ok(())
+    }
+
+    /// Refuse to join a cluster without peer mTLS unless told to.
+    ///
+    /// The internal listener binds whenever this broker has a node id, and
+    /// without mTLS anything that reaches it is a peer: it can forward writes
+    /// and send `ReplicateRebuild`, which discards a follower's log. Keyed on
+    /// membership rather than replication factor because the broker learns
+    /// replication factors from the control plane after it is already
+    /// listening, and an RF=1 cluster still forwards over this port.
+    fn validate_peers_are_authenticated(&self) -> Result<()> {
+        match &self.peer_transport {
+            Some(peer) if peer.tls.is_none() && !peer.allow_unauthenticated => anyhow::bail!(
+                "this broker joins a cluster (FELIX_NODE_ID is set) without peer mTLS:                  anything that can reach FELIX_INTERNAL_BIND could act as a broker and                  rewrite replicas. Set FELIX_INTERNAL_TLS_CERT, FELIX_INTERNAL_TLS_KEY                  and FELIX_INTERNAL_TLS_CA, or set FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true                  if the internal port is reachable from brokers only"
+            ),
+            _ => Ok(()),
+        }
     }
 
     /// Refuse an I/O runtime pool too small for the listeners that will use it.

@@ -37,10 +37,11 @@ use felix_common::lifecycle::Readiness;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use crate::cluster::credential;
+use crate::cluster::{controlplane_http, credential};
 use crate::config::{self, DurableStorageConfig};
 use crate::replication;
 use crate::serving::auth::BrokerAuth;
+use crate::serving::tls::ClientTls;
 
 /// Start the broker and run until the provided `shutdown` future resolves.
 ///
@@ -68,6 +69,8 @@ where
     // Configuration is resolved from environment variables (and optionally a YAML file).
     // Keep this early so the remainder of startup is entirely driven by `config`.
     let config = config::BrokerConfig::from_env_or_yaml()?;
+    // Before any control-plane client exists: they are all built trusting it.
+    controlplane_http::trust_ca(config.controlplane_ca.as_deref())?;
     // Size the QUIC I/O runtime pool before ANY endpoint is built: the pool is
     // created on the first one and a tokio runtime cannot be resized after.
     // This has to sit above the peer pool below, which binds a client endpoint
@@ -165,12 +168,14 @@ where
         ))
     };
 
-    let identity = listeners::server_identity()?;
-    let quic_servers = listeners::bind(&config, &identity)?;
+    // Loaded before anything binds, so unreadable key material fails startup.
+    let client_tls = ClientTls::from_config(&config.client_tls)?;
+    client_tls.spawn_reload(&accept_shutdown);
+    let quic_servers = listeners::bind(&config, &client_tls)?;
     let broker = Arc::new(broker);
     let kafka = listeners::bind_kafka(
         &config,
-        &identity,
+        &client_tls,
         &broker,
         &auth,
         listeners::KafkaClusterView {
@@ -231,7 +236,7 @@ where
         seeded_rx,
     );
 
-    let membership_client = reqwest::Client::new();
+    let membership_client = controlplane_http::client();
     let (membership, credential_refresh) = match membership::spawn(
         &config,
         &membership_client,

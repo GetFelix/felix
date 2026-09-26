@@ -13,12 +13,14 @@ pub mod kafka;
 mod membership;
 mod print;
 mod subscriber;
+pub mod tls;
 mod validate;
 
 pub use durable::DurableStorageConfig;
 pub use kafka::KafkaListenerConfig;
 pub use membership::MembershipConfig;
 pub use subscriber::{SubStreamMode, SubscriberLaneShard};
+pub use tls::{ClientTlsConfig, ClientTlsFiles};
 
 use std::net::SocketAddr;
 
@@ -76,6 +78,10 @@ pub struct BrokerConfig {
     pub controlplane_token: String,
     /// Poll interval for control-plane changes.
     pub controlplane_sync_interval_ms: u64,
+    /// Extra CA bundle trusted for an `https://` control plane.
+    pub controlplane_ca: Option<String>,
+    /// The certificate the client-facing listeners present.
+    pub client_tls: ClientTlsConfig,
     /// Cluster membership identity, when this broker joins one.
     pub membership: Option<MembershipConfig>,
     /// Broker-internal transport, present only when this broker joins a cluster.
@@ -291,6 +297,8 @@ impl Default for BrokerConfig {
             controlplane_url: None,
             controlplane_token: String::new(),
             controlplane_sync_interval_ms: 2000,
+            controlplane_ca: None,
+            client_tls: ClientTlsConfig::default(),
             membership: None,
             peer_transport: None,
             ack_on_commit: false,

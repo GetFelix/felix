@@ -10,6 +10,7 @@
 
 pub mod catalog_sync;
 pub mod client_endpoints;
+pub(crate) mod controlplane_http;
 pub mod credential;
 pub mod lease;
 pub mod membership;

@@ -86,7 +86,7 @@ pub(crate) async fn start_sync_with_signal(
     mut seeded: Option<tokio::sync::oneshot::Sender<()>>,
     credential: Option<NodeCredential>,
 ) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = crate::cluster::controlplane_http::client();
     // Sequence cursors for each change feed; 0 means "not yet seeded".
     let mut state = SyncState::new();
     loop {
