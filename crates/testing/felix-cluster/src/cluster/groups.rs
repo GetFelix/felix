@@ -147,7 +147,12 @@ impl Cluster {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
-        let client = client::connect(node.client_addr, &self.tenant_id, &self.client_token).await?;
+        let client = client::connect(
+            node.client_addr,
+            &self.tenant_id,
+            &self.group_operator_token,
+        )
+        .await?;
         client
             .group_redrive(
                 &self.tenant_id,

@@ -26,10 +26,12 @@ impl PermissionMatcher {
         Ok(Self::new(parsed))
     }
 
-    /// Whether any pattern allows `action` on `resource`.
+    /// Whether any pattern allows `action` on `resource`, directly or through
+    /// an action that implies it ([`Action::is_granted_by`]).
     pub fn allows(&self, action: Action, resource: &str) -> bool {
         self.patterns.iter().any(|pattern| {
-            pattern.action == action && wildcard_match(&pattern.resource_pattern, resource)
+            action.is_granted_by(pattern.action)
+                && wildcard_match(&pattern.resource_pattern, resource)
         })
     }
 

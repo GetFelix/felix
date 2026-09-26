@@ -19,6 +19,13 @@ pub enum Action {
     StreamSubscribe,
     CacheRead,
     CacheWrite,
+    /// Work a stream's consumer groups: poll, acknowledge, hand back, and list
+    /// dead letters. Granted by `stream.subscribe` too; see
+    /// [`Action::is_granted_by`].
+    GroupConsume,
+    /// Operate a stream's consumer groups: redrive or discard a dead letter.
+    /// Granted by `stream.manage` too.
+    GroupManage,
 }
 
 impl Action {
@@ -37,7 +44,24 @@ impl Action {
             Action::StreamSubscribe => "stream.subscribe",
             Action::CacheRead => "cache.read",
             Action::CacheWrite => "cache.write",
+            Action::GroupConsume => "group.consume",
+            Action::GroupManage => "group.manage",
         }
+    }
+
+    /// Whether a grant of `granted` allows `self`.
+    ///
+    /// Group actions arrived after policies granting `stream.subscribe` and
+    /// `stream.manage` were already deployed, and those grants covered group
+    /// work. Honouring them here keeps every existing consumer working; the
+    /// new actions let a policy grant group work without the stream action.
+    pub fn is_granted_by(self, granted: Action) -> bool {
+        self == granted
+            || matches!(
+                (self, granted),
+                (Action::GroupConsume, Action::StreamSubscribe)
+                    | (Action::GroupManage, Action::StreamManage)
+            )
     }
 }
 
@@ -63,6 +87,8 @@ impl std::str::FromStr for Action {
             "stream.subscribe" => Ok(Action::StreamSubscribe),
             "cache.read" => Ok(Action::CacheRead),
             "cache.write" => Ok(Action::CacheWrite),
+            "group.consume" => Ok(Action::GroupConsume),
+            "group.manage" => Ok(Action::GroupManage),
             _ => Err(()),
         }
     }

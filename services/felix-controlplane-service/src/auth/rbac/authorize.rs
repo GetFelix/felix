@@ -16,6 +16,10 @@ pub const ACTION_STREAM_PUBLISH: &str = "stream.publish";
 pub const ACTION_STREAM_SUBSCRIBE: &str = "stream.subscribe";
 pub const ACTION_CACHE_READ: &str = "cache.read";
 pub const ACTION_CACHE_WRITE: &str = "cache.write";
+/// Work a stream's consumer groups. `stream.subscribe` also grants it.
+pub const ACTION_GROUP_CONSUME: &str = "group.consume";
+/// Redrive or discard a stream's dead letters. `stream.manage` also grants it.
+pub const ACTION_GROUP_MANAGE: &str = "group.manage";
 /// Read cluster membership. Cluster-scoped, so it is never reachable from a
 /// tenant scope -- see [`ParsedObject::Cluster`].
 pub const ACTION_NODE_VIEW: &str = "node.view";
@@ -40,6 +44,8 @@ pub fn canonical_action(action: &str) -> Option<&'static str> {
         ACTION_STREAM_SUBSCRIBE => Some(ACTION_STREAM_SUBSCRIBE),
         ACTION_CACHE_READ => Some(ACTION_CACHE_READ),
         ACTION_CACHE_WRITE => Some(ACTION_CACHE_WRITE),
+        ACTION_GROUP_CONSUME => Some(ACTION_GROUP_CONSUME),
+        ACTION_GROUP_MANAGE => Some(ACTION_GROUP_MANAGE),
         ACTION_NODE_VIEW => Some(ACTION_NODE_VIEW),
         ACTION_NODE_MANAGE => Some(ACTION_NODE_MANAGE),
         _ => None,

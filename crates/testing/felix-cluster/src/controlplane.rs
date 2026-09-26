@@ -225,6 +225,19 @@ impl ControlPlane {
         .context("mint admin token")
     }
 
+    /// A credential that may operate consumer groups: redrive and discard dead
+    /// letters, which a consumer's `stream.subscribe` does not allow.
+    pub fn group_operator_token(&self, tenant_id: &str) -> Result<String> {
+        felix_controlplane_service::auth::felix_token::mint_token(
+            &self.keys,
+            tenant_id,
+            "p:harness-group-operator",
+            vec![format!("group.manage:stream:{tenant_id}/*/*")],
+            Duration::from_secs(3600),
+        )
+        .context("mint group operator token")
+    }
+
     /// A credential that may subscribe but not publish.
     ///
     /// For asserting that a forwarded publish is still authorized: a check done

@@ -39,6 +39,7 @@ impl Cluster {
         let admin_token = control_plane.admin_token(&config.tenant_id)?;
         let operator_token = control_plane.operator_token(&config.tenant_id)?;
         let subscribe_only_token = control_plane.subscribe_only_token(&config.tenant_id)?;
+        let group_operator_token = control_plane.group_operator_token(&config.tenant_id)?;
 
         // Metadata first: a broker syncs streams at startup, and one that starts
         // before its streams exist has to wait for the next sync to become
@@ -64,6 +65,7 @@ impl Cluster {
             admin_token,
             operator_token,
             subscribe_only_token,
+            group_operator_token,
             http,
             binary: binary.clone(),
             config: config.clone(),
