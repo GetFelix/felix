@@ -369,8 +369,7 @@ def main() -> int:
                 "broker.clientTls.enabled=true")
     must_refuse("needs controlplane.tls.existingSecret", postgres,
                 "controlplane.tls.enabled=true")
-    must_refuse("not supported with the raft backend", raft,
-                "controlplane.tls.enabled=true", "controlplane.tls.existingSecret=cp-tls")
+
     must_refuse("needs controlplane.storage.postgres.existingSecret", None,
                 "broker.credential.existingSecret=cred")
     must_refuse("odd number of members", raft, "controlplane.replicas=4")

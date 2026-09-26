@@ -101,7 +101,7 @@ controlplane:
   # unencrypted. The Secret is a kubernetes.io/tls one, as cert-manager's
   # Certificate writes it; its certificate must name the API Service
   # (<release>-controlplane.<namespace>.svc). The files are re-read on
-  # renewal. Not available with the raft backend yet.
+  # renewal. It does not cover the Raft peer port (storage.raft.peerPort).
   tls:
     enabled: false
     existingSecret: ""

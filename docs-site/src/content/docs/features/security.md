@@ -29,7 +29,7 @@ configuration:
 | Client ↔ broker (QUIC) | Encrypted (TLS 1.3). The broker serves a **self-signed `localhost` certificate generated at every start**, so clients cannot verify which broker they reached, and startup warns. | `FELIX_TLS_CERT` / `FELIX_TLS_KEY`: a real certificate, re-read on rotation. `FELIX_TLS_CLIENT_CA`: clients must also present a certificate. `FELIX_TLS_REQUIRE_CERT=true` refuses to start without one. |
 | Client ↔ broker (Kafka listener) | TLS with the same certificate as QUIC (`FELIX_KAFKA_TLS=false` turns it off). | Same variables as QUIC. |
 | Broker ↔ broker (internal port) | Encrypted, not authenticated. A broker with a node id **refuses to start** this way unless `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`. | `FELIX_INTERNAL_TLS_CERT` / `_KEY` / `_CA`: mutual TLS, the certificate's DNS name checked against the node id in both directions. |
-| Broker / admin CLI ↔ control-plane API | **Plain HTTP**, and the control plane warns at startup. Node credentials, token exchange and tenant JWKS cross it. | `FELIX_CONTROLPLANE_TLS_CERT` / `_KEY` on the control plane, an `https://` `FELIX_CONTROLPLANE_URL` on brokers, and `FELIX_CONTROLPLANE_CA` when the certificate comes from a private CA. Not yet available with the Raft backend, whose RPCs share that listener over plain HTTP; terminate TLS in front of it instead. |
+| Broker / admin CLI ↔ control-plane API | **Plain HTTP**, and the control plane warns at startup. Node credentials, token exchange and tenant JWKS cross it. | `FELIX_CONTROLPLANE_TLS_CERT` / `_KEY` on the control plane, an `https://` `FELIX_CONTROLPLANE_URL` on brokers, and `FELIX_CONTROLPLANE_CA` when the certificate comes from a private CA. |
 | Control-plane bootstrap listener | Plain HTTP, off by default. | `FELIX_BOOTSTRAP_TLS_*`: mutual TLS, described below. |
 
 So every QUIC connection is encrypted out of the box, the control-plane API
@@ -401,9 +401,6 @@ Stated plainly, so nobody designs around a protection that is not there:
   and required by default; with `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`
   peers encrypt but do not authenticate each other and the internal network
   is trusted.
-- **TLS on the control-plane API under the Raft backend.** The Raft RPCs
-  share the API listener and speak plain HTTP between members, so the control
-  plane refuses `FELIX_CONTROLPLANE_TLS_CERT` with that backend.
 - **Client certificates from the Python and TypeScript bindings.**
 - **Audit logging, quotas, and rate limits.**
 

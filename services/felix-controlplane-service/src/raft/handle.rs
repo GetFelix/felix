@@ -176,7 +176,7 @@ impl RaftHandle {
         let router = self.rpc_router();
         match self.security.server_tls()? {
             Some(tls) => {
-                crate::server::tls::serve_mtls(listener, router, tls, shutdown).await;
+                crate::server::tls::serve_tls("raft", listener, router, tls, shutdown).await;
             }
             None => {
                 axum::serve(listener, router.into_make_service())

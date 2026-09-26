@@ -180,9 +180,6 @@ applies.
 {{- if and $cp.tls.enabled (not $cp.tls.existingSecret) -}}
 {{- fail "controlplane.tls.enabled needs controlplane.tls.existingSecret: a kubernetes.io/tls Secret with the API certificate" -}}
 {{- end -}}
-{{- if and $cp.tls.enabled (eq $cp.storage.backend "raft") -}}
-{{- fail "controlplane.tls is not supported with the raft backend yet: the Raft RPCs share the API port over plain HTTP. Terminate TLS in front of the control plane instead" -}}
-{{- end -}}
 {{- if and $cp.bootstrap.enabled (not $cp.bootstrap.existingSecret) -}}
 {{- fail "controlplane.bootstrap.enabled needs controlplane.bootstrap.existingSecret: a Secret holding the bootstrap token" -}}
 {{- end -}}

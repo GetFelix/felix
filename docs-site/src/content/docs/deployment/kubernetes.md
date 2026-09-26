@@ -270,9 +270,9 @@ Brokers send their node credential, and clients exchange tokens, over the
 control-plane API. `controlplane.tls` serves it over TLS from a
 `kubernetes.io/tls` Secret whose certificate names the API Service
 (`felix-controlplane.felix.svc.cluster.local`); brokers then use `https://` and
-trust the Secret's `ca.crt` (`controlplane.tls.caKey`). It is not available
-with the Raft backend yet, because the Raft members reach each other over the
-same port in plain HTTP; the chart refuses that combination.
+trust the Secret's `ca.crt` (`controlplane.tls.caKey`). It does not cover
+the Raft members' peer port, which is separate and authenticated by the peer
+token.
 
 ## Peer mTLS
 
