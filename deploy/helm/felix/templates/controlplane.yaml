@@ -29,10 +29,12 @@ spec:
       {{- include "felix.controlplane.selectorLabels" . | nindent 6 }}
   {{- if $raft }}
   serviceName: {{ $headless }}
-  # Members restart one at a time, each rejoining the group from its volume
-  # before the next goes; a leader restart pauses metadata writes for one
-  # election.
-  podManagementPolicy: OrderedReady
+  # Parallel, not OrderedReady: a member is ready only once it sees a leader,
+  # and one member alone never elects one, so ordered creation would wait on
+  # pod-0 forever. This only governs creation and scaling; the rolling update
+  # below still restarts members one at a time, each rejoining from its volume
+  # before the next goes.
+  podManagementPolicy: Parallel
   updateStrategy:
     type: RollingUpdate
   {{- else }}
