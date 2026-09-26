@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790463549878,
+  "lastUpdate": 1790463748285,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -21318,6 +21318,72 @@ window.BENCHMARK_DATA = {
             "range": "346.82",
             "unit": "us",
             "extra": "trials: 5\nmedian: 541.00\nmean: 728.60\nstdev: 346.82\ncv: 47.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c89454d6695586829d083fd478dca96fd2668fe9",
+          "message": "docs: correct claims the code no longer backs (#733)\n\n- SECURITY.md: the supported minor line is 0.5.x, not 0.4.x.\n- panic-audit.md, todos.md: frame and message decoders are fuzzed in CI\n  (7 targets, 30 s each); say what is still thin (budget, Kafka decoders).\n- protocol.md: control and publish traffic uses client-opened bidi\n  streams, events use broker-opened uni streams, and clients may publish\n  on a uni stream; a flags=0 payload is JSON, not binary. Drop the stale\n  note that no binary layout carries an idempotent producer.\n- semantics.md: the report-ordering gap (#527) is closed by the\n  report-before-mark ordering (#268); note it relies on the control\n  plane's 204 meaning the report was recorded.\n- what-felix-is-for.md: live-state sync is \"Partly\", matching the cache\n  watch rows marked shipped on the same page.\n- Placement is deterministic over separate reads and made safe by\n  conditional writes, not a shared snapshot (control-plane.md,\n  architecture.md, system-design.md, components.md, metadata-raft-design.md).\n- env_registry.rs: stop hardcoding ~160 variables.\n- Metadata export as a DR backup: not a consistent read unless writes are\n  frozen, and it holds tenant signing-key seeds in plaintext; refresh\n  tokens are not exported.\n- metadata-raft-design.md: list which contract suites run on Raft.\n- kubernetes.md: volume snapshots are not a consistent cluster point.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-26T15:55:30-07:00",
+          "tree_id": "fe584d5421873aa4e71a97cb6695647a1e40eb11",
+          "url": "https://github.com/gabloe/felix/commit/c89454d6695586829d083fd478dca96fd2668fe9"
+        },
+        "date": 1790463746136,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 63,
+            "range": "1.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 63.00\nmean: 62.00\nstdev: 1.87\ncv: 3.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 82,
+            "range": "4.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 82.00\nmean: 84.00\nstdev: 4.30\ncv: 5.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 110,
+            "range": "936.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 110.00\nmean: 527.00\nstdev: 936.38\ncv: 177.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 83,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 83.00\nmean: 82.60\nstdev: 1.67\ncv: 2.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 184,
+            "range": "15.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 184.00\nmean: 184.40\nstdev: 15.58\ncv: 8.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1305,
+            "range": "616.60",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1305.00\nmean: 927.60\nstdev: 616.60\ncv: 66.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
