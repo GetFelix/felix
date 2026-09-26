@@ -198,6 +198,61 @@ async fn a_writer_stages_behind_an_unfinished_commit() {
     );
 }
 
+/// A put whose caller is dropped after its record is on disk is still
+/// finished: applied, and reported to watchers, like any other write. The log
+/// and its followers hold the record either way, so a watcher that never
+/// hears of it has diverged from them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cancelled_put_is_still_applied() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = Arc::new(cache(dir.path()).await);
+    let observer = Arc::new(RecordingObserver::default());
+    assert!(cache.set_change_observer(observer.clone()));
+
+    // Hold an earlier turn so the put stages and then waits.
+    let (shard, pending, log, _op) = stage_without_committing(&cache, "first", b"one").await;
+    let turn = shard
+        .sequencer
+        .reserve(pending.first_offset(), pending.last_offset() + 1);
+    let put = {
+        let cache = Arc::clone(&cache);
+        tokio::spawn(async move {
+            cache
+                .put_checked(T, NS, C, 0, "k", Bytes::from_static(b"v"), None)
+                .await
+        })
+    };
+    let staged = async {
+        while log.tail_offset().await.expect("tail") <= pending.last_offset() + 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), staged)
+        .await
+        .expect("the put never staged");
+    put.abort();
+    assert!(put.await.expect_err("aborted").is_cancelled());
+
+    log.commit(&pending).await.expect("commit");
+    drop(turn);
+    let applied = async {
+        while cache.get(T, NS, C, 0, "k").await.is_none() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), applied)
+        .await
+        .expect("the cancelled put never reached the index");
+    assert!(
+        observer
+            .changes
+            .lock()
+            .iter()
+            .any(|change| change.key == "k"),
+        "the observer never saw the cancelled put",
+    );
+}
+
 /// A writer abandoned mid-flight — commit never run, turn dropped, the shape
 /// of a cancelled future — must not strand the writers behind it.
 #[tokio::test]

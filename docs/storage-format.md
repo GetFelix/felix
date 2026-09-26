@@ -236,12 +236,31 @@ because only there can a record have been mid-write when the process died:
   oversized records, so a verified header carrying an impossible length is damage
   the checksums did not catch.
 - Segment-header damage is never repairable.
+- **A zero-filled tail is always repairable**, whatever the failure kind and
+  without `repair_checksum_tail`. After a power loss (not a process crash) the
+  file size can reach disk while the data blocks it covers do not, and those
+  read back as zeros inside `i_size`. The rule: every byte from the damaged
+  record to end of file is zero, or the zeros start at a 512-byte boundary
+  inside the damaged record and run to end of file. Nothing past those zeros
+  can have been acknowledged, because an fsync that covered a later record
+  covered the zeroed bytes too. Zeros followed by any non-zero byte are not
+  this case and stay fatal, as do stale (non-zero) blocks at the tail: recovery
+  cannot tell those from rot on an acknowledged record.
+- **An unfinished background roll.** The background roll installs the new
+  segment before it flushes the retired one, and writes the new header without
+  a flush of its own. Every flush syncs the retired segment before the active
+  one, so a power loss in that window can leave only unflushed bytes damaged.
+  A newest segment whose header is all zeros is discarded as an uninstalled
+  roll. A torn or zero-filled tail (the two cases above) on the segment just
+  before the newest is cut back; the newest segment is kept if it starts
+  exactly at the cut and discarded otherwise, since records past a gap cannot
+  be kept in order. Any other damage there is still fatal.
 
 The dividing line is whether the length is trustworthy. When it is, recovery can
 prove the write was unfinished; when it is not, recovery refuses to choose
 between "unfinished" and "rotted" and fails loudly instead.
 
-The full rules live in `is_repairable_tail` in
+The full rules live in `is_repairable_tail` and `is_zero_filled_tail` in
 [`segment/scan.rs`](../crates/server/felix-storage/src/segment/scan.rs).
 
 ## Golden vectors

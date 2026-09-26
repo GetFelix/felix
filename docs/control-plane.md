@@ -1105,8 +1105,9 @@ advisory reports cannot deliver.
 
 ### Services
 - Headless Service for control-plane peer discovery — required by the raft
-  backend (stable per-pod names feed `FELIX_RAFT_PEERS`), unused by the
-  Postgres backend, whose instances do not know about each other.
+  backend (stable per-pod names feed `FELIX_RAFT_PEERS`, on the separate,
+  token-authenticated Raft peer port), unused by the Postgres backend, whose
+  instances do not know about each other.
 - ClusterIP Service for control plane client API (watch/snapshot/health).
 - Separate Service for broker QUIC ingress.
 

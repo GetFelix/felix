@@ -18,7 +18,9 @@
 //!   redb file per instance. Consensus state is the one thing here that must
 //!   never lie about being on disk.
 //! - `network` / `http` — Raft RPCs as JSON over HTTP between instances,
-//!   riding the same listener the control plane already runs.
+//!   on a peer listener of their own, never the public API one.
+//! - `peer` — how that traffic is authenticated: cluster id, peer token,
+//!   optional mTLS.
 //! - `types` — the openraft type configuration. Commands and responses are
 //!   opaque bytes at this layer; their meaning belongs to the application
 //!   state machine (#338 gives them theirs).
@@ -27,12 +29,15 @@ mod health;
 mod http;
 mod join;
 mod network;
+mod peer;
 mod proposal;
 mod store;
 mod types;
 
 pub use handle::RaftHandle;
+pub use peer::{CLUSTER_ID_HEADER, PeerSecurity, PeerTls};
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -65,16 +70,25 @@ pub struct RaftSettings {
     /// here, where "no quorum" becomes an error a caller can surface
     /// instead of a hang inside the seam.
     pub write_timeout: Duration,
+    /// How peer traffic is authenticated, both directions.
+    pub security: PeerSecurity,
+    /// Where each member's peer listener is, by id. Consulted before the
+    /// address recorded in the membership, so moving the peer port is a
+    /// config change rather than a membership change. Empty means the
+    /// recorded addresses are used as they are.
+    pub peer_addrs: BTreeMap<NodeId, String>,
 }
 
 impl RaftSettings {
     /// Defaults sized for a three-instance metadata group: elections settle
     /// in about a second, and the log is compacted often because state is
     /// kilobytes.
-    pub fn new(node_id: NodeId, data_dir: PathBuf) -> Self {
+    pub fn new(node_id: NodeId, data_dir: PathBuf, security: PeerSecurity) -> Self {
         Self {
             node_id,
             data_dir,
+            security,
+            peer_addrs: BTreeMap::new(),
             heartbeat_interval: Duration::from_millis(150),
             election_timeout: (Duration::from_millis(600), Duration::from_millis(1200)),
             snapshot_logs_since_last: 500,
@@ -82,6 +96,19 @@ impl RaftSettings {
             write_timeout: Duration::from_secs(10),
         }
     }
+}
+
+/// Whether an empty member may form a brand-new group, etcd-style.
+///
+/// A member with no state cannot tell a first boot from a lost volume, and
+/// a majority of lost volumes would otherwise vote a fresh, empty group into
+/// existence: new signing keys, every generation back to zero. `Existing`
+/// makes that impossible; `New` is the operator saying this is day 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InitialClusterState {
+    New,
+    #[default]
+    Existing,
 }
 
 /// The application half of the state machine seam.

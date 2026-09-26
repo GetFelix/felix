@@ -100,11 +100,37 @@ where
     );
 
     let app = build_router(state.clone());
-    // The Raft RPC routes ride the main listener — the design's "no new
-    // port": one less listener to secure.
-    let app = match &raft_handle {
-        Some(handle) => app.merge(handle.rpc_router()),
-        None => app,
+
+    // The Raft RPCs get a listener of their own, authenticated as peers:
+    // `propose` can replace the whole store, so it must never share the
+    // public API port. Bound before the API so a bad address fails startup.
+    // It stops after the Raft node does, on its own token, so a draining
+    // member keeps answering its peers until it has left.
+    let peer_shutdown = CancellationToken::new();
+    let raft_peer_task = match (&raft_handle, &config.raft) {
+        (Some(handle), Some(raft_cfg)) => {
+            let listener = tokio::net::TcpListener::bind(raft_cfg.peer_bind_addr).await?;
+            tracing::info!(
+                addr = %listener.local_addr().unwrap_or(raft_cfg.peer_bind_addr),
+                mtls = raft_cfg.security.tls.is_some(),
+                authenticated = raft_cfg.security.token.is_some(),
+                "raft peer listener listening"
+            );
+            if raft_cfg.security.token.is_none() {
+                tracing::warn!(
+                    "FELIX_RAFT_INSECURE_PEERS is set: anyone who reaches the raft peer \
+                     listener can replace the metadata store"
+                );
+            }
+            let handle = handle.clone();
+            let shutdown = peer_shutdown.clone();
+            Some(tokio::spawn(async move {
+                if let Err(err) = handle.serve_peers(listener, shutdown).await {
+                    tracing::error!(error = %err, "raft peer listener failed");
+                }
+            }))
+        }
+        _ => None,
     };
 
     let bootstrap_task = if config.bootstrap.enabled {
@@ -194,6 +220,8 @@ where
         bootstrap_task,
         raft_metrics_task,
         raft_handle,
+        raft_peer_task,
+        peer_shutdown,
         metrics_task,
     }
     .drain()

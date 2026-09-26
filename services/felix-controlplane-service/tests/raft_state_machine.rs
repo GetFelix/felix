@@ -32,7 +32,7 @@ async fn start_node(id: NodeId, dir: &std::path::Path) -> TestNode {
         change_retention_max_rows: Some(1_000),
     }));
     let machine = Arc::new(MetadataStateMachine::new(store));
-    let mut settings = RaftSettings::new(id, dir.into());
+    let mut settings = RaftSettings::new(id, dir.into(), peer_security());
     settings.heartbeat_interval = Duration::from_millis(50);
     settings.election_timeout = (Duration::from_millis(200), Duration::from_millis(400));
     let handle = RaftHandle::start(settings, Arc::clone(&machine) as Arc<dyn AppStateMachine>)
@@ -190,5 +190,14 @@ async fn concurrent_bootstraps_are_settled_by_log_order_alone() {
     for node in &nodes {
         let _ = node.handle.shutdown().await;
         node.server.abort();
+    }
+}
+
+/// Peer credentials every member of a test group shares.
+fn peer_security() -> felix_controlplane_service::raft::PeerSecurity {
+    felix_controlplane_service::raft::PeerSecurity {
+        cluster_id: "test-cluster".to_string(),
+        token: Some("0123456789abcdef0123456789abcdef".to_string()),
+        tls: None,
     }
 }

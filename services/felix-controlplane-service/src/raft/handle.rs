@@ -8,7 +8,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use super::types::Raft;
-use super::{AppStateMachine, NodeId, RaftSettings, RaftStatus, http, network, store};
+use super::{
+    AppStateMachine, NodeId, PeerSecurity, RaftSettings, RaftStatus, http, network, store,
+};
 
 /// One running member of the metadata Raft group.
 ///
@@ -20,6 +22,9 @@ pub struct RaftHandle {
     pub(super) write_timeout: Duration,
     /// For forwarding proposals to the leader; pooled per host underneath.
     pub(super) forward: reqwest::Client,
+    pub(super) security: Arc<PeerSecurity>,
+    /// Configured peer addresses, preferred over the ones in the membership.
+    pub(super) peer_addrs: Arc<BTreeMap<NodeId, String>>,
     /// Kept past construction only for [`AppStateMachine::restamp`], which
     /// runs on the proposal path rather than the apply loop.
     pub(super) app: Arc<dyn AppStateMachine>,
@@ -45,6 +50,7 @@ impl RaftHandle {
     pub async fn start(settings: RaftSettings, app: Arc<dyn AppStateMachine>) -> Result<Self> {
         std::fs::create_dir_all(&settings.data_dir).context("create raft data dir")?;
         let db = store::open(&settings.data_dir.join("raft.redb"))?;
+        store::claim_cluster_id(&db, &settings.security.cluster_id)?;
         let may_vote = !store::vote_withheld(&db)?;
         let config = openraft::Config {
             cluster_name: "felix-metadata".to_string(),
@@ -74,7 +80,7 @@ impl RaftHandle {
         let raft = Raft::new(
             settings.node_id,
             config,
-            network::HttpNetworkFactory::new(),
+            network::HttpNetworkFactory::new(&settings.security, settings.peer_addrs.clone())?,
             log_store,
             state_machine,
         )
@@ -113,10 +119,12 @@ impl RaftHandle {
             raft,
             id: settings.node_id,
             write_timeout: settings.write_timeout,
-            forward: reqwest::Client::builder()
-                .timeout(settings.write_timeout)
-                .build()
+            forward: settings
+                .security
+                .client(settings.write_timeout)
                 .context("build forwarding client")?,
+            security: Arc::new(settings.security),
+            peer_addrs: Arc::new(settings.peer_addrs),
             app,
             db: Arc::downgrade(&db),
             may_vote: Arc::new(AtomicBool::new(may_vote)),
@@ -151,10 +159,42 @@ impl RaftHandle {
         Ok(())
     }
 
-    /// Router serving this node's Raft RPCs, to be merged into the internal
-    /// HTTP listener.
+    /// Router serving this node's Raft RPCs, peer authentication included.
+    /// Serve it on the peer listener only: [`RaftHandle::serve_peers`] does,
+    /// with mTLS when configured.
     pub fn rpc_router(&self) -> axum::Router {
         http::router(self.clone())
+    }
+
+    /// Serve the Raft RPCs on `listener` until `shutdown` fires, over mTLS
+    /// when the peer security says so.
+    pub async fn serve_peers(
+        &self,
+        listener: tokio::net::TcpListener,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> Result<()> {
+        let router = self.rpc_router();
+        match self.security.server_tls()? {
+            Some(tls) => {
+                crate::server::tls::serve_mtls(listener, router, tls, shutdown).await;
+            }
+            None => {
+                axum::serve(listener, router.into_make_service())
+                    .with_graceful_shutdown(async move { shutdown.cancelled().await })
+                    .await
+                    .context("serve raft peer listener")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The base URL of a member's peer listener: the configured address when
+    /// there is one, otherwise `recorded` (the membership's).
+    pub(super) fn peer_url(&self, id: Option<NodeId>, recorded: Option<&str>) -> Option<String> {
+        let addr = id
+            .and_then(|id| self.peer_addrs.get(&id).map(String::as_str))
+            .or(recorded)?;
+        Some(format!("{}://{addr}", self.security.scheme()))
     }
 
     /// Add a node as a non-voting learner and wait until it has caught up.

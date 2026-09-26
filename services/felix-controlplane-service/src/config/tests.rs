@@ -193,6 +193,104 @@ fn from_env_respects_env_vars() {
     let _env = clear_felix_env();
 }
 
+/// The minimum a Raft member needs besides its peer credentials.
+fn set_raft_basics() {
+    unsafe {
+        env::set_var("FELIX_RAFT_NODE_ID", "1");
+        env::set_var("FELIX_RAFT_DATA_DIR", "/tmp/felix-raft-config-test");
+        env::set_var("FELIX_RAFT_PEERS", "1=127.0.0.1:9444");
+        env::set_var("FELIX_RAFT_BIND_ADDR", "127.0.0.1:9444");
+        env::set_var("FELIX_RAFT_CLUSTER_ID", "test-cluster");
+    }
+}
+
+const PEER_TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+#[serial]
+#[test]
+fn raft_refuses_to_start_without_a_peer_token() {
+    let _env = clear_felix_env();
+    set_raft_basics();
+    let err = ControlPlaneConfig::from_env().expect_err("no peer token");
+    assert!(err.to_string().contains("FELIX_RAFT_PEER_TOKEN"), "{err}");
+
+    unsafe { env::set_var("FELIX_RAFT_PEER_TOKEN", "short") };
+    let err = ControlPlaneConfig::from_env().expect_err("short peer token");
+    assert!(err.to_string().contains("at least"), "{err}");
+
+    unsafe { env::set_var("FELIX_RAFT_PEER_TOKEN", PEER_TOKEN) };
+    let config = ControlPlaneConfig::from_env().expect("token set");
+    let raft = config.raft.expect("raft config");
+    assert_eq!(raft.security.token.as_deref(), Some(PEER_TOKEN));
+    assert_eq!(raft.peer_bind_addr.to_string(), "127.0.0.1:9444");
+    assert_eq!(
+        raft.initial_cluster_state,
+        crate::raft::InitialClusterState::Existing,
+        "an empty member must not form a group unless told to"
+    );
+    assert!(
+        !format!("{:?}", raft.security).contains(PEER_TOKEN),
+        "the peer token must not reach Debug output"
+    );
+}
+
+#[serial]
+#[test]
+fn raft_runs_without_a_peer_token_only_when_told_to() {
+    let _env = clear_felix_env();
+    set_raft_basics();
+    unsafe { env::set_var("FELIX_RAFT_INSECURE_PEERS", "true") };
+    let config = ControlPlaneConfig::from_env().expect("explicit opt-out");
+    assert!(config.raft.expect("raft config").security.token.is_none());
+}
+
+#[serial]
+#[test]
+fn raft_needs_a_cluster_id_and_its_own_listener() {
+    let _env = clear_felix_env();
+    set_raft_basics();
+    unsafe {
+        env::set_var("FELIX_RAFT_PEER_TOKEN", PEER_TOKEN);
+        env::remove_var("FELIX_RAFT_CLUSTER_ID");
+    }
+    let err = ControlPlaneConfig::from_env().expect_err("no cluster id");
+    assert!(err.to_string().contains("FELIX_RAFT_CLUSTER_ID"), "{err}");
+
+    unsafe {
+        env::set_var("FELIX_RAFT_CLUSTER_ID", "test-cluster");
+        env::remove_var("FELIX_RAFT_BIND_ADDR");
+    }
+    let err = ControlPlaneConfig::from_env().expect_err("no peer listener");
+    assert!(err.to_string().contains("FELIX_RAFT_BIND_ADDR"), "{err}");
+}
+
+#[serial]
+#[test]
+fn raft_initial_cluster_state_and_peer_tls_parse_strictly() {
+    let _env = clear_felix_env();
+    set_raft_basics();
+    unsafe {
+        env::set_var("FELIX_RAFT_PEER_TOKEN", PEER_TOKEN);
+        env::set_var("FELIX_RAFT_INITIAL_CLUSTER_STATE", "new");
+    }
+    let config = ControlPlaneConfig::from_env().expect("new");
+    assert_eq!(
+        config.raft.expect("raft").initial_cluster_state,
+        crate::raft::InitialClusterState::New
+    );
+
+    unsafe { env::set_var("FELIX_RAFT_INITIAL_CLUSTER_STATE", "bootstrap") };
+    let err = ControlPlaneConfig::from_env().expect_err("unknown state");
+    assert!(err.to_string().contains("'new' or 'existing'"), "{err}");
+
+    unsafe {
+        env::remove_var("FELIX_RAFT_INITIAL_CLUSTER_STATE");
+        env::set_var("FELIX_RAFT_TLS_CERT", "/etc/felix/raft.crt");
+    }
+    let err = ControlPlaneConfig::from_env().expect_err("partial TLS");
+    assert!(err.to_string().contains("FELIX_RAFT_TLS_CA"), "{err}");
+}
+
 /// Move pacing from the environment. Zero means "no limit" for the per-node
 /// cap and "never" for the timeout, and a move limit of zero holds every
 /// move.

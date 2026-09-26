@@ -13,8 +13,9 @@
 //! commands carry their timestamps, bootstrap carries its candidate keys.
 //! If a command cannot be decoded — a newer envelope version, an unknown
 //! operation — the answer is a [`MetaError::Unsupported`](super::command::MetaError::Unsupported) *response*,
-//! identical on every replica; silently skipping a committed command would
-//! fork this replica's state from the group's.
+//! identical on every replica running this build. A newer leader that did
+//! apply it has moved on without this member, which is why the upgrade order
+//! in `docs/metadata-raft-design.md` matters and why the event is counted.
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
@@ -377,7 +378,20 @@ impl AppStateMachine for MetadataStateMachine {
 
         let result: MetaResult = match decode_command(command) {
             Ok(command) => self.dispatch(command).await,
-            Err(err) => Err(err),
+            Err(err) => {
+                // Deterministic among members running the same build, but a
+                // newer leader applied this for real: in a mixed-version group
+                // this member's state now differs from the leader's. The
+                // counter is what the rolling-upgrade runbook watches
+                // (docs/metadata-raft-design.md, "Upgrading").
+                metrics::counter!("felix_meta_raft_unsupported_commands_total").increment(1);
+                tracing::error!(
+                    error = %err,
+                    "committed raft command this build cannot apply; this member's metadata \
+                     may now differ from the leader's until it is upgraded and rebuilt"
+                );
+                Err(err)
+            }
         };
         let encoded = encode_result(&result);
         if let Some(rid) = rid {

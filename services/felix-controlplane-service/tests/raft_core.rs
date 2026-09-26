@@ -62,7 +62,7 @@ struct TestNode {
 
 /// Election timings shrunk so a test failure is a failure, not a wait.
 fn settings(id: NodeId, dir: PathBuf) -> RaftSettings {
-    let mut settings = RaftSettings::new(id, dir);
+    let mut settings = RaftSettings::new(id, dir, peer_security());
     settings.heartbeat_interval = Duration::from_millis(50);
     settings.election_timeout = (Duration::from_millis(200), Duration::from_millis(400));
     settings
@@ -361,4 +361,269 @@ async fn a_learner_catches_up_and_then_votes() {
 
     one.stop().await;
     two.stop().await;
+}
+
+/// The Raft routes can replace the whole store, so a caller that does not
+/// name this cluster and present its peer token never reaches them — not
+/// `propose`, not `vote`.
+#[tokio::test]
+async fn the_rpc_routes_refuse_callers_without_peer_credentials() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let node = start_node(dir.path().into(), settings(1, dir.path().into()), None).await;
+    node.handle
+        .initialize(BTreeMap::from([(1, node.addr.to_string())]))
+        .await
+        .expect("initialize");
+    leader_of(&[&node]).await;
+
+    let anonymous = reqwest::Client::new();
+    let propose = format!("http://{}/internal/raft/propose", node.addr);
+    let status = |response: reqwest::Response| response.status().as_u16();
+    let refused = anonymous
+        .post(&propose)
+        .body(set("k", "forged"))
+        .send()
+        .await
+        .map(status)
+        .expect("send");
+    assert_eq!(refused, 403, "no cluster id");
+    let refused = anonymous
+        .post(&propose)
+        .header(
+            felix_controlplane_service::raft::CLUSTER_ID_HEADER,
+            "test-cluster",
+        )
+        .body(set("k", "forged"))
+        .send()
+        .await
+        .map(status)
+        .expect("send");
+    assert_eq!(refused, 401, "no peer token");
+    let refused = anonymous
+        .post(format!("http://{}/internal/raft/vote", node.addr))
+        .header(
+            felix_controlplane_service::raft::CLUSTER_ID_HEADER,
+            "test-cluster",
+        )
+        .header("authorization", "Bearer not-the-token-not-the-token-not!!")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .map(status)
+        .expect("send");
+    assert_eq!(refused, 401, "wrong peer token");
+    assert_eq!(node.app.get("k"), None, "nothing forged was applied");
+
+    let peer = peer_security()
+        .client(Duration::from_secs(5))
+        .expect("peer client");
+    let accepted = peer
+        .post(&propose)
+        .body(set("k", "v1"))
+        .send()
+        .await
+        .map(status)
+        .expect("send");
+    assert_eq!(accepted, 200);
+    assert_eq!(node.app.get("k").as_deref(), Some("v1"));
+
+    node.stop().await;
+}
+
+/// Empty members that make up a majority used to form a fresh group on
+/// their own, which after lost volumes means a new, empty control plane.
+/// Now they wait until the operator says this is a first start.
+#[tokio::test]
+async fn empty_members_form_a_group_only_when_told_to() {
+    use felix_controlplane_service::raft::InitialClusterState;
+
+    let dirs: Vec<tempfile::TempDir> = (0..3)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    let mut nodes = Vec::new();
+    for (i, dir) in dirs.iter().enumerate() {
+        let id = (i + 1) as NodeId;
+        nodes.push(start_node(dir.path().into(), settings(id, dir.path().into()), None).await);
+    }
+    let members: BTreeMap<NodeId, String> = nodes
+        .iter()
+        .map(|node| (node.handle.status().id, node.addr.to_string()))
+        .collect();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    for node in &nodes {
+        node.handle
+            .enter_group(
+                members.clone(),
+                InitialClusterState::Existing,
+                shutdown.clone(),
+            )
+            .expect("enter group");
+    }
+    // Many election timeouts, and every member can see every other.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    for node in &nodes {
+        let status = node.handle.status();
+        assert_eq!(status.leader, None, "member {} found a leader", status.id);
+        assert!(
+            status.voters.is_empty(),
+            "member {} formed a group",
+            status.id
+        );
+    }
+    shutdown.cancel();
+    let addrs: Vec<SocketAddr> = nodes.iter().map(|node| node.addr).collect();
+    for node in &nodes {
+        node.stop().await;
+    }
+    drop(nodes);
+
+    // The same empty members, told this is day 0.
+    let mut nodes = Vec::new();
+    for (i, dir) in dirs.iter().enumerate() {
+        let id = (i + 1) as NodeId;
+        nodes.push(
+            start_node(
+                dir.path().into(),
+                settings(id, dir.path().into()),
+                Some(addrs[i]),
+            )
+            .await,
+        );
+    }
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    for node in &nodes {
+        node.handle
+            .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
+            .expect("enter group");
+    }
+    let refs: Vec<&TestNode> = nodes.iter().collect();
+    let leader = leader_of(&refs).await;
+    leader.write(set("k", "v1")).await.expect("write");
+    shutdown.cancel();
+    for node in &nodes {
+        node.stop().await;
+    }
+}
+
+/// Under peer mTLS the members replicate over TLS, and a caller holding the
+/// peer token but no certificate from the cluster CA is stopped at the
+/// handshake.
+#[tokio::test]
+async fn peers_replicate_over_mtls_and_refuse_a_caller_without_a_certificate() {
+    let pki_dir = tempfile::tempdir().expect("tempdir");
+    let tls = peer_pki(pki_dir.path());
+    let dirs: Vec<tempfile::TempDir> = (0..2)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    let mut nodes = Vec::new();
+    for (i, dir) in dirs.iter().enumerate() {
+        let id = (i + 1) as NodeId;
+        let mut settings = settings(id, dir.path().into());
+        settings.security.tls = Some(tls.clone());
+        let app = Arc::new(KvApp::default());
+        let handle = RaftHandle::start(settings, Arc::clone(&app) as Arc<dyn AppStateMachine>)
+            .await
+            .expect("start raft node");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let server = {
+            let handle = handle.clone();
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                handle
+                    .serve_peers(listener, shutdown)
+                    .await
+                    .expect("serve peers");
+            })
+        };
+        nodes.push((handle, app, port, shutdown, server));
+    }
+    // `localhost`, the name the certificate carries: peers verify it.
+    let members: BTreeMap<NodeId, String> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, (_, _, port, _, _))| ((i + 1) as NodeId, format!("localhost:{port}")))
+        .collect();
+    nodes[0].0.initialize(members).await.expect("initialize");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let leader = loop {
+        if let Some(leader) = nodes[0].0.status().leader {
+            break nodes[(leader - 1) as usize].0.clone();
+        }
+        assert!(Instant::now() < deadline, "no leader over mTLS");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    leader.write(set("k", "v1")).await.expect("write over mTLS");
+    wait_until("replication over mTLS", Duration::from_secs(5), || {
+        nodes
+            .iter()
+            .all(|(_, app, ..)| app.get("k").as_deref() == Some("v1"))
+    })
+    .await;
+
+    // The token alone is not enough without a certificate.
+    let ca = std::fs::read(&tls.ca_path).expect("read ca");
+    let no_cert = reqwest::Client::builder()
+        .tls_built_in_root_certs(false)
+        .add_root_certificate(reqwest::Certificate::from_pem(&ca).expect("ca"))
+        .build()
+        .expect("client");
+    let result = no_cert
+        .get(format!(
+            "https://localhost:{}/internal/raft/standing",
+            nodes[0].2
+        ))
+        .header(
+            felix_controlplane_service::raft::CLUSTER_ID_HEADER,
+            "test-cluster",
+        )
+        .header("authorization", "Bearer 0123456789abcdef0123456789abcdef")
+        .send()
+        .await;
+    assert!(
+        result.is_err(),
+        "a caller without a certificate got {result:?}"
+    );
+
+    for (handle, _, _, shutdown, server) in nodes {
+        let _ = handle.shutdown().await;
+        shutdown.cancel();
+        server.abort();
+    }
+}
+
+/// A CA and one certificate for `localhost`, used by every member as both
+/// server and client.
+fn peer_pki(dir: &std::path::Path) -> felix_controlplane_service::raft::PeerTls {
+    let ca_key = rcgen::KeyPair::generate().expect("ca key");
+    let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("ca params");
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca_cert = ca_params.self_signed(&ca_key).expect("ca cert");
+    let ca = rcgen::Issuer::new(ca_params, ca_key);
+    let key = rcgen::KeyPair::generate().expect("peer key");
+    let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+        .expect("peer params")
+        .signed_by(&key, &ca)
+        .expect("peer cert");
+    let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
+    std::fs::write(path("ca.pem"), ca_cert.pem()).expect("write ca");
+    std::fs::write(path("peer.pem"), cert.pem()).expect("write cert");
+    std::fs::write(path("peer.key"), key.serialize_pem()).expect("write key");
+    felix_controlplane_service::raft::PeerTls {
+        cert_path: path("peer.pem"),
+        key_path: path("peer.key"),
+        ca_path: path("ca.pem"),
+    }
+}
+
+/// Peer credentials every member of a test group shares.
+fn peer_security() -> felix_controlplane_service::raft::PeerSecurity {
+    felix_controlplane_service::raft::PeerSecurity {
+        cluster_id: "test-cluster".to_string(),
+        token: Some("0123456789abcdef0123456789abcdef".to_string()),
+        tls: None,
+    }
 }

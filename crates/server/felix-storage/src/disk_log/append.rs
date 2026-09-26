@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use super::segments::RollOutcome;
+use super::segments::{RollOutcome, SegmentSet};
 use super::{DiskLog, LogInner, PendingAppend};
 use crate::log::{AppendRecord, AppendResult};
 use crate::segment::SegmentWriter;
@@ -35,7 +35,7 @@ impl DiskLog {
         if records.is_empty() {
             return Err(StorageError::InvalidRange);
         }
-        inner.check_roll_state()?;
+        inner.check_healthy()?;
         // Shared with the rollover re-check, which runs on a blocking thread;
         // cloning it there would copy the batch once per retry.
         let records = Arc::new(records);
@@ -75,7 +75,10 @@ impl DiskLog {
                     // segment behind.
                     if segments.would_roll_within(&batch, roller.roll_pending()) {
                         roller.before_inline_roll();
-                        segments.roll()?;
+                        if let Err(err) = segments.roll() {
+                            roller.poison_after_writer_failure(&segments);
+                            return Err(err);
+                        }
                         // `roll` sealed the retired segment, so the snapshot
                         // describes only records already on the device.
                         let snapshot = roller.producer_snapshot(&segments);
@@ -288,30 +291,43 @@ impl LogInner {
     }
 
     /// Record a failed rollover as terminal, and say why.
-    ///
-    /// Idempotent and first-writer-wins: the first failure is the interesting
-    /// one, and a later flush failing for the same underlying reason should not
-    /// overwrite it.
     pub(super) fn record_roll_failure(&self, err: &StorageError) {
-        let mut failure = self.roll_failure.lock();
-        if failure.is_none() {
-            *failure = Some(err.to_string());
-        }
+        self.poison(format!("a background segment rollover failed ({err})"));
         self.roll_state
             .store(RollState::Failed as u8, Ordering::Release);
     }
 
-    /// The terminal rollover error, if one has been recorded.
+    /// Stop the log for good.
+    ///
+    /// Idempotent and first-writer-wins: the first failure is the interesting
+    /// one, and a later flush failing for the same underlying reason should not
+    /// overwrite it.
+    pub(super) fn poison(&self, reason: String) {
+        let mut failure = self.failure.lock();
+        if failure.is_none() {
+            tracing::error!(shard = %self.label, %reason, "log stopped; it will reject further appends");
+            *failure = Some(reason);
+        }
+    }
+
+    /// Poison the log if the active writer has poisoned itself, which it does
+    /// when one of its own syncs fails.
+    pub(super) fn poison_after_writer_failure(&self, segments: &SegmentSet) {
+        if segments.active().is_poisoned() {
+            self.poison("a sync of the active segment failed".to_string());
+        }
+    }
+
+    /// The terminal error, if one has been recorded.
     ///
     /// Checked on every path that either accepts new work or reports
-    /// durability — not just at the entry to an append. A rollover can fail
-    /// while an append is already in flight, and that append must not be
+    /// durability — not just at the entry to an append. A flush or rollover can
+    /// fail while an append is already in flight, and that append must not be
     /// acknowledged on the strength of a flush that did not cover it.
-    pub(super) fn check_roll_state(&self) -> Result<()> {
-        if let Some(reason) = self.roll_failure.lock().as_deref() {
+    pub(super) fn check_healthy(&self) -> Result<()> {
+        if let Some(reason) = self.failure.lock().as_deref() {
             return Err(StorageError::SyncFailed(format!(
-                "{}: a background segment rollover failed ({reason}); the log is no longer \
-                 accepting appends",
+                "{}: {reason}; the log is no longer accepting appends",
                 self.label
             )));
         }

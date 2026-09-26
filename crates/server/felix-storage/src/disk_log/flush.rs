@@ -18,9 +18,21 @@ impl LogInner {
     /// then the lock is released before the flush: an `fsync` must never be held
     /// across the lock that appends need.
     pub(super) async fn flush(self: Arc<Self>) -> Result<Offset> {
+        // After a failed fsync the kernel may have dropped the dirty pages and
+        // cleared the error, so the next fsync "succeeds" having written
+        // nothing. Only refusing to flush again keeps `durable_upto` below the
+        // lost bytes.
+        self.check_healthy()?;
         let (handle, segment_id, synced_bytes, durable_upto) = {
             let segments = self.segments.read();
             let active = segments.active();
+            // The writer's own sync (a seal, a truncation) failed. Flushing
+            // through a cloned handle would not see that.
+            if active.is_poisoned() {
+                self.poison_after_writer_failure(&segments);
+                drop(segments);
+                return Err(self.check_healthy().expect_err("just poisoned"));
+            }
             (
                 active.sync_handle(),
                 active.id(),
@@ -73,12 +85,21 @@ impl LogInner {
                     .await
             }
         };
+        #[cfg(test)]
+        let outcome = if self
+            .fail_next_flush
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            Err(std::io::Error::other("injected fsync failure"))
+        } else {
+            outcome
+        };
         if let Err(err) = outcome {
             let err = StorageError::SyncFailed(err.to_string());
-            // A flush that could not cover the retired segment is the same
-            // failure as a seal that could not, and is equally terminal.
             if had_pending_seal {
                 self.record_roll_failure(&err);
+            } else {
+                self.poison(format!("a flush failed ({err})"));
             }
             return Err(err);
         }
@@ -107,7 +128,7 @@ impl LogInner {
         // while this flush is in flight, and `durable_upto` spans the retired
         // segment as well as the active one -- reporting it would acknowledge
         // records that the failed seal left unflushed.
-        self.check_roll_state()?;
+        self.check_healthy()?;
 
         Ok(durable_upto)
     }

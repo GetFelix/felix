@@ -190,6 +190,99 @@ fn a_crash_while_sealing_a_retired_segment_loses_nothing() {
     assert_eq!(recovered.sealed.len(), ids.len() - 1);
 }
 
+/// The segment before the active one, and the active one after it.
+fn retired_and_active(dir: &TempDir) -> (PathBuf, PathBuf) {
+    let ids = discover_segment_ids(dir.path()).expect("ids");
+    assert!(ids.len() > 1, "the test needs a retired segment");
+    (
+        segment_path(dir.path(), ids[ids.len() - 2]),
+        segment_path(dir.path(), ids[ids.len() - 1]),
+    )
+}
+
+fn last_offset_of(path: &Path) -> Offset {
+    scan_segment(path, 0, "t/ns/s/0", 32, ScanStart::Full, false)
+        .expect("scan")
+        .last_offset()
+        .expect("records")
+}
+
+/// Power loss while a background roll was sealing: the retired segment's last
+/// record came back as zeros, and the active segment starts after it. Nothing
+/// past the tear was ever flushed, so recovery cuts there and drops the
+/// segment that can no longer follow on.
+#[test]
+fn power_loss_while_sealing_recovers_to_the_torn_retired_segment() {
+    let dir = tempdir().expect("dir");
+    populate(&dir, 12);
+    let (retired, active) = retired_and_active(&dir);
+    let lost = last_offset_of(&retired);
+    let mut bytes = std::fs::read(&retired).expect("read");
+    let len = bytes.len();
+    let record = crate::segment::format::record_len(9, &Default::default()) as usize;
+    bytes[len - record..].fill(0);
+    std::fs::write(&retired, &bytes).expect("write");
+
+    let recovered = reopen(&dir).expect("an unsealed retired segment is a torn tail");
+    assert_eq!(recovered.active.next_offset(), lost);
+    assert!(!active.exists(), "the segment past the tear was kept");
+}
+
+/// Only slack past the retired segment's last record was lost, so the active
+/// segment still follows on exactly and is kept.
+#[test]
+fn a_zeroed_slack_on_the_retired_segment_keeps_the_next_segment() {
+    let dir = tempdir().expect("dir");
+    let tail = populate(&dir, 12);
+    let (retired, active) = retired_and_active(&dir);
+    let good_len = std::fs::metadata(&retired).expect("meta").len();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&retired)
+        .expect("open")
+        .set_len(good_len + 4096)
+        .expect("extend");
+
+    let recovered = reopen(&dir).expect("recover");
+    assert_eq!(recovered.active.next_offset(), tail);
+    assert!(active.exists());
+    assert_eq!(std::fs::metadata(&retired).expect("meta").len(), good_len);
+}
+
+/// Damage in the retired segment that a crash cannot leave is still fatal,
+/// and the segment after it is left alone.
+#[test]
+fn a_rotted_record_in_the_retired_segment_is_still_fatal() {
+    let dir = tempdir().expect("dir");
+    populate(&dir, 12);
+    let (retired, active) = retired_and_active(&dir);
+    let mut bytes = std::fs::read(&retired).expect("read");
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xFF;
+    std::fs::write(&retired, &bytes).expect("write");
+
+    reopen(&dir).expect_err("rot is not a torn tail");
+    assert!(active.exists());
+}
+
+/// A background roll writes the new segment's header without a flush of its
+/// own. Power loss can leave it as zeros; nothing in that segment was ever
+/// flushed, so it is an unfinished roll rather than a corrupt segment.
+#[test]
+fn a_zeroed_header_on_the_newest_segment_is_an_unfinished_roll() {
+    let dir = tempdir().expect("dir");
+    populate(&dir, 12);
+    let (retired, active) = retired_and_active(&dir);
+    let retired_end = last_offset_of(&retired) + 1;
+    let mut bytes = std::fs::read(&active).expect("read");
+    bytes[..SEGMENT_HEADER_LEN as usize].fill(0);
+    std::fs::write(&active, &bytes).expect("write");
+
+    let recovered = reopen(&dir).expect("recover");
+    assert_eq!(recovered.active.next_offset(), retired_end);
+    assert!(!active.exists());
+}
+
 #[test]
 fn an_empty_directory_starts_a_fresh_log() {
     let dir = tempdir().expect("dir");
@@ -282,6 +375,33 @@ fn a_torn_tail_is_truncated_back_to_the_last_valid_record() {
     let recovered = reopen(&dir).expect("recover");
     assert_eq!(recovered.active.next_offset(), tail);
     assert_eq!(recovered.truncated_bytes, 13);
+    assert_eq!(std::fs::metadata(&path).expect("meta").len(), good_len);
+}
+
+/// Power loss after the file grew but before its data blocks were written:
+/// the size survives and the blocks read back as zeros. The default config has
+/// to open this, not refuse it as interior corruption.
+#[test]
+fn a_zero_filled_tail_after_power_loss_recovers_with_the_default_config() {
+    let dir = tempdir().expect("dir");
+    let tail = populate(&dir, 5);
+    let active_id = *discover_segment_ids(dir.path())
+        .expect("ids")
+        .last()
+        .expect("id");
+    let path = segment_path(dir.path(), active_id);
+    let good_len = std::fs::metadata(&path).expect("meta").len();
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("open");
+    file.set_len(good_len + 4096).expect("extend with zeros");
+    drop(file);
+
+    assert!(!config().repair_checksum_tail);
+    let recovered = reopen(&dir).expect("a zeroed tail is a torn tail");
+    assert_eq!(recovered.active.next_offset(), tail);
+    assert_eq!(recovered.truncated_bytes, 4096);
     assert_eq!(std::fs::metadata(&path).expect("meta").len(), good_len);
 }
 
@@ -402,6 +522,49 @@ fn a_stale_index_is_replaced() {
     let reloaded = SparseIndex::load(&dir.path().join(index_file_name(sealed_id)), 0);
     assert!(reloaded.is_some());
     assert!(!recovered.sealed[0].index.is_empty());
+}
+
+/// An index that loads but points somewhere wrong is still only an index: the
+/// segment is rebuilt from, not declared corrupt because of it.
+#[test]
+fn a_sealed_index_pointing_at_the_wrong_place_is_rebuilt() {
+    let dir = tempdir().expect("dir");
+    populate(&dir, 12);
+    let ids = discover_segment_ids(dir.path()).expect("ids");
+    let sealed_id = ids[0];
+    let index_path = dir.path().join(index_file_name(sealed_id));
+    let good = SparseIndex::load(&index_path, 0).expect("index");
+    let last = *good.entries().last().expect("entry");
+
+    // One byte into a record, and a claimed offset one past the real one:
+    // each sends the resume scan to bytes that do not decode as claimed.
+    for bad in [
+        crate::segment::format::IndexEntry {
+            offset: last.offset,
+            position: last.position + 1,
+        },
+        crate::segment::format::IndexEntry {
+            offset: last.offset + 1,
+            position: last.position,
+        },
+    ] {
+        let mut index = SparseIndex::new(0);
+        for entry in &good.entries()[..good.len() - 1] {
+            index.push(*entry);
+        }
+        index.push(bad);
+        index.persist(&index_path).expect("persist");
+
+        let recovered = reopen(&dir).expect("a bad index is rebuilt, not fatal");
+        assert_eq!(recovered.sealed[0].index.entries(), good.entries());
+        drop(recovered);
+        assert_eq!(
+            SparseIndex::load(&index_path, 0)
+                .expect("rebuilt")
+                .entries(),
+            good.entries(),
+        );
+    }
 }
 
 #[test]

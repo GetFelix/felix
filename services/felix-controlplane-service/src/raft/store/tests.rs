@@ -74,3 +74,17 @@ fn vote_and_purge_marker_survive_reopen() {
         assert_eq!(state.last_log_id, Some(purged));
     });
 }
+
+#[test]
+fn a_data_dir_keeps_the_cluster_id_it_first_saw() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("raft.redb");
+    {
+        let db = open(&path).expect("open store");
+        claim_cluster_id(&db, "prod-a").expect("first claim records the id");
+        claim_cluster_id(&db, "prod-a").expect("the same id again is fine");
+    }
+    let db = open(&path).expect("reopen store");
+    let err = claim_cluster_id(&db, "prod-b").expect_err("another cluster's id is refused");
+    assert!(err.to_string().contains("prod-a"), "{err}");
+}

@@ -133,6 +133,39 @@ async fn compaction_moves_neither_the_sum_nor_the_offsets() {
     );
 }
 
+/// A crash between compaction's two renames leaves the shard directory
+/// missing and every delta in `.retired` (plus a finished `.compacting`). An
+/// open that ignored that would start every counter at zero.
+#[tokio::test]
+async fn a_shard_interrupted_mid_compaction_keeps_its_sums() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let shard_dir = layout::shard_dir(
+        dir.path(),
+        &ShardKey {
+            tenant: T.to_string(),
+            namespace: NS.to_string(),
+            stream: C.to_string(),
+            shard: 0,
+        },
+    );
+    {
+        let store = store(dir.path());
+        store.add(T, NS, C, 0, "a", 40).await.expect("add");
+        store.add(T, NS, C, 0, "a", 2).await.expect("add");
+        store.add(T, NS, C, 0, "b", -3).await.expect("add");
+        store.shutdown().await.expect("shutdown");
+    }
+
+    // Exactly the state a crash between the renames leaves behind.
+    std::fs::rename(&shard_dir, shard_dir.with_extension("retired")).expect("retire");
+    std::fs::create_dir_all(shard_dir.with_extension("compacting")).expect("staging");
+
+    let reopened = store(dir.path());
+    assert_eq!(reopened.get(T, NS, C, 0, "a").await.expect("get"), Some(42));
+    assert_eq!(reopened.get(T, NS, C, 0, "b").await.expect("get"), Some(-3));
+    assert!(!shard_dir.with_extension("retired").exists());
+}
+
 /// The fold catches up with records that reached the log without going
 /// through `add` — a shipped follower's log, later asked for the sum.
 #[tokio::test]

@@ -34,7 +34,18 @@ keeps it affordable: one flush serves every waiter queued behind it.
 A crash mid-append leaves a **torn tail**, which recovery repairs by discarding
 the incomplete record — it was never acknowledged. Corruption in the *interior*
 of a segment is refused instead: the broker will not start. Refusing to start
-beats silently losing an acknowledged record.
+beats silently losing an acknowledged record. Power loss can also leave the
+end of the active segment as zeros inside the file's length; that is repaired
+the same way, while zeros with data after them are refused.
+
+**An error is not a "no".** A publish or cache write that fails after the
+broker has written it (a failed fsync, a lost connection, a cancelled request)
+is indeterminate: the record may be on disk, may be replicated, and may be
+read back or delivered on replay. Only a refusal before anything is written
+(an authorization, validation or idempotent-sequence error) means the record
+does not exist. A failed fsync also stops that shard's log: every later write
+to it fails until the broker restarts and recovery reads back what actually
+reached the disk.
 
 > Held by `crates/server/felix-storage/src/disk_log/` recovery tests, including
 > `a_crash_before_the_header_is_written_leaves_the_log_openable`,

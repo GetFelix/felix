@@ -239,9 +239,12 @@ refuses vote requests and does not stand for election. It asks its peers
   (`GET /internal/raft/catch-up-target`, answered only after a read-index
   round confirms the leadership) and votes again once it has applied that
   far. Readiness keeps it out of rotation until then.
-- **First boot** — a majority, this member included, answers and is empty.
-  Each such member initializes the configured group, which openraft allows.
-  A single-member group decides this alone.
+- **First boot** — a majority, this member included, answers and is empty,
+  *and* the operator set `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`. Each such
+  member initializes the configured group, which openraft allows. A
+  single-member group decides this alone. With the default, `existing`, an
+  empty majority waits and logs why instead: a member cannot tell a first
+  boot from a lost volume, and only the operator knows which it is.
 - **Neither** — it waits and asks again, so a lone wiped member never forms a
   group of its own.
 
@@ -251,9 +254,19 @@ voter with half a log. Membership never changes: a demote-and-promote would
 need every remaining voter for the joint configuration, so one other member
 being down would stall writes until it came back.
 
-Losing a majority's volumes at once is out of scope. Two empty members of
-three that can reach each other but not the third will form a new group;
-that is quorum loss, and the snapshot restore path is the answer.
+Losing a majority's volumes at once is quorum loss, and the snapshot
+restore path is the answer. What the member must not do is paper over it:
+two empty members of three that can reach each other but not the third
+used to form a new, empty group on their own, with new signing keys and
+every generation back to zero. Now they form one only under `new`, which
+belongs to a cluster's first start and nowhere else.
+
+**Cluster id.** Every member is configured with `FELIX_RAFT_CLUSTER_ID`,
+etcd's cluster token under another name. The first start records it in the
+member's store, and a member refuses to start on a store recorded under
+another id. Every peer request carries it and is refused (403) when it
+names another cluster, so a member whose peers map points at some other
+group's members never counts them as empty or as holding the group.
 
 ### Migration from Postgres
 
@@ -277,9 +290,12 @@ the API serves. The ceremony:
    database). The tool prints a summary — counts per entity — for the
    before/after comparison.
 4. **Import**: `felix-controlplane migrate import state.json
-   http://<any-member>` — one `ImportState` command proposed through the
-   group: atomic on every member, forwarded to the leader from whichever
-   address you gave. *Abort here: the group either applied all of it or
+   http://<any-member-peer-address>` — one `ImportState` command proposed
+   through the group: atomic on every member, forwarded to the leader from
+   whichever address you gave. The tool talks to the peer listener as a
+   peer, so run it with the group's `FELIX_RAFT_CLUSTER_ID` and
+   `FELIX_RAFT_PEER_TOKEN` (and `FELIX_RAFT_TLS_*` under peer mTLS; the URL
+   is then `https://`). *Abort here: the group either applied all of it or
    none; tear it down and put Postgres back.*
 5. **Verify and repoint**: compare the import summary against the export's,
    spot-check snapshots and feed heads, then point brokers and operators at
@@ -342,9 +358,61 @@ against openraft's documented pre-1.0 API instability.
   Felix's inventiveness budget here goes to the state machine and the
   migration, which nobody else can write.
 
-Transport between Raft nodes rides the control plane's existing HTTP
-listener (internal routes), not a new port: the group is small, elections
-are rare, and one less listener is one less thing to secure in M8.
+### Transport and peer authentication
+
+Raft RPCs are JSON over HTTP on a **peer listener of their own**
+(`FELIX_RAFT_BIND_ADDR`), never the public API port. On the API port,
+`propose` would be open to anyone who can reach the API, and one
+`ImportState{overwrite}` replaces the whole store, signing keys included.
+
+Every peer request must carry:
+
+- `x-felix-raft-cluster-id` naming this group (403 otherwise), and
+- `Authorization: Bearer <FELIX_RAFT_PEER_TOKEN>`, compared in constant
+  time (401 otherwise).
+
+The token is the cluster-admin credential. Members hold it, and so does the
+operator running `migrate import`; brokers and API clients never see it.
+`propose` needs nothing more because holding the token already is
+cluster-admin. A member refuses to start in Raft mode without a token of at
+least 32 characters unless `FELIX_RAFT_INSECURE_PEERS=true` says otherwise,
+which is for throwaway local groups.
+
+With `FELIX_RAFT_TLS_CERT`, `FELIX_RAFT_TLS_KEY` and `FELIX_RAFT_TLS_CA`
+set, the peer listener terminates mTLS and refuses the handshake to any
+client without a certificate from that CA, and the member's own peer client
+presents the same certificate, trusts only that CA, and checks the server
+name against the address in `FELIX_RAFT_PEERS`. The token stays required
+under mTLS. What mTLS does not do yet is bind a certificate to a member id:
+any certificate from the cluster CA can speak for any member, so issue that
+CA's certificates to control-plane members only.
+
+The network layer resolves a member's address from `FELIX_RAFT_PEERS` by
+id before falling back to the address recorded in the membership, so moving
+the peer port is a config change, not a membership change.
+
+### Upgrading
+
+Two rules, both about mixed versions.
+
+**Moving to the authenticated peer listener** is not a rolling change: an
+old member sends unauthenticated RPCs to the API port, and a new one only
+answers authenticated ones on the peer port. Upgrade every member at once
+(scale the StatefulSet's pods down and up, or delete them together). Writes
+pause for the restart; brokers keep serving on their catalogs and leases as
+during any control-plane blip. The recorded membership still names the old
+API addresses, which is fine: the configured peers map wins.
+
+**A release that adds a command variant** must finish rolling every member
+before anything proposes the new variant. An older member cannot decode it:
+it records an `Unsupported` response rather than misparse or skip it, logs
+an error, and counts `felix_meta_raft_unsupported_commands_total`, but the
+newer leader applied the command, so that member's state is now behind the
+leader's and a snapshot it takes keeps the difference. Roll followers first
+and the current leader last, so the leader stays on the older build for
+most of the roll. If the counter moves on any member anyway, upgrade it,
+then wipe its volume and let it rejoin: it rebuilds from the leader's
+snapshot as in [rejoining after a lost volume](#rejoining-after-a-lost-volume).
 
 ## Failure modes
 
@@ -352,6 +420,8 @@ are rare, and one less listener is one less thing to secure in M8.
 | --- | --- |
 | One instance of three dies | Leader (if it was the leader) re-elected in one election timeout; writes pause for that long, reads keep serving; M7 signal holds |
 | Instance loses its volume | Rejoins without a vote, catches up by log or snapshot, then votes again ([above](#rejoining-after-a-lost-volume)); no operator data surgery |
+| A majority loses its volumes | The empty members wait rather than form a new, empty group, unless `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`; recovery is the snapshot restore |
+| Something other than a member reaches the peer port | Refused before any route runs: wrong cluster id 403, missing or wrong peer token 401, and under peer mTLS no TLS handshake without a certificate from the cluster CA |
 | Network partition, leader in minority | Old leader steps down (cannot commit), majority elects; minority instances fail readiness rather than serve writes that cannot commit |
 | Quorum lost (2 of 3 down) | Writes and readiness fail on survivors; brokers keep serving on catalogs and leases as during any control-plane outage; recovery = restore instances, or restore-from-snapshot ceremony documented with appropriately loud warnings |
 | Clock skew between instances | Irrelevant to Raft safety (term-based). Liveness expiry does not depend on it either: heartbeats are stamped and judged by one clock — the store's, which under Postgres is `clock_timestamp()` — so two instances comparing their own `SystemTime` is not a thing that can happen |

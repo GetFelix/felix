@@ -56,7 +56,7 @@ cosign verify ghcr.io/gabloe/felix-broker:0.5.0 \
 
 | Component | Runs as | Listens on | Reached by |
 | --- | --- | --- | --- |
-| Control plane | Deployment over Postgres, or a StatefulSet of 3+ under Raft | `8443` TCP (REST API), `8080` TCP (metrics, `/ready`), `9095` TCP (bootstrap, only while enabled) | Brokers and operators on `8443`; Raft members reach each other on `8443` too |
+| Control plane | Deployment over Postgres, or a StatefulSet of 3+ under Raft | `8443` TCP (REST API), `8080` TCP (metrics, `/ready`), `9095` TCP (bootstrap, only while enabled) | Brokers and operators on `8443`; under Raft, members reach each other on `8444`, token-authenticated, which nothing else needs |
 | Postgres | Outside the chart | Whatever you run it on | The control plane only |
 | Broker | StatefulSet, one volume per pod | `5000` UDP (client QUIC, `ports.listeners` consecutive ports from there), `5001` UDP (internal QUIC), `8080` TCP (metrics, `/ready`, `/replication/halted`) | Clients on `5000`; other brokers on `5001`; Prometheus on `8080` |
 
@@ -124,8 +124,19 @@ kubectl -n felix rollout status deployment/felix-controlplane
 For the Raft backend instead of Postgres:
 
 ```bash
-  --set controlplane.storage.backend=raft --set controlplane.replicas=3
+kubectl -n felix create secret generic felix-raft-peer \
+  --from-literal=token="$(openssl rand -hex 32)"
+# ...the install command above, plus:
+  --set controlplane.storage.backend=raft --set controlplane.replicas=3 \
+  --set controlplane.storage.raft.peerToken.existingSecret=felix-raft-peer
 ```
+
+The peer token authenticates every Raft request between members, and it is
+also what the `migrate import` tool needs, so treat it as the cluster-admin
+credential it is. The first `helm install` lets the empty members form the
+group; every later upgrade renders `FELIX_RAFT_INITIAL_CLUSTER_STATE=existing`,
+so members that lose their volumes wait for the group rather than start an
+empty one.
 
 The bootstrap listener is on its own ClusterIP Service, never behind the API's,
 so it is reachable only through a port-forward.
@@ -348,7 +359,8 @@ layer, or rely on replication and retention.
 | Broker registers, then heartbeats are refused with 403 | The token lacks `node.manage` over `node:<pod name>` or `cluster:*`. |
 | Broker never becomes ready | It cannot reach the control plane (`FELIX_CONTROLPLANE_URL`), or the token lacks `node.view:cluster:*`, so it never seeds a catalog. Check its log. |
 | Control plane not ready, liveness fine | The store: Postgres unreachable, or the database is behind the build's migrations. That is readiness doing its job. |
-| Raft group never forms | Fewer members than the peers map names, or the headless Service was changed. Every member must carry the same map. |
+| Raft group never forms | Fewer members than the peers map names, or the headless Service was changed. Every member must carry the same map. A log line saying a majority is empty and none holds the group means the members were started with `existing` and no data: the first install forms the group, or set `controlplane.storage.raft.initialClusterState=new` for one upgrade. |
+| Raft members log `raft peer request ... refused` | The members disagree on the peer token or the cluster id; both must be the same on every member. |
 | `helm upgrade` refused with a message about budgets, drains, or members | Deliberate. The message names the values that are wrong together. |
 | PVC `Pending` | No default StorageClass, or the named one does not exist in this zone. |
 | Peer mTLS pods stuck in `ContainerCreating` | cert-manager-csi-driver is not installed, or the Issuer cannot sign. `kubectl describe pod` shows the CSI error. |
