@@ -96,6 +96,18 @@ controlplane:
     type: ClusterIP
     port: 8443
     annotations: {}
+  # TLS on the API port (FELIX_CONTROLPLANE_TLS_*). Off, the API is plain
+  # HTTP: node credentials, token exchange and tenant JWKS cross the network
+  # unencrypted. The Secret is a kubernetes.io/tls one, as cert-manager's
+  # Certificate writes it; its certificate must name the API Service
+  # (<release>-controlplane.<namespace>.svc). The files are re-read on
+  # renewal. Not available with the raft backend yet.
+  tls:
+    enabled: false
+    existingSecret: ""
+    # Key in that Secret brokers trust the certificate through. Empty means
+    # the public roots only.
+    caKey: ca.crt
   metrics:
     port: 8080
   # How long a broker heartbeat may go unanswered before the control plane
@@ -181,7 +193,8 @@ broker:
     # An IdP refresh token for re-minting the Felix token before it expires,
     # under this key; empty means none.
     refreshTokenKey: ""
-  # Where the control plane is. Empty means this release's own control plane.
+  # Where the control plane is. Empty means this release's own control plane,
+  # over https when controlplane.tls is enabled.
   controlplaneUrl: ""
   storage:
     size: 50Gi
@@ -191,13 +204,31 @@ broker:
   # per-pod identity, so this uses cert-manager's CSI driver to issue one into
   # each pod at start. Requires cert-manager and cert-manager-csi-driver, and
   # an Issuer for the peer CA in this namespace. Off, the port is encrypted
-  # but unauthenticated and the broker warns at startup.
+  # but unauthenticated, and a broker refuses to start that way unless
+  # allowUnauthenticated says the NetworkPolicy alone is the boundary.
   peerTls:
     enabled: false
     issuerName: felix-peer-ca
     issuerKind: Issuer
     duration: 24h
     renewBefore: 8h
+    # Run without peer mTLS (FELIX_INTERNAL_ALLOW_UNAUTHENTICATED). Anything
+    # that reaches the internal port is then a broker. One of this or
+    # `enabled` is required; neither refuses to render.
+    allowUnauthenticated: false
+  # The certificate clients verify brokers with (FELIX_TLS_*). Off, each
+  # broker generates a self-signed `localhost` certificate at every start,
+  # which clients cannot use to tell one broker from another. One Secret for
+  # every broker, a kubernetes.io/tls one as cert-manager writes it: its
+  # certificate must name the client Service and each broker's advertised
+  # name (a wildcard over the headless Service covers the in-cluster ones).
+  # Renewals are picked up without a restart.
+  clientTls:
+    enabled: false
+    existingSecret: ""
+    # Key in that Secret holding a CA bundle every client must present a
+    # certificate from (FELIX_TLS_CLIENT_CA). Empty asks clients for none.
+    clientCaKey: ""
   # What discovery hands clients for each broker. Defaults to the pod's
   # in-cluster DNS name on the client port; set it when clients come from
   # outside the cluster and reach brokers some other way. `$(POD_NAME)` and

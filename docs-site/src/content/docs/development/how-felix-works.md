@@ -329,10 +329,12 @@ Startup proceeds in this order:
    `node::cluster` binds the peer listener and starts the shard and
    replication tasks.
 
-:::caution[Current TLS certificate behavior]
-`services/felix-broker-service/src/node/listeners.rs::build_server_config` currently generates a
-fresh self-signed certificate for `localhost`. The code explicitly marks
-this as development behavior, not production certificate management.
+:::caution[TLS certificate behavior]
+`services/felix-broker-service/src/serving/tls.rs` serves the certificate in
+`FELIX_TLS_CERT` / `FELIX_TLS_KEY`, re-read on rotation. Without them it
+generates a fresh self-signed certificate for `localhost` at every start and
+warns; that is development behavior, and `FELIX_TLS_REQUIRE_CERT=true` refuses
+it.
 :::
 ### 6.1 Graceful shutdown
 
@@ -1063,8 +1065,6 @@ Do not assume the following are complete production paths:
   documents exist, but they are not the current data path described here.
 - **Multi-region routing and residency enforcement:** these remain broader
   architectural work.
-- **Production certificate provisioning:** the broker currently generates a
-  development self-signed certificate.
 - **Per-subsystem shutdown cancellation:** the drain cancels admission and winds
   connections down under a bounded grace, but publish workers, acknowledgement
   waiters, and subscription writers are not individually signalled to stop.

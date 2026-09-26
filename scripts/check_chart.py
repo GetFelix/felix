@@ -167,6 +167,24 @@ def check_broker(docs: list[dict], label: str) -> None:
         fail(f"{label}: peer TLS is half-configured: {tls_env}")
     if tls_env and "csi" not in volumes.get("peer-tls", {}):
         fail(f"{label}: peer TLS is set but no per-pod certificate volume is mounted")
+    # A broker refuses to start with neither peer mTLS nor the explicit opt-out.
+    if not tls_env and env.get("FELIX_INTERNAL_ALLOW_UNAUTHENTICATED", {}).get("value") != "true":
+        fail(f"{label}: no peer mTLS and no FELIX_INTERNAL_ALLOW_UNAUTHENTICATED; brokers would not start")
+
+    # A configured client certificate comes from a mounted Secret, and a
+    # broker that lost it refuses rather than generating one.
+    if "FELIX_TLS_CERT" in env:
+        if "secret" not in volumes.get("client-tls", {}):
+            fail(f"{label}: FELIX_TLS_CERT is set but no client-tls Secret is mounted")
+        if env.get("FELIX_TLS_REQUIRE_CERT", {}).get("value") != "true":
+            fail(f"{label}: a configured client certificate is not required")
+        if "FELIX_TLS_CERT_EXPORT" in env:
+            fail(f"{label}: FELIX_TLS_CERT_EXPORT set with FELIX_TLS_CERT; the broker refuses that")
+
+    # An https control plane with a private CA hands brokers the CA.
+    url = env.get("FELIX_CONTROLPLANE_URL", {}).get("value", "")
+    if "FELIX_CONTROLPLANE_CA" in env and not url.startswith("https://"):
+        fail(f"{label}: FELIX_CONTROLPLANE_CA with {url!r}; the broker refuses that")
 
 
 def check_controlplane(docs: list[dict], label: str, backend: str) -> None:
@@ -225,6 +243,15 @@ def check_controlplane(docs: list[dict], label: str, backend: str) -> None:
             fail(f"{label}: a first install does not let the group form")
         if headless is not None and [p["name"] for p in headless["spec"]["ports"]] != ["raft"]:
             fail(f"{label}: the headless Service does not expose the peer port")
+
+    # A TLS API is probed over HTTPS, from a mounted Secret.
+    if "FELIX_CONTROLPLANE_TLS_CERT" in env:
+        for probe in ("livenessProbe", "readinessProbe"):
+            if container[probe]["httpGet"].get("scheme") != "HTTPS":
+                fail(f"{label}: {probe} is not HTTPS against a TLS API")
+        spec_volumes = {v["name"]: v for v in workload["spec"]["template"]["spec"]["volumes"]}
+        if "secret" not in spec_volumes.get("tls", {}):
+            fail(f"{label}: the API certificate is not a mounted Secret")
 
     # Liveness never asks the store; readiness does.
     probes = container
@@ -308,6 +335,12 @@ def main() -> int:
     env = env_of(containers(sts)[0]) if sts else {}
     if env.get("FELIX_CLIENT_ADVERTISE_ADDR", {}).get("value") != "$(POD_NAME).brokers.example.com:5000":
         fail("mtls: the external client address was not used")
+    if env.get("FELIX_TLS_CLIENT_CA", {}).get("value") != "/etc/felix/client-tls/clients-ca.crt":
+        fail("mtls: the client CA was not wired")
+    if not env.get("FELIX_CONTROLPLANE_URL", {}).get("value", "").startswith("https://"):
+        fail("mtls: brokers do not reach a TLS control plane over https")
+    if "FELIX_CONTROLPLANE_CA" not in env:
+        fail("mtls: brokers are not given the control plane's CA")
 
     print("render: memory (brokers off)")
     docs = render(memory)
@@ -321,6 +354,7 @@ def main() -> int:
         None,
         "controlplane.storage.postgres.existingSecret=pg",
         "broker.credential.existingSecret=cred",
+        "broker.peerTls.allowUnauthenticated=true",
     )
     check_controlplane(docs, "defaults", "postgres")
     check_broker(docs, "defaults")
@@ -328,6 +362,15 @@ def main() -> int:
     print("refusals")
     must_refuse("broker.credential.existingSecret is empty", None,
                 "controlplane.storage.postgres.existingSecret=pg")
+    must_refuse("brokers refuse to start without peer mTLS", None,
+                "controlplane.storage.postgres.existingSecret=pg",
+                "broker.credential.existingSecret=cred")
+    must_refuse("needs broker.clientTls.existingSecret", postgres,
+                "broker.clientTls.enabled=true")
+    must_refuse("needs controlplane.tls.existingSecret", postgres,
+                "controlplane.tls.enabled=true")
+    must_refuse("not supported with the raft backend", raft,
+                "controlplane.tls.enabled=true", "controlplane.tls.existingSecret=cp-tls")
     must_refuse("needs controlplane.storage.postgres.existingSecret", None,
                 "broker.credential.existingSecret=cred")
     must_refuse("odd number of members", raft, "controlplane.replicas=4")

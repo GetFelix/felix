@@ -115,7 +115,8 @@ put a node in the catalog that placement would then try to use.
 | `FELIX_REGION_ID` | no | Defaults to `local`. |
 | `FELIX_REGION_BRIDGES` | no | Directional `source>dest` pairs, comma-separated, of regions this broker may forward to besides its own. Unset is none. Give the control plane the same value; see [Regions](#regions). |
 | `FELIX_INTERNAL_BIND` | no | Where the internal listener binds. Defaults to `0.0.0.0:5001`. Must not share a port with `FELIX_QUIC_BIND`. |
-| `FELIX_INTERNAL_TLS_CERT`, `FELIX_INTERNAL_TLS_KEY`, `FELIX_INTERNAL_TLS_CA` | recommended | Peer mTLS: this broker's certificate (its DNS name must be `FELIX_NODE_ID`), its key, and the CA every peer must chain to. All three or none; without them the peer link is encrypted but unauthenticated. See `docs/internal-protocol.md`. |
+| `FELIX_INTERNAL_TLS_CERT`, `FELIX_INTERNAL_TLS_KEY`, `FELIX_INTERNAL_TLS_CA` | yes, or the opt-out below | Peer mTLS: this broker's certificate (its DNS name must be `FELIX_NODE_ID`), its key, and the CA every peer must chain to. All three or none. See `docs/internal-protocol.md`. |
+| `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED` | no | `true` lets the broker join without peer mTLS: the peer link is then encrypted but unauthenticated. Without either, startup refuses. |
 
 The advertised address is the internal listener's, not the client-facing one:
 peers are the only thing that reads it. A broker that advertises a port it does

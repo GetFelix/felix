@@ -177,6 +177,48 @@ A single connection with a single publish stream will bottleneck regardless of b
 > the publish worker count (one worker per shard, so each stream has a single
 > owning core). `pub_workers_per_conn` is ignored in that mode.
 
+## TLS
+
+TLS is configured through the environment only, not the YAML file: the paths
+are deployment wiring (a mounted Secret), not tuning.
+
+### Client TLS
+
+The QUIC listeners, and the Kafka listener when `FELIX_KAFKA_TLS` is on, serve
+one certificate:
+
+| Variable | Effect |
+| --- | --- |
+| `FELIX_TLS_CERT`, `FELIX_TLS_KEY` | PEM chain (leaf first) and key to serve. Both or neither. Re-read every 30s; a renewal over the same paths reaches the next handshake, and open connections keep theirs. |
+| `FELIX_TLS_CLIENT_CA` | Clients must present a certificate chaining to this bundle. Needs the two above. Read once. |
+| `FELIX_TLS_REQUIRE_CERT=true` | Refuse to start without `FELIX_TLS_CERT`. Set it in production. |
+| `FELIX_TLS_CERT_EXPORT` | Write the generated development certificate out for clients to trust. Refused together with `FELIX_TLS_CERT`. |
+
+Without `FELIX_TLS_CERT` the broker generates a self-signed certificate for
+`localhost` at every start and logs a warning: clients can encrypt to it but
+cannot tell which broker they reached. The certificate you configure must
+carry every name clients dial, typically the load-balanced Service name and
+each broker's `FELIX_CLIENT_ADVERTISE_ADDR` host (a wildcard over the headless
+Service covers the per-broker names in Kubernetes). Clients verify it with the
+issuing CA and that server name: `ClusterClient::connect(seeds, server_name, ..)`
+in Rust, `ca_file=`/`server_name=` in Python and `caFile`/`serverName` in
+TypeScript.
+
+### Peer mTLS
+
+A broker with `FELIX_NODE_ID` binds the internal listener, and refuses to
+start unless `FELIX_INTERNAL_TLS_CERT`, `_KEY` and `_CA` are set or
+`FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`. The rule is keyed on cluster
+membership, not replication factor: replication factors arrive from the
+control plane after the listener is up, and even an RF=1 cluster forwards
+writes over that port. See [internal-protocol.md](internal-protocol.md).
+
+### Control-plane CA
+
+With an `https://` `FELIX_CONTROLPLANE_URL`, the broker verifies the control
+plane against the public roots plus `FELIX_CONTROLPLANE_CA` when set. Setting
+the CA with an `http://` URL fails startup.
+
 ## Notes
 
 - All byte values are raw bytes; use powers of two for MiB values (e.g., 1048576 = 1 MiB).

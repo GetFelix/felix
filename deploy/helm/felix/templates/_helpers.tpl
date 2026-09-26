@@ -83,7 +83,7 @@ the digest is what runs.
 {{- if .Values.broker.controlplaneUrl -}}
 {{- .Values.broker.controlplaneUrl -}}
 {{- else -}}
-{{- printf "http://%s.%s.svc.%s:%d" (include "felix.controlplane.fullname" .) .Release.Namespace .Values.clusterDomain (int .Values.controlplane.service.port) -}}
+{{- printf "%s://%s.%s.svc.%s:%d" (ternary "https" "http" .Values.controlplane.tls.enabled) (include "felix.controlplane.fullname" .) .Release.Namespace .Values.clusterDomain (int .Values.controlplane.service.port) -}}
 {{- end -}}
 {{- end -}}
 
@@ -177,6 +177,12 @@ applies.
 {{- if and (eq $cp.storage.backend "memory") (gt (int $cp.replicas) 1) -}}
 {{- fail "controlplane.storage.backend=memory keeps metadata in one process; more than one replica would be two control planes that disagree" -}}
 {{- end -}}
+{{- if and $cp.tls.enabled (not $cp.tls.existingSecret) -}}
+{{- fail "controlplane.tls.enabled needs controlplane.tls.existingSecret: a kubernetes.io/tls Secret with the API certificate" -}}
+{{- end -}}
+{{- if and $cp.tls.enabled (eq $cp.storage.backend "raft") -}}
+{{- fail "controlplane.tls is not supported with the raft backend yet: the Raft RPCs share the API port over plain HTTP. Terminate TLS in front of the control plane instead" -}}
+{{- end -}}
 {{- if and $cp.bootstrap.enabled (not $cp.bootstrap.existingSecret) -}}
 {{- fail "controlplane.bootstrap.enabled needs controlplane.bootstrap.existingSecret: a Secret holding the bootstrap token" -}}
 {{- end -}}
@@ -199,6 +205,12 @@ applies.
 {{- end -}}
 {{- if and $b.podDisruptionBudget.enabled (ge (int $b.replicas) 3) (gt (int $b.podDisruptionBudget.maxUnavailable) 1) -}}
 {{- fail (printf "broker.podDisruptionBudget.maxUnavailable (%d) is above one: a replication-factor-three shard loses its quorum when two of its replicas are evicted together" (int $b.podDisruptionBudget.maxUnavailable)) -}}
+{{- end -}}
+{{- if not (or $b.peerTls.enabled $b.peerTls.allowUnauthenticated) -}}
+{{- fail "brokers refuse to start without peer mTLS: set broker.peerTls.enabled=true (needs cert-manager and its CSI driver), or broker.peerTls.allowUnauthenticated=true to rely on the NetworkPolicy alone" -}}
+{{- end -}}
+{{- if and $b.clientTls.enabled (not $b.clientTls.existingSecret) -}}
+{{- fail "broker.clientTls.enabled needs broker.clientTls.existingSecret: a kubernetes.io/tls Secret with the certificate clients verify" -}}
 {{- end -}}
 {{- if and $b.peerTls.enabled (not $b.peerTls.issuerName) -}}
 {{- fail "broker.peerTls.enabled needs broker.peerTls.issuerName: the cert-manager issuer of the peer CA" -}}

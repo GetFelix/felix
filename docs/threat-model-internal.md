@@ -48,7 +48,8 @@ refused before any request is read.
 **Without those three variables, the security boundary is the network.** The
 transport then runs encrypted but unauthenticated — brokers present self-signed
 certificates and accept any — and anyone who can reach the peer port is a peer.
-Startup warns. Every abuse case below should be read against the mode in use:
+A broker refuses to start in this mode unless
+`FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true` is set. Every abuse case below should be read against the mode in use:
 under mTLS they describe what a *compromised broker* can do; without it, what
 any *reachable* attacker can do, because those are then the same thing.
 
@@ -189,8 +190,9 @@ the connection. Neither leaves the reader mid-frame.
 
 ## Residual risk and operating assumptions
 
-**Configure mTLS.** Without `FELIX_INTERNAL_TLS_*` the peer port must be
-treated as a trusted network — reachable from other brokers and nothing else —
+**Configure mTLS.** Without `FELIX_INTERNAL_TLS_*` (and so with
+`FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`) the peer port must be treated as a
+trusted network — reachable from other brokers and nothing else —
 which is an operational control rather than a product one. With it, a peer is a
 broker holding a certificate the cluster's CA issued to its own node id, and
 reachability is no longer the boundary.

@@ -5,7 +5,7 @@ Felix {{ .Chart.AppVersion }} ({{ .Release.Name }} in {{ .Release.Namespace }})
 {{- if $cp.enabled }}
 
 Control plane: {{ $cp.replicas }} instance(s), {{ $cp.storage.backend }} store
-  API inside the cluster:  http://{{ include "felix.controlplane.fullname" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}:{{ $cp.service.port }}
+  API inside the cluster:  {{ ternary "https" "http" $cp.tls.enabled }}://{{ include "felix.controlplane.fullname" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}:{{ $cp.service.port }}
   Ready when:              kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/component=controlplane
 {{- if $cp.bootstrap.enabled }}
 
@@ -22,12 +22,22 @@ Brokers: {{ $b.replicas }}, region {{ $b.region }}
   First connection:        {{ include "felix.broker.fullname" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}:{{ $b.clientService.port }} (UDP/QUIC)
   Each broker's name:      {{ include "felix.broker.fullname" . }}-<n>.{{ include "felix.broker.headless" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}:{{ $b.ports.client }}
   Credential Secret:       {{ $b.credential.existingSecret }}{{ if $b.credential.perBroker }} (one key per broker, named after the pod){{ end }}
-  Peer mTLS:               {{ if $b.peerTls.enabled }}on, issued per pod by cert-manager ({{ $b.peerTls.issuerKind }}/{{ $b.peerTls.issuerName }}){{ else }}OFF: the internal port is encrypted but unauthenticated; the NetworkPolicy is the boundary{{ end }}
+  Peer mTLS:               {{ if $b.peerTls.enabled }}on, issued per pod by cert-manager ({{ $b.peerTls.issuerKind }}/{{ $b.peerTls.issuerName }}){{ else }}OFF (allowUnauthenticated): the internal port is encrypted but unauthenticated; the NetworkPolicy is the boundary{{ end }}
+  Control-plane API TLS:   {{ if and $cp.enabled $cp.tls.enabled }}on, from Secret {{ $cp.tls.existingSecret }}{{ else if $cp.enabled }}OFF: node credentials and tokens cross the network as plain HTTP{{ else }}whatever broker.controlplaneUrl says{{ end }}
   Halted replicas:         kubectl -n {{ .Release.Namespace }} exec {{ include "felix.broker.fullname" . }}-0 -- wget -qO- http://127.0.0.1:{{ $b.ports.metrics }}/replication/halted
+{{- if $b.clientTls.enabled }}
 
-  Clients verify the broker's own certificate, exported inside each pod at
-  /var/lib/felix/export/broker-cert.pem. Copy it out:
+  Clients verify brokers with the CA that issued Secret {{ $b.clientTls.existingSecret }},
+  dialling a name the certificate carries.{{ if $b.clientTls.clientCaKey }} They must also present a
+  certificate from the bundle under {{ $b.clientTls.clientCaKey }}.{{ end }}
+{{- else }}
+
+  !! Client TLS uses a self-signed certificate each broker generates at start,
+     so clients cannot tell one broker from another. Set broker.clientTls for
+     anything but trying the chart out. Each broker's is exported at
+     /var/lib/felix/export/broker-cert.pem:
     kubectl -n {{ .Release.Namespace }} exec {{ include "felix.broker.fullname" . }}-0 -- cat /var/lib/felix/export/broker-cert.pem
+{{- end }}
 {{- else }}
 
 Brokers are disabled. Bootstrap the control plane, create the credential
