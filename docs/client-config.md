@@ -46,7 +46,9 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
   - Bounded request queue per publish worker. Default: `64`.
 - `publish_inflight_bytes` (env: `FELIX_PUBLISH_INFLIGHT_BYTES`)
   - Shared byte budget across all publish workers. Default: `4194304` (4 MiB).
-  - Publishers wait for budget before enqueueing and reject a single publish larger than the limit.
+  - Publishers wait for budget before enqueueing. A single publish larger than the
+    budget waits until nothing else is in flight and then takes all of it, so it
+    goes out alone; the frame cap (`max_frame_bytes`) is what bounds its size.
   - An acked publish holds its budget until the broker's ack arrives (acked
     publishes are pipelined on the stream), so the budget also caps acked
     data in flight — not just data queued for writing.

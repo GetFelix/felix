@@ -304,6 +304,61 @@ async fn quic_publish_commit_ack_ok() -> Result<()> {
     Ok(())
 }
 
+// The client's in-flight budget (4 MiB) is smaller than the frame cap
+// (16 MiB); a payload between the two must still be publishable.
+#[tokio::test]
+#[serial]
+async fn quic_publish_larger_than_the_inflight_budget() -> Result<()> {
+    unsafe {
+        std::env::set_var("FELIX_ACK_ON_COMMIT", "false");
+    }
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_stream("t1", "default", "orders", StreamMetadata::default())
+        .await?;
+    let mut sub = broker.subscribe("t1", "default", "orders", 0).await?;
+
+    let (server_config, cert) = build_server_config()?;
+    let server = Arc::new(QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?);
+    let addr = server.local_addr()?;
+    let config = felix_broker_service::config::BrokerConfig::from_env()?;
+    let auth = auth_fixture("t1", vec!["stream.publish:stream:t1/*/*".to_string()]);
+    let server_task = tokio::spawn(felix_broker_service::serving::quic::serve(
+        Arc::clone(&server),
+        Arc::clone(&broker),
+        config,
+        Arc::clone(&auth.auth),
+    ));
+
+    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let payload = vec![7u8; 6 * 1024 * 1024];
+    client
+        .publisher()
+        .await?
+        .publish(
+            "t1",
+            "default",
+            "orders",
+            payload.clone(),
+            AckMode::PerMessage,
+        )
+        .await?;
+    let got = timeout(Duration::from_secs(10), sub.recv())
+        .await
+        .context("record not delivered")?
+        .context("subscription closed")?;
+    assert_eq!(got.len(), payload.len());
+
+    server_task.abort();
+    Ok(())
+}
+
 #[tokio::test]
 #[serial]
 async fn quic_publish_binary_decode_error_closes_stream() -> Result<()> {
