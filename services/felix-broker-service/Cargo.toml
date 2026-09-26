@@ -111,7 +111,7 @@ tempfile = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 # The Kafka tests run kcat in a container.
-tokio = { workspace = true, features = ["process"] }
+tokio = { workspace = true, features = ["process", "test-util"] }
 serial_test = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }

@@ -97,7 +97,8 @@ utoipa = "5.4.0"
 serde_yaml_ng = "0.10"
 bytes = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "test-util"] }
+# `test-util` (paused time) is a dev-dependency feature, added per member.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ahash = "0.8"

@@ -31,7 +31,7 @@ libc = { workspace = true }
 io-uring = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]
