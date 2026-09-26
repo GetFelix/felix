@@ -56,11 +56,32 @@ impl SegmentReader {
         shard_label: &str,
         out: &mut Vec<LogRecord>,
     ) -> Result<()> {
+        self.read_from_position(
+            index.seek_position(start_offset),
+            start_offset,
+            valid_bytes,
+            budget,
+            shard_label,
+            out,
+        )
+    }
+
+    /// [`SegmentReader::read_from`], starting at a record boundary the caller
+    /// already found with the index, so the index need not be held while the
+    /// segment is read.
+    pub(crate) fn read_from_position(
+        &self,
+        mut position: u64,
+        start_offset: Offset,
+        valid_bytes: u64,
+        budget: &mut ReadBudget,
+        shard_label: &str,
+        out: &mut Vec<LogRecord>,
+    ) -> Result<()> {
         if budget.is_spent() {
             return Ok(());
         }
 
-        let mut position = index.seek_position(start_offset);
         let mut cursor = SegmentCursor::new(&self.file);
 
         while position < valid_bytes && !budget.is_spent() {
@@ -100,6 +121,33 @@ impl SegmentReader {
         }
 
         Ok(())
+    }
+
+    /// Byte position of the record at `offset`, or `valid_bytes` when every
+    /// record is below it.
+    ///
+    /// Walks record headers from the nearest index entry, so it reads one
+    /// index interval plus a header per record, never a payload.
+    pub(crate) fn position_of(
+        &self,
+        index: &SparseIndex,
+        offset: Offset,
+        valid_bytes: u64,
+        shard_label: &str,
+    ) -> Result<u64> {
+        let mut position = index.seek_position(offset);
+        let mut cursor = SegmentCursor::new(&self.file);
+        while position < valid_bytes {
+            let header_slice = cursor.slice_at(position, RECORD_HEADER_LEN as usize)?;
+            let record_header = RecordHeader::decode(header_slice).map_err(|err| {
+                StorageError::Corruption(err.in_segment(shard_label, self.id).at_position(position))
+            })?;
+            if record_header.offset >= offset {
+                return Ok(position);
+            }
+            position += record_header.encoded_len();
+        }
+        Ok(valid_bytes)
     }
 }
 

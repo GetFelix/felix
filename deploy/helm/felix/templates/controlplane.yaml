@@ -6,6 +6,7 @@
 {{- $headless := include "felix.controlplane.headless" . }}
 {{- $apiPort := int $cp.service.port }}
 {{- $metricsPort := int $cp.metrics.port }}
+{{- $peerPort := int $cp.storage.raft.peerPort }}
 {{- $image := include "felix.image" (dict "root" . "image" $cp.image) }}
 {{- /*
 The control plane's shape follows its store. Over Postgres the instances are
@@ -28,10 +29,12 @@ spec:
       {{- include "felix.controlplane.selectorLabels" . | nindent 6 }}
   {{- if $raft }}
   serviceName: {{ $headless }}
-  # Members restart one at a time, each rejoining the group from its volume
-  # before the next goes; a leader restart pauses metadata writes for one
-  # election.
-  podManagementPolicy: OrderedReady
+  # Parallel, not OrderedReady: a member is ready only once it sees a leader,
+  # and one member alone never elects one, so ordered creation would wait on
+  # pod-0 forever. This only governs creation and scaling; the rolling update
+  # below still restarts members one at a time, each rejoining from its volume
+  # before the next goes.
+  podManagementPolicy: Parallel
   updateStrategy:
     type: RollingUpdate
   {{- else }}
@@ -92,6 +95,11 @@ spec:
             - name: metrics
               containerPort: {{ $metricsPort }}
               protocol: TCP
+            {{- if $raft }}
+            - name: raft
+              containerPort: {{ $peerPort }}
+              protocol: TCP
+            {{- end }}
             {{- if $cp.bootstrap.enabled }}
             - name: bootstrap
               containerPort: {{ int $cp.bootstrap.port }}
@@ -122,6 +130,26 @@ spec:
               value: /var/lib/felix/raft
             - name: FELIX_RAFT_PEERS
               value: {{ include "felix.controlplane.raftPeers" . | quote }}
+            - name: FELIX_RAFT_BIND_ADDR
+              value: "0.0.0.0:{{ $peerPort }}"
+            - name: FELIX_RAFT_CLUSTER_ID
+              value: {{ $cp.storage.raft.clusterId | default $name | quote }}
+            {{- if $cp.storage.raft.peerToken.existingSecret }}
+            - name: FELIX_RAFT_PEER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $cp.storage.raft.peerToken.existingSecret }}
+                  key: {{ $cp.storage.raft.peerToken.tokenKey }}
+            {{- end }}
+            {{- if $cp.storage.raft.insecurePeers }}
+            - name: FELIX_RAFT_INSECURE_PEERS
+              value: "true"
+            {{- end }}
+            # Only a first install may form a new group. After that, an empty
+            # member is a lost volume, and forming would start an empty
+            # control plane.
+            - name: FELIX_RAFT_INITIAL_CLUSTER_STATE
+              value: {{ $cp.storage.raft.initialClusterState | default (ternary "new" "existing" .Release.IsInstall) | quote }}
             {{- with $cp.storage.raft.heartbeatMs }}
             - name: FELIX_RAFT_HEARTBEAT_MS
               value: {{ . | quote }}

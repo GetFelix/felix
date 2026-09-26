@@ -202,6 +202,29 @@ def check_controlplane(docs: list[dict], label: str, backend: str) -> None:
         headless = one(docs, "Service", "-controlplane-headless")
         if headless is None or not headless["spec"].get("publishNotReadyAddresses"):
             fail(f"{label}: Raft members cannot find each other before they are ready")
+        # The Raft routes can replace the whole store: their own port, never
+        # the API one, and a peer token from a Secret.
+        api_port = next(
+            p["containerPort"] for p in container["ports"] if p["name"] == "api"
+        )
+        peer_ports = [p["containerPort"] for p in container["ports"] if p["name"] == "raft"]
+        if len(peer_ports) != 1 or peer_ports[0] == api_port:
+            fail(f"{label}: Raft members have no peer port of their own")
+        bind = env.get("FELIX_RAFT_BIND_ADDR", {}).get("value", "")
+        if peer_ports and not bind.endswith(f":{peer_ports[0]}"):
+            fail(f"{label}: FELIX_RAFT_BIND_ADDR {bind!r} is not the peer port")
+        if peer_ports and any(not entry.endswith(f":{peer_ports[0]}") for entry in peers):
+            fail(f"{label}: the peers map does not name the peer port")
+        token = env.get("FELIX_RAFT_PEER_TOKEN", {})
+        if "secretKeyRef" not in token.get("valueFrom", {}):
+            fail(f"{label}: the Raft peer token is not a Secret reference")
+        if not env.get("FELIX_RAFT_CLUSTER_ID", {}).get("value"):
+            fail(f"{label}: no Raft cluster id")
+        # `helm template` renders as an install.
+        if env.get("FELIX_RAFT_INITIAL_CLUSTER_STATE", {}).get("value") != "new":
+            fail(f"{label}: a first install does not let the group form")
+        if headless is not None and [p["name"] for p in headless["spec"]["ports"]] != ["raft"]:
+            fail(f"{label}: the headless Service does not expose the peer port")
 
     # Liveness never asks the store; readiness does.
     probes = container
@@ -309,6 +332,10 @@ def main() -> int:
                 "broker.credential.existingSecret=cred")
     must_refuse("odd number of members", raft, "controlplane.replicas=4")
     must_refuse("at least three members", raft, "controlplane.replicas=1")
+    must_refuse("needs controlplane.storage.raft.peerToken.existingSecret", raft,
+                "controlplane.storage.raft.peerToken.existingSecret=")
+    must_refuse("the Raft RPCs need a listener of their own", raft,
+                "controlplane.storage.raft.peerPort=8443")
     must_refuse("memory keeps metadata in one process", memory, "controlplane.replicas=2")
     must_refuse("share a port", postgres, "broker.ports.internal=5000")
     must_refuse("permit evicting every broker", postgres,

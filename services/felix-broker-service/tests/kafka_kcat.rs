@@ -173,6 +173,14 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+fn is_addr_in_use(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::AddrInUse)
+    })
+}
+
 fn free_port() -> u16 {
     std::net::TcpListener::bind("0.0.0.0:0")
         .expect("bind")
@@ -226,27 +234,38 @@ async fn start() -> Felix {
     let connections = TaskTracker::new();
     let mut addrs = Vec::new();
     for (tls_on, anonymous) in [(false, None), (true, None), (false, Some(TENANT))] {
-        let port = free_port();
-        let advertise = format!("{}:{port}", docker_host());
-        let config = KafkaListenerConfig {
-            listen: SocketAddr::from(([0, 0, 0, 0], port)),
-            advertise: advertise.clone(),
-            tls: tls_on,
-            anonymous_tenant: anonymous.map(str::to_string),
-            default_namespace: None,
-            max_connections: 64,
+        // The advertised address has to name the port before the bind, so the
+        // port comes from a probe socket that is closed again. Another test can
+        // take it in between; pick a fresh one when that happens.
+        let mut attempt = 0;
+        let (listener, advertise) = loop {
+            attempt += 1;
+            let port = free_port();
+            let advertise = format!("{}:{port}", docker_host());
+            let config = KafkaListenerConfig {
+                listen: SocketAddr::from(([0, 0, 0, 0], port)),
+                advertise: advertise.clone(),
+                tls: tls_on,
+                anonymous_tenant: anonymous.map(str::to_string),
+                default_namespace: None,
+                max_connections: 64,
+            };
+            let cluster = BrokerCluster::new(Arc::clone(&auth), None, None, "felix", &advertise)
+                .expect("cluster");
+            match KafkaListener::bind(
+                &config,
+                Some(Arc::clone(&tls)),
+                Arc::clone(&broker),
+                Arc::new(cluster),
+                "felix-test".to_string(),
+            )
+            .await
+            {
+                Ok(listener) => break (listener, advertise),
+                Err(err) if attempt < 5 && is_addr_in_use(&err) => continue,
+                Err(err) => panic!("bind: {err:?}"),
+            }
         };
-        let cluster = BrokerCluster::new(Arc::clone(&auth), None, None, "felix", &advertise)
-            .expect("cluster");
-        let listener = KafkaListener::bind(
-            &config,
-            Some(Arc::clone(&tls)),
-            Arc::clone(&broker),
-            Arc::new(cluster),
-            "felix-test".to_string(),
-        )
-        .await
-        .expect("bind");
         tokio::spawn(listener.serve(shutdown.clone(), connections.clone()));
         addrs.push(advertise);
     }

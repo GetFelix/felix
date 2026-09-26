@@ -7,6 +7,7 @@
 //! only long enough to move a pointer.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::{SealedEntry, SegmentSet};
@@ -140,17 +141,21 @@ impl SegmentSet {
             .activate(self.active.next_offset(), now_micros())?;
         self.bump_next_segment_id(replacement.id() + 1);
         let retired = std::mem::replace(&mut self.active, replacement);
-        self.active_reader = SegmentReader::open(
+        self.active_reader = Arc::new(SegmentReader::open(
             self.active.path(),
             self.active.id(),
             self.active.base_offset(),
-        )?;
+        )?);
 
         // Guaranteed non-empty by the check above, so `last_offset` is real.
         self.sealed.push(SealedEntry {
             descriptor,
             index: retired.index().clone(),
-            reader: SegmentReader::open(retired.path(), retired.id(), retired.base_offset())?,
+            reader: Arc::new(SegmentReader::open(
+                retired.path(),
+                retired.id(),
+                retired.base_offset(),
+            )?),
             holds_marks: retired.holds_marks(),
         });
 
@@ -179,8 +184,11 @@ impl SegmentSet {
             self.config.index_spacing_bytes,
         )?;
         let retired = std::mem::replace(&mut self.active, replacement);
-        self.active_reader =
-            SegmentReader::open(self.active.path(), self.active.id(), base_offset)?;
+        self.active_reader = Arc::new(SegmentReader::open(
+            self.active.path(),
+            self.active.id(),
+            base_offset,
+        )?);
         self.bump_next_segment_id(id + 1);
 
         // A sealed segment holding no records would break the `last_offset`
@@ -191,7 +199,11 @@ impl SegmentSet {
             self.sealed.push(SealedEntry {
                 descriptor,
                 index: retired.index().clone(),
-                reader: SegmentReader::open(retired.path(), retired.id(), retired.base_offset())?,
+                reader: Arc::new(SegmentReader::open(
+                    retired.path(),
+                    retired.id(),
+                    retired.base_offset(),
+                )?),
                 holds_marks: retired.holds_marks(),
             });
         } else {

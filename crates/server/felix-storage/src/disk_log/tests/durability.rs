@@ -206,3 +206,73 @@ fn a_saturated_blocking_pool_does_not_hold_up_a_durable_append() {
         assert!(log.durable_offset() > result.last_offset);
     });
 }
+
+/// Fsyncgate: after a failed fsync the kernel may have dropped the dirty pages
+/// and cleared the error, so the next fsync succeeds having written nothing.
+/// The log has to stop rather than let that second flush publish a durable
+/// bound over the lost bytes.
+#[tokio::test]
+async fn a_failed_flush_poisons_the_log_and_never_advances_the_durable_bound() {
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::None);
+    log.append(&records(&["a", "b"])).await.expect("append");
+
+    log.inner
+        .fail_next_flush
+        .store(true, std::sync::atomic::Ordering::Release);
+    log.sync().await.expect_err("injected fsync failure");
+    assert_eq!(log.durable_offset(), 0);
+
+    // The injected failure is spent, so the device would now "succeed".
+    let err = log
+        .sync()
+        .await
+        .expect_err("a later flush must not succeed");
+    assert!(err.to_string().contains("flush failed"), "{err}");
+    assert_eq!(
+        log.durable_offset(),
+        0,
+        "durable bound advanced past lost bytes"
+    );
+    assert!(log.append(&records(&["c"])).await.is_err());
+    assert!(log.shutdown().await.is_err());
+}
+
+#[tokio::test]
+async fn a_failed_flush_under_on_commit_rejects_every_later_append() {
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.append(&records(&["a"])).await.expect("append");
+    assert_eq!(log.durable_offset(), 1);
+
+    log.inner
+        .fail_next_flush
+        .store(true, std::sync::atomic::Ordering::Release);
+    log.append(&records(&["b"]))
+        .await
+        .expect_err("flush failed");
+    log.append(&records(&["c"]))
+        .await
+        .expect_err("log is poisoned");
+    assert_eq!(log.durable_offset(), 1);
+}
+
+/// The writer's own sync (here, the one a seal starts with) failing has to
+/// stop the log too: the flush path syncs through a cloned handle and would
+/// otherwise never learn about it.
+#[tokio::test]
+async fn a_failed_writer_sync_stops_later_flushes() {
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::None);
+    log.append(&records(&["a", "b", "c"]))
+        .await
+        .expect("append");
+
+    log.inner.segments.write().active_mut().fail_next_sync();
+    log.seal().await.expect_err("injected sync failure");
+
+    log.sync()
+        .await
+        .expect_err("flush after a failed writer sync");
+    assert_eq!(log.durable_offset(), 0);
+}

@@ -64,8 +64,8 @@ impl RaftHandle {
                     continue;
                 }
                 Ok(Ok(response)) => return Ok(response.data),
-                Ok(Err(err)) => match forward_target(&err) {
-                    Some(addr) => match self.forward_to(&addr, &command, attempt).await {
+                Ok(Err(err)) => match self.forward_target(&err) {
+                    Some(base) => match self.forward_to(&base, &command, attempt).await {
                         Ok(bytes) => {
                             // The counter that says the load balancer keeps
                             // handing writes to followers — informational,
@@ -104,10 +104,10 @@ impl RaftHandle {
         command.to_vec()
     }
 
-    async fn forward_to(&self, addr: &str, command: &[u8], budget: Duration) -> Result<Vec<u8>> {
+    async fn forward_to(&self, base: &str, command: &[u8], budget: Duration) -> Result<Vec<u8>> {
         let response = self
             .forward
-            .post(format!("http://{addr}/internal/raft/propose"))
+            .post(format!("{base}/internal/raft/propose"))
             .timeout(budget)
             .body(command.to_vec())
             .send()
@@ -124,21 +124,25 @@ impl RaftHandle {
             .context("read forwarded response")?
             .to_vec())
     }
-}
 
-/// Where a refused proposal should go instead, when the refusal says.
-fn forward_target(
-    err: &openraft::error::RaftError<
-        u64,
-        openraft::error::ClientWriteError<u64, openraft::BasicNode>,
-    >,
-) -> Option<String> {
-    if let openraft::error::RaftError::APIError(
-        openraft::error::ClientWriteError::ForwardToLeader(forward),
-    ) = err
-    {
-        forward.leader_node.as_ref().map(|node| node.addr.clone())
-    } else {
-        None
+    /// Where a refused proposal should go instead, when the refusal says.
+    fn forward_target(
+        &self,
+        err: &openraft::error::RaftError<
+            u64,
+            openraft::error::ClientWriteError<u64, openraft::BasicNode>,
+        >,
+    ) -> Option<String> {
+        if let openraft::error::RaftError::APIError(
+            openraft::error::ClientWriteError::ForwardToLeader(forward),
+        ) = err
+        {
+            self.peer_url(
+                forward.leader_id,
+                forward.leader_node.as_ref().map(|node| node.addr.as_str()),
+            )
+        } else {
+            None
+        }
     }
 }

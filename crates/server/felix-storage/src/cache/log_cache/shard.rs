@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
@@ -36,7 +37,7 @@ pub(super) struct CacheShard {
     pub(super) state: Mutex<ShardState>,
     /// Re-serialises the post-durability half of writes into disk-offset
     /// order. Fsyncs overlap; what `get` and the watch observer see does not.
-    pub(super) sequencer: CommitSequencer,
+    pub(super) sequencer: Arc<CommitSequencer>,
 }
 
 impl CacheShard {

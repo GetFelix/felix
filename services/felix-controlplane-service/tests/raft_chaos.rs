@@ -22,7 +22,9 @@
 //!
 //! Seeding exercises #340's path too: the signing keys and tenant arrive by
 //! proposing an `ImportState` command over the real propose route, which is
-//! also what lets this test mint operator tokens locally.
+//! also what lets this test mint operator tokens locally. That route is on
+//! the peer listener and needs the cluster id and peer token, so the test
+//! proposes as a peer would.
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -37,6 +39,9 @@ use felix_controlplane_service::store::raft::command::{
     MetaCommand, decode_result, encode_command,
 };
 use felix_controlplane_service::store::{AuthStore, ControlPlaneStore, StoreConfig};
+
+const CLUSTER_ID: &str = "chaos-cluster";
+const PEER_TOKEN: &str = "chaos-peer-token-chaos-peer-token-chaos";
 
 fn http(
     addr: SocketAddr,
@@ -69,6 +74,11 @@ fn http_with_timeout(
     if let Some(bearer) = bearer {
         request.push_str(&format!("Authorization: Bearer {bearer}\r\n"));
     }
+    // Only the peer listener reads it; the peer token rides as the bearer.
+    request.push_str(&format!(
+        "{}: {CLUSTER_ID}\r\n",
+        felix_controlplane_service::raft::CLUSTER_ID_HEADER
+    ));
     match body {
         Some(body) => {
             request.push_str(&format!(
@@ -105,6 +115,7 @@ fn reserve() -> SocketAddr {
         .expect("addr")
 }
 
+/// Restart a member of a group that already exists.
 fn spawn_instance(
     id: u64,
     api: SocketAddr,
@@ -112,6 +123,25 @@ fn spawn_instance(
     data_dir: &PathBuf,
     peers: &str,
 ) -> std::process::Child {
+    spawn_with_state(id, api, metrics, data_dir, peers, "existing")
+}
+
+/// Start a member for the first time; `initial` is
+/// `FELIX_RAFT_INITIAL_CLUSTER_STATE`. The member's peer listener is its own
+/// entry in `peers`.
+fn spawn_with_state(
+    id: u64,
+    api: SocketAddr,
+    metrics: SocketAddr,
+    data_dir: &PathBuf,
+    peers: &str,
+    initial: &str,
+) -> std::process::Child {
+    let peer_bind = peers
+        .split(',')
+        .find_map(|entry| entry.strip_prefix(&format!("{id}=")))
+        .expect("own entry in peers")
+        .to_string();
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -128,6 +158,10 @@ fn spawn_instance(
         .env("FELIX_RAFT_NODE_ID", id.to_string())
         .env("FELIX_RAFT_DATA_DIR", data_dir)
         .env("FELIX_RAFT_PEERS", peers)
+        .env("FELIX_RAFT_BIND_ADDR", peer_bind)
+        .env("FELIX_RAFT_CLUSTER_ID", CLUSTER_ID)
+        .env("FELIX_RAFT_PEER_TOKEN", PEER_TOKEN)
+        .env("FELIX_RAFT_INITIAL_CLUSTER_STATE", initial)
         // Faster consensus so each injected fault costs the test seconds,
         // not the production-default election window.
         .env("FELIX_RAFT_HEARTBEAT_MS", "100")
@@ -509,11 +543,12 @@ struct Group {
 fn start_group() -> Group {
     // --- Three members, fixed addresses, own volumes ------------------------
     let apis: Vec<SocketAddr> = (0..3).map(|_| reserve()).collect();
+    let peer_addrs: Vec<SocketAddr> = (0..3).map(|_| reserve()).collect();
     let metrics: Vec<SocketAddr> = (0..3).map(|_| reserve()).collect();
     let dirs: Vec<tempfile::TempDir> = (0..3)
         .map(|_| tempfile::tempdir().expect("tempdir"))
         .collect();
-    let peers = apis
+    let peers = peer_addrs
         .iter()
         .enumerate()
         .map(|(i, addr)| format!("{}={}", i + 1, addr))
@@ -526,12 +561,13 @@ fn start_group() -> Group {
             api: apis[i],
             metrics: metrics[i],
             data_dir: dirs[i].path().to_path_buf(),
-            child: spawn_instance(
+            child: spawn_with_state(
                 (i + 1) as u64,
                 apis[i],
                 metrics[i],
                 &dirs[i].path().to_path_buf(),
                 &peers,
+                "new",
             ),
         })
         .collect();
@@ -568,10 +604,10 @@ fn start_group() -> Group {
         overwrite: false,
     });
     let (status, body) = http(
-        apis[0],
+        peer_addrs[0],
         "POST",
         "/internal/raft/propose",
-        None,
+        Some(PEER_TOKEN),
         Some(&import),
     )
     .expect("propose import");

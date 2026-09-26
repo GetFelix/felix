@@ -4,14 +4,11 @@
 //! Compaction writes the live entries into a fresh log in a sibling directory
 //! and swaps the two, so no record is ever edited in place.
 
-use std::path::Path;
-
 use bytes::Bytes;
 
 use super::CacheOp;
 use super::shard::{CacheShard, Entry, Index, ShardState, now_millis};
 use crate::disk_log::DiskLog;
-use crate::io::sync_dir;
 use crate::log::{AppendOnlyLog, AppendRecord, Offset};
 use crate::{Result, StorageError};
 
@@ -72,9 +69,8 @@ impl CacheShard {
     /// **Records are never rewritten**, which is the invariant the whole storage
     /// layer rests on. Compaction honours it: it writes new segments in a new
     /// directory and swaps directories, and never edits a byte in place. A crash
-    /// at any point leaves either the old log or the new one whole, because the
-    /// swap is two renames and the old log is not removed until the new one is
-    /// in position.
+    /// at any point leaves either the old log or the new one whole: see
+    /// `crate::log_swap`.
     pub(super) async fn compact(&self, state: &mut ShardState) -> Result<()> {
         let now = now_millis();
         let mut live: Vec<(String, Bytes, u64)> = Vec::with_capacity(state.index.entries.len());
@@ -140,55 +136,11 @@ impl CacheShard {
         fresh.shutdown().await?;
         state.log.shutdown().await?;
 
-        // Each rename is synced before the next, so a crash lands on one of
-        // the two states `recover_interrupted_swap` knows how to read. Without
-        // the syncs the renames can reach disk in either order, or not at all,
-        // and the window in between is total loss for the shard: the directory
-        // is missing, and an unguarded open would create it empty.
-        let retired = self.dir.with_extension("retired");
-        if retired.exists() {
-            std::fs::remove_dir_all(&retired).map_err(StorageError::Io)?;
-        }
-        let parent = self.dir.parent().map(Path::to_path_buf);
-        std::fs::rename(&self.dir, &retired).map_err(StorageError::Io)?;
-        if let Some(parent) = &parent {
-            sync_dir(parent).map_err(StorageError::Io)?;
-        }
-        std::fs::rename(&staging, &self.dir).map_err(StorageError::Io)?;
-        if let Some(parent) = &parent {
-            sync_dir(parent).map_err(StorageError::Io)?;
-        }
-        std::fs::remove_dir_all(&retired).map_err(StorageError::Io)?;
+        crate::log_swap::swap_in_compacted(&self.dir, &staging)?;
 
         state.log = DiskLog::open(self.dir.clone(), self.label.clone(), self.config.clone())?;
         index.covered_through = Some(state.log.tail_offset().await?);
         state.index = index;
         Ok(())
     }
-}
-
-/// Finish a compaction swap that a crash interrupted.
-///
-/// Compaction renames the shard directory aside to `.retired`, renames the
-/// compacted one into its place, then deletes the retired copy. A crash
-/// between the first two leaves the shard directory missing and all of its
-/// data in `.retired` — and an open that ignored that would create the
-/// directory empty and the next compaction would delete the only copy.
-///
-/// The retired directory is the pre-compaction state, so restoring it loses
-/// the compaction and nothing else.
-pub(super) fn recover_interrupted_swap(dir: &Path) -> Result<()> {
-    let retired = dir.with_extension("retired");
-    if dir.exists() || !retired.exists() {
-        return Ok(());
-    }
-    tracing::warn!(
-        dir = %dir.display(),
-        "a compaction was interrupted; restoring the shard from its retired copy",
-    );
-    std::fs::rename(&retired, dir).map_err(StorageError::Io)?;
-    if let Some(parent) = dir.parent() {
-        sync_dir(parent).map_err(StorageError::Io)?;
-    }
-    Ok(())
 }

@@ -44,9 +44,9 @@ spec:
   # Members must find each other before they are ready, or no group forms.
   publishNotReadyAddresses: true
   ports:
-    - name: api
-      port: {{ int $cp.service.port }}
-      targetPort: api
+    - name: raft
+      port: {{ int $cp.storage.raft.peerPort }}
+      targetPort: raft
       protocol: TCP
   selector:
     {{- include "felix.controlplane.selectorLabels" . | nindent 4 }}

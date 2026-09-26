@@ -81,6 +81,11 @@ Anything that breaks a property Felix claims to enforce:
 - **Bootstrap mode.** Token comparison weaknesses, replay, races that produce a
   partially initialized tenant, or any way to reach the bootstrap endpoint
   without the configured token and (when configured) client certificate.
+- **Metadata Raft peer listener.** Any way to reach a Raft route (`propose`,
+  `append-entries`, `vote`, snapshot install) without the cluster id and peer
+  token, or without a certificate from the peer CA when peer mTLS is on, or
+  to make empty members form a new group without
+  `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`.
 - **Wire protocol.** Remotely triggered panics, unbounded allocation, integer
   overflow, or out-of-bounds reads in frame decoding; a malformed or hostile
   frame that takes down a broker, escapes its connection, or corrupts another
@@ -169,7 +174,10 @@ Until the gaps above close, the deployment-side controls that matter most:
 - **Keep token TTLs short** (`FELIX_EXCHANGE_TOKEN_TTL_SECONDS`) and rotate
   tenant signing keys through JWKS.
 - **Protect the control plane's database** — it holds tenant signing keys and
-  RBAC policy.
+  RBAC policy. Under the Raft backend the members' volumes are that database,
+  and `FELIX_RAFT_PEER_TOKEN` can replace it wholesale: keep the token in a
+  Secret, and the Raft peer port (`FELIX_RAFT_BIND_ADDR`) reachable from the
+  other members only.
 
 ## Non-security bugs
 

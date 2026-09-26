@@ -27,7 +27,7 @@
 //! throughput fix; it removes a hand-off that should not be there on a
 //! Linux-only server, and the dividend is small. See #547 and #548.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io;
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -43,6 +43,12 @@ use tokio::sync::oneshot;
 /// One per shard log is the shape to size for; a broker with more shards than
 /// this simply queues, which is what the blocking pool did anyway.
 const RING_ENTRIES: u32 = 256;
+
+/// Operations in flight at once, leaving a slot for the wake poll. Requests
+/// past this wait in the service thread's backlog until completions free a
+/// slot. A full ring must never become an I/O error: a failed flush poisons
+/// its log.
+const MAX_IN_FLIGHT: usize = RING_ENTRIES as usize - 1;
 
 static RING: OnceLock<Option<Ring>> = OnceLock::new();
 /// Flush ids start at 1; this one marks the wake poll's completion.
@@ -214,6 +220,7 @@ fn ring() -> Option<&'static Ring> {
                 // completion queues are not safe to touch from several.
                 let wake = thread_wake;
                 let mut waiting = Waiting::new();
+                let mut backlog = VecDeque::new();
                 // The wake poll is always armed, so the wait below returns on
                 // either a completion or a newly queued request.
                 wake.arm(&mut uring);
@@ -222,8 +229,16 @@ fn ring() -> Option<&'static Ring> {
                     // drain signals again and ends the next wait.
                     wake.pending.store(false, Ordering::SeqCst);
                     fence(Ordering::SeqCst);
-                    for submission in rx.try_iter() {
-                        push(&mut uring, &mut waiting, submission);
+                    backlog.extend(rx.try_iter());
+                    while waiting.len() < MAX_IN_FLIGHT {
+                        let Some(submission) = backlog.pop_front() else {
+                            break;
+                        };
+                        if let Err(submission) = push(&mut uring, &mut waiting, submission) {
+                            // The queue drains on the submit below.
+                            backlog.push_front(submission);
+                            break;
+                        }
                     }
 
                     match uring.submit_and_wait(1) {
@@ -266,9 +281,12 @@ fn ring() -> Option<&'static Ring> {
     .as_ref()
 }
 
-/// Queue one fsync. Answers the caller directly if the ring has no room, so a
-/// full queue is a reported error rather than a lost request.
-fn push(uring: &mut IoUring, waiting: &mut Waiting, submission: Submission) {
+/// Queue one operation, or hand it back if the submission queue is full.
+fn push(
+    uring: &mut IoUring,
+    waiting: &mut Waiting,
+    submission: Submission,
+) -> Result<(), Submission> {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     // `DATASYNC`, matching `io::sync_data` on the blocking path: an append
     // changes data and size, not the metadata a full fsync also writes.
@@ -284,13 +302,11 @@ fn push(uring: &mut IoUring, waiting: &mut Waiting, submission: Submission) {
     // Safety: `waiting` keeps the `File` alive until its completion is
     // collected, so the descriptor stays open for the whole operation.
     let pushed = unsafe { uring.submission().push(&entry).is_ok() };
-    if pushed {
-        waiting.insert(id, (submission.file, submission.reply));
-    } else {
-        let _ = submission
-            .reply
-            .send(Err(io::Error::other("io_uring submission queue full")));
+    if !pushed {
+        return Err(submission);
     }
+    waiting.insert(id, (submission.file, submission.reply));
+    Ok(())
 }
 
 #[cfg(test)]

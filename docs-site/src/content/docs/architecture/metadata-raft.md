@@ -80,17 +80,48 @@ contained.
 ## Trying it (experimental)
 
 Three environment variables select the backend, the same way a Postgres URL
-selects Postgres:
+selects Postgres, and four more are required with them:
 
 ```
 FELIX_RAFT_NODE_ID=1
 FELIX_RAFT_DATA_DIR=/var/lib/felix/raft
-FELIX_RAFT_PEERS=1=cp-0:8443,2=cp-1:8443,3=cp-2:8443
+FELIX_RAFT_PEERS=1=cp-0:8444,2=cp-1:8444,3=cp-2:8444
+FELIX_RAFT_BIND_ADDR=0.0.0.0:8444
+FELIX_RAFT_CLUSTER_ID=prod-metadata
+FELIX_RAFT_PEER_TOKEN=<at least 32 random characters, from a Secret>
+FELIX_RAFT_INITIAL_CLUSTER_STATE=new   # first start of the cluster only
 ```
 
 Every member must carry the **same** peers map (initializing two disjoint
 member sets is how split brain is manufactured), and the data directory
-must survive restarts — it is what makes a restart a rejoin. Writes reaching
+must survive restarts — it is what makes a restart a rejoin.
+
+The Raft RPCs are served on their own **peer listener**
+(`FELIX_RAFT_BIND_ADDR`), and `FELIX_RAFT_PEERS` names each member's peer
+listener, not its API port. Every peer request must name the cluster and
+carry the peer token, or it is refused before any route runs. That token is
+the cluster-admin credential — the `propose` route behind it can replace the
+whole store — so keep it in a Secret, expose the peer port to the other
+members only, and give the token to nothing but the members and the
+`migrate import` tool. A member refuses to start without one unless
+`FELIX_RAFT_INSECURE_PEERS=true`, which is for a throwaway local group. Add
+`FELIX_RAFT_TLS_CERT`, `FELIX_RAFT_TLS_KEY` and `FELIX_RAFT_TLS_CA` for peer
+mTLS on top.
+
+`FELIX_RAFT_CLUSTER_ID` is recorded in the data dir on first start; a member
+refuses to start on a data dir from another cluster. Empty members form a
+new group only under `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`. With the
+default, `existing`, members that lost their volumes wait for the group
+instead of quietly starting an empty control plane, so set `new` for the
+cluster's first start and nothing else.
+
+Upgrading an existing Raft group to a release with the peer listener is not
+a rolling change: old members send unauthenticated RPCs to the API port, and
+new ones only answer authenticated ones on the peer port. Restart every
+member together (set `FELIX_RAFT_CLUSTER_ID` to any stable name; existing
+data dirs adopt it). Metadata writes pause for the restart; brokers keep
+serving. A release that adds a Raft command has its own rule, in
+[the design doc](https://github.com/gabloe/felix/blob/main/docs/metadata-raft-design.md#upgrading). Writes reaching
 a follower forward to the leader invisibly; the expiry sweep and shard
 placement run only on the leader, confirmed by a linearizable check each
 tick. A proposal that cannot commit — no leader, quorum lost — fails with an
@@ -158,7 +189,16 @@ spec:
             - name: FELIX_RAFT_DATA_DIR
               value: /var/lib/felix/raft
             - name: FELIX_RAFT_PEERS
-              value: "1=felix-controlplane-0.felix-controlplane:8443,2=felix-controlplane-1.felix-controlplane:8443,3=felix-controlplane-2.felix-controlplane:8443"
+              value: "1=felix-controlplane-0.felix-controlplane:8444,2=felix-controlplane-1.felix-controlplane:8444,3=felix-controlplane-2.felix-controlplane:8444"
+            - name: FELIX_RAFT_BIND_ADDR
+              value: "0.0.0.0:8444"
+            - name: FELIX_RAFT_CLUSTER_ID
+              value: felix-controlplane
+            - name: FELIX_RAFT_PEER_TOKEN
+              valueFrom: { secretKeyRef: { name: felix-raft-peer, key: token } }
+            # `new` on the cluster's first start only.
+            - name: FELIX_RAFT_INITIAL_CLUSTER_STATE
+              value: existing
           volumeMounts:
             - name: raft
               mountPath: /var/lib/felix/raft
@@ -179,7 +219,8 @@ The PVC is what makes a pod restart a rejoin; a member whose volume is lost
 rejoins empty and is rebuilt by snapshot install. The
 [Helm chart](/felix/deployment/kubernetes/) renders exactly this with
 `controlplane.storage.backend=raft`, deriving each member's id from its pod
-ordinal and the peers map from the replica count.
+ordinal and the peers map from the replica count, and setting
+`FELIX_RAFT_INITIAL_CLUSTER_STATE=new` only on `helm install`.
 
 ## Migrating from Postgres
 
@@ -194,8 +235,10 @@ control-plane blip):
 FELIX_CONTROLPLANE_POSTGRES_URL=postgres://... \
   felix-controlplane migrate export-postgres state.json
 
-# 4. One atomic command, proposed to any member (it forwards to the leader):
-felix-controlplane migrate import state.json http://cp-0:8443
+# 4. One atomic command, proposed to any member's peer listener as a peer
+#    (it forwards to the leader):
+FELIX_RAFT_CLUSTER_ID=prod-metadata FELIX_RAFT_PEER_TOKEN=... \
+  felix-controlplane migrate import state.json http://cp-0:8444
 
 # 5. Compare the printed summaries, spot-check, repoint, retire Postgres.
 ```

@@ -105,7 +105,11 @@ async fn open_store(
             // Before the routes serve: an empty member must not answer a
             // vote until it knows whether it is forming the group or
             // rejoining one it forgot.
-            handle.enter_group(raft_cfg.peers.clone(), api_shutdown.child_token())?;
+            handle.enter_group(
+                raft_cfg.peers.clone(),
+                raft_cfg.initial_cluster_state,
+                api_shutdown.child_token(),
+            )?;
             raft_handle = Some(handle.clone());
             Arc::new(RaftStore::new(handle, machine))
         }
@@ -115,7 +119,12 @@ async fn open_store(
 
 /// The seam's defaults, overridden by whatever the operator set.
 fn raft_settings(raft_cfg: &RaftBackendConfig) -> RaftSettings {
-    let mut settings = RaftSettings::new(raft_cfg.node_id, raft_cfg.data_dir.clone());
+    let mut settings = RaftSettings::new(
+        raft_cfg.node_id,
+        raft_cfg.data_dir.clone(),
+        raft_cfg.security.clone(),
+    );
+    settings.peer_addrs = raft_cfg.peers.clone();
     if let Some(ms) = raft_cfg.heartbeat_ms {
         settings.heartbeat_interval = Duration::from_millis(ms);
     }

@@ -73,7 +73,11 @@ at that offset.
 
 Compaction rewrites the live set and drops superseded and expired records. It
 **appends the live set at the tail** rather than renumbering from zero, so an
-offset names the same record for the life of the shard.
+offset names the same record for the life of the shard. The live set is
+written to a sibling directory and swapped in with two renames, each followed
+by a directory sync; an open that finds the shard directory missing and a
+`.retired` copy beside it restores that copy, so a crash between the renames
+loses the compaction and nothing else. Counters use the same swap.
 
 > `a_cache_survives_a_restart` — the index is rebuilt from the log.
 > `the_index_catches_up_with_records_appended_behind_it` — records that arrive
@@ -168,7 +172,8 @@ log rides its cache shard's replica set the way group state rides a stream
 shard's, shipped by the same driver pass and gating nothing.
 
 > `crates/server/felix-storage/src/counter_log/tests.rs`, including
-> `compaction_moves_neither_the_sum_nor_the_offsets` and
+> `compaction_moves_neither_the_sum_nor_the_offsets`,
+> `a_shard_interrupted_mid_compaction_keeps_its_sums` and
 > `the_sum_survives_a_restart`;
 > `services/felix-broker-service/tests/counters.rs::an_add_answers_with_the_sum_including_it`;
 > `crates/testing/felix-cluster/tests/caches/cache_failover.rs::a_counter_survives_the_loss_of_its_owner`.
