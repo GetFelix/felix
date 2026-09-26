@@ -62,7 +62,7 @@ felix-router = { path = "../../crates/server/felix-router", version = "0.6.0-pre
 arc-swap = { workspace = true }
 base64 = { workspace = true }
 felix-broker = { path = "../../crates/server/felix-broker", version = "0.6.0-preview" }
-felix-common = { path = "../../crates/server/felix-common", version = "0.6.0-preview", features = ["lifecycle"] }
+felix-common = { path = "../../crates/server/felix-common", version = "0.6.0-preview", features = ["lifecycle", "tls"] }
 felix-client = { path = "../../crates/sdk/felix-client", version = "0.6.0-preview" }
 felix-authz = { path = "../../crates/server/felix-authz", version = "0.6.0-preview" }
 felix-kafka = { path = "../../crates/server/felix-kafka", version = "0.6.0-preview" }

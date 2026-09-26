@@ -13,25 +13,21 @@
 //!   link is encrypted and nothing more; startup says so, and the internal
 //!   listener must then be on a network only brokers can reach.
 //!
-//! Rotation is a file swap. The certificate and key are re-read on a timer
-//! and installed for the *next* handshake; connections already up keep the
-//! identity they were made with, so a rolling rotation never drops healthy
-//! traffic. The CA bundle is read once: trust roots change at a restart.
+//! Rotation is a file swap, handled by `felix_common::tls::ReloadingIdentity`:
+//! the next handshake presents the new certificate, connections already up
+//! keep theirs, and the CA bundle is read once.
 //!
 //! What both modes enforce is *role separation*: both ends negotiate
 //! [`INTERNAL_ALPN`], and the listener rejects a connection that settled on
 //! anything else. The client-facing endpoint uses no ALPN, so a client that
 //! dials the internal port is refused before it can send a frame.
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
-use arc_swap::ArcSwap;
+use felix_common::tls::{IdentityFiles, ReloadingIdentity};
 use quinn::{ClientConfig, ServerConfig};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
-use rustls::sign::CertifiedKey;
 use rustls::{DigitallySignedStruct, SignatureScheme};
 
 use super::config::{INTERNAL_ALPN, PeerTlsConfig};
@@ -40,9 +36,6 @@ use super::config::{INTERNAL_ALPN, PeerTlsConfig};
 /// Only has to be a valid DNS name both ends agree on.
 pub(super) const INTERNAL_SERVER_NAME: &str = "felix-internal";
 
-/// How often the certificate and key files are checked for a rotation.
-const RELOAD_INTERVAL: Duration = Duration::from_secs(30);
-
 /// This broker's peer identity and the roots it trusts.
 ///
 /// One value shared by the listener and the dialler, so a rotation reaches
@@ -50,7 +43,7 @@ const RELOAD_INTERVAL: Duration = Duration::from_secs(30);
 pub struct PeerTls {
     paths: PeerTlsConfig,
     roots: Arc<rustls::RootCertStore>,
-    identity: Arc<Identity>,
+    identity: Arc<ReloadingIdentity>,
 }
 
 impl std::fmt::Debug for PeerTls {
@@ -69,31 +62,27 @@ impl PeerTls {
     /// comes up with unreadable key material is a misconfiguration, not a
     /// runtime condition to retry.
     pub fn load(paths: &PeerTlsConfig) -> Result<Self> {
-        let mut roots = rustls::RootCertStore::empty();
-        for cert in load_pem_certs(&paths.ca_path)
-            .with_context(|| format!("read FELIX_INTERNAL_TLS_CA {}", paths.ca_path))?
-        {
-            roots.add(cert).context("add internal CA root")?;
-        }
-        let identity = Arc::new(Identity {
-            current: ArcSwap::from_pointee(load_identity(paths)?),
-        });
+        let roots = felix_common::tls::load_roots("FELIX_INTERNAL_TLS_CA", &paths.ca_path)?;
+        let identity = ReloadingIdentity::load(
+            IdentityFiles {
+                cert_path: paths.cert_path.clone(),
+                cert_var: "FELIX_INTERNAL_TLS_CERT",
+                key_path: paths.key_path.clone(),
+                key_var: "FELIX_INTERNAL_TLS_KEY",
+            },
+            provider(),
+        )?;
         Ok(Self {
             paths: paths.clone(),
             roots: Arc::new(roots),
-            identity,
+            identity: Arc::new(identity),
         })
     }
 
     /// Re-read the certificate and key. A file that is mid-write or missing
     /// leaves the current identity in place; the next check tries again.
     pub fn reload(&self) -> Result<bool> {
-        let fresh = load_identity(&self.paths)?;
-        let changed = fresh.cert != self.identity.current.load().cert;
-        if changed {
-            self.identity.current.store(Arc::new(fresh));
-        }
-        Ok(changed)
+        Ok(self.identity.reload()?)
     }
 
     /// Check the files on an interval until `shutdown`.
@@ -101,24 +90,11 @@ impl PeerTls {
         self: Arc<Self>,
         shutdown: tokio_util::sync::CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
+        let identity = Arc::clone(&self.identity);
         tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(RELOAD_INTERVAL);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                tokio::select! {
-                    _ = shutdown.cancelled() => return,
-                    _ = ticker.tick() => match self.reload() {
-                        Ok(true) => tracing::info!(
-                            cert = %self.paths.cert_path,
-                            "internal TLS certificate rotated; new peer connections use it",
-                        ),
-                        Ok(false) => {}
-                        Err(err) => tracing::warn!(
-                            error = %err,
-                            "could not reload the internal TLS certificate; keeping the current one",
-                        ),
-                    },
-                }
+            tokio::select! {
+                _ = shutdown.cancelled() => {}
+                _ = identity.reload_periodically("internal") => {}
             }
         })
     }
@@ -142,42 +118,6 @@ impl PeerTls {
             .map_err(|err| format!("the peer's certificate does not parse: {err}"))?;
         cert.verify_is_valid_for_subject_name(&name)
             .map_err(|_| format!("the peer's certificate is not issued to {node_id}"))
-    }
-}
-
-/// The certificate and key currently presented, swapped whole on rotation.
-struct Identity {
-    current: ArcSwap<Loaded>,
-}
-
-struct Loaded {
-    cert: Vec<CertificateDer<'static>>,
-    key: Arc<CertifiedKey>,
-}
-
-impl rustls::server::ResolvesServerCert for Identity {
-    fn resolve(&self, _hello: rustls::server::ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        Some(Arc::clone(&self.current.load().key))
-    }
-}
-
-impl rustls::client::ResolvesClientCert for Identity {
-    fn resolve(
-        &self,
-        _root_hint_subjects: &[&[u8]],
-        _sigschemes: &[SignatureScheme],
-    ) -> Option<Arc<CertifiedKey>> {
-        Some(Arc::clone(&self.current.load().key))
-    }
-
-    fn has_certs(&self) -> bool {
-        true
-    }
-}
-
-impl std::fmt::Debug for Identity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Identity(<redacted>)")
     }
 }
 
@@ -255,32 +195,13 @@ pub(super) fn client_config(tls: Option<&PeerTls>) -> Result<ClientConfig> {
     Ok(ClientConfig::new(Arc::new(crypto)))
 }
 
-fn load_identity(paths: &PeerTlsConfig) -> Result<Loaded> {
-    let cert = load_pem_certs(&paths.cert_path)
-        .with_context(|| format!("read FELIX_INTERNAL_TLS_CERT {}", paths.cert_path))?;
-    let key = rustls::pki_types::PrivateKeyDer::from_pem_file(&paths.key_path)
-        .with_context(|| format!("read FELIX_INTERNAL_TLS_KEY {}", paths.key_path))?;
-    let key = CertifiedKey::from_der(cert.clone(), key, &provider())
-        .context("the internal TLS key does not match its certificate")?;
-    Ok(Loaded {
-        cert,
-        key: Arc::new(key),
-    })
-}
-
-fn load_pem_certs(path: &str) -> Result<Vec<CertificateDer<'static>>> {
-    let certs = CertificateDer::pem_file_iter(path)?.collect::<std::result::Result<Vec<_>, _>>()?;
-    anyhow::ensure!(!certs.is_empty(), "no certificates in {path}");
-    Ok(certs)
-}
-
 /// The crypto provider both internal endpoints use.
 ///
 /// Named explicitly rather than left to `CryptoProvider::get_default`: both
 /// `ring` and `aws-lc-rs` are in the dependency graph, so there is no unambiguous
 /// process default, and this matches the provider quinn's own config helpers
 /// pick for the client-facing endpoints.
-fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+pub(crate) fn provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
