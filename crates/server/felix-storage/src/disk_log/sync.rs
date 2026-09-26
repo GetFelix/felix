@@ -218,9 +218,9 @@ impl PeriodicSyncer {
     /// needs a timer, and a log opened outside a runtime would otherwise die at
     /// an unrelated call site with a message about reactors.
     ///
-    /// Flush failures are logged and retried on the next tick rather than
-    /// killing the task: a transient I/O error must not silently disable
-    /// durability for the rest of the process's life.
+    /// Flush failures are logged rather than killing the task. A failed fsync
+    /// poisons the log (see `LogInner::poison`), so the ticks that follow
+    /// skip flushing and appends report the error instead.
     pub(super) fn spawn<F, Fut>(interval: Duration, flush: F) -> Result<Self>
     where
         F: Fn() -> Fut + Send + 'static,
