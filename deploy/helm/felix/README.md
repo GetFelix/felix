@@ -11,7 +11,8 @@ What it renders:
 | Brokers | StatefulSet with a volume each, `OrderedReady` | The pod name is the node id: what the broker registers as, what shards are assigned to, and under peer mTLS the DNS name its certificate carries. Replacing a pod keeps all of it. |
 | Budgets | PodDisruptionBudgets | Voluntary disruption takes at most one broker at a time, which keeps a replication-factor-three shard's quorum. |
 | Network policy | Internal port admitted from broker pods only | Without peer mTLS reachability is the boundary; with it, this is the second fence. The internal port is never on a Service. |
-| Peer mTLS (optional) | A cert-manager CSI volume per pod | Each broker needs a certificate issued to its own name; the CSI driver is what can vary a volume per pod of one StatefulSet. |
+| Peer mTLS | A cert-manager CSI volume per pod, or an explicit opt-out | Each broker needs a certificate issued to its own name; the CSI driver is what can vary a volume per pod of one StatefulSet. Brokers refuse to start with neither, so the chart refuses to render with neither. |
+| Client and control-plane TLS (optional) | Secrets you provide, mounted as directories | One certificate for every broker, and one for the control-plane API. Renewals reach the running processes without a restart. |
 
 Secrets are referenced, never rendered: the Postgres URL, the bootstrap token
 and the broker credential come from Secrets the operator creates. Value
@@ -40,8 +41,13 @@ Once the credential is in a Secret:
 helm upgrade felix deploy/helm/felix -n felix --reuse-values \
   --set broker.enabled=true \
   --set broker.credential.existingSecret=felix-broker-credential \
+  --set broker.peerTls.enabled=true \
   --set controlplane.bootstrap.enabled=false
 ```
+
+Peer mTLS needs cert-manager and its CSI driver. Without them, set
+`broker.peerTls.allowUnauthenticated=true` instead: the internal port is then
+encrypted but unauthenticated, and the NetworkPolicy is the only boundary.
 
 ## Values
 
@@ -74,6 +80,10 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 | `broker.clientAdvertiseAddr` | pod DNS name on the client port | What discovery hands clients for each broker. `$(POD_NAME)` and `$(POD_NAMESPACE)` expand per pod. |
 | `broker.clientService.type` | `ClusterIP` | The first hop for clients. `LoadBalancer` needs a provider that balances UDP. |
 | `broker.peerTls.enabled` | `false` | Mutual TLS on the internal port, issued per pod by cert-manager's CSI driver from `issuerName`/`issuerKind`. |
+| `broker.peerTls.allowUnauthenticated` | `false` | Run the internal port without mTLS. One of this or `enabled` is required. |
+| `broker.clientTls.enabled` / `existingSecret` | `false` / — | The certificate clients verify brokers with, from a `kubernetes.io/tls` Secret. Off, each broker generates a self-signed certificate at every start. |
+| `broker.clientTls.clientCaKey` | — | A key in that Secret holding the CA every client must present a certificate from. |
+| `controlplane.tls.enabled` / `existingSecret` / `caKey` | `false` / — / `ca.crt` | TLS on the control-plane API, from a `kubernetes.io/tls` Secret. Brokers then use `https://` and trust `caKey` from the same Secret. Not with `raft` yet. |
 | `broker.shutdown.preStopSeconds` / `handoffTimeoutMs` / `drainTimeoutMs` | `15` / `30000` / `40000` | The endpoints controller's head start, then the shard handoff, then the drain. The grace period is derived; an explicit one that is too short is refused. |
 | `broker.podDisruptionBudget.maxUnavailable` | `1` | Must be below `replicas`, and at most one once there are three or more. |
 | `broker.antiAffinity` / `topologySpread` | `soft` / zone, `ScheduleAnyway` | `hard` refuses to co-locate; `DoNotSchedule` refuses to skew. |
@@ -90,6 +100,8 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 - `raft` has fewer than three members, or an even number, or no peer token Secret, or a peer port equal to the API port.
 - `memory` has more than one replica.
 - brokers are enabled with no credential Secret, or with no control plane and no `controlplaneUrl`.
+- brokers are enabled with neither `peerTls.enabled` nor `peerTls.allowUnauthenticated`.
+- `clientTls` or `controlplane.tls` is on without a Secret, or `controlplane.tls` is on under `raft`.
 - the client and internal ports are the same.
 - a budget would let every broker, or two replicas of one shard, go at once; or would never let a control-plane instance go.
 - an explicit grace period is shorter than the preStop sleep plus the drain.

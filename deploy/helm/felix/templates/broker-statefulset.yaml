@@ -126,10 +126,33 @@ spec:
             {{- end }}
             - name: FELIX_DURABLE_STORAGE_DIR
               value: /var/lib/felix/data
+            {{- if $b.clientTls.enabled }}
+            - name: FELIX_TLS_CERT
+              value: /etc/felix/client-tls/tls.crt
+            - name: FELIX_TLS_KEY
+              value: /etc/felix/client-tls/tls.key
+            {{- if $b.clientTls.clientCaKey }}
+            - name: FELIX_TLS_CLIENT_CA
+              value: {{ printf "/etc/felix/client-tls/%s" $b.clientTls.clientCaKey | quote }}
+            {{- end }}
+            # A broker that lost its Secret mount must not quietly fall back
+            # to a generated certificate.
+            - name: FELIX_TLS_REQUIRE_CERT
+              value: "true"
+            {{- else }}
             # The broker's client-facing certificate is generated at start;
             # this is where clients read it from.
             - name: FELIX_TLS_CERT_EXPORT
               value: /var/lib/felix/export/broker-cert.pem
+            {{- end }}
+            {{- if and .Values.controlplane.tls.enabled .Values.controlplane.tls.caKey }}
+            - name: FELIX_CONTROLPLANE_CA
+              value: /etc/felix/controlplane-ca/ca.crt
+            {{- end }}
+            {{- if not $b.peerTls.enabled }}
+            - name: FELIX_INTERNAL_ALLOW_UNAUTHENTICATED
+              value: "true"
+            {{- end }}
             {{- if $b.peerTls.enabled }}
             - name: FELIX_INTERNAL_TLS_CERT
               value: /etc/felix/peer/tls.crt
@@ -194,6 +217,18 @@ spec:
               mountPath: /etc/felix/peer
               readOnly: true
             {{- end }}
+            {{- if $b.clientTls.enabled }}
+            # A directory mount, not subPath, so a renewed Secret reaches the
+            # files the broker re-reads.
+            - name: client-tls
+              mountPath: /etc/felix/client-tls
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.controlplane.tls.enabled .Values.controlplane.tls.caKey }}
+            - name: controlplane-ca
+              mountPath: /etc/felix/controlplane-ca
+              readOnly: true
+            {{- end }}
             {{- if $b.config }}
             - name: config
               mountPath: /etc/felix/config
@@ -220,6 +255,19 @@ spec:
               csi.cert-manager.io/duration: {{ $b.peerTls.duration }}
               csi.cert-manager.io/renew-before: {{ $b.peerTls.renewBefore }}
               csi.cert-manager.io/fs-group: "65532"
+        {{- end }}
+        {{- if $b.clientTls.enabled }}
+        - name: client-tls
+          secret:
+            secretName: {{ $b.clientTls.existingSecret }}
+        {{- end }}
+        {{- if and .Values.controlplane.tls.enabled .Values.controlplane.tls.caKey }}
+        - name: controlplane-ca
+          secret:
+            secretName: {{ .Values.controlplane.tls.existingSecret }}
+            items:
+              - key: {{ .Values.controlplane.tls.caKey }}
+                path: ca.crt
         {{- end }}
         {{- if $b.config }}
         - name: config

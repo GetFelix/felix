@@ -112,6 +112,12 @@ spec:
                   fieldPath: metadata.name
             - name: FELIX_CONTROLPLANE_BIND
               value: "0.0.0.0:{{ $apiPort }}"
+            {{- if $cp.tls.enabled }}
+            - name: FELIX_CONTROLPLANE_TLS_CERT
+              value: /etc/felix/tls/tls.crt
+            - name: FELIX_CONTROLPLANE_TLS_KEY
+              value: /etc/felix/tls/tls.key
+            {{- end }}
             - name: FELIX_CONTROLPLANE_METRICS_BIND
               value: "0.0.0.0:{{ $metricsPort }}"
             - name: FELIX_CONTROLPLANE_STORAGE_BACKEND
@@ -205,6 +211,9 @@ spec:
             httpGet:
               path: /v1/system/ready
               port: api
+              {{- if $cp.tls.enabled }}
+              scheme: HTTPS
+              {{- end }}
             periodSeconds: 3
             timeoutSeconds: 3
             failureThreshold: 2
@@ -212,6 +221,9 @@ spec:
             httpGet:
               path: /v1/system/live
               port: api
+              {{- if $cp.tls.enabled }}
+              scheme: HTTPS
+              {{- end }}
             periodSeconds: 10
             timeoutSeconds: 2
             failureThreshold: 3
@@ -226,11 +238,23 @@ spec:
             - name: raft
               mountPath: /var/lib/felix/raft
             {{- end }}
+            {{- if $cp.tls.enabled }}
+            # A directory mount, not subPath, so a renewed Secret reaches the
+            # files the control plane re-reads.
+            - name: tls
+              mountPath: /etc/felix/tls
+              readOnly: true
+            {{- end }}
       volumes:
         # The image's working directory, writable because the root
         # filesystem is not.
         - name: home
           emptyDir: {}
+        {{- if $cp.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ $cp.tls.existingSecret }}
+        {{- end }}
   {{- if $raft }}
   # The volume is what makes a restart a rejoin; a member whose volume is
   # lost rejoins empty and is rebuilt by snapshot install.

@@ -83,6 +83,15 @@
           }
         },
         "service": { "$ref": "#/definitions/service" },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "existingSecret": { "type": "string" },
+            "caKey": { "type": "string" }
+          }
+        },
         "metrics": {
           "type": "object",
           "additionalProperties": false,
@@ -163,7 +172,17 @@
             "issuerName": { "type": "string" },
             "issuerKind": { "type": "string", "enum": ["Issuer", "ClusterIssuer"] },
             "duration": { "type": "string", "minLength": 1 },
-            "renewBefore": { "type": "string", "minLength": 1 }
+            "renewBefore": { "type": "string", "minLength": 1 },
+            "allowUnauthenticated": { "type": "boolean" }
+          }
+        },
+        "clientTls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "existingSecret": { "type": "string" },
+            "clientCaKey": { "type": "string" }
           }
         },
         "clientAdvertiseAddr": { "type": "string" },

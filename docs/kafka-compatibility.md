@@ -82,8 +82,7 @@ destination.
   a namespace cannot be addressed and its streams are not listed.
 - Log compaction and Kafka retention settings. A tombstone (null value) is
   stored as an empty payload and deletes nothing.
-- SASL mechanisms other than PLAIN (no SCRAM), and a configured TLS
-  certificate: the listener uses the broker's generated self-signed one.
+- SASL mechanisms other than PLAIN (no SCRAM).
 - Tested clients: kcat 1.7.1 (librdkafka 1.8.2). The Java client is untested.
 
 Two things work but differ from Kafka: `acks=all` on a `Leader` stream waits
@@ -407,11 +406,14 @@ All of these are read by the broker. The listener is off unless
 | `FELIX_KAFKA_DEFAULT_NAMESPACE` | unset | Namespace for topic names without a dot. |
 | `FELIX_KAFKA_MAX_CONNECTIONS` | `1024` | Connections served at once. Extra ones are closed on arrival. |
 
-With TLS on, the listener uses the same self-signed certificate the QUIC
-listener does; `FELIX_TLS_CERT_EXPORT` writes it out for clients to trust. Its
-name is `localhost`. librdkafka before 2.0 does not verify hostnames by default;
-2.0 and later do, and need `ssl.endpoint.identification.algorithm=none` with
-this certificate. The broker only generates self-signed certificates today.
+With TLS on, the listener serves the same certificate the QUIC listeners do:
+`FELIX_TLS_CERT` and `FELIX_TLS_KEY` when set, with `FELIX_TLS_CLIENT_CA`
+requiring a client certificate on this listener too (librdkafka's
+`ssl.certificate.location` and `ssl.key.location`). Point `ssl.ca.location` at
+the CA that issued it. Without them the broker generates a self-signed
+certificate named `localhost`, which `FELIX_TLS_CERT_EXPORT` writes out for
+clients to trust; librdkafka 2.0 and later verify hostnames and need
+`ssl.endpoint.identification.algorithm=none` with that one.
 
 The metrics are listed on the
 [observability page](https://gabloe.github.io/felix/features/observability/):
