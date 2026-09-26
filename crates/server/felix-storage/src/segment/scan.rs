@@ -7,6 +7,7 @@
 use std::fs::File;
 use std::path::Path;
 
+use crate::io::read_at;
 use crate::log::{Offset, RecordMark, SegmentId};
 use crate::segment::cursor::SegmentCursor;
 use crate::segment::format::{
@@ -106,6 +107,7 @@ impl ScanState {
     /// error.
     fn finish_or_fail(
         self,
+        file: &File,
         err: Corruption,
         claimed_len: Option<u64>,
         file_len: u64,
@@ -119,6 +121,10 @@ impl ScanState {
             file_len,
             self.repair_checksum_tail,
         ) {
+            return Ok(self.torn(file_len, err.kind));
+        }
+        let damaged_end = self.position + claimed_len.unwrap_or(RECORD_HEADER_LEN);
+        if is_zero_filled_tail(file, self.position, damaged_end, file_len)? {
             return Ok(self.torn(file_len, err.kind));
         }
         let position = self.position;
@@ -221,7 +227,9 @@ pub fn scan_segment(
         }
         let total_len = match RecordHeader::decode(header_slice) {
             Ok(record_header) => record_header.encoded_len(),
-            Err(err) => return state.finish_or_fail(err, None, file_len, shard_label, segment_id),
+            Err(err) => {
+                return state.finish_or_fail(&file, err, None, file_len, shard_label, segment_id);
+            }
         };
 
         let record_slice = cursor.slice_at(position, total_len as usize)?;
@@ -240,6 +248,7 @@ pub fn scan_segment(
             Ok((decoded, _)) => decoded,
             Err(err) => {
                 return state.finish_or_fail(
+                    &file,
                     err,
                     Some(total_len),
                     file_len,
@@ -250,7 +259,14 @@ pub fn scan_segment(
         };
 
         if let Err(err) = check_offset_continuity(state.next_offset, decoded.header.offset) {
-            return state.finish_or_fail(err, Some(total_len), file_len, shard_label, segment_id);
+            return state.finish_or_fail(
+                &file,
+                err,
+                Some(total_len),
+                file_len,
+                shard_label,
+                segment_id,
+            );
         }
 
         state.observe(decoded.header.offset, position, total_len);
@@ -330,6 +346,60 @@ fn is_repairable_tail(
         }
         _ => false,
     }
+}
+
+/// The granularity a lost write comes back at. Filesystems allocate and drop
+/// whole blocks, and every block size is a multiple of this.
+const SECTOR_BYTES: u64 = 512;
+
+/// Whether the damage at `position` is a power-loss tail: everything from the
+/// damaged record to end of file reads as zeros, or the zeros start at a
+/// sector boundary inside the damaged record (which ends at `damaged_end`) and
+/// run to end of file.
+///
+/// After a power loss the file size can survive while the data blocks it
+/// covers do not, and those read back as zeros. Nothing after them can have
+/// been acknowledged: an fsync that covered a later record covered these
+/// bytes too. Zeros followed by anything else are not this case and stay
+/// fatal. See `docs/storage-format.md`, "What recovery may repair".
+fn is_zero_filled_tail(
+    file: &File,
+    position: u64,
+    damaged_end: u64,
+    file_len: u64,
+) -> Result<bool> {
+    let Some(zeros_from) = trailing_zeros_start(file, position, file_len)? else {
+        return Ok(false);
+    };
+    if zeros_from == position {
+        return Ok(true);
+    }
+    let boundary = zeros_from.next_multiple_of(SECTOR_BYTES);
+    Ok(boundary < damaged_end.min(file_len))
+}
+
+/// Where the run of zero bytes that ends the file begins, searching no
+/// earlier than `from`. `None` when the file does not end in a zero byte.
+fn trailing_zeros_start(file: &File, from: u64, file_len: u64) -> Result<Option<u64>> {
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut last_nonzero: Option<u64> = None;
+    let mut at = from;
+    while at < file_len {
+        let want = buf.len().min((file_len - at) as usize);
+        let read = read_at(file, &mut buf[..want], at)?;
+        if read == 0 {
+            break;
+        }
+        if let Some(i) = buf[..read].iter().rposition(|byte| *byte != 0) {
+            last_nonzero = Some(at + i as u64);
+        }
+        at += read as u64;
+    }
+    Ok(match last_nonzero {
+        None => Some(from),
+        Some(last) if last + 1 < file_len => Some(last + 1),
+        Some(_) => None,
+    })
 }
 
 #[cfg(test)]

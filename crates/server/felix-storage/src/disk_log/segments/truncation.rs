@@ -1,14 +1,17 @@
 //! Cutting a log back: dropping a suffix for replication, or discarding
 //! everything to start again at a new base.
 
+use std::sync::Arc;
+
 use super::{SealedEntry, SegmentSet};
 use crate::disk_log::now_micros;
+use crate::io::sync_dir;
 use crate::log::{Offset, SegmentId};
-use crate::segment::format::{SEGMENT_HEADER_LEN, record_len};
+use crate::segment::format::SEGMENT_HEADER_LEN;
 use crate::segment::writer::ResumeState;
 use crate::segment::{
-    ReadBudget, ScanStart, SegmentReader, SegmentWriter, SparseIndex, index_file_name,
-    read_segment_header, scan_segment, segment_file_name,
+    ScanStart, SegmentReader, SegmentWriter, SparseIndex, index_file_name, read_segment_header,
+    scan_segment, segment_file_name,
 };
 use crate::{Result, metrics_names};
 
@@ -22,6 +25,7 @@ impl SegmentSet {
         if offset >= self.tail_offset() {
             return Ok(());
         }
+        self.generation += 1;
 
         // Remove whole segments that begin at or after the cut.
         while let Some(entry) = self.sealed.last() {
@@ -44,6 +48,7 @@ impl SegmentSet {
                     // Nothing left at all: restart the log at `offset`.
                     self.replace_active(active_id + 1, offset, SEGMENT_HEADER_LEN, offset, 0)?;
                     self.remove_segment_files(active_id)?;
+                    sync_dir(&self.dir)?;
                     return Ok(());
                 }
             };
@@ -51,6 +56,10 @@ impl SegmentSet {
             self.remove_segment_files(active_id)?;
         }
 
+        // The unlinks must be durable before the surviving segment is cut
+        // short. Otherwise a crash can bring the later segments back next to a
+        // shortened predecessor, and recovery refuses the gap between them.
+        sync_dir(&self.dir)?;
         self.truncate_active_to(offset)
     }
 
@@ -61,6 +70,7 @@ impl SegmentSet {
     /// record is where the new copy begins. Unlike `truncate`, the base may
     /// move in either direction.
     pub(crate) fn reset_to(&mut self, base_offset: Offset) -> Result<()> {
+        self.generation += 1;
         while let Some(entry) = self.sealed.pop() {
             self.remove_segment_files(entry.descriptor.id)?;
         }
@@ -72,7 +82,9 @@ impl SegmentSet {
             base_offset,
             0,
         )?;
-        self.remove_segment_files(active_id)
+        self.remove_segment_files(active_id)?;
+        sync_dir(&self.dir)?;
+        Ok(())
     }
 
     /// Reopen a sealed segment as the active one so appends resume inside it.
@@ -98,11 +110,11 @@ impl SegmentSet {
             },
             self.config.index_spacing_bytes,
         )?;
-        self.active_reader = SegmentReader::open(
+        self.active_reader = Arc::new(SegmentReader::open(
             self.active.path(),
             self.active.id(),
             self.active.base_offset(),
-        )?;
+        )?);
         Ok(())
     }
 
@@ -112,32 +124,20 @@ impl SegmentSet {
             return Ok(());
         }
 
-        // Find the byte position of `offset` by seeking with the index and
-        // walking forward — the same path a read takes.
-        let mut budget = ReadBudget::unbounded();
-        let mut kept = Vec::new();
-        self.active_reader.read_from(
+        // Seek with the index and walk headers forward, reading one index
+        // interval rather than the whole segment. Offsets are contiguous
+        // within a segment, so the count kept follows from the offset.
+        let keep_bytes = self.active_reader.position_of(
             self.active.index(),
-            self.active.base_offset(),
+            offset,
             self.active.size_bytes(),
-            &mut budget,
             &self.label,
-            &mut kept,
         )?;
-        let keep_count = kept
-            .iter()
-            .take_while(|record| record.offset < offset)
-            .count();
-        let keep_bytes = SEGMENT_HEADER_LEN
-            + kept
-                .iter()
-                .take(keep_count)
-                .map(|record| record_len(record.payload.len(), &record.mark))
-                .sum::<u64>();
+        let keep_count = offset.saturating_sub(self.active.base_offset());
 
         let id = self.active.id();
         let base_offset = self.active.base_offset();
-        self.replace_active(id, base_offset, keep_bytes, offset, keep_count as u64)
+        self.replace_active(id, base_offset, keep_bytes, offset, keep_count)
     }
 
     /// Swap in an active writer over segment `id`, either reopened at
@@ -179,11 +179,11 @@ impl SegmentSet {
                 self.config.index_spacing_bytes,
             )?
         };
-        self.active_reader = SegmentReader::open(
+        self.active_reader = Arc::new(SegmentReader::open(
             self.active.path(),
             self.active.id(),
             self.active.base_offset(),
-        )?;
+        )?);
         self.bump_next_segment_id(id + 1);
         metrics::gauge!(metrics_names::SEGMENT_COUNT).set((self.sealed.len() + 1) as f64);
         Ok(())

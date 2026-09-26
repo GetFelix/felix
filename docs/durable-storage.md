@@ -429,8 +429,18 @@ Four properties:
    guess: it fails to start, naming the segment and position.
    `repair_checksum_tail` opts in to truncating it, which is defensible under
    `FsyncMode::None` and is not under `OnCommit`.
-   A **failed fsync poisons the segment writer**: no later sync or append on it
-   can report durability. Linux may drop the dirty pages a failed writeback
+   The exception is a **zero-filled tail**, which power loss leaves when the
+   file size reached disk and the data blocks did not. If everything from the
+   damaged record to end of file is zero (or the zeros start at a sector
+   boundary inside it), no later record exists that an fsync could have
+   acknowledged, so it is repaired by default. Zeros with anything after them
+   are still interior corruption. See `docs/storage-format.md`, "What recovery
+   may repair".
+   A **failed fsync poisons the log**, whichever path issued it (the group
+   commit flush, the io_uring flusher, a seal, a truncation): the durable bound
+   never moves again, and every later append, commit, flush and shutdown on that
+   log returns the error until the process restarts and recovery re-reads what
+   actually reached the disk. Linux may drop the dirty pages a failed writeback
    could not write, so the *next* fsync returns success having flushed nothing —
    "fsyncgate". Believing it would acknowledge records that are gone, which is
    the same silent loss the checksum rule above refuses to risk.

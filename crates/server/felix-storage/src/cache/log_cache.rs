@@ -13,6 +13,7 @@
 mod compaction;
 mod record;
 mod shard;
+mod write;
 
 pub use record::CacheOp;
 
@@ -25,12 +26,13 @@ use bytes::Bytes;
 use parking_lot::Mutex as SyncMutex;
 use tokio::sync::Mutex;
 
-use self::compaction::recover_interrupted_swap;
 use self::shard::{CacheShard, Index, ShardState, now_millis};
+use self::write::{FinishOnDrop, Observer, StagedWrite};
 use crate::cache::{CacheChange, CacheObserver, CacheSnapshotEntry, StorageApi};
 use crate::commit_order::CommitSequencer;
 use crate::disk_log::{DiskLog, layout};
 use crate::log::{AppendRecord, LogConfig, ShardKey};
+use crate::log_swap::recover_interrupted_swap;
 use crate::{Result, StorageError};
 
 /// A cache backed by the same log streams are.
@@ -41,7 +43,7 @@ pub struct LogCache {
     shards: SyncMutex<HashMap<CacheId, Arc<CacheShard>>>,
     /// Told about every applied write, while the shard's write lock is held —
     /// which is what makes the order it sees the shard's order.
-    observer: SyncMutex<Option<Arc<dyn CacheObserver>>>,
+    observer: Observer,
 }
 
 impl LogCache {
@@ -58,7 +60,7 @@ impl LogCache {
             root,
             config,
             shards: SyncMutex::new(HashMap::new()),
-            observer: SyncMutex::new(None),
+            observer: Arc::new(SyncMutex::new(None)),
         })
     }
 
@@ -94,7 +96,7 @@ impl LogCache {
             expires_at_millis,
         };
 
-        let (pending, log, bytes, turn) = {
+        let mut staged = {
             let mut state = shard.state.lock().await;
             shard.ensure_index(&mut state).await?;
             let payload = op.encode();
@@ -112,32 +114,34 @@ impl LogCache {
             // so a failed commit cannot strand the writers queued behind it.
             let turn = shard
                 .sequencer
-                .reserve(pending.first_offset(), pending.last_offset() + 1);
+                .reserve_owned(pending.first_offset(), pending.last_offset() + 1);
             state.sequenced_through = Some(pending.last_offset() + 1);
-            (pending, state.log.clone(), bytes, turn)
+            FinishOnDrop::new(StagedWrite {
+                shard: Arc::clone(&shard),
+                log: state.log.clone(),
+                change: CacheChange {
+                    tenant_id: tenant_id.to_string(),
+                    namespace: namespace.to_string(),
+                    cache: cache.to_string(),
+                    shard: shard_index,
+                    key: key.to_string(),
+                    value: Some(value),
+                    offset: pending.first_offset(),
+                    expires_at_millis,
+                },
+                pending,
+                turn,
+                op,
+                bytes,
+                observer: Arc::clone(&self.observer),
+            })
         };
 
-        log.commit(&pending).await?;
-        turn.wait().await;
-
+        staged.commit().await?;
         let mut state = shard.state.lock().await;
-        let offset = pending.first_offset();
-        CacheShard::apply_op(&mut state, &op, offset, bytes);
-        // Observed under the apply lock, in turn order: that is what makes
-        // the order watchers see the shard's disk order, and it fires only
-        // for a write that is already durable.
-        self.notify(CacheChange {
-            tenant_id: tenant_id.to_string(),
-            namespace: namespace.to_string(),
-            cache: cache.to_string(),
-            shard: shard_index,
-            key: key.to_string(),
-            value: Some(value),
-            offset,
-            expires_at_millis,
-        });
+        let write = staged.apply(&mut state);
         shard
-            .maybe_compact(&mut state, pending.last_offset() + 1)
+            .maybe_compact(&mut state, write.pending.last_offset() + 1)
             .await?;
         Ok(())
     }
@@ -184,7 +188,7 @@ impl LogCache {
             key: key.to_string(),
         };
 
-        let (previous, pending, log, bytes, turn) = {
+        let (previous, mut staged) = {
             let mut state = shard.state.lock().await;
             shard.ensure_index(&mut state).await?;
             let Some(entry) = state.index.entries.get(key).copied() else {
@@ -207,27 +211,33 @@ impl LogCache {
                 .await?;
             let turn = shard
                 .sequencer
-                .reserve(pending.first_offset(), pending.last_offset() + 1);
+                .reserve_owned(pending.first_offset(), pending.last_offset() + 1);
             state.sequenced_through = Some(pending.last_offset() + 1);
-            (previous, pending, state.log.clone(), bytes, turn)
+            let staged = FinishOnDrop::new(StagedWrite {
+                shard: Arc::clone(&shard),
+                log: state.log.clone(),
+                change: CacheChange {
+                    tenant_id: tenant_id.to_string(),
+                    namespace: namespace.to_string(),
+                    cache: cache.to_string(),
+                    shard: shard_index,
+                    key: key.to_string(),
+                    value: None,
+                    offset: pending.first_offset(),
+                    expires_at_millis: 0,
+                },
+                pending,
+                turn,
+                op,
+                bytes,
+                observer: Arc::clone(&self.observer),
+            });
+            (previous, staged)
         };
 
-        log.commit(&pending).await?;
-        turn.wait().await;
-
+        staged.commit().await?;
         let mut state = shard.state.lock().await;
-        let offset = pending.first_offset();
-        CacheShard::apply_op(&mut state, &op, offset, bytes);
-        self.notify(CacheChange {
-            tenant_id: tenant_id.to_string(),
-            namespace: namespace.to_string(),
-            cache: cache.to_string(),
-            shard: shard_index,
-            key: key.to_string(),
-            value: None,
-            offset,
-            expires_at_millis: 0,
-        });
+        staged.apply(&mut state);
         Ok(previous)
     }
 
@@ -398,17 +408,10 @@ impl LogCache {
             // Aligned to the log's tail by the first `ensure_index`; until
             // then nothing can reserve, because every writer passes through
             // `ensure_index` first.
-            sequencer: CommitSequencer::new(0),
+            sequencer: Arc::new(CommitSequencer::new(0)),
         });
         shards.insert(id, Arc::clone(&open));
         Ok(open)
-    }
-
-    fn notify(&self, change: CacheChange) {
-        let observer = self.observer.lock().clone();
-        if let Some(observer) = observer {
-            observer.cache_changed(change);
-        }
     }
 }
 

@@ -175,6 +175,17 @@ impl SegmentWriter {
         self.index.index()
     }
 
+    #[cfg(test)]
+    pub(crate) fn fail_next_sync(&mut self) {
+        self.fail_next_sync = true;
+    }
+
+    /// True once a failed sync or an unrecoverable write has left this
+    /// segment's on-disk state unknown.
+    pub(crate) fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
     /// True when every byte written so far is on stable storage.
     pub fn is_synced(&self) -> bool {
         self.synced_bytes >= self.size_bytes

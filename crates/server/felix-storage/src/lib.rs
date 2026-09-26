@@ -27,7 +27,7 @@
 //!   implementation), [`segment`] (one segment file and its index), and `io`
 //!   (positioned reads, preallocation, flushes).
 //! - Projections of a log: [`cache`] ([`StorageApi`] and its two stores) and
-//!   [`counter_log`].
+//!   [`counter_log`], which both compact through `log_swap`.
 //! - Ordering and reporting: `commit_order` ([`CommitSequencer`]),
 //!   [`metrics_names`], and the errors every call returns ([`StorageError`],
 //!   [`Corruption`]).
@@ -40,6 +40,7 @@ pub mod disk_log;
 mod error;
 pub(crate) mod io;
 pub mod log;
+mod log_swap;
 pub mod metrics_names;
 pub mod segment;
 pub mod tiered;

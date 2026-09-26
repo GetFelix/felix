@@ -225,7 +225,7 @@ impl DiskLog {
             return Ok(());
         }
         self.inner.ensure_durable(offset).await?;
-        self.inner.check_roll_state()
+        self.inner.check_healthy()
     }
 
     /// Wait until a [`PendingAppend`] satisfies the configured fsync policy.
@@ -237,7 +237,7 @@ impl DiskLog {
         // `ensure_durable` returns immediately when the target is already
         // covered, which skips the check inside `flush`. A rollover that failed
         // since then still has to be reported rather than acknowledged.
-        self.inner.check_roll_state()
+        self.inner.check_healthy()
     }
 
     /// Force a flush regardless of the configured policy.
@@ -246,7 +246,7 @@ impl DiskLog {
             .durability
             .force_flush(|| Arc::clone(&self.inner).flush())
             .await?;
-        self.inner.check_roll_state()
+        self.inner.check_healthy()
     }
 
     /// Run one retention pass now, instead of waiting for the timer.
@@ -272,7 +272,10 @@ impl DiskLog {
         tokio::task::spawn_blocking(move || {
             let mut segments = operation.segments.write();
             segments.reset_to(base_offset)?;
-            segments.active_mut().sync()?;
+            if let Err(err) = segments.active_mut().sync() {
+                operation.poison_after_writer_failure(&segments);
+                return Err(err);
+            }
             operation.durability.reset_after_truncate(base_offset);
             let mut epochs = operation.epochs.lock();
             *epochs = epochs::EpochMap::default();
@@ -309,7 +312,7 @@ impl DiskLog {
             // `sync` below is what reports the problem.
             let _ = roll.await;
         }
-        self.inner.check_roll_state()?;
+        self.inner.check_healthy()?;
         self.sync().await
     }
 
@@ -363,9 +366,13 @@ impl DiskLog {
             producers: Mutex::new(producer_state),
             dir: epochs_dir,
             roll_state: AtomicU8::new(RollState::Idle as u8),
-            roll_failure: Mutex::new(None),
+            failure: Mutex::new(None),
             #[cfg(test)]
             fail_seal: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            fail_next_flush: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            pause_next_read: Mutex::new(None),
             #[cfg(test)]
             slow_inline_roll_millis: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
@@ -390,6 +397,11 @@ impl DiskLog {
                         // of a clean file is still a syscall and a flush-thread
                         // round trip.
                         Some(inner) if inner.fully_durable() => Ok(inner.durability.durable_upto()),
+                        // Already logged once when it was poisoned; appends
+                        // and commits are what report it from here on.
+                        Some(inner) if inner.check_healthy().is_err() => {
+                            Ok(inner.durability.durable_upto())
+                        }
                         Some(inner) => inner.durability.force_flush(|| inner.clone().flush()).await,
                     }
                 }
@@ -433,11 +445,11 @@ impl AppendOnlyLog for DiskLog {
             // on the periodic flush (or the operating system) from there.
             if !inner.durability.acknowledges_before_sync() {
                 inner.ensure_durable(pending.durable_target).await?;
-                // Checked again after the wait: `check_roll_state` at the top of
+                // Checked again after the wait: `check_healthy` at the top of
                 // `write_batch` only covers rollovers that had already failed
                 // when this append started, and this one may have been in flight
                 // across the failure.
-                inner.check_roll_state()?;
+                inner.check_healthy()?;
             }
 
             metrics::histogram!(metrics_names::APPEND_DURATION_SECONDS)
@@ -451,19 +463,36 @@ impl AppendOnlyLog for DiskLog {
         Box::pin(async move {
             let started = std::time::Instant::now();
             let records = tokio::task::spawn_blocking(move || {
-                let segments = inner.segments.read();
-                let oldest = segments.base_offset();
-                if range.start < oldest {
-                    // Not an empty range: these offsets existed and are gone.
-                    return Err(StorageError::Trimmed {
-                        requested: range.start,
-                        oldest,
-                    });
+                loop {
+                    // Planned under the lock, read without it: a cold `pread`
+                    // must not hold up the appends queued on `segments`.
+                    let plan = {
+                        let segments = inner.segments.read();
+                        let oldest = segments.base_offset();
+                        if range.start < oldest {
+                            // Not an empty range: these offsets existed and
+                            // are gone.
+                            return Err(StorageError::Trimmed {
+                                requested: range.start,
+                                oldest,
+                            });
+                        }
+                        segments.read_plan(range.start)
+                    };
+                    #[cfg(test)]
+                    if let Some(pause) = inner.pause_next_read.lock().take() {
+                        pause.wait();
+                        pause.wait();
+                    }
+                    let mut budget =
+                        ReadBudget::new(range.max_bytes, inner.config.max_records_per_read);
+                    let read = plan.execute(range.start, &mut budget, &inner.label);
+                    // A truncation in between may have put other records at
+                    // the positions just read. Rare, so read again.
+                    if inner.segments.read().generation() == plan.generation {
+                        return read;
+                    }
                 }
-                segments.read(
-                    range.start,
-                    ReadBudget::new(range.max_bytes, inner.config.max_records_per_read),
-                )
             })
             .await
             .map_err(|err| StorageError::Io(std::io::Error::other(err)))??;
@@ -507,7 +536,10 @@ impl AppendOnlyLog for DiskLog {
             tokio::task::spawn_blocking(move || {
                 let mut segments = operation.segments.write();
                 segments.truncate(offset)?;
-                segments.active_mut().sync()?;
+                if let Err(err) = segments.active_mut().sync() {
+                    operation.poison_after_writer_failure(&segments);
+                    return Err(err);
+                }
                 let tail = segments.tail_offset();
                 operation.durability.reset_after_truncate(tail);
                 // The history cannot outlive the records it describes, or it
@@ -528,7 +560,13 @@ impl AppendOnlyLog for DiskLog {
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 let mut segments = inner.segments.write();
-                let (descriptor, checksum) = segments.seal_active()?;
+                let (descriptor, checksum) = match segments.seal_active() {
+                    Ok(sealed) => sealed,
+                    Err(err) => {
+                        inner.poison_after_writer_failure(&segments);
+                        return Err(err);
+                    }
+                };
                 // Start a fresh segment so the sealed one is immutable from here
                 // on, which is what makes its checksum meaningful.
                 if segments.active().record_count() > 0 {
@@ -567,9 +605,9 @@ impl PendingAppend {
 struct LogInner {
     label: String,
     config: LogConfig,
-    /// Guards the segment set. A read lock serves range reads concurrently; a
-    /// write lock serialises appends, which must assign offsets in order
-    /// anyway.
+    /// Guards the segment set. Held only for pointer work: a range read plans
+    /// under the read lock and does its I/O after releasing it, and a write
+    /// lock serialises appends, which must assign offsets in order anyway.
     segments: RwLock<SegmentSet>,
     /// Held shared by appends, exclusively by an inline rollover.
     ///
@@ -620,7 +658,7 @@ struct LogInner {
     pending_seal: Mutex<Option<Arc<std::fs::File>>>,
     /// Where this log's device flushes run.
     flusher: crate::io::flusher::Flusher,
-    /// Why the log stopped accepting work, once a rollover has failed.
+    /// Why the log stopped accepting work, once a flush or rollover has failed.
     ///
     /// Separate from `roll_state` because the two are read for different
     /// reasons and, critically, are written in a specific order: this is set
@@ -628,10 +666,17 @@ struct LogInner {
     /// a durability wait can see a cleared `pending_seal` and a state that is
     /// not yet `Failed`. `roll_state` remains the scheduler's view; this is the
     /// durability view.
-    roll_failure: Mutex<Option<String>>,
+    failure: Mutex<Option<String>>,
     /// Forces the next seal to fail, so the failure path can be tested.
     #[cfg(test)]
     fail_seal: std::sync::atomic::AtomicBool,
+    /// Makes the next flush report a failed fsync after the real one ran.
+    #[cfg(test)]
+    fail_next_flush: std::sync::atomic::AtomicBool,
+    /// Stops the next read between planning and reading: it waits on the
+    /// barrier once to say it has planned, and again to go on.
+    #[cfg(test)]
+    pause_next_read: Mutex<Option<Arc<std::sync::Barrier>>>,
     /// Milliseconds an inline rollover holds the segment lock, for tests.
     #[cfg(test)]
     slow_inline_roll_millis: std::sync::atomic::AtomicU64,

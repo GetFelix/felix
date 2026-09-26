@@ -19,6 +19,31 @@ fn reader_returns_records_from_the_requested_offset() {
     assert_eq!(out[0].payload, Bytes::from_static(b"payload-4"));
 }
 
+/// Every record's position agrees with a full scan, and an offset past the
+/// last record lands on the end of the valid bytes.
+#[test]
+fn position_of_finds_each_record_boundary() {
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("a.log");
+    let bytes = write_segment(&path, 5, 10);
+    let outcome = scan_segment(&path, 0, "t/ns/s/0", 64, ScanStart::Full, true).expect("scan");
+    let reader = SegmentReader::open(&path, 0, 5).expect("open");
+
+    let mut expected = SEGMENT_HEADER_LEN;
+    for offset in 5..15 {
+        let found = reader
+            .position_of(&outcome.index, offset, outcome.valid_bytes, "t/ns/s/0")
+            .expect("position");
+        assert_eq!(found, expected, "offset {offset}");
+        let header = RecordHeader::decode(&bytes[expected as usize..]).expect("header");
+        expected += header.encoded_len();
+    }
+    let past = reader
+        .position_of(&outcome.index, 99, outcome.valid_bytes, "t/ns/s/0")
+        .expect("position");
+    assert_eq!(past, outcome.valid_bytes);
+}
+
 #[test]
 fn reader_respects_the_byte_budget_but_always_makes_progress() {
     let dir = tempdir().expect("dir");
