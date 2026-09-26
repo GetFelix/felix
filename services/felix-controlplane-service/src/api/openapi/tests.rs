@@ -112,6 +112,10 @@ fn every_placement_route_is_described() {
             "delete",
         ),
         ("/v1/placement/plan", "get"),
+        (
+            "/v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}",
+            "post",
+        ),
         ("/v1/placement/pause", "post"),
         ("/v1/placement/resume", "post"),
     ] {

@@ -52,7 +52,8 @@ pub use moves::{
     MovePolicy,
 };
 pub use operator::{
-    Catalog, OperatorError, OperatorStep, Refused, cancel_move, run_operator, start_move,
+    Catalog, OperatorError, OperatorStep, Refused, abandon_log, cancel_move, run_operator,
+    start_move,
 };
 pub use plan::{Plan, ShardPlan, assignment_for, plan, plan_with};
 pub use reconciler::{

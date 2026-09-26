@@ -125,8 +125,20 @@ were never acknowledged, and an idempotent producer sends them again.
 > `a_leader_stream_follower_missing_the_newest_record_cannot_lead`.
 
 > `the_promoted_leader_is_one_of_the_replicas` and
-> `an_unreplicated_shard_does_not_fail_over_to_an_empty_broker` — a shard with
-> no qualifying replica is left unavailable rather than served empty.
+> `a_shard_with_no_caught_up_replica_does_not_fail_over_to_an_empty_broker` — a
+> shard with no qualifying replica is left unavailable rather than served empty.
+
+**A durable shard with no replicas waits for its broker.** With
+`replication_factor: 1`, the default, the leader holds the only copy, so there
+is nothing to promote. The shard stays assigned to the lost broker and
+unavailable until that broker comes back, when it serves the shard again with
+every record it held. Only an operator can give the records up:
+`POST /v1/placement/abandon/...` (`felix-controlplane admin abandon`) places
+the shard afresh on another broker, which starts from an empty log. An
+in-memory stream has no log to wait for and is placed again straight away.
+
+> `an_unreplicated_durable_shard_waits_for_its_owner` and
+> `an_operator_can_abandon_the_log_of_a_shard_whose_owner_is_gone`.
 > `failover_completes_within_the_configured_bound`.
 > `records_survive_repeated_failovers` — two failovers in a row, not just one.
 
@@ -183,8 +195,9 @@ what a client sees.
 > `a_producer_keeps_its_sequence_across_a_planned_move`,
 > `a_durable_publish_claimed_after_the_fence_is_refused`.
 
-Stopping a broker is not a move: the shards it leads fail over. Drain it
-first (`POST /v1/nodes/{id}/drain`) to hand them off.
+Stopping a broker is not a move: the shards it leads fail over, and the ones
+it holds the only copy of wait for it to return. Drain it first
+(`POST /v1/nodes/{id}/drain`) to hand them off.
 
 ## Routing
 

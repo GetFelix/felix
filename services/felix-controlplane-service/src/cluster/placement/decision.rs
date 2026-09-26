@@ -49,6 +49,9 @@ pub enum MoveStep {
     /// serves again, at a new generation. `successor` is the destination
     /// dropped, if the move still had one.
     Retake { successor: Option<String> },
+    /// An operator gave up the log of a shard whose only copies are out of
+    /// reach: `to` leads it afresh, and whatever `from` held is lost.
+    Discard { from: String, to: String },
 }
 
 impl MoveStep {
@@ -63,6 +66,7 @@ impl MoveStep {
             Self::Seat { .. } => "seat",
             Self::Cancel { .. } => "cancel",
             Self::Retake { .. } => "retake",
+            Self::Discard { .. } => "discard",
         }
     }
 }
@@ -121,8 +125,15 @@ pub enum Unplaceable {
     /// the records sat on replicas that were not chosen — the failover would
     /// *be* the data loss, and nothing downstream would report it as one. This
     /// is visible, and it resolves on its own when a replica catches up or the
-    /// old leader returns.
+    /// old leader returns, or when an operator abandons the log.
     NoCaughtUpReplica,
+    /// The shard has no replicas and its leader, which holds the only copy of
+    /// the log, is not serving.
+    ///
+    /// Unavailable for the same reason as `NoCaughtUpReplica`. It resolves
+    /// when `leader` returns, or when an operator abandons the log and has
+    /// the shard placed afresh.
+    OwnerUnavailable { leader: String },
     /// The stream belongs to `region`, and no live node is in it or in a
     /// region it has a bridge to. Not placed elsewhere: that is exactly the
     /// copy the region policy exists to refuse.
@@ -139,6 +150,11 @@ impl std::fmt::Display for Unplaceable {
             Self::NoCaughtUpReplica => write!(
                 f,
                 "the leader is gone and no replica holding this shard's log can take over"
+            ),
+            Self::OwnerUnavailable { leader } => write!(
+                f,
+                "the only copy of this shard's log is on {leader}, which is not serving; \
+                 waiting for it to return"
             ),
             Self::NoNodeInRegion { region } => write!(
                 f,

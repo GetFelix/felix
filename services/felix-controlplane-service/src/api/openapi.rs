@@ -91,6 +91,7 @@ use crate::model::{
         shard_moves::start_shard_move,
         shard_moves::cancel_shard_move,
         shard_moves::placement_plan,
+        shard_moves::abandon_shard_log,
         shard_moves::pause_placement,
         shard_moves::resume_placement
     ),

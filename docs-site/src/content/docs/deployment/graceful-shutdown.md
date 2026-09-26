@@ -120,7 +120,8 @@ drain's leaderships are moved
 before its follower copies are replaced, so those copies do not hold the slots
 the leaders need. A shard with no follower has its whole log copied first;
 raise the timeout if brokers lead large unreplicated shards, or accept that
-those fail over.
+those are unavailable until the broker is back: a durable shard with no
+follower is never handed to a broker that does not hold its log.
 
 The drain does not outlive the process. A broker that starts again registers
 as live, and placement gives it back its share of shards as it would any

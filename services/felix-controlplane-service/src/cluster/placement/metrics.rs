@@ -108,7 +108,8 @@ impl MoveClock {
             MoveStep::Abandon { .. }
             | MoveStep::TimedOut { .. }
             | MoveStep::Cancel { .. }
-            | MoveStep::Retake { .. } => {
+            | MoveStep::Retake { .. }
+            | MoveStep::Discard { .. } => {
                 self.moves.remove(key);
                 None
             }

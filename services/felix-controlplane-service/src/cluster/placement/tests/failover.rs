@@ -154,13 +154,58 @@ fn the_shard_is_placed_as_soon_as_a_replica_is_caught_up() {
     assert_eq!(leader, "broker-b");
 }
 
-/// **A stream that never asked for replication is untouched.** It has no
-/// replicas, so there was never a copy to prefer, and a fresh placement stays
-/// the only thing available — refusing there would turn a recoverable single-copy
-/// outage into a permanent one.
+/// **An unreplicated durable shard waits for its owner.** The owner holds the
+/// only copy of the log, so placing the shard elsewhere would serve it empty
+/// at a new generation. It stays unplaced until the owner returns or an
+/// operator abandons the log (`abandon`).
 #[test]
-fn an_unreplicated_shard_is_still_placed_after_its_node_is_lost() {
+fn an_unreplicated_durable_shard_waits_for_its_owner() {
     let streams = vec![replicated_stream("orders", 1, 1)];
+    let existing = vec![assigned("orders", "broker-a", &[])];
+    for lifecycle in [NodeLifecycle::Down, NodeLifecycle::Left] {
+        let nodes = vec![
+            node("broker-a", lifecycle, None),
+            node("broker-b", NodeLifecycle::Live, None),
+        ];
+
+        let plan = plan(&streams, &[], &nodes, &existing, &NothingCaughtUp);
+
+        assert_eq!(
+            plan.to_place().count(),
+            0,
+            "an unreplicated shard was placed on a node that does not hold its log ({lifecycle:?})",
+        );
+        let (_, why) = plan.unplaceable().next().expect("says why");
+        assert_eq!(
+            why,
+            &Unplaceable::OwnerUnavailable {
+                leader: "broker-a".to_string()
+            }
+        );
+    }
+}
+
+/// The owner coming back is what ends the wait: it keeps the shard at the
+/// same generation, with every record it held.
+#[test]
+fn a_returning_owner_keeps_its_unreplicated_shard() {
+    let streams = vec![replicated_stream("orders", 1, 1)];
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Live, None),
+    ];
+    let existing = vec![assigned("orders", "broker-a", &[])];
+
+    let plan = plan(&streams, &[], &nodes, &existing, &NothingCaughtUp);
+
+    assert_eq!(plan.kept(), 1);
+}
+
+/// A shard held only in memory has no log to lose, so it is placed again
+/// straight away.
+#[test]
+fn an_unreplicated_ephemeral_shard_is_placed_after_its_node_is_lost() {
+    let streams = vec![ephemeral_stream("orders", 1)];
     let nodes = vec![node("broker-b", NodeLifecycle::Live, None)];
     let existing = vec![assigned("orders", "broker-a", &[])];
 
@@ -169,7 +214,7 @@ fn an_unreplicated_shard_is_still_placed_after_its_node_is_lost() {
     let (_, leader, _) = plan
         .to_place()
         .next()
-        .expect("an unreplicated shard should still be placed");
+        .expect("an ephemeral shard should still be placed");
     assert_eq!(leader, "broker-b");
 }
 

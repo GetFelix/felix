@@ -409,7 +409,7 @@ and `semantics.md` describe.
 | `BrokerError` with `not_found` | This broker does not know it *yet*, or at all | Retried for you for 5 s |
 | `BrokerError` with `quorum_timeout` (`outcome_unknown`) | `Quorum` could not reach a majority in time | Unknown, not failed. Resend only if duplicates are acceptable, or use an idempotent producer |
 | `BrokerError` with `shard_unavailable` | The shard is between owners, or its owner is not ready | Retried for you; a cached owner is dropped at once |
-| `no eligible leader` / owner unavailable | No replica holds the log, so the shard is unavailable rather than served empty | Wait; this resolves or needs an operator |
+| `no eligible leader` / owner unavailable | No replica holds the log, so the shard is unavailable rather than served empty | Wait for the broker to return; only an operator can abandon the log |
 | `shard is owned by …` (`NotLeaderError`) | You used `Client`, not `ClusterClient` | Follow it, or use `ClusterClient::subscribe` |
 | `gave up after … attempts` | Every endpoint failed | The cluster is unreachable, not merely rebalancing |
 

@@ -179,10 +179,11 @@ fn a_valid_assignment_is_kept_even_if_the_hash_disagrees() {
     assert_eq!(plan.moves().count(), 0, "no reshuffling");
 }
 
-/// Losing a node must move that node's shards and nothing else.
+/// Losing a node must move that node's shards and nothing else. Ephemeral, so
+/// they are placed again rather than waiting for the node.
 #[test]
 fn losing_a_node_moves_only_its_shards() {
-    let streams = vec![stream("orders", 30)];
+    let streams = vec![ephemeral_stream("orders", 30)];
     let all = live(&["broker-a", "broker-b", "broker-c"]);
 
     let initial = plan(&streams, &[], &all, &[], &NothingCaughtUp);
@@ -231,11 +232,12 @@ fn only_live_nodes_are_eligible() {
     }
 }
 
-/// An assignment on a node that is gone is re-placed, not kept. A draining
-/// node is not gone -- its shards are moved, which `moves` covers.
+/// An assignment of an ephemeral stream on a node that is gone is re-placed,
+/// not kept. A draining node is not gone -- its shards are moved, which
+/// `moves` covers. A durable one waits for the node; see `failover`.
 #[test]
 fn an_assignment_on_an_ineligible_node_is_replaced() {
-    let streams = vec![stream("orders", 2)];
+    let streams = vec![ephemeral_stream("orders", 2)];
     let nodes = vec![
         node("broker-a", NodeLifecycle::Down, None),
         node("broker-b", NodeLifecycle::Live, None),

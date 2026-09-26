@@ -363,7 +363,8 @@ pub struct ShardMoveRequest {
 /// The assignment an operator's request wrote, and which step it was.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ShardMoveResponse {
-    /// `stage` or `fence` for a start; `cancel` or `retake` for a cancel.
+    /// `stage` or `fence` for a start; `cancel` or `retake` for a cancel;
+    /// `discard` for an abandoned log.
     pub step: String,
     pub assignment: crate::model::ShardAssignment,
 }

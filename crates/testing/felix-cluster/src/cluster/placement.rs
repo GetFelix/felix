@@ -230,6 +230,21 @@ impl Cluster {
         step_of(response)
     }
 
+    /// Give up the log of shard `shard` of `stream` through the operator API,
+    /// so placement puts it on another broker. Returns the step written
+    /// (`discard`). Refused unless the shard is stranded: its only copies are
+    /// on brokers that are not serving.
+    pub async fn abandon_log(&self, stream: &str, shard: u32) -> Result<String> {
+        let url = format!(
+            "{}/v1/placement/abandon/{}/{}/{stream}/{shard}",
+            self.control_plane_url(),
+            self.tenant_id,
+            self.namespace,
+        );
+        let response = self.operator_call(self.http.post(&url)).await?;
+        step_of(response)
+    }
+
     /// The moves in progress, as `GET /v1/shard-moves` answers.
     pub async fn shard_moves(&self) -> Result<serde_json::Value> {
         let url = format!("{}/v1/shard-moves", self.control_plane_url());
