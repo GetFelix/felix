@@ -99,6 +99,20 @@ impl std::fmt::Display for SubscribeCursorError {
     }
 }
 
+/// A subscription's event stream broke before the broker ended it.
+///
+/// The connection dropped, timed out or was reset. A clean end from the
+/// broker is `Ok(None)` instead, so a consumer loop that stops on `None` does
+/// not mistake a dead broker for a finished stream. On a durable stream,
+/// resubscribe from the last delivered offset plus one;
+/// [`crate::ClusterSubscription`] does that itself.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("subscription connection lost: {reason}")]
+pub struct SubscriptionLost {
+    /// What the transport reported.
+    pub reason: String,
+}
+
 /// The broker refused a request and sent a typed code with it.
 ///
 /// Only a broker that advertised `FEATURE_ERROR_CODES` sends one; from any

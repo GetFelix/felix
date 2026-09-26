@@ -228,6 +228,117 @@ async fn subscription_stream_close_returns_none() -> Result<()> {
     Ok(())
 }
 
+/// A broker that goes away mid-subscription is not a stream that ended: a
+/// `while let Some(event) = sub.next_event().await?` loop has to see an error.
+#[tokio::test]
+#[serial_test::serial]
+async fn subscription_connection_loss_is_an_error_not_an_end() -> Result<()> {
+    let _env_guard = set_client_env();
+
+    let (server_config, cert) = build_server_config()?;
+    let server = QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?;
+    let addr = server.local_addr()?;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        async fn handle_connection(connection: felix_transport::QuicConnection) -> Result<()> {
+            let mut frame_scratch = BytesMut::with_capacity(64 * 1024);
+            let Ok((mut send, mut recv)) = connection.accept_bi().await else {
+                return Ok(());
+            };
+            let _ = read_message(&mut recv, &mut frame_scratch).await?;
+            write_message(&mut send, Message::Ok).await?;
+            loop {
+                let next = read_message(&mut recv, &mut frame_scratch).await?;
+                match next {
+                    Some(Message::Subscribe {
+                        subscription_id, ..
+                    }) => {
+                        let sub_id = subscription_id.unwrap_or(1);
+                        write_message(
+                            &mut send,
+                            Message::Subscribed {
+                                subscription_id: sub_id,
+                                start_offset: None,
+                                live_offset: None,
+                            },
+                        )
+                        .await?;
+                        let mut uni = connection.open_uni().await?;
+                        write_message(
+                            &mut uni,
+                            Message::EventStreamHello {
+                                subscription_id: sub_id,
+                            },
+                        )
+                        .await?;
+                        // Let the subscribe complete, then die rather than end
+                        // the stream.
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        connection.close(0u32.into(), b"gone");
+                        break;
+                    }
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+            Ok(())
+        }
+
+        let mut tasks = Vec::new();
+        let accept_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= accept_deadline {
+                break;
+            }
+            let remaining = accept_deadline.saturating_duration_since(now);
+            let result = timeout(remaining, server.accept()).await;
+            let Ok(Ok(connection)) = result else {
+                break;
+            };
+            tasks.push(tokio::spawn(handle_connection(connection)));
+        }
+        for task in tasks {
+            drop(task);
+        }
+        let _ = shutdown_rx.await;
+        Ok::<(), anyhow::Error>(())
+    });
+
+    let client = Client::connect_with_transport(
+        addr,
+        "localhost",
+        build_client_config_with_overrides(cert, 1)?,
+        TransportConfig::default(),
+    )
+    .await?;
+    let mut subscription = client.subscribe("t1", "default", "updates").await?;
+    let err = match timeout(Duration::from_secs(1), subscription.next_event()).await? {
+        Ok(event) => panic!(
+            "a dropped connection read as {}",
+            if event.is_some() {
+                "an event"
+            } else {
+                "a clean end"
+            }
+        ),
+        Err(err) => err,
+    };
+    assert!(
+        err.downcast_ref::<crate::SubscriptionLost>().is_some(),
+        "expected SubscriptionLost, got {err:#}"
+    );
+
+    let _ = shutdown_tx.send(());
+    server_task.abort();
+    Ok(())
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn subscription_empty_event_batch_returns_none() -> Result<()> {

@@ -319,3 +319,94 @@ async fn a_forbidden_publish_fails_fast_instead_of_retrying() {
 
     cluster.shutdown().await;
 }
+
+/// The next record that is not the harness's own probe.
+async fn next_record(subscription: &mut felix_client::ClusterSubscription) -> felix_client::Event {
+    let read = async {
+        loop {
+            let event = subscription
+                .next_event()
+                .await
+                .expect("the subscription should carry on")
+                .expect("the subscription ended");
+            if event.payload.as_ref() != b"harness-probe" {
+                return event;
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(30), read)
+        .await
+        .expect("no record within the timeout")
+}
+
+/// **A subscription outlives the broker it was reading from.**
+///
+/// The leader is killed under a `ClusterClient` subscription. The loss is not
+/// a clean end: the subscription resubscribes on the promoted leader from the
+/// offset after the last one it delivered, so a record published while it was
+/// down arrives, and the one delivered before is not repeated.
+#[serial]
+#[tokio::test]
+async fn a_subscription_resumes_after_its_broker_is_killed() {
+    let mut cluster = Cluster::start(config()).await.expect("start cluster");
+    let leader = cluster
+        .wait_for_replication(STREAM, Duration::from_secs(20))
+        .await
+        .expect("the leader should ship and report");
+    // The leader first, so the subscription reads from the broker that dies.
+    let leader_addr = cluster.node(&leader).expect("leader").client_addr;
+    let mut seeds = cluster.broker_addrs();
+    seeds.retain(|addr| *addr != leader_addr);
+    seeds.insert(0, leader_addr);
+    let client = std::sync::Arc::new(
+        felix_cluster::client::connect_cluster(&seeds, &cluster.tenant_id, &cluster.client_token)
+            .await
+            .expect("connect"),
+    );
+    let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
+    let mut subscription = client
+        .subscribe(&tenant, &namespace, STREAM)
+        .await
+        .expect("subscribe");
+
+    client
+        .publish_at_least_once(
+            &tenant,
+            &namespace,
+            STREAM,
+            b"before".to_vec(),
+            AckMode::PerMessage,
+        )
+        .await
+        .expect("publish before the failure");
+    assert_eq!(
+        next_record(&mut subscription).await.payload.as_ref(),
+        b"before"
+    );
+
+    cluster.kill_node(&leader).expect("kill the leader");
+    felix_cluster::wait::until(Duration::from_secs(30), "a new leader", || async {
+        cluster.place_shards().await;
+        matches!(cluster.owner(STREAM).await, Ok(owner) if owner != leader)
+    })
+    .await
+    .expect("a replica should be promoted");
+    client
+        .publish_at_least_once(
+            &tenant,
+            &namespace,
+            STREAM,
+            b"after".to_vec(),
+            AckMode::PerMessage,
+        )
+        .await
+        .expect("publish after the failover");
+
+    assert_eq!(
+        next_record(&mut subscription).await.payload.as_ref(),
+        b"after"
+    );
+    assert_eq!(subscription.reconnects(), 1);
+
+    cluster.shutdown().await;
+}

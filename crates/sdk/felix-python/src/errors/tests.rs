@@ -84,3 +84,12 @@ fn a_code_is_found_under_added_context() {
     assert_eq!(classified.code.as_deref(), Some("not_leader"));
     assert_eq!(classified.retry, Some("redirect"));
 }
+
+#[test]
+fn a_lost_subscription_is_a_connection_error() {
+    let err = anyhow::Error::new(felix_client::SubscriptionLost {
+        reason: "reset by peer".to_string(),
+    })
+    .context("resubscribe to shard 0 of orders");
+    assert_eq!(classify(&err).kind, Kind::Connection);
+}

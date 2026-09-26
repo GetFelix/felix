@@ -20,6 +20,7 @@ use felix_wire::StartPosition;
 use tokio::time::Instant;
 
 use super::{Attempt, ClusterClient, Next, next_step};
+use crate::SubscriptionLost;
 use crate::client::Client;
 use crate::subscribe::{Event, ShardMoved, Subscription};
 
@@ -39,6 +40,13 @@ const FOLLOW_DEADLINE: Duration = Duration::from_secs(30);
 /// nothing is skipped that the subscriber's own queue did not drop. An
 /// in-memory stream has no offsets to resume from, so it resumes at the tail,
 /// as a resubscribe would.
+///
+/// A lost connection is followed the same way when there is an offset to
+/// resume from: the last one delivered plus one, or where the subscription
+/// started if it delivered nothing. Without one (an in-memory stream, or a
+/// broker that sends no offsets) resuming would skip whatever was published
+/// meanwhile without saying so, so the [`crate::SubscriptionLost`] error is
+/// returned instead.
 pub struct ClusterSubscription {
     cluster: Arc<ClusterClient>,
     tenant_id: String,
@@ -51,6 +59,9 @@ pub struct ClusterSubscription {
     /// The highest offset handed out, so a move resumes after it.
     last_offset: Option<u64>,
     moves: u64,
+    reconnects: u64,
+    /// A loss that could not be resumed from yet, retried on the next call.
+    lost: Option<anyhow::Error>,
 }
 
 impl ClusterSubscription {
@@ -73,6 +84,8 @@ impl ClusterSubscription {
             subscription,
             last_offset: None,
             moves: 0,
+            reconnects: 0,
+            lost: None,
         }
     }
 
@@ -98,15 +111,38 @@ impl ClusterSubscription {
         self.moves
     }
 
-    /// The next event, or `None` once the event stream has closed for a reason
-    /// other than the shard moving.
+    /// The next event, or `None` once the broker has closed the event stream
+    /// for a reason other than the shard moving.
     ///
-    /// Following a move happens inside this call. If the new owner cannot be
-    /// subscribed to within the client's reconnect deadline, the error is
-    /// returned; calling again retries.
+    /// Following a move or a lost connection happens inside this call. If no
+    /// broker can be subscribed to within the client's reconnect deadline, the
+    /// error is returned; calling again retries.
     pub async fn next_event(&mut self) -> Result<Option<Event>> {
         loop {
-            if let Some(event) = self.subscription.next_event().await? {
+            let next = match self.lost.take() {
+                Some(lost) => Err(lost),
+                None => self.subscription.next_event().await,
+            };
+            let next = match next {
+                Ok(next) => next,
+                Err(err) if err.chain().any(|cause| cause.is::<SubscriptionLost>()) => {
+                    let Some(start) = self.resume_point() else {
+                        return Err(err);
+                    };
+                    match self.resume_after_loss(start).await {
+                        Ok(()) => continue,
+                        Err(resume_err) => {
+                            // Kept so the next call tries again rather than
+                            // reading the dead subscription's closed queue as a
+                            // clean end.
+                            self.lost = Some(err);
+                            return Err(resume_err);
+                        }
+                    }
+                }
+                Err(err) => return Err(err),
+            };
+            if let Some(event) = next {
                 if let Some(offset) = event.offset {
                     self.last_offset = Some(self.last_offset.map_or(offset, |at| at.max(offset)));
                 }
@@ -129,6 +165,72 @@ impl ClusterSubscription {
             self.subscription = subscription;
             self.client = client;
             self.moves += 1;
+        }
+    }
+
+    /// How many times this subscription has resubscribed after losing its
+    /// connection.
+    pub fn reconnects(&self) -> u64 {
+        self.reconnects
+    }
+
+    /// Where to resume after a lost connection, if anywhere is exact.
+    fn resume_point(&self) -> Option<StartPosition> {
+        self.last_offset
+            .map(|last| last.saturating_add(1))
+            .or(self.subscription.start_offset())
+            .or(self.subscription.live_offset())
+            .map(StartPosition::Offset)
+    }
+
+    /// Resubscribe from `start` on whichever broker owns the shard now,
+    /// reconnecting the cluster client when the broker it holds is the one
+    /// that was lost.
+    async fn resume_after_loss(&mut self, start: StartPosition) -> Result<()> {
+        let deadline = Instant::now() + self.cluster.policy.deadline.unwrap_or(FOLLOW_DEADLINE);
+        let mut attempt = 0usize;
+        loop {
+            // The entry broker may be the dead one, and after a failed attempt
+            // it may have died too; `connect_any` moves on to one that answers.
+            if (attempt > 0 || Arc::ptr_eq(&self.cluster.client().await, &self.client))
+                && let Err(err) = self.cluster.reconnect().await
+            {
+                tracing::debug!(error = %err, "no broker answered while resubscribing");
+            }
+            let error = match self
+                .cluster
+                .subscribe_shard_following_redirects(
+                    &self.tenant_id,
+                    &self.namespace,
+                    &self.stream,
+                    self.shard,
+                    Some(start),
+                )
+                .await
+            {
+                Ok((client, subscription)) => {
+                    self.client = client;
+                    self.subscription = subscription;
+                    self.reconnects += 1;
+                    return Ok(());
+                }
+                Err(err) => err,
+            };
+            if next_step(&error, Attempt::default()) == Next::Fail {
+                return Err(error.context(format!(
+                    "resubscribe to shard {} of {} after losing the connection",
+                    self.shard, self.stream
+                )));
+            }
+            let delay = self.cluster.policy.delay_before(attempt);
+            if Instant::now() + delay >= deadline {
+                return Err(error.context(format!(
+                    "no broker took shard {} of {} back before the deadline",
+                    self.shard, self.stream
+                )));
+            }
+            tokio::time::sleep(delay).await;
+            attempt += 1;
         }
     }
 }

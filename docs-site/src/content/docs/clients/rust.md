@@ -432,6 +432,12 @@ while let Some(event) = subscription.next_event().await? {
 }
 ```
 
+`None` means the broker ended the stream. A lost connection is an error,
+`SubscriptionLost`, so the loop above stops with `?` rather than exiting as if
+the stream had finished. A `ClusterClient` subscription resubscribes by itself
+from the offset after the last one it delivered; on an in-memory stream there
+is no offset to resume from, so it returns the error.
+
 ### Event Structure
 
 ```rust
