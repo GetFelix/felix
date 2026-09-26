@@ -18,10 +18,20 @@
 //! driver cannot enumerate — groups appear whenever a consumer names one —
 //! where a log per shard is exactly the unit the driver already walks. This is
 //! what lets a dead-letter list reach a replica and survive its leader.
+//!
+//! An entry's value is its state. Empty means given up on; [`REDRIVEN`] means
+//! an operator put it back and it has not been finished yet. Redriving is one
+//! write that flips the value, so there is no moment where the record is in
+//! neither state — a leader that dies mid-redrive leaves it either still dead
+//! or owed, and the next leader reads which. The entry is deleted when the
+//! redriven record is finally acknowledged.
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use felix_storage::LogCache;
 use felix_storage::log::LogConfig;
+use parking_lot::Mutex as SyncMutex;
 
 use super::reader::GroupKey;
 use crate::error::{BrokerError, Result};
@@ -35,7 +45,20 @@ pub struct DeadLetters {
     /// still be discarded, and nothing is ever written there again. `None`
     /// once no legacy directory can exist.
     legacy_root: PathBuf,
+    /// One lock per shard, held across each read-then-write of an entry's
+    /// state. Without it a discard racing a redrive could delete the entry the
+    /// redrive had just flipped, and the record would be owed nowhere.
+    locks: SyncMutex<HashMap<ShardKey, Arc<tokio::sync::Mutex<()>>>>,
+    /// Makes the next `record` fail, for tests of what a failed write leaves.
+    #[cfg(test)]
+    pub(crate) fail_next_record: std::sync::atomic::AtomicBool,
 }
+
+/// The value of an entry whose record was redriven and is not yet finished.
+const REDRIVEN: &[u8] = b"redriven";
+
+/// One stream shard: `(tenant, namespace, stream, shard)`.
+type ShardKey = (String, String, String, u32);
 
 impl DeadLetters {
     pub fn open(root: impl Into<PathBuf>, config: LogConfig) -> Result<Self> {
@@ -43,11 +66,26 @@ impl DeadLetters {
         Ok(Self {
             entries: LogCache::open(&root, config).map_err(storage_error)?,
             legacy_root: root,
+            locks: SyncMutex::new(HashMap::new()),
+            #[cfg(test)]
+            fail_next_record: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
     /// Record that `group` gave up on `offset`.
+    ///
+    /// Also how a redriven record that failed again goes back to being dead:
+    /// the write replaces its [`REDRIVEN`] state.
     pub async fn record(&self, key: &GroupKey, offset: u64) -> Result<()> {
+        #[cfg(test)]
+        if self
+            .fail_next_record
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(BrokerError::Storage("injected dead-letter failure".into()));
+        }
+        let lock = self.lock_for(key);
+        let _guard = lock.lock().await;
         self.entries
             .put_checked(
                 &key.tenant_id,
@@ -65,17 +103,10 @@ impl DeadLetters {
             .map_err(storage_error)
     }
 
-    /// Offsets `group` has given up on, lowest first.
+    /// Offsets `group` has given up on, lowest first. Redriven ones are not
+    /// listed: they are back in the queue.
     pub async fn list(&self, key: &GroupKey) -> Result<Vec<u64>> {
-        let prefix = format!("{}\u{1f}", key.group);
-        let mut offsets: Vec<u64> = self
-            .entries
-            .keys(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-            .await
-            .map_err(storage_error)?
-            .into_iter()
-            .filter_map(|entry| entry.strip_prefix(&prefix)?.parse().ok())
-            .collect();
+        let mut offsets = self.entries_in_state(key, false).await?;
         if let Some(legacy) = self.legacy(key) {
             offsets.extend(
                 legacy
@@ -96,25 +127,112 @@ impl DeadLetters {
         Ok(offsets)
     }
 
+    /// Offsets `group` had redriven and has not finished, lowest first.
+    ///
+    /// What a leader rebuilding the group reads to owe them again.
+    pub async fn redriven(&self, key: &GroupKey) -> Result<Vec<u64>> {
+        let mut offsets = self.entries_in_state(key, true).await?;
+        offsets.sort_unstable();
+        Ok(offsets)
+    }
+
+    /// Put a dead letter back in the queue: flip its entry to [`REDRIVEN`].
+    ///
+    /// Returns whether it was listed as dead. A legacy entry is moved into the
+    /// per-shard log as redriven before it is deleted, so a crash between the
+    /// two leaves it listed twice rather than nowhere.
+    pub async fn redrive(&self, key: &GroupKey, offset: u64) -> Result<bool> {
+        let lock = self.lock_for(key);
+        let _guard = lock.lock().await;
+        let entry = entry_key(&key.group, offset);
+        match self.state(key, &entry).await? {
+            Some(value) if value.is_empty() => {
+                self.put(key, &entry, REDRIVEN).await?;
+                return Ok(true);
+            }
+            Some(_) => return Ok(false),
+            None => {}
+        }
+        let Some(legacy) = self.legacy(key) else {
+            return Ok(false);
+        };
+        let listed = legacy
+            .get_checked(
+                &key.tenant_id,
+                &key.namespace,
+                &legacy_scope(key),
+                key.shard,
+                &offset.to_string(),
+            )
+            .await
+            .map_err(storage_error)?
+            .is_some();
+        if !listed {
+            return Ok(false);
+        }
+        self.put(key, &entry, REDRIVEN).await?;
+        legacy
+            .delete_checked(
+                &key.tenant_id,
+                &key.namespace,
+                &legacy_scope(key),
+                key.shard,
+                &offset.to_string(),
+            )
+            .await
+            .map_err(storage_error)?;
+        Ok(true)
+    }
+
+    /// A redriven record was finished: drop its entry. Leaves an entry that
+    /// has since gone back to dead alone.
+    pub async fn finish_redrive(&self, key: &GroupKey, offset: u64) -> Result<()> {
+        let lock = self.lock_for(key);
+        let _guard = lock.lock().await;
+        let entry = entry_key(&key.group, offset);
+        if self.state(key, &entry).await?.as_deref() == Some(REDRIVEN) {
+            self.entries
+                .delete_checked(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    &entry,
+                )
+                .await
+                .map_err(storage_error)?;
+        }
+        Ok(())
+    }
+
     /// Drop one offset from the list.
     ///
     /// Returns whether it was there. Does not touch the record, which stays in
     /// the stream's log — this only says the group has stopped tracking it as
     /// an outstanding problem.
+    ///
+    /// A redriven entry is not a dead letter and is refused: dropping it would
+    /// forget a record that is owed.
     pub async fn discard(&self, key: &GroupKey, offset: u64) -> Result<bool> {
-        let removed = self
-            .entries
-            .delete_checked(
-                &key.tenant_id,
-                &key.namespace,
-                &key.stream,
-                key.shard,
-                &entry_key(&key.group, offset),
-            )
-            .await
-            .map_err(storage_error)?;
-        if removed.is_some() {
-            return Ok(true);
+        let lock = self.lock_for(key);
+        let _guard = lock.lock().await;
+        let entry = entry_key(&key.group, offset);
+        match self.state(key, &entry).await? {
+            Some(value) if value.is_empty() => {
+                self.entries
+                    .delete_checked(
+                        &key.tenant_id,
+                        &key.namespace,
+                        &key.stream,
+                        key.shard,
+                        &entry,
+                    )
+                    .await
+                    .map_err(storage_error)?;
+                return Ok(true);
+            }
+            Some(_) => return Ok(false),
+            None => {}
         }
         // Recorded before the per-shard layout, perhaps. The legacy log is
         // opened only when its directory already exists, so a miss costs a
@@ -170,6 +288,58 @@ impl DeadLetters {
     /// Flush every open dead-letter log. Call once during graceful shutdown.
     pub async fn shutdown(&self) -> Result<()> {
         self.entries.shutdown().await.map_err(storage_error)
+    }
+
+    async fn state(&self, key: &GroupKey, entry: &str) -> Result<Option<bytes::Bytes>> {
+        self.entries
+            .get_checked(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                entry,
+            )
+            .await
+            .map_err(storage_error)
+    }
+
+    async fn put(&self, key: &GroupKey, entry: &str, value: &'static [u8]) -> Result<()> {
+        self.entries
+            .put_checked(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                entry,
+                bytes::Bytes::from_static(value),
+                None,
+            )
+            .await
+            .map_err(storage_error)
+    }
+
+    /// This group's entries in the per-shard log that are redriven, or not.
+    async fn entries_in_state(&self, key: &GroupKey, redriven: bool) -> Result<Vec<u64>> {
+        let prefix = format!("{}\u{1f}", key.group);
+        Ok(self
+            .entries
+            .live_entries_checked(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await
+            .map_err(storage_error)?
+            .into_iter()
+            .filter(|entry| (entry.value.as_ref() == REDRIVEN) == redriven)
+            .filter_map(|entry| entry.key.strip_prefix(&prefix)?.parse().ok())
+            .collect())
+    }
+
+    fn lock_for(&self, key: &GroupKey) -> Arc<tokio::sync::Mutex<()>> {
+        let shard = (
+            key.tenant_id.clone(),
+            key.namespace.clone(),
+            key.stream.clone(),
+            key.shard,
+        );
+        Arc::clone(self.locks.lock().entry(shard).or_default())
     }
 
     /// The legacy per-`(stream, group)` log, if one is on disk for this key.

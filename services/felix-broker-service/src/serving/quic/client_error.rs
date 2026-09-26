@@ -202,7 +202,8 @@ impl ClientError {
             | E::StreamNotDurable { .. }
             | E::SequenceGap { .. }
             | E::UnknownProducer { .. }
-            | E::SequenceExpired { .. } => Self::invalid(message),
+            | E::SequenceExpired { .. }
+            | E::GroupOffsetNotHandedOut { .. } => Self::invalid(message),
             // A broker configured without the storage the stream needs will
             // answer the same way until someone changes its configuration.
             E::DurableStorageNotConfigured { .. } => {

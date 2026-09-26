@@ -232,6 +232,9 @@ rather than misreading the request. The broker caps it at
 The wait bounds how long the broker looks, not whether it answers: an empty
 `group_records` after the wait still means nothing was available.
 
+The broker hands out at most 1,000 records per poll, and stops early once it has
+read about 4 MiB of payload, whatever `max_records` asks for.
+
 ### GroupRecords (server -> client)
 ```
 { "type": "group_records",
@@ -265,6 +268,10 @@ Sent only to a broker that advertised `FEATURE_GROUP_DEAD_LETTERS`.
   "shard": <number>, "group": "<string>", "offset": <number>, "request_id": <number> }
 { "type": "group_nack", ... }
 ```
+
+An offset the group has not handed out (at or past the next offset it would
+hand out) is refused with `invalid_request`. An offset below the group's
+position is a harmless duplicate and answered `ok`.
 
 ### CacheDelete
 ```

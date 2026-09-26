@@ -98,11 +98,34 @@ nothing is moved somewhere you have to go and find.
 
 A redrive resets the record's attempt count and makes it owed again. It does
 **not** move the group's cursor backwards, so everything already finished stays
-finished.
+finished. The redrive is durable: it is written to the dead-letter log before
+the broker answers, so a leader lost before the record is finished leaves the
+next leader owing it. It stays owed until a consumer acknowledges it, or until
+it fails its attempts again and goes back on the list.
+
+Redrive and discard change what every consumer of the group sees, so they need
+`group.manage` (or `stream.manage`) on the stream. Polling, acknowledging,
+handing back and listing dead letters need `group.consume`, which
+`stream.subscribe` also grants. See [Security](/felix/features/security/).
 
 > `a_record_is_given_up_on_after_the_attempt_bound`,
 > `a_redriven_record_is_handed_out_again`,
-> `a_redriven_record_gets_its_attempts_back`.
+> `a_redriven_record_gets_its_attempts_back`,
+> `a_redriven_record_is_still_owed_after_a_restart`.
+
+### Limits
+
+- A consumer can only acknowledge or hand back an offset the group has handed
+  out. Anything else, such as an offset at or past the tail, is refused with
+  `invalid_request`: acknowledging a record that does not exist yet would skip
+  it when it is written.
+- One poll hands out at most 1,000 records and stops reading after about 4 MiB
+  of payload, whatever `max_records` asks for. The rest stay owed for the next
+  poll.
+- A group untouched for ten minutes (or twice the visibility timeout, if that
+  is longer) has its in-memory state dropped and rebuilt from disk on its next
+  request. That redelivers anything it still had in flight and restarts attempt
+  counts, the same as a leader change.
 
 ## What a queue does not promise
 
@@ -113,7 +136,7 @@ order they are finished in. If you need per-key ordering, use a stream with a
 routing key so related records land on one shard.
 
 **Exactly-once.** A record can arrive twice — after a claim lapses, after a
-leader is lost, or after a redrive. Handlers must tolerate seeing the same
+leader is lost, after an idle group is rebuilt, or after a redrive. Handlers must tolerate seeing the same
 record again.
 
 **A consumer per group member.** A group is bound to the shard you name, and
@@ -124,8 +147,9 @@ out.
 **A complete picture after a leader failover.** Group state travels with its
 shard, whole: the position *and* the dead-letter list replicate beside the
 shard's records, so a promoted leader resumes where the group had got to,
-lists which records were set aside, and serves a redrive — proven by killing
-the leader after a record was given up on and redriving it on the replacement.
+lists which records were set aside, serves a redrive, and still owes any record
+an operator redrove before the failover — proven by killing the leader after a
+record was given up on and redriving it on the replacement.
 This used to stop at the position; the dead-letter list stayed behind, and a
 promotion forgot exactly the records an operator had been told to look at.
 

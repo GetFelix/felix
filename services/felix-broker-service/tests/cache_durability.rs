@@ -144,9 +144,14 @@ async fn start(root: &std::path::Path) -> Result<Running> {
 
 impl Running {
     async fn client(&self) -> Result<Client> {
+        self.client_as("t1").await
+    }
+
+    /// A client presenting the token minted under `token`.
+    async fn client_as(&self, token: &str) -> Result<Client> {
         let mut config = build_client_config(self.cert.clone())?;
         config.auth_tenant_id = Some("t1".to_string());
-        config.auth_token = self.tokens.get("t1").cloned();
+        config.auth_token = self.tokens.get(token).cloned();
         Client::connect(self.addr, "localhost", config).await
     }
 
@@ -259,10 +264,20 @@ fn demo_auth_for_tenants(tenants: &[&str], ttl: Duration) -> Result<DemoAuthBund
             format!("cache.write:cache:{tenant}/*/*"),
             format!("stream.publish:stream:{tenant}/*/*"),
             format!("stream.subscribe:stream:{tenant}/*/*"),
+            format!("group.manage:stream:{tenant}/*/*"),
         ];
         tokens.insert(
             (*tenant).to_string(),
             issuer.mint(&TenantId::new(*tenant), "p:demo", perms)?,
+        );
+        // What a consumer holds: enough to work a group, not to operate one.
+        let consumer = vec![
+            format!("stream.publish:stream:{tenant}/*/*"),
+            format!("stream.subscribe:stream:{tenant}/*/*"),
+        ];
+        tokens.insert(
+            format!("{tenant}:consumer"),
+            issuer.mint(&TenantId::new(*tenant), "p:consumer", consumer)?,
         );
     }
 
@@ -760,6 +775,95 @@ async fn a_waiting_poll_with_no_work_answers_empty() -> Result<()> {
         started.elapsed() >= Duration::from_millis(150),
         "the poll returned before its wait was up",
     );
+    running.stop().await;
+    Ok(())
+}
+
+/// **Reading a stream is not operating its groups.** A consumer holding only
+/// `stream.subscribe` works the queue as it always could, but redriving or
+/// discarding a dead letter takes `group.manage` (or `stream.manage`): either
+/// one changes what every other consumer of the group sees.
+#[tokio::test]
+async fn a_consumer_works_a_group_but_cannot_operate_it() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let running = start(dir.path()).await?;
+    let consumer = running.client_as("t1:consumer").await?;
+    consumer
+        .publisher()
+        .await?
+        .publish(
+            "t1",
+            "default",
+            QUEUE,
+            b"job".to_vec(),
+            felix_wire::AckMode::PerMessage,
+        )
+        .await?;
+
+    let claimed = consumer
+        .group_poll("t1", "default", QUEUE, 0, "workers", 10)
+        .await?;
+    assert_eq!(claimed.len(), 1, "a consumer could not poll its group");
+    consumer
+        .group_ack("t1", "default", QUEUE, 0, "workers", claimed[0].offset)
+        .await?;
+    consumer
+        .group_dead_letters("t1", "default", QUEUE, 0, "workers")
+        .await?;
+
+    let redrive = running
+        .client_as("t1:consumer")
+        .await?
+        .group_redrive("t1", "default", QUEUE, 0, "workers", 0)
+        .await;
+    let redrive = format!(
+        "{:#}",
+        redrive.expect_err("a consumer redrove a dead letter")
+    );
+    assert_refused_for_authz(&redrive);
+    let discard = running
+        .client_as("t1:consumer")
+        .await?
+        .group_discard("t1", "default", QUEUE, 0, "workers", 0)
+        .await;
+    let discard = format!(
+        "{:#}",
+        discard.expect_err("a consumer discarded a dead letter")
+    );
+    assert_refused_for_authz(&discard);
+
+    running.stop().await;
+    Ok(())
+}
+
+/// Offset 0 is not a dead letter, so a request that got past authorization is
+/// refused with "not a dead letter". The broker answers an authorization failure
+/// with `forbidden` and then closes the stream, and the client can see either.
+fn assert_refused_for_authz(refusal: &str) {
+    assert!(
+        !refusal.contains("not a dead letter")
+            && (refusal.contains("forbidden") || refusal.contains("closed")),
+        "refused for the wrong reason: {refusal}"
+    );
+}
+
+/// Acknowledging an offset the group never handed out is refused as the
+/// consumer's mistake, not reported as a storage fault to retry.
+#[tokio::test]
+async fn an_ack_past_the_tail_is_refused() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let running = start(dir.path()).await?;
+    let client = running.client().await?;
+
+    let refused = client
+        .group_ack("t1", "default", QUEUE, 0, "workers", 1_000)
+        .await;
+    let refused = format!("{:#}", refused.expect_err("an ack past the tail was taken"));
+    assert!(
+        refused.contains("not handed out"),
+        "refused for the wrong reason: {refused}",
+    );
+
     running.stop().await;
     Ok(())
 }

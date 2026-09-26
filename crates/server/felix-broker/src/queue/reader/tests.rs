@@ -6,6 +6,7 @@ use felix_storage::log::{FsyncMode, LogConfig};
 use super::*;
 use crate::durable::{DurableStorage, StreamLog};
 use crate::queue::DeadLetters;
+use crate::queue::tracker::MAX_CLAIM;
 
 const T: &str = "t1";
 const NS: &str = "ns";
@@ -427,4 +428,225 @@ async fn resetting_one_shard_leaves_another_alone() {
         .await
         .expect("poll");
     assert_eq!(payloads(&next), ["b"]);
+}
+
+/// Poll `fx` at `secs` after `base`, with room for everything.
+async fn poll_at(fx: &Fixture, key: &GroupKey, base: Instant, secs: u64) -> Vec<Claimed> {
+    fx.reader
+        .poll(key, &fx.log, 10, base + Duration::from_secs(secs))
+        .await
+        .expect("poll")
+}
+
+/// Give up on offset 0 of a one-record log (attempt bound 1).
+async fn dead_letter_the_only_record(fx: &Fixture, key: &GroupKey, base: Instant) {
+    publish(&fx.log, &["poison"]).await;
+    assert_eq!(poll_at(fx, key, base, 0).await.len(), 1);
+    assert!(poll_at(fx, key, base, 31).await.is_empty());
+    assert_eq!(fx.reader.dead_lettered(key).await.expect("list"), vec![0]);
+    assert_eq!(fx.reader.committed(key).await.expect("cursor"), Some(1));
+}
+
+/// **A redrive survives losing the leader.** Once the operator is told it
+/// worked, the record is owed until someone finishes it: a new leader, which
+/// rebuilds the group from disk, must hand it out even though the cursor has
+/// passed it and it is no longer listed as dead.
+#[tokio::test]
+async fn a_redriven_record_is_still_owed_after_a_restart() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key = key();
+    let base = Instant::now();
+    {
+        let fx = open_with_attempts(dir.path(), 1);
+        dead_letter_the_only_record(&fx, &key, base).await;
+        assert!(fx.reader.redrive(&key, 0).await.expect("redrive"));
+    }
+
+    let fx = open_with_attempts(dir.path(), 1);
+    let again = poll_at(&fx, &key, base, 62).await;
+    assert_eq!(
+        again.iter().map(|c| c.offset).collect::<Vec<_>>(),
+        vec![0],
+        "the redriven record was lost with the leader",
+    );
+    assert_eq!(again[0].attempts, 1, "its attempts did not start over");
+    assert!(
+        fx.reader
+            .dead_lettered(&key)
+            .await
+            .expect("list")
+            .is_empty(),
+        "a redriven record is listed as given up on",
+    );
+}
+
+/// Once it is finished it stays finished: the redrive record is cleared, so
+/// the next leader does not hand it out yet again.
+#[tokio::test]
+async fn a_finished_redrive_is_not_redelivered_after_a_restart() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key = key();
+    let base = Instant::now();
+    {
+        let fx = open_with_attempts(dir.path(), 1);
+        dead_letter_the_only_record(&fx, &key, base).await;
+        assert!(fx.reader.redrive(&key, 0).await.expect("redrive"));
+        assert_eq!(poll_at(&fx, &key, base, 62).await.len(), 1);
+        fx.reader.ack(&key, 0).await.expect("ack");
+    }
+
+    let fx = open_with_attempts(dir.path(), 1);
+    assert!(
+        poll_at(&fx, &key, base, 93).await.is_empty(),
+        "a finished redrive came back",
+    );
+}
+
+/// A redriven record that fails again goes back on the list, and is neither
+/// owed nor listed twice.
+#[tokio::test]
+async fn a_redriven_record_that_fails_again_is_dead_again() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open_with_attempts(dir.path(), 1);
+    let key = key();
+    let base = Instant::now();
+    dead_letter_the_only_record(&fx, &key, base).await;
+
+    assert!(fx.reader.redrive(&key, 0).await.expect("redrive"));
+    assert!(
+        !fx.reader.redrive(&key, 0).await.expect("second redrive"),
+        "a record already back in the queue was redriven twice",
+    );
+    assert!(
+        !fx.reader.discard(&key, 0).await.expect("discard"),
+        "discarding a redriven record forgot a record that is owed",
+    );
+    assert_eq!(poll_at(&fx, &key, base, 62).await.len(), 1);
+    assert!(poll_at(&fx, &key, base, 93).await.is_empty());
+
+    assert_eq!(fx.reader.dead_lettered(&key).await.expect("list"), vec![0]);
+    assert!(poll_at(&fx, &key, base, 124).await.is_empty());
+    // Dead again, so it can be redriven again.
+    assert!(fx.reader.redrive(&key, 0).await.expect("redrive"));
+}
+
+/// An acknowledgement at or past the tail names a record that does not exist
+/// yet. Taking it would finish that record before it is written, and the group
+/// would skip it when it arrives.
+#[tokio::test]
+async fn an_ack_for_an_offset_never_handed_out_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    let key = key();
+    publish(&fx.log, &["a"]).await;
+    assert_eq!(poll_at(&fx, &key, Instant::now(), 0).await.len(), 1);
+
+    for offset in [1, u64::MAX] {
+        assert!(
+            matches!(
+                fx.reader.ack(&key, offset).await,
+                Err(BrokerError::GroupOffsetNotHandedOut { next: 1, .. })
+            ),
+            "ack of {offset} was accepted",
+        );
+        assert!(
+            matches!(
+                fx.reader.nack(&key, offset).await,
+                Err(BrokerError::GroupOffsetNotHandedOut { next: 1, .. })
+            ),
+            "nack of {offset} was accepted",
+        );
+    }
+
+    publish(&fx.log, &["b"]).await;
+    fx.reader.ack(&key, 0).await.expect("ack");
+    let next = poll_at(&fx, &key, Instant::now(), 0).await;
+    assert_eq!(
+        payloads(&next),
+        vec!["b"],
+        "a record acked early was skipped"
+    );
+}
+
+/// **One failed dead-letter write does not stall the group.** The record is
+/// owed again, still at its bound, so the next poll retries the write rather
+/// than leaving it in no set at all with the cursor stuck below it.
+#[tokio::test]
+async fn a_failed_dead_letter_write_is_retried() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open_with_attempts(dir.path(), 1);
+    let key = key();
+    let base = Instant::now();
+    publish(&fx.log, &["poison", "also"]).await;
+    assert_eq!(poll_at(&fx, &key, base, 0).await.len(), 2);
+
+    fx.reader
+        .dead_letters()
+        .fail_next_record
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        fx.reader
+            .poll(&key, &fx.log, 10, base + Duration::from_secs(31))
+            .await
+            .is_err(),
+        "the dead-letter write did not fail",
+    );
+
+    assert!(poll_at(&fx, &key, base, 62).await.is_empty());
+    assert_eq!(
+        fx.reader.dead_lettered(&key).await.expect("list"),
+        vec![0, 1],
+        "a record whose dead-letter write failed was never retried",
+    );
+    assert_eq!(fx.reader.committed(&key).await.expect("cursor"), Some(2));
+}
+
+/// A poll asking for more than the cap gets the cap, and the rest stay owed.
+#[tokio::test]
+async fn a_poll_hands_out_at_most_the_cap() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    let key = key();
+    let many: Vec<String> = (0..MAX_CLAIM + 5).map(|i| i.to_string()).collect();
+    let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+    publish(&fx.log, &refs).await;
+
+    let first = fx
+        .reader
+        .poll(&key, &fx.log, usize::MAX, Instant::now())
+        .await
+        .expect("poll");
+    assert_eq!(first.len(), MAX_CLAIM);
+    let rest = fx
+        .reader
+        .poll(&key, &fx.log, usize::MAX, Instant::now())
+        .await
+        .expect("poll");
+    assert_eq!(rest.len(), 5);
+}
+
+/// An idle group's tracker is dropped, and the group carries on from disk as if
+/// nothing happened.
+#[tokio::test]
+async fn an_idle_tracker_is_evicted_and_rebuilt() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    let key = key();
+    publish(&fx.log, &["a", "b"]).await;
+    let now = Instant::now();
+    assert_eq!(poll_at(&fx, &key, now, 0).await.len(), 2);
+    fx.reader.ack(&key, 0).await.expect("ack");
+    fx.reader.ack(&key, 1).await.expect("ack");
+
+    assert_eq!(fx.reader.evict_idle(now), 0, "a group in use was evicted");
+    assert_eq!(fx.reader.evict_idle(now + Duration::from_secs(3600)), 1);
+    assert_eq!(fx.reader.tracked(), 0);
+
+    publish(&fx.log, &["c"]).await;
+    let next = poll_at(&fx, &key, Instant::now(), 0).await;
+    assert_eq!(
+        payloads(&next),
+        vec!["c"],
+        "the rebuilt group repeated work"
+    );
 }
