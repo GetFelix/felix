@@ -470,13 +470,14 @@ know about each other; every write and every read goes to the database.
 - Change feeds are sequenced from a locked row rather than a sequence, because a
   sequence hands out numbers in request order and not commit order — a snapshot
   taken between two commits would resume past a change it never saw
-- Placement is a pure function of a metadata snapshot, so two instances planning
-  the same cluster reach the same answer without agreeing on one
+- Placement is conditional writes, not a shared snapshot: a pass reads its inputs
+  separately, and each assignment write is refused if the generation or placement
+  token it was planned from has moved, so instances need not agree on one
 
 A Raft backend moves this off Postgres entirely, with the instances holding
 the metadata between them — see [Metadata Raft](/felix/architecture/metadata-raft/).
 Postgres remains supported; the properties above hold either way, because
-placement stays a pure function of a snapshot.
+placement's writes stay conditional.
 
 ### Broker Synchronization
 

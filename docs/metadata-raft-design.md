@@ -171,7 +171,7 @@ instances mid-poll and the numbers still mean the same thing, which is
 better than today, where an in-memory control plane restarting resets them.
 
 Admin reads that feed decisions (the sweep's view before claiming an expiry,
-placement's snapshot) run on the leader, which serves them from applied
+placement's reads) run on the leader, which serves them from applied
 state — leader-local reads after `ReadIndex`-style confirmation where
 staleness would change a decision. The expiry sweep and the placement
 reconciler run **only on the leader**, which replaces M7's
@@ -322,8 +322,19 @@ this is deliberate: the export file *is* the DR artifact, and
 `--overwrite` flag is the loud warning made mechanical — it discards
 whatever the target group holds, and consumers' checkpoints with it, so it
 belongs in a runbook and nowhere else. Take exports on a schedule the way
-database backups are taken; any consistent export is a state the cluster
-has actually been in.
+database backups are taken, with two caveats:
+
+- **An export is not a consistent read.** It is many separate queries with no
+  transaction around them, so an export taken while metadata is being written
+  can pair records from different moments (an assignment for a stream the same
+  file no longer lists, a change-feed head behind a record). Only an export of a
+  frozen database is a state the cluster has actually been in.
+- **The file is a credential.** It holds every tenant's Ed25519 signing-key
+  seeds, current and previous, as plaintext JSON: whoever reads it can mint a
+  valid token for any tenant. Store and transfer it the way you would the
+  signing keys themselves. Refresh tokens are not in it (the store keeps only
+  their hashes, and the export leaves them out), so a restore invalidates every
+  refresh token issued before it.
 
 ### Probes
 
@@ -433,9 +444,12 @@ snapshot as in [rejoining after a lost volume](#rejoining-after-a-lost-volume).
   machines, assert byte-identical snapshots — the cheap test that catches
   the expensive bug (a clock or a HashMap iteration order leaking into
   apply).
-- **The contract suites run against the Raft backend** exactly as they run
-  against memory and Postgres (`contract::nodes`, `contract::shards`) — that is
-  what the trait seam is for.
+- **The contract suites run against the Raft backend** as they run against
+  memory and Postgres (`contract::nodes`, `contract::shards`,
+  `contract::signing_keys`, `contract::placement`) — that is what the trait seam
+  is for. Two do not yet: the refresh-token contract and the expiring placement
+  lease contract run against memory and Postgres only, and there are no
+  contracts for tenants, streams, or RBAC on any backend.
 - **`rolling_restart.rs`, Raft variant**: three instances, no Postgres,
   same zero-failed-calls assertion, plus a hard kill of the leader
   specifically.

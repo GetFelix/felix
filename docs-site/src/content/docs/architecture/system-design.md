@@ -41,7 +41,7 @@ Three things carry most of the design.
 
 **Ownership comes from the control plane, and only from there.** Every shard of every stream and cache has exactly one leader, chosen by rendezvous hashing over the live nodes. Brokers watch the assignment feed — a snapshot, then a change stream — and never negotiate ownership among themselves. When a shard has to move — its broker is draining, or leads more than its share — the control plane stages the destination as a replica, fences the leader once the copy is level, and only then names the destination, so a shard is never served by a broker that has not seen its log (see [Adding, draining and removing brokers](/felix/deployment/scaling/)).
 
-**No consensus protocol runs between brokers.** Placement is a pure function of a metadata snapshot, so two control-plane instances reading the same catalog reach the same answer without having to agree on one. Durability across a leader change comes from log shipping and leader leases: per-shard Raft was considered and rejected, for reasons set out in [`docs/replication-design.md`](https://github.com/gabloe/felix/blob/main/docs/replication-design.md).
+**No consensus protocol runs between brokers.** Placement is deterministic over the rows it reads, and control-plane instances do not coordinate a shared snapshot: every assignment write is conditional on the generation and placement token it was planned from, so a write planned from stale reads is refused. Durability across a leader change comes from log shipping and leader leases: per-shard Raft was considered and rejected, for reasons set out in [`docs/replication-design.md`](https://github.com/gabloe/felix/blob/main/docs/replication-design.md).
 
 That rejection is specific to *replicating records*. Making the control plane's own metadata highly available is a separate problem, and Raft is the answer there: the instances embed a Raft group and hold the metadata themselves, with no external database. See [Metadata Raft](/felix/architecture/metadata-raft/); Postgres remains fully supported for deployments that prefer it.
 
@@ -328,8 +328,8 @@ regulatory or compliance purposes until it ships.
 - **Sharding:** Partition streams across brokers
 - **Connection pooling:** Reuse connections across shards
 - **Control plane:** REST over Raft, Postgres, or memory; scale by adding
-  instances, since placement is a pure function of the catalog and needs no
-  agreement between them. On the Postgres backend the instances are stateless;
+  instances, since placement writes are conditional and need no agreement
+  between them. On the Postgres backend the instances are stateless;
   on the Raft backend they hold the metadata themselves
 - **Data plane:** many broker nodes for capacity
 

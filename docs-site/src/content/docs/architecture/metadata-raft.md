@@ -254,6 +254,16 @@ artifact, and `migrate import … --overwrite` onto a fresh group is the
 restore. `--overwrite` discards whatever the target holds — checkpoints
 included — so it belongs in a runbook, run deliberately, and nowhere else.
 
+Two things to know before relying on an export as a backup:
+
+- **It is not a consistent read.** The export is many separate queries, not one
+  transaction, so it is a state the cluster was actually in only when metadata
+  writes were frozen while it ran.
+- **It is a credential.** The file holds every tenant's Ed25519 signing-key seeds
+  in plaintext JSON, enough to mint tokens for any tenant. Keep it encrypted and
+  access-controlled. Refresh tokens are not exported, so they do not survive a
+  restore.
+
 ## How it is built
 
 The state machine is real: `MetadataStateMachine` wraps the same in-memory

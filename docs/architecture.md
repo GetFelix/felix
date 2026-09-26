@@ -222,9 +222,10 @@ stream and cache has exactly one leader, chosen by rendezvous hashing over the
 live nodes. Brokers watch the assignment feed — a snapshot, then a change stream
 — and never negotiate ownership among themselves.
 
-**No consensus protocol runs between brokers.** Placement is a pure function of a
-metadata snapshot, so two control-plane instances reading the same catalog reach
-the same answer without having to agree on one. Durability across a leader change
+**No consensus protocol runs between brokers.** Placement is deterministic over
+the rows it reads, and control-plane instances do not coordinate a shared
+snapshot: every assignment write is conditional on the generation and placement
+token it was planned from, so a write planned from stale reads is refused. Durability across a leader change
 comes from log shipping and leader leases instead; `replication-design.md` argues
 that choice in full, including why per-shard Raft was rejected.
 

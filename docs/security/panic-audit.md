@@ -99,8 +99,10 @@ path involved no `unwrap` at all. Counting `unwrap` would not have found it.
 - The `telemetry` feature's 103 mutex-poisoning `expect`s are unreviewed. They are not
   in default builds; if `telemetry` is ever enabled in production, they need their own
   pass.
-- Fuzzing the frame and message decoders remains open in `docs/todos.md` and would be
-  the natural way to gain confidence beyond this manual review.
+- The frame and message decoders are fuzzed (`crates/protocol/felix-wire/fuzz/`, four
+  targets, plus three storage targets), but CI runs each target for only 30 s on every
+  PR. That is a regression gate, not a sustained campaign. The Kafka request decoders
+  also parse untrusted input and have no fuzz target.
 - Sustained-load, connection-churn, and resource-leak evidence is not covered by this
   document; it is tracked in [#154](https://github.com/gabloe/felix/issues/154). Until
   that lands, M0's "no known concurrency or leak issues" criterion rests on this static

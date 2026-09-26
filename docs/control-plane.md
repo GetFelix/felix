@@ -373,10 +373,17 @@ and no virtual-node tuning, distributes better at the handful-of-brokers scale a
 cluster starts at, and because removing a node moves only the shards that node
 held.
 
-Placement is a **pure function of a metadata snapshot**, so two control-plane
-instances reading the same rows reach the same decision without coordinating.
-It is independent of the order streams, nodes, or existing assignments arrive
-in.
+The placement *plan* is deterministic: the same rows give the same decision,
+whatever order streams, nodes, or existing assignments arrive in. Its input is
+not one consistent snapshot, though. A pass reads the catalog, nodes,
+assignments, replica reports and pause switch separately
+(`PlacementRead::load`), and two instances may read different states. What keeps
+that safe is **conditional writes**: every assignment write names the generation
+it was planned from and the placement token read at the start of the pass, and
+is refused if either moved, so a plan built on stale input is dropped and
+replanned. The token advances only on placement's own writes, not on node
+lifecycle or stream changes, so a pass can still act on a node or stream that
+changed after it was read; the next pass corrects it.
 
 The hash is written out rather than taken from `DefaultHasher`, whose seeding is
 not part of its contract — a placement decision that changed with the Rust
