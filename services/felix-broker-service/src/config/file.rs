@@ -76,6 +76,24 @@ impl BrokerConfig {
         if let Some(value) = override_cfg.max_frame_bytes {
             config.max_frame_bytes = value;
         }
+        if let Some(value) = override_cfg.preauth_max_frame_bytes
+            && value > 0
+        {
+            config.preauth_max_frame_bytes = value;
+        }
+        if let Some(value) = override_cfg.preauth_max_streams_per_conn
+            && value > 0
+        {
+            config.preauth_max_streams_per_conn = value;
+        }
+        if let Some(value) = override_cfg.auth_timeout_ms {
+            config.auth_timeout_ms = value;
+        }
+        if let Some(value) = override_cfg.max_client_connections
+            && value > 0
+        {
+            config.max_client_connections = value;
+        }
         if let Some(value) = override_cfg.publish_queue_wait_timeout_ms {
             config.publish_queue_wait_timeout_ms = value;
         }
@@ -239,6 +257,10 @@ pub(super) struct BrokerConfigOverride {
     controlplane_sync_interval_ms: Option<u64>,
     ack_on_commit: Option<bool>,
     max_frame_bytes: Option<usize>,
+    preauth_max_frame_bytes: Option<usize>,
+    preauth_max_streams_per_conn: Option<usize>,
+    auth_timeout_ms: Option<u64>,
+    max_client_connections: Option<usize>,
     publish_queue_wait_timeout_ms: Option<u64>,
     ack_wait_timeout_ms: Option<u64>,
     disable_timings: Option<bool>,

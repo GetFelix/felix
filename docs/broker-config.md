@@ -28,6 +28,10 @@ controlplane_url: null
 controlplane_sync_interval_ms: 2000
 ack_on_commit: false
 max_frame_bytes: 16777216
+preauth_max_frame_bytes: 65536
+preauth_max_streams_per_conn: 16
+auth_timeout_ms: 10000
+max_client_connections: 8192
 publish_queue_wait_timeout_ms: 2000
 ack_wait_timeout_ms: 2000
 disable_timings: false
@@ -233,6 +237,14 @@ the CA with an `http://` URL fails startup.
   batches can't starve every other connection's admission. Must be smaller than
   `pub_inflight_bytes` to have any effect; a value equal to or larger than it degenerates to
   "no per-connection cap."
+- The pre-auth limits bound what a client costs before it proves who it is. Until a stream's
+  `Auth` succeeds its frames are capped at `preauth_max_frame_bytes` (only an `Auth` has to
+  fit), and at most `preauth_max_streams_per_conn` unauthenticated streams per connection are
+  read at once; more wait their turn. A connection that has authenticated no stream within
+  `auth_timeout_ms` is closed with application code `1` (`0` disables the deadline).
+  `max_client_connections` caps client QUIC connections across all client listeners; attempts
+  past it are refused before the handshake. Frame buffers grow as payload bytes arrive, so a
+  frame header alone never reserves `max_frame_bytes`.
 - `max_subscriptions_per_conn` bounds how many concurrent subscriptions a single QUIC connection
   may hold, independent of `subscriber_queue_capacity`. It protects broker memory from a
   connection that opens unbounded subscriptions rather than bounding any one subscription's

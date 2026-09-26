@@ -90,9 +90,11 @@ pub(super) fn spawn_accept_loops(
         quorum_marks,
         client_endpoints,
     } = shared;
+    let limit = quic::ConnectionLimit::new(config.max_client_connections);
     quic_servers
         .iter()
         .map(|server| {
+            let limit = limit.clone();
             let quic_server = Arc::clone(server);
             let broker = Arc::clone(broker);
             let quic_config = config.clone();
@@ -138,6 +140,7 @@ pub(super) fn spawn_accept_loops(
                         marks: Some(Arc::clone(&marks_for_accept)),
                         client_endpoints: Some(Arc::clone(&endpoints_for_accept)),
                     },
+                    limit,
                 )
                 .await
                 {

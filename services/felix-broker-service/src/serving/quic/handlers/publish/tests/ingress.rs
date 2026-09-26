@@ -116,6 +116,9 @@ async fn enqueue_publish_wait_times_out_when_queue_full() {
         subscriptions: Arc::new(SubscriptionLimiter::new()),
         lane_manager: test_lane_manager(),
         ingress_wait: false,
+        preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
+            &crate::config::BrokerConfig::default(),
+        )),
     };
     let err = enqueue_publish(&ctx, make_job(), EnqueuePolicy::Wait, None)
         .await
@@ -144,6 +147,9 @@ async fn enqueue_publish_returns_error_when_queue_closed() {
         subscriptions: Arc::new(SubscriptionLimiter::new()),
         lane_manager: test_lane_manager(),
         ingress_wait: false,
+        preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
+            &crate::config::BrokerConfig::default(),
+        )),
     };
     let err = enqueue_publish(&ctx, make_job(), EnqueuePolicy::Fail, None)
         .await

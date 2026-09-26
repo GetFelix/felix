@@ -65,6 +65,33 @@ impl Credentials {
     }
 }
 
+impl Credentials {
+    /// Authenticate `connection` without waiting for an answer, on a uni
+    /// stream that carries only the `Auth`.
+    ///
+    /// A broker closes a connection that has authenticated nothing within its
+    /// auth timeout, and a pooled connection may sit idle until much later.
+    /// Nothing is read back: a refused token shows up on the first real
+    /// stream, which authenticates again.
+    pub(crate) async fn announce(&self, connection: &QuicConnection) -> Result<()> {
+        let token = self.tokens.token().await?;
+        let mut send = connection.open_uni().await?;
+        write_message(
+            &mut send,
+            Message::Auth {
+                tenant_id: self.tenant_id.clone(),
+                token,
+                client_flags: None,
+                client_features: None,
+            },
+        )
+        .await
+        .context("send auth")?;
+        send.finish().context("finish auth stream")?;
+        Ok(())
+    }
+}
+
 /// What one authenticated stream agreed with the broker.
 #[derive(Debug, Clone)]
 pub(crate) struct Negotiated {

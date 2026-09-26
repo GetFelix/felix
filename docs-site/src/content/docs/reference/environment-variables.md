@@ -283,6 +283,54 @@ export FELIX_MAX_FRAME_BYTES="8388608"     # 8 MiB
 **Notes**:
 - Value of `0` uses default
 - Affects max message size
+
+### `FELIX_PREAUTH_MAX_FRAME_BYTES`
+
+**Description**: Maximum frame size a stream may send before it has authenticated. Only an
+`Auth` has to fit; a larger frame on an unauthenticated stream ends the stream.
+
+**Type**: Positive integer (bytes)
+
+**Default**: `65536` (64 KiB). Never more than `FELIX_MAX_FRAME_BYTES`.
+
+**Example**:
+```bash
+export FELIX_PREAUTH_MAX_FRAME_BYTES="65536"
+```
+
+### `FELIX_PREAUTH_MAX_STREAMS_PER_CONN`
+
+**Description**: Unauthenticated streams one connection may have reading at once. Further
+streams wait until one authenticates or ends; they are not refused.
+
+**Type**: Positive integer
+
+**Default**: `16`
+
+### `FELIX_AUTH_TIMEOUT_MS`
+
+**Description**: How long a client connection has to authenticate a stream. A connection with
+no authenticated stream by then is closed with QUIC application code `1` and reason
+`authentication timeout`.
+
+**Type**: Non-negative integer (milliseconds)
+
+**Default**: `10000`. `0` disables the deadline.
+
+**Notes**:
+- Clients from this release authenticate every pooled connection when they connect. An older
+  client that holds an event connection idle until its first subscribe will see that
+  connection closed; raise the timeout or set `0` while such clients remain.
+
+### `FELIX_MAX_CLIENT_CONNECTIONS`
+
+**Description**: Client QUIC connections the broker holds at once, across all client
+listeners. Attempts past the cap are refused before the handshake (`CONNECTION_REFUSED`) and
+counted in `felix_quic_connections_refused_total{reason="limit"}`.
+
+**Type**: Positive integer
+
+**Default**: `8192`
 - Must align with client configuration
 
 ### `FELIX_PUBLISH_QUEUE_WAIT_MS`

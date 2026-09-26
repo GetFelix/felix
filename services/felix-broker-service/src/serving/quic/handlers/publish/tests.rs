@@ -76,6 +76,9 @@ fn make_publish_context(
         subscriptions: Arc::new(SubscriptionLimiter::new()),
         lane_manager: test_lane_manager(),
         ingress_wait: false,
+        preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
+            &crate::config::BrokerConfig::default(),
+        )),
     };
     (context, rx, tx)
 }

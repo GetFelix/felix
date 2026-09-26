@@ -237,6 +237,10 @@ impl Client {
             let target = pool_target(&targets, index, &mut listeners);
             let connection = event_client.connect(target, server_name).await?;
             debug!("client established event connection");
+            // An event connection may sit idle until the first subscribe, and
+            // a broker closes a connection that has authenticated nothing
+            // within its auth timeout.
+            credentials.announce(&connection).await?;
             event_connections.push(connection);
         }
         let mut event_stream_routers = Vec::with_capacity(event_pool_size);

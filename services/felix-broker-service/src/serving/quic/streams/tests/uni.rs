@@ -122,6 +122,9 @@ async fn uni_loop_breaks_on_enqueue_error() -> Result<()> {
         subscriptions: Arc::new(SubscriptionLimiter::new()),
         lane_manager: WriterLaneManager::new(&BrokerConfig::default()),
         ingress_wait: false,
+        preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
+            &crate::config::BrokerConfig::default(),
+        )),
     };
     let mut scratch = BytesMut::with_capacity(64 * 1024);
     let binary =

@@ -64,6 +64,7 @@ pub(crate) mod client_error;
 mod codec;
 mod conn;
 mod errors;
+pub(crate) mod preauth;
 mod streams;
 mod telemetry;
 
@@ -71,6 +72,7 @@ pub mod handlers;
 
 pub use codec::{read_frame_limited_into, read_message_limited, write_message};
 pub use conn::{ClusterContext, serve, serve_with_shutdown};
+pub use preauth::ConnectionLimit;
 pub use telemetry::{FrameCountersSnapshot, frame_counters_snapshot, reset_frame_counters};
 
 use std::sync::atomic::{AtomicU64, AtomicUsize};

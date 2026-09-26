@@ -153,6 +153,8 @@ pub(crate) async fn start_broker(auth: &AuthFixture) -> Result<BrokerHarness> {
     let addr = server.local_addr()?;
 
     let config = felix_broker_service::config::BrokerConfig::from_env()?;
+    let limit =
+        felix_broker_service::serving::quic::ConnectionLimit::new(config.max_client_connections);
     let accept_shutdown = CancellationToken::new();
     let connections = TaskTracker::new();
     let accept_task = {
@@ -171,6 +173,7 @@ pub(crate) async fn start_broker(auth: &AuthFixture) -> Result<BrokerHarness> {
                 // The soak harness is a single-node broker: nothing to route
                 // against, and no peers to forward to.
                 Default::default(),
+                limit,
             )
             .await
             {

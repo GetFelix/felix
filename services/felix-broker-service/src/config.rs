@@ -91,6 +91,18 @@ pub struct BrokerConfig {
     pub ack_on_commit: bool,
     /// Max frame size accepted on QUIC streams.
     pub max_frame_bytes: usize,
+    /// Max frame size a stream may send before it has authenticated. Only an
+    /// `Auth` has to fit, so this is far below `max_frame_bytes`.
+    pub preauth_max_frame_bytes: usize,
+    /// Streams one connection may have reading before they authenticate.
+    /// More wait their turn rather than being refused.
+    pub preauth_max_streams_per_conn: usize,
+    /// How long a client connection has to authenticate a stream before it is
+    /// closed. `0` disables the deadline.
+    pub auth_timeout_ms: u64,
+    /// Client QUIC connections this broker holds at once, across all its
+    /// client listeners. Attempts beyond it are refused before the handshake.
+    pub max_client_connections: usize,
     /// Max time to wait when backpressuring publish enqueue.
     pub publish_queue_wait_timeout_ms: u64,
     /// Max time to wait for ack-on-commit publish completion.
@@ -303,6 +315,10 @@ impl Default for BrokerConfig {
             peer_transport: None,
             ack_on_commit: false,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
+            preauth_max_frame_bytes: DEFAULT_PREAUTH_MAX_FRAME_BYTES,
+            preauth_max_streams_per_conn: DEFAULT_PREAUTH_MAX_STREAMS_PER_CONN,
+            auth_timeout_ms: DEFAULT_AUTH_TIMEOUT_MS,
+            max_client_connections: DEFAULT_MAX_CLIENT_CONNECTIONS,
             publish_queue_wait_timeout_ms: DEFAULT_PUBLISH_QUEUE_WAIT_TIMEOUT_MS,
             ack_wait_timeout_ms: DEFAULT_ACK_WAIT_TIMEOUT_MS,
             group_visibility_timeout_ms: DEFAULT_GROUP_VISIBILITY_TIMEOUT_MS,

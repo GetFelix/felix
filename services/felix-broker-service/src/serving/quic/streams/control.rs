@@ -123,6 +123,8 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
         ack_timeout_state: &ack_timeout_state,
         cancel_tx: &cancel_tx,
     };
+    // Held until this stream authenticates; see `preauth`.
+    let mut preauth_permit = Some(publish_ctx.preauth.admit_stream().await);
     loop {
         if *cancel_rx_read.borrow() {
             break;
@@ -141,7 +143,12 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 }
                 continue;
             }
-            frame = source.next_frame(config.max_frame_bytes, frame_scratch) => {
+            frame = source.next_frame(
+                publish_ctx
+                    .preauth
+                    .frame_cap(session.auth_ctx.is_some(), config.max_frame_bytes),
+                frame_scratch,
+            ) => {
                 match frame? {
                     Some(frame) => frame,
                     // EOF: the peer cleanly finished the control stream.
@@ -708,6 +715,10 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
         };
         if let Step::Close(graceful) = step {
             return Ok(graceful);
+        }
+        if preauth_permit.is_some() && session.auth_ctx.is_some() {
+            preauth_permit = None;
+            publish_ctx.preauth.mark_authenticated();
         }
     }
     // `graceful_close` only tracks EOF from the peer. Any other early-exit path returns false
