@@ -113,7 +113,8 @@ async fn serve(
     let port = listener.local_addr().expect("addr").port();
     let router = build_bootstrap_router(state_with_token());
     let shutdown = CancellationToken::new();
-    let task = tokio::spawn(felix_controlplane_service::server::tls::serve_mtls(
+    let task = tokio::spawn(felix_controlplane_service::server::tls::serve_tls(
+        "bootstrap",
         listener,
         router,
         tls,

@@ -5,7 +5,8 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use super::{
-    BootstrapTlsConfig, ControlPlaneConfig, StorageBackend, parse_oidc_allowed_algorithms,
+    ApiTlsConfig, BootstrapTlsConfig, ControlPlaneConfig, StorageBackend,
+    parse_oidc_allowed_algorithms,
 };
 
 /// The settings a config file may override.
@@ -19,6 +20,7 @@ use super::{
 #[serde(deny_unknown_fields)]
 pub(super) struct ControlPlaneConfigOverride {
     bind_addr: Option<String>,
+    tls: Option<ApiTlsConfig>,
     metrics_bind: Option<String>,
     region_id: Option<String>,
     storage: Option<StorageOverride>,
@@ -154,6 +156,9 @@ impl ControlPlaneConfig {
             if matches!(config.storage, StorageBackend::Memory) {
                 config.storage = StorageBackend::Postgres;
             }
+        }
+        if let Some(tls) = override_cfg.tls {
+            config.api_tls = Some(tls);
         }
         if let Some(bootstrap_override) = override_cfg.bootstrap {
             if let Some(enabled) = bootstrap_override.enabled {
