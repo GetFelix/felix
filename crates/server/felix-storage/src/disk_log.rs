@@ -194,9 +194,26 @@ impl DiskLog {
     pub async fn append_pending(&self, records: &[AppendRecord]) -> Result<PendingAppend> {
         let records = records.to_vec();
         let inner = Arc::clone(&self.inner);
-        Self::write_batch(inner, records, None)
+        Self::write_batch(inner, records, append::WriteIf::Always)
             .await
             .map(|pending| pending.expect("an unconditional write is always written"))
+    }
+
+    /// [`DiskLog::append_pending`], only if the batch would start at exactly
+    /// `first_offset`. `None`, and nothing written, when the tail is anywhere
+    /// else.
+    ///
+    /// For a writer that decided what to write from a tail it read earlier,
+    /// such as a follower storing a leader's batch at the leader's offsets:
+    /// another append landing in between would otherwise put these records
+    /// at offsets their sender never assigned.
+    pub async fn append_pending_at(
+        &self,
+        first_offset: Offset,
+        records: &[AppendRecord],
+    ) -> Result<Option<PendingAppend>> {
+        let inner = Arc::clone(&self.inner);
+        Self::write_batch(inner, records.to_vec(), append::WriteIf::At(first_offset)).await
     }
 
     /// Write the rest of `producer_id`'s batch `sequence`, which the log holds
@@ -214,7 +231,15 @@ impl DiskLog {
     ) -> Result<Option<PendingAppend>> {
         debug_assert!(records.iter().all(|r| r.mark == RecordMark::Continues));
         let inner = Arc::clone(&self.inner);
-        Self::write_batch(inner, records.to_vec(), Some((producer_id, sequence))).await
+        Self::write_batch(
+            inner,
+            records.to_vec(),
+            append::WriteIf::Continuing {
+                producer_id,
+                sequence,
+            },
+        )
+        .await
     }
 
     /// Wait until every record below `offset` satisfies the configured fsync
@@ -436,7 +461,7 @@ impl AppendOnlyLog for DiskLog {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             let started = std::time::Instant::now();
-            let pending = Self::write_batch(Arc::clone(&inner), records, None)
+            let pending = Self::write_batch(Arc::clone(&inner), records, append::WriteIf::Always)
                 .await?
                 .expect("an unconditional write is always written");
 

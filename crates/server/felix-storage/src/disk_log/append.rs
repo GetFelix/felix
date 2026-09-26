@@ -22,15 +22,13 @@ use crate::{Result, StorageError, metrics_names};
 const MAX_ROLL_ATTEMPTS: usize = 8;
 
 impl DiskLog {
-    /// Roll if needed, then assign offsets and write the batch.
-    ///
-    /// With `continuing`, the batch is the rest of that producer batch, and is
-    /// written only if the batch is still open at the tail; `None` otherwise.
-    /// Checked under the lock the write takes, so nothing can land in between.
+    /// Roll if needed, then assign offsets and write the batch, if `condition`
+    /// holds; `None`, and nothing written, when it does not. Checked under the
+    /// lock the write takes, so nothing can land in between.
     pub(super) async fn write_batch(
         inner: Arc<LogInner>,
         records: Vec<AppendRecord>,
-        continuing: Option<(u64, u64)>,
+        condition: WriteIf,
     ) -> Result<Option<PendingAppend>> {
         if records.is_empty() {
             return Err(StorageError::InvalidRange);
@@ -104,9 +102,15 @@ impl DiskLog {
                 debug_assert!(attempt + 1 < MAX_ROLL_ATTEMPTS, "rollover retry starved");
                 continue;
             }
-            if let Some((producer_id, sequence)) = continuing
-                && !inner.batch_open_at_tail(&segments, producer_id, sequence)
-            {
+            let holds = match condition {
+                WriteIf::Always => true,
+                WriteIf::Continuing {
+                    producer_id,
+                    sequence,
+                } => inner.batch_open_at_tail(&segments, producer_id, sequence),
+                WriteIf::At(offset) => segments.tail_offset() == offset,
+            };
+            if !holds {
                 return Ok(None);
             }
             let (first_offset, last_offset) = segments.append(&records)?;
@@ -175,6 +179,20 @@ impl DiskLog {
             "append could not secure segment capacity; rollover kept losing the race",
         ))
     }
+}
+
+/// When [`DiskLog::write_batch`] may write.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum WriteIf {
+    Always,
+    /// The batch is the rest of this producer batch, which must still be open
+    /// at the tail.
+    Continuing {
+        producer_id: u64,
+        sequence: u64,
+    },
+    /// The batch must start at exactly this offset.
+    At(crate::log::Offset),
 }
 
 impl LogInner {
