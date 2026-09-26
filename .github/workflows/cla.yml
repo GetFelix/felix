@@ -47,4 +47,4 @@ jobs:
           # NOT allowlisted here: PRs it opens should be signed off by the human
           # maintainer directing/merging them, since the agent itself can't hold or
           # assign copyright. Revisit if that turns out to be too strict in practice.
-          allowlist: dependabot[bot],GCOV Github Badge,Claude <noreply@anthropic.com>
+          allowlist: dependabot[bot],GCOV Github Badge,Claude
