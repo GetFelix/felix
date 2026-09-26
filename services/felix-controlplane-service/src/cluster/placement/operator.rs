@@ -1,4 +1,4 @@
-//! Moves an operator starts or cancels.
+//! Moves an operator starts or cancels, and abandoning a shard's log.
 //!
 //! Each is one assignment write, decided like a placement step from the store
 //! and fresh reports. The caller writes it only at the placement token and
@@ -8,7 +8,8 @@
 //! That is how a request on any instance keeps to the same limits as the
 //! lease holder's placement.
 use super::moves::{AtGeneration, MovePolicy, Moves, start, undo_replacement, undo_staged};
-use super::{Blocked, CaughtUp, MoveStep};
+use super::plan::{assignment_for, plan_abandoning};
+use super::{Blocked, CaughtUp, Decision, MoveStep, Unplaceable};
 use crate::model::{
     Cache, MoveReason, Node, NodeLifecycle, ShardAssignment, ShardKey, ShardKind, ShardState,
     Stream,
@@ -73,6 +74,11 @@ pub enum Refused {
     Blocked(Blocked),
     /// Nothing to cancel: no move in progress, or it has cut over.
     NotMoving,
+    /// Nothing to abandon: the shard is not waiting on a log that is out of
+    /// reach. Its leader serves it, or a replica can take over without loss.
+    NotStranded,
+    /// The log was given up, but no node can take the shard.
+    Unplaceable(Unplaceable),
 }
 
 impl Refused {
@@ -89,6 +95,8 @@ impl Refused {
             Self::LeaderUnavailable(_) => "leader_unavailable",
             Self::Blocked(_) => "move_limit",
             Self::NotMoving => "not_moving",
+            Self::NotStranded => "not_stranded",
+            Self::Unplaceable(_) => "unplaceable",
         }
     }
 }
@@ -120,6 +128,11 @@ impl std::fmt::Display for Refused {
                 f,
                 "no move is in progress for this shard; it may already have cut over"
             ),
+            Self::NotStranded => write!(
+                f,
+                "this shard is not waiting on a lost log: its leader is serving, or a replica can take over"
+            ),
+            Self::Unplaceable(why) => write!(f, "{why}"),
         }
     }
 }
@@ -258,6 +271,57 @@ pub fn cancel_move(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep
         assignment,
         expected_generation: existing.generation,
     })
+}
+
+/// Give up the log of a shard whose only copies are out of reach, and place
+/// it afresh.
+///
+/// Only for a durable shard that placement is holding unplaced: its leader is not
+/// serving and no replica holds everything it may have acknowledged. The new
+/// leader is chosen as for any new shard and starts from whatever it holds,
+/// usually nothing, at a new generation. Every record only the old leader
+/// held is lost, including acknowledged ones, and a returning old leader does
+/// not get them back.
+pub fn abandon_log(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep, Refused> {
+    let existing = assignment_of(catalog, key)?;
+    placeable_of(catalog, key).ok_or(Refused::UnknownShard)?;
+    let decide = |abandoned: Option<&ShardKey>| {
+        plan_abandoning(
+            catalog.streams,
+            catalog.caches,
+            catalog.nodes,
+            catalog.existing,
+            catalog.caught_up,
+            catalog.policy.clone(),
+            abandoned,
+        )
+        .shards
+        .into_iter()
+        .find(|shard| &shard.key == key)
+        .map(|shard| shard.decision)
+    };
+    // Decided by placement itself, so this refuses exactly when placement
+    // would do something better than lose the log.
+    if !matches!(
+        decide(None),
+        Some(Decision::Unplaceable(
+            Unplaceable::NoCaughtUpReplica | Unplaceable::OwnerUnavailable { .. }
+        ))
+    ) {
+        return Err(Refused::NotStranded);
+    }
+    match decide(Some(key)) {
+        Some(Decision::Place(leader, replicas)) => Ok(OperatorStep {
+            step: MoveStep::Discard {
+                from: existing.leader.clone(),
+                to: leader.clone(),
+            },
+            assignment: assignment_for(key, &leader, replicas),
+            expected_generation: existing.generation,
+        }),
+        Some(Decision::Unplaceable(why)) => Err(Refused::Unplaceable(why)),
+        _ => Err(Refused::NotStranded),
+    }
 }
 
 /// Whether a move or replacement is in progress.

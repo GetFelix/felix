@@ -520,10 +520,11 @@ fails without it with no address in the redirect.
   long. A holder that shuts down releases the lease and costs nothing.
 - **A shutdown handoff is bounded.** What a stopping broker still leads when
   `FELIX_SHUTDOWN_HANDOFF_TIMEOUT_MS` runs out fails over. For a `Quorum`
-  stream that loses no acknowledged record; for a `Leader` or unreplicated
-  one it can, as any failover can. Moves are paced like any other, so a
-  broker leading many unreplicated shards needs a longer timeout (and grace
-  period).
+  stream that loses no acknowledged record; for a `Leader` one it can, as
+  any failover can. A durable unreplicated shard has nothing to fail over
+  to and is unavailable until the broker restarts. Moves are paced like any
+  other, so a broker leading many unreplicated shards needs a longer timeout
+  (and grace period).
 - **Load-aware placement** is separate work with its own status row.
 
 ## Checking the work

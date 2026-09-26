@@ -607,7 +607,7 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `timed_out`, `reseat`, `seat`, and an operator's `cancel` and `retake` |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `timed_out`, `reseat`, `seat`, and an operator's `cancel`, `retake` and `discard` |
 | `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout; a steady count means a copy that cannot finish |
 | `felix_shard_moves_waiting` | moves that could not advance in the last pass — a destination not catching up, a leader not reporting drained, or a move limit holding a drain back |
 | `felix_shard_assignment_write_conflicts_total` | placements and move steps not written because another instance changed the shard after this pass read it; the next pass re-plans |
@@ -650,6 +650,7 @@ a move takes `node.manage:cluster:*`, the permission that drains a node.
 | `POST /v1/shard-moves` | start moving a shard's leadership to a node |
 | `DELETE /v1/shard-moves/{tenant_id}/{namespace}/{name}/{shard}` | cancel a shard's move or replacement; `?kind=cache` for a cache shard |
 | `POST /v1/placement/pause`, `POST /v1/placement/resume` | stop and restart placement's own moves |
+| `POST /v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}` | give up a stranded shard's log and place it afresh; `?kind=cache` for a cache shard. **Loses data** |
 
 A listed move has a `step` (`staged`, `fenced` or `replacing`), the `reason`
 it started (`drain`, `balance`, `operator` or `replace`, stored on the
@@ -700,6 +701,20 @@ the shard back to a leader missing writes the new one acknowledged
 the check). Either way a cancelled move keeps its start time, so placement
 puts the shard behind others for its next move.
 
+**Abandoning a log** is for a durable shard that placement is holding unplaced
+because every copy of its log is out of reach: its leader is not serving and
+no replica holds everything it may have acknowledged. With
+`replication_factor: 1` that is every shard of a broker that is down. The
+plan lists such a shard as `unplaceable`, and it waits there for the broker to
+come back. Abandoning writes a new assignment at a new generation (step
+`discard`) on the node placement would choose for a new shard; that broker
+starts from whatever it holds for the shard, usually nothing. Every record
+only the old leader held is gone, acknowledged ones included, and it does not
+come back if the old leader returns. Refused as 409 `not_stranded` while the
+leader serves the shard or a replica can take over without loss, and as
+`unplaceable` when no node can take it. It takes `node.manage:cluster:*`; a
+broker's own `node.manage:node:{id}` does not reach it.
+
 **Pausing** is stored (the `placement_settings` table, a Raft command, or in
 memory), so every instance's placement sees it on its next pass. Paused,
 placement starts no move or follower replacement of its own, drains
@@ -717,6 +732,7 @@ felix-controlplane admin --url http://cp:8443 --token "$TOKEN" moves
 felix-controlplane admin plan
 felix-controlplane admin move t1/ns/orders/0 broker-3
 felix-controlplane admin cancel t1/ns/orders/0        # --cache for a cache shard
+felix-controlplane admin abandon t1/ns/orders/0       # loses the shard's records
 felix-controlplane admin pause
 felix-controlplane admin resume
 ```

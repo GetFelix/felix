@@ -269,7 +269,7 @@ async fn failover_completes_within_the_configured_bound() {
 /// holding the log, the cluster declines to invent a leader.
 #[serial]
 #[tokio::test]
-async fn an_unreplicated_shard_does_not_fail_over_to_an_empty_broker() {
+async fn a_shard_with_no_caught_up_replica_does_not_fail_over_to_an_empty_broker() {
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 3,
         // Replicated across two, so a replica set exists — but the publish is
@@ -310,5 +310,131 @@ async fn an_unreplicated_shard_does_not_fail_over_to_an_empty_broker() {
             "{promoted} was made leader but holds none of the shard",
         );
     }
+    cluster.shutdown().await;
+}
+
+/// A leader-only stream: the owner holds the only copy of each shard.
+fn unreplicated_config() -> ClusterConfig {
+    ClusterConfig {
+        nodes: 2,
+        streams: vec![StreamSpec::new(STREAM, 1)],
+        ..Default::default()
+    }
+}
+
+/// Publish a record to the owner and wait until it replays it, so it is in
+/// the owner's log before the owner is stopped.
+async fn written_to_owner(cluster: &Cluster, owner: &str, payload: &[u8]) {
+    cluster
+        .publish_via(owner, STREAM, payload.to_vec())
+        .await
+        .expect("publish");
+    felix_cluster::wait::until(
+        Duration::from_secs(20),
+        "the owner to replay the record",
+        || async {
+            replay_until(cluster, owner, Duration::from_secs(20))
+                .await
+                .iter()
+                .any(|record| record == payload)
+        },
+    )
+    .await
+    .expect("the record is in the owner's log");
+}
+
+/// Step placement until it holds the shard unplaced: the owner is marked
+/// down, which is when placement used to hand the shard to the survivor. A
+/// stopped broker stops being placeable a little before that.
+async fn stranded(cluster: &Cluster) {
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "placement to hold the shard for its owner",
+        || async {
+            let outcome = cluster.place_shards().await;
+            assert_eq!(outcome.placed, 0, "the shard was placed away from its log");
+            outcome.unplaceable == 1
+        },
+    )
+    .await
+    .expect("the shard is held unplaced");
+}
+
+/// **An unreplicated durable shard waits for its owner.** The owner holds the
+/// only copy of the log, so handing the shard to the other broker would serve
+/// it empty at a new generation. It stays with the owner, unserved, and the
+/// owner coming back serves it with its records.
+#[serial]
+#[tokio::test]
+async fn an_unreplicated_durable_shard_waits_for_its_owner() {
+    let mut cluster = Cluster::start(unreplicated_config())
+        .await
+        .expect("start cluster");
+    let owner = cluster.owner(STREAM).await.expect("owner");
+    written_to_owner(&cluster, &owner, b"only-copy").await;
+
+    cluster.stop_node(&owner).await.expect("stop the owner");
+    stranded(&cluster).await;
+    for _ in 0..5 {
+        let outcome = cluster.place_shards().await;
+        assert_eq!(outcome.placed, 0, "the shard was placed away from its log");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(cluster.owner(STREAM).await.expect("owner"), owner);
+
+    cluster
+        .restart_node(&owner)
+        .await
+        .expect("restart the owner");
+    cluster.place_shards().await;
+    assert_eq!(cluster.owner(STREAM).await.expect("owner"), owner);
+    let replayed = replay_until(&cluster, &owner, Duration::from_secs(30)).await;
+    assert!(
+        replayed.iter().any(|record| record == b"only-copy"),
+        "the returning owner should serve the records it held",
+    );
+    cluster.shutdown().await;
+}
+
+/// **Giving the log up is an operator's call.** Abandoning the stranded shard
+/// places it on the surviving broker, which then serves it.
+#[serial]
+#[tokio::test]
+async fn an_operator_can_abandon_the_log_of_a_shard_whose_owner_is_gone() {
+    let mut cluster = Cluster::start(unreplicated_config())
+        .await
+        .expect("start cluster");
+    let owner = cluster.owner(STREAM).await.expect("owner");
+    let survivor = cluster
+        .node_ids()
+        .into_iter()
+        .find(|node| node != &owner)
+        .expect("two brokers");
+    assert!(
+        cluster.abandon_log(STREAM, 0).await.is_err(),
+        "a shard whose owner serves it cannot be abandoned",
+    );
+    written_to_owner(&cluster, &owner, b"lost").await;
+
+    cluster.stop_node(&owner).await.expect("stop the owner");
+    stranded(&cluster).await;
+    assert_eq!(
+        cluster.abandon_log(STREAM, 0).await.expect("abandon"),
+        "discard"
+    );
+    assert_eq!(cluster.owner(STREAM).await.expect("owner"), survivor);
+
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the survivor to serve the abandoned shard",
+        || async {
+            cluster
+                .publish_via(&survivor, STREAM, b"after".to_vec())
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("the survivor serves the shard");
     cluster.shutdown().await;
 }

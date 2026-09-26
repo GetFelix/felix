@@ -83,11 +83,63 @@ async fn a_second_pass_writes_nothing() {
     );
 }
 
-/// Losing a broker re-places only its shards, and the generation moves so a
-/// stale report from the old leader can be rejected.
+/// Losing a broker leaves its unreplicated durable shards where they are,
+/// unplaced, and its return picks them up at the same generation: nothing
+/// was served empty in between.
 #[tokio::test]
-async fn a_lost_node_has_its_shards_replaced() {
+async fn a_lost_node_keeps_its_unreplicated_shards_until_it_returns() {
     let store = cluster(&["broker-a", "broker-b", "broker-c"]).await;
+    reconcile_once(&store, &Default::default(), MovePolicy::default()).await;
+
+    let before = store.list_shard_assignments().await.expect("list");
+    let victim = before[0].leader.clone();
+    let lost = before.iter().filter(|a| a.leader == victim).count();
+    store
+        .set_node_lifecycle(&victim, NodeLifecycle::Down)
+        .await
+        .expect("down");
+
+    let outcome = reconcile_once(&store, &Default::default(), MovePolicy::default()).await;
+    assert_eq!(outcome.placed, 0);
+    assert_eq!(outcome.unplaceable, lost);
+    assert_eq!(outcome.kept, 3 - lost);
+    assert_eq!(
+        store.list_shard_assignments().await.expect("list"),
+        before,
+        "nothing may be written while the only copy is out of reach",
+    );
+
+    store
+        .set_node_lifecycle(&victim, NodeLifecycle::Live)
+        .await
+        .expect("back");
+    let outcome = reconcile_once(&store, &Default::default(), MovePolicy::default()).await;
+    assert_eq!(outcome.unplaceable, 0);
+    assert_eq!(outcome.kept, 3);
+    assert_eq!(store.list_shard_assignments().await.expect("list"), before);
+}
+
+/// Losing a broker re-places only its ephemeral shards, and the generation
+/// moves so a stale report from the old leader can be rejected.
+#[tokio::test]
+async fn a_lost_node_has_its_ephemeral_shards_replaced() {
+    let store = cluster(&["broker-a", "broker-b", "broker-c"]).await;
+    store
+        .patch_stream(
+            &crate::model::StreamKey {
+                tenant_id: "t1".to_string(),
+                namespace: "ns".to_string(),
+                stream: "orders".to_string(),
+            },
+            crate::model::StreamPatchRequest {
+                retention: None,
+                consistency: None,
+                delivery: None,
+                durable: Some(false),
+            },
+        )
+        .await
+        .expect("make the stream ephemeral");
     reconcile_once(&store, &Default::default(), MovePolicy::default()).await;
 
     let before = store.list_shard_assignments().await.expect("list");

@@ -1,5 +1,6 @@
 //! Placement tests, by theme. The helpers here build the catalogs and
 //! clusters every theme plans over.
+mod abandon;
 mod caches;
 mod failover;
 mod lease;
@@ -24,6 +25,15 @@ use crate::model::{
 
 fn stream(name: &str, shards: u32) -> Stream {
     replicated_stream(name, shards, 1)
+}
+
+/// A stream held only in memory: there is no log to lose, so a shard whose
+/// broker is lost is simply placed again.
+fn ephemeral_stream(name: &str, shards: u32) -> Stream {
+    Stream {
+        durable: false,
+        ..stream(name, shards)
+    }
 }
 
 /// A stream that keeps `replication_factor` copies of each shard.

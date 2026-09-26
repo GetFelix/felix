@@ -18,6 +18,9 @@ commands:
                                            move a shard's leadership to <node>
   cancel <tenant>/<namespace>/<name>/<shard> [--cache]
                                            cancel a shard's move
+  abandon <tenant>/<namespace>/<name>/<shard> [--cache]
+                                           LOSE a shard's unreachable log and
+                                           place the shard afresh
   pause                                    stop placement starting moves
   resume                                   let placement start moves again
 
@@ -86,6 +89,21 @@ pub async fn run(args: Vec<String>) -> Result<()> {
             );
             (
                 admin.send(reqwest::Method::DELETE, &path, None).await?,
+                render_step,
+            )
+        }
+        ["abandon", shard] => {
+            let key = ShardPath::parse(shard, cache)?;
+            let path = format!(
+                "/v1/placement/abandon/{}/{}/{}/{}?kind={}",
+                key.tenant_id,
+                key.namespace,
+                key.name,
+                key.shard,
+                key.kind()
+            );
+            (
+                admin.send(reqwest::Method::POST, &path, None).await?,
                 render_step,
             )
         }

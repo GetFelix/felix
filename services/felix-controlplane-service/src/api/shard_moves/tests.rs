@@ -31,6 +31,7 @@ async fn fixture() -> Fixture {
 }
 
 const CANCEL: &str = "/v1/shard-moves/t1/ns/orders/0";
+const ABANDON: &str = "/v1/placement/abandon/t1/ns/orders/0";
 
 impl Fixture {
     async fn call(
@@ -110,6 +111,7 @@ async fn reading_moves_takes_view_and_changing_them_takes_manage() {
         ("DELETE", CANCEL, Value::Null),
         ("POST", "/v1/placement/pause", Value::Null),
         ("POST", "/v1/placement/resume", Value::Null),
+        ("POST", ABANDON, Value::Null),
     ] {
         let (status, _) = fx.call(method, uri, &fx.viewer, body).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
@@ -261,4 +263,40 @@ async fn the_plan_previews_a_pass_without_writing_it() {
         fx.store.get_shard_assignment(&shard_zero()).await.is_err(),
         "the preview wrote an assignment"
     );
+}
+
+/// Abandoning a log is cluster-wide operator work: a broker's own
+/// `node.manage` does not reach it. It is refused while the leader serves,
+/// and once the leader is down it places the shard on a live node.
+#[tokio::test]
+async fn abandoning_a_log_takes_the_cluster_operator_and_a_lost_leader() {
+    let fx = fixture().await;
+    let (_, keys) = one_shard_cluster().await;
+    let before = fx.assign(ShardState::Assigning, None).await;
+    let broker = token(&keys, &["node.manage:node:broker-x"]);
+    let (status, _) = fx.call("POST", ABANDON, &broker, Value::Null).await;
+    assert!(
+        matches!(status, StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED),
+        "{status}"
+    );
+
+    let (status, body) = fx.operator("POST", ABANDON, Value::Null).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "not_stranded");
+
+    fx.store
+        .set_node_lifecycle("broker-x", crate::model::NodeLifecycle::Down)
+        .await
+        .expect("down");
+    let (status, body) = fx.operator("POST", ABANDON, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["step"], "discard");
+    assert_eq!(body["assignment"]["leader"], "broker-y");
+    let after = fx
+        .store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_eq!(after.leader, "broker-y");
+    assert!(after.generation > before.generation);
 }

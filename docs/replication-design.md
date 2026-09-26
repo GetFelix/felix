@@ -472,9 +472,14 @@ were not chosen — a failover that *is* the data loss, and one nothing downstre
 reports as one. Unavailable is visible and recoverable; silently empty is
 neither.
 
-A stream that never asked for replication is unaffected. It has no replicas, so
-there was never a copy to prefer, and a fresh placement stays the only thing
-available.
+The same holds for a durable stream that never asked for replication. Its
+leader holds the only copy, so the shard stays assigned to it, unplaced, until
+it returns (`Unplaceable::OwnerUnavailable`). Placing it elsewhere would be the
+same silent empty log. An operator who would rather lose the records than wait
+abandons them explicitly (`POST /v1/placement/abandon/...`, see
+[control-plane.md](control-plane.md#operator-controls)); that is the only path
+by which a durable shard is placed on a broker that does not hold its log. An
+in-memory stream has no log to lose and is placed again at once.
 
 Positions are held in the control plane's memory. They change constantly, are
 advisory, and expire in about a second, so persisting them would cost a write

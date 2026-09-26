@@ -1,5 +1,6 @@
 //! Operator controls over shard moves: list them, start one, cancel one, see
-//! what placement would do next, and pause placement's own moves.
+//! what placement would do next, and pause placement's own moves. Also the
+//! one control that loses data: abandoning a shard's unreachable log.
 //!
 //! Reads take `node.view:cluster:*`, like the assignment listing. Everything
 //! that changes a move takes `node.manage:cluster:*`, the permission that
@@ -18,8 +19,8 @@ use crate::api::types::{
 use crate::auth::bearer::require_cluster_action;
 use crate::auth::rbac::authorize::ACTION_NODE_MANAGE;
 use crate::cluster::placement::{
-    CaughtUp, Decision, OperatorError, PlacementRead, Refused, cancel_move, run_operator,
-    start_move,
+    CaughtUp, Decision, OperatorError, PlacementRead, Refused, abandon_log, cancel_move,
+    run_operator, start_move,
 };
 use crate::model::{ShardKey, ShardKind, ShardState};
 
@@ -138,6 +139,64 @@ pub(crate) async fn cancel_shard_move(
         kind: query.kind,
     };
     run(&state, |catalog| cancel_move(catalog, &key)).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}",
+    tag = "placement",
+    params(
+        ("tenant_id" = String, Path, description = "Tenant"),
+        ("namespace" = String, Path, description = "Namespace"),
+        ("name" = String, Path, description = "Stream or cache name"),
+        ("shard" = u32, Path, description = "Shard number"),
+        ("kind" = Option<ShardKind>, Query, description = "`stream` (default) or `cache`")
+    ),
+    responses(
+        (status = 200, description = "Log abandoned and the shard placed afresh", body = ShardMoveResponse),
+        (status = 404, description = "No such shard", body = crate::api::types::ErrorResponse),
+        (status = 409, description = "Nothing to abandon, or no node can take the shard", body = crate::api::types::ErrorResponse)
+    )
+)]
+/// Give up a shard's log and place the shard afresh. **This loses data.**
+///
+/// For a durable shard that placement is holding unplaced because the only copies
+/// of its log are out of reach: its leader is not serving and no replica
+/// holds everything it may have acknowledged. That includes every durable
+/// shard with a replication factor of 1 whose broker is down. The shard
+/// otherwise waits for that broker to return. The new leader is chosen as
+/// for a new shard and starts from whatever it holds, usually nothing, at a
+/// new generation; records only the old leader held are gone, acknowledged
+/// ones included.
+///
+/// # Errors
+/// - 404 when the shard has no assignment.
+/// - 409 `not_stranded` when the leader is serving or a replica can take
+///   over without loss, and `unplaceable` when no node can take the shard.
+pub(crate) async fn abandon_shard_log(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((tenant_id, namespace, name, shard)): Path<(String, String, String, u32)>,
+    Query(query): Query<KindQuery>,
+) -> Result<Json<ShardMoveResponse>, ApiError> {
+    require_cluster_action(&state, &headers, ACTION_NODE_MANAGE).await?;
+    let key = ShardKey {
+        tenant_id,
+        namespace,
+        stream: name,
+        shard,
+        kind: query.kind,
+    };
+    let response = run(&state, |catalog| abandon_log(catalog, &key)).await?;
+    tracing::warn!(
+        kind = %key.kind,
+        name = %key.stream,
+        shard = key.shard,
+        leader = %response.assignment.leader,
+        generation = response.assignment.generation,
+        "an operator abandoned a shard's log; records only its previous leader held are lost",
+    );
+    Ok(response)
 }
 
 #[utoipa::path(

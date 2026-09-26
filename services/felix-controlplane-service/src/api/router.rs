@@ -193,6 +193,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::get(api::shard_moves::placement_plan),
         )
         .route(
+            "/v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}",
+            axum::routing::post(api::shard_moves::abandon_shard_log),
+        )
+        .route(
             "/v1/placement/pause",
             axum::routing::post(api::shard_moves::pause_placement),
         )

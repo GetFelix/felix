@@ -92,6 +92,21 @@ pub fn plan_with(
     caught_up: &dyn CaughtUp,
     policy: MovePolicy,
 ) -> Plan {
+    plan_abandoning(streams, caches, nodes, existing, caught_up, policy, None)
+}
+
+/// [`plan_with`], except that `abandoned` is placed afresh even though the only
+/// copies of its log are out of reach. That is data loss, so only an operator
+/// asks for it (`abandon_log`).
+pub(super) fn plan_abandoning(
+    streams: &[Stream],
+    caches: &[Cache],
+    nodes: &[Node],
+    existing: &[ShardAssignment],
+    caught_up: &dyn CaughtUp,
+    policy: MovePolicy,
+    abandoned: Option<&ShardKey>,
+) -> Plan {
     let placeables: Vec<Placeable<'_>> = streams
         .iter()
         .map(Placeable::of_stream)
@@ -283,21 +298,26 @@ pub fn plan_with(
             continue;
         }
 
-        // The shard was replicated and nothing that holds it can lead. Placing
-        // it on a node that has never seen it is not a failover, it is a
-        // silently empty shard: the records stay on the replicas, unreachable,
-        // while a new leader serves nothing at a newer generation.
-        //
-        // A stream that never asked for replication is untouched by this — it
-        // has no replicas, so there was never a copy to prefer, and a fresh
-        // placement remains the only thing available.
+        // Nothing that holds the log can lead. Placing the shard on a node
+        // that has never seen it is not a failover, it is a silently empty
+        // shard at a newer generation, with the records stranded where they
+        // were. That holds for an unreplicated shard too: its owner is the
+        // only copy, so the shard waits for it unless an operator gives the
+        // data up.
         if let Some(previous) = current.get(&key)
-            && !previous.replicas.is_empty()
             && durable
+            && abandoned != Some(&key)
         {
+            let reason = if previous.replicas.is_empty() {
+                Unplaceable::OwnerUnavailable {
+                    leader: previous.leader.clone(),
+                }
+            } else {
+                Unplaceable::NoCaughtUpReplica
+            };
             shards.push(ShardPlan {
                 key,
-                decision: Decision::Unplaceable(Unplaceable::NoCaughtUpReplica),
+                decision: Decision::Unplaceable(reason),
             });
             continue;
         }
