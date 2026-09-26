@@ -31,6 +31,7 @@ use tokio::sync::Mutex;
 
 use crate::disk_log::{DiskLog, layout};
 use crate::log::{AppendOnlyLog, AppendRecord, LogConfig, Offset, ReadRange, ShardKey};
+use crate::log_swap::{recover_interrupted_swap, swap_in_compacted};
 use crate::{Corruption, CorruptionKind, Result, StorageError};
 
 /// How much larger than its live bytes a log may grow before it is compacted.
@@ -198,6 +199,7 @@ impl CounterStore {
         };
         let dir = layout::shard_dir(&self.root, &key);
         let label = layout::shard_label(&key);
+        recover_interrupted_swap(&dir)?;
         let log = match base_offset {
             Some(base) => DiskLog::open_at(dir.clone(), label.clone(), self.config.clone(), base)?,
             None => DiskLog::open(dir.clone(), label.clone(), self.config.clone())?,
@@ -384,13 +386,7 @@ impl CounterShard {
         fresh.shutdown().await?;
         state.log.shutdown().await?;
 
-        let retired = self.dir.with_extension("retired");
-        if retired.exists() {
-            std::fs::remove_dir_all(&retired).map_err(StorageError::Io)?;
-        }
-        std::fs::rename(&self.dir, &retired).map_err(StorageError::Io)?;
-        std::fs::rename(&staging, &self.dir).map_err(StorageError::Io)?;
-        std::fs::remove_dir_all(&retired).map_err(StorageError::Io)?;
+        swap_in_compacted(&self.dir, &staging)?;
 
         state.log = DiskLog::open(self.dir.clone(), self.label.clone(), self.config.clone())?;
         index.covered_through = Some(state.log.tail_offset().await?);
