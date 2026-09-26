@@ -44,13 +44,13 @@ pub fn refresh_ttl() -> Duration {
     )
 }
 
-#[derive(Debug, Deserialize, ToSchema, Clone)]
+#[derive(Deserialize, ToSchema, Clone)]
 pub struct TokenRefreshRequest {
     /// The refresh token handed out by exchange or by a previous refresh.
     pub refresh_token: String,
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone)]
+#[derive(Serialize, ToSchema, Clone)]
 pub struct TokenRefreshResponse {
     pub felix_token: String,
     pub expires_in: u64,
@@ -58,6 +58,26 @@ pub struct TokenRefreshResponse {
     /// The replacement refresh token. The one just presented is spent.
     pub refresh_token: String,
     pub refresh_expires_in: u64,
+}
+
+impl std::fmt::Debug for TokenRefreshRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenRefreshRequest")
+            .field("refresh_token", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for TokenRefreshResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenRefreshResponse")
+            .field("felix_token", &"<redacted>")
+            .field("expires_in", &self.expires_in)
+            .field("token_type", &self.token_type)
+            .field("refresh_token", &"<redacted>")
+            .field("refresh_expires_in", &self.refresh_expires_in)
+            .finish()
+    }
 }
 
 /// Mint a refresh token for a principal, returning the record to store and the

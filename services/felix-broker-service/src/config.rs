@@ -39,7 +39,7 @@ const ACK_WAIT_OVER_QUORUM_MS: u64 = 500;
 /// out by hand so the dump cannot drift from the struct — a listing that quietly
 /// stops mentioning a setting is the same class of problem as a documented
 /// variable nothing reads.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct BrokerConfig {
     /// QUIC listener bind address. With `quic_listeners > 1` this is the *first*
     /// of a consecutive run of ports; see [`BrokerConfig::quic_binds`].
@@ -215,6 +215,17 @@ pub struct BrokerConfig {
     /// shard it leads; zero is unlimited. Never applied to a follower the
     /// quorum needs.
     pub shard_move_bytes_per_sec: u64,
+}
+
+/// Rendered through the same `Serialize` as `--print-config`, so the
+/// credential is redacted here too and a new field cannot be forgotten.
+impl std::fmt::Debug for BrokerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match serde_json::to_string(self) {
+            Ok(rendered) => write!(f, "BrokerConfig {rendered}"),
+            Err(_) => f.write_str("BrokerConfig { .. }"),
+        }
+    }
 }
 
 impl BrokerConfig {

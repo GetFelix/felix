@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BootstrapConfig {
     pub enabled: bool,
     pub bind_addr: SocketAddr,
@@ -16,6 +16,20 @@ pub struct BootstrapConfig {
     /// When set, the bootstrap listener terminates TLS and refuses any client
     /// that does not present a certificate signed by `client_ca_path`.
     pub tls: Option<BootstrapTlsConfig>,
+}
+
+/// Whether each token is set, never the token.
+impl std::fmt::Debug for BootstrapConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let shown = |token: &Option<String>| token.as_ref().map(|_| "<redacted>");
+        f.debug_struct("BootstrapConfig")
+            .field("enabled", &self.enabled)
+            .field("bind_addr", &self.bind_addr)
+            .field("token", &shown(&self.token))
+            .field("previous_token", &shown(&self.previous_token))
+            .field("tls", &self.tls)
+            .finish()
+    }
 }
 
 impl BootstrapConfig {

@@ -15,11 +15,21 @@ use tokio_util::sync::CancellationToken;
 use super::{NodeCredential, now_secs, read_claims, refresh_delay};
 use crate::cluster::membership::metrics as mm;
 
-/// What `/token/refresh` answers with.
-#[derive(Debug, Deserialize)]
+/// What `/token/refresh` answers with. Both fields are live credentials, so
+/// `Debug` shows neither.
+#[derive(Deserialize)]
 struct RefreshResponse {
     felix_token: String,
     refresh_token: String,
+}
+
+impl std::fmt::Debug for RefreshResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RefreshResponse")
+            .field("felix_token", &"<redacted>")
+            .field("refresh_token", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Everything the loop needs.

@@ -131,3 +131,14 @@ async fn shutdown_mid_refresh_still_saves_the_rotated_token() {
         )
     }
 }
+
+#[test]
+fn debug_never_shows_the_tokens() {
+    let response = RefreshResponse {
+        felix_token: "access-secret".to_string(),
+        refresh_token: "refresh-secret".to_string(),
+    };
+    let rendered = format!("{response:?}");
+    assert!(!rendered.contains("access-secret"), "{rendered}");
+    assert!(!rendered.contains("refresh-secret"), "{rendered}");
+}

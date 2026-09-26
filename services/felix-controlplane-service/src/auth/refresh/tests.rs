@@ -137,3 +137,20 @@ fn refresh_refusals_are_counted() {
     assert_eq!(recorder.count("felix_refresh_token_bad_secret_total"), 1);
     assert_eq!(recorder.count("felix_refresh_token_replays_total"), 1);
 }
+
+#[test]
+fn debug_never_shows_a_token() {
+    let request = TokenRefreshRequest {
+        refresh_token: "refresh-secret".to_string(),
+    };
+    let response = TokenRefreshResponse {
+        felix_token: "access-secret".to_string(),
+        expires_in: 900,
+        token_type: "Bearer".to_string(),
+        refresh_token: "refresh-secret".to_string(),
+        refresh_expires_in: 60,
+    };
+    for rendered in [format!("{request:?}"), format!("{response:?}")] {
+        assert!(!rendered.contains("secret"), "{rendered}");
+    }
+}

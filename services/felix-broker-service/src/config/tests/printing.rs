@@ -61,3 +61,12 @@ fn peer_timeouts_are_printed_as_milliseconds() {
     let rendered = serde_yaml_ng::to_string(&config).expect("render");
     assert!(rendered.contains("request_timeout: 2500"), "{rendered}");
 }
+
+/// `{:?}` is the other way a config reaches a log, and it must redact the
+/// same way.
+#[test]
+fn debug_never_shows_the_credential() {
+    let rendered = format!("{:?}", with_membership("super-secret-value"));
+    assert!(!rendered.contains("super-secret-value"), "{rendered}");
+    assert!(rendered.contains("<redacted>"), "{rendered}");
+}

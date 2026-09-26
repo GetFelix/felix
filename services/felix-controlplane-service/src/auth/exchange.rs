@@ -34,7 +34,7 @@ pub struct TokenExchangeRequest {
 }
 
 /// The minted Felix bearer token plus expiry. Treat `felix_token` as a secret.
-#[derive(Debug, Serialize, ToSchema, Clone)]
+#[derive(Serialize, ToSchema, Clone)]
 pub struct TokenExchangeResponse {
     pub felix_token: String,
     pub expires_in: u64,
@@ -43,6 +43,18 @@ pub struct TokenExchangeResponse {
     /// IdP round trip. Single-use: refreshing mints its replacement.
     pub refresh_token: String,
     pub refresh_expires_in: u64,
+}
+
+impl std::fmt::Debug for TokenExchangeResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenExchangeResponse")
+            .field("felix_token", &"<redacted>")
+            .field("expires_in", &self.expires_in)
+            .field("token_type", &self.token_type)
+            .field("refresh_token", &"<redacted>")
+            .field("refresh_expires_in", &self.refresh_expires_in)
+            .finish()
+    }
 }
 
 /// Exchange an upstream IdP token for a Felix EdDSA token.
