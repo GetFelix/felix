@@ -682,7 +682,7 @@ cargo profdata run -p felix-broker-service
 cargo run --release -p felix-broker-service
 
 # In another terminal, run latency demo
-cargo run --release -p felix-broker-service --bin latency-demo -- \
+cargo run --release -p felix-broker-service --features demo --bin latency-demo -- \
   --binary \
   --fanout 1 \
   --batch 1 \

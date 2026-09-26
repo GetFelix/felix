@@ -81,7 +81,7 @@ struct Placement {
 /// A node whose advertised address does not parse is skipped rather than
 /// failing the fetch: one malformed registration must not cost this broker every
 /// other route it knows.
-pub async fn fetch(
+pub(crate) async fn fetch(
     client: &reqwest::Client,
     base_url: &str,
     bearer: Option<&str>,

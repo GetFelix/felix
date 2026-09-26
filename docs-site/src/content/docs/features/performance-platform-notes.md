@@ -74,7 +74,7 @@ export FELIX_EVENT_CONN_RECV_WINDOW=268435456
 export FELIX_EVENT_STREAM_RECV_WINDOW=67108864
 export FELIX_EVENT_SEND_WINDOW=268435456
 
-cargo run --release -p felix-broker-service --bin latency-demo -- \
+cargo run --release -p felix-broker-service --features demo --bin latency-demo -- \
   --all false \
   --warmup 2000 \
   --total 20000 \

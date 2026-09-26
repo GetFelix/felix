@@ -150,14 +150,14 @@ publish and subscribe against it; running brokers yourself is covered there too.
 Verify end-to-end functionality with a self-contained demo (no separate broker required):
 
 ```bash
-cargo run --release -p felix-broker-service --bin pubsub-demo-simple
+cargo run --release -p felix-broker-service --features demo --bin pubsub-demo-simple
 ```
 
 Other demos you can try (including a control-plane RBAC mutation demo):
 
 ```bash
-cargo run --release -p felix-broker-service --bin cache-demo
-cargo run --release -p felix-broker-service --bin latency-demo
+cargo run --release -p felix-broker-service --features demo --bin cache-demo
+cargo run --release -p felix-broker-service --features demo --bin latency-demo
 cargo run --release -p felix-broker-service --bin pubsub-demo-notifications
 cargo run --release -p felix-broker-service --bin pubsub-demo-orders
 cargo run --manifest-path demos/rbac-live/Cargo.toml

@@ -1,9 +1,10 @@
 //! Demo authentication: a fixed Ed25519 key and a token for one tenant, so a
 //! demo broker accepts clients without a control plane.
 //!
-//! The key is a constant in this file, so anything it signs is forgeable. Used
-//! by the `demos/broker` binaries, `demos/slow-consumer` and
-//! `demos/state-divergence`.
+//! The key is a constant in this file, so anything it signs is forgeable. Only
+//! built with the `demo` feature, which the `demos/broker` binaries,
+//! `demos/slow-consumer`, `demos/state-divergence` and this crate's tests turn
+//! on; the broker binary never has it.
 
 use std::collections::HashMap;
 use std::sync::Arc;

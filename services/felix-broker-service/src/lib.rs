@@ -18,7 +18,7 @@
 //! per-message work, and [`serving::auth`] checks the token on each action.
 //! A publish for a shard another broker owns goes there through
 //! [`serving::forward`]. `serving::cache_routing` decides which broker answers
-//! for a cache key, and `serving::group_ops` and [`serving::core_shards`] are
+//! for a cache key, and `serving::group_ops` and `serving::core_shards` are
 //! the queue and shard operations behind the handlers.
 //!
 //! # 2. Belonging to a cluster
@@ -26,8 +26,8 @@
 //! [`cluster::membership`] registers this node and heartbeats;
 //! [`cluster::credential`] holds the token it presents and refreshes it before
 //! expiry. [`cluster::catalog_sync`] syncs the metadata catalog,
-//! [`cluster::node_catalog`] turns node ids into addresses,
-//! [`cluster::client_endpoints`] is what this broker tells a client about where
+//! `cluster::node_catalog` turns node ids into addresses,
+//! `cluster::client_endpoints` is what this broker tells a client about where
 //! to connect, and [`cluster::lease`] is the authority to serve at all —
 //! renewed by the same heartbeat, checked cheaply on admission and against the
 //! clock again before any record is committed.

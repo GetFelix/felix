@@ -68,7 +68,7 @@ pub(crate) mod preauth;
 mod streams;
 mod telemetry;
 
-pub mod handlers;
+pub(crate) mod handlers;
 
 pub use codec::{read_frame_limited_into, read_message_limited, write_message};
 pub use conn::{ClusterContext, serve, serve_with_shutdown};

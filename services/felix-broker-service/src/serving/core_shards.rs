@@ -24,7 +24,7 @@ use tokio::sync::oneshot;
 
 /// A fixed set of single-threaded runtimes, one per shard.
 #[derive(Debug)]
-pub struct CoreShards {
+pub(crate) struct CoreShards {
     handles: Vec<tokio::runtime::Handle>,
     // Dropping the senders releases each shard's `block_on`, ending its thread.
     _shutdown: Vec<oneshot::Sender<()>>,
@@ -33,7 +33,7 @@ pub struct CoreShards {
 impl CoreShards {
     /// Build `count` shard threads. Each thread hosts a current-thread tokio
     /// runtime and is pinned to a core on Linux (best-effort no-op elsewhere).
-    pub fn new(count: usize) -> Arc<Self> {
+    pub(crate) fn new(count: usize) -> Arc<Self> {
         let count = count.max(1);
         let mut handles = Vec::with_capacity(count);
         let mut shutdown = Vec::with_capacity(count);
@@ -76,31 +76,26 @@ impl CoreShards {
     }
 
     /// Number of shards.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.handles.len()
-    }
-
-    /// Whether the set is empty (never true in practice; `new` clamps to 1).
-    pub fn is_empty(&self) -> bool {
-        self.handles.is_empty()
     }
 
     /// Deterministic owner shard for a stream handle id. Must stay consistent
     /// with publish-worker sharding so a stream's publish worker and its
     /// subscriptions' lane feeders land on the same core.
-    pub fn shard_for(&self, handle_id: u64) -> usize {
+    pub(crate) fn shard_for(&self, handle_id: u64) -> usize {
         (handle_id as usize) % self.handles.len()
     }
 
     /// Runtime handle of the shard owning `handle_id`.
-    pub fn handle_for(&self, handle_id: u64) -> &tokio::runtime::Handle {
+    pub(crate) fn handle_for(&self, handle_id: u64) -> &tokio::runtime::Handle {
         &self.handles[self.shard_for(handle_id)]
     }
 }
 
 /// Process-wide shard set, initialized from the first config that enables it.
 /// Returns `None` while `core_shards == 0` (feature disabled).
-pub fn global_shards(config: &crate::config::BrokerConfig) -> Option<Arc<CoreShards>> {
+pub(crate) fn global_shards(config: &crate::config::BrokerConfig) -> Option<Arc<CoreShards>> {
     static SHARDS: OnceLock<Option<Arc<CoreShards>>> = OnceLock::new();
     SHARDS
         .get_or_init(|| {

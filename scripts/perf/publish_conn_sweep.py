@@ -27,7 +27,7 @@ def to_ms(value: float, unit: str) -> float:
 def run_once(payload: int, fanout: int, batch: int, pub_conns: int, pub_streams: int, warmup: int, total: int) -> Sample:
     cmd = [
         "cargo", "run", "--release", "--bin", "latency-demo",
-        "--features", "telemetry,perf_debug", "--",
+        "--features", "demo,telemetry,perf_debug", "--",
         "--warmup", str(warmup),
         "--total", str(total),
         "--payload", str(payload),

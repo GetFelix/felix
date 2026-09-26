@@ -232,7 +232,7 @@ STEP 19 t2 token publish denied: PASS
 
 **Run**:
 ```bash
-cargo run --release -p felix-broker-service --bin pubsub-demo-simple
+cargo run --release -p felix-broker-service --features demo --bin pubsub-demo-simple
 ```
 
 **What to expect**:
@@ -250,7 +250,7 @@ cargo run --release -p felix-broker-service --bin pubsub-demo-simple
 
 **Run**:
 ```bash
-cargo run --release -p felix-broker-service --bin cache-demo
+cargo run --release -p felix-broker-service --features demo --bin cache-demo
 ```
 
 **Common tuning env vars**:
@@ -278,10 +278,10 @@ FELIX_CACHE_BENCH_OPS=put,get_hit,get_miss
 **Run**:
 ```bash
 # Single run
-cargo run --release -p felix-broker-service --bin latency-demo
+cargo run --release -p felix-broker-service --features demo --bin latency-demo
 
 # Customized run
-cargo run --release -p felix-broker-service --bin latency-demo -- \
+cargo run --release -p felix-broker-service --features demo --bin latency-demo -- \
     --binary \
     --fanout 10 \
     --batch 64 \

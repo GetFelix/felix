@@ -516,11 +516,11 @@ npm run build
 
 ```bash
 # Run latency benchmarks
-cargo run --release -p felix-broker-service --bin latency-demo -- \
+cargo run --release -p felix-broker-service --features demo --bin latency-demo -- \
     --binary --fanout 10 --batch 64 --payload 4096
 
 # Run cache benchmarks
-cargo run --release -p felix-broker-service --bin cache-demo
+cargo run --release -p felix-broker-service --features demo --bin cache-demo
 ```
 
 ### Profiling

@@ -17,9 +17,9 @@ Located in `demos/broker/` and built from the `felix-broker-service` package:
 ### Run
 
 ```bash
-cargo run --release -p felix-broker-service --bin pubsub-demo-simple
-cargo run --release -p felix-broker-service --bin cache-demo
-cargo run --release -p felix-broker-service --bin latency-demo
+cargo run --release -p felix-broker-service --features demo --bin pubsub-demo-simple
+cargo run --release -p felix-broker-service --features demo --bin cache-demo
+cargo run --release -p felix-broker-service --features demo --bin latency-demo
 cargo run --release -p felix-broker-service --bin pubsub-demo-notifications
 cargo run --release -p felix-broker-service --bin pubsub-demo-orders
 cargo run --release -p felix-broker-service --bin durable-restart-demo
