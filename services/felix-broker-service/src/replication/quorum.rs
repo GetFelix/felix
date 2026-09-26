@@ -327,6 +327,39 @@ pub async fn await_cache_quorum(
     }
 }
 
+/// How far readers may see into a shard: the committed high-water mark.
+///
+/// A `Quorum` shard's commit point is the quorum mark, not the local tail. A
+/// record past the mark may still be lost at failover and its offset reused
+/// for a different record, so a reader that saw it would hold a position the
+/// new leader's log contradicts. `None` means no bound: a `Leader` stream,
+/// whose commit point is local durability, a single-node broker, or a shard
+/// placed without replicas, where the leader alone is the majority -- the
+/// same cases [`await_quorum`] acknowledges without waiting.
+///
+/// Zero while this broker has no mark for the shard at its current
+/// generation: nothing is known to be on a majority yet.
+pub fn read_bound(
+    consistency: Option<felix_broker::ConsistencyLevel>,
+    shard: &crate::shards::ShardKey,
+    marks: Option<&QuorumMarks>,
+    ingress: Option<&crate::shards::routing::IngressRouter>,
+) -> Option<u64> {
+    if consistency != Some(felix_broker::ConsistencyLevel::Quorum) {
+        return None;
+    }
+    let (Some(marks), Some(ingress)) = (marks, ingress) else {
+        return None;
+    };
+    if !ingress.replicated(shard) {
+        return None;
+    }
+    let Some(generation) = ingress.generation(shard) else {
+        return Some(0);
+    };
+    Some(marks.offset(shard, generation).unwrap_or(0))
+}
+
 /// The lease re-check at ack release.
 ///
 /// The mark says a majority held the write when the control plane stored the

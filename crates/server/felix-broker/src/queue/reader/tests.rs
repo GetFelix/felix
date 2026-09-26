@@ -89,6 +89,36 @@ async fn a_group_reads_from_the_beginning_of_the_log() {
     assert_eq!(claimed[0].offset, 0);
 }
 
+/// A group reads no further than the commit point it is given: past it a
+/// record can still be lost at failover and its offset reused.
+#[tokio::test]
+async fn a_group_reads_only_below_the_commit_point() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    publish(&fx.log, &["a", "b", "c"]).await;
+    let now = Instant::now();
+
+    let first = fx
+        .reader
+        .poll_below(&key(), &fx.log, 1, 10, now)
+        .await
+        .expect("poll");
+    assert_eq!(payloads(&first), vec!["a"]);
+    let nothing = fx
+        .reader
+        .poll_below(&key(), &fx.log, 1, 10, now)
+        .await
+        .expect("poll");
+    assert!(nothing.is_empty(), "handed out past the commit point");
+
+    let rest = fx
+        .reader
+        .poll_below(&key(), &fx.log, 3, 10, now)
+        .await
+        .expect("poll");
+    assert_eq!(payloads(&rest), vec!["b", "c"]);
+}
+
 #[tokio::test]
 async fn an_empty_log_yields_nothing() {
     let dir = tempfile::tempdir().expect("tempdir");

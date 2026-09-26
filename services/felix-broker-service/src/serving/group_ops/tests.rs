@@ -148,6 +148,65 @@ async fn an_ack_after_the_lease_lapses_is_refused() {
     assert_eq!(committed(&leader).await, Some(1), "renewed, the ack lands");
 }
 
+/// **A group on a `Quorum` stream reads only to the quorum mark.** A record
+/// past it can be lost at failover and its offset reused; a group that had
+/// consumed it would skip whatever the next leader writes there.
+#[tokio::test]
+async fn a_quorum_group_poll_stops_at_the_quorum_mark() {
+    let leader = Leader::start().await;
+    leader
+        .broker
+        .publish_batch(
+            TENANT,
+            NAMESPACE,
+            leader::QUORUM,
+            0,
+            &[
+                Bytes::from_static(b"a"),
+                Bytes::from_static(b"b"),
+                Bytes::from_static(b"c"),
+            ],
+        )
+        .await
+        .expect("publish");
+    let marks = Arc::new(crate::replication::quorum::QuorumMarks::new());
+    let publish_ctx = build_publish_context(
+        Arc::clone(&leader.broker),
+        &BrokerConfig::default(),
+        ClusterContext {
+            ingress: Some(Arc::clone(&leader.ingress)),
+            marks: Some(Arc::clone(&marks)),
+            ..ClusterContext::default()
+        },
+    );
+    let take = || async {
+        poll(
+            &leader.broker,
+            &publish_ctx,
+            None,
+            TENANT,
+            NAMESPACE,
+            leader::QUORUM,
+            0,
+            GROUP,
+            10,
+            Duration::ZERO,
+        )
+        .await
+        .expect("poll")
+        .into_iter()
+        .map(|record| record.offset)
+        .collect::<Vec<_>>()
+    };
+
+    assert!(take().await.is_empty(), "no majority holds anything yet");
+    marks.publish(&leader::stream_key(leader::QUORUM), leader::GENERATION, 2);
+    assert_eq!(take().await, vec![0, 1]);
+    assert!(take().await.is_empty(), "handed out past the mark");
+    marks.publish(&leader::stream_key(leader::QUORUM), leader::GENERATION, 3);
+    assert_eq!(take().await, vec![2]);
+}
+
 #[tokio::test]
 async fn a_poll_after_the_fence_is_refused() {
     let (mut leader, publish_ctx) = claimed_one().await;

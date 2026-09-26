@@ -380,7 +380,16 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
             // by another route. The publish waits, the next pass retries, and a
             // client is told a timeout rather than an acknowledgement this
             // broker cannot stand behind.
-            publish_mark(reporter, marks, key, route.generation, &report, offset).await;
+            publish_mark(
+                broker,
+                reporter,
+                marks,
+                key,
+                route.generation,
+                &report,
+                offset,
+            )
+            .await;
             Some(report)
         },
     )
@@ -447,6 +456,7 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
         // answering raises the offset a majority holds, and that is this pass's
         // to publish rather than the next one's.
         publish_mark(
+            broker,
             reporter,
             marks,
             key,
@@ -807,6 +817,7 @@ pub(super) fn watch_key(key: &ShardKey) -> crate::shards::ShardKey {
 /// Returns whether the mark moved. A caller with nothing waiting on the mark
 /// can ignore it; a caller on the quorum path cannot.
 pub(super) async fn publish_mark(
+    broker: &Broker,
     reporter: Option<&Reporter>,
     marks: &QuorumMarks,
     key: &ShardKey,
@@ -822,6 +833,16 @@ pub(super) async fn publish_mark(
     };
     if reported {
         marks.publish(&watch_key(key), generation, offset);
+        // A `Quorum` stream's readers stop at the mark (see
+        // `quorum::read_bound`), so a fetch waiting for records is waiting
+        // for this as much as for the append.
+        if key.kind == felix_router::ShardKind::Stream
+            && let Ok(handle) = broker
+                .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .await
+        {
+            handle.appended().notify_waiters();
+        }
     } else {
         metrics::record_mark_withheld();
         tracing::warn!(

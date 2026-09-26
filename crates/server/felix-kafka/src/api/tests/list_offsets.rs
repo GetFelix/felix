@@ -53,6 +53,20 @@ async fn earliest_and_latest_come_from_the_shard_log() {
     }
 }
 
+/// `latest` is the commit point, not the log's end: a consumer that starts
+/// from it must not be handed a position past what is committed.
+#[tokio::test]
+async fn latest_is_the_commit_point() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture
+        .publish("orders", "created", 0, &["a", "b", "c"])
+        .await;
+    fixture.cluster.commit_until("created", 0, 1);
+    let mut client = fixture.connect();
+    assert_eq!(answer(&mut client, 0, -1, 1).await, (0, -1, 1));
+}
+
 #[tokio::test]
 async fn a_time_finds_the_first_record_at_or_after_it() {
     let fixture = Fixture::anonymous().await;

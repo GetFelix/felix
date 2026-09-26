@@ -39,7 +39,7 @@ pub(super) async fn answer(
             )
             .await
             {
-                Ok(readable) => offset_for(&readable.log, partition.timestamp).await,
+                Ok(readable) => offset_for(&readable, partition.timestamp).await,
                 Err(error) => Err(error),
             };
             match found {
@@ -64,10 +64,16 @@ pub(super) async fn answer(
 
 /// `(timestamp, offset)` for one partition. The timestamp is -1 except where
 /// a record's own time is the answer.
-async fn offset_for(log: &StreamLog, timestamp: i64) -> Result<(i64, i64), ResponseError> {
+async fn offset_for(
+    readable: &super::partition::Readable,
+    timestamp: i64,
+) -> Result<(i64, i64), ResponseError> {
+    let log = &readable.log;
     let storage = |err: felix_broker::BrokerError| crate::errors::from_broker(&err);
     let base = log.base_offset();
-    let tail = log.tail_offset().await.map_err(storage)?;
+    // The high watermark, not the log end: an offset past the commit point is
+    // not one a consumer may start from.
+    let tail = readable.high_watermark(log.tail_offset().await.map_err(storage)?);
     match timestamp {
         LATEST => Ok((-1, tail as i64)),
         EARLIEST => Ok((-1, base as i64)),

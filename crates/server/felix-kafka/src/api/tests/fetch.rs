@@ -321,3 +321,71 @@ async fn an_unknown_fetch_session_is_refused() {
         .await;
     assert_eq!(response.error_code, 70, "FETCH_SESSION_ID_NOT_FOUND");
 }
+
+/// **A fetch stops at the commit point, not the log's end.** On a `Quorum`
+/// shard a record past the quorum mark can be lost at failover and its
+/// offset reused, so a consumer that read it would hold a position the next
+/// leader's log contradicts.
+#[tokio::test]
+async fn a_fetch_reads_only_to_the_commit_point() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture
+        .publish("orders", "created", 0, &["r0", "r1", "r2", "r3"])
+        .await;
+    fixture.cluster.commit_until("created", 0, 2);
+    let mut client = fixture.connect();
+
+    let response = client
+        .call(&request(&[("orders.created", 0, 0)], 1, 0), 11)
+        .await;
+    let partition = only(&response);
+    assert_eq!(partition.error_code, 0);
+    assert_eq!(partition.high_watermark, 2);
+    assert_eq!(partition.last_stable_offset, 2);
+    assert_eq!(
+        records(partition),
+        vec![(0, "r0".to_string()), (1, "r1".to_string())]
+    );
+
+    // Past the commit point but within the log: not readable yet, and not an
+    // error either.
+    let response = client
+        .call(&request(&[("orders.created", 0, 3)], 1, 0), 11)
+        .await;
+    assert_eq!(only(&response).error_code, 0);
+    assert!(records(only(&response)).is_empty());
+}
+
+/// A fetch waiting at the commit point returns once the mark moves; the
+/// broker wakes it the way it does for an append.
+#[tokio::test]
+async fn a_long_poll_at_the_commit_point_returns_once_it_moves() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture.publish("orders", "created", 0, &["r0", "r1"]).await;
+    fixture.cluster.commit_until("created", 0, 1);
+    let mut client = fixture.connect();
+
+    let pending = tokio::spawn(async move {
+        client
+            .call(&request(&[("orders.created", 0, 1)], 1, 20_000), 11)
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!pending.is_finished(), "r1 is not committed yet");
+
+    fixture.cluster.commit_until("created", 0, 2);
+    fixture
+        .broker
+        .resolve_stream_handle(super::TENANT, "orders", "created", 0)
+        .await
+        .expect("handle")
+        .appended()
+        .notify_waiters();
+    let response = tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .expect("woken when the mark moved")
+        .expect("task");
+    assert_eq!(records(only(&response)), vec![(1, "r1".to_string())]);
+}
