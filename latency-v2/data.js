@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790463046701,
+  "lastUpdate": 1790463549878,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -21252,6 +21252,72 @@ window.BENCHMARK_DATA = {
             "range": "271.16",
             "unit": "us",
             "extra": "trials: 5\nmedian: 523.00\nmean: 711.20\nstdev: 271.16\ncv: 38.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c9e7efd549906210d318973be2c267dd7502e8da",
+          "message": "fix(groups): durable redrive, validated acks, group authz actions, DLQ retry, poll caps and tracker eviction (#731)\n\n* fix(authz): group.consume and group.manage actions for consumer groups\n\nPoll, ack, nack and the dead-letter list now need group.consume, and\nredrive and discard need group.manage. stream.subscribe still grants\ngroup.consume and stream.manage still grants group.manage, so existing\nconsumers keep working, but a principal that can only read a stream can\nno longer redrive or discard another group's dead letters.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(groups): durable redrive, validated acks, DLQ-write retry, poll caps, tracker eviction\n\n- A redrive is written to the dead-letter log (the entry's value flips to\n  redriven) before it is applied, so a record redriven before a failover\n  is still owed afterwards; the entry is cleared once the record is acked.\n- Acks and nacks for offsets the group never handed out are refused with\n  GroupOffsetNotHandedOut (invalid_request on the wire).\n- A failed dead-letter write puts the offsets back as owed instead of\n  dropping them from every set, which stalled the group.\n- One poll hands out at most 1,000 records and about 4 MiB of payload.\n- Idle trackers are evicted. The tracker map is no longer a broker-wide\n  async mutex held across the cursor read; each group hydrates in its own\n  OnceCell.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-26T15:53:06-07:00",
+          "tree_id": "2c4fcf3e574ef8de21e9c8b349d4bef8ce6bb3ab",
+          "url": "https://github.com/gabloe/felix/commit/c9e7efd549906210d318973be2c267dd7502e8da"
+        },
+        "date": 1790463546912,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 170,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 170.00\nmean: 170.00\nstdev: 0.71\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 209,
+            "range": "2.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 209.00\nmean: 207.40\nstdev: 2.70\ncv: 1.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 240,
+            "range": "12.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 240.00\nmean: 239.00\nstdev: 12.77\ncv: 5.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 203,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 203.00\nmean: 202.60\nstdev: 1.14\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 405,
+            "range": "10.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 405.00\nmean: 409.20\nstdev: 10.66\ncv: 2.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 541,
+            "range": "346.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 541.00\nmean: 728.60\nstdev: 346.82\ncv: 47.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
