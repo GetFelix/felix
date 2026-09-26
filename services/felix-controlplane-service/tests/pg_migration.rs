@@ -233,7 +233,7 @@ async fn a_postgres_control_plane_migrates_into_a_raft_group() {
         change_retention_max_rows: Some(1_000),
     }));
     let machine = Arc::new(MetadataStateMachine::new(inner));
-    let mut settings = RaftSettings::new(1, dir.path().into());
+    let mut settings = RaftSettings::new(1, dir.path().into(), peer_security());
     settings.heartbeat_interval = Duration::from_millis(50);
     settings.election_timeout = (Duration::from_millis(150), Duration::from_millis(300));
     let handle = RaftHandle::start(settings, Arc::clone(&machine) as Arc<dyn AppStateMachine>)
@@ -261,7 +261,9 @@ async fn a_postgres_control_plane_migrates_into_a_raft_group() {
         state: Box::new(exported),
         overwrite: false,
     });
-    let response = reqwest::Client::new()
+    let response = peer_security()
+        .client(Duration::from_secs(30))
+        .expect("peer client")
         .post(format!("http://{addr}/internal/raft/propose"))
         .body(command)
         .send()
@@ -372,4 +374,13 @@ fn felix_test_container_name() -> String {
             .unwrap_or_default()
             .as_nanos()
     )
+}
+
+/// Peer credentials every member of a test group shares.
+fn peer_security() -> felix_controlplane_service::raft::PeerSecurity {
+    felix_controlplane_service::raft::PeerSecurity {
+        cluster_id: "test-cluster".to_string(),
+        token: Some("0123456789abcdef0123456789abcdef".to_string()),
+        tls: None,
+    }
 }

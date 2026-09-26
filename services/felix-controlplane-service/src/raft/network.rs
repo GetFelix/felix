@@ -1,4 +1,4 @@
-//! Raft RPCs to peers: JSON over the internal HTTP listener.
+//! Raft RPCs to peers: JSON over each member's peer listener.
 //!
 //! The wire format is openraft's own request/response types serialized as
 //! JSON, with the server's `Result` shipped whole — a remote `RaftError` is
@@ -13,23 +13,32 @@ use openraft::raft::{
     VoteRequest, VoteResponse,
 };
 
+use std::collections::BTreeMap;
+
 use super::types::TypeConfig;
+use super::{NodeId, PeerSecurity};
 
 pub(super) struct HttpNetworkFactory {
     client: reqwest::Client,
+    scheme: &'static str,
+    peer_addrs: BTreeMap<NodeId, String>,
 }
 
 impl HttpNetworkFactory {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(
+        security: &PeerSecurity,
+        peer_addrs: BTreeMap<NodeId, String>,
+    ) -> anyhow::Result<Self> {
         // One client, shared by every peer connection: reqwest pools per
         // host underneath. The timeout bounds a peer that accepts and then
         // hangs — an unanswered RPC must become an error openraft can react
         // to, not a stuck replication task.
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .expect("build raft http client");
-        Self { client }
+        let client = security.client(std::time::Duration::from_secs(10))?;
+        Ok(Self {
+            client,
+            scheme: security.scheme(),
+            peer_addrs,
+        })
     }
 }
 
@@ -37,10 +46,14 @@ impl RaftNetworkFactory<TypeConfig> for HttpNetworkFactory {
     type Network = HttpNetwork;
 
     async fn new_client(&mut self, target: u64, node: &openraft::BasicNode) -> Self::Network {
+        // The configured address wins over the one the membership recorded
+        // when the group formed, so a moved peer port needs no membership
+        // change.
+        let addr = self.peer_addrs.get(&target).unwrap_or(&node.addr);
         HttpNetwork {
             client: self.client.clone(),
             target,
-            base: format!("http://{}", node.addr),
+            base: format!("{}://{addr}", self.scheme),
         }
     }
 }

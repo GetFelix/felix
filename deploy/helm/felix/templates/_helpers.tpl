@@ -97,14 +97,14 @@ the digest is what runs.
 {{- end -}}
 
 {{/*
-The Raft peers map every member is told: "1=<pod-0>.<headless>:<port>,...".
+The Raft peers map every member is told: "1=<pod-0>.<headless>:<peerPort>,...".
 Every member carries the same map, since initialising two disjoint groups
 is two control planes.
 */}}
 {{- define "felix.controlplane.raftPeers" -}}
 {{- $name := include "felix.controlplane.fullname" . -}}
 {{- $headless := include "felix.controlplane.headless" . -}}
-{{- $port := int .Values.controlplane.service.port -}}
+{{- $port := int .Values.controlplane.storage.raft.peerPort -}}
 {{- $peers := list -}}
 {{- range $i := until (int .Values.controlplane.replicas) -}}
 {{- $peers = append $peers (printf "%d=%s-%d.%s:%d" (add $i 1) $name $i $headless $port) -}}
@@ -163,6 +163,15 @@ applies.
 {{- end -}}
 {{- if eq (mod (int $cp.replicas) 2) 0 -}}
 {{- fail (printf "controlplane.storage.backend=raft needs an odd number of members, not %d: an even group tolerates the same failures as the odd one below it and adds an election tie" (int $cp.replicas)) -}}
+{{- end -}}
+{{- if and (not $cp.storage.raft.peerToken.existingSecret) (not $cp.storage.raft.insecurePeers) -}}
+{{- fail "controlplane.storage.backend=raft needs controlplane.storage.raft.peerToken.existingSecret: a Secret holding the Raft peer token, without which any pod that reaches the peer port can replace the metadata store" -}}
+{{- end -}}
+{{- if eq (int $cp.storage.raft.peerPort) (int $cp.service.port) -}}
+{{- fail "controlplane.storage.raft.peerPort and controlplane.service.port share a port; the Raft RPCs need a listener of their own" -}}
+{{- end -}}
+{{- if not (has $cp.storage.raft.initialClusterState (list "" "new" "existing")) -}}
+{{- fail (printf "controlplane.storage.raft.initialClusterState must be new, existing or empty, not %q" $cp.storage.raft.initialClusterState) -}}
 {{- end -}}
 {{- end -}}
 {{- if and (eq $cp.storage.backend "memory") (gt (int $cp.replicas) 1) -}}

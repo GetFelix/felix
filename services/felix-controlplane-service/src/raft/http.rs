@@ -4,9 +4,9 @@
 //! proposal route and the two a member uses to enter the group
 //! ([`super::join`]).
 //!
-//! Mounted on the internal listener, deliberately not a new port: the group
-//! is small, elections are rare, and one less listener is one less surface
-//! to secure.
+//! Served on the peer listener only, behind [`super::peer::require_peer`]:
+//! `propose` alone can replace the whole store, so nothing here is reachable
+//! from the public API port or without the cluster's peer credentials.
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -21,6 +21,7 @@ use openraft::raft::{
 use super::types::TypeConfig;
 
 pub(super) fn router(handle: super::RaftHandle) -> Router {
+    let security = std::sync::Arc::clone(&handle.security);
     Router::new()
         .route("/internal/raft/append-entries", post(append_entries))
         .route("/internal/raft/vote", post(vote))
@@ -34,13 +35,18 @@ pub(super) fn router(handle: super::RaftHandle) -> Router {
         // to the chunk plus JSON's expansion of binary data.
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
         .with_state(handle)
+        .layer(axum::middleware::from_fn_with_state(
+            security,
+            super::peer::require_peer,
+        ))
 }
 
 /// A proposal over HTTP: opaque command bytes in, the state machine's
 /// response bytes out. Goes through the seam's `write`, so a proposal
 /// landing on a follower forwards to the leader and a caller may point at
-/// **any** member — the promise the migration tool leans on. 503 only when
-/// the bounded write budget runs out: no leader, or no quorum.
+/// **any** member — the promise the migration tool leans on. The peer token
+/// is what authorizes it: that token is the cluster-admin credential. 503
+/// only when the bounded write budget runs out: no leader, or no quorum.
 async fn propose(State(handle): State<super::RaftHandle>, body: axum::body::Bytes) -> Response {
     match handle.write(body.to_vec()).await {
         Ok(bytes) => (StatusCode::OK, bytes).into_response(),
