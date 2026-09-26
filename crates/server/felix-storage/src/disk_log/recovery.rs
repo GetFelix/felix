@@ -95,7 +95,19 @@ pub(super) fn recover_shard(dir: &Path, label: &str, config: &LogConfig) -> Resu
             active_marks: Vec::new(),
         },
         Some((active_id, sealed_ids)) => {
-            recover_existing(dir, label, config, sealed_ids, *active_id)?
+            match recover_existing(dir, label, config, sealed_ids, *active_id) {
+                Err(StorageError::Corruption(detail)) => {
+                    let Some(retired) = unsealed_retired(dir, label, config, sealed_ids, &detail)?
+                    else {
+                        return Err(StorageError::Corruption(detail));
+                    };
+                    repair_unsealed_retired(dir, label, &retired, *active_id)?;
+                    let ids = discover_segment_ids(dir)?;
+                    let (active_id, sealed_ids) = ids.split_last().expect("the retired segment");
+                    recover_existing(dir, label, config, sealed_ids, *active_id)?
+                }
+                recovered => recovered?,
+            }
         }
     };
 
@@ -218,7 +230,7 @@ fn discard_abandoned_preparations(
         // A file too short to hold a header is a rollover that was interrupted
         // between creating the segment and writing its header. It has no base
         // offset to compare and, having no header, cannot hold a record either.
-        let headerless = std::fs::metadata(&path)?.len() < SEGMENT_HEADER_LEN;
+        let headerless = header_never_written(&path)?;
         let base_offset = if headerless {
             None
         } else {
@@ -282,6 +294,104 @@ fn discard_abandoned_preparations(
         sync_dir(dir)?;
     }
     Ok(discarded)
+}
+
+/// The segment a background rollover retired but never finished sealing,
+/// when `detail` is a torn tail in it.
+///
+/// The rollover installs the new active segment first and flushes the retired
+/// one afterwards, so a power loss in between can leave the retired segment
+/// with a torn or zero-filled tail and the newer segment after it. Every flush
+/// syncs the retired segment before the active one, so no record past the
+/// tear, in either segment, was ever reported durable. Only the damage a
+/// crash can leave qualifies (`scan_segment` with repair off); anything else
+/// is still corruption.
+fn unsealed_retired(
+    dir: &Path,
+    label: &str,
+    config: &LogConfig,
+    sealed_ids: &[SegmentId],
+    detail: &Corruption,
+) -> Result<Option<UnsealedRetired>> {
+    let Some(&id) = sealed_ids.last() else {
+        return Ok(None);
+    };
+    if detail.site.segment != Some(id) {
+        return Ok(None);
+    }
+    match scan_segment(
+        &dir.join(segment_file_name(id)),
+        id,
+        label,
+        config.index_spacing_bytes,
+        ScanStart::Full,
+        false,
+    ) {
+        Ok(outcome) if outcome.torn_tail.is_some() => Ok(Some(UnsealedRetired {
+            id,
+            valid_bytes: outcome.valid_bytes,
+            next_offset: outcome.next_offset,
+        })),
+        Ok(_) | Err(StorageError::Corruption(_)) => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+struct UnsealedRetired {
+    id: SegmentId,
+    valid_bytes: u64,
+    next_offset: Offset,
+}
+
+/// Cut an unsealed retired segment back to its last intact record. The newer
+/// segment is kept only if it starts exactly there; otherwise records were
+/// lost in between and nothing after the tear can be kept in order.
+fn repair_unsealed_retired(
+    dir: &Path,
+    label: &str,
+    retired: &UnsealedRetired,
+    active_id: SegmentId,
+) -> Result<()> {
+    let active_path = dir.join(segment_file_name(active_id));
+    let continues = read_segment_header(&active_path, active_id, label)
+        .is_ok_and(|header| header.base_offset == retired.next_offset);
+    tracing::warn!(
+        shard = label,
+        segment = retired.id,
+        valid_bytes = retired.valid_bytes,
+        kept_next_segment = continues,
+        "repairing the torn tail of a segment whose seal never finished",
+    );
+    if !continues {
+        for path in [active_path, dir.join(index_file_name(active_id))] {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(StorageError::Io(err)),
+            }
+        }
+        sync_dir(dir)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(dir.join(segment_file_name(retired.id)))?;
+    file.set_len(retired.valid_bytes)?;
+    crate::io::sync_data(&file)?;
+    Ok(())
+}
+
+/// A segment whose header never reached the disk: shorter than a header, or
+/// a header of zeros. A background rollover writes the header without a flush
+/// of its own, and every flush that would cover it syncs the retired segment
+/// first, so nothing in such a segment was ever reported durable.
+fn header_never_written(path: &Path) -> Result<bool> {
+    let file = std::fs::File::open(path)?;
+    if file.metadata()?.len() < SEGMENT_HEADER_LEN {
+        return Ok(true);
+    }
+    let mut header = [0u8; SEGMENT_HEADER_LEN as usize];
+    let read = crate::io::read_at(&file, &mut header, 0)?;
+    Ok(read == header.len() && header.iter().all(|byte| *byte == 0))
 }
 
 fn recover_existing(

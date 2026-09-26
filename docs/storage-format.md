@@ -246,6 +246,15 @@ because only there can a record have been mid-write when the process died:
   covered the zeroed bytes too. Zeros followed by any non-zero byte are not
   this case and stay fatal, as do stale (non-zero) blocks at the tail: recovery
   cannot tell those from rot on an acknowledged record.
+- **An unfinished background roll.** The background roll installs the new
+  segment before it flushes the retired one, and writes the new header without
+  a flush of its own. Every flush syncs the retired segment before the active
+  one, so a power loss in that window can leave only unflushed bytes damaged.
+  A newest segment whose header is all zeros is discarded as an uninstalled
+  roll. A torn or zero-filled tail (the two cases above) on the segment just
+  before the newest is cut back; the newest segment is kept if it starts
+  exactly at the cut and discarded otherwise, since records past a gap cannot
+  be kept in order. Any other damage there is still fatal.
 
 The dividing line is whether the length is trustworthy. When it is, recovery can
 prove the write was unfinished; when it is not, recovery refuses to choose
