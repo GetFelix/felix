@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790457380701,
+  "lastUpdate": 1790462545459,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -21120,6 +21120,72 @@ window.BENCHMARK_DATA = {
             "range": "1334.12",
             "unit": "us",
             "extra": "trials: 5\nmedian: 543.00\nmean: 1269.40\nstdev: 1334.12\ncv: 105.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bcb9613a107a417deb71e9e0006e43205a7fb405",
+          "message": "fix(controlplane): hold unreplicated durable shards for their owner (#728)\n\nA durable shard with no replicas fell through the failover guard and was\nplaced on whichever live broker scored highest once its owner stopped\nheartbeating. That broker served an empty log at a new generation while\nthe records sat on the lost owner's disk. With replication_factor 1 as\nthe default, that was every stream's behaviour after ~15 s of silence,\ncontrary to docs/semantics.md.\n\nPlacement now leaves any durable shard with no caught-up replica unplaced\n(Unplaceable::OwnerUnavailable when it has no replicas at all), so the\nreturning owner picks it up at the same generation with its records. An\nin-memory shard still moves at once.\n\nGiving the records up is an explicit operator action:\nPOST /v1/placement/abandon/{tenant}/{ns}/{name}/{shard} (and\n`felix-controlplane admin abandon`), behind node.manage:cluster:*. It is\ndecided by placement itself: refused unless placement would hold the shard\nunplaced, and it then places the shard as for a new one (step `discard`),\nwritten at the generation and placement token it was decided from.\n\nSpec-Unaffected: FelixShard.tla's Promote only ever hands the shard to a replica that qualifies and has no \"place on an empty broker\" action, so the model already describes holding the shard; abandoning is an operator-declared data loss outside the model's safety claim.\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-26T15:39:16-07:00",
+          "tree_id": "45f92d25b968c9bfaa58ff9d40d218b19e1afeaf",
+          "url": "https://github.com/gabloe/felix/commit/bcb9613a107a417deb71e9e0006e43205a7fb405"
+        },
+        "date": 1790462541837,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 169,
+            "range": "4.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 169.00\nmean: 166.40\nstdev: 4.77\ncv: 2.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 214,
+            "range": "9.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 214.00\nmean: 217.80\nstdev: 9.18\ncv: 4.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 280,
+            "range": "993.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 280.00\nmean: 968.40\nstdev: 993.82\ncv: 102.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 203,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 203.00\nmean: 203.40\nstdev: 1.14\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 405,
+            "range": "3.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 405.00\nmean: 404.60\nstdev: 3.58\ncv: 0.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 580,
+            "range": "32.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 580.00\nmean: 575.00\nstdev: 32.67\ncv: 5.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
