@@ -68,6 +68,7 @@ expectations=(
   "FelixShardLease pass"
   "FelixShardLogOrder pass"
   "FelixShardThinMargin violates AtMostOneServing"
+  "FelixShardRealMargins violates AtMostOneServing"
   "FelixShardNoCommitCheck violates NoStaleCommit"
   "FelixShardNoReportOrder violates AckedSurvive"
   "FelixShardReportAtTail violates QuorumReportNamesASuccessor"

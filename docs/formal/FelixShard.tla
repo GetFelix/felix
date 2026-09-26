@@ -430,9 +430,17 @@ Ship(b, f) ==
 \*
 \* The majority is over `of`: the quorum set, or for the check below, the
 \* stream's own replica set.
+\*
+\* The broker learns that its report landed from the control plane's answer,
+\* per shard: it may act on a report only when the answer says the report was
+\* stored for its own generation. So the stored report counts only while it is
+\* this broker's, at the generation it leads. A report stored by a later
+\* leader says nothing to a deposed one, whose own reports are answered
+\* `not_leader` and whose mark stays where it was.
 AckReadyOver(b, i, of) ==
     /\ MajorityOf({ m \in Brokers : Len(log[m]) >= i /\ log[m][i] = log[b][i] } \cup {b}, of)
-    /\ ReportBeforeAck => /\ i <= report.len
+    /\ ReportBeforeAck => /\ report.gen = bgen[b]
+                          /\ i <= report.len
                           /\ MajorityOf(report.holders \cup {b}, of)
 
 AckQuorum(b) ==

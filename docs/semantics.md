@@ -56,7 +56,7 @@ reached the disk.
 
 | Level | An ack means | Loss window |
 | --- | --- | --- |
-| `Leader` | With `ack_on_commit` on, the shard's leader has it durably. Off, the default, the leader has queued it | Everything the leader had not yet shipped, if its storage is lost; with `ack_on_commit` off, also a record still queued when the leader crashes or its lease runs out |
+| `Leader` | With `ack_on_commit` on, the shard's leader has it durably. Off, the default, the leader has queued it | Everything the leader had not yet shipped, at **any** failover (see below); with `ack_on_commit` off, also a record still queued when the leader crashes or its lease runs out |
 | `Quorum` | A majority of the replica set, leader included, has it durably | None within the replica set |
 
 `Quorum` waits. A publish is not acknowledged until the leader can show a
@@ -102,6 +102,12 @@ the record is on disk, turn `ack_on_commit` on or declare the stream `Quorum`.
 **The `Leader` loss window is bounded by replication lag**, exported as
 `felix_broker_replication_lag_records`. An operator choosing `Leader` is
 choosing that window, and a bound nobody can observe is not a bound.
+
+It opens at any failover, not only when the leader's disk is lost. A replica is
+promoted, writes at the next generation, and when the old leader comes back as
+its follower, the records it had acknowledged and not shipped are a previous
+generation's suffix that disagrees with the new leader's log. They are
+truncated so the follower can rejoin. The disk surviving does not save them.
 
 A majority is of the replica set, leader included: a set of three needs two, a
 set of five needs three, and a set of one needs one — which is why
@@ -149,6 +155,30 @@ in-memory stream has no log to wait for and is placed again straight away.
 **A leader that was frozen past its lease and then resumed cannot acknowledge a
 write the cluster has lost.** It wakes still believing it leads; the lease and
 the generation are what stop it.
+
+The lease is checked on every write path, not only on a direct publish: a
+forwarded publish, a cache put or delete, a counter add, a consumer-group ack
+or nack, a dead-letter change and a Kafka produce all enter the same per-shard
+fence, which checks the generation and reads the lease against the clock. While
+the lease has lapsed every one of them is refused with `shard_unavailable`
+(reason `fenced`), which is safe to retry: nothing was written. A `Quorum`
+write that was waiting for its majority when the lease lapsed is answered as
+indeterminate (`leadership_lost`) rather than acknowledged, even if the
+majority then arrives.
+
+> `a_lapsed_lease_refuses_every_write_until_it_is_renewed`,
+> `cache_and_counter_writes_after_the_lease_lapses_are_refused`,
+> `an_ack_after_the_lease_lapses_is_refused`,
+> `forwarded_writes_after_the_lease_lapses_are_refused`,
+> `a_quorum_ack_is_withheld_when_the_lease_lapses_while_it_waits`.
+
+**A `Quorum` ack rests on a report the control plane stored.** The leader moves
+its quorum mark only for a shard whose replica report the control plane
+answered `accepted`. A report it refused (the broker no longer leads the shard,
+the report is from an older generation, or it is behind a report already held)
+holds the mark, so the publish waits or times out instead of being acknowledged
+on a report failover will never read. See `docs/replication-design.md`,
+"Replica reports".
 
 > `a_resumed_leader_does_not_acknowledge_writes_the_cluster_loses`.
 
@@ -264,6 +294,21 @@ throughput rather than correctness.
   inferred.
 - **A subscription can resume.** `Subscribe` takes `latest`, `earliest`, or an
   offset; stored history joins live delivery with no gap.
+- **What a reader sees of a `Quorum` stream.** A consumer group and a Kafka
+  consumer read only up to the shard's quorum mark, the committed high-water
+  mark: a record past it can be lost at failover and its offset reused by the
+  next leader, and a consumer that had moved past it would never see the
+  record that replaced it. Kafka reports the mark as the high watermark. A
+  `Leader` stream's readers see everything durable on the leader, as before.
+
+  **Plain subscriptions are not gated yet.** Live delivery, the replay ring and
+  history read for a subscription can include records past the quorum mark,
+  so a subscriber on a `Quorum` stream can see a record that a failover then
+  replaces. A subscriber that checkpoints offsets and needs to be sure should
+  read through a consumer group.
+
+  > `a_quorum_group_poll_stops_at_the_quorum_mark`,
+  > `a_fetch_reads_only_to_the_commit_point`, `latest_is_the_commit_point`.
 - **Replayed history is never dropped.** The overflow policy governs live
   records only. History below the join's `live_offset` is read off disk for
   that subscriber alone, so there is no publisher to protect: it waits for room
