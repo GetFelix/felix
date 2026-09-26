@@ -355,6 +355,13 @@ Bootstrap tokens **never** authorize normal admin endpoints.
 1) Client connects to a broker with `tenant_id` and a Felix token.
 2) Broker verifies the token using tenant JWKS fetched from:
    - `GET /v1/tenants/{tenant_id}/.well-known/jwks.json`
+
+   The tenant id comes from a client that has not authenticated yet, so the
+   fetch is guarded. Once the broker's catalog sync has landed, a tenant it
+   does not know is refused without a request. The id is percent-encoded as one
+   path segment. Concurrent misses for one tenant share a single request, a
+   failed fetch is remembered for 5 seconds, at most 8 fetches run at once, and
+   each has a 5 second timeout. A fetched JWKS is cached for an hour.
 3) Broker validates claims:
    - `iss = felix-auth`
    - `aud = felix-broker`

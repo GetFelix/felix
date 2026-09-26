@@ -16,7 +16,8 @@ use crate::config::BrokerConfig;
 /// refreshed. When disabled, the broker relies solely on local registrations.
 ///
 /// `seeded_tx` is signalled once the first pass is applied, but only when
-/// readiness is gated on it.
+/// readiness is gated on it. `catalog_seeded` is cancelled at the same point
+/// either way.
 pub(super) fn spawn_catalog_sync(
     config: &BrokerConfig,
     broker: &Arc<Broker>,
@@ -24,6 +25,7 @@ pub(super) fn spawn_catalog_sync(
     sync_shutdown: &CancellationToken,
     gate_readiness_on_sync: bool,
     seeded_tx: oneshot::Sender<()>,
+    catalog_seeded: &CancellationToken,
 ) -> Option<JoinHandle<()>> {
     if let Some(base_url) = config.controlplane_url.clone() {
         let sync_credential = credential.clone();
@@ -31,6 +33,17 @@ pub(super) fn spawn_catalog_sync(
         let broker = Arc::clone(broker);
         let sync_shutdown = sync_shutdown.clone();
         let seeded_tx = gate_readiness_on_sync.then_some(seeded_tx);
+        let (applied_tx, applied_rx) = oneshot::channel();
+        let catalog_seeded = catalog_seeded.clone();
+        // Ends with the sync task, which drops the sender if it never seeds.
+        tokio::spawn(async move {
+            if applied_rx.await.is_ok() {
+                catalog_seeded.cancel();
+                if let Some(seeded_tx) = seeded_tx {
+                    let _ = seeded_tx.send(());
+                }
+            }
+        });
         // The feeds require `node.view:cluster:*`, so a sync with nothing to
         // present is refused on every poll. Said once here, at startup, rather
         // than discovered from a wall of 401s -- and as a warning, because the
@@ -56,7 +69,7 @@ pub(super) fn spawn_catalog_sync(
                     broker,
                     base_url,
                     Duration::from_millis(interval_ms),
-                    seeded_tx,
+                    Some(applied_tx),
                     sync_credential,
                 ) => {
                     if let Err(err) = result {

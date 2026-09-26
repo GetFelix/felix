@@ -27,6 +27,11 @@ impl Broker {
         Ok(true)
     }
 
+    /// Whether a tenant is registered.
+    pub async fn tenant_exists(&self, tenant_id: &str) -> bool {
+        self.tenants.read().await.contains_key(tenant_id)
+    }
+
     /// Remove a tenant. `false` if it was not registered.
     pub async fn remove_tenant(&self, tenant_id: &str) -> Result<bool> {
         let mut guard = self.tenants.write().await;

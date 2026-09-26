@@ -33,6 +33,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use felix_authz::TenantKeyCache;
 use felix_common::lifecycle::Readiness;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -40,7 +41,7 @@ use tokio_util::task::TaskTracker;
 use crate::cluster::{controlplane_http, credential};
 use crate::config::{self, DurableStorageConfig};
 use crate::replication;
-use crate::serving::auth::BrokerAuth;
+use crate::serving::auth::{BrokerAuth, ControlPlaneKeyStore, TenantCatalog};
 use crate::serving::tls::ClientTls;
 
 /// Start the broker and run until the provided `shutdown` future resolves.
@@ -104,6 +105,10 @@ where
     // neither advertises itself nor answers a direct client before its streams
     // exist.
     let seeded = CancellationToken::new();
+    // Cancelled once the catalog is applied, whether or not readiness waits on
+    // it. Until then auth cannot tell an unknown tenant from one not yet
+    // synced, so it lets both through to the JWKS fetch.
+    let catalog_seeded = CancellationToken::new();
 
     let cluster = cluster::shard_state(&config);
     let ingress_router = cluster
@@ -158,7 +163,6 @@ where
         .controlplane_url
         .clone()
         .context("FELIX_CONTROLPLANE_URL must be set for auth")?;
-    let auth = Arc::new(BrokerAuth::new(controlplane_url));
 
     // Start the Prometheus metrics HTTP server. This is separate from QUIC traffic and
     // intentionally lightweight so metrics remain available even under load.
@@ -178,6 +182,13 @@ where
     client_tls.spawn_reload(&accept_shutdown);
     let quic_servers = listeners::bind(&config, &client_tls)?;
     let broker = Arc::new(broker);
+    let key_store =
+        ControlPlaneKeyStore::new(controlplane_url, Arc::new(TenantKeyCache::default()))
+            .with_tenant_catalog(TenantCatalog::new(
+                Arc::clone(&broker),
+                catalog_seeded.clone(),
+            ));
+    let auth = Arc::new(BrokerAuth::with_key_store(Arc::new(key_store)));
     let kafka = listeners::bind_kafka(
         &config,
         &client_tls,
@@ -232,6 +243,7 @@ where
         &sync_shutdown,
         gate_readiness_on_sync,
         seeded_tx,
+        &catalog_seeded,
     );
     sync::spawn_readiness_flip(
         gate_readiness_on_sync,
