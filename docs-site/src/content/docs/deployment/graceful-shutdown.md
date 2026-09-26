@@ -37,7 +37,10 @@ The order matters more than the individual steps.
    control plane stops accepting new HTTP connections. Already-accepted work is
    untouched.
 5. **Drain, bounded by a deadline.** In-flight connections and requests finish on
-   their own.
+   their own. The broker's publish workers are drained in the same step: once the
+   connections are gone they write everything still queued, including publishes
+   already acknowledged on enqueue, before replication catches up and the logs are
+   flushed.
 6. **Force-cancel the remainder and name it.** Anything still running when the
    deadline expires is aborted and logged by name at WARN.
 
@@ -238,8 +241,9 @@ The Helm chart derives it from all three (`broker.shutdown.handoffTimeoutMs`).
 Tracked under [#139](https://github.com/gabloe/felix/issues/139):
 
 - Cancellation is coordinated at the **connection** boundary. The drain waits for
-  each connection task to finish, but does not separately signal publish workers,
-  acknowledgement waiters, or subscription writers to wind down early. A connection
+  each connection task to finish, and then for the publish workers to empty their
+  queues, but does not separately signal acknowledgement waiters or subscription
+  writers to wind down early. A connection
   that would otherwise sit idle for its full timeout is only cut short by the
   overall deadline.
 - Subscription streams are not flushed or closed according to their delivery

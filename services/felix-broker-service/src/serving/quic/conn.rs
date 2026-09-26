@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use super::client_error::ClientError;
-use super::handlers::publish::{PublishContext, build_publish_context};
+use super::handlers::publish::{PublishContext, build_tracked_publish_context};
 use super::preauth::{AUTH_TIMEOUT_CLOSE_CODE, ConnectionLimit, auth_timeout};
 use super::streams::{handle_stream, handle_uni_stream};
 use crate::config::BrokerConfig;
@@ -51,8 +51,8 @@ pub async fn serve(
 /// Accept loop with cooperative shutdown.
 ///
 /// Same as [`serve`], but stops accepting when `shutdown` is cancelled and registers
-/// every per-connection task with `connections` so a drain can wait for in-flight
-/// work to finish.
+/// every per-connection task, and the publish workers behind them, with
+/// `connections` so a drain can wait for in-flight work to finish.
 ///
 /// Aborting the accept task kills the loop but says nothing about the connections it
 /// already spawned — those are detached and die with the process. Separating "stop
@@ -73,7 +73,11 @@ pub async fn serve_with_shutdown(
     cluster: ClusterContext,
     limit: ConnectionLimit,
 ) -> Result<()> {
-    let publish_ctx = build_publish_context(Arc::clone(&broker), &config, cluster);
+    // The publish workers are tracked with the connections, so a drain waiting
+    // on `connections` also waits for every queued publish to be written. They
+    // exit once the connections and this loop have dropped their senders.
+    let publish_ctx =
+        build_tracked_publish_context(Arc::clone(&broker), &config, cluster, &connections);
     // Main accept loop: spawn a task per incoming QUIC connection.
     if config.disable_timings {
         timings::set_enabled(false);

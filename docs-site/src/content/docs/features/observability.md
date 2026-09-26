@@ -56,6 +56,7 @@ felix_broker_ingress_queue_depth            # publish jobs waiting (telemetry)
 felix_broker_ingress_dropped_total          # overflow, by policy (telemetry)
 felix_broker_ingress_rejected_total         # (telemetry)
 felix_broker_acked_publishes_dropped_total  # by reason: acked on enqueue, then not written
+felix_broker_publish_worker_restarts_total  # publish workers replaced after a panic; should stay 0
 felix_client_publish_forwarded_total        # client: publishes the broker had to relay (telemetry)
 felix_broker_json_publishes_total            # by frame: publishes still on JSON
 felix_client_publish_cancelled_after_enqueue_total  # client: publishes whose caller went away (telemetry)
