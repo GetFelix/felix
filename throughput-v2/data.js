@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790463049633,
+  "lastUpdate": 1790463552812,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -16744,6 +16744,58 @@ window.BENCHMARK_DATA = {
             "range": "6996.79",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 929906.14\nmean: 932156.63\nstdev: 6996.79\ncv: 0.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c9e7efd549906210d318973be2c267dd7502e8da",
+          "message": "fix(groups): durable redrive, validated acks, group authz actions, DLQ retry, poll caps and tracker eviction (#731)\n\n* fix(authz): group.consume and group.manage actions for consumer groups\n\nPoll, ack, nack and the dead-letter list now need group.consume, and\nredrive and discard need group.manage. stream.subscribe still grants\ngroup.consume and stream.manage still grants group.manage, so existing\nconsumers keep working, but a principal that can only read a stream can\nno longer redrive or discard another group's dead letters.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(groups): durable redrive, validated acks, DLQ-write retry, poll caps, tracker eviction\n\n- A redrive is written to the dead-letter log (the entry's value flips to\n  redriven) before it is applied, so a record redriven before a failover\n  is still owed afterwards; the entry is cleared once the record is acked.\n- Acks and nacks for offsets the group never handed out are refused with\n  GroupOffsetNotHandedOut (invalid_request on the wire).\n- A failed dead-letter write puts the offsets back as owed instead of\n  dropping them from every set, which stalled the group.\n- One poll hands out at most 1,000 records and about 4 MiB of payload.\n- Idle trackers are evicted. The tracker map is no longer a broker-wide\n  async mutex held across the cursor read; each group hydrates in its own\n  OnceCell.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-26T15:53:06-07:00",
+          "tree_id": "2c4fcf3e574ef8de21e9c8b349d4bef8ce6bb3ab",
+          "url": "https://github.com/gabloe/felix/commit/c9e7efd549906210d318973be2c267dd7502e8da"
+        },
+        "date": 1790463551690,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 387483.67,
+            "range": "15801.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 387483.67\nmean: 380179.76\nstdev: 15801.49\ncv: 4.16%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 387483.67,
+            "range": "15801.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 387483.67\nmean: 380179.76\nstdev: 15801.49\ncv: 4.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 91197.83,
+            "range": "1118.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 91197.83\nmean: 91021.99\nstdev: 1118.74\ncv: 1.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 911978.34,
+            "range": "11187.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 911978.34\nmean: 910219.92\nstdev: 11187.39\ncv: 1.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
