@@ -557,7 +557,9 @@ sequence it expects and where the last 64 it appended landed:
 | the rest of a batch it holds only the start of | appends the records it is missing, and answers with the whole batch's offsets |
 
 So a producer re-sends a batch it got no answer for under the *same* sequence,
-advances only on `publish_ok`, and stops on any refusal but `not_leader`.
+never sends a different batch under that sequence (it would be acknowledged
+without being appended), advances only on `publish_ok`, and stops on any
+refusal but `not_leader`.
 
 **Only the leader takes them.** A `publish_idempotent` that arrives at a broker
 that does not lead the shard is refused with `not_leader`, naming the leader

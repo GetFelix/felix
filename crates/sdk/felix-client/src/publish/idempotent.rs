@@ -13,10 +13,13 @@
 //! any more.
 //!
 //! The sequence advances only on an acknowledgement. A publish that fails
-//! for any reason but a typed refusal leaves it where it was, so the next
-//! call re-sends the same batch under the same number; and a typed refusal
-//! ends the producer on that stream, because a gap or a forgotten producer
-//! is not something a re-send can mend. A forgotten producer is not started
+//! for any reason but a typed refusal leaves it where it was and holds on to
+//! the batch, because the batch may have landed under that number. The next
+//! call on the stream must be that same batch, re-sent; a different one is
+//! refused rather than sent, since the leader would answer it from memory
+//! and report success without appending it. A typed refusal ends the
+//! producer on that stream, because a gap or a forgotten producer is not
+//! something a re-send can mend. A forgotten producer is not started
 //! again under a new id here: whether its last batch landed is exactly what
 //! the shard can no longer say, so the caller has to decide.
 
@@ -94,8 +97,12 @@ impl<'a> IdempotentProducer<'a> {
     ///
     /// Returns once the leader has acknowledged it, which under `Quorum`
     /// means a majority holds it. On any error but a typed refusal the
-    /// sequence is not advanced, so calling again re-sends the same batch and
-    /// cannot duplicate it. A [`PublishRefused`] ends this producer on the
+    /// sequence is not advanced and the batch is in doubt: calling again with
+    /// the same payloads re-sends it and cannot duplicate it, and calling with
+    /// different payloads fails without sending anything, because the leader
+    /// may already hold the first batch under that sequence and would
+    /// acknowledge the second without appending it. Re-send until it succeeds,
+    /// or replace the producer. A [`PublishRefused`] ends this producer on the
     /// stream: every later call fails with the same reason, because the
     /// broker no longer knows where this producer is.
     /// **Cancelling this stops the producer.** Dropping the future between
@@ -134,6 +141,21 @@ impl<'a> IdempotentProducer<'a> {
         let sequence = match cursors.get(&key) {
             None => 0,
             Some(Cursor::Next(sequence)) => *sequence,
+            Some(Cursor::InDoubt {
+                sequence,
+                payloads: pending,
+            }) => {
+                if *pending != payloads {
+                    anyhow::bail!(
+                        "the last batch on this stream failed without a definite answer, so \
+                         sequence {sequence} may already hold it. A different batch under that \
+                         sequence would be acknowledged without being appended, so it is not \
+                         sent: re-send the same batch, or call producer_init for a fresh \
+                         producer.",
+                    );
+                }
+                *sequence
+            }
             Some(Cursor::Ended(refused)) => {
                 return Err(refused.clone()).context("this producer was ended on the stream");
             }
@@ -143,7 +165,7 @@ impl<'a> IdempotentProducer<'a> {
         // window where the cursor and the broker can disagree.
         let cancelled = InDoubtOnCancel::armed(&self.in_doubt);
         let result = self
-            .send(tenant_id, namespace, stream, payloads, sequence, &key)
+            .send(tenant_id, namespace, stream, &payloads, sequence, &key)
             .await;
         cancelled.disarm();
         match result {
@@ -152,11 +174,18 @@ impl<'a> IdempotentProducer<'a> {
                 Ok(())
             }
             Err(err) => {
-                if let Some(refused) = err.downcast_ref::<PublishRefused>()
-                    && !matches!(refused.reason, PublishRefusalReason::NotLeader { .. })
-                {
-                    cursors.insert(key, Cursor::Ended(refused.clone()));
-                }
+                // Anything short of a terminal refusal may have landed: a
+                // timeout, a dropped connection, or a not-leader refusal that
+                // ended a run of retries whose earlier attempts went unanswered.
+                let cursor = match err.downcast_ref::<PublishRefused>() {
+                    Some(refused)
+                        if !matches!(refused.reason, PublishRefusalReason::NotLeader { .. }) =>
+                    {
+                        Cursor::Ended(refused.clone())
+                    }
+                    _ => Cursor::InDoubt { sequence, payloads },
+                };
+                cursors.insert(key, cursor);
                 Err(err)
             }
         }
@@ -170,7 +199,7 @@ impl<'a> IdempotentProducer<'a> {
         tenant_id: &str,
         namespace: &str,
         stream: &str,
-        payloads: Vec<Vec<u8>>,
+        payloads: &[Vec<u8>],
         sequence: u64,
         key: &(String, String, String),
     ) -> Result<()> {
@@ -212,13 +241,7 @@ impl<'a> IdempotentProducer<'a> {
                     let client = cluster.client().await;
                     let err = match self
                         .send_via(
-                            &client,
-                            tenant_id,
-                            namespace,
-                            stream,
-                            payloads.clone(),
-                            sequence,
-                            key,
+                            &client, tenant_id, namespace, stream, payloads, sequence, key,
                         )
                         .await
                     {
@@ -251,7 +274,7 @@ impl<'a> IdempotentProducer<'a> {
                     .unwrap_or_else(|| anyhow::anyhow!("publish failed"))
                     .context(format!(
                         "gave up after {:?} and at most {} attempts; sequence {sequence} \
-                         was not advanced and may be sent again",
+                         was not advanced; re-send the same batch under it",
                         started.elapsed(),
                         policy.attempts.max(1),
                     )))
@@ -268,33 +291,19 @@ impl<'a> IdempotentProducer<'a> {
         tenant_id: &str,
         namespace: &str,
         stream: &str,
-        payloads: Vec<Vec<u8>>,
+        payloads: &[Vec<u8>],
         sequence: u64,
         key: &(String, String, String),
     ) -> Result<()> {
         let remembered = self.leaders.lock().await.get(key).cloned();
         let first = match &remembered {
             Some(leader) => {
-                self.publish_on(
-                    leader,
-                    tenant_id,
-                    namespace,
-                    stream,
-                    payloads.clone(),
-                    sequence,
-                )
-                .await
+                self.publish_on(leader, tenant_id, namespace, stream, payloads, sequence)
+                    .await
             }
             None => {
-                self.publish_on(
-                    client,
-                    tenant_id,
-                    namespace,
-                    stream,
-                    payloads.clone(),
-                    sequence,
-                )
-                .await
+                self.publish_on(client, tenant_id, namespace, stream, payloads, sequence)
+                    .await
             }
         };
         let err = match first {
@@ -347,7 +356,7 @@ impl<'a> IdempotentProducer<'a> {
         tenant_id: &str,
         namespace: &str,
         stream: &str,
-        payloads: Vec<Vec<u8>>,
+        payloads: &[Vec<u8>],
         sequence: u64,
     ) -> Result<()> {
         client
@@ -357,7 +366,7 @@ impl<'a> IdempotentProducer<'a> {
                 tenant_id,
                 namespace,
                 stream,
-                payloads,
+                payloads.to_vec(),
                 self.producer_id,
                 sequence,
             )
@@ -372,10 +381,16 @@ enum Source<'a> {
     Cluster(&'a ClusterClient),
 }
 
-/// The next sequence on one stream, or the refusal that ended it.
+/// Where a producer stands on one stream.
 #[derive(Debug, Clone)]
 enum Cursor {
     Next(u64),
+    /// A batch went out under `sequence` and no answer said whether it
+    /// landed. Only the same batch may go out under it again.
+    InDoubt {
+        sequence: u64,
+        payloads: Vec<Vec<u8>>,
+    },
     Ended(PublishRefused),
 }
 

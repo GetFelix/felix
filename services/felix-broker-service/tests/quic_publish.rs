@@ -842,3 +842,101 @@ async fn quic_publish_binary_acked_reply_is_a_binary_frame() -> Result<()> {
     server_task.abort();
     Ok(())
 }
+
+// A batch whose publish failed may still have landed under its sequence, and
+// the leader answers that sequence from memory. A different batch sent under
+// it next would be acknowledged and silently dropped, so the producer must
+// refuse it and only let the same batch go out again.
+#[tokio::test]
+#[serial]
+async fn idempotent_producer_does_not_reuse_a_sequence_in_doubt() -> Result<()> {
+    unsafe {
+        std::env::set_var("FELIX_ACK_ON_COMMIT", "false");
+    }
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+
+    let (server_config, cert) = build_server_config()?;
+    let server = Arc::new(QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?);
+    let addr = server.local_addr()?;
+    let config = felix_broker_service::config::BrokerConfig::from_env()?;
+    let auth = auth_fixture("t1", vec!["stream.publish:stream:t1/*/*".to_string()]);
+    let server_task = tokio::spawn(felix_broker_service::serving::quic::serve(
+        Arc::clone(&server),
+        Arc::clone(&broker),
+        config,
+        Arc::clone(&auth.auth),
+    ));
+
+    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let producer = client.idempotent_producer().await?;
+
+    // As far as the producer can tell, the first batch failed...
+    producer
+        .publish("t1", "default", "orders", b"a".to_vec())
+        .await
+        .expect_err("the stream does not exist yet");
+
+    // ...but it landed under sequence 0, as it would have if only the
+    // acknowledgement had been lost.
+    broker
+        .register_stream("t1", "default", "orders", StreamMetadata::default())
+        .await?;
+    let mut sub = broker.subscribe("t1", "default", "orders", 0).await?;
+    // The connection remembers the miss for STREAM_CACHE_TTL (2 s).
+    tokio::time::sleep(Duration::from_millis(2_100)).await;
+    client
+        .publisher()
+        .await?
+        .publish_idempotent_batch(
+            "t1",
+            "default",
+            "orders",
+            vec![b"a".to_vec()],
+            producer.producer_id(),
+            0,
+        )
+        .await
+        .context("out-of-band append")?;
+
+    let err = producer
+        .publish("t1", "default", "orders", b"b".to_vec())
+        .await
+        .expect_err("a different batch under a sequence in doubt must not be sent");
+    assert!(
+        format!("{err:#}").contains("re-send the same batch"),
+        "unexpected error: {err:#}"
+    );
+
+    // The same batch again is answered from memory, and the producer moves on.
+    producer
+        .publish("t1", "default", "orders", b"a".to_vec())
+        .await
+        .context("re-send")?;
+    producer
+        .publish("t1", "default", "orders", b"b".to_vec())
+        .await
+        .context("next")?;
+
+    for expected in [b"a", b"b"] {
+        let got = timeout(Duration::from_secs(5), sub.recv())
+            .await
+            .context("record not delivered")?
+            .context("subscription closed")?;
+        assert_eq!(got.as_ref(), expected);
+    }
+    assert!(
+        timeout(Duration::from_millis(200), sub.recv())
+            .await
+            .is_err(),
+        "a record landed twice"
+    );
+
+    server_task.abort();
+    Ok(())
+}
