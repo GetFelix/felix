@@ -1,14 +1,13 @@
-//! mTLS termination for the bootstrap listener.
+//! TLS termination for the control plane's HTTP listeners.
 //!
-//! The bootstrap API hands out admin-equivalent power, and a shared token is
-//! one factor. When [`crate::config::BootstrapTlsConfig`] is set, the listener
-//! refuses the TLS handshake itself to any client that does not present a
-//! certificate signed by the configured CA — an unauthenticated caller never
-//! reaches the router, so there is no request to mis-handle.
+//! The API listener serves TLS when [`crate::config::ApiTlsConfig`] is set,
+//! with a certificate re-read on rotation. The bootstrap listener hands out
+//! admin-equivalent power, and a shared token is one factor, so when
+//! [`crate::config::BootstrapTlsConfig`] is set it refuses the TLS handshake
+//! itself to any client that does not present a certificate signed by the
+//! configured CA: an unauthenticated caller never reaches the router.
 //!
-//! Broker-to-broker traffic uses the same certificate model. The material
-//! loading here (`load_server_config`) is deliberately plain PEM files, the
-//! format operators already have.
+//! Material is plain PEM files, the format operators already have.
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -19,7 +18,39 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use rustls::pki_types::pem::PemObject;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::BootstrapTlsConfig;
+use crate::config::{ApiTlsConfig, BootstrapTlsConfig};
+
+/// The API listener's rustls config over `identity`, which the caller keeps
+/// to reload.
+pub fn api_server_config(
+    identity: Arc<felix_common::tls::ReloadingIdentity>,
+) -> Result<Arc<rustls::ServerConfig>> {
+    let config = rustls::ServerConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .context("API TLS protocol versions")?
+        .with_no_client_auth()
+        .with_cert_resolver(identity);
+    Ok(Arc::new(config))
+}
+
+/// Read the API certificate and key. Fails startup on unreadable material.
+pub fn load_api_identity(tls: &ApiTlsConfig) -> Result<Arc<felix_common::tls::ReloadingIdentity>> {
+    Ok(Arc::new(felix_common::tls::ReloadingIdentity::load(
+        felix_common::tls::IdentityFiles {
+            cert_path: tls.cert_path.clone(),
+            cert_var: "FELIX_CONTROLPLANE_TLS_CERT",
+            key_path: tls.key_path.clone(),
+            key_var: "FELIX_CONTROLPLANE_TLS_KEY",
+        },
+        provider(),
+    )?))
+}
+
+/// Named explicitly: more than one rustls crypto provider is linked into
+/// this binary, so there is no unambiguous process default to rely on.
+fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+    Arc::new(rustls::crypto::aws_lc_rs::default_provider())
+}
 
 /// Build the listener's rustls config: serve `cert_path`/`key_path`, require a
 /// client certificate signed by `client_ca_path`.
@@ -28,9 +59,7 @@ use crate::config::BootstrapTlsConfig;
 /// that comes up with unreadable key material is a misconfiguration, not a
 /// runtime condition to retry.
 pub fn load_server_config(tls: &BootstrapTlsConfig) -> Result<Arc<rustls::ServerConfig>> {
-    // Named explicitly: more than one rustls crypto provider is linked into
-    // this binary, so there is no unambiguous process default to rely on.
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let provider = provider();
 
     let certs = load_pem_certs(&tls.cert_path)
         .with_context(|| format!("read bootstrap TLS certificate {}", tls.cert_path))?;
@@ -66,12 +95,13 @@ fn load_pem_certs(path: &str) -> Result<Vec<rustls::pki_types::CertificateDer<'s
     Ok(certs)
 }
 
-/// Serve `router` over mTLS until `shutdown` fires, then let accepted
-/// connections finish.
+/// Serve `router` over TLS until `shutdown` fires, then let accepted
+/// connections finish. `name` labels the log lines.
 ///
 /// A failed handshake ends that connection and nothing else: the listener's
 /// job during a probe or scan is to keep serving legitimate clients.
-pub async fn serve_mtls(
+pub async fn serve_tls(
+    name: &'static str,
     listener: tokio::net::TcpListener,
     router: Router,
     tls: Arc<rustls::ServerConfig>,
@@ -89,7 +119,7 @@ pub async fn serve_mtls(
                     Err(err) => {
                         // Transient accept errors (EMFILE, resets) starve the
                         // loop if it exits; log and go on accepting.
-                        tracing::warn!(error = %err, "bootstrap accept failed");
+                        tracing::warn!(error = %err, listener = name, "accept failed");
                         continue;
                     }
                 };
@@ -100,9 +130,9 @@ pub async fn serve_mtls(
                     let tls_stream = match acceptor.accept(stream).await {
                         Ok(tls_stream) => tls_stream,
                         Err(err) => {
-                            // The refusal doing its job: no accepted client
-                            // certificate, no connection.
-                            tracing::debug!(%peer, error = %err, "bootstrap TLS handshake refused");
+                            // With client verification on, this is the
+                            // refusal doing its job.
+                            tracing::debug!(%peer, error = %err, listener = name, "TLS handshake refused");
                             return;
                         }
                     };
@@ -122,7 +152,7 @@ pub async fn serve_mtls(
                         }
                     };
                     if let Err(err) = result {
-                        tracing::debug!(%peer, error = %err, "bootstrap connection ended with error");
+                        tracing::debug!(%peer, error = %err, listener = name, "connection ended with error");
                     }
                 });
             }

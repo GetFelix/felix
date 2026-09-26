@@ -159,7 +159,8 @@ where
                     );
                     match bootstrap_tls {
                         Some(tls) => {
-                            tls::serve_mtls(listener, bootstrap_app, tls, api_shutdown).await;
+                            tls::serve_tls("bootstrap", listener, bootstrap_app, tls, api_shutdown)
+                                .await;
                         }
                         None => {
                             let _ = axum::serve(listener, bootstrap_app.into_make_service())
@@ -179,20 +180,50 @@ where
         None
     };
 
+    // Loaded before the bind, so unreadable key material fails startup.
+    let api_tls = match &config.api_tls {
+        Some(paths) => {
+            let identity = tls::load_api_identity(paths)?;
+            let server_config = tls::api_server_config(Arc::clone(&identity))?;
+            let reload_shutdown = api_shutdown.clone();
+            drop(tokio::spawn(async move {
+                tokio::select! {
+                    _ = reload_shutdown.cancelled() => {}
+                    _ = identity.reload_periodically("API") => {}
+                }
+            }));
+            Some(server_config)
+        }
+        None => None,
+    };
+
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     let addr = listener.local_addr().unwrap_or(config.bind_addr);
-    tracing::info!(%addr, "control plane listening");
+    tracing::info!(%addr, tls = api_tls.is_some(), "control plane listening");
+    if api_tls.is_none() {
+        tracing::warn!(
+            "the control-plane API is plain HTTP: node credentials, token exchange and tenant \
+             JWKS cross the network unencrypted. Set FELIX_CONTROLPLANE_TLS_CERT and \
+             FELIX_CONTROLPLANE_TLS_KEY, or terminate TLS in front of it"
+        );
+    }
 
     // The API server drains itself: `with_graceful_shutdown` stops accepting new
     // connections and lets in-flight requests finish. Racing the server against
     // the shutdown future instead would drop it mid-request.
     let mut api_task = {
         let api_shutdown = api_shutdown.clone();
-        tokio::spawn(
-            axum::serve(listener, app.into_make_service())
-                .with_graceful_shutdown(async move { api_shutdown.cancelled().await })
-                .into_future(),
-        )
+        match api_tls {
+            Some(server_config) => tokio::spawn(async move {
+                tls::serve_tls("api", listener, app, server_config, api_shutdown).await;
+                Ok(())
+            }),
+            None => tokio::spawn(
+                axum::serve(listener, app.into_make_service())
+                    .with_graceful_shutdown(async move { api_shutdown.cancelled().await })
+                    .into_future(),
+            ),
+        }
     };
 
     tokio::pin!(shutdown);
