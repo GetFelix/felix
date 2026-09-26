@@ -285,6 +285,33 @@ fn a_torn_tail_is_truncated_back_to_the_last_valid_record() {
     assert_eq!(std::fs::metadata(&path).expect("meta").len(), good_len);
 }
 
+/// Power loss after the file grew but before its data blocks were written:
+/// the size survives and the blocks read back as zeros. The default config has
+/// to open this, not refuse it as interior corruption.
+#[test]
+fn a_zero_filled_tail_after_power_loss_recovers_with_the_default_config() {
+    let dir = tempdir().expect("dir");
+    let tail = populate(&dir, 5);
+    let active_id = *discover_segment_ids(dir.path())
+        .expect("ids")
+        .last()
+        .expect("id");
+    let path = segment_path(dir.path(), active_id);
+    let good_len = std::fs::metadata(&path).expect("meta").len();
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("open");
+    file.set_len(good_len + 4096).expect("extend with zeros");
+    drop(file);
+
+    assert!(!config().repair_checksum_tail);
+    let recovered = reopen(&dir).expect("a zeroed tail is a torn tail");
+    assert_eq!(recovered.active.next_offset(), tail);
+    assert_eq!(recovered.truncated_bytes, 4096);
+    assert_eq!(std::fs::metadata(&path).expect("meta").len(), good_len);
+}
+
 #[test]
 fn truncation_at_every_byte_of_a_trailing_record_recovers() {
     let dir = tempdir().expect("dir");

@@ -299,3 +299,85 @@ fn repairable_tail_rules() {
         true
     ));
 }
+
+/// The default policy, as recovery calls it for the active segment.
+fn scan_strict(path: &std::path::Path) -> Result<ScanOutcome> {
+    scan_segment(path, 0, "t/ns/s/0", 4096, ScanStart::Full, false)
+}
+
+/// Power loss can keep a file's new size while the blocks it covers come back
+/// as zeros. That is a torn tail, and it must not need `repair_checksum_tail`.
+#[test]
+fn a_zero_filled_tail_is_torn_under_the_default_policy() {
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("a.log");
+    let mut bytes = write_segment(&path, 0, 3);
+    let valid = bytes.len() as u64;
+    bytes.resize(bytes.len() + 8192, 0);
+    std::fs::write(&path, &bytes).expect("write");
+
+    let outcome = scan_strict(&path).expect("a zeroed tail is repairable");
+    assert_eq!(outcome.record_count, 3);
+    assert_eq!(outcome.valid_bytes, valid);
+    assert_eq!(outcome.torn_tail.expect("tail").discarded_bytes, 8192);
+}
+
+/// The header block of the last record reached the disk and the block after
+/// it did not: the zeros start at a sector boundary inside the record.
+#[test]
+fn a_record_zeroed_from_a_sector_boundary_is_torn() {
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("a.log");
+    let mut bytes = write_segment(&path, 0, 2);
+    let valid = bytes.len();
+    encode_record(&mut bytes, 2, 102, &[0xAB; 1500], &Default::default());
+    let lost_from = valid.next_multiple_of(512) + 512;
+    assert!(lost_from < bytes.len());
+    bytes[lost_from..].fill(0);
+    bytes.resize(bytes.len() + 1024, 0);
+    std::fs::write(&path, &bytes).expect("write");
+
+    let outcome = scan_strict(&path).expect("a zeroed sector is a torn write");
+    assert_eq!(outcome.record_count, 2);
+    assert_eq!(outcome.valid_bytes, valid as u64);
+    assert!(matches!(
+        outcome.torn_tail.expect("tail").cause,
+        CorruptionKind::RecordChecksum { .. }
+    ));
+}
+
+/// Zeros that end before the file does are interior damage: a later record
+/// made it to disk, so an fsync may have acknowledged what the zeros replaced.
+#[test]
+fn zeros_followed_by_a_valid_record_are_a_hard_error() {
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("a.log");
+    let mut bytes = write_segment(&path, 0, 2);
+    let damaged = bytes.len();
+    encode_record(&mut bytes, 2, 102, b"lost", &Default::default());
+    encode_record(&mut bytes, 3, 103, b"kept", &Default::default());
+    let second = bytes.len();
+    encode_record(&mut bytes, 4, 104, b"last", &Default::default());
+    bytes[damaged..second].fill(0);
+    std::fs::write(&path, &bytes).expect("write");
+
+    let err = scan_strict(&path).expect_err("interior zeros must not be truncated");
+    let StorageError::Corruption(detail) = err else {
+        panic!("expected corruption");
+    };
+    assert_eq!(detail.site.position, Some(damaged as u64));
+}
+
+/// A final record whose last few bytes are zero, not from a sector boundary,
+/// is a complete record that rotted: still refused by default.
+#[test]
+fn zeros_starting_mid_sector_in_the_last_record_are_not_a_torn_tail() {
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("a.log");
+    let mut bytes = write_segment(&path, 0, 3);
+    let len = bytes.len();
+    bytes[len - 3..].fill(0);
+    std::fs::write(&path, &bytes).expect("write");
+
+    scan_strict(&path).expect_err("rot on a complete record is not a torn write");
+}
