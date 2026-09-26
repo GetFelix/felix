@@ -77,19 +77,28 @@ design.
 4. Instances reconnect through the same URL on their next queries; the first
    readiness check that succeeds (within one cache window of connectivity
    returning) puts each instance back in rotation.
-5. Brokers, meanwhile, retry heartbeats with backoff and keep their last-known
-   catalog — a control-plane blip does not take down brokers that are serving
-   fine (see [control-plane.md](control-plane.md#broker-liveness)).
+5. Brokers, meanwhile, retry heartbeats and keep their last-known catalog. They
+   keep serving the shards they lead only while their lease holds, which is
+   0.75 × `FELIX_NODE_EXPIRY_TIMEOUT_MS` from the last accepted heartbeat: with
+   the defaults (15s expiry, 5s heartbeat interval) every broker stops serving
+   the shards it leads somewhere between about 5s and 11s into the outage.
+   That is deliberate — see
+   [the replication design](replication-design.md#failure-model).
+6. Once the database is back, each broker's next heartbeat lands within about
+   3s (retries are capped at a fifth of the lease) and renews its lease, so
+   service resumes without a restart. The expiry sweep does not run until it
+   has watched for one full expiry window after reading the store again, so
+   the outage itself cannot mark a broker down; see
+   [control-plane.md](control-plane.md#broker-liveness).
 
 The visible cost of a failover is therefore the platform's promotion time plus
-at most a couple of seconds of readiness lag on each side. One interaction to
-size deliberately: broker heartbeats fail while the database is down, and the
-first sweep after recovery compares each broker's *last accepted* heartbeat
-against `FELIX_NODE_EXPIRY_TIMEOUT_MS` (default 15s). Keep promotion time plus
-one heartbeat interval (`FELIX_NODE_HEARTBEAT_INTERVAL_MS`, default 5s)
-under the expiry timeout — or raise the timeout to match your platform — so a
-database failover alone can never expire brokers that were serving fine
-throughout.
+a few seconds on each side: readiness lag, and the broker's next heartbeat. A
+promotion shorter than about 5s is usually absorbed by the lease; a longer one
+makes the shards unavailable for the rest of the outage, but does not take
+brokers out of the cluster. If something does mark a broker down (for example
+a network partition between brokers and the control plane while the database
+stays up), the broker registers again on its next heartbeat and is placeable
+again under a new incarnation.
 
 ## Sizing and connections
 

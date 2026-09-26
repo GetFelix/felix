@@ -65,6 +65,13 @@ A broker registers on boot and then reports health on an interval. Nothing
 reports that a broker has *stopped*, so silence is the only signal: a periodic
 sweep marks a node `down` once its last heartbeat is older than the timeout.
 
+The sweep holds off for one full timeout after the instance starts watching:
+at startup, on becoming the Raft leader, and after it could not read its
+store. Brokers cannot heartbeat to a control plane that is down, so right after
+one comes back every heartbeat stamp is as old as the outage, and sweeping at
+once would mark the whole fleet down. A broker that stays silent through the
+grace window is expired as usual.
+
 ### `POST /v1/nodes/{node_id}/heartbeat`
 
 Request carries the reporting process's own `incarnation`, from its last
@@ -161,10 +168,19 @@ The sequence:
 1. **Register after the broker can serve.** Advertising a node placement may
    route to before it can answer is worse than advertising it a moment late, so
    registration waits for the initial catalog sync when readiness is gated on it.
-2. **Heartbeat** on the interval the control plane returns, with bounded
-   exponential backoff and jitter. A failure is visible
+2. **Heartbeat** on the interval the control plane returns, with exponential
+   backoff and jitter on failure. A failure is visible
    (`felix_broker_heartbeat_failures_total`) but never fatal: a control plane
    that is briefly unreachable must not take down a broker that is serving fine.
+   Retries are capped at a fifth of the lease (about 2.25s with the default
+   15s expiry) and each attempt is abandoned after a quarter of it, so a broker
+   gets a heartbeat in within a few seconds of the control plane answering
+   again. Every other control-plane call has a 2s connect and 5s request
+   deadline, so a control plane that accepts connections and then stalls
+   cannot hang the broker.
+   If the answer is `down`, the broker registers again, takes a new
+   incarnation, and carries on heartbeating under it. `left` is not undone:
+   that is a deregistration someone asked for.
 3. **Drain, then deregister** on SIGTERM, before connections are drained, so
    nothing new is placed here while in-flight work finishes.
 

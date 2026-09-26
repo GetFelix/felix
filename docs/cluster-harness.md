@@ -186,6 +186,11 @@ such test races the expiry sweep. Liveness windows are tuned short (a 1s expiry
 timeout) because every process is local, so a stopped broker is observable in
 about a second.
 
+`restart_control_plane` takes the control plane down for a given time and
+brings it back on the same address over the same store, so brokers see a
+restart: cut connections, failed requests, and a fresh expiry sweep facing
+heartbeat stamps as old as the outage. `stop_control_plane` stops it for good.
+
 `kill_node` kills without waiting for the control plane to react. A test
 measuring how long failover takes has to start its clock at the kill, not after
 the cluster has already responded to it.
