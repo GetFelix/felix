@@ -202,272 +202,331 @@ pub(super) async fn run_writer_lane(
     metrics::gauge!("felix_sub_lane_queue_len", "lane" => lane_label).set(0.0);
 }
 
+/// How the per-connection writer treats a subscriber that stops accepting
+/// writes.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ConnectionWriterConfig {
+    pub(super) max_bytes_per_write: usize,
+    /// Frames one subscriber may have waiting behind its current write.
+    pub(super) max_queued_per_subscriber: usize,
+    /// `SubQueuePolicy::Block`: a subscriber at its limit stops the writer
+    /// taking more commands, which is how that policy pushes back on the
+    /// publisher. Otherwise the frame over the limit is dropped.
+    pub(super) block: bool,
+}
+
+/// Write every subscription of one connection.
+///
+/// Commands are taken while writes are in flight, and each subscriber has
+/// its own bounded queue. A subscription whose stream is flow-controlled only
+/// fills its own queue; the others keep being written. Taking commands only
+/// between rounds of writes let one stalled stream stop the whole connection,
+/// and the lanes then dropped frames for every subscription on it.
 pub(super) async fn run_connection_writer(
     connection_id: u64,
     mut rx: mpsc::Receiver<ConnectionCommand>,
-    max_bytes_per_write: usize,
+    config: ConnectionWriterConfig,
 ) {
+    let ConnectionWriterConfig {
+        max_bytes_per_write,
+        max_queued_per_subscriber,
+        block,
+    } = config;
+    let max_queued_per_subscriber = max_queued_per_subscriber.max(1);
+    // Only read by the telemetry build's per-connection series.
+    #[cfg_attr(not(feature = "telemetry"), allow(unused_variables))]
     let conn_label = connection_id.to_string();
     let mut debug_window_start = Instant::now();
     let mut debug_writes = 0u64;
     let mut debug_bytes = 0u64;
     let mut debug_dequeues = 0u64;
     let mut subscribers: HashMap<u64, LaneSubscriber> = HashMap::new();
-    while let Some(first_cmd) = rx.recv().await {
-        let mut pending = Vec::with_capacity(64);
-        pending.push(first_cmd);
-        while pending.len() < 64 {
-            match rx.try_recv() {
-                Ok(cmd) => pending.push(cmd),
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
-            }
-        }
-        metrics::gauge!("felix_sub_conn_queue_len", "connection_id" => conn_label.clone())
-            .set(rx.len() as f64);
+    let mut deliveries: HashMap<u64, VecDeque<LaneDelivery>> = HashMap::new();
+    // Unregistered, but still writing what was queued before the unregister.
+    let mut leaving: HashSet<u64> = HashSet::new();
+    let mut in_flight: HashSet<u64> = HashSet::new();
+    let mut writes = FuturesUnordered::new();
+    let mut open = true;
+    loop {
+        // Start the next write for every subscriber that is idle and has
+        // something queued, coalescing what fits in one write.
+        let ready: Vec<u64> = deliveries
+            .iter()
+            .filter_map(|(subscriber_id, queue)| {
+                (!queue.is_empty() && !in_flight.contains(subscriber_id)).then_some(*subscriber_id)
+            })
+            .collect();
+        for subscriber_id in ready {
+            let Some(mut subscriber) = subscribers.remove(&subscriber_id) else {
+                // Never registered here, or already gone: nothing to write to.
+                deliveries.remove(&subscriber_id);
+                continue;
+            };
+            let Some(queue) = deliveries.get_mut(&subscriber_id) else {
+                continue;
+            };
+            let Some(first) = queue.pop_front() else {
+                continue;
+            };
+            debug_dequeues = debug_dequeues.saturating_add(1);
 
-        let mut deliveries: HashMap<u64, VecDeque<LaneDelivery>> = HashMap::new();
-        let mut leaving: Vec<u64> = Vec::new();
-        for cmd in pending {
-            match cmd {
-                ConnectionCommand::Register {
-                    subscriber_id,
-                    connection,
-                    connection_id,
-                    event_send,
-                    guard,
-                } => {
-                    subscribers.insert(
-                        subscriber_id,
-                        LaneSubscriber {
-                            event_send,
-                            _connection: connection,
-                            _connection_id: connection_id,
-                            _unsubscribe_guard: guard,
-                        },
-                    );
+            let first_subscriber_id = first.subscriber_id;
+            let mut frames = vec![first.frame];
+            let mut item_count = first.item_count;
+            let mut coalesced_bytes = frames[0].len();
+            while let Some(next) = queue.front() {
+                let next_len = next.frame.len();
+                if coalesced_bytes.saturating_add(next_len) > max_bytes_per_write {
+                    break;
                 }
-                ConnectionCommand::Unregister {
-                    subscriber_id,
-                    last,
-                } => {
-                    if let Some(frame) = last {
-                        let now = Instant::now();
-                        deliveries
-                            .entry(subscriber_id)
-                            .or_default()
-                            .push_back(LaneDelivery {
-                                subscriber_id,
-                                frame,
-                                item_count: 0,
-                                first_enqueued_at: now,
-                                enqueue_at: now,
-                            });
-                    }
-                    // Frames queued ahead of this in the same batch are the
-                    // subscription's last, and may say where to resume, so they
-                    // are written before the stream is dropped.
-                    if deliveries
-                        .get(&subscriber_id)
-                        .is_some_and(|queue| !queue.is_empty())
-                    {
-                        leaving.push(subscriber_id);
-                    } else {
-                        subscribers.remove(&subscriber_id);
-                        deliveries.remove(&subscriber_id);
-                    }
+                if let Some(next_frame) = queue.pop_front() {
+                    item_count = item_count.saturating_add(next_frame.item_count);
+                    coalesced_bytes = coalesced_bytes.saturating_add(next_frame.frame.len());
+                    frames.push(next_frame.frame);
                 }
-                ConnectionCommand::Delivery {
+            }
+
+            let sample = t_should_sample();
+            let queue_wait_ns = first.enqueue_at.elapsed().as_nanos() as u64;
+            let first_dequeue_ns = first.first_enqueued_at.elapsed().as_nanos() as u64;
+            t_histogram!("broker_sub_lane_queue_wait_ns", "connection_id" => conn_label.clone())
+                .record(queue_wait_ns as f64);
+            t_histogram!(
+                "broker_sub_lane_dequeue_to_write_start_ns",
+                "connection_id" => conn_label.clone()
+            )
+            .record(queue_wait_ns as f64);
+            t_histogram!(
+                "broker_sub_time_to_first_dequeue_ns",
+                "connection_id" => conn_label.clone()
+            )
+            .record(first_dequeue_ns as f64);
+
+            let write_start = t_now_if(sample);
+            t_counter!("broker_sub_conn_write_calls_total", "connection_id" => conn_label.clone())
+                .increment(1);
+            t_histogram!("broker_sub_conn_writes_per_flush", "connection_id" => conn_label.clone())
+                .record(frames.len() as f64);
+            in_flight.insert(subscriber_id);
+            writes.push(async move {
+                let write_result = if frames.len() == 1 {
+                    write_frame(
+                        &mut subscriber.event_send,
+                        frames.pop().expect("single frame"),
+                    )
+                    .await
+                    .map(|_| coalesced_bytes)
+                } else {
+                    write_frames_many(&mut subscriber.event_send, frames).await
+                };
+                let write_ns = write_start.map(|start| start.elapsed().as_nanos() as u64);
+                (
                     subscriber_id,
-                    frame,
+                    first_subscriber_id,
+                    subscriber,
                     item_count,
-                    first_enqueued_at,
-                    enqueue_at,
-                } => {
-                    deliveries
-                        .entry(subscriber_id)
-                        .or_default()
-                        .push_back(LaneDelivery {
+                    write_result,
+                    write_ns,
+                )
+            });
+        }
+
+        // Under `Block`, a subscriber at its limit holds everyone: that policy
+        // exists to push back rather than drop.
+        let accepting = open
+            && !(block
+                && deliveries
+                    .values()
+                    .any(|queue| queue.len() >= max_queued_per_subscriber));
+
+        tokio::select! {
+            command = rx.recv(), if accepting => {
+                let Some(first_cmd) = command else {
+                    open = false;
+                    continue;
+                };
+                let mut pending = Vec::with_capacity(64);
+                pending.push(first_cmd);
+                while pending.len() < 64 {
+                    match rx.try_recv() {
+                        Ok(cmd) => pending.push(cmd),
+                        Err(_) => break,
+                    }
+                }
+                metrics::histogram!("felix_sub_conn_queue_depth").record(rx.len() as f64);
+                for cmd in pending {
+                    match cmd {
+                        ConnectionCommand::Register {
+                            subscriber_id,
+                            connection,
+                            connection_id,
+                            event_send,
+                            guard,
+                        } => {
+                            subscribers.insert(
+                                subscriber_id,
+                                LaneSubscriber {
+                                    event_send,
+                                    _connection: connection,
+                                    _connection_id: connection_id,
+                                    _unsubscribe_guard: guard,
+                                },
+                            );
+                        }
+                        ConnectionCommand::Unregister {
+                            subscriber_id,
+                            last,
+                        } => {
+                            if let Some(frame) = last {
+                                // Never dropped for being over the limit: it may
+                                // be the frame that says where to resume.
+                                let now = Instant::now();
+                                deliveries
+                                    .entry(subscriber_id)
+                                    .or_default()
+                                    .push_back(LaneDelivery {
+                                        subscriber_id,
+                                        frame,
+                                        item_count: 0,
+                                        first_enqueued_at: now,
+                                        enqueue_at: now,
+                                    });
+                            }
+                            // What was queued ahead of this is the subscription's
+                            // last, and is written before the stream is dropped.
+                            let draining = in_flight.contains(&subscriber_id)
+                                || deliveries
+                                    .get(&subscriber_id)
+                                    .is_some_and(|queue| !queue.is_empty());
+                            if draining {
+                                leaving.insert(subscriber_id);
+                            } else {
+                                subscribers.remove(&subscriber_id);
+                                deliveries.remove(&subscriber_id);
+                            }
+                        }
+                        ConnectionCommand::Delivery {
                             subscriber_id,
                             frame,
                             item_count,
                             first_enqueued_at,
                             enqueue_at,
-                        });
-                }
-            }
-        }
-
-        // Pipeline writes across subscribers instead of gating on a full round: each subscriber
-        // starts its next write as soon as its own previous write completes, so one slow/backpressured
-        // stream can't stall delivery to the others sharing this connection writer.
-        let mut in_flight: HashSet<u64> = HashSet::new();
-        let mut writes = FuturesUnordered::new();
-        loop {
-            let ready: Vec<u64> = deliveries
-                .iter()
-                .filter_map(|(subscriber_id, queue)| {
-                    (!queue.is_empty() && !in_flight.contains(subscriber_id))
-                        .then_some(*subscriber_id)
-                })
-                .collect();
-
-            for subscriber_id in ready {
-                let Some(queue) = deliveries.get_mut(&subscriber_id) else {
-                    continue;
-                };
-                let Some(first) = queue.pop_front() else {
-                    continue;
-                };
-                debug_dequeues = debug_dequeues.saturating_add(1);
-                let Some(mut subscriber) = subscribers.remove(&subscriber_id) else {
-                    continue;
-                };
-
-                let first_subscriber_id = first.subscriber_id;
-                let mut frames = vec![first.frame];
-                let mut item_count = first.item_count;
-                let mut coalesced_bytes = frames[0].len();
-                while let Some(next) = queue.front() {
-                    let next_len = next.frame.len();
-                    if coalesced_bytes.saturating_add(next_len) > max_bytes_per_write {
-                        break;
-                    }
-                    if let Some(next_frame) = queue.pop_front() {
-                        item_count = item_count.saturating_add(next_frame.item_count);
-                        coalesced_bytes = coalesced_bytes.saturating_add(next_frame.frame.len());
-                        frames.push(next_frame.frame);
+                        } => {
+                            if leaving.contains(&subscriber_id) {
+                                continue;
+                            }
+                            let queue = deliveries.entry(subscriber_id).or_default();
+                            if queue.len() >= max_queued_per_subscriber {
+                                // This subscriber is not keeping up; the others
+                                // on the connection are not made to wait for it.
+                                metrics::counter!("felix_sub_queue_dropped_total")
+                                    .increment(item_count as u64);
+                                continue;
+                            }
+                            queue.push_back(LaneDelivery {
+                                subscriber_id,
+                                frame,
+                                item_count,
+                                first_enqueued_at,
+                                enqueue_at,
+                            });
+                        }
                     }
                 }
-
-                let sample = t_should_sample();
-                let queue_wait_ns = first.enqueue_at.elapsed().as_nanos() as u64;
-                let first_dequeue_ns = first.first_enqueued_at.elapsed().as_nanos() as u64;
-                t_histogram!("broker_sub_lane_queue_wait_ns", "connection_id" => conn_label.clone())
-                    .record(queue_wait_ns as f64);
-                t_histogram!(
-                    "broker_sub_lane_dequeue_to_write_start_ns",
-                    "connection_id" => conn_label.clone()
-                )
-                .record(queue_wait_ns as f64);
-                t_histogram!(
-                    "broker_sub_time_to_first_dequeue_ns",
-                    "connection_id" => conn_label.clone()
-                )
-                .record(first_dequeue_ns as f64);
-
-                let write_start = t_now_if(sample);
-                t_counter!("broker_sub_conn_write_calls_total", "connection_id" => conn_label.clone())
-                    .increment(1);
-                t_histogram!("broker_sub_conn_writes_per_flush", "connection_id" => conn_label.clone())
-                    .record(frames.len() as f64);
-                in_flight.insert(subscriber_id);
-                writes.push(async move {
-                    let write_result = if frames.len() == 1 {
-                        write_frame(
-                            &mut subscriber.event_send,
-                            frames.pop().expect("single frame"),
-                        )
-                        .await
-                        .map(|_| coalesced_bytes)
-                    } else {
-                        write_frames_many(&mut subscriber.event_send, frames).await
-                    };
-                    let write_ns = write_start.map(|start| start.elapsed().as_nanos() as u64);
-                    (
-                        subscriber_id,
-                        first_subscriber_id,
-                        subscriber,
-                        item_count,
-                        write_result,
-                        write_ns,
-                    )
-                });
             }
-
-            let Some((
+            Some((
                 subscriber_id,
                 first_subscriber_id,
                 subscriber,
                 _item_count,
                 write_result,
                 write_ns,
-            )) = writes.next().await
-            else {
-                // No in-flight writes and nothing newly ready: this connection is fully drained.
-                break;
-            };
-            in_flight.remove(&subscriber_id);
-            match write_result {
-                Ok(bytes_written) => {
-                    subscribers.insert(subscriber_id, subscriber);
-                    debug_writes = debug_writes.saturating_add(1);
-                    debug_bytes = debug_bytes.saturating_add(bytes_written as u64);
-                    t_histogram!(
-                        "broker_sub_conn_avg_bytes_per_write",
-                        "connection_id" => conn_label.clone()
-                    )
-                    .record(bytes_written as f64);
-                    t_counter!(
-                        "broker_sub_conn_bytes_written_total",
-                        "connection_id" => conn_label.clone()
-                    )
-                    .increment(bytes_written as u64);
-                    #[cfg(feature = "telemetry")]
-                    {
-                        let counters = crate::serving::quic::telemetry::frame_counters();
-                        counters
-                            .frames_out_ok
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        counters
-                            .bytes_out
-                            .fetch_add(bytes_written as u64, std::sync::atomic::Ordering::Relaxed);
-                        counters
-                            .sub_frames_out_ok
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        counters
-                            .sub_batches_out_ok
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        counters
-                            .sub_items_out_ok
-                            .fetch_add(_item_count as u64, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    if let Some(write_ns) = write_ns {
-                        timings::record_sub_write_ns(write_ns);
-                        timings::record_sub_write_await_ns(write_ns);
-                        timings::record_quic_write_ns(write_ns);
-                        t_histogram!("broker_sub_write_blocked_ns").record(write_ns as f64);
+            )) = writes.next(), if !writes.is_empty() => {
+                in_flight.remove(&subscriber_id);
+                match write_result {
+                    Ok(bytes_written) => {
+                        let done = leaving.contains(&subscriber_id)
+                            && deliveries
+                                .get(&subscriber_id)
+                                .is_none_or(|queue| queue.is_empty());
+                        if done {
+                            leaving.remove(&subscriber_id);
+                            deliveries.remove(&subscriber_id);
+                            drop(subscriber);
+                        } else {
+                            subscribers.insert(subscriber_id, subscriber);
+                        }
+                        debug_writes = debug_writes.saturating_add(1);
+                        debug_bytes = debug_bytes.saturating_add(bytes_written as u64);
                         t_histogram!(
-                            "broker_sub_conn_write_ns",
+                            "broker_sub_conn_avg_bytes_per_write",
                             "connection_id" => conn_label.clone()
                         )
-                        .record(write_ns as f64);
-                        t_histogram!(
-                            "broker_sub_conn_write_await_ns",
+                        .record(bytes_written as f64);
+                        t_counter!(
+                            "broker_sub_conn_bytes_written_total",
                             "connection_id" => conn_label.clone()
                         )
-                        .record(write_ns as f64);
+                        .increment(bytes_written as u64);
+                        #[cfg(feature = "telemetry")]
+                        {
+                            let counters = crate::serving::quic::telemetry::frame_counters();
+                            counters
+                                .frames_out_ok
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            counters
+                                .bytes_out
+                                .fetch_add(bytes_written as u64, std::sync::atomic::Ordering::Relaxed);
+                            counters
+                                .sub_frames_out_ok
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            counters
+                                .sub_batches_out_ok
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            counters
+                                .sub_items_out_ok
+                                .fetch_add(_item_count as u64, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        if let Some(write_ns) = write_ns {
+                            timings::record_sub_write_ns(write_ns);
+                            timings::record_sub_write_await_ns(write_ns);
+                            timings::record_quic_write_ns(write_ns);
+                            t_histogram!("broker_sub_write_blocked_ns").record(write_ns as f64);
+                            t_histogram!(
+                                "broker_sub_conn_write_ns",
+                                "connection_id" => conn_label.clone()
+                            )
+                            .record(write_ns as f64);
+                            t_histogram!(
+                                "broker_sub_conn_write_await_ns",
+                                "connection_id" => conn_label.clone()
+                            )
+                            .record(write_ns as f64);
+                        }
                     }
-                }
-                Err(err) => {
-                    t_counter!(
-                        "broker_sub_conn_write_errors_total",
-                        "connection_id" => conn_label.clone()
-                    )
-                    .increment(1);
-                    metrics::counter!("felix_subscriber_disconnect_total").increment(1);
-                    tracing::info!(
-                        connection_id,
-                        subscriber_id = first_subscriber_id,
-                        error = %err,
-                        "connection writer subscriber stream closed"
-                    );
+                    Err(err) => {
+                        // The stream is gone, and so is everything queued for it.
+                        leaving.remove(&subscriber_id);
+                        deliveries.remove(&subscriber_id);
+                        t_counter!(
+                            "broker_sub_conn_write_errors_total",
+                            "connection_id" => conn_label.clone()
+                        )
+                        .increment(1);
+                        metrics::counter!("felix_subscriber_disconnect_total").increment(1);
+                        tracing::info!(
+                            connection_id,
+                            subscriber_id = first_subscriber_id,
+                            error = %err,
+                            "connection writer subscriber stream closed"
+                        );
+                    }
                 }
             }
+            // Closed, and every write has finished.
+            else => break,
         }
-        for subscriber_id in leaving {
-            subscribers.remove(&subscriber_id);
-        }
+
         if debug_window_start.elapsed() >= Duration::from_secs(1) {
             let avg_bytes_per_write = if debug_writes == 0 {
                 0.0

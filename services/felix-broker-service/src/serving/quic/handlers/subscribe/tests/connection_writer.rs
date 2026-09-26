@@ -1,6 +1,15 @@
 //! The shared per-connection writer.
 
 use super::*;
+use crate::serving::quic::handlers::subscribe::writer::ConnectionWriterConfig;
+
+fn writer_config() -> ConnectionWriterConfig {
+    ConnectionWriterConfig {
+        max_bytes_per_write: 64 * 1024,
+        max_queued_per_subscriber: 1024,
+        block: false,
+    }
+}
 
 #[tokio::test]
 async fn run_connection_writer_coalesces_multiple_deliveries() -> Result<()> {
@@ -33,7 +42,7 @@ async fn run_connection_writer_coalesces_multiple_deliveries() -> Result<()> {
     let event_send = connection.open_uni().await?;
 
     let (tx, rx) = mpsc::channel(8);
-    let writer_task = tokio::spawn(run_connection_writer(connection_id, rx, 64 * 1024));
+    let writer_task = tokio::spawn(run_connection_writer(connection_id, rx, writer_config()));
 
     tx.send(ConnectionCommand::Register {
         subscriber_id: 1,
@@ -128,7 +137,7 @@ async fn run_connection_writer_handles_write_error() -> Result<()> {
     drop(client_conn);
 
     let (tx, rx) = mpsc::channel(8);
-    let writer_task = tokio::spawn(run_connection_writer(connection_id, rx, 64 * 1024));
+    let writer_task = tokio::spawn(run_connection_writer(connection_id, rx, writer_config()));
 
     tx.send(ConnectionCommand::Register {
         subscriber_id: 1,
@@ -189,7 +198,7 @@ async fn run_connection_writer_unregister_drops_late_deliveries() -> Result<()> 
     let event_send = connection.open_uni().await?;
 
     let (tx, rx) = mpsc::channel(8);
-    let writer_task = tokio::spawn(run_connection_writer(connection_id, rx, 64 * 1024));
+    let writer_task = tokio::spawn(run_connection_writer(connection_id, rx, writer_config()));
 
     tx.send(ConnectionCommand::Register {
         subscriber_id: 1,
@@ -326,7 +335,7 @@ async fn run_connection_writer_writes_queued_frames_before_an_unregister() -> Re
     })
     .await
     .context("unregister")?;
-    let writer_task = tokio::spawn(run_connection_writer(connection_id, rx, 64 * 1024));
+    let writer_task = tokio::spawn(run_connection_writer(connection_id, rx, writer_config()));
 
     let mut event_recv = tokio::time::timeout(Duration::from_secs(2), client_conn.accept_uni())
         .await
@@ -359,6 +368,127 @@ async fn run_connection_writer_writes_queued_frames_before_an_unregister() -> Re
 
     drop(tx);
     writer_task.await.context("writer join")?;
+    let _ = crate::observability::timings::take_samples();
+    Ok(())
+}
+
+/// A subscription whose client stops reading must not stop the others on
+/// the same connection. The writer used to take a batch of commands and then
+/// wait for every write in it, so one flow-controlled stream parked the whole
+/// writer and nothing queued behind it was ever written.
+#[tokio::test]
+async fn a_stalled_subscription_does_not_stop_the_others_on_its_connection() -> Result<()> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_stream(
+            "t1",
+            "default",
+            "orders",
+            felix_broker::StreamMetadata::default(),
+        )
+        .await?;
+    let (_rx_a, guard_a) = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await?
+        .into_parts();
+    let (_rx_b, guard_b) = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await?
+        .into_parts();
+
+    let (server_config, cert) = make_server_config()?;
+    let server = QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?;
+    let addr = server.local_addr()?;
+    let server_task = tokio::spawn(async move { server.accept().await });
+    // A small per-stream window, so a stream the client does not read stalls
+    // the broker's writes to it quickly.
+    let client_transport = TransportConfig {
+        stream_receive_window: 64 * 1024,
+        ..TransportConfig::default()
+    };
+    let client = QuicClient::bind(
+        "0.0.0.0:0".parse()?,
+        make_client_config(cert)?,
+        client_transport,
+    )?;
+    let client_conn = client.connect(addr, "localhost").await?;
+    let connection = server_task.await.context("server join")??;
+    let connection_id = connection.info().id.0;
+
+    let (tx, rx) = mpsc::channel(64);
+    for (subscriber_id, guard) in [(1, guard_a), (2, guard_b)] {
+        tx.send(ConnectionCommand::Register {
+            subscriber_id,
+            connection: connection.clone(),
+            connection_id: Some(connection_id),
+            event_send: connection.open_uni().await?,
+            guard,
+        })
+        .await
+        .context("register")?;
+    }
+    // Far more for subscription 1 than its window takes.
+    let big = Bytes::from(vec![b'x'; 32 * 1024]);
+    for _ in 0..16 {
+        let now = Instant::now();
+        tx.send(ConnectionCommand::Delivery {
+            subscriber_id: 1,
+            frame: felix_wire::binary::encode_event_batch_bytes(1, std::slice::from_ref(&big))?,
+            item_count: 1,
+            first_enqueued_at: now,
+            enqueue_at: now,
+        })
+        .await
+        .context("delivery for the stalled subscription")?;
+    }
+    let writer_task = tokio::spawn(run_connection_writer(connection_id, rx, writer_config()));
+    // Let the writer take that batch and block on subscription 1.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let now = Instant::now();
+    tx.send(ConnectionCommand::Delivery {
+        subscriber_id: 2,
+        frame: felix_wire::binary::encode_event_batch_bytes(2, &[Bytes::from_static(b"hello")])?,
+        item_count: 1,
+        first_enqueued_at: now,
+        enqueue_at: now,
+    })
+    .await
+    .context("delivery for the healthy subscription")?;
+
+    // Streams show up on the client as their data arrives. Read one frame
+    // from each until subscription 2's turns up, and nothing more from 1.
+    let mut scratch = BytesMut::new();
+    let mut unread = Vec::new();
+    let found = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let mut event_recv = client_conn.accept_uni().await?;
+            let frame = crate::serving::quic::codec::read_frame_limited_into(
+                &mut event_recv,
+                64 * 1024,
+                &mut scratch,
+            )
+            .await?
+            .context("stream ended")?;
+            let batch = felix_wire::binary::decode_event_batch(&frame).context("decode")?;
+            if batch.subscription_id == 2 {
+                return anyhow::Ok(batch.payloads[0].clone());
+            }
+            // Subscription 1's stream stays open and unread.
+            unread.push(event_recv);
+        }
+    })
+    .await
+    .context("the healthy subscription was never written")??;
+    assert_eq!(found.as_ref(), b"hello");
+
+    writer_task.abort();
     let _ = crate::observability::timings::take_samples();
     Ok(())
 }
