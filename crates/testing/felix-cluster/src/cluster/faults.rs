@@ -21,6 +21,18 @@ impl Cluster {
         }
     }
 
+    /// Take the control plane down for `downtime`, then bring it back on the
+    /// same address with the same metadata, the way a redeploy or a crash and
+    /// restart would.
+    pub async fn restart_control_plane(&mut self, downtime: Duration) -> Result<()> {
+        let control_plane = self
+            .control_plane
+            .take()
+            .ok_or_else(|| anyhow!("the control plane is not running"))?;
+        self.control_plane = Some(control_plane.restart(downtime).await?);
+        Ok(())
+    }
+
     /// Whether the control plane is still running. `false` once
     /// [`Self::stop_control_plane`] has been called, after which the assignment
     /// and node endpoints are unreachable.
