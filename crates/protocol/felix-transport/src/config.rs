@@ -111,11 +111,12 @@ impl Default for TransportConfig {
     fn default() -> Self {
         // Environment overrides act as process-wide tuning levers so every
         // endpoint (broker, client, demos) picks them up without plumbing.
+        let ceiling = mtu_override_ceiling_for(cfg!(target_os = "macos"));
         let initial_mtu = env_u64("FELIX_INITIAL_MTU")
-            .map(|value| value.clamp(1200, 65527) as u16)
+            .map(|value| clamp_mtu_override("FELIX_INITIAL_MTU", value, ceiling))
             .unwrap_or(DEFAULT_INITIAL_MTU);
         let mtu_discovery_upper_bound = env_u64("FELIX_MTU_UPPER_BOUND")
-            .map(|value| value.clamp(1200, 65527) as u16)
+            .map(|value| clamp_mtu_override("FELIX_MTU_UPPER_BOUND", value, ceiling))
             .unwrap_or(DEFAULT_MTU_DISCOVERY_UPPER_BOUND);
         let max_udp_payload_size = env_u64("FELIX_MAX_UDP_PAYLOAD")
             .map(|value| value.clamp(1200, 65527) as u16)
@@ -156,6 +157,29 @@ impl Default for TransportConfig {
 /// host doing the editing is worth very little.
 const fn mtu_discovery_upper_bound_for(macos: bool) -> u16 {
     if macos { 16384 } else { 4096 }
+}
+
+/// The largest MTU an override may set.
+///
+/// On Linux a GSO batch of quinn's 10 segments is one IP datagram, so an MTU
+/// over 6553 gets every batch refused with `EMSGSIZE` and stalls delivery for
+/// good (see `DEFAULT_MTU_DISCOVERY_UPPER_BOUND`). An override is clamped to
+/// that ceiling rather than trusted to know it. macOS has no GSO limit.
+const fn mtu_override_ceiling_for(macos: bool) -> u16 {
+    if macos { 65527 } else { 6553 }
+}
+
+fn clamp_mtu_override(name: &str, value: u64, ceiling: u16) -> u16 {
+    let clamped = value.clamp(1200, u64::from(ceiling)) as u16;
+    if u64::from(clamped) != value {
+        tracing::warn!(
+            name,
+            requested = value,
+            used = clamped,
+            "MTU override out of range; clamped"
+        );
+    }
+    clamped
 }
 
 fn env_u64(name: &str) -> Option<u64> {
