@@ -484,7 +484,7 @@ fn open_sealed(dir: &Path, label: &str, config: &LogConfig, id: SegmentId) -> Re
         entry: SealedEntry {
             descriptor,
             index,
-            reader: SegmentReader::open(&path, id, base_offset)?,
+            reader: std::sync::Arc::new(SegmentReader::open(&path, id, base_offset)?),
             holds_marks: header.holds_marks(),
         },
         rebuilt_index,

@@ -14,6 +14,7 @@ mod test_support;
 pub(super) use rollover::RollOutcome;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::io::read_at;
@@ -33,7 +34,11 @@ pub(super) struct SegmentSet {
     sealed: Vec<SealedEntry>,
     active: SegmentWriter,
     /// Read handle on the active segment. Recreated on every roll.
-    active_reader: SegmentReader,
+    active_reader: Arc<SegmentReader>,
+    /// Bumped by every truncation and reset. A read planned under the lock and
+    /// run without it compares this afterwards: a cut in between can put new
+    /// records at the byte positions the read was walking.
+    generation: u64,
     /// Next free segment id.
     ///
     /// Atomic because `roll_plan` runs under a *read* lock — it has to, so
@@ -52,7 +57,11 @@ impl SegmentSet {
         sealed: Vec<SealedEntry>,
         active: SegmentWriter,
     ) -> Result<Self> {
-        let active_reader = SegmentReader::open(active.path(), active.id(), active.base_offset())?;
+        let active_reader = Arc::new(SegmentReader::open(
+            active.path(),
+            active.id(),
+            active.base_offset(),
+        )?);
         let next_segment_id = AtomicU64::new(active.id() + 1);
         metrics::gauge!(metrics_names::SEGMENT_COUNT).set((sealed.len() + 1) as f64);
         Ok(Self {
@@ -62,6 +71,7 @@ impl SegmentSet {
             sealed,
             active,
             active_reader,
+            generation: 0,
             next_segment_id,
         })
     }
@@ -132,40 +142,44 @@ impl SegmentSet {
     /// Walks segments in offset order, so results are strictly ascending with no
     /// duplicates and no gaps inside the data that is present.
     pub(super) fn read(&self, start: Offset, mut budget: ReadBudget) -> Result<Vec<LogRecord>> {
-        let mut out = Vec::new();
-        if start >= self.tail_offset() {
-            return Ok(out);
-        }
+        self.read_plan(start)
+            .execute(start, &mut budget, &self.label)
+    }
 
-        for entry in &self.sealed {
-            if budget.is_spent() {
-                return Ok(out);
+    /// Everything a read from `start` needs, copied out so the read itself can
+    /// run without the lock: appends must not wait behind a cold `pread`.
+    pub(super) fn read_plan(&self, start: Offset) -> ReadPlan {
+        let mut spans = Vec::new();
+        if start < self.tail_offset() {
+            // Segments entirely below the requested start are skipped.
+            let first = self
+                .sealed
+                .partition_point(|entry| entry.next_offset() <= start);
+            for entry in &self.sealed[first..] {
+                spans.push(ReadSpan {
+                    reader: Arc::clone(&entry.reader),
+                    position: entry.index.seek_position(start),
+                    valid_bytes: entry.descriptor.size_bytes,
+                });
             }
-            // Skip segments entirely below the requested start.
-            if entry.next_offset() <= start {
-                continue;
+            if self.active.next_offset() > start {
+                spans.push(ReadSpan {
+                    reader: Arc::clone(&self.active_reader),
+                    position: self.active.index().seek_position(start),
+                    valid_bytes: self.active.size_bytes(),
+                });
             }
-            entry.reader.read_from(
-                &entry.index,
-                start,
-                entry.descriptor.size_bytes,
-                &mut budget,
-                &self.label,
-                &mut out,
-            )?;
         }
+        ReadPlan {
+            generation: self.generation,
+            spans,
+        }
+    }
 
-        if !budget.is_spent() && self.active.next_offset() > start {
-            self.active_reader.read_from(
-                self.active.index(),
-                start,
-                self.active.size_bytes(),
-                &mut budget,
-                &self.label,
-                &mut out,
-            )?;
-        }
-        Ok(out)
+    /// Changes whenever a truncation or reset may have rewritten bytes a
+    /// planned read could be walking.
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Seal the active segment and report a verifiable summary of it.
@@ -283,12 +297,53 @@ impl SegmentSet {
     }
 }
 
+/// A read planned under the segment lock, to run without it.
+#[derive(Debug)]
+pub(super) struct ReadPlan {
+    pub(super) generation: u64,
+    spans: Vec<ReadSpan>,
+}
+
+#[derive(Debug)]
+struct ReadSpan {
+    reader: Arc<SegmentReader>,
+    /// A record boundary at or before the read's start, from the index.
+    position: u64,
+    /// Bytes of the segment that held records when the plan was made.
+    valid_bytes: u64,
+}
+
+impl ReadPlan {
+    pub(super) fn execute(
+        &self,
+        start: Offset,
+        budget: &mut ReadBudget,
+        label: &str,
+    ) -> Result<Vec<LogRecord>> {
+        let mut out = Vec::new();
+        for span in &self.spans {
+            if budget.is_spent() {
+                break;
+            }
+            span.reader.read_from_position(
+                span.position,
+                start,
+                span.valid_bytes,
+                budget,
+                label,
+                &mut out,
+            )?;
+        }
+        Ok(out)
+    }
+}
+
 /// A finished segment: immutable bytes plus the index needed to seek into them.
 #[derive(Debug)]
 pub(super) struct SealedEntry {
     pub descriptor: SegmentDescriptor,
     pub index: SparseIndex,
-    pub reader: SegmentReader,
+    pub reader: Arc<SegmentReader>,
     /// A v3 segment, which may hold producer marks. A v2 one cannot, so a
     /// rebuild of producer state never has to read it.
     pub holds_marks: bool,

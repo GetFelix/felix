@@ -372,6 +372,8 @@ impl DiskLog {
             #[cfg(test)]
             fail_next_flush: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
+            pause_next_read: Mutex::new(None),
+            #[cfg(test)]
             slow_inline_roll_millis: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             flushes: std::sync::atomic::AtomicU64::new(0),
@@ -461,19 +463,36 @@ impl AppendOnlyLog for DiskLog {
         Box::pin(async move {
             let started = std::time::Instant::now();
             let records = tokio::task::spawn_blocking(move || {
-                let segments = inner.segments.read();
-                let oldest = segments.base_offset();
-                if range.start < oldest {
-                    // Not an empty range: these offsets existed and are gone.
-                    return Err(StorageError::Trimmed {
-                        requested: range.start,
-                        oldest,
-                    });
+                loop {
+                    // Planned under the lock, read without it: a cold `pread`
+                    // must not hold up the appends queued on `segments`.
+                    let plan = {
+                        let segments = inner.segments.read();
+                        let oldest = segments.base_offset();
+                        if range.start < oldest {
+                            // Not an empty range: these offsets existed and
+                            // are gone.
+                            return Err(StorageError::Trimmed {
+                                requested: range.start,
+                                oldest,
+                            });
+                        }
+                        segments.read_plan(range.start)
+                    };
+                    #[cfg(test)]
+                    if let Some(pause) = inner.pause_next_read.lock().take() {
+                        pause.wait();
+                        pause.wait();
+                    }
+                    let mut budget =
+                        ReadBudget::new(range.max_bytes, inner.config.max_records_per_read);
+                    let read = plan.execute(range.start, &mut budget, &inner.label);
+                    // A truncation in between may have put other records at
+                    // the positions just read. Rare, so read again.
+                    if inner.segments.read().generation() == plan.generation {
+                        return read;
+                    }
                 }
-                segments.read(
-                    range.start,
-                    ReadBudget::new(range.max_bytes, inner.config.max_records_per_read),
-                )
             })
             .await
             .map_err(|err| StorageError::Io(std::io::Error::other(err)))??;
@@ -586,9 +605,9 @@ impl PendingAppend {
 struct LogInner {
     label: String,
     config: LogConfig,
-    /// Guards the segment set. A read lock serves range reads concurrently; a
-    /// write lock serialises appends, which must assign offsets in order
-    /// anyway.
+    /// Guards the segment set. Held only for pointer work: a range read plans
+    /// under the read lock and does its I/O after releasing it, and a write
+    /// lock serialises appends, which must assign offsets in order anyway.
     segments: RwLock<SegmentSet>,
     /// Held shared by appends, exclusively by an inline rollover.
     ///
@@ -654,6 +673,10 @@ struct LogInner {
     /// Makes the next flush report a failed fsync after the real one ran.
     #[cfg(test)]
     fail_next_flush: std::sync::atomic::AtomicBool,
+    /// Stops the next read between planning and reading: it waits on the
+    /// barrier once to say it has planned, and again to go on.
+    #[cfg(test)]
+    pause_next_read: Mutex<Option<Arc<std::sync::Barrier>>>,
     /// Milliseconds an inline rollover holds the segment lock, for tests.
     #[cfg(test)]
     slow_inline_roll_millis: std::sync::atomic::AtomicU64,
