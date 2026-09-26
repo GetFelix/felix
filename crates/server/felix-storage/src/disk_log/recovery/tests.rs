@@ -431,6 +431,49 @@ fn a_stale_index_is_replaced() {
     assert!(!recovered.sealed[0].index.is_empty());
 }
 
+/// An index that loads but points somewhere wrong is still only an index: the
+/// segment is rebuilt from, not declared corrupt because of it.
+#[test]
+fn a_sealed_index_pointing_at_the_wrong_place_is_rebuilt() {
+    let dir = tempdir().expect("dir");
+    populate(&dir, 12);
+    let ids = discover_segment_ids(dir.path()).expect("ids");
+    let sealed_id = ids[0];
+    let index_path = dir.path().join(index_file_name(sealed_id));
+    let good = SparseIndex::load(&index_path, 0).expect("index");
+    let last = *good.entries().last().expect("entry");
+
+    // One byte into a record, and a claimed offset one past the real one:
+    // each sends the resume scan to bytes that do not decode as claimed.
+    for bad in [
+        crate::segment::format::IndexEntry {
+            offset: last.offset,
+            position: last.position + 1,
+        },
+        crate::segment::format::IndexEntry {
+            offset: last.offset + 1,
+            position: last.position,
+        },
+    ] {
+        let mut index = SparseIndex::new(0);
+        for entry in &good.entries()[..good.len() - 1] {
+            index.push(*entry);
+        }
+        index.push(bad);
+        index.persist(&index_path).expect("persist");
+
+        let recovered = reopen(&dir).expect("a bad index is rebuilt, not fatal");
+        assert_eq!(recovered.sealed[0].index.entries(), good.entries());
+        drop(recovered);
+        assert_eq!(
+            SparseIndex::load(&index_path, 0)
+                .expect("rebuilt")
+                .entries(),
+            good.entries(),
+        );
+    }
+}
+
 #[test]
 fn a_missing_segment_in_the_middle_is_an_error() {
     let dir = tempdir().expect("dir");

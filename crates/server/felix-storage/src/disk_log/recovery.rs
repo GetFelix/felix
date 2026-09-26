@@ -396,12 +396,12 @@ fn open_sealed(dir: &Path, label: &str, config: &LogConfig, id: SegmentId) -> Re
     let loaded = SparseIndex::load(&dir.join(index_file_name(id)), base_offset);
     let mut rebuilt_index = false;
 
-    let (index, outcome) = match (loaded, config.verify_all_on_open) {
+    let resumed = match (loaded, config.verify_all_on_open) {
         (Some(index), false) if !index.is_empty() => {
             // Resume from the last index entry: only the records it does not
             // cover need checking, which is bounded by one index interval.
             let last = index.entries().last().copied().expect("non-empty");
-            let outcome = scan_segment(
+            let resumed = scan_segment(
                 &path,
                 id,
                 label,
@@ -413,10 +413,31 @@ fn open_sealed(dir: &Path, label: &str, config: &LogConfig, id: SegmentId) -> Re
                 // A sealed segment was synced and trimmed when it was sealed,
                 // so nothing in it can be an unfinished write.
                 false,
-            )?;
-            (index, outcome)
+            );
+            match resumed {
+                Ok(outcome) if outcome.torn_tail.is_none() && outcome.valid_bytes == file_len => {
+                    Some((index, outcome))
+                }
+                // The index sent the scan somewhere that is not a record
+                // boundary, or not the one it claims. That may be the index
+                // alone, so the full scan below decides: it fails only if the
+                // segment itself is damaged.
+                Ok(_) | Err(StorageError::Corruption(_)) => {
+                    tracing::warn!(
+                        shard = label,
+                        segment = id,
+                        "sealed segment index does not match its segment; rebuilding it",
+                    );
+                    None
+                }
+                Err(err) => return Err(err),
+            }
         }
-        _ => {
+        _ => None,
+    };
+    let (index, outcome) = match resumed {
+        Some(resumed) => resumed,
+        None => {
             // No usable index, or a full verification was requested: walk the
             // whole segment and rebuild.
             rebuilt_index = true;
