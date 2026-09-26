@@ -105,6 +105,8 @@ felix_sub_queue_enqueued_total
 felix_sub_queue_dropped_total               # records lost to slow consumers
 felix_sub_queue_drop_old_emulated_total     # DropOld configured, DropNew behavior
 felix_sub_queue_len
+felix_sub_conn_queue_depth                  # histogram: commands waiting for a connection's writer
+felix_sub_connection_subscribers            # subscribers across all connections
 felix_subscriber_disconnect_total
 ```
 
