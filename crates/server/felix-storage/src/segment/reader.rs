@@ -101,6 +101,33 @@ impl SegmentReader {
 
         Ok(())
     }
+
+    /// Byte position of the record at `offset`, or `valid_bytes` when every
+    /// record is below it.
+    ///
+    /// Walks record headers from the nearest index entry, so it reads one
+    /// index interval plus a header per record, never a payload.
+    pub(crate) fn position_of(
+        &self,
+        index: &SparseIndex,
+        offset: Offset,
+        valid_bytes: u64,
+        shard_label: &str,
+    ) -> Result<u64> {
+        let mut position = index.seek_position(offset);
+        let mut cursor = SegmentCursor::new(&self.file);
+        while position < valid_bytes {
+            let header_slice = cursor.slice_at(position, RECORD_HEADER_LEN as usize)?;
+            let record_header = RecordHeader::decode(header_slice).map_err(|err| {
+                StorageError::Corruption(err.in_segment(shard_label, self.id).at_position(position))
+            })?;
+            if record_header.offset >= offset {
+                return Ok(position);
+            }
+            position += record_header.encoded_len();
+        }
+        Ok(valid_bytes)
+    }
 }
 
 /// How much a read may produce, carried across every segment it visits.
