@@ -182,24 +182,6 @@ fn api_tls_is_both_paths_or_neither() {
     assert_eq!(tls.key_path, "/etc/felix/api/tls.key");
 }
 
-/// The Raft RPCs ride the API listener over plain HTTP, so TLS there would
-/// cut the group off from itself. Refused until they have their own.
-#[serial]
-#[test]
-fn api_tls_with_the_raft_backend_is_refused() {
-    let _env = clear_felix_env();
-    let dir = TempDir::new().expect("tempdir");
-    unsafe {
-        env::set_var("FELIX_RAFT_NODE_ID", "1");
-        env::set_var("FELIX_RAFT_DATA_DIR", dir.path());
-        env::set_var("FELIX_RAFT_PEERS", "1=127.0.0.1:8443");
-        env::set_var("FELIX_CONTROLPLANE_TLS_CERT", "/etc/felix/api/tls.crt");
-        env::set_var("FELIX_CONTROLPLANE_TLS_KEY", "/etc/felix/api/tls.key");
-    }
-    let err = ControlPlaneConfig::from_env().expect_err("raft with api tls");
-    assert!(err.to_string().contains("raft backend"), "{err}");
-}
-
 #[serial]
 #[test]
 fn from_env_uses_defaults() {

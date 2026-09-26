@@ -139,14 +139,6 @@ impl ControlPlaneConfig {
                 ));
             }
             raft.validate()?;
-            // The Raft RPCs share the API listener and the Raft client
-            // speaks plain HTTP to its peers, so TLS here would cut the group
-            // off from itself.
-            if self.api_tls.is_some() {
-                return Err(anyhow!(
-                    "FELIX_CONTROLPLANE_TLS_CERT is not supported with the raft backend yet:                      the Raft RPCs ride the API listener and members reach each other over                      plain HTTP. Terminate TLS in front of the control plane, or use the                      postgres backend"
-                ));
-            }
         }
         if self.bootstrap.enabled && self.bootstrap.token.is_none() {
             return Err(anyhow!(

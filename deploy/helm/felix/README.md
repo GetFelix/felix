@@ -83,7 +83,7 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 | `broker.peerTls.allowUnauthenticated` | `false` | Run the internal port without mTLS. One of this or `enabled` is required. |
 | `broker.clientTls.enabled` / `existingSecret` | `false` / — | The certificate clients verify brokers with, from a `kubernetes.io/tls` Secret. Off, each broker generates a self-signed certificate at every start. |
 | `broker.clientTls.clientCaKey` | — | A key in that Secret holding the CA every client must present a certificate from. |
-| `controlplane.tls.enabled` / `existingSecret` / `caKey` | `false` / — / `ca.crt` | TLS on the control-plane API, from a `kubernetes.io/tls` Secret. Brokers then use `https://` and trust `caKey` from the same Secret. Not with `raft` yet. |
+| `controlplane.tls.enabled` / `existingSecret` / `caKey` | `false` / — / `ca.crt` | TLS on the control-plane API, from a `kubernetes.io/tls` Secret. Brokers then use `https://` and trust `caKey` from the same Secret. |
 | `broker.shutdown.preStopSeconds` / `handoffTimeoutMs` / `drainTimeoutMs` | `15` / `30000` / `40000` | The endpoints controller's head start, then the shard handoff, then the drain. The grace period is derived; an explicit one that is too short is refused. |
 | `broker.podDisruptionBudget.maxUnavailable` | `1` | Must be below `replicas`, and at most one once there are three or more. |
 | `broker.antiAffinity` / `topologySpread` | `soft` / zone, `ScheduleAnyway` | `hard` refuses to co-locate; `DoNotSchedule` refuses to skew. |
@@ -101,7 +101,7 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 - `memory` has more than one replica.
 - brokers are enabled with no credential Secret, or with no control plane and no `controlplaneUrl`.
 - brokers are enabled with neither `peerTls.enabled` nor `peerTls.allowUnauthenticated`.
-- `clientTls` or `controlplane.tls` is on without a Secret, or `controlplane.tls` is on under `raft`.
+- `clientTls` or `controlplane.tls` is on without a Secret.
 - the client and internal ports are the same.
 - a budget would let every broker, or two replicas of one shard, go at once; or would never let a control-plane instance go.
 - an explicit grace period is shorter than the preStop sleep plus the drain.

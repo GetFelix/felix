@@ -1713,7 +1713,7 @@ absent; they are listed in that script rather than here.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `FELIX_CONTROLPLANE_BIND` | `0.0.0.0:8443` | Address the control-plane API listens on. |
-| `FELIX_CONTROLPLANE_TLS_CERT` | — | PEM certificate chain the API listener serves. Set with the key below, or neither; without them the API is plain HTTP and startup warns. Re-read every 30s, so a renewal on disk reaches the next handshake. Not supported with the `raft` backend yet (its RPCs share this listener over plain HTTP); startup refuses the combination. |
+| `FELIX_CONTROLPLANE_TLS_CERT` | — | PEM certificate chain the API listener serves. Set with the key below, or neither; without them the API is plain HTTP and startup warns. Re-read every 30s, so a renewal on disk reaches the next handshake. The Raft peer listener is separate and has its own `FELIX_RAFT_TLS_CERT`, `_KEY` and `_CA`. |
 | `FELIX_CONTROLPLANE_TLS_KEY` | — | PEM private key for `FELIX_CONTROLPLANE_TLS_CERT`. |
 | `FELIX_CONTROLPLANE_METRICS_BIND` | — | Separate address for the metrics endpoint. |
 | `FELIX_CONTROLPLANE_CONFIG` | — | Path to a config file; environment variables override it. |
