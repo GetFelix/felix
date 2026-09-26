@@ -15,7 +15,8 @@
 //! the queue, and the delivery path tells the client to re-watch from that
 //! offset. Loss is loud, and the recovery is gapless.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::hash::{BuildHasher, Hash};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 
 use bytes::Bytes;
@@ -29,11 +30,31 @@ use crate::handoff::ShardMoved;
 /// collide with it: a log would have to hold 2^64 records first.
 const NOT_LAGGED: u64 = u64::MAX;
 
+/// Lock stripes over the cache shards. Every cache write reports here with
+/// its store's shard lock held, so one broker-wide lock would serialise
+/// writes to unrelated caches.
+const STRIPES: usize = 16;
+
 /// Fanout registry for every cache watch this broker serves.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CacheWatchHub {
-    shards: Mutex<HashMap<WatchShardKey, Vec<Watcher>>>,
+    stripes: Box<[Mutex<HashMap<WatchShardKey, ShardWatchers>>]>,
+    /// Picks a key's stripe.
+    hasher: hashbrown::DefaultHashBuilder,
+    /// Watchers registered anywhere. A broker with none skips the stripes.
+    watching: AtomicUsize,
     next_id: AtomicU64,
+}
+
+impl Default for CacheWatchHub {
+    fn default() -> Self {
+        Self {
+            stripes: (0..STRIPES).map(|_| Mutex::default()).collect(),
+            hasher: hashbrown::DefaultHashBuilder::default(),
+            watching: AtomicUsize::new(0),
+            next_id: AtomicU64::new(0),
+        }
+    }
 }
 
 impl CacheWatchHub {
@@ -71,11 +92,18 @@ impl CacheWatchHub {
             cache.to_string(),
             shard,
         );
-        self.shards
+        let exact = match &filter {
+            CacheWatchFilter::Key(key) => Some(key.clone()),
+            CacheWatchFilter::Prefix(_) => None,
+        };
+        // Counted before it is visible, so a write that skips the stripes on
+        // a zero count is one that no registered watcher could have seen.
+        self.watching.fetch_add(1, Ordering::AcqRel);
+        self.stripe(&key)
             .lock()
             .entry(key.clone())
             .or_default()
-            .push(Watcher {
+            .insert(Watcher {
                 id,
                 filter,
                 sender,
@@ -87,9 +115,17 @@ impl CacheWatchHub {
             guard: CacheWatchGuard {
                 hub: Arc::downgrade(self),
                 key,
+                exact,
                 id,
             },
         }
+    }
+
+    fn stripe(&self, key: &WatchShardKey) -> &Mutex<HashMap<WatchShardKey, ShardWatchers>> {
+        let mut hasher = self.hasher.build_hasher();
+        key.hash(&mut hasher);
+        let hash = std::hash::Hasher::finish(&hasher);
+        &self.stripes[hash as usize % self.stripes.len()]
     }
 
     /// Watcher slots currently registered for one cache shard, for tests that
@@ -107,7 +143,10 @@ impl CacheWatchHub {
             cache.to_string(),
             shard,
         );
-        self.shards.lock().get(&key).map_or(0, Vec::len)
+        self.stripe(&key)
+            .lock()
+            .get(&key)
+            .map_or(0, ShardWatchers::len)
     }
 
     /// End every watch on one cache shard. Each watcher is handed what was
@@ -133,21 +172,25 @@ impl CacheWatchHub {
             cache.to_string(),
             shard,
         );
-        let Some(watchers) = self.shards.lock().remove(&key) else {
+        let Some(watchers) = self.stripe(&key).lock().remove(&key) else {
             return 0;
         };
+        let ended = watchers.len();
+        self.watching.fetch_sub(ended, Ordering::AcqRel);
         if let Some(moved) = moved {
-            for watcher in &watchers {
+            for watcher in watchers.iter() {
                 let _ = watcher.state.moved.set(moved.clone());
             }
         }
-        watchers.len()
+        ended
     }
 
-    fn remove(&self, key: &WatchShardKey, id: u64) {
-        let mut shards = self.shards.lock();
+    fn remove(&self, key: &WatchShardKey, exact: Option<&str>, id: u64) {
+        let mut shards = self.stripe(key).lock();
         if let Some(watchers) = shards.get_mut(key) {
-            watchers.retain(|watcher| watcher.id != id);
+            if watchers.remove(exact, id) {
+                self.watching.fetch_sub(1, Ordering::AcqRel);
+            }
             if watchers.is_empty() {
                 shards.remove(key);
             }
@@ -160,13 +203,16 @@ impl felix_storage::CacheObserver for CacheWatchHub {
     /// enqueue is a `try_send`, and a full queue ends that watcher rather than
     /// stalling the writer.
     fn cache_changed(&self, change: felix_storage::CacheChange) {
-        let mut shards = self.shards.lock();
+        if self.watching.load(Ordering::Acquire) == 0 {
+            return;
+        }
         let key = (
             change.tenant_id,
             change.namespace,
             change.cache,
             change.shard,
         );
+        let mut shards = self.stripe(&key).lock();
         let Some(watchers) = shards.get_mut(&key) else {
             return;
         };
@@ -176,31 +222,104 @@ impl felix_storage::CacheObserver for CacheWatchHub {
             offset: change.offset,
             expires_at_millis: change.expires_at_millis,
         };
-        watchers.retain(|watcher| {
-            if !watcher.filter.matches(&event.key) {
-                return true;
-            }
-            match watcher.sender.try_send(event.clone()) {
-                Ok(()) => true,
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    // Ended, not thinned: record what was missed and close the
-                    // queue by dropping the sender. The reader drains what was
-                    // delivered, sees the close, and reports the lag offset so
-                    // the client can re-watch from it without a gap.
-                    watcher
-                        .state
-                        .lagged_at
-                        .store(event.offset, Ordering::Release);
-                    metrics::counter!("felix_cache_watch_lagged_total").increment(1);
-                    false
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => false,
-            }
-        });
+        let ended = watchers.deliver(&event);
+        self.watching.fetch_sub(ended, Ordering::AcqRel);
         if watchers.is_empty() {
             shards.remove(&key);
         }
     }
+}
+
+/// One cache shard's watchers. Exact-key watchers are indexed by their key,
+/// so a write is offered only to the watchers of that key and to the prefix
+/// watchers, not to every watcher of the shard.
+#[derive(Debug, Default)]
+struct ShardWatchers {
+    by_key: HashMap<String, Vec<Watcher>>,
+    prefixes: Vec<Watcher>,
+}
+
+impl ShardWatchers {
+    fn insert(&mut self, watcher: Watcher) {
+        match &watcher.filter {
+            CacheWatchFilter::Key(key) => self.by_key.entry(key.clone()).or_default().push(watcher),
+            CacheWatchFilter::Prefix(_) => self.prefixes.push(watcher),
+        }
+    }
+
+    /// Whether a watcher with this id was registered.
+    fn remove(&mut self, exact: Option<&str>, id: u64) -> bool {
+        let list = match exact {
+            Some(key) => match self.by_key.get_mut(key) {
+                Some(list) => list,
+                None => return false,
+            },
+            None => &mut self.prefixes,
+        };
+        let before = list.len();
+        list.retain(|watcher| watcher.id != id);
+        let removed = list.len() != before;
+        if let Some(key) = exact
+            && self.by_key.get(key).is_some_and(Vec::is_empty)
+        {
+            self.by_key.remove(key);
+        }
+        removed
+    }
+
+    /// Empty lists are removed from `by_key` as they empty, so this is cheap.
+    fn is_empty(&self) -> bool {
+        self.by_key.is_empty() && self.prefixes.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.by_key.values().map(Vec::len).sum::<usize>() + self.prefixes.len()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &Watcher> {
+        self.by_key.values().flatten().chain(&self.prefixes)
+    }
+
+    /// Offer one change to every watcher it matches. Returns how many
+    /// watchers ended.
+    fn deliver(&mut self, event: &CacheChangeEvent) -> usize {
+        let mut ended = 0;
+        if let Some(exact) = self.by_key.get_mut(&event.key) {
+            ended += offer(exact, event);
+            if exact.is_empty() {
+                self.by_key.remove(&event.key);
+            }
+        }
+        ended + offer(&mut self.prefixes, event)
+    }
+}
+
+/// Hand `event` to each matching watcher, dropping the ones that end.
+/// Returns how many ended.
+fn offer(watchers: &mut Vec<Watcher>, event: &CacheChangeEvent) -> usize {
+    let before = watchers.len();
+    watchers.retain(|watcher| {
+        if !watcher.filter.matches(&event.key) {
+            return true;
+        }
+        match watcher.sender.try_send(event.clone()) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                // Ended, not thinned: record what was missed and close the
+                // queue by dropping the sender. The reader drains what was
+                // delivered, sees the close, and reports the lag offset so
+                // the client can re-watch from it without a gap.
+                watcher
+                    .state
+                    .lagged_at
+                    .store(event.offset, Ordering::Release);
+                metrics::counter!("felix_cache_watch_lagged_total").increment(1);
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+        }
+    });
+    before - watchers.len()
 }
 
 /// Tenant, namespace, cache, shard — one fanout list per cache shard.
@@ -287,13 +406,15 @@ impl CacheWatchSubscription {
 pub(crate) struct CacheWatchGuard {
     hub: Weak<CacheWatchHub>,
     key: WatchShardKey,
+    /// The watched key, for an exact-key watch: where the hub indexed it.
+    exact: Option<String>,
     id: u64,
 }
 
 impl Drop for CacheWatchGuard {
     fn drop(&mut self) {
         if let Some(hub) = self.hub.upgrade() {
-            hub.remove(&self.key, self.id);
+            hub.remove(&self.key, self.exact.as_deref(), self.id);
         }
     }
 }

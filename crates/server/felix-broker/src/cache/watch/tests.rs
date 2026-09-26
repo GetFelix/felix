@@ -188,3 +188,27 @@ async fn a_watch_ended_by_a_move_says_where_to_resume() {
     assert_eq!(watch.moved(), Some(&moved));
     assert_eq!(watch.lagged(), None);
 }
+
+/// Watchers of one key share an index slot. Dropping one leaves the other
+/// delivered to, and dropping the last frees the slot for a later watch.
+#[tokio::test]
+async fn key_watchers_come_and_go_independently() {
+    let hub = CacheWatchHub::new();
+    let first = register(&hub, CacheWatchFilter::Key("user:42".to_string()));
+    let mut second = register(&hub, CacheWatchFilter::Key("user:42".to_string()));
+    let mut other = register(&hub, CacheWatchFilter::Key("user:7".to_string()));
+    assert_eq!(hub.registered_watchers("t1", "ns", "sessions", 0), 3);
+
+    drop(first);
+    hub.cache_changed(change("user:42", 0));
+    assert_eq!(second.try_recv().expect("still watching").offset, 0);
+    assert!(other.try_recv().is_err());
+
+    drop(second);
+    drop(other);
+    assert_eq!(hub.registered_watchers("t1", "ns", "sessions", 0), 0);
+
+    let mut later = register(&hub, CacheWatchFilter::Key("user:42".to_string()));
+    hub.cache_changed(change("user:42", 1));
+    assert_eq!(later.try_recv().expect("a later watch").offset, 1);
+}
