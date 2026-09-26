@@ -250,16 +250,17 @@ mod test_slot {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
         }
 
-        pub(super) fn set(&self, collector: TimingCollector) -> Result<(), TimingCollector> {
+        /// Whether it was set: like `OnceLock::set`, the first one wins.
+        pub(super) fn set(&self, collector: TimingCollector) -> bool {
             let mut slot = self
                 .0
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if slot.is_some() {
-                return Err(collector);
+                return false;
             }
             *slot = Some(Box::leak(Box::new(collector)));
-            Ok(())
+            true
         }
 
         pub(super) fn clear(&self) {
