@@ -161,6 +161,17 @@ impl Leader {
             .next_seq()
     }
 
+    /// Bind a freshly renewed lease to the fence, as a running broker does,
+    /// and hand it back so a test can let it lapse.
+    pub(crate) fn hold_lease(&self) -> Arc<crate::cluster::lease::LeaseState> {
+        let lease = Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+            3600,
+        )));
+        lease.renew();
+        self.ingress.fence().bind_lease(Arc::clone(&lease));
+        lease
+    }
+
     /// What a move does to the old leader: the same generation, now draining.
     pub(crate) fn fence_move(&mut self, key: &ShardKey) {
         let action = self

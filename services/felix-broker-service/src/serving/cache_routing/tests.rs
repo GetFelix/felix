@@ -353,6 +353,56 @@ mod fence {
         );
     }
 
+    /// A broker whose lease lapsed may already have been replaced as leader,
+    /// so cache puts, deletes and counter adds are refused like a publish is,
+    /// and served again once the lease is renewed.
+    #[tokio::test]
+    async fn cache_and_counter_writes_after_the_lease_lapses_are_refused() {
+        let leader = Leader::start().await;
+        let lease = leader.hold_lease();
+        cache_op(&leader, put_request(Bytes::from_static(b"v1"), None))
+            .await
+            .expect("leased");
+        assert_eq!(
+            counter_op(&leader, CacheRequest::CounterAdd { delta: 5 }).await,
+            Ok(Some(5))
+        );
+
+        lease.surrender();
+        assert_fenced(
+            cache_op(&leader, put_request(Bytes::from_static(b"v2"), None))
+                .await
+                .expect_err("a put landed without a lease"),
+            "put",
+        );
+        assert_fenced(
+            cache_op(&leader, CacheRequest::Delete)
+                .await
+                .expect_err("a delete landed without a lease"),
+            "delete",
+        );
+        assert_fenced(
+            counter_op(&leader, CacheRequest::CounterAdd { delta: 5 })
+                .await
+                .expect_err("a counter add landed without a lease"),
+            "counter add",
+        );
+        assert_eq!(
+            cache_op(&leader, CacheRequest::Get).await,
+            Ok(Some(Bytes::from_static(b"v1")))
+        );
+        assert_eq!(
+            counter_op(&leader, CacheRequest::CounterGet).await,
+            Ok(Some(5))
+        );
+
+        lease.renew();
+        assert_eq!(
+            counter_op(&leader, CacheRequest::CounterAdd { delta: 1 }).await,
+            Ok(Some(6))
+        );
+    }
+
     /// A cache write to the old owner between the fence and the cut-over is
     /// held, then sent to the new owner rather than refused.
     #[tokio::test]

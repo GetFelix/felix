@@ -149,9 +149,11 @@ fn codes_reach_only_a_client_that_offered_them() {
 fn a_write_refused_by_the_fence_is_fenced_and_retryable() {
     use crate::shards::lifecycle::fence::Fenced;
 
-    let at_claim = ClientError::from_anyhow(&anyhow::Error::from(Fenced).context("publish"));
-    let at_admission = ClientError::not_enqueued(&Fenced.into());
-    for refused in [at_claim, at_admission] {
+    let at_claim =
+        ClientError::from_anyhow(&anyhow::Error::from(Fenced::NotServing).context("publish"));
+    let at_admission = ClientError::not_enqueued(&Fenced::NotServing.into());
+    let lease_lapsed = ClientError::from_anyhow(&Fenced::LeaseLapsed.into());
+    for refused in [at_claim, at_admission, lease_lapsed] {
         assert_eq!(refused.code(), &ErrorCode::ShardUnavailable);
         assert_eq!(refused.retry(), RetryClass::Retry);
         let Message::Error { detail, .. } = refused.into_message() else {

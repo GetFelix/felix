@@ -466,6 +466,62 @@ async fn a_forwarded_quorum_publish_is_acknowledged_once_the_majority_holds_it()
     );
 }
 
+/// The lease is checked again when a `Quorum` ack is released. A broker whose
+/// lease lapsed while it waited may already have been replaced, so it answers
+/// "unknown" even once the mark passes the record.
+#[tokio::test]
+async fn a_quorum_ack_is_withheld_when_the_lease_lapses_while_it_waits() {
+    let (broker, _dir) = broker_with(ConsistencyLevel::Quorum).await;
+    let shard = crate::shards::ShardKey {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: STREAM.to_string(),
+        shard: 0,
+        kind: crate::shards::ShardKind::Stream,
+    };
+    let marks = Arc::new(QuorumMarks::new());
+    marks.publish(&shard, GENERATION, 0);
+    let handler = Arc::new(handler(
+        Arc::clone(&broker),
+        Some(Arc::clone(&marks)),
+        Duration::from_secs(5),
+    ));
+    let lease = Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+        3600,
+    )));
+    lease.renew();
+    handler.ingress.fence().bind_lease(Arc::clone(&lease));
+
+    let waiting = tokio::spawn({
+        let handler = Arc::clone(&handler);
+        async move { handler.apply(forwarded()).await }
+    });
+    for _ in 0..200 {
+        if broker
+            .cursor_tail(TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("tail")
+            .next_seq()
+            > 0
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    lease.surrender();
+    marks.publish(&shard, GENERATION, 1_000);
+
+    match waiting.await.expect("task") {
+        InternalMessage::ForwardPublishError(err) => {
+            assert!(err.detail.contains("lease"), "{}", err.detail)
+        }
+        other => panic!(
+            "a quorum ack went out after the lease lapsed: {:?}",
+            other.kind()
+        ),
+    }
+}
+
 /// A `Leader` stream is unaffected: local durability is the guarantee it offers,
 /// so a forwarded publish is acknowledged without waiting for anyone.
 #[tokio::test]
@@ -567,6 +623,71 @@ mod fence {
             1,
             "the refused publish was written"
         );
+    }
+
+    /// The owner's lease is checked on a forwarded write exactly as on a
+    /// direct one: the generation matching is not enough once the lease has
+    /// lapsed, because the control plane may have moved the shard already.
+    #[tokio::test]
+    async fn forwarded_writes_after_the_lease_lapses_are_refused() {
+        let leader = Leader::start().await;
+        let lease = leader.hold_lease();
+        let credentials = Credentials::new();
+        let handler = owner(&leader, &credentials);
+        let publish = ForwardPublish {
+            correlation_id: 1,
+            shard: shard_ref(DURABLE),
+            ack: AckMode::OnCommit,
+            payloads: vec![Bytes::from_static(b"late")],
+            credential: credentials.token(&[&format!(
+                "stream.publish:stream:{TENANT}/{NAMESPACE}/{DURABLE}"
+            )]),
+        };
+        let writer =
+            credentials.token(&[&format!("cache.write:cache:{TENANT}/{NAMESPACE}/{CACHE}")]);
+
+        lease.surrender();
+        let started = std::time::Instant::now();
+        match handler.apply(publish.clone()).await {
+            InternalMessage::ForwardPublishError(err) => {
+                assert_eq!(err.code, ErrorCode::Unavailable, "{}", err.detail);
+                assert!(err.detail.contains("lease"), "{}", err.detail);
+            }
+            other => panic!("a forwarded publish landed without a lease: {other:?}"),
+        }
+        assert_eq!(
+            leader.tail(DURABLE).await,
+            0,
+            "the refused publish was written"
+        );
+        refused_cache_op(
+            handler
+                .apply_cache_op(cache_op(
+                    &writer,
+                    CacheOpKind::Put,
+                    Bytes::from_static(b"v"),
+                ))
+                .await,
+        );
+        refused_cache_op(
+            handler
+                .apply_cache_op(cache_op(
+                    &writer,
+                    CacheOpKind::CounterAdd,
+                    felix_storage::counter_log::encode_sum(1),
+                ))
+                .await,
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a lapsed lease is not a move to wait out"
+        );
+
+        lease.renew();
+        assert!(matches!(
+            handler.apply(publish).await,
+            InternalMessage::ForwardPublishOk(_)
+        ));
     }
 
     #[tokio::test]

@@ -230,7 +230,7 @@ pub async fn await_quorum(
         .wait_for(shard, generation, last_offset + 1, timeout)
         .await
     {
-        crate::replication::quorum::QuorumWait::Reached => Ok(()),
+        crate::replication::quorum::QuorumWait::Reached => release(ingress, "batch"),
         crate::replication::quorum::QuorumWait::TimedOut => {
             crate::replication::metrics::record_quorum(
                 crate::replication::metrics::QUORUM_TIMED_OUT,
@@ -303,7 +303,7 @@ pub async fn await_cache_quorum(
         return Ok(());
     }
     match marks.wait_for(shard, generation, tail, timeout).await {
-        QuorumWait::Reached => Ok(()),
+        QuorumWait::Reached => release(ingress, "write"),
         QuorumWait::TimedOut => {
             crate::replication::metrics::record_quorum(
                 crate::replication::metrics::QUORUM_TIMED_OUT,
@@ -325,6 +325,28 @@ pub async fn await_cache_quorum(
             .into())
         }
     }
+}
+
+/// The lease re-check at ack release.
+///
+/// The mark says a majority held the write when the control plane stored the
+/// report, but this broker may have lost its lease while it waited, and an
+/// acknowledgement from a broker that may no longer lead is the one the model
+/// (`AckQuorum` requires `LeaseValid`) forbids. The write is on a majority or
+/// may yet be, so the answer is "unknown", never "failed".
+fn release(
+    ingress: &crate::shards::routing::IngressRouter,
+    what: &'static str,
+) -> Result<(), anyhow::Error> {
+    if ingress.fence().lease_valid() {
+        return Ok(());
+    }
+    crate::cluster::lease::metrics::record_refusal(crate::cluster::lease::metrics::BOUNDARY_ACK);
+    Err(QuorumError::LeadershipLost {
+        what,
+        detail: "the lease lapsed",
+    }
+    .into())
 }
 
 /// How many copies must hold a record for a majority, the leader included.

@@ -448,6 +448,15 @@ impl ForwardingHandler {
         generation: u64,
         refused: Fenced,
     ) -> Denial {
+        // A lapsed lease is not a move: no newer route is coming to wait for,
+        // and this broker must not name itself the owner while it lasts.
+        if refused == Fenced::LeaseLapsed {
+            metrics::record_served(metrics::OUTCOME_REFUSED);
+            return Denial::Refused {
+                code: ErrorCode::Unavailable,
+                detail: refused.to_string(),
+            };
+        }
         self.ingress.settle(key, generation.saturating_add(1)).await;
         if let Some(denial) = self.check_ownership(correlation_id, key, generation) {
             return denial;

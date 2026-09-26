@@ -12,14 +12,22 @@
 //! [`ShardLifecycle`](super::ShardLifecycle) is the only thing that opens and
 //! closes it: open while the shard is `Active` at a generation, closed in
 //! every other phase.
+//!
+//! The fence is also the commit gate for the lease. Every write path already
+//! has to enter it -- publishes, forwarded writes, cache puts, counter adds,
+//! group acks -- so checking the lease here, against the clock, is what makes
+//! a lapsed lease refuse all of them rather than whichever paths remembered to
+//! ask. See "Leases" in `docs/replication-design.md`.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst};
+use std::sync::{Arc, OnceLock};
 
 use parking_lot::RwLock;
 use tokio::sync::Notify;
 
+use crate::cluster::lease::LeaseState;
+use crate::cluster::lease::metrics as lease_metrics;
 use crate::shards::ShardKey;
 use crate::shards::routing::IngressRouter;
 
@@ -31,9 +39,25 @@ const CLOSED: u64 = u64::MAX;
 #[derive(Debug, Default)]
 pub struct ShardFence {
     gates: RwLock<HashMap<ShardKey, Arc<Gate>>>,
+    /// The broker's lease, once membership has one. Unset only where there is
+    /// no control plane to grant one (unit tests of the fence on its own).
+    lease: OnceLock<Arc<LeaseState>>,
 }
 
 impl ShardFence {
+    /// Gate every write on `lease` as well as on the generation. Called once,
+    /// at startup, before any shard is opened; a second call is ignored.
+    pub fn bind_lease(&self, lease: Arc<LeaseState>) {
+        let _ = self.lease.set(lease);
+    }
+
+    /// Whether the lease, if one is bound, is valid right now against the
+    /// clock. The same check a write makes when it enters, for callers that
+    /// must re-check before acknowledging.
+    pub fn lease_valid(&self) -> bool {
+        self.lease.get().is_none_or(|lease| lease.is_valid_now())
+    }
+
     /// Let writes to `key` in, if they were admitted at `generation`.
     pub fn open(&self, key: &ShardKey, generation: u64) {
         let gate = Arc::clone(self.gates.write().entry(key.clone()).or_default());
@@ -53,18 +77,43 @@ impl ShardFence {
     /// since admission and the write must be refused. Hold the guard until the
     /// write is durable and fanned out.
     pub fn enter(&self, key: &ShardKey, generation: u64) -> Option<FenceGuard> {
-        let gate = Arc::clone(self.gates.read().get(key)?);
+        self.admit(key, generation).ok()
+    }
+
+    /// [`Self::enter`], with the refusal and its reason as an error.
+    ///
+    /// The lease is read from the clock here, not from the cached admission
+    /// flag: a write can sit in a queue, or the process can be suspended,
+    /// for longer than the lease had left when the write was admitted.
+    pub fn admit(&self, key: &ShardKey, generation: u64) -> Result<FenceGuard, Fenced> {
+        let gate = Arc::clone(self.gates.read().get(key).ok_or(Fenced::NotServing)?);
         // Counted before the check. A close that lands between the two then
         // still sees this write in flight, so `quiesced` cannot miss a write
         // that got in; one that gets refused only delays it a moment.
         gate.in_flight.fetch_add(1, SeqCst);
         let guard = FenceGuard { gate };
-        (guard.gate.open_at.load(SeqCst) == generation).then_some(guard)
+        if guard.gate.open_at.load(SeqCst) != generation {
+            return Err(Fenced::NotServing);
+        }
+        self.check_lease()?;
+        Ok(guard)
     }
 
-    /// [`Self::enter`], with the refusal as an error.
-    pub fn admit(&self, key: &ShardKey, generation: u64) -> Result<FenceGuard, Fenced> {
-        self.enter(key, generation).ok_or(Fenced)
+    /// Refuse a write that already holds its place in the fence if the lease
+    /// lapsed since it entered. The generation is not re-checked: a write in
+    /// the fence is one a close waits for, which is what makes it safe to
+    /// finish.
+    pub fn recheck(&self, _held: &FenceGuard) -> Result<(), Fenced> {
+        self.check_lease()
+    }
+
+    fn check_lease(&self) -> Result<(), Fenced> {
+        if self.lease_valid() {
+            Ok(())
+        } else {
+            lease_metrics::record_refusal(lease_metrics::BOUNDARY_COMMIT);
+            Err(Fenced::LeaseLapsed)
+        }
     }
 
     /// Whether `key` is closed with no write in flight, so its log cannot grow
@@ -109,7 +158,7 @@ pub fn enter(
     match (ingress, key) {
         (None, _) => Ok(None),
         (Some(ingress), Some(key)) => ingress.fence().admit(key, generation).map(Some),
-        (Some(_), None) => Err(Fenced),
+        (Some(_), None) => Err(Fenced::NotServing),
     }
 }
 
@@ -121,22 +170,40 @@ pub fn enter_or_keep(
     generation: u64,
 ) -> Result<Option<FenceGuard>, Fenced> {
     match held.take() {
-        Some(guard) => Ok(Some(guard)),
+        Some(guard) => {
+            // Admission may have been a queue ago. The lease has to hold at
+            // the claim, not just when the write came in.
+            if let Some(ingress) = ingress {
+                ingress.fence().recheck(&guard)?;
+            }
+            Ok(Some(guard))
+        }
         None => enter(ingress, key, generation),
     }
 }
 
-/// A write refused at its claim: the shard stopped serving here after the
-/// write was admitted.
+/// A write refused at its claim. Nothing was written, so it is safe to send
+/// again, to this broker once it holds the lease or to the shard's new owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Fenced;
+pub enum Fenced {
+    /// The shard stopped serving here, or never was, at the write's generation.
+    NotServing,
+    /// This broker's lease lapsed: another broker may be leading the shard.
+    LeaseLapsed,
+}
 
 impl std::fmt::Display for Fenced {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "shard is not servable here: this broker stopped serving it after the write was admitted"
-        )
+        match self {
+            Self::NotServing => write!(
+                f,
+                "shard is not servable here: this broker stopped serving it after the write was admitted"
+            ),
+            Self::LeaseLapsed => write!(
+                f,
+                "lease lapsed: this broker may no longer lead the shard, so it commits no writes until the lease is renewed"
+            ),
+        }
     }
 }
 

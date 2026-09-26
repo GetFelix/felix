@@ -9,13 +9,16 @@ pub const LEASE_HELD: &str = "felix_broker_lease_held";
 /// Times a lease lapsed. Each one is a window in which this broker's shards were
 /// unavailable here and not yet reassigned elsewhere.
 pub const LEASE_EXPIRIES_TOTAL: &str = "felix_broker_lease_expiries_total";
-/// Publishes refused because the lease was invalid, by `boundary`: `admission`
-/// or `commit`. A non-zero `commit` count means requests are outliving their
+/// Writes refused because the lease was invalid, by `boundary`: `admission`,
+/// `commit` or `ack`. A non-zero `commit` count means requests are outliving their
 /// lease inside the broker — the queue is deeper than the margin.
 pub const LEASE_REFUSALS_TOTAL: &str = "felix_broker_lease_refusals_total";
 
 pub const BOUNDARY_ADMISSION: &str = "admission";
 pub const BOUNDARY_COMMIT: &str = "commit";
+/// A `Quorum` write a majority held, not acknowledged because the lease
+/// lapsed while it waited.
+pub const BOUNDARY_ACK: &str = "ack";
 
 pub fn set_held(held: bool) {
     metrics::gauge!(LEASE_HELD).set(if held { 1.0 } else { 0.0 });

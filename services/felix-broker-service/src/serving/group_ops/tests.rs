@@ -99,6 +99,55 @@ async fn an_ack_after_the_fence_is_refused() {
     assert_eq!(committed(&leader).await, None, "the cursor moved");
 }
 
+/// Group acks commit to the shard like a publish does, so a broker whose
+/// lease lapsed refuses them rather than moving a cursor a new leader owns.
+#[tokio::test]
+async fn an_ack_after_the_lease_lapses_is_refused() {
+    let (leader, publish_ctx) = claimed_one().await;
+    let lease = leader.hold_lease();
+    lease.surrender();
+
+    for finish in [true, false] {
+        let refused = settle(
+            &leader.broker,
+            &publish_ctx,
+            None,
+            TENANT,
+            NAMESPACE,
+            DURABLE,
+            0,
+            GROUP,
+            0,
+            finish,
+        )
+        .await
+        .expect_err("a settle landed without a lease");
+        assert_eq!(
+            refused.code(),
+            &felix_wire::ErrorCode::ShardUnavailable,
+            "finish: {finish}"
+        );
+    }
+    assert_eq!(committed(&leader).await, None, "the cursor moved");
+
+    lease.renew();
+    settle(
+        &leader.broker,
+        &publish_ctx,
+        None,
+        TENANT,
+        NAMESPACE,
+        DURABLE,
+        0,
+        GROUP,
+        0,
+        true,
+    )
+    .await
+    .expect("renewed");
+    assert_eq!(committed(&leader).await, Some(1), "renewed, the ack lands");
+}
+
 #[tokio::test]
 async fn a_poll_after_the_fence_is_refused() {
     let (mut leader, publish_ctx) = claimed_one().await;

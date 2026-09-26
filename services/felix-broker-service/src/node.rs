@@ -115,6 +115,11 @@ where
         .membership
         .as_ref()
         .map(|_| Arc::new(membership::initial_lease()));
+    // Every write path enters the shard fence, so that is where the lease is
+    // enforced; see `shards::lifecycle::fence`.
+    if let (Some(ingress), Some(lease)) = (&ingress_router, &lease) {
+        ingress.fence().bind_lease(Arc::clone(lease));
+    }
 
     // Shared between the replication driver, which advances it, and the publish
     // path, which waits on it for `Quorum` streams.

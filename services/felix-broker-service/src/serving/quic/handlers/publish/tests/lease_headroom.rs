@@ -35,6 +35,7 @@ impl Harness {
         let leader = Leader::start().await;
         let lease = Arc::new(LeaseState::new(LEASE));
         lease.renew();
+        leader.ingress.fence().bind_lease(Arc::clone(&lease));
         let (mut queued, rx, _tx) = make_publish_context(8);
         queued.ingress = Some(Arc::clone(&leader.ingress));
         queued.lease = Some(Arc::clone(&lease));
