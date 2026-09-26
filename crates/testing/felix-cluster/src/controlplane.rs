@@ -194,7 +194,7 @@ impl ControlPlane {
     /// Scoped to `node:{node_id}` on purpose, which is what a real deployment
     /// would hand it — a broker presenting this for another node is refused.
     pub fn node_token(&self, tenant_id: &str, node_id: &str) -> Result<String> {
-        felix_controlplane_service::auth::felix_token::mint_token(
+        felix_controlplane_service::auth::felix_token::mint_token_for(
             &self.keys,
             tenant_id,
             &format!("p:{node_id}"),
@@ -205,6 +205,7 @@ impl ControlPlane {
                 "node.view:cluster:*".to_string(),
             ],
             Duration::from_secs(3600),
+            felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
         )
         .context("mint node token")
     }
@@ -237,7 +238,7 @@ impl ControlPlane {
     /// Separate from [`Self::client_token`] because the two are presented to
     /// different services, which accept different actions.
     pub fn admin_token(&self, tenant_id: &str) -> Result<String> {
-        felix_controlplane_service::auth::felix_token::mint_token(
+        felix_controlplane_service::auth::felix_token::mint_token_for(
             &self.keys,
             tenant_id,
             "p:harness-admin",
@@ -249,6 +250,7 @@ impl ControlPlane {
                 "node.view:cluster:*".to_string(),
             ],
             Duration::from_secs(3600),
+            felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
         )
         .context("mint admin token")
     }
@@ -289,7 +291,7 @@ impl ControlPlane {
     /// containing the node. A test that moves a shard needs this; nothing else
     /// should. It also reads, so a test can list the moves it made.
     pub fn operator_token(&self, tenant_id: &str) -> Result<String> {
-        felix_controlplane_service::auth::felix_token::mint_token(
+        felix_controlplane_service::auth::felix_token::mint_token_for(
             &self.keys,
             tenant_id,
             "p:harness-operator",
@@ -298,6 +300,7 @@ impl ControlPlane {
                 "node.view:cluster:*".to_string(),
             ],
             Duration::from_secs(3600),
+            felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
         )
         .context("mint operator token")
     }

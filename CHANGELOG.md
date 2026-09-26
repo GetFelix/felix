@@ -11,6 +11,34 @@ for what the current release actually guarantees.
 
 ## [Unreleased]
 
+### Security
+
+- **Control-plane authorization can shrink.** `DELETE .../rbac/policies` and
+  `.../rbac/groupings` remove rules (same scope as adding them);
+  `POST /v1/tenants/{t}/refresh-tokens/revoke` ends a principal's refresh
+  chains; `/v1/tenants/{t}/signing-keys` stages, activates and retires tenant
+  signing keys. On Raft these are new commands: roll every member first.
+- **IdP groups are scoped by issuer** (`group:{issuer}#{name}`), so an IdP a
+  tenant admin registers cannot claim another IdP's groups. Bare
+  `group:{name}` groupings need migrating; see `docs/auth.md`
+  (`FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS` bridges the migration).
+- **The control-plane API refuses broker-audience tokens.** Exchange and
+  refresh take `"audience": "felix-controlplane"` for API callers, including
+  broker node credentials; `FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE` bridges
+  the migration.
+- **IdP discovery and JWKS URLs must be HTTPS** (plain HTTP on loopback, or
+  with `FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP`), and a discovery
+  document must name the configured issuer.
+- Token exchange `resources` now narrow grants instead of passing a broader
+  grant through unchanged.
+- Tenant, namespace, stream and cache names are validated at creation; `*`,
+  `/`, `:` and similar are refused.
+- Postgres `delete_node` and assignment writes lock the node row, so a racing
+  delete can no longer leave an assignment to a deleted node; a node that is
+  still a replica can no longer be deleted.
+- Live tokens no longer appear in `Debug` output, and migration exports are
+  written mode `0600`.
+
 ### Added
 
 - **Kafka producers can write to durable streams.** `Produce` (v3-9) on the

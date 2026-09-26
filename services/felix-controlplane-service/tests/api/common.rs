@@ -19,12 +19,13 @@ pub(crate) struct Credentials {
 
 impl Credentials {
     pub(crate) fn token(&self, tenant_id: &str, perms: &[&str]) -> String {
-        felix_controlplane_service::auth::felix_token::mint_token(
+        felix_controlplane_service::auth::felix_token::mint_token_for(
             &self.keys,
             tenant_id,
             "p:test",
             perms.iter().map(|perm| perm.to_string()).collect(),
             std::time::Duration::from_secs(900),
+            felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
         )
         .expect("mint token")
     }

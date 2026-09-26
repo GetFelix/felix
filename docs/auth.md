@@ -57,7 +57,7 @@ Minted by the control plane and verified by brokers.
 
 Claims:
 - `iss`: `felix-auth`
-- `aud`: `felix-broker`
+- `aud`: `felix-broker` or `felix-controlplane` — see [Audiences](#audiences)
 - `sub`: `principal_id` (sha256 of `iss|sub`)
 - `tid`: tenant id
 - `exp`, `iat`
@@ -67,13 +67,33 @@ Algorithm:
 - **EdDSA (Ed25519)** (tenant-specific signing key).
 - Header includes `kid`.
 
+### Audiences
+
+A Felix token is for brokers or for the control plane's API, never both:
+
+- `felix-broker` (the default) is what a client presents to a broker.
+- `felix-controlplane` is what the API accepts: admin tooling, operators, and a
+  broker's own node credential.
+
+Brokers see every client token they are shown and keep it to forward publishes.
+If the API accepted those tokens, a compromised broker could replay a tenant
+admin's client token against the API. So the API refuses `felix-broker` tokens,
+and a caller asks exchange or refresh for `"audience": "felix-controlplane"`
+when it wants to call the API.
+
+`FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE=true` makes the API accept
+broker-audience tokens as well, for the length of a migration (see
+[Upgrading](#upgrading-to-scoped-groups-and-audiences)).
+
 ## Principal Normalization
 
 - `principal_id = sha256(iss + "|" + sub)` (hex encoding).
 - Groups/roles are extracted from a configured claim (optional).
-- During token exchange, each extracted group is added as a transient role link:
-  - `g, <principal_id>, group:<group_name>, <tenant>`
-  - This allows RBAC bindings like `g, group:g1, role:reader, <tenant>`.
+- During token exchange, each extracted group is scoped by the token's issuer
+  and added as a transient role link:
+  - `g, <principal_id>, group:<issuer>#<group_name>, <tenant>`
+  - This allows RBAC bindings like
+    `g, group:https://login.example.com#g1, role:reader, <tenant>`.
 
 ## RBAC Model (Casbin)
 
@@ -170,13 +190,23 @@ You can assign roles to IdP groups without per-user RBAC bindings:
 
 - Add RBAC grouping rules that bind `group:<name>` to a role.
 - Configure `groups_claim` for the tenant IdP issuer.
-- At token exchange time, Felix maps each incoming group value to `group:<name>`
-  and evaluates RBAC through that link. The prefix is always added, so an IdP
-  group literally named `group:ops` becomes `group:group:ops` and cannot stand
-  in for a group named `ops`.
+- At token exchange time, Felix maps each incoming group value to
+  `group:<issuer>#<name>`, where `<issuer>` is the validated token's `iss`
+  exactly as configured, and evaluates RBAC through that link. The prefix is
+  always added, so an IdP group literally named `group:ops` cannot stand in for
+  a group named `ops`.
+
+The issuer is part of the name because a tenant can trust several IdPs, and
+adding one needs only `tenant.manage`. Without it, anyone who could register an
+IdP could assert `groups: ["ops"]` and inherit every grant made to the
+operators' `ops` group, cluster scope included. An issuer containing `#` is
+refused, so the name splits unambiguously at the first `#`.
+
+A refresh re-applies only groups whose issuer the tenant still trusts, so
+removing an IdP removes its groups at the next refresh.
 
 Example:
-- `g, group:g1, role:reader, tenant-a`
+- `g, group:https://login.example.com#g1, role:reader, tenant-a`
 - `p, role:reader, tenant-a, stream:tenant-a/payments/*, stream.subscribe`
 
 ## Control Plane Token Exchange Flow
@@ -192,8 +222,14 @@ Example:
    - `aud` matches configured audiences
 4) Control plane derives `principal_id` and loads RBAC policies/groupings for the tenant.
 5) Effective permissions are computed from Casbin and expanded for inheritance.
-6) Optional request filters reduce the permission set (`requested` / `resources`).
-7) A Felix access token is minted, along with a refresh token, and both are returned.
+6) Optional request filters reduce the permission set. `requested` keeps only
+   the listed actions. `resources` narrows each grant to the part a resource
+   covers: asking for `stream:t1/payments/orders` out of a
+   `stream:t1/payments/*` grant yields the one stream. A resource outside every
+   grant, or one that is not an RBAC object, yields nothing; the filter never
+   widens.
+7) A Felix access token is minted for the requested `audience`, along with a
+   refresh token, and both are returned.
 
 If no permissions remain, the exchange returns `403`.
 
@@ -246,7 +282,20 @@ is stolen and *never used* — one that is used produces a replay, which ends th
 chain immediately.
 
 To cut off a principal without waiting out any token's expiry, revoke its
-refresh tokens for the tenant; every chain it holds ends at once.
+refresh tokens for the tenant; every chain it holds ends at once:
+
+```
+POST /v1/tenants/{tenant_id}/refresh-tokens/revoke
+Authorization: Bearer <felix-controlplane token with tenant.manage:tenant:{tenant_id}>
+Content-Type: application/json
+
+{ "principal_id": "<the principal's sub>" }
+```
+
+The answer is `{"revoked": <n>}`, the number of live tokens it ended. Access
+tokens already minted stay valid until they expire, which is what the short
+access TTL bounds. Removing the principal's groupings stops the next refresh
+too, and ends its chain.
 
 ### In the Rust client
 
@@ -344,8 +393,9 @@ Content-Type: application/json
 ### After bootstrap
 
 Auth admin permissions:
-- IdP issuer admin endpoints require `tenant.manage`.
-- RBAC policy/grouping endpoints allow either:
+- IdP issuer, signing-key and refresh-token revocation endpoints require
+  `tenant.manage`.
+- RBAC policy/grouping endpoints (add and remove) allow either:
   - `rbac.policy.manage` / `rbac.assignment.manage` at tenant scope (`tenant:{tenant_id}`), or
   - those same actions at narrower namespace/stream/cache scopes.
 Bootstrap tokens **never** authorize normal admin endpoints.
@@ -367,9 +417,34 @@ Bootstrap tokens **never** authorize normal admin endpoints.
 In the control plane store (memory or Postgres):
 - Allowed OIDC issuers + audiences + claim mappings
 - Casbin policies and groupings
-- Tenant signing keys: a current key plus any previous keys, all published in
-  the tenant JWKS and all tried on verification. Nothing rotates them yet; a
-  tenant keeps the key it was created with.
+- Tenant signing keys: a current key that signs, plus any keys that only
+  verify, all published in the tenant JWKS and all tried on verification. See
+  [Rotating signing keys](#rotating-signing-keys).
+
+## Rotating signing keys
+
+Every call requires a `felix-controlplane` token with `tenant.manage` over the
+tenant. Responses name keys by `kid`; key material never leaves the store.
+
+1. **Stage** a new key: `POST /v1/tenants/{tenant_id}/signing-keys`. The
+   control plane generates it, publishes it in the JWKS and accepts tokens it
+   signs, but keeps signing with the current key.
+2. **Wait for brokers to learn it.** A broker caches a tenant's JWKS for up to
+   an hour and does not refetch on an unknown `kid`, so a token signed by a key
+   it has not seen is refused until its cache expires. Wait at least an hour.
+3. **Activate** it: `POST /v1/tenants/{tenant_id}/signing-keys/{kid}/activate`.
+   It signs from now on; the key it replaced keeps verifying.
+4. **Wait for the old key's tokens to expire**: the access-token TTL
+   (`FELIX_EXCHANGE_TOKEN_TTL_SECONDS`, 900 s by default) plus a minute of
+   clock skew.
+5. **Retire** the old key: `DELETE /v1/tenants/{tenant_id}/signing-keys/{kid}`.
+   It leaves the JWKS; tokens it signed stop verifying. The current key cannot
+   be retired (`409`).
+
+`GET /v1/tenants/{tenant_id}/signing-keys` lists `current` and the keys that
+only verify. Refresh tokens are not signed and are unaffected. To respond to a
+leaked key, do the same with no waits, and accept that clients holding tokens
+from the old key re-authenticate.
 
 ## Allowing Particular Upstream IdPs
 
@@ -438,6 +513,18 @@ Notes:
 - If `discovery_url` is `NULL`, the control plane uses `{iss}/.well-known/openid-configuration`.
 - `jwks_url` can be set directly if your IdP doesn’t support discovery.
 - `subject_claim` defaults to `sub`. `groups_claim` is optional.
+- Discovery and JWKS URLs must be `https`. Plain `http` is accepted only for a
+  loopback host (a local IdP in development), or anywhere when
+  `FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP=true`. URLs carrying
+  credentials, and other schemes, are refused. A JWKS fetched over plain HTTP
+  can be replaced in transit, and whoever replaces it can mint tokens for the
+  tenant. The rule is checked when an issuer is added (`400`) and again before
+  every fetch, including the `jwks_uri` a discovery document returns, so an
+  issuer stored before the rule existed is held to it too.
+- A discovery document's `issuer` must equal the configured issuer exactly
+  (OIDC Discovery 1.0, section 4.3), or the exchange fails.
+- The issuer must not contain `#`; see
+  [Group-Based Role Assignment](#group-based-role-assignment-from-idp-groups_claim).
 
 ### In-Memory Store (dev/tests)
 
@@ -474,9 +561,13 @@ Content-Type: application/json
 
 {
   "requested": ["stream.publish", "cache.read"],
-  "resources": ["namespace:t1/payments", "stream:t1/payments/orders/*"]
+  "resources": ["namespace:t1/payments", "stream:t1/payments/orders"],
+  "audience": "felix-broker"
 }
 ```
+
+All three fields are optional. `audience` is `felix-broker` (the default) or
+`felix-controlplane`; anything else is `400`.
 
 Response:
 
@@ -497,11 +588,14 @@ POST /v1/tenants/{tenant_id}/token/refresh
 Content-Type: application/json
 
 {
-  "refresh_token": "<token_id>.<secret>"
+  "refresh_token": "<token_id>.<secret>",
+  "audience": "felix-controlplane"
 }
 ```
 
-No `Authorization` header: the refresh token *is* the credential.
+No `Authorization` header: the refresh token *is* the credential. `audience`
+is optional and defaults to `felix-broker`, as for exchange; a broker's
+credential refresh asks for `felix-controlplane`.
 
 Response:
 
@@ -547,6 +641,60 @@ Response:
   ]
 }
 ```
+
+### RBAC rule removal
+
+```
+DELETE /v1/tenants/{tenant_id}/rbac/policies
+Content-Type: application/json
+
+{ "subject": "role:reader", "object": "stream:t1/payments/*", "action": "stream.subscribe" }
+```
+
+```
+DELETE /v1/tenants/{tenant_id}/rbac/groupings
+Content-Type: application/json
+
+{ "user": "p:bob", "role": "role:reader" }
+```
+
+Both answer `204`, or `404` when no such rule exists. Removal is held to the
+same scope as adding: `rbac.policy.manage` over the rule's object for a policy,
+and `rbac.assignment.manage` over every policy of the role for a grouping (a
+role with no policies needs tenant scope). A removed grant stops working at
+the holder's next refresh, since refresh re-evaluates RBAC.
+
+## Upgrading to scoped groups and audiences
+
+Two changes need operator action.
+
+**Group names.** Groupings written against bare IdP group names
+(`group:ops`) stop matching, because exchange now produces
+`group:<issuer>#ops`. For each such grouping, add the scoped form for every
+issuer that should carry the group, then remove the bare one:
+
+```
+POST   /v1/tenants/t1/rbac/groupings  {"user": "group:https://login.example.com#ops", "role": "role:operator"}
+DELETE /v1/tenants/t1/rbac/groupings  {"user": "group:ops", "role": "role:operator"}
+```
+
+`FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS=true` links the bare names as well
+while this is under way. It keeps the hole scoping closes open, so turn it off
+once the groupings are moved. Refresh tokens issued before the upgrade record
+bare names and lose their group-derived grants at their next refresh unless the
+switch is on; their holders re-exchange.
+
+**Audiences.** Every caller of the API needs a `felix-controlplane` token:
+exchange with `"audience": "felix-controlplane"`. That includes each broker's
+node credential (`FELIX_NODE_TOKEN` / `FELIX_NODE_TOKEN_FILE`); an
+upgraded broker's refresh loop asks for the right audience itself, but the
+first token has to be minted with it. To upgrade without an outage, set
+`FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE=true` on the control plane, upgrade,
+re-provision credentials, then remove it.
+
+Rule removal and key rotation add Raft commands. On the Raft backend, finish
+rolling every control-plane member before using those routes; see
+[metadata-raft-design.md](metadata-raft-design.md#upgrading).
 
 ## Example Policies
 

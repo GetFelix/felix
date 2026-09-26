@@ -159,10 +159,11 @@ async fn run_demo(report: &mut DemoReport) -> Result<()> {
     // The broker reads the metadata feeds with a credential of its own; the
     // admin creates the metadata with theirs. Neither works without a token.
     let broker_id_token = mint_id_token(&idp_base, BROKER_SUB, &["role:broker"])?;
-    let broker_token = exchange_token(&http, &cp_base, TENANT_T1, &broker_id_token).await?;
+    let broker_token =
+        exchange_token(&http, &cp_base, TENANT_T1, &broker_id_token, CONTROLPLANE).await?;
     let admin_id_token = mint_id_token(&idp_base, ADMIN_SUB, &[])?;
-    let t1_admin = exchange_token(&http, &cp_base, TENANT_T1, &admin_id_token).await?;
-    let t2_admin = exchange_token(&http, &cp_base, TENANT_T2, &admin_id_token).await?;
+    let t1_admin = exchange_token(&http, &cp_base, TENANT_T1, &admin_id_token, CONTROLPLANE).await?;
+    let t2_admin = exchange_token(&http, &cp_base, TENANT_T2, &admin_id_token, CONTROLPLANE).await?;
     report.pass("STEP 5 broker and admin token exchange", "status=200");
 
     let (broker_addr, broker_cert, broker, broker_handles) =
@@ -203,10 +204,10 @@ async fn run_demo(report: &mut DemoReport) -> Result<()> {
     wait_for_broker_metadata(&broker, Duration::from_secs(12)).await?;
 
     let alice_id_token = mint_id_token(&idp_base, ALICE_SUB, &[])?;
-    let t1_token = exchange_token(&http, &cp_base, TENANT_T1, &alice_id_token).await?;
+    let t1_token = exchange_token(&http, &cp_base, TENANT_T1, &alice_id_token, BROKER).await?;
     report.pass("STEP 13 token exchange t1", "status=200");
 
-    let t2_token = exchange_token(&http, &cp_base, TENANT_T2, &alice_id_token).await?;
+    let t2_token = exchange_token(&http, &cp_base, TENANT_T2, &alice_id_token, BROKER).await?;
     report.pass("STEP 14 token exchange t2", "status=200");
 
     let t1_client = build_client(&broker_addr, &broker_cert, TENANT_T1, &t1_token).await?;
@@ -784,18 +785,26 @@ struct TokenExchangeResponse {
     felix_token: String,
 }
 
-/// Exchanges an upstream ID token for a Felix access token for a tenant.
+/// Token audience for connecting to a broker.
+const BROKER: &str = "felix-broker";
+/// Token audience for the control plane's API, including a broker's own
+/// node credential.
+const CONTROLPLANE: &str = "felix-controlplane";
+
+/// Exchanges an upstream ID token for a Felix access token for a tenant and
+/// `audience`.
 async fn exchange_token(
     http: &reqwest::Client,
     cp_base: &str,
     tenant_id: &str,
     id_token: &str,
+    audience: &str,
 ) -> Result<String> {
     let url = format!("{cp_base}/v1/tenants/{tenant_id}/token/exchange");
     let response = http
         .post(url)
         .bearer_auth(id_token)
-        .json(&json!({}))
+        .json(&json!({ "audience": audience }))
         .send()
         .await?;
     let status = response.status();

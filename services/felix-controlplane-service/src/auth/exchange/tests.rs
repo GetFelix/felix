@@ -21,7 +21,7 @@ fn filters_by_requested_actions() {
     ];
     let request = TokenExchangeRequest {
         requested: Some(vec!["stream.publish".to_string()]),
-        resources: None,
+        ..Default::default()
     };
     let filtered = filter_permissions(perms, &request, "t1");
     assert_eq!(filtered.len(), 1);
@@ -81,8 +81,20 @@ fn a_broader_hint_keeps_a_narrower_grant_as_is() {
 /// tenant, it yields nothing.
 #[test]
 fn a_resource_hint_never_widens() {
-    assert!(narrow(&["stream.publish:stream:t1/payments/*"], &["stream:t1/orders/x"]).is_empty());
-    assert!(narrow(&["stream.publish:stream:t1/payments/*"], &["stream:t2/payments/x"]).is_empty());
+    assert!(
+        narrow(
+            &["stream.publish:stream:t1/payments/*"],
+            &["stream:t1/orders/x"]
+        )
+        .is_empty()
+    );
+    assert!(
+        narrow(
+            &["stream.publish:stream:t1/payments/*"],
+            &["stream:t2/payments/x"]
+        )
+        .is_empty()
+    );
     assert!(narrow(&["stream.publish:stream:t1/payments/*"], &["not an object"]).is_empty());
     // A stream hint does not turn a tenant grant into a stream-shaped one.
     assert!(narrow(&["tenant.manage:tenant:t1"], &["stream:t1/payments/orders"]).is_empty());
@@ -319,4 +331,43 @@ fn exchange_refusals_are_counted() {
     assert_eq!(rejected("missing_token"), 1);
     assert_eq!(rejected("forbidden"), 1, "unknown tenant");
     assert_eq!(rejected("invalid_token"), 1);
+}
+
+/// Two IdPs asserting the same group name are two different groups, and
+/// neither is the bare name an older grant was written against.
+#[test]
+fn group_claims_are_scoped_by_issuer() {
+    let corp = scoped_group("https://corp.example", "ops");
+    let other = scoped_group("https://tenant-idp.example", "ops");
+    assert_ne!(corp, other);
+
+    let mut groupings = Vec::new();
+    add_group_claim_groupings(&mut groupings, "p1", &with_legacy_names(&[other], false));
+    assert_eq!(
+        groupings,
+        vec![GroupingRule {
+            user: "p1".to_string(),
+            role: "group:https://tenant-idp.example#ops".to_string(),
+        }]
+    );
+    assert!(!groupings.iter().any(|g| g.role == "group:ops"));
+}
+
+#[test]
+fn the_legacy_switch_also_links_the_bare_name() {
+    let names = with_legacy_names(&[scoped_group("https://corp.example", "ops")], true);
+    assert_eq!(
+        names,
+        vec!["https://corp.example#ops".to_string(), "ops".to_string()]
+    );
+}
+
+#[test]
+fn the_requested_audience_defaults_to_brokers_and_is_closed() {
+    assert_eq!(token_audience(None).unwrap(), BROKER_AUDIENCE);
+    assert_eq!(
+        token_audience(Some("felix-controlplane")).unwrap(),
+        CONTROLPLANE_AUDIENCE
+    );
+    assert!(token_audience(Some("anything-else")).is_err());
 }

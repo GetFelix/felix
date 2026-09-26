@@ -329,7 +329,7 @@ async fn a_rolling_restart_serves_every_watch_and_heartbeat() {
         .set_tenant_signing_keys("t1", keys.clone())
         .await
         .expect("store keys");
-    let bearer = felix_controlplane_service::auth::felix_token::mint_token(
+    let bearer = felix_controlplane_service::auth::felix_token::mint_token_for(
         &keys,
         "t1",
         "p:operator",
@@ -338,6 +338,7 @@ async fn a_rolling_restart_serves_every_watch_and_heartbeat() {
             "node.view:cluster:*".to_string(),
         ],
         Duration::from_secs(3_600),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
     )
     .expect("token");
     drop(store);

@@ -58,6 +58,12 @@ pub struct ExportedState {
     pub(super) placement_token: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) placement_holder: Option<String>,
+    /// Refresh tokens, by hash only. In a Raft snapshot because a follower
+    /// that installs one must agree with the leader on which tokens exist and
+    /// which are spent or revoked. Absent from older snapshots, and from a
+    /// `migrate` export, which has no store-wide way to list them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) refresh_tokens: Vec<crate::auth::refresh_token::RefreshToken>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -269,5 +275,8 @@ pub async fn export_state_from(
         // planned against the old one.
         placement_token: store.placement_token().await?,
         placement_holder: None,
+        // The store traits cannot list them. Holders re-exchange after a
+        // migration, as they would after any lost refresh chain.
+        refresh_tokens: Vec::new(),
     })
 }

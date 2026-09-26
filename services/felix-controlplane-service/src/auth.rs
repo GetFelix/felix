@@ -11,6 +11,6 @@ pub mod keys;
 pub mod oidc;
 pub mod principal;
 pub mod rbac;
-pub mod signing_keys;
 pub mod refresh;
 pub mod refresh_token;
+pub mod signing_keys;

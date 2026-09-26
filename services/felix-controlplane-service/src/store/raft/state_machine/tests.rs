@@ -244,6 +244,49 @@ fn script() -> Vec<MetaCommand> {
             signing_keys: fixed_keys(3),
         },
     });
+    commands.push(MetaCommand::RemoveRbacGrouping {
+        tenant_id: "t-a".to_string(),
+        grouping: GroupingRule {
+            user: "p:reader".to_string(),
+            role: "role:reader".to_string(),
+        },
+    });
+    commands.push(MetaCommand::RemoveRbacPolicy {
+        tenant_id: "t-a".to_string(),
+        policy: PolicyRule {
+            subject: "role:reader".to_string(),
+            object: "tenant:t-a".to_string(),
+            action: "rbac.view".to_string(),
+        },
+    });
+    commands.push(MetaCommand::StageSigningKey {
+        tenant_id: "t-b".to_string(),
+        key: fixed_keys(10).current,
+    });
+    commands.push(MetaCommand::ActivateSigningKey {
+        tenant_id: "t-b".to_string(),
+        kid: "kid-10".to_string(),
+    });
+    commands.push(MetaCommand::RetireSigningKey {
+        tenant_id: "t-b".to_string(),
+        kid: "kid-9".to_string(),
+    });
+    for id in ["rt-2", "rt-1"] {
+        commands.push(MetaCommand::InsertRefreshToken {
+            token: crate::auth::refresh_token::RefreshToken {
+                token_id: id.to_string(),
+                tenant_id: "t-a".to_string(),
+                principal_id: "p:admin".to_string(),
+                groups: Vec::new(),
+                secret_hash: "hash".to_string(),
+                family_id: "family".to_string(),
+                issued_at_secs: 1_000,
+                expires_at_secs: 10_000,
+                used: false,
+                revoked: false,
+            },
+        });
+    }
     // A cascade across nine namespaces, six streams, three caches — all of
     // whose delete events take seqs inside one apply.
     commands.push(MetaCommand::DeleteTenant {

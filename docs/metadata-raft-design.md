@@ -336,6 +336,13 @@ database backups are taken, with two caveats:
   their hashes, and the export leaves them out), so a restore invalidates every
   refresh token issued before it.
 
+Two things about the export file. It is **not a consistent read** unless
+metadata writes are frozen: it is many queries through the store traits, so
+an export of a live store can mix states. And it holds **every tenant's
+signing-key seed** in plain JSON (refresh tokens only as hashes), so whoever
+reads it can mint tokens for any tenant. The tool writes it mode `0600`;
+store it encrypted, as you would the database it came from.
+
 ### Probes
 
 - `/v1/system/live` — unchanged: process-local, never touches consensus.
@@ -424,6 +431,12 @@ and the current leader last, so the leader stays on the older build for
 most of the roll. If the counter moves on any member anyway, upgrade it,
 then wipe its volume and let it rejoin: it rebuilds from the leader's
 snapshot as in [rejoining after a lost volume](#rejoining-after-a-lost-volume).
+
+The commands for removing RBAC rules and rotating signing keys
+(`remove_rbac_policy`, `remove_rbac_grouping`, `stage_signing_key`,
+`activate_signing_key`, `retire_signing_key`) are such an addition: nothing
+proposes them until someone calls the matching routes, so hold off on those
+until the roll is done.
 
 ## Failure modes
 

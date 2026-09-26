@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Normalized identity used for RBAC and auditing: the stable `principal_id`
-/// plus the original issuer/subject and the IdP's raw group strings.
+/// plus the original issuer/subject and its group claims, as the caller
+/// passes them (token exchange scopes them by issuer first).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Principal {
     pub principal_id: String,

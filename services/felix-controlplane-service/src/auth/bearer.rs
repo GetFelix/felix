@@ -18,7 +18,9 @@ use axum::http::HeaderMap;
 
 use crate::api::AppState;
 use crate::api::error::{ApiError, api_forbidden, api_internal, api_unauthorized};
-use crate::auth::felix_token::{FelixClaims, verify_token};
+use crate::auth::felix_token::{
+    BROKER_AUDIENCE, CONTROLPLANE_AUDIENCE, FelixClaims, verify_token_for,
+};
 use crate::auth::rbac::authorize::{
     ParsedObject, ParsedPermission, object_within_scope, parse_permission,
 };
@@ -26,6 +28,11 @@ use crate::store::StoreError;
 
 /// Clock skew tolerated when checking `exp`, in seconds.
 const LEEWAY_SECS: u64 = 5;
+
+/// Set to `true` to keep accepting broker-audience tokens on the API while
+/// callers move to `felix-controlplane` tokens. It lets a broker replay a
+/// client's token against the API, so it is for the migration only.
+pub(crate) const ACCEPT_BROKER_AUDIENCE_ENV: &str = "FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE";
 
 /// Counts every credential refusal. `reason` is one of a closed set, so the
 /// label stays bounded.
@@ -259,8 +266,21 @@ async fn verify_against(
         }
         Err(ref err) => return Err(api_internal("failed to load signing keys", err)),
     };
-    verify_token(&keys, tenant_id, bearer, LEEWAY_SECS)
+    verify_token_for(&keys, tenant_id, bearer, LEEWAY_SECS, &api_audiences())
         .map_err(|_| refused(Refusal::InvalidToken, "invalid token"))
+}
+
+/// The audiences the API accepts: its own, and the broker's only while
+/// [`ACCEPT_BROKER_AUDIENCE_ENV`] is set.
+fn api_audiences() -> Vec<&'static str> {
+    let accept_broker = std::env::var(ACCEPT_BROKER_AUDIENCE_ENV)
+        .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes"))
+        .unwrap_or(false);
+    if accept_broker {
+        vec![CONTROLPLANE_AUDIENCE, BROKER_AUDIENCE]
+    } else {
+        vec![CONTROLPLANE_AUDIENCE]
+    }
 }
 
 /// Read `tid` from an unverified token, only to choose a verification key.

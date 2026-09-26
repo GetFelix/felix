@@ -91,6 +91,11 @@ impl InMemoryStore {
             )
         };
 
+        let mut refresh_tokens: Vec<_> =
+            self.refresh_tokens.read().await.values().cloned().collect();
+        refresh_tokens
+            .sort_by(|a, b| (&a.tenant_id, &a.token_id).cmp(&(&b.tenant_id, &b.token_id)));
+
         ExportedState {
             v: EXPORTED_STATE_VERSION,
             tenants: sorted_by_string_key(&*self.tenants.read().await),
@@ -113,6 +118,7 @@ impl InMemoryStore {
             moves_paused: *self.moves_paused.read().await,
             placement_token,
             placement_holder,
+            refresh_tokens,
         }
     }
 
@@ -159,6 +165,11 @@ impl InMemoryStore {
         *self.rbac_groupings.write().await = state.rbac_groupings.into_iter().collect();
         *self.auth_bootstrapped.write().await = state.auth_bootstrapped.into_iter().collect();
         *self.moves_paused.write().await = state.moves_paused;
+        *self.refresh_tokens.write().await = state
+            .refresh_tokens
+            .into_iter()
+            .map(|token| ((token.tenant_id.clone(), token.token_id.clone()), token))
+            .collect();
         // The derived-key cache may hold keys the imported state replaced —
         // an --overwrite restore in a live process would otherwise keep
         // verifying tokens against a world that no longer exists.

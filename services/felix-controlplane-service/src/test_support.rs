@@ -137,12 +137,13 @@ pub(crate) fn shard_zero() -> crate::model::ShardKey {
 
 /// A credential for `t1` carrying `perms`.
 pub(crate) fn token(keys: &crate::auth::felix_token::TenantSigningKeys, perms: &[&str]) -> String {
-    crate::auth::felix_token::mint_token(
+    crate::auth::felix_token::mint_token_for(
         keys,
         "t1",
         "p:test",
         perms.iter().map(|perm| perm.to_string()).collect(),
         std::time::Duration::from_secs(900),
+        crate::auth::felix_token::CONTROLPLANE_AUDIENCE,
     )
     .expect("token")
 }

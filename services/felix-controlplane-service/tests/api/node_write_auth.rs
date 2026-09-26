@@ -11,7 +11,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use felix_controlplane_service::api::types::{FeatureFlags, Region};
 use felix_controlplane_service::api::{AppState, build_router};
-use felix_controlplane_service::auth::felix_token::{TenantSigningKeys, mint_token};
+use felix_controlplane_service::auth::felix_token::{TenantSigningKeys, mint_token_for};
 use felix_controlplane_service::auth::keys::generate_signing_keys;
 use felix_controlplane_service::config::NodeLivenessConfig;
 use felix_controlplane_service::model::{Node, NodeCapacity, NodeLifecycle, NodeSpec, NodeStatus};
@@ -68,12 +68,13 @@ async fn setup() -> (App, Arc<InMemoryStore>, TenantSigningKeys) {
 }
 
 fn token(keys: &TenantSigningKeys, perms: Vec<&str>) -> String {
-    mint_token(
+    mint_token_for(
         keys,
         "t1",
         "p:broker",
         perms.into_iter().map(str::to_string).collect(),
         Duration::from_secs(900),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
     )
     .expect("token")
 }
@@ -312,12 +313,13 @@ async fn a_token_signed_by_another_key_is_rejected() {
     let (app, store, _keys) = setup().await;
     seed_node(&store, "broker-a", 7001).await;
     let foreign = generate_signing_keys().expect("keys");
-    let bearer = mint_token(
+    let bearer = mint_token_for(
         &foreign,
         "t1",
         "p:attacker",
         vec!["node.manage:cluster:*".to_string()],
         Duration::from_secs(900),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
     )
     .expect("token");
 

@@ -296,18 +296,37 @@ async fn a_refresh_picks_up_group_claims_recorded_at_exchange() {
     // group claim, which is exactly the grant that vanishes if the claims are
     // not carried on the record.
     let by_group = "oidc:https://idp.example#user-3";
+    // Recorded claims are honoured only for an issuer the tenant still trusts.
+    store
+        .upsert_idp_issuer(
+            TENANT,
+            felix_controlplane_service::auth::idp_registry::IdpIssuerConfig {
+                issuer: "https://idp.example".to_string(),
+                audiences: vec!["felix".to_string()],
+                discovery_url: None,
+                jwks_url: None,
+                claim_mappings: Default::default(),
+            },
+        )
+        .await
+        .expect("issuer");
     store
         .add_rbac_grouping(
             TENANT,
             GroupingRule {
-                user: "group:oncall".to_string(),
+                user: "group:https://idp.example#oncall".to_string(),
                 role: "role:publisher".to_string(),
             },
         )
         .await
         .expect("grouping");
 
-    let with_claim = issue_for(&store, by_group, vec!["oncall".to_string()]).await;
+    let with_claim = issue_for(
+        &store,
+        by_group,
+        vec!["https://idp.example#oncall".to_string()],
+    )
+    .await;
     assert_eq!(
         post_refresh(&state, &with_claim).await.status(),
         StatusCode::OK,

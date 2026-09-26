@@ -6,7 +6,7 @@ use axum::http::Request;
 use axum::http::StatusCode;
 use felix_controlplane_service::api::types::{FeatureFlags, Region};
 use felix_controlplane_service::api::{AppState, build_router};
-use felix_controlplane_service::auth::felix_token::{TenantSigningKeys, mint_token};
+use felix_controlplane_service::auth::felix_token::{TenantSigningKeys, mint_token_for};
 use felix_controlplane_service::auth::keys::generate_signing_keys;
 use felix_controlplane_service::auth::oidc::UpstreamOidcValidator;
 use felix_controlplane_service::auth::rbac::policy_store::{GroupingRule, PolicyRule};
@@ -86,12 +86,13 @@ pub(super) fn token(keys: &TenantSigningKeys, perms: Vec<&str>) -> String {
 }
 
 fn token_for_tenant(keys: &TenantSigningKeys, tenant_id: &str, perms: Vec<&str>) -> String {
-    mint_token(
+    mint_token_for(
         keys,
         tenant_id,
         "p:admin",
         perms.into_iter().map(|value| value.to_string()).collect(),
         Duration::from_secs(900),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
     )
     .expect("token")
 }

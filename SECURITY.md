@@ -173,7 +173,17 @@ Until the gaps above close, the deployment-side controls that matter most:
 - **Scope tokens narrowly** at exchange time. The exchange request can only
   narrow what RBAC grants; ask for the minimum.
 - **Keep token TTLs short** (`FELIX_EXCHANGE_TOKEN_TTL_SECONDS`) and rotate
-  tenant signing keys through JWKS.
+  tenant signing keys through JWKS: stage a new key, activate it once brokers
+  have fetched it, and retire the old one once its tokens have expired
+  ([`docs/auth.md`](docs/auth.md#rotating-signing-keys)).
+- **Use HTTPS for every IdP discovery and JWKS URL.** The control plane refuses
+  plain HTTP except on loopback unless
+  `FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP` is set; leave it unset outside
+  development.
+- **Give API callers `felix-controlplane` tokens** and brokers' clients
+  `felix-broker` ones, and leave `FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE`
+  unset once migrated, so a broker cannot replay a client's token against the
+  API.
 - **Protect the control plane's database** — it holds tenant signing keys and
   RBAC policy. Under the Raft backend the members' volumes are that database,
   and `FELIX_RAFT_PEER_TOKEN` can replace it wholesale: keep the token in a

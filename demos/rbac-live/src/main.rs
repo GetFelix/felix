@@ -146,13 +146,13 @@ async fn run_demo() -> Result<()> {
     let alice_id_token = mint_id_token(&idp_base, ALICE_SUB, &["role:reader"])?;
     let broker_id_token = mint_id_token(&idp_base, BROKER_SUB, &["role:broker"])?;
 
-    let admin_felix = exchange_token(&http, &cp_base, &admin_id_token).await?;
+    let admin_felix = exchange_token(&http, &cp_base, &admin_id_token, CONTROLPLANE).await?;
     println!("STEP 3 admin token exchange: PASS (status=200)");
 
-    let alice_felix = exchange_token(&http, &cp_base, &alice_id_token).await?;
+    let alice_felix = exchange_token(&http, &cp_base, &alice_id_token, BROKER).await?;
     println!("STEP 4 alice token exchange: PASS (status=200)");
 
-    let broker_felix = exchange_token(&http, &cp_base, &broker_id_token).await?;
+    let broker_felix = exchange_token(&http, &cp_base, &broker_id_token, CONTROLPLANE).await?;
     println!("STEP 5 broker token exchange: PASS (status=200)");
 
     let (broker_addr, broker_cert, broker_handles) = spawn_broker(&cp_base, &broker_felix).await?;
@@ -205,7 +205,7 @@ async fn run_demo() -> Result<()> {
     println!(
         "STEP 15 re-exchange alice token: Felix tokens embed permissions; reissuing to reflect RBAC changes."
     );
-    let alice_felix_updated = exchange_token(&http, &cp_base, &alice_id_token).await?;
+    let alice_felix_updated = exchange_token(&http, &cp_base, &alice_id_token, BROKER).await?;
 
     let client = build_client(&broker_addr, &broker_cert, &alice_felix_updated).await?;
 
@@ -575,15 +575,26 @@ struct TokenExchangeResponse {
     felix_token: String,
 }
 
-/// Exchanges an upstream ID token for a Felix access token.
+/// Token audience for connecting to a broker.
+const BROKER: &str = "felix-broker";
+/// Token audience for the control plane's API, including a broker's own
+/// node credential.
+const CONTROLPLANE: &str = "felix-controlplane";
+
+/// Exchanges an upstream ID token for a Felix access token for `audience`.
 ///
 /// Ensures the demo uses the real auth flow instead of shortcuts.
-async fn exchange_token(http: &reqwest::Client, cp_base: &str, id_token: &str) -> Result<String> {
+async fn exchange_token(
+    http: &reqwest::Client,
+    cp_base: &str,
+    id_token: &str,
+    audience: &str,
+) -> Result<String> {
     let url = format!("{cp_base}/v1/tenants/{TENANT_ID}/token/exchange");
     let response = http
         .post(url)
         .bearer_auth(id_token)
-        .json(&json!({}))
+        .json(&json!({ "audience": audience }))
         .send()
         .await?;
     let status = response.status();

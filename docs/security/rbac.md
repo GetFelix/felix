@@ -156,6 +156,12 @@ Examples:
 
 - Strict grammar is enforced for RBAC evaluation and writes.
 - Group-claim RBAC is evaluated at token exchange by materializing transient
-  `principal -> group:<claim value>` links before Casbin permission expansion.
-  The prefix is always added, so a claim value that itself starts with
-  `group:` cannot stand in for the bare group of the same name.
+  `principal -> group:<issuer>#<claim value>` links before Casbin permission
+  expansion. The issuer is the validated token's `iss`, so one IdP cannot
+  assert another's groups, and a tenant admin who registers an IdP cannot
+  claim the operators' groups. The prefix is always added, so a claim value
+  that itself starts with `group:` cannot stand in for the bare group of the
+  same name. Migrating bare `group:<name>` groupings is covered in
+  [auth.md](../auth.md#upgrading-to-scoped-groups-and-audiences).
+- Rules can be removed as well as added (`DELETE .../rbac/policies`,
+  `DELETE .../rbac/groupings`), under the same scope rules as adding them.

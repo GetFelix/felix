@@ -174,7 +174,13 @@ async fn refresh_once(
 
     let response = client
         .post(url)
-        .json(&serde_json::json!({ "refresh_token": refresh_token }))
+        // The node credential is for the control plane's API, which refuses
+        // broker-audience tokens. A control plane that predates audiences
+        // ignores the field.
+        .json(&serde_json::json!({
+            "refresh_token": refresh_token,
+            "audience": "felix-controlplane",
+        }))
         .send()
         .await
         .context("send refresh request")?;

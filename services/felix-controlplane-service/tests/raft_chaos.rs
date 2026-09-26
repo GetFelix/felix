@@ -617,7 +617,7 @@ fn start_group() -> Group {
         .expect("decodes")
         .expect("import succeeds");
 
-    let bearer = felix_controlplane_service::auth::felix_token::mint_token(
+    let bearer = felix_controlplane_service::auth::felix_token::mint_token_for(
         &keys,
         "t1",
         "p:operator",
@@ -628,6 +628,7 @@ fn start_group() -> Group {
             "tenant.manage:cluster:*".to_string(),
         ],
         Duration::from_secs(3_600),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
     )
     .expect("token");
 

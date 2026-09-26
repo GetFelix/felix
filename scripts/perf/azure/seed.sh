@@ -130,7 +130,7 @@ echo ">> waiting for the brokers to register and take their shards"
 # session since #513; it is deterministic.
 poll_out="$(run_on_str "$(loadgen_vm)" "set -eu
 TOKEN=\$(curl -fsS -X POST 'http://${CONTROLPLANE_IP}:8080/v1/tenants/${TENANT}/token/exchange' \
-  -H 'Authorization: Bearer ${IDP_TOKEN}' -H 'Content-Type: application/json' -d '{}' \
+  -H 'Authorization: Bearer ${IDP_TOKEN}' -H 'Content-Type: application/json' -d '{\"audience\":\"felix-controlplane\"}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"felix_token\"])')
 n=0
 i=0
@@ -186,7 +186,7 @@ esac
 # The distribution is the point of the reordering, so report it rather than
 # assume it: an uneven split here means placement still has a problem.
 echo ">> shard ownership"
-run_on_str "$(loadgen_vm)" "ADMIN=\$(curl -s -X POST '${CP_URL:-http://${CONTROLPLANE_IP}:8080}/v1/tenants/${TENANT}/token/exchange' -H 'Authorization: Bearer ${IDP_TOKEN}' -H 'Content-Type: application/json' -d '{}' | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"felix_token\"])')
+run_on_str "$(loadgen_vm)" "ADMIN=\$(curl -s -X POST '${CP_URL:-http://${CONTROLPLANE_IP}:8080}/v1/tenants/${TENANT}/token/exchange' -H 'Authorization: Bearer ${IDP_TOKEN}' -H 'Content-Type: application/json' -d '{\"audience\":\"felix-controlplane\"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"felix_token\"])')
 curl -s '${CP_URL:-http://${CONTROLPLANE_IP}:8080}/v1/shard-assignments/changes?since=0' -H \"Authorization: Bearer \$ADMIN\" | python3 -c '
 import json,sys,collections
 items=json.load(sys.stdin)[\"items\"]

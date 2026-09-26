@@ -292,7 +292,9 @@ fetch that verifies client tokens is unauthenticated and keeps working.
 
 ### Metadata API authorization
 
-Every endpoint that reads or changes the catalog takes a Felix bearer token.
+Every endpoint that reads or changes the catalog takes a Felix bearer token
+with audience `felix-controlplane`; a broker-audience token, the kind clients
+hand to brokers, is refused (see [auth.md](auth.md#audiences)).
 The check runs before the existence check, so a caller without a credential
 learns nothing from a 404: a tenant that does not exist has no signing keys,
 and a request against it answers `401` whatever the token says.
@@ -304,6 +306,16 @@ and a request against it answers `401` whatever the token says.
 | `/v1/tenants/{t}/namespaces/{ns}/streams[/{s}]` | `stream.manage` over `stream:{t}/{ns}/{s}` | tenant `t` |
 | `/v1/tenants/{t}/namespaces/{ns}/caches[/{c}]` | `cache.manage` over `cache:{t}/{ns}/{c}` | tenant `t` |
 | `/v1/{tenants,namespaces,streams,caches}/{snapshot,changes}` | `node.view:cluster:*` | any tenant |
+| `/v1/tenants/{t}/idp-issuers[/{issuer}]`, `/v1/tenants/{t}/signing-keys[/...]`, `POST /v1/tenants/{t}/refresh-tokens/revoke` | `tenant.manage` over `tenant:{t}` | tenant `t` |
+| `GET /v1/tenants/{t}/rbac/{policies,groupings}` | `rbac.view` | tenant `t` |
+| `POST`/`DELETE /v1/tenants/{t}/rbac/policies` | `rbac.policy.manage` over the rule's object | tenant `t` |
+| `POST`/`DELETE /v1/tenants/{t}/rbac/groupings` | `rbac.assignment.manage` over every policy of the role | tenant `t` |
+
+Tenant, namespace, stream and cache names are checked when created: 1 to 128
+ASCII letters, digits, `-`, `_` or `.`, starting with a letter or digit.
+Anything else would change meaning inside an RBAC object (`*`, `/`, `:`), a URL
+or a storage path, and is refused with `400`. Names that already exist are
+left alone.
 
 A listing returns only what the caller could manage, so a namespace admin sees
 their namespace and not the tenant's layout. A tenant admin's token carries the

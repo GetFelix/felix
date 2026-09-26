@@ -288,8 +288,11 @@ pub trait AuthStore: Send + Sync {
     async fn remove_rbac_policy(&self, tenant_id: &str, policy: PolicyRule) -> StoreResult<()>;
     /// Remove one role assignment. `NotFound` when the tenant holds no such
     /// assignment.
-    async fn remove_rbac_grouping(&self, tenant_id: &str, grouping: GroupingRule)
-    -> StoreResult<()>;
+    async fn remove_rbac_grouping(
+        &self,
+        tenant_id: &str,
+        grouping: GroupingRule,
+    ) -> StoreResult<()>;
 
     async fn get_tenant_signing_keys(&self, tenant_id: &str) -> StoreResult<TenantSigningKeys>;
     async fn set_tenant_signing_keys(
@@ -313,13 +316,19 @@ pub trait AuthStore: Send + Sync {
     /// Make the non-current key `kid` the signing key. The key it replaces
     /// keeps verifying until it is retired. Activating the current key is a
     /// no-op; an unknown `kid` is `NotFound`.
-    async fn activate_signing_key(&self, tenant_id: &str, kid: &str)
-    -> StoreResult<TenantSigningKeys>;
+    async fn activate_signing_key(
+        &self,
+        tenant_id: &str,
+        kid: &str,
+    ) -> StoreResult<TenantSigningKeys>;
     /// Stop publishing and accepting the non-current key `kid`. `Conflict` for
     /// the current key, which would leave nothing to sign with; `NotFound` for
     /// an unknown one.
-    async fn retire_signing_key(&self, tenant_id: &str, kid: &str)
-    -> StoreResult<TenantSigningKeys>;
+    async fn retire_signing_key(
+        &self,
+        tenant_id: &str,
+        kid: &str,
+    ) -> StoreResult<TenantSigningKeys>;
 
     async fn tenant_auth_is_bootstrapped(&self, tenant_id: &str) -> StoreResult<bool>;
     async fn set_tenant_auth_bootstrapped(

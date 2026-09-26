@@ -241,12 +241,13 @@ fn seed_operator(addr: SocketAddr, peer: SocketAddr) -> String {
         http_as_peer(peer, "POST", "/internal/raft/propose", &import).expect("propose import");
     assert_eq!(status, 200, "import the operator tenant: {body}");
 
-    felix_controlplane_service::auth::felix_token::mint_token(
+    felix_controlplane_service::auth::felix_token::mint_token_for(
         &keys,
         "ops",
         "p:operator",
         vec!["tenant.manage:cluster:*".to_string()],
         Duration::from_secs(3_600),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
     )
     .expect("token")
 }

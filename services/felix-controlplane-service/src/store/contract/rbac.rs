@@ -75,10 +75,7 @@ async fn removing_a_grouping_leaves_the_others(store: &dyn ControlPlaneAuthStore
         .remove_rbac_grouping(TENANT, removed.clone())
         .await
         .expect("remove grouping");
-    assert_eq!(
-        store.list_rbac_groupings(TENANT).await.unwrap(),
-        vec![kept]
-    );
+    assert_eq!(store.list_rbac_groupings(TENANT).await.unwrap(), vec![kept]);
     assert!(matches!(
         store.remove_rbac_grouping(TENANT, removed).await,
         Err(StoreError::NotFound(_))

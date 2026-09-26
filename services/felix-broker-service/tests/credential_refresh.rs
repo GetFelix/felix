@@ -61,6 +61,11 @@ async fn refresh_handler(
         .as_str()
         .unwrap_or_default()
         .to_string();
+    // The node credential is for the control plane's API, which refuses a
+    // broker-audience token; asking for the default would get one.
+    if body["audience"] != "felix-controlplane" {
+        return Err(axum::http::StatusCode::BAD_REQUEST);
+    }
 
     if state.refuse_first.load(Ordering::Acquire) > 0 {
         state.refuse_first.fetch_sub(1, Ordering::AcqRel);

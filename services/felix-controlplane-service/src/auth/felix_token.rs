@@ -49,6 +49,17 @@ use serde::{Deserialize, Serialize};
 
 const ED25519_KEY_LEN: usize = 32;
 
+/// `iss` of every Felix token.
+pub const ISSUER: &str = "felix-auth";
+/// `aud` of a token for brokers: what a client presents on connect.
+pub const BROKER_AUDIENCE: &str = "felix-broker";
+/// `aud` of a token for the control plane's API.
+///
+/// Separate from [`BROKER_AUDIENCE`] because a broker sees every client
+/// token it is shown, and must not be able to replay one against the admin
+/// API.
+pub const CONTROLPLANE_AUDIENCE: &str = "felix-controlplane";
+
 /// Claims carried by Felix-issued JWTs. `tid` and `perms` are what the broker
 /// authorizes with.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,14 +170,10 @@ impl From<jsonwebtoken::errors::Error> for TokenError {
     }
 }
 
-/// Mint a Felix EdDSA token for `tenant_id` / `principal_id`, valid for `ttl`.
-///
-/// The algorithm is pinned to EdDSA and the claims always carry `iss`, `aud`
-/// and `tid`. Uses a cached encoding key so repeated mints do not redo the
-/// PKCS8 conversion. Never log the returned token.
+/// [`mint_token_for`] with the broker audience.
 ///
 /// # Errors
-/// `TokenError::Key` if key validation fails, `TokenError::Jwt` if encoding does.
+/// As [`mint_token_for`].
 pub fn mint_token(
     keys: &TenantSigningKeys,
     tenant_id: &str,
@@ -174,12 +181,32 @@ pub fn mint_token(
     perms: Vec<String>,
     ttl: Duration,
 ) -> Result<String, TokenError> {
+    mint_token_for(keys, tenant_id, principal_id, perms, ttl, BROKER_AUDIENCE)
+}
+
+/// Mint a Felix EdDSA token for `tenant_id` / `principal_id`, valid for `ttl`,
+/// for `audience` ([`BROKER_AUDIENCE`] or [`CONTROLPLANE_AUDIENCE`]).
+///
+/// The algorithm is pinned to EdDSA and the claims always carry `iss`, `aud`
+/// and `tid`. Uses a cached encoding key so repeated mints do not redo the
+/// PKCS8 conversion. Never log the returned token.
+///
+/// # Errors
+/// `TokenError::Key` if key validation fails, `TokenError::Jwt` if encoding does.
+pub fn mint_token_for(
+    keys: &TenantSigningKeys,
+    tenant_id: &str,
+    principal_id: &str,
+    perms: Vec<String>,
+    ttl: Duration,
+    audience: &str,
+) -> Result<String, TokenError> {
     keys.validate()?;
     let now = now_epoch_seconds();
     let exp = now + ttl.as_secs() as i64;
     let claims = FelixClaims {
-        iss: "felix-auth".to_string(),
-        aud: "felix-broker".to_string(),
+        iss: ISSUER.to_string(),
+        aud: audience.to_string(),
         sub: principal_id.to_string(),
         tid: tenant_id.to_string(),
         exp,
@@ -194,7 +221,21 @@ pub fn mint_token(
     Ok(jsonwebtoken::encode(&header, &claims, &encoding_key)?)
 }
 
-/// Verify a Felix token against a tenant's signing keys.
+/// [`verify_token_for`] accepting only the broker audience.
+///
+/// # Errors
+/// As [`verify_token_for`].
+pub fn verify_token(
+    keys: &TenantSigningKeys,
+    tenant_id: &str,
+    token: &str,
+    leeway: u64,
+) -> Result<FelixClaims, TokenError> {
+    verify_token_for(keys, tenant_id, token, leeway, &[BROKER_AUDIENCE])
+}
+
+/// Verify a Felix token against a tenant's signing keys, accepting any of
+/// `audiences`.
 ///
 /// Keys are tried in `kid`-preferred order so the common case is one signature
 /// check even mid-rotation. After the signature passes, `tid` must still name
@@ -204,11 +245,12 @@ pub fn mint_token(
 /// # Errors
 /// `TokenError::Jwt` for validation/decoding failures (including a `tid`
 /// mismatch), `TokenError::Key` if key validation fails.
-pub fn verify_token(
+pub fn verify_token_for(
     keys: &TenantSigningKeys,
     tenant_id: &str,
     token: &str,
     leeway: u64,
+    audiences: &[&str],
 ) -> Result<FelixClaims, TokenError> {
     keys.validate()?;
     let header = jsonwebtoken::decode_header(token)?;
@@ -229,8 +271,8 @@ pub fn verify_token(
     }
 
     let mut validation = Validation::new(Algorithm::EdDSA);
-    validation.set_audience(&["felix-broker"]);
-    validation.set_issuer(&["felix-auth"]);
+    validation.set_audience(audiences);
+    validation.set_issuer(&[ISSUER]);
     validation.leeway = leeway;
     let mut last_err = None;
     for key in ordered_keys {

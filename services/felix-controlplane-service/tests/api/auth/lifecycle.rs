@@ -39,7 +39,11 @@ async fn a_policy_can_be_removed_within_scope_only() {
     let response = app
         .clone()
         .oneshot(add_auth(
-            json_request("DELETE", "/v1/tenants/t1/rbac/policies", policy_body(&orders)),
+            json_request(
+                "DELETE",
+                "/v1/tenants/t1/rbac/policies",
+                policy_body(&orders),
+            ),
             &narrow,
         ))
         .await
@@ -49,7 +53,11 @@ async fn a_policy_can_be_removed_within_scope_only() {
     let response = app
         .clone()
         .oneshot(add_auth(
-            json_request("DELETE", "/v1/tenants/t1/rbac/policies", policy_body(&payments)),
+            json_request(
+                "DELETE",
+                "/v1/tenants/t1/rbac/policies",
+                policy_body(&payments),
+            ),
             &narrow,
         ))
         .await
@@ -62,7 +70,11 @@ async fn a_policy_can_be_removed_within_scope_only() {
     // Already gone.
     let response = app
         .oneshot(add_auth(
-            json_request("DELETE", "/v1/tenants/t1/rbac/policies", policy_body(&payments)),
+            json_request(
+                "DELETE",
+                "/v1/tenants/t1/rbac/policies",
+                policy_body(&payments),
+            ),
             &narrow,
         ))
         .await
@@ -81,7 +93,10 @@ async fn a_grouping_can_be_removed_by_an_assignment_admin() {
         user: "p:bob".to_string(),
         role: "role:reader".to_string(),
     };
-    store.add_rbac_grouping("t1", grouping.clone()).await.unwrap();
+    store
+        .add_rbac_grouping("t1", grouping.clone())
+        .await
+        .unwrap();
     let body = serde_json::json!({"user": "p:bob", "role": "role:reader"});
 
     // Policy management is not assignment management.
@@ -131,14 +146,8 @@ async fn revoking_a_principal_ends_its_refresh_tokens() {
     let (app, store, keys) = setup().await;
     let now = felix_controlplane_service::auth::refresh::now_secs();
     let ttl = std::time::Duration::from_secs(3600);
-    let (bob, _) = felix_controlplane_service::auth::refresh::issue(
-        "t1",
-        "p:bob",
-        Vec::new(),
-        None,
-        now,
-        ttl,
-    );
+    let (bob, _) =
+        felix_controlplane_service::auth::refresh::issue("t1", "p:bob", Vec::new(), None, now, ttl);
     let (carol, _) = felix_controlplane_service::auth::refresh::issue(
         "t1",
         "p:carol",
@@ -315,4 +324,33 @@ async fn a_signing_key_rotation_keeps_old_tokens_working_until_retired() {
         StatusCode::UNAUTHORIZED,
         "a retired key verifies nothing"
     );
+}
+
+/// A token for brokers is not a token for the API: a broker holds every
+/// client token it is shown, and must not be able to replay one here.
+#[tokio::test]
+async fn the_api_refuses_a_broker_audience_token() {
+    let (app, _store, keys) = setup().await;
+    let perms = vec!["tenant.manage:tenant:t1".to_string()];
+    let broker = felix_controlplane_service::auth::felix_token::mint_token(
+        &keys,
+        "t1",
+        "p:admin",
+        perms.clone(),
+        std::time::Duration::from_secs(900),
+    )
+    .unwrap();
+    let response = app
+        .clone()
+        .oneshot(get("/v1/tenants/t1/signing-keys", &broker))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let api = token(&keys, vec!["tenant.manage:tenant:t1"]);
+    let response = app
+        .oneshot(get("/v1/tenants/t1/signing-keys", &api))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
 }

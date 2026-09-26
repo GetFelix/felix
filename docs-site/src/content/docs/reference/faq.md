@@ -177,10 +177,11 @@ end-to-end payload encryption, audit logging. The
 ## Can I grant stream access by IdP group instead of per-user?
 
 Yes. Configure `groups_claim` for the tenant issuer, then bind RBAC roles to
-`group:<name>` subjects. During token exchange, Felix maps incoming group
-claims to those subjects and evaluates role permissions:
+`group:<issuer>#<name>` subjects. During token exchange, Felix maps incoming
+group claims to those subjects, scoped by the token's issuer, and evaluates
+role permissions:
 
-- grouping: `g, group:g1, role:reader, tenant-a`
+- grouping: `g, group:https://login.example.com#g1, role:reader, tenant-a`
 - policy: `p, role:reader, tenant-a, stream:tenant-a/payments/*, stream.subscribe`
 
 ## Will there be clients for other languages?

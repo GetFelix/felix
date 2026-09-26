@@ -374,7 +374,10 @@ pub(super) async fn set_tenant_signing_keys(
 async fn lock_tenant_keys(
     store: &PostgresStore,
     tenant_id: &str,
-) -> StoreResult<(sqlx::Transaction<'static, sqlx::Postgres>, TenantSigningKeys)> {
+) -> StoreResult<(
+    sqlx::Transaction<'static, sqlx::Postgres>,
+    TenantSigningKeys,
+)> {
     let mut tx = store.pool.begin().await?;
     let tenant: Option<String> =
         sqlx::query_scalar("SELECT tenant_id FROM tenants WHERE tenant_id = $1 FOR UPDATE")
