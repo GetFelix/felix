@@ -63,6 +63,8 @@ pub async fn initialize(
 
     ensure_bootstrap_authorized(&state, &headers, &tenant_id)?;
 
+    crate::model::validate_identifier("tenant_id", &tenant_id)
+        .map_err(|err| api_validation_error(&err))?;
     if body.display_name.trim().is_empty() {
         return Err(api_validation_error("display_name is required"));
     }
@@ -72,9 +74,9 @@ pub async fn initialize(
         ));
     }
     for issuer in &body.idp_issuers {
-        if issuer.issuer.trim().is_empty() {
-            return Err(api_validation_error("issuer must not be empty"));
-        }
+        issuer
+            .validate(state.oidc_validator.allow_insecure_http())
+            .map_err(|err| api_validation_error(&err))?;
     }
 
     let tenant_exists = state

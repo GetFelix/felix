@@ -77,6 +77,8 @@ pub async fn upsert_idp_issuer(
     )
     .await?;
     ensure_tenant_exists(&state, &tenant_id).await?;
+    body.validate(state.oidc_validator.allow_insecure_http())
+        .map_err(|err| api_validation_error(&err))?;
     state
         .store
         .upsert_idp_issuer(&tenant_id, body)

@@ -26,7 +26,7 @@ use crate::auth::bearer::{require_cluster_action, require_tenant_action, tenant_
 use crate::auth::rbac::authorize::{
     ACTION_NODE_VIEW, ACTION_STREAM_MANAGE, ParsedObject, Segment, object_within_scope,
 };
-use crate::model::{Stream, StreamKey, StreamPatchRequest};
+use crate::model::{Stream, StreamKey, StreamPatchRequest, validate_identifier};
 use crate::store::StoreError;
 
 #[utoipa::path(
@@ -88,6 +88,7 @@ pub(crate) async fn create_stream(
     Json(body): Json<StreamCreateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_stream_manage(&state, &tenant_id, &headers, &namespace, &body.stream).await?;
+    validate_identifier("stream", &body.stream).map_err(|err| api_validation_error(&err))?;
     ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
     let region = match body.region {
         Some(region) if region.trim().is_empty() => {

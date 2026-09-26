@@ -53,6 +53,7 @@ pub struct UpstreamOidcValidator {
     discovery_ttl: Duration,
     clock_skew_seconds: u64,
     allowed_algorithms: Arc<Vec<Algorithm>>,
+    allow_insecure_http: bool,
 }
 
 impl Default for UpstreamOidcValidator {
@@ -101,7 +102,15 @@ impl UpstreamOidcValidator {
             discovery_ttl,
             clock_skew_seconds,
             allowed_algorithms: Arc::new(allowed_algorithms),
+            allow_insecure_http: crate::auth::idp_registry::allow_insecure_http_from_env(),
         }
+    }
+
+    /// Whether discovery and JWKS may be fetched over plain HTTP from a
+    /// non-loopback host. Read once, from
+    /// [`ALLOW_INSECURE_HTTP_ENV`](crate::auth::idp_registry::ALLOW_INSECURE_HTTP_ENV).
+    pub fn allow_insecure_http(&self) -> bool {
+        self.allow_insecure_http
     }
 
     /// Validate an upstream bearer token against the tenant's configured
@@ -213,6 +222,10 @@ pub enum OidcError {
     JwksKeyNotFound,
     #[error("jwks unavailable")]
     JwksUnavailable,
+    #[error("IdP URL not allowed: {0}")]
+    UrlNotAllowed(String),
+    #[error("discovery document names a different issuer")]
+    DiscoveryIssuerMismatch,
     #[error("http error: {0}")]
     Http(#[from] reqwest::Error),
     #[error("jwt error: {0}")]
