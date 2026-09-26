@@ -25,9 +25,14 @@ metrics = { version = "0.24", optional = true }
 # Only needed to publish the membership shapes in the control plane's OpenAPI.
 # Optional so the broker, which sends them, takes no utoipa dependency.
 utoipa = { workspace = true, optional = true }
+# Only needed by the `tls` module.
+rustls = { workspace = true, optional = true }
+arc-swap = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+rcgen = { workspace = true }
+tempfile = { workspace = true }
 serde_json = { workspace = true }
 # For the deployment-docs YAML check in `tests/deployment_yaml.rs`.
 serde_yaml_ng = { workspace = true }
@@ -38,6 +43,8 @@ default = []
 lifecycle = ["dep:tokio", "dep:tracing", "dep:metrics"]
 # `ToSchema` on the membership shapes, for the control plane's OpenAPI.
 openapi = ["dep:utoipa"]
+# Certificate files re-read on rotation, for the services' TLS listeners.
+tls = ["dep:rustls", "dep:arc-swap", "dep:tokio", "dep:tracing"]
 
 [package.metadata.docs.rs]
 # `lifecycle` is off by default so library consumers do not inherit tokio;
