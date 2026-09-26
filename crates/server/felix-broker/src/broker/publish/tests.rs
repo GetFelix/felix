@@ -516,3 +516,83 @@ async fn resolved_stream_handle_publishes_without_name_lookup() {
         Bytes::from_static(b"handled")
     );
 }
+
+/// Concurrent publishes to an in-memory stream reach every subscriber in the
+/// ring's order. Fanout used to run after the ring lock with nothing ordering
+/// it, so two publishes could append in one order and be delivered in the
+/// other, and two subscribers of one stream could see different orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn in_memory_fanout_follows_ring_order_for_every_subscriber() {
+    const PUBLISHERS: usize = 8;
+    const PER_PUBLISHER: usize = 500;
+    const TOTAL: usize = PUBLISHERS * PER_PUBLISHER;
+
+    let broker = Broker::new(EphemeralCache::new().into())
+        .with_topic_capacity(TOTAL)
+        .expect("topic capacity")
+        .with_log_capacity(TOTAL)
+        .expect("log capacity");
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "default")
+        .await
+        .expect("namespace");
+    broker
+        .register_stream("t1", "default", "orders", StreamMetadata::default())
+        .await
+        .expect("register");
+    let broker = std::sync::Arc::new(broker);
+    let mut subscribers = Vec::new();
+    for _ in 0..3 {
+        subscribers.push(
+            broker
+                .subscribe("t1", "default", "orders", 0)
+                .await
+                .expect("subscribe"),
+        );
+    }
+
+    let mut publishers = Vec::new();
+    for publisher in 0..PUBLISHERS {
+        let broker = std::sync::Arc::clone(&broker);
+        publishers.push(tokio::spawn(async move {
+            for i in 0..PER_PUBLISHER {
+                let payload = Bytes::from(format!("{publisher}-{i}"));
+                broker
+                    .publish("t1", "default", "orders", payload)
+                    .await
+                    .expect("publish");
+            }
+        }));
+    }
+    for publisher in publishers {
+        publisher.await.expect("publisher");
+    }
+
+    let ring: Vec<Bytes> = broker
+        .subscribe_from(
+            "t1",
+            "default",
+            "orders",
+            0,
+            felix_wire::StartPosition::Earliest,
+        )
+        .await
+        .expect("replay the ring")
+        .backlog
+        .into_iter()
+        .map(|(_, payload)| payload)
+        .collect();
+    assert_eq!(ring.len(), TOTAL);
+    for (index, subscriber) in subscribers.iter_mut().enumerate() {
+        let mut delivered = Vec::with_capacity(TOTAL);
+        while let Ok(payload) = subscriber.try_recv() {
+            delivered.push(payload);
+        }
+        assert_eq!(delivered.len(), TOTAL, "subscriber {index} dropped records");
+        assert!(
+            delivered == ring,
+            "subscriber {index} saw a different order from the ring"
+        );
+    }
+}
