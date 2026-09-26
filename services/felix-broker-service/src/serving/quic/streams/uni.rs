@@ -56,6 +56,11 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
             Some(frame) => frame,
             None => break,
         };
+        // Flags select the body's layout, and a uni stream has no way to
+        // answer, so a bit this version does not know ends the stream.
+        if felix_wire::has_unknown_flags(frame.header.flags) {
+            anyhow::bail!("unsupported frame flags {:#06x}", frame.header.flags);
+        }
 
         // Binary batches skip the JSON decode entirely.
         if frame.header.flags & felix_wire::FLAG_BINARY_PUBLISH_BATCH != 0 {

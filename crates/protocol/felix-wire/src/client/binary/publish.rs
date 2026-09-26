@@ -5,7 +5,8 @@ use serde::de::Error as SerdeError;
 
 use super::checked_payload_count;
 use crate::client::flags::{
-    FLAG_BINARY_PUBLISH_BATCH, FLAG_BINARY_PUBLISH_IDEMPOTENT, FLAG_BINARY_PUBLISH_KEYED,
+    FLAG_BINARY_PUBLISH_ACKED, FLAG_BINARY_PUBLISH_BATCH, FLAG_BINARY_PUBLISH_IDEMPOTENT,
+    FLAG_BINARY_PUBLISH_KEYED,
 };
 use crate::client::frame::{Frame, FrameHeader};
 use crate::error::{Error, Result};
@@ -262,6 +263,13 @@ pub fn decode_publish_batch(frame: &Frame) -> Result<PublishBatch> {
     if frame.header.flags & FLAG_BINARY_PUBLISH_IDEMPOTENT != 0 {
         return Err(Error::Deserialize(SerdeError::custom(
             "an idempotent publish must be acked",
+        )));
+    }
+    // Likewise the acked prefix: read as a plain batch, its request id would
+    // become the tenant length. `decode_acked_publish_batch` is the parser.
+    if frame.header.flags & FLAG_BINARY_PUBLISH_ACKED != 0 {
+        return Err(Error::Deserialize(SerdeError::custom(
+            "an acked publish needs the acked decoder",
         )));
     }
     let mut buf = frame.payload.clone();
