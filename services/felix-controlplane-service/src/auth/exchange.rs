@@ -5,12 +5,12 @@
 //! issuers, RBAC decides the effective permissions, and the result is a Felix
 //! EdDSA token for the broker. The request body can narrow those permissions
 //! but can never widen them.
+use std::collections::HashSet;
 use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use casbin::function_map::key_match2;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -20,6 +20,7 @@ use crate::auth::bearer::{Refusal, extract_bearer, refused};
 use crate::auth::felix_token::mint_token;
 use crate::auth::oidc::OidcError;
 use crate::auth::principal;
+use crate::auth::rbac::authorize::{format_object, narrow_object, parse_object};
 use crate::auth::rbac::enforcer::build_enforcer;
 use crate::auth::rbac::permissions::effective_permissions;
 use crate::auth::rbac::policy_store::GroupingRule;
@@ -128,7 +129,7 @@ pub async fn exchange_token(
     let mut perms = effective_permissions(&enforcer, &principal.principal_id, &tenant_id);
 
     if let Some(request) = body.map(|Json(value)| value) {
-        perms = filter_permissions(perms, &request);
+        perms = filter_permissions(perms, &request, &tenant_id);
     }
 
     // A token with no permissions is useless and usually masks a
@@ -191,36 +192,57 @@ pub fn access_token_ttl() -> Duration {
     )
 }
 
-fn filter_permissions(perms: Vec<String>, request: &TokenExchangeRequest) -> Vec<String> {
-    let requested_actions = request.requested.as_ref().map(|actions| {
-        actions
+/// Keep what was granted AND requested. `requested` filters by action;
+/// `resources` narrows each grant to the part a resource hint covers, so
+/// asking for one stream out of a namespace grant yields that stream, not the
+/// namespace. Never widens: a hint outside every grant yields nothing, and a
+/// hint that does not parse matches nothing.
+fn filter_permissions(
+    perms: Vec<String>,
+    request: &TokenExchangeRequest,
+    tenant_id: &str,
+) -> Vec<String> {
+    let requested_actions = request
+        .requested
+        .as_ref()
+        .map(|actions| actions.iter().map(String::as_str).collect::<HashSet<_>>());
+    let hints = request.resources.as_ref().map(|resources| {
+        resources
             .iter()
-            .cloned()
-            .collect::<std::collections::HashSet<String>>()
+            .filter_map(|hint| parse_object(hint, tenant_id).ok())
+            .collect::<Vec<_>>()
     });
-    let resources = request.resources.as_ref();
 
-    // Intersection only: a permission survives if it was already granted AND
-    // the request asked for it.
-    perms
-        .into_iter()
-        .filter(|perm| {
-            let Some((action, object)) = perm.split_once(':') else {
-                return false;
-            };
-            if let Some(actions) = &requested_actions
-                && !actions.contains(action)
-            {
-                return false;
+    let mut kept = Vec::new();
+    let mut seen = HashSet::new();
+    for perm in perms {
+        let Some((action, object)) = perm.split_once(':') else {
+            continue;
+        };
+        if let Some(actions) = &requested_actions
+            && !actions.contains(action)
+        {
+            continue;
+        }
+        let Some(hints) = &hints else {
+            if seen.insert(perm.clone()) {
+                kept.push(perm);
             }
-            if let Some(resources) = resources
-                && !resources.iter().any(|hint| key_match2(hint, object))
-            {
-                return false;
+            continue;
+        };
+        let Ok(granted) = parse_object(object, tenant_id) else {
+            continue;
+        };
+        for hint in hints {
+            if let Some(narrowed) = narrow_object(&granted, hint) {
+                let narrowed = format!("{action}:{}", format_object(&narrowed));
+                if seen.insert(narrowed.clone()) {
+                    kept.push(narrowed);
+                }
             }
-            true
-        })
-        .collect()
+        }
+    }
+    kept
 }
 
 // Group claims from the IdP become ephemeral Casbin groupings for this

@@ -23,9 +23,69 @@ fn filters_by_requested_actions() {
         requested: Some(vec!["stream.publish".to_string()]),
         resources: None,
     };
-    let filtered = filter_permissions(perms, &request);
+    let filtered = filter_permissions(perms, &request, "t1");
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0], "stream.publish:stream:t1/payments/*");
+}
+
+fn narrow(perms: &[&str], resources: &[&str]) -> Vec<String> {
+    let request = TokenExchangeRequest {
+        resources: Some(resources.iter().map(|value| value.to_string()).collect()),
+        ..Default::default()
+    };
+    let mut narrowed = filter_permissions(
+        perms.iter().map(|value| value.to_string()).collect(),
+        &request,
+        "t1",
+    );
+    narrowed.sort();
+    narrowed
+}
+
+/// Asking for one stream out of a namespace grant yields that stream, not the
+/// namespace grant unchanged.
+#[test]
+fn a_resource_hint_narrows_a_broader_grant() {
+    assert_eq!(
+        narrow(
+            &["stream.publish:stream:t1/payments/*"],
+            &["stream:t1/payments/orders"]
+        ),
+        vec!["stream.publish:stream:t1/payments/orders"]
+    );
+    assert_eq!(
+        narrow(
+            &["stream.subscribe:stream:t1/*/*"],
+            &["namespace:t1/payments"]
+        ),
+        vec!["stream.subscribe:stream:t1/payments/*"]
+    );
+}
+
+#[test]
+fn a_broader_hint_keeps_a_narrower_grant_as_is() {
+    assert_eq!(
+        narrow(
+            &["stream.publish:stream:t1/payments/orders"],
+            &["namespace:t1/payments"]
+        ),
+        vec!["stream.publish:stream:t1/payments/orders"]
+    );
+    assert_eq!(
+        narrow(&["tenant.manage:tenant:t1"], &["tenant:t1"]),
+        vec!["tenant.manage:tenant:t1"]
+    );
+}
+
+/// A hint never widens: outside every grant, unparseable, or for another
+/// tenant, it yields nothing.
+#[test]
+fn a_resource_hint_never_widens() {
+    assert!(narrow(&["stream.publish:stream:t1/payments/*"], &["stream:t1/orders/x"]).is_empty());
+    assert!(narrow(&["stream.publish:stream:t1/payments/*"], &["stream:t2/payments/x"]).is_empty());
+    assert!(narrow(&["stream.publish:stream:t1/payments/*"], &["not an object"]).is_empty());
+    // A stream hint does not turn a tenant grant into a stream-shaped one.
+    assert!(narrow(&["tenant.manage:tenant:t1"], &["stream:t1/payments/orders"]).is_empty());
 }
 
 #[test]
