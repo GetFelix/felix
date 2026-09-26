@@ -1,4 +1,6 @@
 //! Placement properties: determinism, coverage, skew, and order independence.
+use std::collections::HashMap;
+
 use super::*;
 
 /// The headline property: the same snapshot always yields the same result. Two
@@ -364,6 +366,39 @@ fn scores_are_stable_across_runs() {
     let first = score(&key, "broker-a");
     assert_eq!(score(&key, "broker-a"), first);
     assert_ne!(score(&key, "broker-b"), first);
+}
+
+/// Once every node is past its share, the overflow goes to the least loaded
+/// node, not to whichever scores highest. Otherwise a node that tops the score
+/// for most shards takes every one that does not fit.
+#[test]
+fn past_every_share_the_least_loaded_node_is_chosen() {
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let nodes = live(&["broker-a", "broker-b"]);
+    let eligible: Vec<&Node> = nodes.iter().collect();
+    let (top, other) = if score(&key, "broker-a") > score(&key, "broker-b") {
+        ("broker-a", "broker-b")
+    } else {
+        ("broker-b", "broker-a")
+    };
+    // Both over a share of one, the higher scorer far more so.
+    let load: HashMap<&str, u32> = [(top, 9), (other, 2)].into_iter().collect();
+
+    let chosen = crate::cluster::placement::rendezvous::choose(
+        &key,
+        &eligible,
+        &load,
+        1,
+        &HashMap::new(),
+        1,
+    );
+    assert_eq!(chosen, Some(other));
 }
 
 #[test]
