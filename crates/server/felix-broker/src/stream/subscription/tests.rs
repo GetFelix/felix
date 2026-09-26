@@ -143,3 +143,25 @@ async fn try_recv_reports_an_empty_queue_as_empty() {
         Err(mpsc::error::TryRecvError::Empty),
     ));
 }
+
+/// **Split into parts, the receiver still honours the resume point.**
+///
+/// The broker's subscribe handler delivers live records from the bare
+/// receiver. When the resume point was dropped with the `Subscription`, a
+/// `Latest` subscriber could be handed an in-flight record below the
+/// `start_offset` it had just been told.
+#[tokio::test]
+async fn the_split_receiver_skips_below_the_resume_point() {
+    let (tx, subscription) = resuming_at(105);
+    let (mut receiver, _guard) = subscription.into_parts();
+
+    deliver(&tx, 100, &["a", "b", "c"]);
+    deliver(&tx, 103, &["d", "e", "f", "g"]);
+    deliver(&tx, 107, &["h"]);
+
+    let straddling = receiver.recv().await.expect("a batch");
+    assert_eq!(straddling.base_offset(), Some(105));
+    assert_eq!(straddling.payloads(), &[payload("f"), payload("g")]);
+    let next = receiver.try_recv().expect("the next batch");
+    assert_eq!(next.base_offset(), Some(107));
+}
