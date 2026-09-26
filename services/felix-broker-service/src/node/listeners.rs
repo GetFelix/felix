@@ -1,18 +1,12 @@
 //! The client-facing listeners and their accept loops: QUIC always, Kafka when
-//! `FELIX_KAFKA_LISTEN` is set.
-//!
-//! `server_identity()` currently creates a **dev-only self-signed**
-//! certificate, which both listeners serve. Production deployments should use
-//! a real certificate chain and should not re-generate keys on each start.
+//! `FELIX_KAFKA_LISTEN` is set. Both serve the certificate in
+//! [`ClientTls`](crate::serving::tls::ClientTls).
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use felix_broker::Broker;
 use felix_transport::{QuicServer, TransportConfig};
-use quinn::ServerConfig;
-use rcgen::generate_simple_self_signed;
-use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -23,28 +17,15 @@ use crate::config::{BrokerConfig, KafkaListenerConfig};
 use crate::peer::PeerPool;
 use crate::replication::quorum::QuorumMarks;
 use crate::serving::kafka::{BrokerCluster, KafkaListener, STANDALONE_NODE_ID};
+use crate::serving::tls::ClientTls;
 use crate::serving::{auth::BrokerAuth, quic};
 use crate::shards::routing::IngressRouter;
 
-/// The certificate and key clients see, whichever listener they reach.
-pub(super) struct ServerIdentity {
-    cert: CertificateDer<'static>,
-    key: PrivatePkcs8KeyDer<'static>,
-}
-
-impl ServerIdentity {
-    /// The Kafka listener's TLS config over this certificate.
-    pub(super) fn kafka_tls(&self) -> Result<Arc<rustls::ServerConfig>> {
-        crate::serving::kafka::tls_config(self.cert.clone(), self.key.clone_key().into())
-    }
-}
-
 /// Bind one QUIC listener per configured address.
-pub(super) fn bind(
-    config: &BrokerConfig,
-    identity: &ServerIdentity,
-) -> Result<Vec<Arc<QuicServer>>> {
-    let server_config = build_server_config(identity).context("build QUIC server config")?;
+pub(super) fn bind(config: &BrokerConfig, tls: &ClientTls) -> Result<Vec<Arc<QuicServer>>> {
+    let server_config = tls
+        .quic_server_config()
+        .context("build QUIC server config")?;
 
     // Apply transport-level configuration (flow control windows, pooling behavior, etc.)
     // derived from broker config.
@@ -167,45 +148,6 @@ pub(super) fn spawn_accept_loops(
         .collect()
 }
 
-/// Generate the broker's client-facing certificate.
-///
-/// Current behavior:
-/// - Generates a fresh self-signed certificate for `localhost` at startup.
-/// - Writes it to `FELIX_TLS_CERT_EXPORT` when set.
-///
-/// This is convenient for local development but **not appropriate for production**.
-/// Production should load a real certificate chain and private key (and should avoid
-/// regenerating keys on each start).
-pub(super) fn server_identity() -> Result<ServerIdentity> {
-    let cert = generate_simple_self_signed(vec!["localhost".into()])?;
-    let cert_der = cert.cert.der().clone();
-    let key_der = PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der());
-
-    // A generated certificate nothing can name is a certificate only a client
-    // that skips verification can use, which is how "just disable TLS
-    // verification in dev" becomes a habit. Writing it out gives every client
-    // -- including the ones that are not Rust and cannot reach into this
-    // process -- a real CA file to trust.
-    if let Ok(path) = std::env::var("FELIX_TLS_CERT_EXPORT")
-        && !path.trim().is_empty()
-    {
-        export_certificate(&cert.cert.pem(), &path)?;
-    }
-
-    Ok(ServerIdentity {
-        cert: cert_der,
-        key: key_der,
-    })
-}
-
-/// The QUIC server TLS configuration, over the broker's certificate.
-pub(super) fn build_server_config(identity: &ServerIdentity) -> Result<ServerConfig> {
-    Ok(ServerConfig::with_single_cert(
-        vec![identity.cert.clone()],
-        identity.key.clone_key().into(),
-    )?)
-}
-
 /// What the Kafka listener needs of the cluster: where shards are and who
 /// may be sent where, and what a write checks and waits on.
 pub(super) struct KafkaClusterView<'a> {
@@ -221,7 +163,7 @@ pub(super) struct KafkaClusterView<'a> {
 /// rather than surfacing later as a listener that never came up.
 pub(super) async fn bind_kafka(
     config: &BrokerConfig,
-    identity: &ServerIdentity,
+    tls: &ClientTls,
     broker: &Arc<Broker>,
     auth: &Arc<BrokerAuth>,
     view: KafkaClusterView<'_>,
@@ -254,7 +196,7 @@ pub(super) async fn bind_kafka(
         Some(Arc::clone(quorum_marks)),
         std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
     );
-    let tls = kafka.tls.then(|| identity.kafka_tls()).transpose()?;
+    let kafka_tls = kafka.tls.then(|| tls.kafka_server_config()).transpose()?;
     if kafka.tls {
         tracing::info!("kafka listener serves TLS: clients connect with SASL_SSL");
     } else {
@@ -270,7 +212,7 @@ pub(super) async fn bind_kafka(
     }
     let listener = KafkaListener::bind(
         &kafka,
-        tls,
+        kafka_tls,
         Arc::clone(broker),
         Arc::new(cluster),
         format!("felix-{node_id}"),
@@ -305,25 +247,4 @@ pub(super) fn spawn_kafka(
         }
         listener.serve(accept_shutdown, connections).await;
     })
-}
-
-/// Write the broker's certificate where a client can trust it from.
-///
-/// Fails startup rather than warning: a deployment that asked for the export
-/// is a deployment whose clients are configured to read it, and coming up
-/// without it produces connection failures whose cause is nowhere near the
-/// symptom.
-fn export_certificate(pem: &str, path: &str) -> Result<()> {
-    if let Some(parent) = std::path::Path::new(path).parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create the directory for FELIX_TLS_CERT_EXPORT {path}"))?;
-    }
-    std::fs::write(path, pem).with_context(|| format!("write the broker certificate to {path}"))?;
-    tracing::info!(
-        path,
-        "wrote the broker's self-signed certificate for clients to trust"
-    );
-    Ok(())
 }

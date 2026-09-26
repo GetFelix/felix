@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use super::listeners::{build_server_config, server_identity};
 use super::*;
+use crate::serving::tls::ClientTls;
 
 struct EnvGuard {
     key: &'static str,
@@ -42,9 +42,9 @@ impl Drop for EnvGuard {
 // Basic sanity check that TLS config generation succeeds, for both listeners.
 #[test]
 fn build_server_config_smoke() -> Result<()> {
-    let identity = server_identity()?;
-    let _quic = build_server_config(&identity)?;
-    let _kafka = identity.kafka_tls()?;
+    let tls = ClientTls::from_config(&Default::default())?;
+    let _quic = tls.quic_server_config()?;
+    let _kafka = tls.kafka_server_config()?;
     Ok(())
 }
 
