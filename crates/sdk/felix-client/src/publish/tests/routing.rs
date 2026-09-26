@@ -110,3 +110,44 @@ async fn separate_clients_spread_one_stream_across_the_pool() {
         "32 clients all hashed one stream to worker {picks:?}"
     );
 }
+
+/// End one worker's writer the way a broken stream does: it stops reading its
+/// queue and drops it.
+async fn kill_worker(publisher: &crate::publish::Publisher, index: usize) {
+    let worker = &publisher.inner.workers[index];
+    let (response, answered) = tokio::sync::oneshot::channel();
+    worker
+        .tx
+        .send(crate::publish::writer::PublishRequest::Finish { response })
+        .await
+        .expect("worker running");
+    let _ = answered.await;
+    while !worker.tx.is_closed() {
+        tokio::task::yield_now().await;
+    }
+}
+
+/// A writer that died on a broken stream must leave the pool: the streams
+/// hashed to it move to a live writer, and stay there, rather than failing
+/// every publish from then on.
+#[tokio::test]
+async fn a_dead_worker_is_skipped_and_its_streams_stay_together() {
+    let publisher = make_publisher(PublishSharding::HashStream, 4);
+    let first = selected_index(&publisher, "orders");
+    kill_worker(&publisher, first).await;
+
+    let moved = selected_index(&publisher, "orders");
+    assert_ne!(moved, first, "a stream stayed on a dead writer");
+    assert_eq!(selected_index(&publisher, "orders"), moved);
+    publisher
+        .publish("t", "ns", "orders", b"p".to_vec(), AckMode::None)
+        .await
+        .expect("publish through a live writer");
+
+    for index in 0..4 {
+        if !publisher.inner.workers[index].tx.is_closed() {
+            kill_worker(&publisher, index).await;
+        }
+    }
+    assert!(publisher.select_worker("t", "ns", "orders").is_err());
+}

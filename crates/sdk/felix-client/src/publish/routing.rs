@@ -63,7 +63,7 @@ impl Publisher {
                 if let Ok(mut cache) = self.inner.stream_cache.try_lock() {
                     if let Some(index) = cache.get(StreamKeyRef::new(tenant_id, namespace, stream))
                     {
-                        return Ok(&workers[index]);
+                        return live_from(workers, index);
                     }
                     let index = hash_stream_index(
                         &self.inner.stream_hasher,
@@ -73,7 +73,7 @@ impl Publisher {
                         worker_count,
                     );
                     cache.insert(StreamKey::new(tenant_id, namespace, stream), index);
-                    return Ok(&workers[index]);
+                    return live_from(workers, index);
                 }
                 hash_stream_index(
                     &self.inner.stream_hasher,
@@ -84,8 +84,22 @@ impl Publisher {
                 )
             }
         };
-        Ok(&workers[index])
+        live_from(workers, index)
     }
+}
+
+/// The first worker at or after `index` whose writer is still running.
+///
+/// A writer that hit a broken stream has failed what it held and exited, and
+/// its queue is closed for good; left in the pool, every stream hashed to it
+/// would fail forever. Probing forward keeps a stream on one live writer, so
+/// its publishes stay in order, and moves it only once its writer is gone.
+fn live_from(workers: &[PublishWorker], index: usize) -> Result<&PublishWorker> {
+    let count = workers.len();
+    (0..count)
+        .map(|step| &workers[(index + step) % count])
+        .find(|worker| !worker.tx.is_closed())
+        .ok_or_else(|| anyhow::anyhow!("every publish stream on this client has failed"))
 }
 
 pub(super) struct StreamShardCache {
