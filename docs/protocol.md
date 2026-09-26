@@ -14,9 +14,14 @@ source of truth for all client implementations.
 
 ## Transport
 - QUIC over TLS 1.3 (IETF QUIC)
-- Streams are bidirectional:
-  - request/response (publish, cache, subscribe setup)
-  - subscription streams carry events
+- Client-opened bidirectional streams carry request/response traffic: `auth`,
+  publishes, cache and counter operations, group polls, and subscribe setup.
+  Each stream authenticates on its own with `auth` before any other request.
+- Broker-opened unidirectional streams carry events. The broker opens one per
+  subscription (and per cache watch), starting with `event_stream_hello`.
+- A client MAY also open a unidirectional stream for publish-only traffic. It
+  must begin with `auth`, may carry only publishes, and the broker never replies
+  on it; anything else closes the stream.
 
 ## Frame Envelope
 All messages are sent in a fixed header + payload frame.
@@ -68,11 +73,13 @@ Field definitions:
 - `length` (u32, big-endian): payload length in bytes
 
 Payload:
-- v1 payload is a binary-encoded Felix wire frame representing a `Message` (see below).
+- With `flags = 0`, the payload is a UTF-8 JSON object encoding a `Message` (see below).
+  The binary layouts selected by the flag bits are described in their own sections.
 - Encoders MUST NOT exceed `u32::MAX` bytes.
 
 ## Message Types (v1)
-Message schemas below are shown in pseudo-struct notation for readability; on the wire they are binary-encoded.
+Message schemas below are the JSON objects carried in a `flags = 0` frame. Byte
+fields such as `payload` are base64 strings.
 
 ### Publish / PublishBatch (compatibility only)
 ```
@@ -95,8 +102,9 @@ it wanted. Brokers count what still arrives on this path as
 `felix_broker_json_publishes_total{frame="publish"|"publish_batch"}`, which is
 the evidence a deployment would need before this arm could ever be dropped.
 
-`publish_idempotent` is unaffected: it is JSON because no binary layout carries a
-producer id and sequence yet, not for compatibility.
+`publish_idempotent` is unaffected: it is the form a client sends to a broker
+that did not advertise `0x0100`, which carries the producer id and sequence in a
+binary frame (see [Binary idempotent PublishBatch](#binary-idempotent-publishbatch)).
 
 ### ProducerInit
 ```

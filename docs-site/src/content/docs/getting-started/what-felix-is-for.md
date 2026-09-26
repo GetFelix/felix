@@ -278,8 +278,8 @@ whether you could build it on the current release.
 | Live operational dashboards, telemetry feeds | Strong | **Yes** | Tolerant of at-most-once and of loss under lag |
 | Ephemeral coordination between services | Strong | **Yes** | Low-latency, no durability needed |
 | Internal service event bus | Moderate | Mostly | Works, but NATS and RabbitMQ serve this well already — weak differentiation |
-| Distributed live-state synchronization | Strong | **No** | Needs gap-free snapshot + change stream; drops corrupt local state |
-| Infrastructure / control-plane state distribution | Strong | **No** | Same gap, plus needs multi-node |
+| Distributed live-state synchronization | Strong | Partly | On log-backed caches the primitive exists: a retained `cache_watch` starts from current values, resumes by offset with no gap, and a watch that falls behind is ended with the offset to re-watch from rather than dropping silently. In-memory caches and streams still drop under lag with no way to resynchronize, and only the Rust client watches a prefix across shards |
+| Infrastructure / control-plane state distribution | Strong | Partly | The same primitive, on a multi-node story that is still 🚧 (see section 2) |
 | AI-agent coordination and shared state | Strong | Partly | Ephemeral coordination works now; durable task state works on one node. Records replicate to followers and a lost leader fails over to one that holds the log |
 | Edge and disconnected operation | Strong | **No** | Durability, resumable subscriptions, and replication exist; retention is available but bounded by one machine's disk, and there is no store-and-forward between sites |
 | Durable event log, replay, event sourcing | Weak | Partly | A durable log with offset replay exists, records replicate to followers, and retention can bound growth. No tiering — use Kafka for anything that needs history to outlive one machine today |
@@ -340,8 +340,14 @@ contiguous — can *detect* a drop rather than diverging silently. That narrows
 the case rather than closing it. It does not help a non-durable stream, it
 requires the application to checkpoint, and a resume reaches only as far back
 as retention keeps — unbounded when retention is unset, and no further than
-the configured bound when it is. "Distributed live-state
-synchronization" remains a direction, not a supported use case.
+the configured bound when it is.
+
+For keyed state the first and third now exist too, on log-backed caches: a
+retained cache watch delivers current values and then changes with no gap, and a
+watch that falls behind is ended with the offset to re-watch from, which is the
+resynchronization signal. What is left is everything that is not a log-backed
+cache: an in-memory cache or stream still drops under lag with nothing to
+resynchronize from.
 
 ---
 
@@ -387,9 +393,9 @@ Stated positively, rather than as a list of things Felix is not:
 
 The nearest neighbour is the coordination-store row, not the messaging rows —
 see [Why not etcd, Consul, or ZooKeeper?](#why-not-etcd-consul-or-zookeeper) for
-the argument and its failure modes. Felix becomes credible against it only once
-the snapshot-plus-stream primitive exists, the multi-node story is real, and
-fanout has been measured somewhere well past 10.
+the argument and its failure modes. The snapshot-plus-stream primitive exists
+for log-backed caches; Felix becomes credible against that row only once the
+multi-node story is real and fanout has been measured somewhere well past 10.
 
 ---
 
