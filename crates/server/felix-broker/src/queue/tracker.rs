@@ -37,6 +37,10 @@ pub(crate) struct GroupTracker {
     /// Dropped as soon as an offset settles, so this holds only what is
     /// currently in play rather than growing with the log.
     attempts: BTreeMap<u64, u32>,
+    /// Offsets an operator redrove whose redrive is recorded on disk and not
+    /// yet finished. Settling one has to clear that record too, or every
+    /// later leader would redeliver it again.
+    redriven: BTreeSet<u64>,
     /// Most times a record is handed out before it is given up on.
     ///
     /// Without a bound a record that always fails is redelivered for ever and
@@ -55,8 +59,22 @@ impl GroupTracker {
             acked_ahead: BTreeSet::new(),
             redeliver: BTreeSet::new(),
             attempts: BTreeMap::new(),
+            redriven: BTreeSet::new(),
             max_attempts: max_attempts.max(1),
         }
+    }
+
+    /// Whether `offset` has been handed out by this tracker, or is below the
+    /// cursor. Anything else is not the consumer's to settle: an ack there
+    /// would finish a record nobody received, and a nack would make an offset
+    /// owed that may not exist yet.
+    pub(crate) fn handed_out(&self, offset: u64) -> bool {
+        offset < self.high_water
+    }
+
+    /// The next offset never handed to anyone.
+    pub(crate) fn high_water(&self) -> u64 {
+        self.high_water
     }
 
     /// How many times `offset` has been handed out, if it is still in play.
@@ -86,6 +104,7 @@ impl GroupTracker {
     ) -> Claim {
         self.expire(now);
 
+        let max = max.min(MAX_CLAIM);
         let deadline = now + visibility;
         let mut claim = Claim {
             offsets: Vec::with_capacity(max.min(16)),
@@ -169,16 +188,68 @@ impl GroupTracker {
     /// without disturbing anything else — a queue's order was never a promise,
     /// and a redriven record is the clearest case of that.
     ///
-    /// Returns whether it was taken. A record at or above the cursor is refused:
-    /// it has not been given up on, so it is either in play or owed already, and
-    /// resetting its attempts would let it evade the bound for ever.
+    /// Returns whether it was taken. A record at or above the cursor is refused
+    /// unless it was settled there by giving up on it: otherwise it is in play
+    /// or owed already, and resetting its attempts would let it evade the bound
+    /// for ever.
     pub(crate) fn redrive(&mut self, offset: u64) -> bool {
-        if offset >= self.committed {
+        if !self.can_redrive(offset) {
             return false;
         }
+        // Given up on while a gap below held the cursor back: settled, but not
+        // yet passed. Owed again instead, so the cursor now waits on it.
+        self.acked_ahead.remove(&offset);
         self.attempts.remove(&offset);
         self.redeliver.insert(offset);
         true
+    }
+
+    /// Whether [`GroupTracker::redrive`] would take `offset`. Asked before the
+    /// redrive is made durable, so a refusal writes nothing.
+    pub(crate) fn can_redrive(&self, offset: u64) -> bool {
+        offset < self.committed || self.acked_ahead.contains(&offset)
+    }
+
+    /// Remember that `offset` has a durable redrive record to clear when it
+    /// settles. Rebuilding a tracker also makes it owed again if the cursor
+    /// has already passed it; above the cursor it is delivered in turn.
+    pub(crate) fn restore_redrive(&mut self, offset: u64) {
+        self.redriven.insert(offset);
+        if offset < self.committed {
+            self.redeliver.insert(offset);
+        }
+    }
+
+    /// Mark `offset` as having a durable redrive record.
+    pub(crate) fn mark_redriven(&mut self, offset: u64) {
+        self.redriven.insert(offset);
+    }
+
+    /// Forget the redrive record for `offset`, returning whether there was one.
+    pub(crate) fn take_redriven(&mut self, offset: u64) -> bool {
+        self.redriven.remove(&offset)
+    }
+
+    /// Make `offset` owed again without counting an attempt. For a dead
+    /// letter whose record could not be written: it stays at its attempt
+    /// bound, so the next claim tries to give up on it again.
+    pub(crate) fn owe(&mut self, offset: u64) {
+        if offset < self.committed || self.acked_ahead.contains(&offset) {
+            return;
+        }
+        self.redeliver.insert(offset);
+    }
+
+    /// Take back a claim that never reached the consumer. Its attempt is not
+    /// counted, since nobody tried the record.
+    pub(crate) fn unclaim(&mut self, offset: u64) {
+        if self.in_flight.remove(&offset).is_none() {
+            return;
+        }
+        if let Some(attempts) = self.attempts.get_mut(&offset) {
+            *attempts = attempts.saturating_sub(1);
+        }
+        self.redeliver.insert(offset);
     }
 
     /// Move claims that have lapsed back to owed.
@@ -203,6 +274,11 @@ impl GroupTracker {
         *self.attempts.entry(offset).or_insert(0) += 1;
     }
 }
+
+/// Most offsets one claim hands out, whatever the client asked for. A request
+/// for millions would otherwise claim them all at once and have the broker read
+/// every one into a single answer.
+pub(crate) const MAX_CLAIM: usize = 1_000;
 
 /// What one `claim` produced.
 #[derive(Debug, Default, PartialEq, Eq)]

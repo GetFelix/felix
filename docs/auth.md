@@ -100,12 +100,21 @@ Actions:
   API, over the namespace, stream or cache being changed
 - `stream.publish`, `stream.subscribe`
 - `cache.read`, `cache.write`
+- `group.consume`, `group.manage` — consumer groups, over the stream's object
 - `node.view` — cluster-scoped only
 - `node.manage` — over `node:{node_id}` or `cluster:*`
 
-Consumer-group operations have no action of their own: a group is a read
-position over a stream, so poll, acknowledge, hand-back and the dead-letter
-requests are all authorized as **`stream.subscribe`** on the stream being read.
+Consumer-group operations are split in two, over the stream's object:
+
+- **`group.consume`**: poll, acknowledge, hand back, and list dead letters.
+  `stream.subscribe` also grants it, so a reader works a group without a new
+  grant.
+- **`group.manage`**: redrive or discard a dead letter. `stream.manage` also
+  grants it; `stream.subscribe` does not. Both change what every consumer of the
+  group sees, so a principal that may only read cannot do them.
+
+A broker that predates these actions refuses a token carrying either one, so
+upgrade brokers before writing policies that use them.
 
 ### Cluster scope
 

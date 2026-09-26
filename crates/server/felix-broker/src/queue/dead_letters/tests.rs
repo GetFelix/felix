@@ -35,6 +35,46 @@ async fn nothing_is_dead_lettered_to_begin_with() {
     );
 }
 
+/// A redrive is one durable state change on the entry: off the list, onto the
+/// redriven set, and back to dead if the record is given up on again.
+#[tokio::test]
+async fn a_redrive_moves_an_entry_between_states() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key = key("jobs", "workers");
+    {
+        let dead = DeadLetters::open(dir.path(), config()).expect("open");
+        dead.record(&key, 3).await.expect("record");
+        dead.record(&key, 7).await.expect("record");
+        assert!(dead.redrive(&key, 3).await.expect("redrive"));
+        assert!(
+            !dead.redrive(&key, 3).await.expect("again"),
+            "redriven twice"
+        );
+        assert!(!dead.redrive(&key, 99).await.expect("unknown"));
+        assert!(
+            !dead.discard(&key, 3).await.expect("discard"),
+            "owed and dropped"
+        );
+    }
+
+    // Reopened, as a new leader would find it.
+    let dead = DeadLetters::open(dir.path(), config()).expect("reopen");
+    assert_eq!(dead.list(&key).await.expect("list"), vec![7]);
+    assert_eq!(dead.redriven(&key).await.expect("redriven"), vec![3]);
+
+    dead.record(&key, 3).await.expect("given up again");
+    assert_eq!(dead.list(&key).await.expect("list"), vec![3, 7]);
+    assert!(dead.redriven(&key).await.expect("redriven").is_empty());
+    // Finishing a redrive leaves an entry that went back to dead alone.
+    dead.finish_redrive(&key, 3).await.expect("finish");
+    assert_eq!(dead.list(&key).await.expect("list"), vec![3, 7]);
+
+    assert!(dead.redrive(&key, 7).await.expect("redrive"));
+    dead.finish_redrive(&key, 7).await.expect("finish");
+    assert!(dead.redriven(&key).await.expect("redriven").is_empty());
+    assert_eq!(dead.list(&key).await.expect("list"), vec![3]);
+}
+
 #[tokio::test]
 async fn recorded_offsets_come_back_in_order() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -176,6 +216,11 @@ async fn a_legacy_layout_is_read_and_discarded_but_never_written() {
     // A legacy entry can be discarded, and stays discarded.
     assert!(dead.discard(&key, 9).await.expect("discard legacy"));
     assert_eq!(dead.list(&key).await.expect("list"), vec![4, 12]);
+
+    // And redriven: it moves to the per-shard log as redriven.
+    assert!(dead.redrive(&key, 4).await.expect("redrive legacy"));
+    assert_eq!(dead.list(&key).await.expect("list"), vec![12]);
+    assert_eq!(dead.redriven(&key).await.expect("redriven"), vec![4]);
 
     // A group with no legacy directory costs a path check and creates
     // nothing: the listing for a fresh group is clean, not littered with an

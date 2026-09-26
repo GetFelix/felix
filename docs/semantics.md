@@ -551,7 +551,14 @@ Stated because a guarantee without its failure model is a slogan.
   Both of a shard's group logs — the cursors and the offsets its groups gave up
   on — replicate beside the shard's records, on the same replica set at the
   same generation. A promoted replica resumes each group where it had reached,
-  lists what it had abandoned, and serves an operator's redrive.
+  lists what it had abandoned, and serves an operator's redrive. A redrive is
+  itself recorded in the dead-letter log before it is acknowledged, so a record
+  redriven before a failover is still owed after it, until a consumer finishes
+  it.
+
+  > `a_redriven_record_is_still_owed_after_a_restart` and
+  > `a_finished_redrive_is_not_redelivered_after_a_restart` in
+  > `crates/server/felix-broker`.
 
   > `crates/testing/felix-cluster/tests/queues/consumer_groups.rs`, including
   > `a_group_position_survives_a_leader_failover` and

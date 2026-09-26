@@ -474,3 +474,68 @@ fn a_record_at_or_above_the_cursor_cannot_be_redriven() {
     assert!(!group.redrive(0), "a record in play was redriven");
     assert!(!group.redrive(5), "a record never delivered was redriven");
 }
+
+/// A record given up on while a gap below it holds the cursor back is settled
+/// but not yet passed. Redriving it has to make the cursor wait on it again,
+/// or the gap closing would carry the cursor over a record that is owed.
+#[test]
+fn a_dead_letter_above_the_cursor_can_be_redriven() {
+    let base = Instant::now();
+    let mut group = GroupTracker::new(0, 1);
+
+    group.claim(2, 10, base, VIS);
+    // 1 is given up on and settled; 0 is still in flight.
+    group.nack(1);
+    let claim = group.claim(2, 10, base, VIS);
+    assert_eq!(claim.dead_lettered[0].offset, 1);
+    group.ack(1);
+    assert_eq!(group.committed(), 0);
+
+    assert!(group.redrive(1));
+    assert_eq!(group.ack(0), Some(1), "the cursor passed an owed record");
+    assert_eq!(group.claim(2, 10, base, VIS).offsets, vec![1]);
+}
+
+// --- Validating what a consumer settles --------------------------------------
+
+#[test]
+fn only_offsets_handed_out_can_be_settled() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(5, MANY);
+    group.claim(10, 2, now, VIS);
+
+    assert!(
+        group.handed_out(0),
+        "below the cursor is a harmless duplicate"
+    );
+    assert!(group.handed_out(6));
+    assert!(!group.handed_out(7), "never handed out");
+    assert!(!group.handed_out(u64::MAX));
+}
+
+/// A claim given back because it never reached the consumer does not count as
+/// an attempt, or a string of failed reads would dead-letter a record nobody
+/// ever tried.
+#[test]
+fn an_unclaimed_record_keeps_its_attempts() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, 1);
+
+    group.claim(1, 10, now, VIS);
+    group.unclaim(0);
+    let again = group.claim(1, 10, now, VIS);
+    assert_eq!(again.offsets, vec![0], "given up on without being tried");
+    assert_eq!(group.attempts(0), 1);
+}
+
+#[test]
+fn one_claim_is_capped() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    let tail = MAX_CLAIM as u64 * 2;
+
+    assert_eq!(
+        group.claim(tail, usize::MAX, now, VIS).offsets.len(),
+        MAX_CLAIM
+    );
+}

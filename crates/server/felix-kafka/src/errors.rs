@@ -34,11 +34,11 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         BrokerError::SequenceGap { .. } => ResponseError::OutOfOrderSequenceNumber,
         BrokerError::UnknownProducer { .. } => ResponseError::UnknownProducerId,
         BrokerError::SequenceExpired { .. } => ResponseError::DuplicateSequenceNumber,
-        // Neither can come from reading or writing records; answered as a
+        // None can come from reading or writing records; answered as a
         // server fault rather than guessed at.
-        BrokerError::CapacityTooLarge | BrokerError::DurabilityChangeRequiresRecreate { .. } => {
-            ResponseError::UnknownServerError
-        }
+        BrokerError::CapacityTooLarge
+        | BrokerError::DurabilityChangeRequiresRecreate { .. }
+        | BrokerError::GroupOffsetNotHandedOut { .. } => ResponseError::UnknownServerError,
     }
 }
 

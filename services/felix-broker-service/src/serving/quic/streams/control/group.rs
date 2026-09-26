@@ -41,12 +41,11 @@ pub(super) async fn group_poll(
         cancel_tx,
         ..
     } = *cx;
-    // A group is a read position over a stream, so it is authorized
-    // as a read of that stream.
+    // `stream.subscribe` grants this too, so existing readers keep working.
     if !authorize_stream_simple(
         session.auth_ctx.as_ref(),
         &tenant_id,
-        Action::StreamSubscribe,
+        Action::GroupConsume,
         &namespace,
         &stream,
         authz_ctx,
@@ -164,7 +163,7 @@ pub(super) async fn group_ack(
     if !authorize_stream_simple(
         session.auth_ctx.as_ref(),
         &tenant_id,
-        Action::StreamSubscribe,
+        Action::GroupConsume,
         &namespace,
         &stream,
         authz_ctx,
@@ -271,7 +270,7 @@ pub(super) async fn group_nack(
     if !authorize_stream_simple(
         session.auth_ctx.as_ref(),
         &tenant_id,
-        Action::StreamSubscribe,
+        Action::GroupConsume,
         &namespace,
         &stream,
         authz_ctx,
@@ -377,7 +376,7 @@ pub(super) async fn group_dead_letters(
     if !authorize_stream_simple(
         session.auth_ctx.as_ref(),
         &tenant_id,
-        Action::StreamSubscribe,
+        Action::GroupConsume,
         &namespace,
         &stream,
         authz_ctx,
@@ -492,7 +491,7 @@ pub(super) async fn group_discard(
     if !authorize_stream_simple(
         session.auth_ctx.as_ref(),
         &tenant_id,
-        Action::StreamSubscribe,
+        Action::GroupManage,
         &namespace,
         &stream,
         authz_ctx,
@@ -599,7 +598,7 @@ pub(super) async fn group_redrive(
     if !authorize_stream_simple(
         session.auth_ctx.as_ref(),
         &tenant_id,
-        Action::StreamSubscribe,
+        Action::GroupManage,
         &namespace,
         &stream,
         authz_ctx,

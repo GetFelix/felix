@@ -81,6 +81,11 @@ pub enum BrokerError {
     /// remembers, so whether it was appended cannot be told.
     #[error("sequence {sequence} is older than the window this broker keeps")]
     SequenceExpired { sequence: u64 },
+    /// A consumer settled a group offset this broker never handed out. `next`
+    /// is the lowest offset not yet handed out; nothing at or above it can be
+    /// acknowledged or handed back.
+    #[error("offset {offset} was not handed out by this group (next is {next})")]
+    GroupOffsetNotHandedOut { offset: u64, next: u64 },
 }
 
 /// Shorthand for results carrying a [`BrokerError`].

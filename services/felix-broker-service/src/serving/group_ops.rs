@@ -170,11 +170,14 @@ pub(crate) async fn settle(
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
     let _fenced = owned.enter(publish_ctx, &mut admitted)?;
+    // Classified rather than all reported as storage: an offset this group
+    // never handed out is the consumer's mistake, and retrying will not fix it.
     if finish {
-        reader.ack(&key, offset).await.map_err(storage)
+        reader.ack(&key, offset).await
     } else {
-        reader.nack(&key, offset).await.map_err(storage)
+        reader.nack(&key, offset).await
     }
+    .map_err(|err| ClientError::from_broker(&err, err.to_string()))
 }
 
 /// A shard this broker led when a group operation was admitted.

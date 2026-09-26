@@ -23,19 +23,32 @@ Canonical actions:
 - `stream.subscribe`
 - `cache.read`
 - `cache.write`
+- `group.consume`
+- `group.manage`
 - `node.view` — cluster-scoped only; see [Cluster scope](#cluster-scope)
 - `node.manage` — over `node:{node_id}` or `cluster:*`
 
-There is no separate action for queues. **A consumer-group operation is
-authorized as `stream.subscribe` on the stream it reads** — poll, acknowledge,
-hand back, and the dead-letter requests alike. A group is a read position over a
-stream, so granting a consumer `stream.subscribe` is what lets it work the
-queue, and there is nothing finer to grant.
+Consumer groups have two actions, both over the stream's object
+(`stream:{tenant_id}/{namespace}/{stream}`):
 
-Worth knowing in both directions: a principal with `stream.subscribe` can poll a
-group and acknowledge records, which advances a cursor other consumers share.
-That is a wider capability than a plain subscription, and the grammar does not
-currently let the two be separated.
+- **`group.consume`** — poll, acknowledge, hand back, and list dead letters.
+  `stream.subscribe` also grants it.
+- **`group.manage`** — redrive or discard a dead letter. `stream.manage` also
+  grants it; `stream.subscribe` does not.
+
+The broker applies those implied grants when it checks a request
+(`Action::is_granted_by` in `felix-authz`); they are not expanded into tokens,
+so they hold for every existing policy. A consumer holding `stream.subscribe`
+keeps working its groups. An operator who redrives or discards now needs
+`group.manage` or `stream.manage`.
+
+Worth knowing: because `stream.subscribe` implies `group.consume`, a principal
+that can read a stream can still poll a group and acknowledge records, which
+advances a cursor other consumers share. Making that grant separate would break
+every deployment that relies on `stream.subscribe` today, so it is not.
+
+A broker refuses a token carrying an action it does not know, so upgrade brokers
+before writing policies that use the group actions.
 
 ## Object Grammar
 

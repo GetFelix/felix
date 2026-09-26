@@ -40,6 +40,8 @@ pub struct Cluster {
     pub operator_token: String,
     /// May subscribe, may not publish.
     pub subscribe_only_token: String,
+    /// Presented to brokers to redrive or discard a dead letter.
+    pub group_operator_token: String,
     http: reqwest::Client,
     /// Kept so a broker that loses the port race can be started again.
     binary: PathBuf,
