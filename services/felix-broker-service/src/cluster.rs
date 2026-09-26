@@ -6,10 +6,12 @@
 //! ids into addresses, and [`client_endpoints`] is what this broker tells a
 //! client about where to connect. [`lease`] is the authority to serve at all:
 //! renewed by the same heartbeat, checked cheaply on admission and against the
-//! clock again before any record is committed.
+//! clock again before any record is committed. `controlplane_client` is the
+//! HTTP client all of them share, with deadlines on every request.
 
 pub mod catalog_sync;
 pub mod client_endpoints;
+pub(crate) mod controlplane_client;
 pub mod credential;
 pub mod lease;
 pub mod membership;

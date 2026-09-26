@@ -19,6 +19,9 @@ struct Calls {
     deregistered: Vec<String>,
     /// Heartbeats to reject before succeeding, so backoff can be exercised.
     fail_heartbeats: usize,
+    /// Answer heartbeats from this incarnation or older with `down`, the way
+    /// the control plane answers a node its sweep has expired.
+    down_through_incarnation: Option<u64>,
 }
 
 type Shared = Arc<Mutex<Calls>>;
@@ -53,11 +56,14 @@ fn stub_control_plane(state: Shared) -> axum::Router {
                         calls.fail_heartbeats -= 1;
                         return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
                     }
-                    calls
-                        .heartbeats
-                        .push(body["incarnation"].as_u64().unwrap_or_default());
+                    let incarnation = body["incarnation"].as_u64().unwrap_or_default();
+                    calls.heartbeats.push(incarnation);
+                    let lifecycle = match calls.down_through_incarnation {
+                        Some(down) if incarnation <= down => "down",
+                        _ => "live",
+                    };
                     Ok(Json(
-                        json!({ "lifecycle": "live", "heartbeat_interval_ms": 20 }),
+                        json!({ "lifecycle": lifecycle, "heartbeat_interval_ms": 20 }),
                     ))
                 },
             ),
@@ -441,4 +447,147 @@ async fn a_server_error_counts_as_an_outage_not_a_refusal() {
 
     let _ = stop.send(());
     let _ = handle.await;
+}
+
+/// The sweep marks a node down once it has been silent a full window, and a
+/// heartbeat never revives it. The broker has to register again, or it keeps
+/// running with no lease and no shards for the rest of its life.
+#[tokio::test]
+async fn a_broker_marked_down_registers_again_and_resumes_heartbeating() {
+    let calls: Shared = Arc::new(Mutex::new(Calls {
+        down_through_incarnation: Some(0),
+        ..Calls::default()
+    }));
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let serving = CancellationToken::new();
+    serving.cancel();
+    let shutdown = CancellationToken::new();
+    let lease = Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+        30,
+    )));
+
+    let task = spawn(
+        client,
+        base_url,
+        config(),
+        crate::cluster::credential::NodeCredential::new("a-node-token"),
+        serving,
+        shutdown.clone(),
+        Arc::clone(&lease),
+    );
+
+    for _ in 0..300 {
+        if calls.lock().expect("lock").heartbeats.contains(&1) && lease.is_valid_now() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    shutdown.cancel();
+    task.handle.await.expect("membership task");
+
+    {
+        let calls = calls.lock().expect("lock");
+        assert_eq!(
+            calls.registrations.len(),
+            2,
+            "expected exactly one registration after being marked down",
+        );
+        assert!(
+            calls.heartbeats.contains(&1),
+            "heartbeats should carry the new incarnation: {:?}",
+            calls.heartbeats,
+        );
+    }
+    assert!(
+        lease.is_valid_now(),
+        "the new registration renews the lease"
+    );
+    assert!(!task.fatal.is_cancelled());
+
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// A control plane that accepts the heartbeat and never answers must not hold
+/// the loop: the lease runs out while it waits, and no retry is ever sent.
+#[tokio::test]
+async fn a_stalled_heartbeat_is_abandoned_within_the_lease() {
+    let app = axum::Router::new().route(
+        "/v1/nodes/{node_id}/heartbeat",
+        post(|| async {
+            std::future::pending::<()>().await;
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (stop, handle) = spawn_axum_with_shutdown(listener, app);
+    wait_for_listen(addr).await.expect("listen");
+
+    // The broker's own client: its default deadline is seconds, so a bound
+    // seen here can only come from the lease.
+    let client = crate::cluster::controlplane_client::build().expect("client");
+    let registration = Registration {
+        node_id: "broker-a".to_string(),
+        token: crate::cluster::credential::NodeCredential::new("a-node-token"),
+        incarnation: 0,
+        heartbeat_interval_ms: 20,
+    };
+    let shutdown = CancellationToken::new();
+    let failures = Arc::new(AtomicU64::new(0));
+    // Usable for 300 ms, so each attempt gets 75 ms.
+    let lease = Arc::new(crate::cluster::lease::LeaseState::new(
+        Duration::from_millis(400),
+    ));
+    let beating = tokio::spawn(run_heartbeat(
+        client,
+        format!("http://{addr}"),
+        registration,
+        shutdown.clone(),
+        Arc::clone(&failures),
+        lease,
+    ));
+
+    let started = std::time::Instant::now();
+    while failures.load(Ordering::Acquire) < 3 && started.elapsed() < Duration::from_secs(4) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    shutdown.cancel();
+    assert_eq!(
+        beating.await.expect("heartbeat task"),
+        HeartbeatEnd::Shutdown
+    );
+    assert!(
+        failures.load(Ordering::Acquire) >= 3,
+        "a stalled heartbeat should time out and be retried; waited {:?}",
+        started.elapsed(),
+    );
+
+    // The handler never returns, so graceful shutdown would wait on it.
+    drop(stop);
+    handle.abort();
+}
+
+/// The default cadence is a 5 s interval against an 11.25 s lease. Uncapped,
+/// the backoff reaches 30 s, which outlives the whole expiry window: a control
+/// plane back after a short outage would expire the broker before its next
+/// retry.
+#[test]
+fn retries_stay_under_a_quarter_of_the_lease() {
+    let usable = Duration::from_millis(11_250);
+    let interval = Duration::from_secs(5);
+    for failures in 1..20 {
+        let delay = backoff(interval, failures).min(retry_cap(usable));
+        let worst = delay.mul_f64(1.0 + JITTER_FRACTION);
+        assert!(
+            worst < usable / 4,
+            "retry {failures} may wait {worst:?}, lease is {usable:?}",
+        );
+    }
+    // A long lease is still bounded by the absolute ceiling.
+    assert_eq!(retry_cap(Duration::from_secs(3_600)), MAX_RETRY_BACKOFF);
+    // And a degenerate one does not spin.
+    assert!(retry_cap(Duration::ZERO) > Duration::ZERO);
 }

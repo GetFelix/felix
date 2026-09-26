@@ -231,7 +231,7 @@ where
         seeded_rx,
     );
 
-    let membership_client = reqwest::Client::new();
+    let membership_client = crate::cluster::controlplane_client::build()?;
     let (membership, credential_refresh) = match membership::spawn(
         &config,
         &membership_client,
