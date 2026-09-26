@@ -132,6 +132,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     missing_assignments_report_not_found(store).await;
     deleting_leaves_the_shard_unowned(store).await;
     a_node_leading_a_shard_cannot_be_deleted(store).await;
+    a_node_replicating_a_shard_cannot_be_deleted(store).await;
     a_snapshot_and_the_changes_after_it_lose_nothing(store).await;
     a_cache_shard_and_a_stream_shard_of_the_same_name_coexist(store).await;
     a_cache_shard_is_bounded_by_the_cache_not_the_stream(store).await;
@@ -234,6 +235,59 @@ pub(crate) async fn run_shard_concurrency_contract(store: Arc<dyn ControlPlaneSt
     seed(store.as_ref()).await;
     concurrent_writes_to_one_shard_serialise(Arc::clone(&store)).await;
     concurrent_conditional_writes_have_one_winner(store).await;
+}
+
+/// Deleting a node while an assignment to it is being written: either the
+/// delete is refused or the write is, never both through. Both checks read
+/// the other side's table, so without a lock between them each can pass on a
+/// read the other is about to invalidate, leaving a shard led by a node that
+/// no longer exists.
+///
+/// `rounds` is per backend: the window is narrow, so an in-process store
+/// needs thousands to hit it, and a replicated one pays a commit per write.
+pub(crate) async fn run_node_delete_race_contract(store: Arc<dyn ControlPlaneStore>, rounds: u16) {
+    seed(store.as_ref()).await;
+    for round in 0..rounds {
+        clear(store.as_ref()).await;
+        let node_id = format!("broker-race-{round}");
+        store
+            .register_node(node(&node_id, 9000 + round))
+            .await
+            .expect("register");
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let deleter = {
+            let (store, barrier, node_id) =
+                (Arc::clone(&store), Arc::clone(&barrier), node_id.clone());
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store.delete_node(&node_id).await
+            })
+        };
+        let writer = {
+            let (store, barrier, node_id) =
+                (Arc::clone(&store), Arc::clone(&barrier), node_id.clone());
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store.put_shard_assignment(assignment(0, &node_id)).await
+            })
+        };
+        let deleted = deleter.await.expect("deleter").is_ok();
+        let written = writer.await.expect("writer").is_ok();
+
+        assert!(
+            !(deleted && written),
+            "round {round}: the node was deleted and an assignment to it written",
+        );
+        if written {
+            let stored = store.get_shard_assignment(&key(0)).await.expect("get");
+            assert!(
+                store.get_node(&stored.leader).await.is_ok(),
+                "round {round}: the stored assignment names a deleted node",
+            );
+        }
+    }
+    clear(store.as_ref()).await;
 }
 
 /// Placement instances racing on one shard, each writing against the
@@ -779,6 +833,26 @@ async fn deleting_leaves_the_shard_unowned(store: &dyn ControlPlaneStore) {
         changes.items[0].assignment.is_none(),
         "an unassignment carries no body",
     );
+}
+
+/// A replica is as much a reference as a leader: an assignment naming a
+/// deleted replica could never be rewritten unchanged, since every write
+/// checks its nodes exist.
+async fn a_node_replicating_a_shard_cannot_be_deleted(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    store
+        .put_shard_assignment(ShardAssignment {
+            replicas: vec!["broker-y".to_string()],
+            ..assignment(0, "broker-x")
+        })
+        .await
+        .expect("put");
+    let err = store
+        .delete_node("broker-y")
+        .await
+        .expect_err("should refuse");
+    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
+    clear(store).await;
 }
 
 /// Cascading would delete the only record of where that shard's data lives.

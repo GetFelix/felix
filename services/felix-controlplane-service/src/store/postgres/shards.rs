@@ -130,13 +130,17 @@ async fn write_shard_assignment(
 
     // Checked here rather than by a foreign key: the node reference has none
     // deliberately, so deleting a node cannot cascade an assignment away.
+    // `FOR SHARE` holds each node until this commits, so a concurrent
+    // `delete_node` (which locks the row `FOR UPDATE`) either waits and then
+    // sees this assignment, or has already deleted the node and this finds
+    // no row.
     for node_id in assignment.nodes() {
-        let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nodes WHERE node_id = $1)")
+        let exists: Option<String> =
+            sqlx::query_scalar("SELECT node_id FROM nodes WHERE node_id = $1 FOR SHARE")
                 .bind(node_id)
-                .fetch_one(&mut *tx)
+                .fetch_optional(&mut *tx)
                 .await?;
-        if !exists {
+        if exists.is_none() {
             return Err(StoreError::NotFound(format!("node {node_id}")));
         }
     }

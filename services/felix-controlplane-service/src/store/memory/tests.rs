@@ -36,11 +36,12 @@ async fn satisfies_the_rbac_contract() {
 }
 
 /// The same suite Postgres runs.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn satisfies_the_shard_store_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
     crate::store::contract::shards::run_shard_contract(store.clone()).await;
-    crate::store::contract::shards::run_shard_concurrency_contract(store).await;
+    crate::store::contract::shards::run_shard_concurrency_contract(store.clone()).await;
+    crate::store::contract::shards::run_node_delete_race_contract(store, 5000).await;
 }
 
 /// The same suite Postgres runs, with both instances on one store.

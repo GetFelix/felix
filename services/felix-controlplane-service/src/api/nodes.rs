@@ -241,9 +241,8 @@ pub(crate) async fn delete_node(
             &format!("node {node_id} is still running; drain it and stop it first"),
         ));
     }
-    // The store refuses a leader atomically. A replica is checked here, which
-    // can race a placement pass, but placement only names live nodes, and this
-    // one is not.
+    // The store refuses a named node atomically; this is only the clearer
+    // message for the common case.
     let named = state
         .store
         .list_shard_assignments()

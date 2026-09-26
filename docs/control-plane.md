@@ -948,10 +948,12 @@ Two references, two different policies, chosen rather than inherited:
 - **Stream**: a foreign key with `ON DELETE CASCADE`. Deleting a stream removes
   its assignments, because the shards no longer exist and keeping ownership
   records for them leaves placement chasing ghosts.
-- **Node**: deliberately **no** foreign key. Deleting a node that still leads a
-  shard is **rejected**, not cascaded. A cascade would delete the only record of
-  where that shard's data lives, turning an operator's tidy-up into silent data
-  orphaning. Reassign the shard first.
+- **Node**: deliberately **no** foreign key. Deleting a node that still leads or
+  replicates a shard is **rejected**, not cascaded. A cascade would delete the
+  only record of where that shard's data lives, turning an operator's tidy-up
+  into silent data orphaning. Reassign the shard first. On Postgres the delete
+  locks the node row `FOR UPDATE` and an assignment write locks each node it
+  names `FOR SHARE`, so a delete racing a write cannot both pass their checks.
 
 Shard numbers are validated against the stream's `shards` count on every write.
 Streams cannot currently be resized — `StreamPatchRequest` has no `shards` field

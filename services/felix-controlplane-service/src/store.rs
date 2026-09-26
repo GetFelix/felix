@@ -75,7 +75,7 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn patch_node(&self, node_id: &str, patch: NodePatchRequest) -> StoreResult<Node>;
     /// Remove a node.
     ///
-    /// Rejected while the node still leads a shard. Cascading instead would
+    /// Rejected while the node still leads or replicates a shard. Cascading instead would
     /// delete the only record of where that shard's data lives, turning an
     /// operator's tidy-up into silent data orphaning; refusing forces the shard
     /// to be reassigned first. There is deliberately no foreign key doing this,

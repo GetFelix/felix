@@ -191,16 +191,31 @@ pub(super) async fn patch_node(
 pub(super) async fn delete_node(store: &PostgresStore, node_id: &str) -> StoreResult<()> {
     let mut tx = store.pool.begin().await?;
 
+    // Lock the node row before counting. An assignment write takes it
+    // `FOR SHARE`, so the two serialize: either the write commits first and
+    // the count below (a fresh statement under READ COMMITTED) sees it, or
+    // the write waits and then finds the node gone.
+    let locked: Option<String> =
+        sqlx::query_scalar("SELECT node_id FROM nodes WHERE node_id = $1 FOR UPDATE")
+            .bind(node_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if locked.is_none() {
+        return Err(StoreError::NotFound("node".into()));
+    }
+
     // Refused rather than cascaded: deleting the assignment would erase the
     // only record of where that shard's data lives. Deliberately not a
     // foreign key, because a cascade is the behaviour being avoided.
-    let led: i64 = sqlx::query_scalar("SELECT count(*) FROM shard_assignments WHERE leader = $1")
-        .bind(node_id)
-        .fetch_one(&mut *tx)
-        .await?;
-    if led > 0 {
+    let held: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM shard_assignments WHERE leader = $1 OR replicas ? $1",
+    )
+    .bind(node_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if held > 0 {
         return Err(StoreError::Conflict(format!(
-            "node {node_id} still leads {led} shard(s); reassign them first"
+            "node {node_id} still holds {held} shard(s); reassign them first"
         )));
     }
 
