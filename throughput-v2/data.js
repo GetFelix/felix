@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790463552812,
+  "lastUpdate": 1790463751530,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -16796,6 +16796,58 @@ window.BENCHMARK_DATA = {
             "range": "11187.39",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 911978.34\nmean: 910219.92\nstdev: 11187.39\ncv: 1.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c89454d6695586829d083fd478dca96fd2668fe9",
+          "message": "docs: correct claims the code no longer backs (#733)\n\n- SECURITY.md: the supported minor line is 0.5.x, not 0.4.x.\n- panic-audit.md, todos.md: frame and message decoders are fuzzed in CI\n  (7 targets, 30 s each); say what is still thin (budget, Kafka decoders).\n- protocol.md: control and publish traffic uses client-opened bidi\n  streams, events use broker-opened uni streams, and clients may publish\n  on a uni stream; a flags=0 payload is JSON, not binary. Drop the stale\n  note that no binary layout carries an idempotent producer.\n- semantics.md: the report-ordering gap (#527) is closed by the\n  report-before-mark ordering (#268); note it relies on the control\n  plane's 204 meaning the report was recorded.\n- what-felix-is-for.md: live-state sync is \"Partly\", matching the cache\n  watch rows marked shipped on the same page.\n- Placement is deterministic over separate reads and made safe by\n  conditional writes, not a shared snapshot (control-plane.md,\n  architecture.md, system-design.md, components.md, metadata-raft-design.md).\n- env_registry.rs: stop hardcoding ~160 variables.\n- Metadata export as a DR backup: not a consistent read unless writes are\n  frozen, and it holds tenant signing-key seeds in plaintext; refresh\n  tokens are not exported.\n- metadata-raft-design.md: list which contract suites run on Raft.\n- kubernetes.md: volume snapshots are not a consistent cluster point.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-26T15:55:30-07:00",
+          "tree_id": "fe584d5421873aa4e71a97cb6695647a1e40eb11",
+          "url": "https://github.com/gabloe/felix/commit/c89454d6695586829d083fd478dca96fd2668fe9"
+        },
+        "date": 1790463750761,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 646804.91,
+            "range": "38142.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 646804.91\nmean: 630553.34\nstdev: 38142.99\ncv: 6.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 646804.91,
+            "range": "38142.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 646804.91\nmean: 630553.34\nstdev: 38142.99\ncv: 6.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 151177.37,
+            "range": "2069.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 151177.37\nmean: 150393.19\nstdev: 2069.90\ncv: 1.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1511773.73,
+            "range": "20699.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1511773.73\nmean: 1503931.89\nstdev: 20699.01\ncv: 1.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
