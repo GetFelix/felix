@@ -45,6 +45,37 @@ async fn a_new_flush_is_not_held_behind_an_outstanding_one() {
     assert!(matches!(flushed, Some(Ok(()))), "flush: {flushed:?}");
 }
 
+/// More operations than the ring has entries, all held in flight at once.
+/// The overflow has to wait for room, not come back as an I/O error: a failed
+/// flush poisons its log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn more_requests_than_ring_entries_wait_rather_than_fail() {
+    if ring().is_none() {
+        eprintln!("io_uring unavailable; skipping");
+        return;
+    }
+    let (reader, mut writer) = std::io::pipe().expect("pipe");
+    let gate = Arc::new(File::from(OwnedFd::from(reader)));
+    let requests = RING_ENTRIES as usize * 4;
+    let held: Vec<_> = (0..requests)
+        .map(|_| tokio::spawn(poll_readable(Arc::clone(&gate))))
+        .collect();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        held.iter().all(|task| !task.is_finished()),
+        "an operation finished before the gate opened",
+    );
+
+    writer.write_all(b"x").expect("release gate");
+    for task in held {
+        let outcome = tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("an operation never completed")
+            .expect("join");
+        assert!(matches!(outcome, Some(Ok(()))), "{outcome:?}");
+    }
+}
+
 /// N logs flushing concurrently through the ring. Prints the per-flush
 /// latency so a change to the service loop can be compared before and after:
 /// `cargo test -p felix-storage --lib uring_fsync::tests::concurrent_flush_latency -- --ignored --nocapture`.
