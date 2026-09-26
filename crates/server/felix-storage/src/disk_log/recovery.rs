@@ -7,7 +7,8 @@
 //!   fsync policy, so it is truncated away and the log resumes at the last intact
 //!   record.
 //! * **Committed data is never silently discarded.** Corruption anywhere that is
-//!   not the very end of the newest segment is an error at startup, naming the
+//!   not the very end of the newest segment (or of a retired segment whose seal
+//!   never finished, see `unsealed_retired`) is an error at startup, naming the
 //!   shard, segment and byte position. Losing acknowledged records quietly is
 //!   worse than refusing to start.
 //! * **Recovery is idempotent.** Opening an already recovered log changes
