@@ -1202,7 +1202,7 @@ async fn a_reused_sequence_is_refused_over_json_only_when_negotiated() -> Result
     .await?;
     assert!(
         matches!(legacy, Some(Message::PublishOk { request_id: 3 })),
-        "{legacy:?}"
+        "a legacy client should get publish_ok for a reused sequence"
     );
 
     let negotiated = reuse_a_sequence_over_json(
@@ -1222,7 +1222,7 @@ async fn a_reused_sequence_is_refused_over_json_only_when_negotiated() -> Result
                 ..
             })
         ),
-        "{negotiated:?}"
+        "a negotiating client should get publish_refused sequence_reused"
     );
 
     // One `a` per producer, and no `b`.
