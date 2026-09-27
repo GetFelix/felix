@@ -17,7 +17,7 @@ use crate::replication::reporter::{ShardReport, shard_report};
 use crate::replication::throttle::{MoveThrottle, paced_destination};
 use crate::replication::{
     FollowerCursor, Progress, Rebuilds, caught_up, lag_records, metrics, quorum_offset_without,
-    ship_once,
+    ship_once_with,
 };
 use crate::shards::lifecycle::fence::ShardFence;
 
@@ -212,7 +212,10 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
     // leaves every follower one short, and a leader dying then can never be
     // replaced. `Leader` acknowledges before shipping, and a move hands over an
     // exact copy, so both keep the tail.
-    let acks_at_quorum = !route.draining && acknowledges_at_quorum(broker, key).await;
+    let quorum_shard = acknowledges_at_quorum(broker, key).await;
+    let acks_at_quorum = !route.draining && quorum_shard;
+    let mark_key = watch_key(key);
+    let mark_key = &mark_key;
     let acknowledged = |tail: u64, followers: &[FollowerCursor]| {
         if !acks_at_quorum {
             return tail;
@@ -255,7 +258,11 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
                         break;
                     }
                     let before = cursor.shipped_bytes;
-                    let progress = ship_once(
+                    // Read per batch: the mark moves while followers ship.
+                    let commit = quorum_shard
+                        .then(|| marks.offset(mark_key, route.generation))
+                        .flatten();
+                    let progress = ship_once_with(
                         requester,
                         log_ref,
                         shard_ref,
@@ -263,6 +270,7 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
                         &mut cursor,
                         MAX_BATCH_BYTES,
                         rebuilds,
+                        commit,
                     )
                     .await;
                     if paced {
@@ -466,6 +474,20 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
         )
         .await;
         report_out = Some(settled);
+    }
+
+    // The leader's own copy is bound by its mark as a follower's is: a later
+    // leader asking it to drop records a majority acknowledged is refused.
+    if quorum_shard
+        && let Some(mark) = marks.offset(mark_key, route.generation)
+        && let Err(err) = log.advance_commit_offset(mark).await
+    {
+        tracing::warn!(
+            stream = %key.stream,
+            shard = key.shard,
+            error = %err,
+            "could not write the commit offset through; it holds in memory",
+        );
     }
 
     // Otherwise after the report and the quorum mark, and never gating

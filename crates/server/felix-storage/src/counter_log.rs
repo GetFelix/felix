@@ -385,6 +385,7 @@ impl CounterShard {
         }
         fresh.shutdown().await?;
         state.log.shutdown().await?;
+        crate::disk_log::replica_state::copy_into(&self.dir, &staging)?;
 
         swap_in_compacted(&self.dir, &staging)?;
 

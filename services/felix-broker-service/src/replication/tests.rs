@@ -5,6 +5,7 @@
 //! answers rarely and never on demand, so they come from a script.
 
 mod answers;
+mod commit_offset;
 mod eligibility;
 mod lag;
 mod quorum;

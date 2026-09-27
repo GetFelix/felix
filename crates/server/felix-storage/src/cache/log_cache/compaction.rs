@@ -135,6 +135,9 @@ impl CacheShard {
         }
         fresh.shutdown().await?;
         state.log.shutdown().await?;
+        // After the shutdown, which writes it through: a replica's accepted
+        // generation and commit offset outlive the records being rewritten.
+        crate::disk_log::replica_state::copy_into(&self.dir, &staging)?;
 
         crate::log_swap::swap_in_compacted(&self.dir, &staging)?;
 

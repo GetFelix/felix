@@ -8,12 +8,15 @@ use crate::store::{ControlPlaneStore, StoreConfig};
 
 const INTERVAL_MS: u64 = 1_000;
 const TIMEOUT_MS: u64 = 3_000;
+/// The timeout plus the default regrant margin, a quarter of it.
+const DOWN_AFTER_MS: u64 = TIMEOUT_MS + TIMEOUT_MS / 4;
 const T0: u64 = 1_700_000_000_000;
 
 fn liveness() -> NodeLivenessConfig {
     NodeLivenessConfig {
         heartbeat_interval_ms: INTERVAL_MS,
         expiry_timeout_ms: TIMEOUT_MS,
+        regrant_margin_ms: None,
         sweep_interval_ms: 500,
         shard_reconcile_interval_ms: 5_000,
     }
@@ -53,7 +56,10 @@ async fn a_silent_broker_goes_down_once_the_timeout_elapses() {
     let store = store_with_node().await;
 
     // Exactly at the timeout is still inside the window.
-    assert_eq!(expire_once(&store, &liveness(), T0 + TIMEOUT_MS).await, 0);
+    assert_eq!(
+        expire_once(&store, &liveness(), T0 + DOWN_AFTER_MS).await,
+        0
+    );
     assert_eq!(
         store
             .get_node("broker-a")
@@ -65,7 +71,7 @@ async fn a_silent_broker_goes_down_once_the_timeout_elapses() {
     );
 
     assert_eq!(
-        expire_once(&store, &liveness(), T0 + TIMEOUT_MS + 1).await,
+        expire_once(&store, &liveness(), T0 + DOWN_AFTER_MS + 1).await,
         1
     );
     assert_eq!(
@@ -86,7 +92,7 @@ async fn expiry_publishes_a_change() {
     let store = store_with_node().await;
     let since = store.node_snapshot().await.expect("snapshot").next_seq;
 
-    expire_once(&store, &liveness(), T0 + TIMEOUT_MS + 1).await;
+    expire_once(&store, &liveness(), T0 + DOWN_AFTER_MS + 1).await;
 
     let changes = store.node_changes(since).await.expect("changes");
     assert_eq!(changes.items.len(), 1);
@@ -101,7 +107,7 @@ async fn expiry_publishes_a_change() {
 async fn a_repeated_sweep_expires_a_node_once() {
     let store = store_with_node().await;
     let since = store.node_snapshot().await.expect("snapshot").next_seq;
-    let now = T0 + TIMEOUT_MS + 1;
+    let now = T0 + DOWN_AFTER_MS + 1;
 
     assert_eq!(expire_once(&store, &liveness(), now).await, 1);
     for _ in 0..3 {
@@ -130,7 +136,7 @@ async fn a_draining_broker_also_expires() {
         .expect("drain");
 
     assert_eq!(
-        expire_once(&store, &liveness(), T0 + TIMEOUT_MS + 1).await,
+        expire_once(&store, &liveness(), T0 + DOWN_AFTER_MS + 1).await,
         1
     );
     assert_eq!(
@@ -288,8 +294,9 @@ async fn a_restarted_sweep_waits_a_window_before_expiring() {
         .lifecycle;
     assert_eq!(lifecycle, NodeLifecycle::Live);
 
-    // Still silent a full window after start: expired as usual.
-    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    // Still silent a full window, and the margin, after start: expired as
+    // usual. The watch started on the first tick, so it is the one waited on.
+    tokio::time::sleep(Duration::from_millis(DOWN_AFTER_MS - TIMEOUT_MS + 1_200)).await;
     let lifecycle = store
         .get_node("broker-a")
         .await
@@ -309,13 +316,101 @@ async fn a_failure_shows_up_in_one_sweep_past_the_timeout() {
     let store = store_with_node().await;
 
     // One sweep at the boundary: still live.
-    assert_eq!(expire_once(&store, &liveness(), T0 + TIMEOUT_MS).await, 0);
+    assert_eq!(
+        expire_once(&store, &liveness(), T0 + DOWN_AFTER_MS).await,
+        0
+    );
     // The very next sweep past it: down, and the listing agrees immediately.
     assert_eq!(
-        expire_once(&store, &liveness(), T0 + TIMEOUT_MS + 1).await,
+        expire_once(&store, &liveness(), T0 + DOWN_AFTER_MS + 1).await,
         1
     );
 
     let listed = store.list_nodes().await.expect("list");
     assert_eq!(listed[0].status.lifecycle, NodeLifecycle::Down);
+}
+
+/// The margin is what separates a broker giving up its lease from its shards
+/// being handed on. Down at the timeout alone, TLA+ finds two leaders under
+/// drift (`FelixShardThinMargin`, and `FelixShardRealMargins` without it).
+#[tokio::test]
+async fn a_silent_broker_outlives_the_timeout_by_the_regrant_margin() {
+    let store = store_with_node().await;
+
+    assert_eq!(
+        expire_once(&store, &liveness(), T0 + TIMEOUT_MS + 1).await,
+        0
+    );
+    assert_eq!(
+        expire_once(&store, &liveness(), T0 + DOWN_AFTER_MS).await,
+        0
+    );
+    assert_eq!(
+        expire_once(&store, &liveness(), T0 + DOWN_AFTER_MS + 1).await,
+        1
+    );
+}
+
+/// A wall clock stepped forward -- NTP, or a newly elected leader whose clock
+/// runs ahead -- makes every stamp look old at once. The monotonic watch has
+/// heard from the broker recently, so it stays up until the watch agrees.
+#[tokio::test]
+async fn a_store_clock_step_does_not_expire_a_broker_heard_from_recently() {
+    let store = store_with_node().await;
+    let mut watch = SilenceWatch::default();
+    let start = tokio::time::Instant::now();
+    watch.observe(&store.list_nodes().await.expect("list"), start);
+
+    let stepped = T0 + 3_600_000;
+    let soon = start + Duration::from_millis(DOWN_AFTER_MS - 1);
+    assert_eq!(
+        expire_observed(&store, &liveness(), stepped, &mut watch, soon).await,
+        0
+    );
+    assert_eq!(
+        store
+            .get_node("broker-a")
+            .await
+            .expect("get")
+            .status
+            .lifecycle,
+        NodeLifecycle::Live,
+    );
+
+    // Once this process has itself seen the whole window pass in silence,
+    // both clocks agree and it goes.
+    let later = start + Duration::from_millis(DOWN_AFTER_MS);
+    assert_eq!(
+        expire_observed(&store, &liveness(), stepped, &mut watch, later).await,
+        1
+    );
+}
+
+/// A new heartbeat stamp restarts the watch's window, even when the store's
+/// clock says the stamp is already stale.
+#[tokio::test]
+async fn a_heartbeat_restarts_the_watch() {
+    let store = store_with_node().await;
+    let mut watch = SilenceWatch::default();
+    let start = tokio::time::Instant::now();
+    watch.observe(&store.list_nodes().await.expect("list"), start);
+
+    let beat = start + Duration::from_millis(DOWN_AFTER_MS / 2);
+    store
+        .record_node_heartbeat("broker-a", 0, T0 + 1)
+        .await
+        .expect("beat");
+    watch.observe(&store.list_nodes().await.expect("list"), beat);
+
+    let stepped = T0 + 3_600_000;
+    let after_first_window = start + Duration::from_millis(DOWN_AFTER_MS);
+    assert_eq!(
+        expire_observed(&store, &liveness(), stepped, &mut watch, after_first_window).await,
+        0
+    );
+    let after_second = beat + Duration::from_millis(DOWN_AFTER_MS);
+    assert_eq!(
+        expire_observed(&store, &liveness(), stepped, &mut watch, after_second).await,
+        1
+    );
 }

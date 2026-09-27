@@ -90,10 +90,10 @@ impl InternalMessage {
                     body.put_u32(u32::try_from(payload.len()).map_err(|_| Error::FrameTooLarge)?);
                     body.extend_from_slice(payload);
                 }
-                // Only the marked kind has the section, and it has one mark
-                // per record however many are unmarked; the other kinds'
-                // layout is frozen and cannot carry any.
-                if let Self::ReplicateMarkedRecords(m) = self {
+                // Only the marked and committed kinds have the section, and it
+                // has one mark per record however many are unmarked; the other
+                // kinds' layout is frozen and cannot carry any.
+                if matches!(self, Self::ReplicateMarkedRecords(_)) || m.commit_offset.is_some() {
                     let mut marks = m.marks.clone();
                     marks.resize(m.payloads.len(), ProducerMark::None);
                     put_marks(&mut body, &marks);
@@ -102,6 +102,17 @@ impl InternalMessage {
                         m.marks.iter().all(|mark| *mark == ProducerMark::None),
                         "producer marks travel only as ReplicateMarkedRecords",
                     );
+                }
+                if let Some(commit_offset) = m.commit_offset {
+                    let log = match self {
+                        Self::ReplicateCacheRecords(_) => ReplicaLog::Cache,
+                        Self::ReplicateGroupRecords(_) => ReplicaLog::GroupCursors,
+                        Self::ReplicateDeadLetterRecords(_) => ReplicaLog::GroupDeadLetters,
+                        Self::ReplicateCounterRecords(_) => ReplicaLog::Counters,
+                        _ => ReplicaLog::Stream,
+                    };
+                    body.put_u8(log as u8);
+                    body.put_u64(commit_offset);
                 }
             }
             Self::ReplicateOk(m) => {
@@ -301,7 +312,8 @@ impl InternalMessage {
             | Kind::ReplicateGroupRecords
             | Kind::ReplicateDeadLetterRecords
             | Kind::ReplicateCounterRecords
-            | Kind::ReplicateMarkedRecords => {
+            | Kind::ReplicateMarkedRecords
+            | Kind::ReplicateCommittedRecords => {
                 let correlation_id = take_u64(&mut body)?;
                 let tenant_id = take_str(&mut body)?;
                 let namespace = take_str(&mut body)?;
@@ -325,12 +337,24 @@ impl InternalMessage {
                     }
                     payloads.push(body.split_to(len));
                 }
-                let marks = if header.kind == Kind::ReplicateMarkedRecords {
+                let committed = header.kind == Kind::ReplicateCommittedRecords;
+                let mut marks = if header.kind == Kind::ReplicateMarkedRecords || committed {
                     take_marks(&mut body, payloads.len())?
                 } else {
                     Vec::new()
                 };
+                let (log, commit_offset) = if committed {
+                    let log = ReplicaLog::from_u8(take_u8(&mut body)?)?;
+                    (Some(log), Some(take_u64(&mut body)?))
+                } else {
+                    (None, None)
+                };
                 expect_empty(&body)?;
+                // An unmarked batch has no marks, as the leader built it; the
+                // checksum covers marks only when there are any.
+                if committed && marks.iter().all(|mark| *mark == ProducerMark::None) {
+                    marks.clear();
+                }
 
                 let message = ReplicateRecords {
                     correlation_id,
@@ -345,7 +369,20 @@ impl InternalMessage {
                     checksum,
                     payloads,
                     marks,
+                    commit_offset,
                 };
+                if let Some(log) = log {
+                    return Ok(match log {
+                        ReplicaLog::Stream if message.marks.is_empty() => {
+                            Self::ReplicateRecords(message)
+                        }
+                        ReplicaLog::Stream => Self::ReplicateMarkedRecords(message),
+                        ReplicaLog::Cache => Self::ReplicateCacheRecords(message),
+                        ReplicaLog::GroupCursors => Self::ReplicateGroupRecords(message),
+                        ReplicaLog::GroupDeadLetters => Self::ReplicateDeadLetterRecords(message),
+                        ReplicaLog::Counters => Self::ReplicateCounterRecords(message),
+                    });
+                }
                 Ok(match header.kind {
                     Kind::ReplicateCacheRecords => Self::ReplicateCacheRecords(message),
                     Kind::ReplicateGroupRecords => Self::ReplicateGroupRecords(message),

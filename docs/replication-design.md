@@ -216,6 +216,21 @@ Nothing in that sequence requires A and CP to agree on the time. It requires onl
 that neither clock runs more than `ρ` faster or slower than real time, so the two
 instants cannot cross.
 
+As built, `L` is the control plane's `expiry_timeout_ms`, which every heartbeat
+response carries. The broker gives up `ε = L/4`. The control plane marks a
+silent broker down, which is what lets placement hand its shards on, only after
+`L + margin`, where the margin is `FELIX_NODE_REGRANT_MARGIN_MS` and defaults to
+`L/4` (it may not be set lower). Silence is measured twice and both have to
+agree: against the store's clock, which stamps heartbeats, and by the sweeping
+instance's own monotonic clock, which starts over whenever it sees the stamp
+change and whenever the instance starts watching (a restart, a Raft election, or
+the store coming back). The store's clock is a wall clock, and after an election
+or a database failover a different machine's, so a step forward alone could
+otherwise expire a broker still inside its lease. `FelixShardRealMargins.cfg`
+checks these margins, a quarter each side against clocks that drift by a
+quarter, and passes; with the control plane's margin at zero it finds two
+brokers serving.
+
 ### The clock assumption, stated precisely
 
 Safety requires a bound on clock **drift rate**, not synchronized clocks. For any
@@ -243,7 +258,20 @@ acknowledged, from a leader that then died.
 A follower therefore truncates, but only **above** the high-water mark. Below it
 a record is on a majority and is never discarded: it was ordered by a leader
 holding an unexpired lease, and the safety interval means no other leader existed
-at that generation. Above it, a record is a proposal that the cluster may not
+at that generation. The follower learns the mark from the leader: under `Quorum`
+every batch carries the leader's quorum mark (`ReplicateRecords.commit_offset`),
+and the follower keeps the lower of it and the end of what the batch left level
+with the leader. The leader keeps its own mark the same way, so a deposed leader
+is held to it when it follows.
+
+A follower also refuses a leader older than one it has already accepted. The
+routing view answers that while it is current, but it is rebuilt after a restart
+and may lag; so each shard log keeps the highest generation it accepted a leader
+at, written and fsynced before the first batch at a new generation is stored or
+acknowledged, and a leader claiming a shard records its own generation the same
+way. The commit offset is kept in the same small file (`replica`, beside the
+segments), written through at most once a second: after a crash it may read
+back behind, which only permits less, never more. Above it, a record is a proposal that the cluster may not
 have adopted, and a new leader reusing the offset is ordinary rather than
 alarming.
 
@@ -461,7 +489,10 @@ Three things this deliberately does not do:
   plausible mis-parse. The map is derived state that can be rebuilt or absent.
 - **It does not truncate below the high-water mark.** Everything there is on a
   majority. A truncation point computed below it is a bug, not a repair, and
-  should refuse rather than proceed.
+  refuses rather than proceeds: the follower keeps the records, answers with
+  the conflict, and counts `felix_broker_replicated_total{outcome="below_commit"}`.
+  The storage layer refuses the cut on its own as well
+  (`StorageError::BelowCommit`), so no caller can get round it.
 - **It does not make a halted follower repair itself.** Truncating a divergent
   suffix is a decision with a policy attached — how many followers may rebuild
   at once, and at what bandwidth — so the repair is the leader's, under that
@@ -726,6 +757,14 @@ follower is counted as caught up when it reaches the tail, like any other. The
 same fence applies as to storing records: a superseded leader cannot make a
 follower discard anything, which is the most damage a stale leader could do and
 the one thing the check most has to stop.
+
+A follower also refuses a rebuild that would discard a record it holds below its
+commit offset and at or above the leader's base. Those records were acknowledged
+on a majority; a leader asking to replace them may not hold them, and this copy
+may be the last. The halt stands for an operator, and the refusal counts as
+`below_commit`. Records below the leader's base are gone from the leader
+already, so a follower that is merely too far behind (`needs_bootstrap`) is
+rebuilt as before.
 
 It happens under a policy, because a rebuild is a full transfer of the shard,
 and every halted follower at once — across every shard a failed broker led — is

@@ -18,7 +18,12 @@ use tokio_util::sync::CancellationToken;
 use crate::config::NodeLivenessConfig;
 use crate::store::ControlPlaneStore;
 
-/// Run one expiry pass against `now_millis`.
+/// Run one expiry pass against `now_millis`, the store's clock.
+///
+/// A node is down once its last heartbeat is older than the expiry timeout
+/// plus the regrant margin: its shards move only then, and the margin is what
+/// keeps the broker's own lease, which it gives up a quarter early, from still
+/// running when they do.
 ///
 /// Separate from the loop so tests can drive it at an exact time instead of
 /// waiting for a timer.
@@ -29,8 +34,42 @@ pub async fn expire_once(
 ) -> usize {
     // Saturating: before the timeout has elapsed since the epoch nothing can be
     // stale, and wrapping would expire the whole cluster.
-    let expiry_before = now_millis.saturating_sub(liveness.expiry_timeout_ms);
+    let expiry_before = now_millis.saturating_sub(liveness.silence_before_down_ms());
+    expire_before(store, expiry_before).await
+}
 
+/// [`expire_once`], sparing any node `watch` has not itself seen silent for
+/// the whole window on this process's monotonic clock.
+///
+/// The store's clock alone is a wall clock, and after a Raft election or a
+/// database failover a different machine's: a step forward would expire a
+/// broker that is still inside its lease. The watch cannot be stepped, so a
+/// node goes down only when both agree.
+pub async fn expire_observed(
+    store: &dyn ControlPlaneStore,
+    liveness: &NodeLivenessConfig,
+    now_millis: u64,
+    watch: &mut SilenceWatch,
+    at: tokio::time::Instant,
+) -> usize {
+    let nodes = match store.list_nodes().await {
+        Ok(nodes) => nodes,
+        Err(err) => {
+            tracing::warn!(error = %err, "skipping the expiry sweep: could not list nodes");
+            return 0;
+        }
+    };
+    let window = std::time::Duration::from_millis(liveness.silence_before_down_ms());
+    let by_clock = now_millis.saturating_sub(liveness.silence_before_down_ms());
+    // The store expires by threshold alone, so a node to spare caps it at its
+    // own stamp. One that could have gone this pass waits for the next.
+    let expiry_before = watch
+        .spared(&nodes, window, at)
+        .fold(by_clock, |before, stamp| before.min(stamp));
+    expire_before(store, expiry_before).await
+}
+
+async fn expire_before(store: &dyn ControlPlaneStore, expiry_before: u64) -> usize {
     match store.expire_stale_nodes(expiry_before).await {
         Ok(expired) => {
             for node in &expired {
@@ -86,12 +125,14 @@ pub fn spawn_expiry_sweep(
         // trying to catch up; the next tick is soon enough.
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut grace = SweepGrace::new(Duration::from_millis(liveness.expiry_timeout_ms));
+        let mut watch = SilenceWatch::default();
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => return,
                 _ = ticker.tick() => {
                     if !gate.holds().await {
                         grace.lost("this instance is not the leader");
+                        watch.clear();
                         continue;
                     }
                     // The store's clock, which is the one heartbeats were
@@ -99,8 +140,15 @@ pub fn spawn_expiry_sweep(
                     // expiry depend on two processes' wall clocks agreeing.
                     match store.now_millis().await {
                         Ok(now) => {
-                            if grace.may_sweep(tokio::time::Instant::now()) {
-                                expire_once(store.as_ref(), &liveness, now).await;
+                            let at = tokio::time::Instant::now();
+                            // Watched from the first tick, grace or not, so
+                            // the window has been running when grace ends.
+                            let swept = grace.may_sweep(at);
+                            if swept {
+                                expire_observed(store.as_ref(), &liveness, now, &mut watch, at)
+                                    .await;
+                            } else if let Ok(nodes) = store.list_nodes().await {
+                                watch.observe(&nodes, at);
                             }
                         }
                         Err(err) => {
@@ -109,12 +157,74 @@ pub fn spawn_expiry_sweep(
                                 "skipping the expiry sweep: could not read the store clock",
                             );
                             grace.lost("the store is unreachable");
+                            watch.clear();
                         }
                     }
                 }
             }
         }
     })
+}
+
+/// When this process last saw each node's heartbeat stamp change, on its own
+/// monotonic clock.
+///
+/// A node this instance has only just started watching counts as heard from
+/// now, so a fresh instance, a new Raft leader or one that lost the store
+/// waits a full window before expiring anything.
+#[derive(Debug, Default)]
+pub struct SilenceWatch {
+    seen: std::collections::HashMap<String, (u64, u64, tokio::time::Instant)>,
+}
+
+impl SilenceWatch {
+    /// Note each node's stamp as of `at`.
+    pub fn observe(&mut self, nodes: &[crate::model::Node], at: tokio::time::Instant) {
+        self.seen
+            .retain(|node_id, _| nodes.iter().any(|node| &node.node_id == node_id));
+        for node in nodes {
+            let stamp = (
+                node.status.incarnation,
+                node.status.last_heartbeat_at_millis,
+            );
+            let entry = self
+                .seen
+                .entry(node.node_id.clone())
+                .or_insert((stamp.0, stamp.1, at));
+            if (entry.0, entry.1) != stamp {
+                *entry = (stamp.0, stamp.1, at);
+            }
+        }
+    }
+
+    /// Observe `nodes`, then the heartbeat stamps of those not yet silent for
+    /// `window` by this watch.
+    pub fn spared<'a>(
+        &'a mut self,
+        nodes: &'a [crate::model::Node],
+        window: Duration,
+        at: tokio::time::Instant,
+    ) -> impl Iterator<Item = u64> + 'a {
+        self.observe(nodes, at);
+        nodes
+            .iter()
+            .filter(|node| {
+                matches!(
+                    node.status.lifecycle,
+                    crate::model::NodeLifecycle::Live | crate::model::NodeLifecycle::Draining
+                )
+            })
+            .filter_map(move |node| {
+                let (_, stamp, since) = self.seen.get(&node.node_id)?;
+                (at.saturating_duration_since(*since) < window).then_some(*stamp)
+            })
+    }
+
+    /// Forget everything: whatever this instance saw before a gap in watching
+    /// is not evidence of silence through it.
+    pub fn clear(&mut self) {
+        self.seen.clear();
+    }
 }
 
 /// Holds the sweep off for one expiry window after this instance starts

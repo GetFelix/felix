@@ -109,6 +109,12 @@ its follower, the records it had acknowledged and not shipped are a previous
 generation's suffix that disagrees with the new leader's log. They are
 truncated so the follower can rejoin. The disk surviving does not save them.
 
+Under `Quorum` that cut has a floor. The leader ships its quorum mark with every
+batch, and a follower, or a deposed leader rejoining as one, refuses to
+truncate or rebuild below the mark it last learned: those records were
+acknowledged, so a newer leader disagreeing with them is a fault to stop on
+(`felix_broker_replicated_total{outcome="below_commit"}`), not a suffix to drop.
+
 A majority is of the replica set, leader included: a set of three needs two, a
 set of five needs three, and a set of one needs one — which is why
 `replication_factor: 1` costs nothing.
@@ -188,7 +194,9 @@ see "Consistency" above.
 
 The lease depends on bounded process suspension, not on synchronised clocks:
 each broker measures elapsed time on its own monotonic clock and gives up a
-quarter of the lease as margin. See "Where the guarantees stop" below.
+quarter of the lease as margin, and the control plane hands a silent broker's
+shards on only a further quarter past the expiry, measured on its own
+monotonic clock as well as the store's. See "Where the guarantees stop" below.
 
 ## Moves
 
@@ -531,7 +539,11 @@ Stated because a guarantee without its failure model is a slogan.
 - **Clock skew between brokers cannot affect lease safety**, because no lease
   reads a wall clock. Each broker measures its own elapsed time on a monotonic
   clock and gives up a quarter of the lease as margin, so two brokers'
-  disagreement about what time it is has nothing to act on. The assumption that
+  disagreement about what time it is has nothing to act on. The control plane
+  marks a broker down only once its own monotonic clock has seen it silent for
+  the expiry timeout and a quarter more (`FELIX_NODE_REGRANT_MARGIN_MS`), so a
+  step in the store's wall clock, or an election onto a machine whose clock
+  runs ahead, cannot expire it early. The assumption that
   *does* matter is bounded **process suspension**, and that is injectable — a
   broker frozen past its lease and resumed is the test above.
 

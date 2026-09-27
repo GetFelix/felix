@@ -95,6 +95,10 @@ pub const OUTCOME_CORRUPT: &str = "corrupt";
 pub const OUTCOME_BOOTSTRAPPED: &str = "bootstrapped";
 /// This broker discarded its copy of a shard at the leader's request.
 pub const OUTCOME_REBUILT: &str = "rebuilt";
+/// A truncation or rebuild was refused because it would have discarded
+/// records this broker knows are committed. It means a leader holds a log
+/// that disagrees with an acknowledged record, so it always needs a person.
+pub const OUTCOME_BELOW_COMMIT: &str = "below_commit";
 
 pub fn record_connect_attempt(outcome: &'static str) {
     metrics::counter!(CONNECT_ATTEMPTS_TOTAL, "outcome" => outcome).increment(1);

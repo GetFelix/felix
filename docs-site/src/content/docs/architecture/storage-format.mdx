@@ -69,6 +69,7 @@ a segment — should be rejected on its first four bytes rather than misparsed.
     00000000000000000001.log
     00000000000000000001.index
     epochs                                   ← where each generation began
+    replica                                  ← accepted generation and commit offset, once replicated
     producers                                ← producer snapshot, when any producer wrote here
 ```
 
@@ -347,6 +348,39 @@ diverge within.
 
 See `docs/replication-design.md`, "Divergence and truncation", for what it is
 for.
+
+## `replica` — the accepted generation and the commit offset
+
+A shard directory that has been replicated to, or led, holds a `replica` file:
+the highest leadership generation this broker accepted a leader of the shard
+at, and the commit offset it knows, one past the last record a majority
+acknowledged.
+
+```text
+ 0   4  magic        u32  "FLRS"
+ 4   2  version      u16
+ 6   2  reserved     u16
+ 8   8  generation   u64  highest generation accepted
+16   8  commit       u64  one past the last record known committed
+24   4  crc          u32  crc32 over bytes 0..24
+```
+
+Written through a temporary, an fsync, a rename and a directory sync. A raised
+generation is on disk before the batch that raised it is stored or
+acknowledged, so a leader this broker has seen replaced is refused after a
+restart too, whatever the routing view says by then. The commit offset is
+written through at most once a second and at shutdown; read back behind after
+a crash, it only permits less.
+
+**Unlike `epochs`, this file is authoritative.** Nothing in the log can rebuild
+it, and reading a damaged one as zero would accept any leader, so a file that
+is present and does not decode fails the open. Absent reads as zero: nothing
+accepted, nothing known committed. Cache and counter compaction carry it into
+the directory they swap in.
+
+A truncation or rebuild that would discard a record held below the commit
+offset is refused with `StorageError::BelowCommit`; see
+`docs/replication-design.md`, "Divergence and truncation".
 
 ## `producers` — the producer snapshot
 

@@ -47,7 +47,7 @@ pub use follower::{CATCH_UP_BOUND, FollowerCursor, Halt, caught_up, lag_records}
 pub use quorum::{majority_of, quorum_offset, quorum_offset_without};
 pub use rebuild::{RebuildPolicy, Rebuilds};
 pub use replica::ReplicaHandler;
-pub use ship::{Progress, read_answer, ship_once};
+pub use ship::{Progress, read_answer, ship_once, ship_once_with};
 pub use throttle::MoveThrottle;
 
 #[cfg(test)]

@@ -43,6 +43,7 @@ pub(super) struct ControlPlaneConfigOverride {
 struct NodeLivenessOverride {
     heartbeat_interval_ms: Option<u64>,
     expiry_timeout_ms: Option<u64>,
+    regrant_margin_ms: Option<u64>,
     sweep_interval_ms: Option<u64>,
     shard_reconcile_interval_ms: Option<u64>,
 }
@@ -102,6 +103,9 @@ impl ControlPlaneConfig {
             }
             if let Some(value) = liveness.expiry_timeout_ms {
                 config.node_liveness.expiry_timeout_ms = value;
+            }
+            if let Some(value) = liveness.regrant_margin_ms {
+                config.node_liveness.regrant_margin_ms = Some(value);
             }
             if let Some(value) = liveness.sweep_interval_ms {
                 config.node_liveness.sweep_interval_ms = value;

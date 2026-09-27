@@ -30,6 +30,7 @@ use tokio_util::sync::CancellationToken;
 const LIVENESS: NodeLivenessConfig = NodeLivenessConfig {
     heartbeat_interval_ms: 5_000,
     expiry_timeout_ms: 15_000,
+    regrant_margin_ms: None,
     sweep_interval_ms: 2_000,
     shard_reconcile_interval_ms: 5_000,
 };

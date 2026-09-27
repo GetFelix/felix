@@ -277,6 +277,37 @@ impl StreamLog {
             .map_err(storage_error)
     }
 
+    /// The highest generation a leader of this shard was accepted at here.
+    pub fn accepted_generation(&self) -> u64 {
+        self.log.accepted_generation()
+    }
+
+    /// Accept a leader at `generation`; a raised one is on disk on return.
+    /// See `DiskLog::accept_generation`.
+    pub async fn accept_generation(
+        &self,
+        generation: u64,
+    ) -> Result<felix_storage::disk_log::GenerationCheck> {
+        self.log
+            .accept_generation(generation)
+            .await
+            .map_err(storage_error)
+    }
+
+    /// One past the last record known committed; truncation and rebuild
+    /// refuse to cut below it.
+    pub fn commit_offset(&self) -> Offset {
+        self.log.commit_offset()
+    }
+
+    /// Record that every record below `offset` is committed.
+    pub async fn advance_commit_offset(&self, offset: Offset) -> Result<()> {
+        self.log
+            .advance_commit_offset(offset)
+            .await
+            .map_err(storage_error)
+    }
+
     /// Where each leadership generation began here, oldest first.
     pub fn generations(&self) -> Vec<felix_storage::log::Epoch> {
         self.log.generations()
