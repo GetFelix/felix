@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790520770543,
+  "lastUpdate": 1790524162067,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -17576,6 +17576,58 @@ window.BENCHMARK_DATA = {
             "range": "14947.77",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 915223.79\nmean: 912086.76\nstdev: 14947.77\ncv: 1.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "59fef11bd2daedf37ae3dd555d049d42701b3cee",
+          "message": "Control plane: check report leadership atomically with the write (#757)\n\nThe replica-status handler checked leader and generation against an\nassignment it had read, then stored the report in a separate step, and no\nbackend checked again. A promotion landing in between let a deposed\nleader's report be stored and answered `accepted`.\n\nrecord_replica_report now takes the reporting node, and every backend\nstores the report only if that node still leads the shard at the report's\ngeneration, in the same step as the write: under the shard lock in memory,\nagainst the assignment row held FOR SHARE in one Postgres transaction, and\nin the Raft state-machine apply against the replicated assignment. The\nRaft command gains an optional `leader`; entries without it apply\nunchecked, as before. Refusals surface as `not_leader` / `stale`.\n\nSpec-Unaffected: the model's DeliverReport already applies a report only if its generation is current, atomically at delivery; this makes the code match that step without changing report, quorum-mark or promotion semantics.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T08:46:10-07:00",
+          "tree_id": "c1daaf3584c6160e52aca64e7989d4b11e5bce96",
+          "url": "https://github.com/gabloe/felix/commit/59fef11bd2daedf37ae3dd555d049d42701b3cee"
+        },
+        "date": 1790524161550,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 374012.31,
+            "range": "10987.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 374012.31\nmean: 379634.36\nstdev: 10987.52\ncv: 2.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 374012.31,
+            "range": "10987.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 374012.31\nmean: 379634.36\nstdev: 10987.52\ncv: 2.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 92354.81,
+            "range": "925.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 92354.81\nmean: 92570.39\nstdev: 925.43\ncv: 1.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 923548.12,
+            "range": "9254.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 923548.12\nmean: 925703.92\nstdev: 9254.31\ncv: 1.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
