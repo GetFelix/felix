@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790530976298,
+  "lastUpdate": 1790539550514,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -22770,6 +22770,72 @@ window.BENCHMARK_DATA = {
             "range": "116.19",
             "unit": "us",
             "extra": "trials: 5\nmedian: 584.00\nmean: 598.60\nstdev: 116.19\ncv: 19.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f676db6e7a0138d64e5b3de394bde114d1712946",
+          "message": "Storage: close shard logs when a shard moves away, and open shards in parallel (#765)\n\n* fix(storage,broker): close shard logs when a shard moves away; per-shard open locks\n\nThe stream provider, cache and counters keep one slot per shard, so opens of\ndifferent shards run in parallel and two opens of the same shard happen once.\nclose_shard flushes, fences old handles with StorageError::Closed, and a later\nopen starts fresh from disk. The shard lifecycle closes a shard once this node\nis no longer its leader, a replica or a move's destination.\n\nSpec-Unaffected: resource cleanup only; no phase, fence, generation or lease change.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(replication): don't report a follower's position before it has answered\n\nA new follower cursor starts at the offset shipping will begin from and\nwas not marked stalled until a batch to it failed. While the first dial to\na move's destination was still pending (a suspended or unreachable\nbroker), the leader reported that start offset as the destination's\nposition. Placement read it as a copy within the fence's lag bound\n(1,000 records) and fenced the leader toward a destination it could not\nreach; the leader stopped serving, publishes were refused as \"leadership\nmoved\", and the move was abandoned back to the leader at a new\ngeneration. Seen as rebalance::a_quorum_publish_during_a_copy_is_not_held_by_it\nfailing under coverage, where the slower build widens the window.\n\nA cursor now starts stalled, so its offset is reported only once the\nfollower has answered a batch.\n\nRevert-checked: with cursors starting un-stalled the new reporter test\nfails.\n\nSpec-Unaffected: the model's move fence already requires the destination's reported position; this stops the broker reporting a position it never heard.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T13:01:30-07:00",
+          "tree_id": "ac1ea14ca7d5c1e618635f26c49e2b84fbbe47fb",
+          "url": "https://github.com/gabloe/felix/commit/f676db6e7a0138d64e5b3de394bde114d1712946"
+        },
+        "date": 1790539546861,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 98,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 98.00\nmean: 97.60\nstdev: 0.55\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 135,
+            "range": "10.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 135.00\nmean: 138.80\nstdev: 10.06\ncv: 7.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 483,
+            "range": "313.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 483.00\nmean: 576.00\nstdev: 313.63\ncv: 54.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 130,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 130.00\nmean: 130.40\nstdev: 0.55\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 255,
+            "range": "7.60",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 255.00\nmean: 257.80\nstdev: 7.60\ncv: 2.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 343,
+            "range": "276.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 343.00\nmean: 484.60\nstdev: 276.51\ncv: 57.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
