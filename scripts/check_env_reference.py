@@ -41,7 +41,9 @@ NOT_OPERATIONAL = {
     "FELIX_LATENCY_DEMO_FAST",
     # Test-only fault injection. Documented in `docs/cluster-harness.md`, and
     # deliberately not advertised as a production setting.
+    "FELIX_CLOCK_FAULT_FILE",
     "FELIX_PEER_PARTITION_FILE",
+    "FELIX_STORAGE_FAULT_FILE",
     "FELIX_TEST_BROKER_OUTPUT",
     "FELIX_TEST_DATABASE_URL",
     "FELIX_TEST_TIMEOUT_SCALE",

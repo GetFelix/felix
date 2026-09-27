@@ -153,10 +153,7 @@ pub trait ControlPlaneStore: Send + Sync {
     /// process's clock either way; the two backends just reach that
     /// differently.
     async fn now_millis(&self) -> StoreResult<u64> {
-        Ok(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|since| since.as_millis() as u64)
-            .unwrap_or(0))
+        Ok(crate::clock::now_millis())
     }
     /// Mark every node whose last heartbeat predates `expiry_before_millis` as
     /// down, and return the ones this call moved.

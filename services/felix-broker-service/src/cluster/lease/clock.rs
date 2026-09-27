@@ -1,10 +1,9 @@
 //! The clock the lease is measured on.
 //!
-//! `CLOCK_MONOTONIC` (and so `tokio::time::Instant`) stops while the host or VM
-//! is suspended, so a broker that slept through its expiry would wake still
-//! counting a valid lease. The control plane's clock kept running. On Linux the
-//! lease reads `CLOCK_BOOTTIME`, which counts suspended time too; elsewhere it
-//! falls back to `std::time::Instant`, which is the best the platform offers.
+//! `felix_common::clock::boottime`: `CLOCK_BOOTTIME` on Linux, so a broker
+//! suspended through its expiry wakes with the lease already spent, as the
+//! control plane's clock says it is. The module doc there has the detail, and
+//! the test-only fault seam that lets the cluster harness skew it.
 //!
 //! Scheduling (sleeps, tickers) stays on tokio: a late tick costs latency, not
 //! safety. Only validity is judged on this clock.
@@ -30,7 +29,7 @@ impl LeaseInstant {
 /// Where lease time comes from.
 #[derive(Clone, Debug)]
 pub(crate) enum LeaseClock {
-    /// `CLOCK_BOOTTIME` on Linux, `std::time::Instant` elsewhere.
+    /// `felix_common::clock::boottime`.
     System,
     /// Tokio's clock, so a paused-time test can drive the lease with
     /// `tokio::time::advance`.
@@ -44,7 +43,7 @@ pub(crate) enum LeaseClock {
 impl LeaseClock {
     pub(crate) fn now(&self) -> LeaseInstant {
         match self {
-            LeaseClock::System => LeaseInstant(system_now()),
+            LeaseClock::System => LeaseInstant(felix_common::clock::boottime()),
             #[cfg(test)]
             LeaseClock::Tokio(origin) => LeaseInstant(origin.elapsed()),
             #[cfg(test)]
@@ -53,25 +52,6 @@ impl LeaseClock {
             }
         }
     }
-}
-
-#[cfg(target_os = "linux")]
-fn system_now() -> Duration {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `ts` is a valid, writable timespec; CLOCK_BOOTTIME exists on
-    // every kernel this runs on (2.6.39+), so the call cannot fail.
-    let rc = unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) };
-    assert_eq!(rc, 0, "clock_gettime(CLOCK_BOOTTIME) failed");
-    Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn system_now() -> Duration {
-    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    ORIGIN.get_or_init(std::time::Instant::now).elapsed()
 }
 
 #[cfg(test)]
