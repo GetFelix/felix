@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790472325168,
+  "lastUpdate": 1790472623988,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -17056,6 +17056,58 @@ window.BENCHMARK_DATA = {
             "range": "11009.58",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 914983.67\nmean: 915251.31\nstdev: 11009.58\ncv: 1.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "597f3347a9641343352c9ca2e45752180dfb5aab",
+          "message": "TLS: configurable client certificates, required peer mTLS, optional control-plane API TLS (#739)\n\n* refactor(tls): share the reloading certificate resolver in felix-common\n\nThe peer transport's certificate-and-key-from-files resolver, re-read on a\ntimer and swapped for the next handshake, moves to felix_common::tls behind\na `tls` feature so the client listeners and the control plane can use the\nsame one. PeerTls keeps its API and error messages.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(broker): configurable client TLS with reload; refuse unauthenticated peers\n\nClient-facing TLS was a fresh self-signed localhost certificate per start,\nso clients could not verify which broker they handed a token to.\n\n- FELIX_TLS_CERT / FELIX_TLS_KEY serve a real certificate on the QUIC and\n  Kafka listeners, re-read every 30s so a renewal reaches the next\n  handshake. FELIX_TLS_CLIENT_CA requires client certificates.\n  FELIX_TLS_REQUIRE_CERT refuses to start on the generated certificate,\n  which now logs a loud warning. Partial configurations, and\n  FELIX_TLS_CERT_EXPORT alongside a configured certificate, fail startup.\n- FELIX_CONTROLPLANE_CA adds a CA every control-plane client trusts, for\n  an https:// control plane with a private CA. Refused with an http:// URL.\n- A broker with FELIX_NODE_ID binds the internal listener and now refuses\n  to start without peer mTLS unless FELIX_INTERNAL_ALLOW_UNAUTHENTICATED is\n  true. Keyed on membership: replication factors arrive from the control\n  plane after the listener is up, and RF=1 clusters still forward.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(controlplane): optional TLS on the API listener\n\nFELIX_CONTROLPLANE_TLS_CERT / _KEY serve the REST API over TLS, with the\ncertificate re-read on rotation. Without them the API stays plain HTTP and\nstartup now says so. Refused with the raft backend for now: the Raft RPCs\nshare this listener and members call each other over plain HTTP.\nfelix-controlplane admin trusts FELIX_CONTROLPLANE_CA like the brokers do.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* docs,chart: client, peer and control-plane TLS\n\nHelm: broker.clientTls (a shared kubernetes.io/tls Secret), controlplane.tls\n(https URL, CA handed to brokers, HTTPS probes), and\nbroker.peerTls.allowUnauthenticated; brokers with neither peer mTLS nor the\nopt-out refuse to render, as the broker refuses to start. Env reference,\nregistry, security pages, SECURITY.md, Kafka and deployment docs say what is\nencrypted and authenticated by default and what needs configuration.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(controlplane): API TLS with the Raft backend now that Raft has its own port\n\nThe merge brings the Raft RPCs onto their own listener, so TLS on the API\nlistener no longer cuts members off from each other: drop the refusal in\nconfig, chart and docs. The Raft listener serves through the renamed\nserve_tls.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* chore(demos): refresh demo lockfiles for felix-common's tls feature\n\nThe standalone demo workspaces pick up felix-common's new dependency; CI\nfails when a build changes a lockfile the commit did not include.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-26T18:23:06-07:00",
+          "tree_id": "0afc99fb5ded93fd347595f728d64540089c9a14",
+          "url": "https://github.com/gabloe/felix/commit/597f3347a9641343352c9ca2e45752180dfb5aab"
+        },
+        "date": 1790472623279,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 505907.1,
+            "range": "21107.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 505907.10\nmean: 512733.16\nstdev: 21107.54\ncv: 4.12%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 505907.1,
+            "range": "21107.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 505907.10\nmean: 512733.16\nstdev: 21107.54\ncv: 4.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118683.29,
+            "range": "507.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118683.29\nmean: 118874.49\nstdev: 507.86\ncv: 0.43%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1186832.87,
+            "range": "5078.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1186832.87\nmean: 1188744.94\nstdev: 5078.57\ncv: 0.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
