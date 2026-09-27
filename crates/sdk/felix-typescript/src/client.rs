@@ -47,6 +47,10 @@ impl Client {
     /// TLS is not optional — QUIC has no unencrypted mode. Supply `caFile` to
     /// trust a specific CA (what a self-signed development broker needs); omit
     /// it to use the operating system's trust store.
+    ///
+    /// `offerAlpn` offers the `felix/1` ALPN. A broker with
+    /// `FELIX_TLS_REQUIRE_ALPN=true` serves only clients that do; a broker
+    /// older than ALPN support refuses them, which is why it is off by default.
     #[napi(factory)]
     pub async fn connect(
         addrs: Either<String, Vec<String>>,
@@ -54,6 +58,7 @@ impl Client {
         token: String,
         server_name: Option<String>,
         ca_file: Option<String>,
+        offer_alpn: Option<bool>,
     ) -> Result<Client> {
         let addrs = match addrs {
             Either::A(one) => vec![one],
@@ -63,7 +68,7 @@ impl Client {
         if seeds.is_empty() {
             return Err(invalid("at least one broker address is required"));
         }
-        let quinn = tls::client_config(ca_file.as_deref())?;
+        let quinn = tls::client_config(ca_file.as_deref(), offer_alpn.unwrap_or(false))?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id);
         config.auth_token = Some(token);

@@ -153,9 +153,9 @@ function wrap(value) {
 
 /** The public `Client`: a façade over the native one that types its errors. */
 const Client = {
-  async connect(addrs, tenantId, token, serverName, caFile) {
+  async connect(addrs, tenantId, token, serverName, caFile, offerAlpn) {
     try {
-      const client = await native.Client.connect(addrs, tenantId, token, serverName, caFile);
+      const client = await native.Client.connect(addrs, tenantId, token, serverName, caFile, offerAlpn);
       return wrap(client);
     } catch (err) {
       throw typed(err);

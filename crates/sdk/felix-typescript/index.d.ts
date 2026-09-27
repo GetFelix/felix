@@ -248,6 +248,10 @@ export declare class Client {
    * TLS is not optional — QUIC has no unencrypted mode. Pass `caFile` to trust
    * a specific CA (what a self-signed development broker needs), or omit it to
    * use the operating system's trust store.
+   *
+   * `offerAlpn` offers the `felix/1` ALPN. A broker with
+   * `FELIX_TLS_REQUIRE_ALPN=true` serves only clients that do; a broker older
+   * than ALPN support refuses them, which is why it is off by default.
    */
   static connect(
     addrs: string | string[],
@@ -255,6 +259,7 @@ export declare class Client {
     token: string,
     serverName?: string,
     caFile?: string,
+    offerAlpn?: boolean,
   ): Promise<Client>;
 
   /**

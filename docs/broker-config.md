@@ -196,7 +196,7 @@ one certificate:
 | `FELIX_TLS_CERT`, `FELIX_TLS_KEY` | PEM chain (leaf first) and key to serve. Both or neither. Re-read every 30s; a renewal over the same paths reaches the next handshake, and open connections keep theirs. |
 | `FELIX_TLS_CLIENT_CA` | Clients must present a certificate chaining to this bundle. Needs the two above. Read once. |
 | `FELIX_TLS_REQUIRE_CERT=true` | Refuse to start without `FELIX_TLS_CERT`. Set it in production. |
-| `FELIX_TLS_REQUIRE_ALPN=true` | Refuse QUIC clients that offer no ALPN. By default they are served; clients offering `felix/1` get it, and a client offering only other protocols is refused. |
+| `FELIX_TLS_REQUIRE_ALPN=true` | Refuse QUIC clients that offer no ALPN. By default they are served; clients offering `felix/1` get it, and a client offering only other protocols is refused. The shipped clients offer `felix/1` only when configured to (see [ALPN](protocol.md#alpn)), so turn that on in every client first. |
 | `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true` | A client presenting a certificate must use a token whose `sub` the certificate was issued to: a URI SAN `felix:principal:<sub>` (exact match), or a DNS or IP SAN the `sub` matches. Control-plane tokens carry a 64-hex principal id, too long for a DNS label, so their certificates need the URI SAN. Needs `FELIX_TLS_CLIENT_CA`. QUIC listeners only; with the Kafka listener on, startup warns that it does not bind (its SASL path has no access to the peer certificate). |
 | `FELIX_TLS_CERT_EXPORT` | Write the generated development certificate out for clients to trust. Refused together with `FELIX_TLS_CERT`. |
 

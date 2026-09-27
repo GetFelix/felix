@@ -16,10 +16,10 @@ about reciprocity, not about who is allowed to make money.
 | `crates/sdk/felix-python/`, `crates/sdk/felix-typescript/` | Apache-2.0 | The Python and Node.js bindings over the Rust client. |
 | `crates/protocol/felix-transport/` | Apache-2.0 | Generic QUIC transport plumbing, not Felix-specific server logic. |
 | `crates/server/felix-common/` | Apache-2.0 | Membership shapes, the env-var registry, and process lifecycle shared by the services. |
-| `crates/testing/felix-conformance/` | Apache-2.0 | The client conformance kit: the scenario catalogue and the verifier, so third-party clients can show they interoperate. (It links against the AGPL-3.0 crates below to run its checks against the reference broker — that's normal for a dev/CI tool and doesn't change its own license.) |
 | `crates/server/felix-broker/`, `felix-storage`, `felix-authz`, `felix-router`, `felix-kafka` | AGPL-3.0-only | Server-side core logic. |
 | `services/felix-broker-service/`, `services/felix-controlplane-service/` | AGPL-3.0-only | The runnable server binaries. |
-| `crates/testing/felix-cluster/` | AGPL-3.0-only | Local multi-node cluster harness for integration and failure tests. It embeds the control plane and drives the broker, so unlike `felix-conformance` it is internal tooling rather than something a third-party implementer runs. Not published. |
+| `crates/testing/felix-conformance/` | AGPL-3.0-only | The client conformance kit: the scenario catalogue, the verifier, and a suite that runs against the reference broker. It links `felix-broker-service`, `felix-broker`, `felix-storage` and `felix-authz`, so a build of it is AGPL whatever its manifest says. Running it against your client's results puts no obligation on your client. Not published. |
+| `crates/testing/felix-cluster/` | AGPL-3.0-only | Local multi-node cluster harness for integration and failure tests. It embeds the control plane and drives the broker, so it is internal tooling rather than something a third-party implementer runs. Not published. |
 | `crates/testing/felix-loadgen/` | AGPL-3.0-only | Load generator for the real-network performance suite. It drives a remote cluster through `felix-client` and is internal instrumentation, not something a third-party implementer runs. Not published. |
 
 The root [`LICENSE`](LICENSE) file is AGPL-3.0 (the license for
@@ -37,7 +37,7 @@ no license text at all.
 The table above is the authoritative statement, and it is enforced rather than
 trusted. `Cargo.toml`'s `[workspace.package]` sets `license = "AGPL-3.0-only"` as a
 **fail-closed default**: a crate added without thinking inherits the copyleft
-license, and the five permissive crates opt in by setting
+license, and the permissive crates opt in by setting
 `license = "Apache-2.0"` explicitly. The previous default was Apache-2.0, which
 meant a new server crate that forgot to override became silently permissive.
 
@@ -45,6 +45,11 @@ meant a new server crate that forgot to override became silently permissive.
 license matches this table, that a crate is not left unclassified, that each has
 its own `LICENSE` file, and that the `publish` flags are what we intend. Adding a
 crate fails CI until it is deliberately classified here.
+
+A label is only half of it: an Apache-2.0 crate that links an AGPL crate is AGPL
+once built. `scripts/check_license_graph.py`, also run by `task publish:check`,
+walks the first-party dependency graph (normal and build dependencies, optional
+ones included) and fails if any permissive crate reaches an AGPL one.
 
 ## What AGPL-3.0 actually requires
 

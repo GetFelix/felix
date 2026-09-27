@@ -66,6 +66,7 @@ felix.Client(
     token=tok,
     server_name="localhost",  # the name the broker's certificate carries
     ca_file=None,             # trust a specific CA; omit for the system store
+    offer_alpn=False,         # offer the felix/1 ALPN
 )
 ```
 
@@ -79,6 +80,10 @@ choices and no third: the platform trust store, or an explicit `ca_file` for a
 self-signed development broker. There is deliberately no "skip verification"
 switch — it is the one setting that silently turns a secure deployment
 insecure, and a CA file covers development without it.
+
+`offer_alpn=True` makes the client offer the `felix/1` ALPN, which a broker
+running with `FELIX_TLS_REQUIRE_ALPN=true` insists on. It is off by default
+because a broker older than ALPN support refuses a client that offers it.
 
 ## Publishing
 

@@ -27,6 +27,9 @@ serde_yaml_ng = { workspace = true }
 felix-transport = { path = "../../protocol/felix-transport", version = "0.6.0-preview" }
 felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview" }
 quinn = { workspace = true }
+# `ring` is the provider quinn's own default configs use.
+rustls = { workspace = true, features = ["ring"] }
+rustls-platform-verifier = { workspace = true }
 
 [features]
 default = []
@@ -34,7 +37,6 @@ telemetry = []
 
 [dev-dependencies]
 rcgen = { workspace = true }
-rustls = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }

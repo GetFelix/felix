@@ -32,6 +32,7 @@ impl AsyncClient {
         token,
         server_name="localhost",
         ca_file=None,
+        offer_alpn=false,
     ))]
     fn connect<'py>(
         py: Python<'py>,
@@ -40,6 +41,7 @@ impl AsyncClient {
         token: &str,
         server_name: &str,
         ca_file: Option<&str>,
+        offer_alpn: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let seeds = parse_addrs(py, &addrs)?;
         if seeds.is_empty() {
@@ -47,7 +49,7 @@ impl AsyncClient {
                 "at least one broker address is required",
             ));
         }
-        let quinn = crate::tls::client_config(ca_file)?;
+        let quinn = crate::tls::client_config(ca_file, offer_alpn)?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id.to_string());
         config.auth_token = Some(token.to_string());

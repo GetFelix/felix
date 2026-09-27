@@ -18,11 +18,16 @@ they live in [`felix-wire`'s `tests/vectors/`](../../protocol/felix-wire/tests/v
 
 ## Licensing
 
-This crate is Apache-2.0, matching `felix-wire`, so that protocol conformance is
-not gated behind a copyleft licence. It links against AGPL-3.0 crates
-(`felix-broker-service`, `felix-broker`, `felix-storage`, `felix-authz`) to run
-its checks against the reference broker — normal for a dev/CI tool, and it does not change this crate's
-own licence. See [`LICENSING.md`](../../../LICENSING.md).
+This crate is AGPL-3.0-only. It links AGPL-3.0 crates (`felix-broker-service`,
+`felix-broker`, `felix-storage`, `felix-authz`) to run its suite against the
+reference broker, so any build of it is AGPL regardless of the label;
+`scripts/check_license_graph.py` fails CI if the label says otherwise. See
+[`LICENSING.md`](../../../LICENSING.md).
 
-Because of those dependencies it is marked `publish = false`: it is a test
-harness rather than something to depend on from a registry.
+Running it to verify your client's results puts no obligation on your client:
+the verifier reads a results file, it is not linked into what you ship. The
+protocol it checks is specified in [`docs/protocol.md`](../../../docs/protocol.md)
+and the Apache-2.0 `felix-wire` test vectors.
+
+It is marked `publish = false`: it is a test harness rather than something to
+depend on from a registry.

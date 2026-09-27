@@ -165,9 +165,9 @@ more natural.
 
 ## Cross-cutting concerns
 
-**Licensing.** Protocol, client, bindings, `felix-common` and `felix-conformance` are
-Apache-2.0; the rest is AGPL-3.0. [`LICENSING.md`](LICENSING.md) is the authoritative table and
-`task publish:check` enforces it.
+**Licensing.** Protocol, client, bindings and `felix-common` are Apache-2.0; the rest,
+including `felix-conformance`, is AGPL-3.0. [`LICENSING.md`](LICENSING.md) is the authoritative
+table and `task publish:check` enforces it, by label and by dependency graph.
 
 **Configuration.** Services read `FELIX_*` environment variables, optionally overlaid by YAML.
 Every variable the workspace reads is listed in `felix-common`'s `env_registry.rs`, and CI fails

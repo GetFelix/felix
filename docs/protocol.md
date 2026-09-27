@@ -1242,6 +1242,11 @@ match. `FELIX_TLS_REQUIRE_ALPN=true` removes that compatibility path. A client
 should offer `felix/1` only to brokers that have it; an older broker lists no
 ALPN and refuses any client that offers one.
 
+For that reason the shipped clients offer `felix/1` only when asked:
+`felix_client::quic_client_config(roots, true)` in Rust, `offer_alpn=True` in
+Python, and `offerAlpn` in TypeScript. Turn it on in every client before
+setting `FELIX_TLS_REQUIRE_ALPN` on the brokers.
+
 ## Unknown requests and the extension area
 
 A broker that advertises `FEATURE_UNSUPPORTED` (0x2000) answers a request whose

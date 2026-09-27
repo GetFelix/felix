@@ -132,6 +132,24 @@ let addr: SocketAddr = "127.0.0.1:5000".parse()?;
 let client = Client::connect(addr, "localhost", config).await?;
 ```
 
+### TLS and ALPN
+
+`ClientConfig` takes a ready-made `quinn::ClientConfig`.
+`felix_client::quic_client_config` builds one: it verifies the broker against
+the roots you pass, or the platform trust store for `None`, and offers the
+`felix/1` ALPN when its second argument is `true`.
+
+```rust
+let quinn = felix_client::quic_client_config(None, true)?;
+let config = ClientConfig::optimized_defaults(quinn);
+```
+
+A broker with `FELIX_TLS_REQUIRE_ALPN=true` serves only clients that offer
+`felix/1`. A broker older than ALPN support refuses them, so offer it only once
+every broker you connect to is current. If you build the rustls config yourself
+(for a client certificate, say), set `alpn_protocols` to
+`vec![felix_wire::CLIENT_ALPN.to_vec()]` to offer it.
+
 ### Configuration Tuning
 
 **Low-latency configuration**:

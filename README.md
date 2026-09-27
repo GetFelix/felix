@@ -251,8 +251,9 @@ site is the authority.
 
 Felix uses a split license: the wire protocol (`felix-wire`), transport layer
 (`felix-transport`), client SDK (`felix-client` and its Python and TypeScript
-bindings), the shapes the services share (`felix-common`), and the conformance
-kit (`felix-conformance`) are Apache-2.0. The broker and control-plane server components are AGPL-3.0:
+bindings), and the shapes the services share (`felix-common`) are Apache-2.0. The broker,
+the control-plane server components and the test tooling (including the
+conformance kit, which links the broker) are AGPL-3.0:
 open source, but running a modified Felix as a network service means
 publishing your changes. See [LICENSING.md](LICENSING.md) for the full
 breakdown and rationale.

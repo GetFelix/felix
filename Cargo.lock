@@ -1170,6 +1170,7 @@ dependencies = [
  "quinn",
  "rcgen",
  "rustls",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "serde_yaml_ng",

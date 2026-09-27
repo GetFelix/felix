@@ -931,6 +931,8 @@ dependencies = [
  "hashbrown 0.17.1",
  "metrics",
  "quinn",
+ "rustls",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "serde_yaml_ng",

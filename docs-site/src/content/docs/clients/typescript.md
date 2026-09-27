@@ -62,6 +62,7 @@ Client.connect(
   token,
   serverName,   // the name the broker's certificate carries; defaults to "localhost"
   caFile,       // trust a specific CA; omit for the system trust store
+  offerAlpn,    // offer the felix/1 ALPN; defaults to false
 )
 ```
 
@@ -73,6 +74,10 @@ and will use brokers it was never told about. Passing several only helps the
 choices and no third: the platform trust store, or an explicit `caFile` for a
 self-signed development broker. There is deliberately no "skip verification"
 switch.
+
+`offerAlpn: true` makes the client offer the `felix/1` ALPN, which a broker
+running with `FELIX_TLS_REQUIRE_ALPN=true` insists on. It is off by default
+because a broker older than ALPN support refuses a client that offers it.
 
 ## Disposal
 

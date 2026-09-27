@@ -312,6 +312,38 @@ async fn requiring_alpn_refuses_a_client_that_offers_none() {
     dialled.expect("a client offering felix/1 was refused");
 }
 
+/// The shipped client's own TLS config, not a hand-built one: with the offer
+/// on it gets past `FELIX_TLS_REQUIRE_ALPN`, and with it off (the default,
+/// for older brokers) it does not.
+#[tokio::test]
+async fn the_sdk_config_offering_alpn_is_served_when_alpn_is_required() {
+    let pki = Pki::new();
+    let (cert, key) = pki.issue("broker", "broker.felix.test");
+    let config = ClientTlsConfig {
+        require_alpn: true,
+        ..files(&cert, &key, None)
+    };
+    let server = serve(&ClientTls::from_config(&config).expect("load"));
+    let sdk = |offer_alpn| {
+        QuicClient::bind(
+            "127.0.0.1:0".parse().expect("addr"),
+            felix_client::quic_client_config(Some(pki.roots()), offer_alpn).expect("sdk config"),
+            TransportConfig::default(),
+        )
+        .expect("client")
+    };
+
+    let (dialled, accepted) = handshake(&server, &sdk(true), "broker.felix.test").await;
+    accepted.expect("the SDK offering felix/1 was refused");
+    assert_eq!(
+        dialled.expect("dial").negotiated_protocol().as_deref(),
+        Some(felix_wire::CLIENT_ALPN)
+    );
+
+    let (dialled, _) = handshake(&server, &sdk(false), "broker.felix.test").await;
+    assert!(dialled.is_err(), "the SDK without ALPN was served");
+}
+
 #[tokio::test]
 async fn a_token_subject_binds_to_the_client_certificate() {
     let pki = Pki::new();

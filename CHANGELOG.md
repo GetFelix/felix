@@ -52,6 +52,21 @@ for what the current release actually guarantees.
 
 ### Added
 
+- **Clients can offer the `felix/1` ALPN.** `felix_client::quic_client_config`
+  builds the QUIC TLS config and offers `felix/1` when asked; the Python
+  (`offer_alpn=True`) and TypeScript (`offerAlpn`) clients expose the same
+  switch. Off by default, since a broker older than ALPN support refuses a
+  client that offers one. Before this no shipped client could connect to a
+  broker with `FELIX_TLS_REQUIRE_ALPN=true`.
+- **The licence split is checked on the dependency graph.**
+  `scripts/check_license_graph.py`, run by `task publish:check`, fails if an
+  Apache-2.0 or MIT first-party crate has a normal or build dependency, direct
+  or transitive, on an AGPL one.
+- **Advisories reach the vendored `kafka-protocol`.** A patched-in path crate
+  has no registry source, so cargo-deny skipped it. `vendor/VENDORED.toml`
+  records the upstream version (0.18.0) and `task deny` checks advisories
+  against it, failing if the record and the vendored copy disagree.
+
 - **Kafka producers can write to durable streams.** `Produce` (v3-9) on the
   Kafka listener decodes v2 record batches, compressed with gzip, snappy, lz4
   or zstd, and publishes them through the broker's publish path on the shard's
@@ -316,6 +331,11 @@ for what the current release actually guarantees.
   `drain_node`, `undrain_node` and `drain_until_empty`.
 
 ### Changed
+
+- **`felix-conformance` is AGPL-3.0-only.** It links the broker, storage and
+  authz crates to run its suite, so a build of it was AGPL whatever its label
+  said. It is not published; running `verify` over a client's results puts no
+  obligation on that client.
 
 - **OTLP tracing export is off unless an endpoint is set.** The broker and the
   control plane used to install the OpenTelemetry layer unconditionally, so a
