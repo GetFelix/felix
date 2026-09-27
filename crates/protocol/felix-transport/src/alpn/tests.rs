@@ -55,7 +55,7 @@ fn a_hello_with_alpn_is_recognised_whole_and_not_before() -> Result<()> {
         assert_eq!(
             client_hello_offers_alpn(&hello[..cut]),
             Hello::Incomplete,
-            "{cut}"
+            "a truncated hello must read as incomplete"
         );
     }
     Ok(())
@@ -125,6 +125,9 @@ async fn a_client_offering_nothing_is_still_accepted() -> Result<()> {
 #[tokio::test]
 async fn a_client_offering_only_another_protocol_is_refused() -> Result<()> {
     let refused = negotiate(&[b"felix-internal/1"]).await;
-    assert!(refused.is_err(), "{refused:?}");
+    assert!(
+        refused.is_err(),
+        "a client offering only another protocol was served"
+    );
     Ok(())
 }
