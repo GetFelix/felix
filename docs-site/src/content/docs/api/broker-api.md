@@ -718,7 +718,9 @@ Claim records to work on.
 `wait_ms` is how long the broker may hold the request open waiting for work, so
 an idle consumer costs one open request rather than a round trip per attempt.
 The broker caps it at `FELIX_GROUP_MAX_WAIT_MS`. **An empty `records` after the
-wait means nothing was available — it is an answer, not an error.**
+wait means nothing was available — it is an answer, not an error.** That
+includes a group at its in-flight cap (`FELIX_GROUP_MAX_IN_FLIGHT`): it gets
+nothing more until some of what it holds is acknowledged, handed back or lapses.
 
 `attempts` counts deliveries including this one, so `1` is a first attempt and
 anything higher is a redelivery. Absent means the broker did not report it,

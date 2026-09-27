@@ -28,8 +28,9 @@ Canonical actions:
 - `node.view` — cluster-scoped only; see [Cluster scope](#cluster-scope)
 - `node.manage` — over `node:{node_id}` or `cluster:*`
 
-Consumer groups have two actions, both over the stream's object
-(`stream:{tenant_id}/{namespace}/{stream}`):
+Consumer groups have two actions, granted over the stream's object
+(`stream:{tenant_id}/{namespace}/{stream}`) or one group's object
+(`group:{tenant_id}/{namespace}/{stream}/{group}`):
 
 - **`group.consume`** — poll, acknowledge, hand back, and list dead letters.
   `stream.subscribe` also grants it.
@@ -50,6 +51,35 @@ every deployment that relies on `stream.subscribe` today, so it is not.
 A broker refuses a token carrying an action it does not know, so upgrade brokers
 before writing policies that use the group actions.
 
+### Granting one group
+
+To let a principal work only some groups of a stream, grant the action on the
+group objects. The broker decides a group action `A` on group `G` of stream `S`
+like this (`PermissionMatcher::allows_group` in `felix-authz`):
+
+1. Allowed if a grant of `A`, or of an action that implies it, matches
+   `group:{tenant}/{namespace}/{S}/{G}`.
+2. Otherwise allowed if such a grant matches `stream:{tenant}/{namespace}/{S}` —
+   **unless** the principal holds any grant of `A` (or an action implying it)
+   on a `group:` object that could match some group of `S`. Then the principal
+   has been scoped to particular groups on `S`, and its stream grants no longer
+   reach the other groups there.
+
+So a token with `stream.subscribe:stream:t1/ns/*` and
+`group.consume:group:t1/ns/orders/workers` may consume `workers` on `orders`,
+may not consume `billing` on `orders`, and may still consume any group of any
+other stream in `ns`. Narrowing is per action: that consume grant does not stop
+a `stream.manage` grant from covering `group.manage` on every group of `orders`.
+A principal with no `group:` grants is unaffected, so existing policies behave
+as before.
+
+A group object follows the stream wildcard rule: a `*` only in the last
+positions (`group:t1/ns/orders/*`, `group:t1/ns/*/*`), never
+`group:t1/ns/*/workers`. A group name containing `/`, `*` or `:` cannot be
+named on its own; grant it through the stream or `group:…/{stream}/*`.
+A stream, namespace or tenant scope contains the groups under it, so a
+delegated admin can grant groups inside what they administer.
+
 ## Object Grammar
 
 Valid canonical objects:
@@ -57,6 +87,8 @@ Valid canonical objects:
 - `namespace:{tenant_id}/{namespace}`
 - `stream:{tenant_id}/{namespace}/{stream}`
 - `cache:{tenant_id}/{namespace}/{cache}`
+- `group:{tenant_id}/{namespace}/{stream}/{group}` — see
+  [Granting one group](#granting-one-group)
 
 Allowed wildcards:
 - `namespace:{tenant_id}/*`

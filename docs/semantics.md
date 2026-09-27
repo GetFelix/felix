@@ -572,9 +572,26 @@ Stated because a guarantee without its failure model is a slogan.
   Delivery is by poll rather than push: a consumer takes work when it has
   capacity, and the broker cannot know when that is. A poll can ask the broker
   to wait for work, so an idle consumer costs one open request rather than a
-  round trip per attempt. Only the broker leading a shard serves its groups, and
-  ownership is re-checked while a poll waits — a shard that moves mid-wait ends
-  the wait rather than being served by its former owner.
+  round trip per attempt. A waiting poll is woken by the things that make work
+  available: an append to the shard, an acknowledgement or hand-back in the
+  group, and the earliest standing claim lapsing. It also looks again every
+  100 ms on its own, which is what notices anything that does not signal.
+  Only the broker leading a shard serves its groups, and ownership is re-checked
+  while a poll waits — a shard that moves mid-wait ends the wait rather than
+  being served by its former owner.
+
+  **In flight is capped per group.** A group on a shard hands out at most
+  `FELIX_GROUP_MAX_IN_FLIGHT` records (default 10,000) that are not yet
+  acknowledged, handed back or lapsed. A poll past the cap answers empty and
+  is counted in `felix_group_polls_capped_total`; a waiting poll is woken when
+  room frees. Without it, one consumer that polls and never answers would pull
+  the whole backlog into its claims and leave every other consumer idle until
+  they lapsed.
+
+  > `claims_stop_at_the_in_flight_cap`,
+  > `a_group_at_its_in_flight_cap_gets_nothing_more`,
+  > `a_poll_at_the_cap_is_woken_by_an_ack`,
+  > `a_waiting_poll_is_woken_by_a_publish`.
 
   The rules are fixed. A group's position on a shard is durable, monotonic, and
   survives a restart. Above that position the broker tracks what has been handed

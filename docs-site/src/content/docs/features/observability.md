@@ -112,6 +112,17 @@ missing records. On a durable stream the subscriber can detect this itself
 from offset gaps and resume; on an ephemeral stream this counter is the only
 witness.
 
+**Are consumer groups keeping up?**
+
+```prometheus
+felix_group_polls_capped_total   # polls held short by FELIX_GROUP_MAX_IN_FLIGHT
+```
+
+A rising `felix_group_polls_capped_total` means a group has as many records
+handed out and unanswered as it is allowed. Either its consumers are slow to
+acknowledge, or one is polling and never answering, and the rest of the group
+waits for those claims to lapse.
+
 **Is durability the bottleneck?** The storage layer's metrics are designed
 around exactly this question — compare append time against sync time, and
 watch the group-commit fan-in:
