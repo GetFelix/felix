@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790525449472,
+  "lastUpdate": 1790525653429,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -22572,6 +22572,72 @@ window.BENCHMARK_DATA = {
             "range": "797.15",
             "unit": "us",
             "extra": "trials: 5\nmedian: 704.00\nmean: 1054.80\nstdev: 797.15\ncv: 75.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "91172c4cf431a1682424326be8545e70dabd1465",
+          "message": "Control plane: gate new Raft commands on a group metadata version; Helm Raft bootstrap hook and peer TLS (#761)\n\n* fix(controlplane): gate new Raft commands on a group metadata version; one-shot Helm Raft bootstrap and peer TLS\n\nA leader on a newer build proposed ExpireNodes and CheckpointHeartbeats\n(every ~5 s) and the RBAC-removal / key-rotation commands regardless of\nwhat the other members could apply. An older member recorded Unsupported\nand its state diverged, and a StatefulSet rollout cannot keep the leader\nfor last.\n\nEach MetaCommand now has a level, and each build reports the highest it\ncan apply (METADATA_VERSION) on the peer standing route. A member proposes\na command only when every member of the membership, learners included,\nreports at least its level; unknown or silent members count as 0. Below\nlevel 1 the RBAC-removal and signing-key routes answer 409, and the leader\ndeclines its soft-state requests so heartbeats, expiry and the placement\nlease stay on the log commands older members apply.\n\nHelm: FELIX_RAFT_INITIAL_CLUSTER_STATE is no longer baked in at install.\nA post-install/post-upgrade hook Job waits for the API to be ready, then a\nhook ConfigMap records that the group formed; members read it at every\nstart and run with `existing` from then on, so restarts with lost volumes\nbefore the first upgrade can no longer form an empty group. The chart now\ntemplates FELIX_RAFT_TLS_* from a Secret (off by default) and adds a\ncontrol-plane NetworkPolicy admitting the Raft peer port only from members\nand raftPeerFrom.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(kafka): cap the vendored record-batch reserve at the bytes left\n\nRecordBatchDecoder reserved Vec capacity for the record count a batch\nheader claims, so a 66-byte produce batch could ask for over 3 GB. Found\nby the kafka_records fuzz target. Cap the reservation at the buffer's\nremaining bytes, as the array decoders already do.\n\nSpec-Unaffected: Kafka record decoding only.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T09:08:33-07:00",
+          "tree_id": "ba9ab69b3ade5070d2d92be59f740d9a5c891149",
+          "url": "https://github.com/gabloe/felix/commit/91172c4cf431a1682424326be8545e70dabd1465"
+        },
+        "date": 1790525650663,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 170,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 170.00\nmean: 170.20\nstdev: 0.45\ncv: 0.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 211,
+            "range": "2.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 211.00\nmean: 211.00\nstdev: 2.92\ncv: 1.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 249,
+            "range": "46.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 249.00\nmean: 270.60\nstdev: 46.59\ncv: 17.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 206,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 206.00\nmean: 205.60\nstdev: 1.14\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 405,
+            "range": "14.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 405.00\nmean: 412.20\nstdev: 14.81\ncv: 3.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 562,
+            "range": "759.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 562.00\nmean: 896.40\nstdev: 759.51\ncv: 84.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
