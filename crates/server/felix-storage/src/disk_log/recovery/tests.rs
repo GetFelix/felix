@@ -734,3 +734,81 @@ fn a_torn_retired_segment_is_not_cut_below_the_mark() {
     let path = segment_path(dir.path(), retired);
     assert_eq!(std::fs::metadata(path).expect("meta").len(), retired_len);
 }
+
+/// Cut the retired segment back by its last `records` records, as a power loss
+/// can when the file's size and pages reach the device apart. Returns the
+/// retired and active ids and the retired segment's new length.
+fn cut_the_retired_segment(dir: &TempDir, records: u64) -> (SegmentId, SegmentId, u64) {
+    let ids = discover_segment_ids(dir.path()).expect("ids");
+    let (retired, active) = (ids[ids.len() - 2], ids[ids.len() - 1]);
+    let path = segment_path(dir.path(), retired);
+    let record = crate::segment::format::record_len(9, &Default::default());
+    let len = std::fs::metadata(&path).expect("meta").len() - records * record;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("open")
+        .set_len(len)
+        .expect("cut");
+    (retired, active, len)
+}
+
+/// Power loss mid-seal cut the retired segment back to a record boundary, so it
+/// scans clean and only the gap before the active segment shows the loss.
+/// Nothing past the cut was reported durable: recovery ends the log there.
+#[test]
+fn a_retired_segment_cut_back_cleanly_recovers_to_its_end() {
+    let dir = tempdir().expect("dir");
+    populate(&dir, 12);
+    let (retired, active, _) = cut_the_retired_segment(&dir, 1);
+    let end = last_offset_of(&segment_path(dir.path(), retired)) + 1;
+
+    let recovered = reopen(&dir).expect("a clean cut mid-seal is a lost tail");
+    assert_eq!(recovered.active.next_offset(), end);
+    assert!(!segment_path(dir.path(), active).exists());
+}
+
+/// A retired segment the crash emptied to its header: the log resumes at its
+/// base, not one past it.
+#[test]
+fn a_retired_segment_cut_back_to_its_header_recovers_to_its_base() {
+    let dir = tempdir().expect("dir");
+    populate(&dir, 12);
+    let ids = discover_segment_ids(dir.path()).expect("ids");
+    let retired = ids[ids.len() - 2];
+    let path = segment_path(dir.path(), retired);
+    let base = read_segment_header(&path, retired, "t/ns/s/0")
+        .expect("header")
+        .base_offset;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("open")
+        .set_len(SEGMENT_HEADER_LEN)
+        .expect("cut");
+
+    let recovered = reopen(&dir).expect("an emptied retired segment is a lost tail");
+    assert_eq!(recovered.active.next_offset(), base);
+}
+
+/// The mark says the active segment was synced, which every flush does only
+/// after the retired one. A gap before it is then lost records, not a crash.
+#[test]
+fn a_cut_retired_segment_does_not_delete_a_synced_active_segment() {
+    let dir = tempdir().expect("dir");
+    populate(&dir, 12);
+    let (retired, active, retired_len) = cut_the_retired_segment(&dir, 1);
+    let active_len = std::fs::metadata(segment_path(dir.path(), active))
+        .expect("meta")
+        .len();
+    record_mark(&dir, active, active_len);
+
+    reopen(&dir).expect_err("synced records would be discarded");
+    let len_of = |id| {
+        std::fs::metadata(segment_path(dir.path(), id))
+            .expect("still there")
+            .len()
+    };
+    assert_eq!(len_of(active), active_len);
+    assert_eq!(len_of(retired), retired_len);
+}

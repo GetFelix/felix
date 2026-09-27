@@ -611,6 +611,8 @@ impl DiskLog {
             #[cfg(test)]
             fail_seal: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
+            hold_next_seal: Mutex::new(None),
+            #[cfg(test)]
             fail_next_flush: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             pause_next_read: Mutex::new(None),
@@ -814,6 +816,7 @@ impl AppendOnlyLog for DiskLog {
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 let mut segments = inner.segments.write();
+                inner.sync_pending_seal()?;
                 let (descriptor, checksum) = match segments.seal_active() {
                     Ok(sealed) => sealed,
                     Err(err) => {
@@ -941,6 +944,10 @@ struct LogInner {
     /// Forces the next seal to fail, so the failure path can be tested.
     #[cfg(test)]
     fail_seal: std::sync::atomic::AtomicBool,
+    /// Stops the next background seal before it flushes the retired segment,
+    /// until the sender is used or dropped. Taking it is the sign it got there.
+    #[cfg(test)]
+    hold_next_seal: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     /// Makes the next flush report a failed fsync after the real one ran.
     #[cfg(test)]
     fail_next_flush: std::sync::atomic::AtomicBool,

@@ -151,23 +151,34 @@ impl SegmentSet {
             .collect()
     }
 
+    /// [`Self::append_within`] with no background roll in flight, for tests
+    /// that drive the set directly.
+    #[cfg(test)]
+    pub(super) fn append(&mut self, records: &[AppendRecord]) -> Result<(Offset, Offset)> {
+        self.append_within(records, false)
+    }
+
     /// Append a batch, rolling to a new segment first if it would not fit.
     ///
     /// A batch is never split across segments: offsets stay contiguous either
     /// way, but keeping a batch whole means one `write` call and one index
     /// update per append regardless of where the boundary falls.
-    pub(super) fn append(&mut self, records: &[AppendRecord]) -> Result<(Offset, Offset)> {
+    ///
+    /// `roll_pending` must be what the caller just passed to
+    /// [`Self::would_roll_within`]. Rolling at the configured size while a
+    /// background roll is sealing would sync this segment ahead of the retired
+    /// one, and a power loss could then keep this one and lose that one's tail.
+    pub(super) fn append_within(
+        &mut self,
+        records: &[AppendRecord],
+        roll_pending: bool,
+    ) -> Result<(Offset, Offset)> {
         self.check_open()?;
         // An empty active segment must accept the batch even when it is
         // oversized — otherwise a record larger than `segment_size_bytes` could
         // never be written at all. Such a record gets a segment to itself and
         // the next append rolls again.
-        //
-        // Normally `DiskLog::append` has already rolled off-thread by this
-        // point; this is the fallback for a roll that became necessary in the
-        // window since that check, and for callers that drive `SegmentSet`
-        // directly.
-        if self.would_roll(records) {
+        if self.would_roll_within(records, roll_pending) {
             self.roll()?;
         }
         self.active.append(records)

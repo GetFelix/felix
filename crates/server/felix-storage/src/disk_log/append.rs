@@ -83,6 +83,7 @@ impl DiskLog {
                     // segment behind.
                     if segments.would_roll_within(&batch, roller.roll_pending()) {
                         roller.before_inline_roll();
+                        roller.sync_pending_seal()?;
                         if let Err(err) = segments.roll() {
                             roller.poison_after_writer_failure(&segments);
                             return Err(err);
@@ -106,7 +107,8 @@ impl DiskLog {
             }
 
             let mut segments = inner.segments.write();
-            if segments.would_roll_within(&records, inner.roll_pending()) {
+            let roll_pending = inner.roll_pending();
+            if segments.would_roll_within(&records, roll_pending) {
                 // Filled again in the gap. Drop the lock and roll off-thread.
                 drop(segments);
                 drop(gate);
@@ -124,7 +126,7 @@ impl DiskLog {
             if !holds {
                 return Ok(None);
             }
-            let (first_offset, last_offset) = segments.append(&records)?;
+            let (first_offset, last_offset) = segments.append_within(&records, roll_pending)?;
             inner.observe_marks(first_offset, &records, &digests);
             let durable_target = segments.tail_offset();
             let prepare_roll = segments.should_prepare_roll();
@@ -310,8 +312,31 @@ impl LogInner {
     #[inline]
     fn before_inline_roll(&self) {}
 
+    /// Sync the segment a background roll retired but has not sealed yet.
+    ///
+    /// For an inline roll, which seals the active segment: without this the
+    /// newer segment could reach the device whole while the older one's tail
+    /// does not, and recovery cannot tell that from lost records.
+    pub(super) fn sync_pending_seal(&self) -> Result<()> {
+        let Some(retired) = self.pending_seal.lock().clone() else {
+            return Ok(());
+        };
+        crate::io::sync_data(&retired).map_err(|err| {
+            let err = StorageError::SyncFailed(err.to_string());
+            self.record_roll_failure(&err);
+            err
+        })
+    }
+
     /// Seal the retired segment, with a hook tests use to force a failure.
     fn seal_retired(&self, retired: &mut SegmentWriter) -> Result<()> {
+        #[cfg(test)]
+        {
+            let hold = self.hold_next_seal.lock().take();
+            if let Some(release) = hold {
+                let _ = release.recv();
+            }
+        }
         #[cfg(test)]
         if self.fail_seal.load(Ordering::Acquire) {
             return Err(StorageError::SyncFailed(

@@ -64,6 +64,9 @@ pub(super) struct Recovered {
 
 struct OpenedSealed {
     entry: SealedEntry,
+    /// Not `last_offset + 1`: a retired segment a crash emptied holds no
+    /// records, and its successor must then start at its base.
+    next_offset: Offset,
     rebuilt_index: bool,
 }
 
@@ -105,8 +108,9 @@ pub(super) fn recover_shard(dir: &Path, label: &str, config: &LogConfig) -> Resu
         Some((active_id, sealed_ids)) => {
             match recover_existing(dir, label, config, mark, sealed_ids, *active_id) {
                 Err(StorageError::Corruption(detail)) => {
-                    let Some(retired) =
-                        unsealed_retired(dir, label, config, mark, sealed_ids, &detail)?
+                    let Some(retired) = unsealed_retired(
+                        dir, label, config, mark, sealed_ids, *active_id, &detail,
+                    )?
                     else {
                         return Err(StorageError::Corruption(detail));
                     };
@@ -377,27 +381,40 @@ fn discard_abandoned_preparations(
 }
 
 /// The segment a background rollover retired but never finished sealing,
-/// when `detail` is a torn tail in it.
+/// when `detail` is damage a crash can leave there.
 ///
 /// The rollover installs the new active segment first and flushes the retired
-/// one afterwards, so a power loss in between can leave the retired segment
-/// with a torn or zero-filled tail and the newer segment after it. Every flush
-/// syncs the retired segment before the active one, so no record past the
-/// tear, in either segment, was ever reported durable. Only the damage a
-/// crash can leave qualifies (`scan_segment` with repair off); anything else
-/// is still corruption.
+/// one afterwards. The two files reach the device independently, so a power
+/// loss in between can leave the retired segment short -- torn or zero-filled
+/// at the end, or cut cleanly back to its last sync -- with the newer segment
+/// after it intact. Every flush syncs the retired segment before the active
+/// one, so no record past the loss, in either segment, was ever reported
+/// durable. Two shapes qualify:
+///
+/// * a torn tail in the retired segment (`scan_segment` with repair off);
+/// * an intact retired segment that ends before the active segment begins,
+///   which is the same loss landing on a record boundary.
+///
+/// Anything else is still corruption.
 fn unsealed_retired(
     dir: &Path,
     label: &str,
     config: &LogConfig,
     mark: Option<DurableMark>,
     sealed_ids: &[SegmentId],
+    active_id: SegmentId,
     detail: &Corruption,
 ) -> Result<Option<UnsealedRetired>> {
     let Some(&id) = sealed_ids.last() else {
         return Ok(None);
     };
-    if detail.site.segment != Some(id) {
+    let cut_short = match detail.kind {
+        CorruptionKind::OffsetOutOfOrder { expected, found } => {
+            detail.site.segment == Some(active_id) && found > expected
+        }
+        _ => false,
+    };
+    if detail.site.segment != Some(id) && !cut_short {
         return Ok(None);
     }
     match scan_segment_with(
@@ -411,7 +428,7 @@ fn unsealed_retired(
             unsynced_from: DurableMark::unsynced_from(mark, id),
         },
     ) {
-        Ok(outcome) if outcome.torn_tail.is_some() => Ok(Some(UnsealedRetired {
+        Ok(outcome) if outcome.torn_tail.is_some() || cut_short => Ok(Some(UnsealedRetired {
             id,
             valid_bytes: outcome.valid_bytes,
             next_offset: outcome.next_offset,
@@ -526,7 +543,7 @@ fn recover_existing(
                 opened.entry.descriptor.base_offset,
             ));
         }
-        expected_base = Some(opened.entry.descriptor.last_offset + 1);
+        expected_base = Some(opened.next_offset);
         sealed.push(opened.entry);
     }
 
@@ -695,6 +712,7 @@ fn open_sealed(dir: &Path, label: &str, config: &LogConfig, id: SegmentId) -> Re
     };
     Ok(OpenedSealed {
         entry: SealedEntry::new(descriptor, header.holds_marks()),
+        next_offset: outcome.next_offset,
         rebuilt_index,
     })
 }
