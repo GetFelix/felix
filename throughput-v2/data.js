@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790525452190,
+  "lastUpdate": 1790525657463,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -17784,6 +17784,58 @@ window.BENCHMARK_DATA = {
             "range": "10577.54",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1191387.31\nmean: 1190200.10\nstdev: 10577.54\ncv: 0.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "91172c4cf431a1682424326be8545e70dabd1465",
+          "message": "Control plane: gate new Raft commands on a group metadata version; Helm Raft bootstrap hook and peer TLS (#761)\n\n* fix(controlplane): gate new Raft commands on a group metadata version; one-shot Helm Raft bootstrap and peer TLS\n\nA leader on a newer build proposed ExpireNodes and CheckpointHeartbeats\n(every ~5 s) and the RBAC-removal / key-rotation commands regardless of\nwhat the other members could apply. An older member recorded Unsupported\nand its state diverged, and a StatefulSet rollout cannot keep the leader\nfor last.\n\nEach MetaCommand now has a level, and each build reports the highest it\ncan apply (METADATA_VERSION) on the peer standing route. A member proposes\na command only when every member of the membership, learners included,\nreports at least its level; unknown or silent members count as 0. Below\nlevel 1 the RBAC-removal and signing-key routes answer 409, and the leader\ndeclines its soft-state requests so heartbeats, expiry and the placement\nlease stay on the log commands older members apply.\n\nHelm: FELIX_RAFT_INITIAL_CLUSTER_STATE is no longer baked in at install.\nA post-install/post-upgrade hook Job waits for the API to be ready, then a\nhook ConfigMap records that the group formed; members read it at every\nstart and run with `existing` from then on, so restarts with lost volumes\nbefore the first upgrade can no longer form an empty group. The chart now\ntemplates FELIX_RAFT_TLS_* from a Secret (off by default) and adds a\ncontrol-plane NetworkPolicy admitting the Raft peer port only from members\nand raftPeerFrom.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(kafka): cap the vendored record-batch reserve at the bytes left\n\nRecordBatchDecoder reserved Vec capacity for the record count a batch\nheader claims, so a 66-byte produce batch could ask for over 3 GB. Found\nby the kafka_records fuzz target. Cap the reservation at the buffer's\nremaining bytes, as the array decoders already do.\n\nSpec-Unaffected: Kafka record decoding only.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T09:08:33-07:00",
+          "tree_id": "ba9ab69b3ade5070d2d92be59f740d9a5c891149",
+          "url": "https://github.com/gabloe/felix/commit/91172c4cf431a1682424326be8545e70dabd1465"
+        },
+        "date": 1790525656039,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 378462.86,
+            "range": "19932.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 378462.86\nmean: 380970.27\nstdev: 19932.14\ncv: 5.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 378462.86,
+            "range": "19932.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 378462.86\nmean: 380970.27\nstdev: 19932.14\ncv: 5.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 92466.16,
+            "range": "1013.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 92466.16\nmean: 92379.58\nstdev: 1013.51\ncv: 1.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 924661.61,
+            "range": "10135.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 924661.61\nmean: 923795.83\nstdev: 10135.08\ncv: 1.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
