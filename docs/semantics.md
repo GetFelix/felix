@@ -167,7 +167,7 @@ indeterminate (`leadership_lost`) rather than acknowledged, even if the
 majority then arrives.
 
 > `a_lapsed_lease_refuses_every_write_until_it_is_renewed`,
-> `cache_and_counter_writes_after_the_lease_lapses_are_refused`,
+> `cache_and_counter_reads_and_writes_after_the_lease_lapses_are_refused`,
 > `an_ack_after_the_lease_lapses_is_refused`,
 > `forwarded_writes_after_the_lease_lapses_are_refused`,
 > `a_quorum_ack_is_withheld_when_the_lease_lapses_while_it_waits`.
