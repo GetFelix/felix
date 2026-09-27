@@ -733,18 +733,19 @@ mod debug_redaction {
         config.bootstrap.previous_token = Some("boot-previous-token".into());
 
         let printed = format!("{config:?}");
-        for secret in [
-            "pg-s3cret",
-            "pg-other",
-            "boot-current-token",
-            "boot-previous-token",
+        for (what, secret) in [
+            ("the URL password", "pg-s3cret"),
+            ("the password= parameter", "pg-other"),
+            ("the bootstrap token", "boot-current-token"),
+            ("the previous bootstrap token", "boot-previous-token"),
         ] {
-            assert!(!printed.contains(secret), "{secret} leaked: {printed}");
+            // Name the field, not the value: a failure message is a log too.
+            assert!(!printed.contains(secret), "{what} leaked into Debug");
         }
         // Still useful for debugging: where it connects, and as whom.
         assert!(
             printed.contains("felix:<redacted>@db.internal:5432/felix"),
-            "{printed}"
+            "the redacted URL should keep the user, host and database"
         );
     }
 
