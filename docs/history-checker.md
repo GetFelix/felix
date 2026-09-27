@@ -2,7 +2,8 @@
 
 A Jepsen-style check of what clients actually observed. Concurrent clients
 append to and read `Quorum` streams on a real three-broker cluster while a
-nemesis kills, pauses and partitions brokers. Every operation is recorded with
+nemesis kills, pauses and partitions brokers, and in the long runs also cuts
+links, skews clocks and fails fsyncs. Every operation is recorded with
 when it started, when it ended and what it returned. Once the faults are healed,
 the checker compares that history with what a replicated append-only log
 promises.
@@ -88,12 +89,54 @@ brokers. The control plane's placement loop runs every 500ms so failovers
 happen without anyone stepping them. The nemesis then loops:
 
 1. Wait 1-4s.
-2. Pick a fault: kill, pause (`SIGSTOP`) or partition. It targets a list
-   leader 75% of the time and any broker otherwise.
+2. Pick a fault. It targets a list leader 75% of the time and any broker
+   otherwise.
 3. Hold the fault for 2-6s.
-4. Heal it: restart, resume, or remove the partition file.
+4. Heal it.
 
-Faults never overlap, so a majority is always one fault from whole.
+Faults never overlap, so a majority is always one fault from whole. That is
+also what makes a broker clock at half speed safe to inject: it runs slow only
+while its heartbeats keep landing, never alongside a partition.
+
+`RandomNemesis::process_faults` picks from the first three kinds below, and is
+what the per-PR run uses. `RandomNemesis::all_faults` picks from all of them,
+and is what a run given `FELIX_HISTORY_DURATION_SECS` uses, the nightly one
+included.
+
+| Family | Kind | Injected | Healed |
+| --- | --- | --- | --- |
+| Process | `Kill` | `SIGKILL` | Restart on the same data directory |
+| Process | `Pause` | `SIGSTOP` | `SIGCONT` |
+| Process | `Partition` | Partition file, both ways, to every peer | File removed |
+| Link | `DropOutbound` | Everything the broker sends its peers is lost | Link restored |
+| Link | `DelayOutbound` | Everything the broker sends its peers is 250ms late | Link restored |
+| Link | `DropControlPlaneReplies` | The control plane's replies to the broker are lost | Link restored |
+| Clock | `ClockRate` | The broker's lease clock runs at 0.5x or 20x | Back to 1x, drift kept |
+| Clock | `ControlPlaneClockStep` | The control plane's wall clock jumps 15s forward | Stepped back to the true clock |
+| Disk | `SlowFsync` | Each of the broker's flushes waits 200ms | Delay removed |
+| Disk | `FsyncFailOnce` | The broker's next flush fails with `EIO` | Fault removed, broker restarted |
+
+The non-process kinds go through the harness's `Cluster::inject` (see
+[the cluster harness](cluster-harness.md), "The fault API"). There are two
+types named `Fault`: `felix_cluster::Fault` is the harness's vocabulary, and
+`felix_cluster::history::Fault` is the campaign's, a fault with its target
+chosen and a `Display` for the timeline. The campaign's clock rate is stored
+in permille so it can stay `Eq`.
+
+A broker's clock is never stepped back: its lease runs on `CLOCK_BOOTTIME`,
+which cannot go backwards, and the harness refuses such a step. Healing a
+failed fsync restarts the broker because a failed fsync poisons the log until
+the process restarts; healing the disk alone would leave it refusing every
+write. Healing the control-plane step is a backward step, which delays
+expiring a broker that dies in the next 15s by up to that much (see
+`a_control_plane_clock_stepped_back_still_expires_a_dead_broker`, ignored
+until that is fixed). It costs availability, not safety.
+
+`Campaign::cluster_config` takes the nemesis and starts the cluster for it:
+with proxied links when it may pick a link fault, and with
+`FELIX_DURABLE_FSYNC_MODE=on_commit` and `FELIX_ACK_ON_COMMIT=true` when it may
+pick a disk fault, so a failed fsync can fail an acknowledgement rather than
+happen behind one.
 
 - **Plain clients** use `ClusterClient::publish`, which never re-sends a publish
   that may have landed. Only these clients ever record a definite failure, so
@@ -106,14 +149,23 @@ Faults never overlap, so a majority is always one fault from whole.
   `not_leader` hop. A client reconnects from a fresh address book after three
   failures in a row, because a restarted broker listens on new ports.
 
-**To add a fault**, add a `FaultKind` variant, a `Fault` variant, and its arms
-in `Fault::inject` and `Fault::heal` (`history/nemesis.rs`). To drive a
+**To add a fault**, add a `FaultKind` variant (with its family), a `Fault`
+variant, and its arms in `Fault::inject`, `Fault::heal` and `Display`
+(`history/nemesis.rs`). A fault the harness already has as a
+`felix_cluster::Fault` needs only an arm in `Fault::harness_faults`. If it
+needs something of the cluster's configuration, say so through `Nemesis`'s
+`needs_*` methods. To drive a
 campaign with something other than a random schedule, such as a replay of the
 faults a failing run printed, implement `Nemesis`.
 
 > `a_fault_campaign_keeps_quorum_histories_valid` — a 45-second campaign of
 > kills, pauses and partitions leaves a valid history, with at least 50
 > acknowledged appends and at least one fault injected and healed.
+> `every_fault_family_is_injected_and_healed_in_a_campaign` — a 75-second
+> campaign that goes round every kind in a fixed order leaves a valid history
+> and injects and heals at least one fault of each family.
+> `all_faults_never_steps_a_broker_clock_back` — the nemesis never asks for a
+> step the harness would refuse.
 
 ## Running it
 
@@ -127,7 +179,7 @@ cargo test -p felix-cluster --test history -- --nocapture
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `FELIX_HISTORY_SEED` | a fixed seed | The schedule's seed: a number, or `random` |
-| `FELIX_HISTORY_DURATION_SECS` | `45` | How long the nemesis runs |
+| `FELIX_HISTORY_DURATION_SECS` | `45` | How long the nemesis runs. When set, the main campaign uses every fault family |
 
 ```bash
 FELIX_HISTORY_SEED=1234 FELIX_HISTORY_DURATION_SECS=600 \
@@ -142,10 +194,12 @@ a few times.
 On a small disk, set `FELIX_DURABLE_PREALLOCATE=false` so each broker does not
 reserve full segments up front.
 
-The per-PR run uses the fixed seed and takes about a minute, cluster start-up
-included. The nightly workflow (`.github/workflows/history.yml`) runs
-it for 20 minutes with a random seed and prints the seed first, so a red night
-can be replayed.
+The per-PR run uses the fixed seed and takes about a minute per test, cluster
+start-up included. The nightly workflow (`.github/workflows/history.yml`) runs
+it for 20 minutes with a random seed and every fault family, and prints the
+seed first, so a red night can be replayed. Setting
+`FELIX_HISTORY_DURATION_SECS` is what switches the main campaign to every
+family, so replay a nightly seed with it set.
 
 ## Reading a violation
 

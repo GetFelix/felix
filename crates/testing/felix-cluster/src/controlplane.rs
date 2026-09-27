@@ -74,6 +74,14 @@ impl ControlPlane {
         Self::serve(store, keys, addr).await
     }
 
+    /// Where this control plane listens.
+    pub(crate) fn addr(&self) -> Result<std::net::SocketAddr> {
+        self.base_url
+            .trim_start_matches("http://")
+            .parse()
+            .context("parse control plane address")
+    }
+
     /// Stop this control plane, stay down for `downtime`, and start a new one
     /// on the same address over the same store.
     ///
@@ -83,11 +91,7 @@ impl ControlPlane {
     pub async fn restart(self, downtime: Duration) -> Result<Self> {
         let store = Arc::clone(&self.store);
         let keys = self.keys.clone();
-        let addr = self
-            .base_url
-            .trim_start_matches("http://")
-            .parse()
-            .context("parse control plane address")?;
+        let addr = self.addr()?;
         self.shutdown().await;
         tokio::time::sleep(downtime).await;
         Self::serve(store, keys, addr).await

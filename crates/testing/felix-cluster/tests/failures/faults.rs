@@ -8,7 +8,7 @@
 //! Run with `cargo test -p felix-cluster` (or `task cluster:test`).
 use std::time::Duration;
 
-use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
+use felix_cluster::{ClockFault, Cluster, ClusterConfig, Endpoint, Fault, StreamSpec};
 use serial_test::serial;
 
 const STREAM: &str = "orders";
@@ -173,4 +173,96 @@ async fn teardown_reclaims_a_suspended_broker() {
     tokio::time::timeout(Duration::from_secs(20), cluster.shutdown())
         .await
         .expect("shutdown hung on a suspended broker");
+}
+
+/// **`Suspend` through the fault API is the same pause.** Injected, the
+/// kernel reports the broker stopped; healed, it answers again.
+#[serial]
+#[tokio::test]
+async fn a_suspend_fault_pauses_and_heals() {
+    let cluster = Cluster::start(config()).await.expect("start cluster");
+    let node_id = cluster.nodes[0].node_id.clone();
+    let fault = Fault::Suspend {
+        node: node_id.clone(),
+    };
+
+    cluster.inject(&fault).await.expect("inject");
+    assert!(
+        cluster.is_paused(&node_id),
+        "the suspend did not stop the broker"
+    );
+
+    cluster.heal(&fault).await.expect("heal");
+    assert!(
+        answers_within(&cluster, &node_id, Duration::from_secs(10)).await,
+        "a healed suspend left the broker silent",
+    );
+    cluster.shutdown().await;
+}
+
+/// **Faults compose, and `heal_all` undoes all of them.** One follower
+/// suspended, the leader refusing the other through the partition file, and
+/// the leader's clock running slow: a `Quorum` publish has no majority. After
+/// `heal_all` nothing is left in effect and the cluster serves again.
+#[serial]
+#[tokio::test]
+async fn faults_compose_and_heal_all_undoes_them() {
+    let cluster = Cluster::start(ClusterConfig {
+        nodes: 3,
+        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
+        broker_env: vec![(
+            "FELIX_PUBLISH_QUORUM_TIMEOUT_MS".to_string(),
+            "1500".to_string(),
+        )],
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    let leader = cluster.owner(STREAM).await.expect("owner");
+    let followers: Vec<String> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|id| *id != leader)
+        .collect();
+
+    let faults = [
+        Fault::Suspend {
+            node: followers[0].clone(),
+        },
+        Fault::Refuse {
+            node: leader.clone(),
+            peers: vec![followers[1].clone()],
+        },
+        Fault::Clock {
+            process: Endpoint::node(&leader),
+            fault: ClockFault::Rate(0.5),
+        },
+    ];
+    for fault in &faults {
+        cluster.inject(fault).await.expect("inject");
+    }
+    assert_eq!(cluster.active_faults(), faults.to_vec());
+    assert!(
+        cluster
+            .publish_via(&leader, STREAM, b"no-majority".to_vec())
+            .await
+            .is_err(),
+        "a Quorum publish succeeded with one follower suspended and the other refused",
+    );
+
+    cluster.heal_all().await.expect("heal all");
+    assert!(cluster.active_faults().is_empty());
+    assert!(!cluster.is_paused(&followers[0]));
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while let Err(err) = cluster
+        .publish_via(&leader, STREAM, b"healed".to_vec())
+        .await
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the cluster never served again after heal_all; last: {err:#}",
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    cluster.shutdown().await;
 }

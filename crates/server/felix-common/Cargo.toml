@@ -29,6 +29,10 @@ utoipa = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 arc-swap = { workspace = true, optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# `CLOCK_BOOTTIME`, which the lease clock reads.
+libc = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 rcgen = { workspace = true }
@@ -45,6 +49,9 @@ lifecycle = ["dep:tokio", "dep:tracing", "dep:metrics"]
 openapi = ["dep:utoipa"]
 # Certificate files re-read on rotation, for the services' TLS listeners.
 tls = ["dep:rustls", "dep:arc-swap", "dep:tokio", "dep:tracing"]
+# The test-only clock faults in `clock::fault`. Debug builds have them
+# regardless; this puts them in an optimised build for a fault-testing run.
+fault-injection = []
 
 [package.metadata.docs.rs]
 # `lifecycle` is off by default so library consumers do not inherit tokio;

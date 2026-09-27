@@ -133,6 +133,7 @@ impl Cluster {
             &self.config,
             self._root.path(),
             index,
+            self.links.as_ref(),
         )
         .with_context(|| format!("start broker {index}"))?;
         let node_id = node.node_id.clone();
