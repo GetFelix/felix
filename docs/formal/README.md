@@ -89,7 +89,13 @@ One shard, three brokers, one control plane, discrete time.
   inside its fence and land in its own log. `CancelCas` makes that write
   conditional like the others.
 
-Not modelled: the storage layer (a commit is a commit), network partitions as
+Not modelled: readers. The code bounds every reader of a `Quorum` shard by
+the quorum mark and refuses reads on a lapsed lease, so what a reader sees is
+a prefix of what `AckQuorum` allows; nothing a reader does feeds back into
+the protocol. Counter adds on a `Quorum` cache now wait for a counter mark,
+matching the model's treatment of the logs riding a shard as one log.
+
+Also not modelled: the storage layer (a commit is a commit), network partitions as
 such (they are lost heartbeats, lost reports, and delays), retention, and the
 bootstrap of a follower below the leader's base.
 

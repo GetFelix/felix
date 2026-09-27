@@ -142,7 +142,7 @@ felix_broker_replication_rebuilds_total     # by outcome: started, completed, re
 felix_broker_replication_drain_withheld_total # by log; a planned move waiting to hand over group state or counters
 felix_broker_replica_reports_per_request    # shards per control-plane report; 1 on a busy broker means batching found nothing
 felix_broker_lease_held
-felix_broker_lease_refusals_total           # writes refused after a lease lapsed
+felix_broker_lease_refusals_total           # writes and reads refused after a lease lapsed, by boundary
 felix_broker_credential_expires_in_seconds  # counts down; -1 when the token carries no exp
 felix_broker_credential_refreshes_total     # by outcome: ok, unavailable
 felix_broker_credential_rotations_total     # by outcome: ok, rejected — a token file rewritten from outside

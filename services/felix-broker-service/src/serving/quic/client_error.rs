@@ -210,6 +210,16 @@ impl ClientError {
                 Self::internal(message).with_retry(RetryClass::Fatal)
             }
             E::Storage(_) => Self::new(ErrorCode::Storage, message),
+            // Nothing was read; the shard is served again here once a mark or
+            // a lease comes back, or by its new owner.
+            E::NotReadable { reason, .. } => {
+                use felix_wire::shard_unavailable_reason as wire;
+                let why = match reason {
+                    felix_broker::NotReadable::Settling => wire::NOT_READY,
+                    felix_broker::NotReadable::Refused => wire::FENCED,
+                };
+                Self::new(ErrorCode::ShardUnavailable, message).with_reason(why)
+            }
         }
     }
 

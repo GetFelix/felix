@@ -72,6 +72,9 @@ pub struct LeaseState {
     /// millis. Atomic because the control plane owns this cadence and can change
     /// it, exactly as it owns the heartbeat interval.
     usable_millis: AtomicU64,
+    /// Signalled when the lease goes from held to lapsed, for whatever has to
+    /// stop when it does: the readers of the shards this broker led.
+    lapsed: tokio::sync::Notify,
 }
 
 impl LeaseState {
@@ -86,7 +89,15 @@ impl LeaseState {
             looks_valid: AtomicBool::new(false),
             base: Instant::now(),
             usable_millis: AtomicU64::new(usable_millis(lease)),
+            lapsed: tokio::sync::Notify::new(),
         }
+    }
+
+    /// Resolves the next time the lease lapses (or at once, for a lapse no
+    /// one has waited for yet). One waiter: a lapse is kept for it rather than
+    /// lost when it is busy with the previous one.
+    pub fn lapsed(&self) -> tokio::sync::futures::Notified<'_> {
+        self.lapsed.notified()
     }
 
     /// Adopt the control plane's expiry window.
@@ -131,8 +142,11 @@ impl LeaseState {
     /// For a broker that has been told it is no longer a member: it should stop
     /// serving now rather than run out the remaining margin.
     pub fn surrender(&self) {
-        self.looks_valid.store(false, Ordering::Release);
+        let held = self.looks_valid.swap(false, Ordering::AcqRel);
         self.renewed_at_millis.store(0, Ordering::Release);
+        if held {
+            self.lapsed.notify_one();
+        }
     }
 
     /// The cheap admission check. One relaxed load.
@@ -186,6 +200,7 @@ impl LeaseState {
                         "lease expired; this broker is no longer serving the shards it led",
                     );
                     crate::cluster::lease::metrics::record_expiry();
+                    self.lapsed.notify_one();
                 }
                 crate::cluster::lease::metrics::set_held(self.is_valid_now());
             }

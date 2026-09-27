@@ -61,6 +61,24 @@ impl Broker {
             .map_or(0, |state| state.end_subscribers(handoff))
     }
 
+    /// Drop the batches one stream shard holds back from readers, and its
+    /// replay ring. For a shard this broker has stopped leading: what it
+    /// held was never committed under its leadership. Returns how many
+    /// batches were dropped.
+    pub async fn discard_uncommitted(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> usize {
+        self.topics
+            .read()
+            .await
+            .get(&TopicKeyRef::new(tenant_id, namespace, stream, shard))
+            .map_or(0, |state| state.discard_held())
+    }
+
     pub(super) async fn get_stream_state(
         &self,
         tenant_id: &str,
@@ -136,6 +154,7 @@ impl Broker {
             durable,
             metadata.consistency,
         ));
+        self.bind_reads(&state, &topic);
         self.hydrate_durable_stream(&state).await?;
 
         let mut topics = self.topics.write().await;
@@ -283,5 +302,18 @@ impl StreamHandle {
     /// `notified_owned()` future and `enable()` it *before* reading the tail.
     pub fn appended(&self) -> Arc<tokio::sync::Notify> {
         Arc::clone(&self.state.appended)
+    }
+
+    /// How far readers of this shard may see; see [`crate::ReadBound`].
+    pub fn read_bound(&self) -> crate::ReadBound {
+        self.state.read_bound()
+    }
+
+    /// Look at the committed mark again and release the held batches it now
+    /// covers. For whoever moves the mark; cheap when nothing is held.
+    pub fn release_committed(&self) {
+        if self.state.held.kick() {
+            super::publish::spawn_release(self);
+        }
     }
 }

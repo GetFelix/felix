@@ -294,18 +294,18 @@ throughput rather than correctness.
   inferred.
 - **A subscription can resume.** `Subscribe` takes `latest`, `earliest`, or an
   offset; stored history joins live delivery with no gap.
-- **What a reader sees of a `Quorum` stream.** A consumer group and a Kafka
-  consumer read only up to the shard's quorum mark, the committed high-water
-  mark: a record past it can be lost at failover and its offset reused by the
-  next leader, and a consumer that had moved past it would never see the
-  record that replaced it. Kafka reports the mark as the high watermark. A
-  `Leader` stream's readers see everything durable on the leader, as before.
-
-  **Plain subscriptions are not gated yet.** Live delivery, the replay ring and
-  history read for a subscription can include records past the quorum mark,
-  so a subscriber on a `Quorum` stream can see a record that a failover then
-  replaces. A subscriber that checkpoints offsets and needs to be sure should
-  read through a consumer group.
+- **What a reader sees of a `Quorum` stream.** Every reader stops at the
+  shard's quorum mark, the committed high-water mark: a record past it can be
+  lost at failover and its offset reused by the next leader, and a reader that
+  had moved past it would never see the record that replaced it. A consumer
+  group and a Kafka consumer read only up to it, and Kafka reports it as the
+  high watermark. A subscription gets a batch only once the mark passes it:
+  the leader holds the batch back from the replay ring and from fanout until
+  then, and releases held batches in offset order. `Latest` and the cursor
+  tail are the mark; resumed history waits for it. A leader that stops serving
+  the shard drops what it held, and its subscribers resume on the next leader.
+  A `Leader` stream's readers see everything durable on the leader, as before,
+  with no added latency.
 
   > `a_quorum_group_poll_stops_at_the_quorum_mark`,
   > `a_fetch_reads_only_to_the_commit_point`, `latest_is_the_commit_point`.
@@ -499,8 +499,12 @@ of the shard's replicas hold it, and survives the loss of its leader.
 > `crates/testing/felix-cluster/tests/caches/cache_failover.rs::a_quorum_acknowledged_cache_write_survives_its_leader`
 > and `a_quorum_cache_write_without_a_majority_is_refused`.
 
-Counter updates are the exception: the counter log feeds no quorum mark, so a
-counter update on a `Quorum` cache is still acknowledged by the leader.
+Counter updates on a `Quorum` cache are acknowledged the same way: the
+counter log has its own quorum mark, published by the same replication pass
+after a report the control plane stored. Reads of a `Quorum` cache (get,
+counter get, watch) hand out nothing past the mark. A broker whose lease has
+lapsed refuses reads of the shards it led, and ends their subscriptions and
+watches the way a shard move does.
 
 ## Authorization
 

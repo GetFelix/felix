@@ -8,8 +8,13 @@ use bytes::Bytes;
 use felix_wire::StartPosition;
 
 use super::Broker;
-use crate::error::{BrokerError, Result};
-use crate::stream::{Subscription, SubscriptionGuard};
+use crate::error::{BrokerError, NotReadable, Result};
+use crate::stream::{ReadBound, Subscription, SubscriptionGuard};
+
+/// How often a history read waiting for the committed mark looks again
+/// without being woken. The mark wakes it when it moves; this catches a bound
+/// that changed another way, such as a lapsed lease.
+const COMMIT_RECHECK: std::time::Duration = std::time::Duration::from_millis(250);
 
 impl Broker {
     /// Subscribe to records published to one shard from now on.
@@ -44,6 +49,9 @@ impl Broker {
     /// durable tail. Handing out a cursor from the ring would then name a
     /// position that is already in the past on disk, and replaying from it
     /// fails as too old rather than resuming where the caller actually was.
+    ///
+    /// On a `Quorum` stream the tail is the committed mark: a position past it
+    /// may name records a failover replaces.
     pub async fn cursor_tail(
         &self,
         tenant_id: &str,
@@ -56,7 +64,12 @@ impl Broker {
             .await?;
 
         let next_seq = match &handle.state.durable {
-            Some(log) => log.tail_offset().await?,
+            Some(log) => committed_tail(
+                handle.state.read_bound(),
+                log.tail_offset().await?,
+                stream,
+                shard,
+            )?,
             None => handle.state.tail_seq(),
         };
         Ok(Cursor { next_seq })
@@ -121,6 +134,11 @@ impl Broker {
     ///
     /// The caller delivers in three phases: `history` (paged from disk),
     /// then `backlog`, then whatever arrives on the subscription.
+    ///
+    /// On a `Quorum` stream `Latest` is the committed mark, not the tail, and
+    /// the history must be read with [`Broker::read_committed`], which waits
+    /// for the mark. An offset up to the tail is still accepted: a reader that
+    /// saw it from an earlier leader resumes here once the mark reaches it.
     pub async fn subscribe_from(
         &self,
         tenant_id: &str,
@@ -139,11 +157,20 @@ impl Broker {
             Some(log) => log.tail_offset().await?,
             None => stream_state.tail_seq(),
         };
+        // Only a log has offsets to bound; an in-memory stream's ring is its
+        // whole story.
+        let bound = match &durable {
+            Some(_) => stream_state.read_bound(),
+            None => ReadBound::Unbounded,
+        };
+        if bound == ReadBound::Refused {
+            return Err(not_readable(stream, shard, NotReadable::Refused));
+        }
         // Resolve the requested position to an offset before touching the ring.
         // `Latest` is the tail read above rather than a second read, so it
         // joins exactly where the reported live edge is.
         let requested = match start {
-            StartPosition::Latest => tail,
+            StartPosition::Latest => committed_tail(bound, tail, stream, shard)?,
             StartPosition::Earliest => match &durable {
                 // The oldest offset still on disk, which retention raises as it
                 // trims. Never 0 for a trimmed stream.
@@ -263,6 +290,60 @@ impl Broker {
         log.read_from(from_offset, max_bytes).await
     }
 
+    /// [`Broker::read_durable`], stopping at the committed mark.
+    ///
+    /// What a subscription's history is read with. Below the mark it reads as
+    /// `read_durable` does and cuts the page at the mark. At the mark it waits
+    /// for it to move, since the history range a resume is given is closed and
+    /// every record in it is on its way to being committed or to being refused
+    /// with the shard. Empty only once `from_offset` is at the log's tail.
+    /// [`BrokerError::NotReadable`] when this broker stops serving the shard
+    /// meanwhile, so the reader resumes on whoever serves it now.
+    pub async fn read_committed(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        from_offset: u64,
+        max_bytes: usize,
+    ) -> Result<Vec<felix_storage::log::LogRecord>> {
+        let handle = self
+            .resolve_stream_handle(tenant_id, namespace, stream, shard)
+            .await?;
+        let Some(log) = &handle.state.durable else {
+            return Err(BrokerError::StreamNotDurable {
+                tenant_id: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                stream: stream.to_string(),
+            });
+        };
+        loop {
+            let appended = Arc::clone(&handle.state.appended);
+            let moved = appended.notified();
+            tokio::pin!(moved);
+            // Registered before the bound is read, so a mark moving in between
+            // still wakes this.
+            moved.as_mut().enable();
+            match handle.state.read_bound() {
+                ReadBound::Unbounded => return log.read_from(from_offset, max_bytes).await,
+                ReadBound::Committed(mark) if from_offset < mark => {
+                    let mut records = log.read_from(from_offset, max_bytes).await?;
+                    records.retain(|record| record.offset < mark);
+                    return Ok(records);
+                }
+                ReadBound::Refused => {
+                    return Err(not_readable(stream, shard, NotReadable::Refused));
+                }
+                ReadBound::Committed(_) | ReadBound::Settling => {}
+            }
+            if from_offset >= log.tail_offset().await? {
+                return Ok(Vec::new());
+            }
+            let _ = tokio::time::timeout(COMMIT_RECHECK, moved).await;
+        }
+    }
+
     /// Number of subscriber slots currently registered for a stream.
     ///
     /// Exposed for tests that need to prove a failed subscribe left nothing
@@ -279,6 +360,24 @@ impl Broker {
             .resolve_stream_handle(tenant_id, namespace, stream, shard)
             .await?;
         Ok(handle.state.subscriber_count())
+    }
+}
+
+/// The durable `tail` as a reader may see it.
+fn committed_tail(bound: ReadBound, tail: u64, stream: &str, shard: u32) -> Result<u64> {
+    match bound {
+        ReadBound::Unbounded => Ok(tail),
+        ReadBound::Committed(mark) => Ok(mark.min(tail)),
+        ReadBound::Settling => Err(not_readable(stream, shard, NotReadable::Settling)),
+        ReadBound::Refused => Err(not_readable(stream, shard, NotReadable::Refused)),
+    }
+}
+
+fn not_readable(stream: &str, shard: u32, reason: NotReadable) -> BrokerError {
+    BrokerError::NotReadable {
+        stream: stream.to_string(),
+        shard,
+        reason,
     }
 }
 

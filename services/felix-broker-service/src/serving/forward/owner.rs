@@ -229,6 +229,25 @@ impl ForwardingHandler {
             });
         }
 
+        // A read follows the lease as a write does: another broker may be
+        // leading the shard by now, with writes this one never saw.
+        if matches!(op.op, CacheOpKind::Get | CacheOpKind::CounterGet)
+            && !self.ingress.fence().lease_valid()
+        {
+            crate::cluster::lease::metrics::record_refusal(
+                crate::cluster::lease::metrics::BOUNDARY_READ,
+            );
+            return self
+                .fenced(
+                    correlation_id,
+                    &key,
+                    op.shard.generation,
+                    Fenced::LeaseLapsed,
+                )
+                .await
+                .into_cache_answer(correlation_id);
+        }
+
         let cache = self.broker.cache();
         let writes = matches!(op.op, CacheOpKind::Put | CacheOpKind::Delete);
         let fenced = if writes {
@@ -288,23 +307,28 @@ impl ForwardingHandler {
         };
         drop(fenced);
 
-        // The same wait the requester's own path makes for a local write: the
-        // client asked for the cache's guarantee, wherever the key happens to
-        // live.
-        if writes
-            && let Err(err) = crate::replication::quorum::await_cache_quorum(
-                &self.broker,
-                &key,
-                self.marks.as_deref(),
-                Some(self.ingress.as_ref()),
-                self.quorum_timeout,
-            )
-            .await
+        // The same wait the requester's own path makes for a local write or
+        // read: the client asked for the cache's guarantee, wherever the key
+        // happens to live.
+        if let Err(err) = crate::replication::quorum::await_cache_quorum(
+            &self.broker,
+            &key,
+            self.marks.as_deref(),
+            Some(self.ingress.as_ref()),
+            self.quorum_timeout,
+            if writes { "write" } else { "read" },
+        )
+        .await
         {
             metrics::record_served(metrics::OUTCOME_ERROR);
             return InternalMessage::ForwardCacheError(ForwardCacheError {
                 correlation_id,
-                code: ErrorCode::StorageFailed,
+                // A read changed nothing, so it is simply not available here.
+                code: if writes {
+                    ErrorCode::StorageFailed
+                } else {
+                    ErrorCode::Unavailable
+                },
                 detail: err.to_string(),
             });
         }
@@ -503,7 +527,7 @@ impl ForwardingHandler {
                             .into_cache_answer(correlation_id);
                     }
                 };
-                counters
+                let added = counters
                     .add(
                         &key.tenant_id,
                         &key.namespace,
@@ -512,11 +536,19 @@ impl ForwardingHandler {
                         &op.key,
                         delta,
                     )
-                    .await
-                    .map(|(sum, _)| Some(sum))
+                    .await;
+                drop(_fenced);
+                match added {
+                    Ok((sum, offset)) => self
+                        .counter_quorum(key, Some(offset + 1), "counter add")
+                        .await
+                        .map(|()| Some(sum))
+                        .map_err(|detail| (ErrorCode::StorageFailed, detail)),
+                    Err(err) => Err((ErrorCode::Unavailable, err.to_string())),
+                }
             }
             _ => {
-                counters
+                let sum = counters
                     .get(
                         &key.tenant_id,
                         &key.namespace,
@@ -525,6 +557,15 @@ impl ForwardingHandler {
                         &op.key,
                     )
                     .await
+                    .map_err(|err| (ErrorCode::Unavailable, err.to_string()));
+                match sum {
+                    Ok(sum) => self
+                        .counter_quorum(key, None, "read")
+                        .await
+                        .map(|()| sum)
+                        .map_err(|detail| (ErrorCode::Unavailable, detail)),
+                    Err(err) => Err(err),
+                }
             }
         };
         match served {
@@ -535,12 +576,33 @@ impl ForwardingHandler {
                     value: sum.map(felix_storage::counter_log::encode_sum),
                 })
             }
-            Err(err) => InternalMessage::ForwardCacheError(ForwardCacheError {
+            Err((code, detail)) => InternalMessage::ForwardCacheError(ForwardCacheError {
                 correlation_id,
-                code: ErrorCode::Unavailable,
-                detail: err.to_string(),
+                code,
+                detail,
             }),
         }
+    }
+
+    /// [`crate::replication::quorum::await_counter_quorum`] for a forwarded
+    /// counter op, as the requester's own path waits for a local one.
+    async fn counter_quorum(
+        &self,
+        key: &ShardKey,
+        end: Option<u64>,
+        what: &'static str,
+    ) -> Result<(), String> {
+        crate::replication::quorum::await_counter_quorum(
+            &self.broker,
+            key,
+            self.marks.as_deref(),
+            Some(self.ingress.as_ref()),
+            self.quorum_timeout,
+            end,
+            what,
+        )
+        .await
+        .map_err(|err| err.to_string())
     }
 }
 

@@ -54,14 +54,15 @@ pub use broker::{
     Broker, CacheMetadata, ClaimedPublish, ConsistencyLevel, IdempotentOutcome, LogKind,
     PublishOutcome, RECORD_SEQUENCE_WRAP, StreamHandle, StreamMetadata,
 };
-pub use error::{BrokerError, Result};
+pub use error::{BrokerError, NotReadable, Result};
 pub use handoff::{ShardHandoff, ShardMoved};
 
 // Streams.
 pub use broker::{Cursor, HistoryRange, JoinOffsets, ResumedSubscription};
 pub use felix_wire::StartPosition;
 pub use stream::{
-    DeliveryEnvelope, SubQueuePolicy, Subscription, SubscriptionGuard, SubscriptionReceiver,
+    DeliveryEnvelope, ReadBound, ReadBounds, SubQueuePolicy, Subscription, SubscriptionGuard,
+    SubscriptionReceiver,
 };
 
 // Caches.

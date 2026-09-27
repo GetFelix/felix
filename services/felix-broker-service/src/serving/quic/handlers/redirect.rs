@@ -9,6 +9,10 @@ use crate::serving::quic::client_error::ClientError;
 /// `None` means serve it here: either this broker owns the shard, or it has no
 /// cluster to resolve against and everything is local.
 ///
+/// A shard this broker owns but whose lease has lapsed is refused like a
+/// write: another broker may be leading it, and a reader here would follow a
+/// log that one has moved past. The refusal is retryable.
+///
 /// A redirect needs the owner's *client-facing* address, which is a different
 /// listener from the one brokers forward to each other on and is known only
 /// from the control plane's catalog. When the cluster has not been told one,
@@ -42,12 +46,17 @@ pub(crate) fn redirect_for(
         kind,
     };
 
-    redirect_from(
-        dispatch(ingress, &key),
-        client_endpoints,
-        stream,
-        peer_features,
-    )
+    let dispatched = dispatch(ingress, &key);
+    if matches!(dispatched, crate::shards::routing::Dispatch::Local { .. })
+        && ingress.is_some_and(|ingress| !ingress.fence().lease_valid())
+    {
+        use crate::cluster::lease::metrics;
+        metrics::record_refusal(metrics::BOUNDARY_READ);
+        return Some(
+            ClientError::from(crate::shards::lifecycle::fence::Fenced::LeaseLapsed).into_message(),
+        );
+    }
+    redirect_from(dispatched, client_endpoints, stream, peer_features)
 }
 
 /// [`redirect_for`], for a request already dispatched.

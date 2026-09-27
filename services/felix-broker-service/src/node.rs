@@ -158,6 +158,14 @@ where
     );
 
     let (broker, durable_storage) = storage::open(&config)?;
+    // Readers of a replicated `Quorum` stream see only what its quorum mark
+    // has passed; see `replication::quorum::committed_bound`.
+    if let Some(ingress) = &ingress_router {
+        broker.set_read_bounds(Arc::new(replication::quorum::CommittedReads::new(
+            Arc::clone(&quorum_marks),
+            Arc::clone(ingress),
+        )));
+    }
     tracing::info!("broker started");
     let controlplane_url = config
         .controlplane_url

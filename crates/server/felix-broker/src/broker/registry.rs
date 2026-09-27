@@ -173,6 +173,7 @@ impl Broker {
                 durable,
                 metadata.consistency,
             ));
+            self.bind_reads(&state, &topic);
             self.hydrate_durable_stream(&state).await?;
 
             // Keep the documented registry lock order: streams before topics.

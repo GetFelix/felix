@@ -8,6 +8,8 @@
 mod completion;
 mod per_record;
 
+pub(crate) use completion::spawn_release;
+
 pub use per_record::RECORD_SEQUENCE_WRAP;
 
 use std::sync::Arc;

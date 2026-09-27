@@ -31,12 +31,16 @@ impl EventSink for quinn::SendStream {
 
 /// Write a resumed subscription's stored history and ring backlog.
 ///
-/// Disk history is *paged*, never collected: `read_durable` returns at most
+/// Disk history is *paged*, never collected: `read_committed` returns at most
 /// `max_bytes` per call and this advances by the last offset it saw, so a client
 /// resuming from the start of a large stream costs the broker one page of memory
 /// at a time rather than the whole history. Each page is written before the next
 /// is read, so backpressure from a slow client propagates naturally into slower
 /// reading rather than unbounded buffering.
+///
+/// On a `Quorum` stream a page stops at the committed mark and the next waits
+/// for it (see `Broker::read_committed`): the history range is closed, but
+/// part of it can be past the mark when this broker has just taken the shard.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn write_replay<S: EventSink>(
     event_send: &mut S,
@@ -62,7 +66,7 @@ pub(super) async fn write_replay<S: EventSink>(
         let mut at = range.from_offset;
         while at < range.until_offset {
             let records = broker
-                .read_durable(tenant_id, namespace, stream, shard, at, HISTORY_PAGE_BYTES)
+                .read_committed(tenant_id, namespace, stream, shard, at, HISTORY_PAGE_BYTES)
                 .await?;
             if records.is_empty() {
                 break;
@@ -180,7 +184,7 @@ pub(super) async fn write_history_range<S: EventSink>(
     let mut at = from;
     while at < until {
         let records = broker
-            .read_durable(tenant_id, namespace, stream, shard, at, HISTORY_PAGE_BYTES)
+            .read_committed(tenant_id, namespace, stream, shard, at, HISTORY_PAGE_BYTES)
             .await?;
         if records.is_empty() {
             break;
