@@ -241,9 +241,8 @@ Filters intersect, and an absent filter matches everything:
 GET /v1/nodes?lifecycle=live&region=us-west-2&label=rack%3Da1&label=tier%3Dhot
 ```
 
-Repeating `label` requires all of them. The listing is unpaginated, like the
-other listings in this API: a cluster has brokers in the tens, and a cursor no
-caller needs is a cursor every caller has to handle.
+Repeating `label` requires all of them. The listing is paged like the others;
+see [Listing and pagination](#listing-and-pagination).
 
 #### Authorization
 
@@ -354,6 +353,69 @@ broker's does: bootstrap an operator tenant with a policy granting
 `tenant.manage`, `node.view` and `node.manage` over `cluster:*` to a role,
 assign the operator principal to it, and exchange an IdP token. No tenant admin
 can write those rules afterwards, because no tenant scope contains `cluster:*`.
+
+### Listing and pagination
+
+These listings are paged:
+
+| Endpoint | Order | No `limit`/`cursor` |
+| --- | --- | --- |
+| `GET /v1/tenants` | `tenant_id` | first 1000 |
+| `GET /v1/tenants/{t}/namespaces` | namespace | first 1000 |
+| `GET /v1/tenants/{t}/namespaces/{ns}/streams` | stream | first 1000 |
+| `GET /v1/tenants/{t}/namespaces/{ns}/caches` | cache | first 1000 |
+| `GET /v1/nodes` | `node_id` | first 1000 |
+| `GET /v1/shard-assignments` | tenant, namespace, kind, name, shard | first 1000 |
+| `GET /v1/tenants/{t}/rbac/policies` | subject, object, action | every rule, as a bare array |
+| `GET /v1/tenants/{t}/rbac/groupings` | user, role | every assignment, as a bare array |
+
+`limit` is 1 to 10000 and defaults to 1000. A response with more to come
+carries `next_cursor`; pass it back as `cursor` with the same filters to get
+the next page, and stop when it is absent. Anything else in either parameter
+is a `400`.
+
+```
+GET /v1/tenants/t1/namespaces/payments/streams?limit=2
+{ "items": [ ... two streams ... ], "next_cursor": "InMyIg" }
+GET /v1/tenants/t1/namespaces/payments/streams?limit=2&cursor=InMyIg
+{ "items": [ ... the last one ... ] }
+```
+
+**Compatibility.** The object-shaped listings keep their shape: `next_cursor`
+is a new optional field, absent on the last page, so a response that fits on
+one page has exactly the fields it had. A caller that ignores `next_cursor` sees
+only the first 1000 entries of a longer listing; every in-repo caller (the
+broker's node catalog, the `felix-cluster` harness) follows it. The two RBAC
+listings answered with a bare JSON array, which has nowhere to put a cursor,
+so they still answer that way, in full, when neither parameter is given, and
+with `{ "items": [...], "next_cursor": ... }` when either is.
+
+**The cursor** is the key of the last entry returned, base64-encoded; treat it
+as opaque. Paging is keyset rather than offset, so an entry created or deleted
+behind the cursor does not make a later page repeat or skip one that was there
+all along; one created ahead of it appears on a later page. There is no
+snapshot across pages: a listing read over several requests is not a
+point-in-time view. The snapshot and changes feeds are for that.
+
+**Filtering** — by the caller's rights, and by `/v1/nodes`' filters and
+`?leader=` — fills the page from further on rather than returning it short, so
+every page but the last holds exactly `limit` entries, and a cursor never names
+an entry the caller was not shown. The last page can be empty when everything
+after the previous one was filtered out. A caller who can see little of a large
+listing therefore costs a longer read per page, never more than the unpaged
+listing did.
+
+Not paged, because each is bounded by something other than growth:
+`/v1/regions` (derived from the nodes), `/v1/shard-moves` (the moves in
+progress, which the move limits cap), and a tenant's `idp-issuers` and
+`signing-keys`.
+
+The store implements pages natively on every backend: Postgres as an index
+range scan (`WHERE key > $cursor ORDER BY key LIMIT n + 1`), memory and Raft
+by sorting what is past the cursor. Postgres orders names by the database's
+collation, so the order of names differing only in punctuation can differ
+between backends; within one backend it is stable, which is all a cursor
+needs.
 
 ### Shard ownership
 

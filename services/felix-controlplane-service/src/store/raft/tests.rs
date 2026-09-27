@@ -77,6 +77,15 @@ async fn satisfies_the_rbac_contract() {
     crate::store::contract::rbac::run_rbac_contract(store).await;
 }
 
+/// Pages are read from the local replica, with the leader's heartbeats
+/// overlaid on nodes.
+#[tokio::test]
+async fn satisfies_the_pagination_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    crate::store::contract::pagination::run_pagination_contract(store).await;
+}
+
 #[tokio::test]
 async fn satisfies_the_placement_contract() {
     let dir = tempfile::tempdir().expect("tempdir");

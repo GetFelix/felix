@@ -6,6 +6,7 @@ pub mod error;
 pub mod namespaces;
 pub mod nodes;
 pub mod openapi;
+pub(crate) mod pagination;
 pub mod readiness;
 pub mod regions;
 mod router;

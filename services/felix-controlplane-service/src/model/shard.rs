@@ -156,6 +156,19 @@ impl ShardKey {
             stream: self.stream.clone(),
         })
     }
+
+    /// The order assignments are paged in: Postgres's primary-key order, so a
+    /// page there is an index range, with kind compared by its stored name.
+    /// Every backend must page alike.
+    pub(crate) fn page_order(&self) -> (String, String, &'static str, String, u32) {
+        (
+            self.tenant_id.clone(),
+            self.namespace.clone(),
+            self.kind.as_str(),
+            self.stream.clone(),
+            self.shard,
+        )
+    }
 }
 
 /// Who owns a shard right now.

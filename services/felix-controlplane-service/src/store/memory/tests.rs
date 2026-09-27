@@ -44,6 +44,13 @@ async fn satisfies_the_shard_store_contract() {
     crate::store::contract::shards::run_node_delete_race_contract(store, 5000).await;
 }
 
+/// The same suite Postgres and Raft run.
+#[tokio::test]
+async fn satisfies_the_pagination_contract() {
+    let store = std::sync::Arc::new(store_with_limits(100, 1000));
+    crate::store::contract::pagination::run_pagination_contract(store).await;
+}
+
 /// The same suite Postgres runs, with both instances on one store.
 #[tokio::test]
 async fn satisfies_the_placement_contract() {

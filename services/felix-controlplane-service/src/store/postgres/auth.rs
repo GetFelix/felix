@@ -4,11 +4,11 @@ use jsonwebtoken::Algorithm;
 use serde_json::Value;
 use sqlx::FromRow;
 
-use super::PostgresStore;
+use super::{PostgresStore, page_fetch};
 use crate::auth::felix_token::{SigningKey, TenantSigningKeys};
 use crate::auth::idp_registry::{ClaimMappings, IdpIssuerConfig};
 use crate::auth::rbac::policy_store::{GroupingRule, PolicyRule};
-use crate::store::{StoreError, StoreResult};
+use crate::store::{Page, PageRequest, StoreError, StoreResult};
 
 #[derive(Debug, Clone, FromRow)]
 struct DbIdpIssuer {
@@ -276,6 +276,77 @@ pub(super) async fn list_rbac_groupings(
             role: row.role,
         })
         .collect())
+}
+
+pub(super) async fn list_rbac_policies_page(
+    store: &PostgresStore,
+    tenant_id: &str,
+    page: PageRequest<PolicyRule>,
+) -> StoreResult<Page<PolicyRule>> {
+    let fetch = page_fetch(page.limit);
+    let rows: Vec<DbPolicy> = match &page.after {
+        None => sqlx::query_as(
+            "SELECT subject, object, action FROM rbac_policies WHERE tenant_id = $1 \
+             ORDER BY subject, object, action LIMIT $2",
+        )
+        .bind(tenant_id)
+        .bind(fetch),
+        Some(after) => sqlx::query_as(
+            "SELECT subject, object, action FROM rbac_policies WHERE tenant_id = $1 \
+             AND (subject, object, action) > ($2, $3, $4) \
+             ORDER BY subject, object, action LIMIT $5",
+        )
+        .bind(tenant_id)
+        .bind(&after.subject)
+        .bind(&after.object)
+        .bind(&after.action)
+        .bind(fetch),
+    }
+    .fetch_all(&store.pool)
+    .await?;
+    let items = rows
+        .into_iter()
+        .map(|row| PolicyRule {
+            subject: row.subject,
+            object: row.object,
+            action: row.action,
+        })
+        .collect();
+    Ok(Page::from_overfetch(items, page.limit))
+}
+
+pub(super) async fn list_rbac_groupings_page(
+    store: &PostgresStore,
+    tenant_id: &str,
+    page: PageRequest<GroupingRule>,
+) -> StoreResult<Page<GroupingRule>> {
+    let fetch = page_fetch(page.limit);
+    let rows: Vec<DbGrouping> = match &page.after {
+        None => sqlx::query_as(
+            "SELECT user_id, role FROM rbac_groupings WHERE tenant_id = $1 \
+             ORDER BY user_id, role LIMIT $2",
+        )
+        .bind(tenant_id)
+        .bind(fetch),
+        Some(after) => sqlx::query_as(
+            "SELECT user_id, role FROM rbac_groupings WHERE tenant_id = $1 \
+             AND (user_id, role) > ($2, $3) ORDER BY user_id, role LIMIT $4",
+        )
+        .bind(tenant_id)
+        .bind(&after.user)
+        .bind(&after.role)
+        .bind(fetch),
+    }
+    .fetch_all(&store.pool)
+    .await?;
+    let items = rows
+        .into_iter()
+        .map(|row| GroupingRule {
+            user: row.user_id,
+            role: row.role,
+        })
+        .collect();
+    Ok(Page::from_overfetch(items, page.limit))
 }
 
 pub(super) async fn add_rbac_policy(

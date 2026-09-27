@@ -5,12 +5,14 @@ use sqlx::FromRow;
 use super::codec::{
     DbCache, DbNamespace, DbStream, parse_consistency, parse_delivery, parse_stream_kind,
 };
-use super::{PostgresStore, is_unique_violation};
+use super::{PostgresStore, is_unique_violation, page_fetch};
 use crate::model::{
     Cache, CacheKey, Namespace, NamespaceKey, RetentionPolicy, Stream, StreamKey, Tenant,
     TenantChange, TenantChangeOp,
 };
-use crate::store::{ChangeSet, ControlPlaneStore, Snapshot, StoreError, StoreResult};
+use crate::store::{
+    ChangeSet, ControlPlaneStore, Page, PageRequest, Snapshot, StoreError, StoreResult,
+};
 
 /// Row shape for `tenants` table (minimal mapping needed by the API).
 #[derive(Debug, Clone, FromRow)]
@@ -51,6 +53,36 @@ pub(super) async fn list_tenants(store: &PostgresStore) -> StoreResult<Vec<Tenan
 ///
 /// Transactionality matters: we want the authoritative row and its change event to be consistent
 /// (no “created row without change” or “change without row” states).
+/// Keyset pages over the primary key, so each page is an index range scan.
+pub(super) async fn list_tenants_page(
+    store: &PostgresStore,
+    page: PageRequest<String>,
+) -> StoreResult<Page<Tenant>> {
+    let fetch = page_fetch(page.limit);
+    let rows = match &page.after {
+        None => sqlx::query_as::<_, DbTenant>(
+            "SELECT tenant_id, display_name FROM tenants ORDER BY tenant_id LIMIT $1",
+        )
+        .bind(fetch),
+        Some(after) => sqlx::query_as::<_, DbTenant>(
+            "SELECT tenant_id, display_name FROM tenants WHERE tenant_id > $1 \
+             ORDER BY tenant_id LIMIT $2",
+        )
+        .bind(after)
+        .bind(fetch),
+    }
+    .fetch_all(&store.pool)
+    .await?;
+    let items = rows
+        .into_iter()
+        .map(|row| Tenant {
+            tenant_id: row.tenant_id,
+            display_name: row.display_name,
+        })
+        .collect();
+    Ok(Page::from_overfetch(items, page.limit))
+}
+
 pub(super) async fn create_tenant(store: &PostgresStore, tenant: Tenant) -> StoreResult<Tenant> {
     let mut tx = store.pool.begin().await?;
     let insert = sqlx::query(r#"INSERT INTO tenants (tenant_id, display_name) VALUES ($1, $2)"#)

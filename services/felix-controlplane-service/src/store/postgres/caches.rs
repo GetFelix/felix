@@ -3,9 +3,9 @@ use serde_json::Value;
 use sqlx::FromRow;
 
 use super::codec::{DbCache, consistency_to_str, parse_consistency};
-use super::{PostgresStore, is_unique_violation};
+use super::{PostgresStore, is_unique_violation, page_fetch};
 use crate::model::{Cache, CacheChange, CacheChangeOp, CacheKey, CachePatchRequest};
-use crate::store::{ChangeSet, Snapshot, StoreError, StoreResult};
+use crate::store::{ChangeSet, Page, PageRequest, Snapshot, StoreError, StoreResult};
 
 /// Row shape for the `cache_changes` table.
 #[derive(Debug, Clone, FromRow)]
@@ -31,19 +31,52 @@ pub(super) async fn list_caches(
     .fetch_all(&store.pool)
     .await
     ?;
-    rows.into_iter()
-        .map(|row| {
-            Ok(Cache {
-                tenant_id: row.tenant_id,
-                namespace: row.namespace,
-                cache: row.cache,
-                display_name: row.display_name,
-                shards: row.shards as u32,
-                replication_factor: row.replication_factor as u32,
-                consistency: parse_consistency(&row.consistency)?,
-            })
-        })
-        .collect()
+    rows.into_iter().map(cache_from_db).collect()
+}
+
+pub(super) async fn list_caches_page(
+    store: &PostgresStore,
+    tenant_id: &str,
+    namespace: &str,
+    page: PageRequest<String>,
+) -> StoreResult<Page<Cache>> {
+    let fetch = page_fetch(page.limit);
+    let rows = match &page.after {
+        None => sqlx::query_as::<_, DbCache>(
+            r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency FROM caches
+               WHERE tenant_id = $1 AND namespace = $2 ORDER BY cache LIMIT $3"#,
+        )
+        .bind(tenant_id)
+        .bind(namespace)
+        .bind(fetch),
+        Some(after) => sqlx::query_as::<_, DbCache>(
+            r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency FROM caches
+               WHERE tenant_id = $1 AND namespace = $2 AND cache > $3 ORDER BY cache LIMIT $4"#,
+        )
+        .bind(tenant_id)
+        .bind(namespace)
+        .bind(after)
+        .bind(fetch),
+    }
+    .fetch_all(&store.pool)
+    .await?;
+    let items = rows
+        .into_iter()
+        .map(cache_from_db)
+        .collect::<StoreResult<Vec<_>>>()?;
+    Ok(Page::from_overfetch(items, page.limit))
+}
+
+fn cache_from_db(row: DbCache) -> StoreResult<Cache> {
+    Ok(Cache {
+        tenant_id: row.tenant_id,
+        namespace: row.namespace,
+        cache: row.cache,
+        display_name: row.display_name,
+        shards: row.shards as u32,
+        replication_factor: row.replication_factor as u32,
+        consistency: parse_consistency(&row.consistency)?,
+    })
 }
 
 pub(super) async fn get_cache(store: &PostgresStore, key: &CacheKey) -> StoreResult<Cache> {

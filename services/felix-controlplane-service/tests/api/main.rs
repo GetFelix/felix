@@ -8,5 +8,6 @@ mod coverage;
 mod node_admin;
 mod node_heartbeat;
 mod node_write_auth;
+mod pagination;
 mod resource_auth;
 mod smoke;

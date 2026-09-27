@@ -45,8 +45,8 @@ use crate::store::raft::command::{
 use crate::store::raft::soft_state::{LeaderRequest, SoftState};
 use crate::store::raft::state_machine::MetadataStateMachine;
 use crate::store::{
-    AssignmentWrite, AuthStore, ChangeSet, ControlPlaneStore, PlacementLease, ReportWrite,
-    Snapshot, StoreError, StoreResult, TenantAuthSeed,
+    AssignmentWrite, AuthStore, ChangeSet, ControlPlaneStore, Page, PageRequest, PlacementLease,
+    ReportWrite, Snapshot, StoreError, StoreResult, TenantAuthSeed,
 };
 
 pub struct RaftStore {
@@ -125,6 +125,10 @@ impl ControlPlaneStore for RaftStore {
         self.local().list_tenants().await
     }
 
+    async fn list_tenants_page(&self, page: PageRequest<String>) -> StoreResult<Page<Tenant>> {
+        self.local().list_tenants_page(page).await
+    }
+
     async fn create_tenant(&self, tenant: Tenant) -> StoreResult<Tenant> {
         match self.propose(MetaCommand::CreateTenant { tenant }).await? {
             MetaResponse::Tenant { tenant } => Ok(tenant),
@@ -150,6 +154,14 @@ impl ControlPlaneStore for RaftStore {
 
     async fn list_namespaces(&self, tenant_id: &str) -> StoreResult<Vec<Namespace>> {
         self.local().list_namespaces(tenant_id).await
+    }
+
+    async fn list_namespaces_page(
+        &self,
+        tenant_id: &str,
+        page: PageRequest<String>,
+    ) -> StoreResult<Page<Namespace>> {
+        self.local().list_namespaces_page(tenant_id, page).await
     }
 
     async fn create_namespace(&self, namespace: Namespace) -> StoreResult<Namespace> {
@@ -178,6 +190,17 @@ impl ControlPlaneStore for RaftStore {
 
     async fn list_streams(&self, tenant_id: &str, namespace: &str) -> StoreResult<Vec<Stream>> {
         self.local().list_streams(tenant_id, namespace).await
+    }
+
+    async fn list_streams_page(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        page: PageRequest<String>,
+    ) -> StoreResult<Page<Stream>> {
+        self.local()
+            .list_streams_page(tenant_id, namespace, page)
+            .await
     }
 
     async fn get_stream(&self, key: &StreamKey) -> StoreResult<Stream> {
@@ -224,6 +247,17 @@ impl ControlPlaneStore for RaftStore {
 
     async fn list_caches(&self, tenant_id: &str, namespace: &str) -> StoreResult<Vec<Cache>> {
         self.local().list_caches(tenant_id, namespace).await
+    }
+
+    async fn list_caches_page(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        page: PageRequest<String>,
+    ) -> StoreResult<Page<Cache>> {
+        self.local()
+            .list_caches_page(tenant_id, namespace, page)
+            .await
     }
 
     async fn get_cache(&self, key: &CacheKey) -> StoreResult<Cache> {
@@ -288,6 +322,19 @@ impl ControlPlaneStore for RaftStore {
             .into_iter()
             .map(|node| self.soft.overlay(node))
             .collect())
+    }
+
+    /// With the leader's latest heartbeats, as [`Self::list_nodes`].
+    async fn list_nodes_page(&self, page: PageRequest<String>) -> StoreResult<Page<Node>> {
+        let page = self.local().list_nodes_page(page).await?;
+        Ok(Page {
+            items: page
+                .items
+                .into_iter()
+                .map(|node| self.soft.overlay(node))
+                .collect(),
+            more: page.more,
+        })
     }
 
     async fn patch_node(&self, node_id: &str, patch: NodePatchRequest) -> StoreResult<Node> {
@@ -434,6 +481,14 @@ impl ControlPlaneStore for RaftStore {
 
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
         self.local().list_shard_assignments().await
+    }
+
+    async fn list_shard_assignments_page(
+        &self,
+        leader: Option<&str>,
+        page: PageRequest<ShardKey>,
+    ) -> StoreResult<Page<ShardAssignment>> {
+        self.local().list_shard_assignments_page(leader, page).await
     }
 
     async fn list_shard_assignments_for_node(
@@ -608,6 +663,22 @@ impl AuthStore for RaftStore {
 
     async fn list_rbac_groupings(&self, tenant_id: &str) -> StoreResult<Vec<GroupingRule>> {
         self.local().list_rbac_groupings(tenant_id).await
+    }
+
+    async fn list_rbac_policies_page(
+        &self,
+        tenant_id: &str,
+        page: PageRequest<PolicyRule>,
+    ) -> StoreResult<Page<PolicyRule>> {
+        self.local().list_rbac_policies_page(tenant_id, page).await
+    }
+
+    async fn list_rbac_groupings_page(
+        &self,
+        tenant_id: &str,
+        page: PageRequest<GroupingRule>,
+    ) -> StoreResult<Page<GroupingRule>> {
+        self.local().list_rbac_groupings_page(tenant_id, page).await
     }
 
     async fn add_rbac_policy(&self, tenant_id: &str, policy: PolicyRule) -> StoreResult<()> {

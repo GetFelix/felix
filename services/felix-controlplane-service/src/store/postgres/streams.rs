@@ -5,9 +5,9 @@ use sqlx::FromRow;
 use super::codec::{
     DbStream, consistency_to_str, delivery_to_str, stream_from_db, stream_kind_to_str,
 };
-use super::{PostgresStore, is_unique_violation};
+use super::{PostgresStore, is_unique_violation, page_fetch};
 use crate::model::{Stream, StreamChange, StreamChangeOp, StreamKey, StreamPatchRequest};
-use crate::store::{ChangeSet, Snapshot, StoreError, StoreResult};
+use crate::store::{ChangeSet, Page, PageRequest, Snapshot, StoreError, StoreResult};
 
 /// Row shape for the `stream_changes` table.
 #[derive(Debug, Clone, FromRow)]
@@ -37,6 +37,40 @@ pub(super) async fn list_streams(
     rows.into_iter()
         .map(stream_from_db)
         .collect::<Result<Vec<_>, StoreError>>()
+}
+
+pub(super) async fn list_streams_page(
+    store: &PostgresStore,
+    tenant_id: &str,
+    namespace: &str,
+    page: PageRequest<String>,
+) -> StoreResult<Page<Stream>> {
+    let fetch = page_fetch(page.limit);
+    let rows = match &page.after {
+        None => sqlx::query_as::<_, DbStream>(
+            r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region
+               FROM streams WHERE tenant_id = $1 AND namespace = $2 ORDER BY stream LIMIT $3"#,
+        )
+        .bind(tenant_id)
+        .bind(namespace)
+        .bind(fetch),
+        Some(after) => sqlx::query_as::<_, DbStream>(
+            r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region
+               FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream > $3
+               ORDER BY stream LIMIT $4"#,
+        )
+        .bind(tenant_id)
+        .bind(namespace)
+        .bind(after)
+        .bind(fetch),
+    }
+    .fetch_all(&store.pool)
+    .await?;
+    let items = rows
+        .into_iter()
+        .map(stream_from_db)
+        .collect::<StoreResult<Vec<_>>>()?;
+    Ok(Page::from_overfetch(items, page.limit))
 }
 
 pub(super) async fn get_stream(store: &PostgresStore, key: &StreamKey) -> StoreResult<Stream> {

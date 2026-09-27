@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
@@ -19,6 +19,7 @@ use crate::api::ensure_tenant_exists;
 use crate::api::error::{
     ApiError, api_conflict, api_internal, api_not_found, api_validation_error,
 };
+use crate::api::pagination::{PageParams, list_visible};
 use crate::api::types::{
     NamespaceChangesResponse, NamespaceCreateRequest, NamespaceListResponse,
     NamespaceSnapshotResponse,
@@ -35,10 +36,12 @@ use crate::store::StoreError;
     path = "/v1/tenants/{tenant_id}/namespaces",
     tag = "namespaces",
     params(
-        ("tenant_id" = String, Path, description = "Tenant identifier")
+        ("tenant_id" = String, Path, description = "Tenant identifier"),
+        PageParams
     ),
     responses(
-        (status = 200, description = "List namespaces", body = NamespaceListResponse),
+        (status = 200, description = "A page of the namespaces the caller may manage, in name order", body = NamespaceListResponse),
+        (status = 400, description = "Invalid limit or cursor", body = crate::api::types::ErrorResponse),
         (status = 404, description = "Tenant not found", body = crate::api::types::ErrorResponse)
     )
 )]
@@ -46,18 +49,17 @@ pub(crate) async fn list_namespaces(
     Path(tenant_id): Path<String>,
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(page): Query<PageParams>,
 ) -> Result<Json<NamespaceListResponse>, ApiError> {
     let scopes = tenant_scopes_for(&state, &tenant_id, &headers, ACTION_NS_MANAGE).await?;
+    let request = page.request()?;
     ensure_tenant_exists(&state, &tenant_id).await?;
-    let items = state
-        .store
-        .list_namespaces(&tenant_id)
-        .await
-        .map_err(|err| api_internal("failed to list namespaces", &err))?
-        .into_iter()
+    let listed = list_visible(
+        request,
+        |page| state.store.list_namespaces_page(&tenant_id, page),
         // Only what the caller could manage: a namespace admin sees their
         // own, not the tenant's whole layout.
-        .filter(|ns| {
+        |ns: &Namespace| {
             let target = ParsedObject::Namespace {
                 tenant_id: tenant_id.clone(),
                 namespace: Segment::Exact(ns.namespace.clone()),
@@ -65,9 +67,15 @@ pub(crate) async fn list_namespaces(
             scopes
                 .iter()
                 .any(|scope| object_within_scope(scope, &target))
-        })
-        .collect();
-    Ok(Json(NamespaceListResponse { items }))
+        },
+        |ns: &Namespace| ns.namespace.clone(),
+    )
+    .await
+    .map_err(|err| api_internal("failed to list namespaces", &err))?;
+    Ok(Json(NamespaceListResponse {
+        items: listed.items,
+        next_cursor: listed.next_cursor,
+    }))
 }
 
 #[utoipa::path(

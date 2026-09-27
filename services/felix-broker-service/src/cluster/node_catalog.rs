@@ -40,6 +40,9 @@ pub struct NodeCatalog {
 #[derive(Debug, Deserialize)]
 struct NodeListResponse {
     items: Vec<NodeView>,
+    /// Absent on the last page, and from a control plane that predates paging.
+    #[serde(default)]
+    next_cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,7 +79,7 @@ struct Placement {
     routable: Option<bool>,
 }
 
-/// Fetch the catalog.
+/// Fetch the catalog, every page of it.
 ///
 /// A node whose advertised address does not parse is skipped rather than
 /// failing the fetch: one malformed registration must not cost this broker every
@@ -86,18 +89,37 @@ pub(crate) async fn fetch(
     base_url: &str,
     bearer: Option<&str>,
 ) -> Result<NodeCatalog> {
-    let mut request = client.get(format!("{base_url}/v1/nodes"));
-    if let Some(bearer) = bearer {
-        request = request.bearer_auth(bearer);
+    let mut all = NodeListResponse {
+        items: Vec::new(),
+        next_cursor: None,
+    };
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut request = client.get(format!("{base_url}/v1/nodes"));
+        if let Some(cursor) = &cursor {
+            request = request.query(&[("cursor", cursor)]);
+        }
+        if let Some(bearer) = bearer {
+            request = request.bearer_auth(bearer);
+        }
+        let response = request.send().await.context("send node list request")?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("{status}: {body}"));
+        }
+        let page: NodeListResponse = response.json().await.context("decode node list")?;
+        all.items.extend(page.items);
+        match page.next_cursor {
+            // A cursor that does not move would loop forever, and half a
+            // catalog would read as brokers that are gone.
+            Some(next) if cursor.as_ref() == Some(&next) => {
+                return Err(anyhow!("node list cursor did not advance"));
+            }
+            Some(next) => cursor = Some(next),
+            None => return Ok(into_catalog(all)),
+        }
     }
-    let response = request.send().await.context("send node list request")?;
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!("{status}: {body}"));
-    }
-    let response: NodeListResponse = response.json().await.context("decode node list")?;
-    Ok(into_catalog(response))
 }
 
 /// Turn the control plane's answer into routable entries.

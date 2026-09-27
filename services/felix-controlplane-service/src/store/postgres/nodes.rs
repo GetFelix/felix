@@ -2,14 +2,18 @@
 use anyhow::anyhow;
 use sqlx::FromRow;
 
-use super::{PostgresStore, begin_consistent_read, is_unique_violation};
+use super::{PostgresStore, begin_consistent_read, is_unique_violation, page_fetch};
 use crate::model::{
     Node, NodeCapacity, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest, NodeSpec,
     NodeStatus, NodeValidationError,
 };
-use crate::store::{ChangeSet, Snapshot, StoreError, StoreResult};
+use crate::store::{ChangeSet, Page, PageRequest, Snapshot, StoreError, StoreResult};
 
 const NODE_SELECT_ALL: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes ORDER BY node_id"#;
+
+const NODE_SELECT_FIRST_PAGE: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes ORDER BY node_id LIMIT $1"#;
+
+const NODE_SELECT_PAGE_AFTER: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes WHERE node_id > $1 ORDER BY node_id LIMIT $2"#;
 
 const NODE_SELECT_BY_ID: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes WHERE node_id = $1"#;
 
@@ -145,6 +149,26 @@ pub(super) async fn list_nodes(store: &PostgresStore) -> StoreResult<Vec<Node>> 
         .fetch_all(&store.pool)
         .await?;
     rows.into_iter().map(node_from_db).collect()
+}
+
+pub(super) async fn list_nodes_page(
+    store: &PostgresStore,
+    page: PageRequest<String>,
+) -> StoreResult<Page<Node>> {
+    let fetch = page_fetch(page.limit);
+    let rows = match &page.after {
+        None => sqlx::query_as::<_, DbNode>(NODE_SELECT_FIRST_PAGE).bind(fetch),
+        Some(after) => sqlx::query_as::<_, DbNode>(NODE_SELECT_PAGE_AFTER)
+            .bind(after)
+            .bind(fetch),
+    }
+    .fetch_all(&store.pool)
+    .await?;
+    let items = rows
+        .into_iter()
+        .map(node_from_db)
+        .collect::<StoreResult<Vec<_>>>()?;
+    Ok(Page::from_overfetch(items, page.limit))
 }
 
 pub(super) async fn patch_node(

@@ -8,6 +8,7 @@ use axum::http::HeaderMap;
 use super::require_cluster_node_view;
 use crate::api::AppState;
 use crate::api::error::{ApiError, api_internal, api_not_found};
+use crate::api::pagination::{PageParams, list_visible};
 use crate::api::types::{NodeListResponse, NodePlacement, NodeView};
 use crate::clock::now_millis;
 use crate::model::{Node, NodeLifecycle};
@@ -20,42 +21,55 @@ use crate::store::StoreError;
     params(
         ("lifecycle" = Option<String>, Query, description = "live, draining, down, or left"),
         ("region" = Option<String>, Query, description = "Exact region match"),
-        ("label" = Option<String>, Query, description = "key=value; repeat to require several")
+        ("label" = Option<String>, Query, description = "key=value; repeat to require several"),
+        PageParams
     ),
-    responses((status = 200, description = "List registered nodes", body = NodeListResponse))
+    responses(
+        (status = 200, description = "A page of registered nodes, in id order", body = NodeListResponse),
+        (status = 400, description = "Invalid limit or cursor", body = crate::api::types::ErrorResponse)
+    )
 )]
-/// List every registered broker and why each is, or is not, placeable.
+/// List registered brokers and why each is, or is not, placeable.
 ///
-/// Unpaginated, like the other listings in this API: a cluster has brokers in
-/// the tens, and a cursor no caller needs is a cursor every caller has to handle.
+/// Paged like every listing, though a cluster rarely has more brokers than
+/// fit on the default page.
 ///
 /// # Errors
+/// - 400 for an invalid `limit` or `cursor`.
 /// - 500 when the store cannot be read.
 pub(crate) async fn list_nodes(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<HashMap<String, String>>,
     raw_query: axum::extract::RawQuery,
+    Query(page): Query<PageParams>,
 ) -> Result<Json<NodeListResponse>, ApiError> {
     require_cluster_node_view(&state, &headers).await?;
     let filters = NodeFilters::from_query(&query, raw_query.0.as_deref().unwrap_or_default());
     let now = now_millis();
     let expiry = state.node_liveness.expiry_timeout_ms;
 
-    let items = state
-        .store
-        .list_nodes()
-        .await
-        .map_err(|ref err| api_internal("failed to list nodes", err))?
+    let listed = list_visible(
+        page.request()?,
+        |page| state.store.list_nodes_page(page),
+        |node| filters.matches(node),
+        |node: &Node| node.node_id.clone(),
+    )
+    .await
+    .map_err(|ref err| api_internal("failed to list nodes", err))?;
+    let items = listed
+        .items
         .into_iter()
-        .filter(|node| filters.matches(node))
         .map(|node| NodeView {
             placement: placement_for(&node, now, expiry),
             node,
         })
         .collect();
 
-    Ok(Json(NodeListResponse { items }))
+    Ok(Json(NodeListResponse {
+        items,
+        next_cursor: listed.next_cursor,
+    }))
 }
 
 #[utoipa::path(

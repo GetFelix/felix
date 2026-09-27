@@ -286,6 +286,17 @@ A tenant admin's token already carries the manage actions: exchange expands
 `stream.manage:stream:t1/*/*` and `cache.manage:cache:t1/*/*`. Listings return
 only what the caller could manage.
 
+Listings are paged. `limit` is 1 to 10000, default 1000; a response with more
+to come carries `next_cursor`, which goes back as `cursor` for the next page.
+This applies to tenants, namespaces, streams, caches, `/v1/nodes` and
+`/v1/shard-assignments`. The RBAC policy and grouping listings answer with the
+full bare array when neither parameter is given, as they always have, and with
+`{ "items": [...], "next_cursor": ... }` when either is.
+
+```http
+GET /v1/tenants/t1/namespaces/payments/streams?limit=100&cursor=InMyIg
+```
+
 The tenant catalog — which tenants exist — is cluster metadata, so creating,
 listing and deleting tenants takes the same kind of operator credential as
 managing the fleet, and deleting is operator-only even for the tenant's own
