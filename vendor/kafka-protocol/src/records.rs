@@ -514,7 +514,9 @@ impl RecordBatchDecoder {
         version: i8,
         records: &mut Vec<Record>,
     ) -> Result<()> {
-        records.reserve(batch_decode_info.record_count as usize);
+        // The count comes from the batch header; every record takes at least a
+        // byte, so a count past what is left is a lie and must not size memory.
+        records.reserve((batch_decode_info.record_count as usize).min(bytes::Buf::remaining(buf)));
         for _ in 0..batch_decode_info.record_count {
             records.push(Record::decode_new(buf, batch_decode_info, version)?);
         }
