@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790472621537,
+  "lastUpdate": 1790472860706,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -21714,6 +21714,72 @@ window.BENCHMARK_DATA = {
             "range": "29.21",
             "unit": "us",
             "extra": "trials: 5\nmedian: 364.00\nmean: 360.20\nstdev: 29.21\ncv: 8.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d87d556bd2e53e1d79278ecb1624df086b1a0b3d",
+          "message": "fix(controlplane): authorization that can shrink, scoped IdP groups, token audiences (#741)\n\n* feat(controlplane): remove RBAC rules, revoke a principal, rotate signing keys\n\nAuthorization could only grow. Add removal to the auth store on every\nbackend (memory, Postgres, and Raft through new command variants), and\nroutes for it:\n\n- DELETE /v1/tenants/{t}/rbac/policies and /rbac/groupings, held to the\n  same delegated scope as adding the rule.\n- POST /v1/tenants/{t}/refresh-tokens/revoke, which calls the existing\n  revoke_refresh_tokens_for_principal; requires tenant.manage.\n- /v1/tenants/{t}/signing-keys: stage a new key (published, not\n  signing), activate it, retire the old one. Three steps because brokers\n  cache JWKS for an hour and do not refetch on an unknown kid.\n\nThe five new Raft commands are refused by a member that predates them,\nso every control-plane member must be upgraded before the routes are\nused.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(controlplane): exchange resources narrow grants instead of passing them through\n\nkey_match2 was called with its arguments reversed, so asking for one\nstream out of a namespace grant returned the namespace grant unchanged.\nNarrow with the RBAC object grammar instead: each grant is cut down to\nthe part a resource hint covers, keeping the grant's object kind, and a\nhint never widens.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix: keep live credentials out of Debug output\n\nBrokerConfig derived Debug over controlplane_token, and the refresh\nresponse, exchange/refresh bodies and the bootstrap config derived it\nover live tokens. None is logged today; one {:?} would publish them.\nBrokerConfig now renders through the same redacting Serialize as\n--print-config, the others redact by hand.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(controlplane): lock nodes between delete_node and assignment writes\n\ndelete_node counted referencing assignments and write_shard_assignment\nchecked node existence, each unlocked under READ COMMITTED (and across\nseparate lock scopes in the memory store), so a racing delete and write\ncould both pass and leave a shard naming a deleted node. The delete now\nlocks the node row FOR UPDATE, the write locks each named node FOR\nSHARE; memory takes nodes before shards in both and holds it across the\ncheck. The delete also refuses a node that is still a replica, as the\nAPI already did non-atomically.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(controlplane): identifier grammar at creation; HTTPS-only IdP URLs\n\nStream and namespace names were validated only as a side effect of RBAC\nparsing and tenant ids not at all, so a stream named '*' read as a\nwildcard in every grant written for it. One validator now runs when a\ntenant, namespace, stream or cache is created: 1-128 ASCII letters,\ndigits, '-', '_' or '.', starting with a letter or digit.\n\nIdP discovery and JWKS URLs must be https (http only on loopback, or with\nFELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP), carry no credentials, and\nare checked both when an issuer is stored and before every fetch,\nincluding a discovery document's jwks_uri. The discovery document's\nissuer must equal the configured one. Issuers may not contain '#', which\nscoped group names rely on.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(controlplane): issuer-scoped IdP groups, token audiences, refresh tokens in snapshots\n\nIdP group claims became group:{name}, so any IdP a tenant admin could\nregister might assert groups: [\"ops\"] and inherit every grant to the\noperators' group, cluster scope included. Groups are now\ngroup:{issuer}#{name}; a refresh honours only groups from issuers the\ntenant still trusts. FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS bridges\nthe migration, which docs/auth.md describes.\n\nTokens are minted for felix-broker (default) or felix-controlplane, and\nthe API accepts only the latter, so a broker cannot replay a client's\ntoken against it. Exchange and refresh take an optional audience; the\nbroker's node-credential refresh asks for felix-controlplane.\nFELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE bridges the migration. The\ncluster harness, tests, demos and perf seed scripts mint the right one.\n\nRaft snapshots did not carry refresh tokens, so a follower that installed\none disagreed with the leader on which tokens exist and which are spent\nor revoked. They are exported and restored now; older snapshots decode\nwith none.\n\nAlso: migrate export-postgres writes its file 0600 (it holds signing-key\nseeds), and the docs for rule removal, revocation, key rotation, audiences\nand the upgrade order.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-26T18:28:42-07:00",
+          "tree_id": "be2edcfb34a90d63101a18657ef9edd9c2f8bcd7",
+          "url": "https://github.com/gabloe/felix/commit/d87d556bd2e53e1d79278ecb1624df086b1a0b3d"
+        },
+        "date": 1790472857755,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 177,
+            "range": "2.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 175.40\nstdev: 2.30\ncv: 1.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 214,
+            "range": "5.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 214.00\nmean: 217.60\nstdev: 5.37\ncv: 2.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 249,
+            "range": "116.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 249.00\nmean: 305.80\nstdev: 116.58\ncv: 38.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 209,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 209.00\nmean: 208.40\nstdev: 1.34\ncv: 0.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 413,
+            "range": "6.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 413.00\nmean: 417.00\nstdev: 6.04\ncv: 1.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 583,
+            "range": "360.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 583.00\nmean: 721.60\nstdev: 360.81\ncv: 50.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
