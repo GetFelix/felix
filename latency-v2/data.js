@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790525653429,
+  "lastUpdate": 1790528472241,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -22638,6 +22638,72 @@ window.BENCHMARK_DATA = {
             "range": "759.51",
             "unit": "us",
             "extra": "trials: 5\nmedian: 562.00\nmean: 896.40\nstdev: 759.51\ncv: 84.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f64f9d584858e7bf9270073afb0fddbe72d5e649",
+          "message": "Check the licence split by dependency graph, track the vendored kafka-protocol, let clients offer felix/1 (#763)\n\n* fix(licensing): check the licence split on the dependency graph\n\nThe publish check only compared each crate's own label, so an Apache-2.0\ncrate linking AGPL code passed. scripts/check_license_graph.py walks the\nfirst-party graph (normal and build deps, optional ones included) from\n`task publish:check` and fails if a permissive crate reaches an AGPL one.\n\nIt found felix-conformance: Apache-2.0 but linking felix-broker-service,\nfelix-broker, felix-storage and felix-authz. It is `publish = false`, so it\nis relabelled AGPL-3.0-only rather than split; running `verify` over a\nclient's results still puts nothing on that client.\n\nThe vendored kafka-protocol is a path crate, which cargo-deny never matches\nagainst advisories. vendor/VENDORED.toml records it as kafka-protocol 0.18.0;\nscripts/check_vendored.py fails `task deny` if that record disagrees with the\nvendored manifest, the [patch] entry or Cargo.lock, and writes a throwaway\ncrate depending on the upstream release so the advisory check runs against it.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* feat(client): let the shipped clients offer the felix/1 ALPN\n\nNo client offered felix/1, so FELIX_TLS_REQUIRE_ALPN=true locked out every\none of them. felix_client::quic_client_config builds the QUIC TLS config\n(given roots or the platform trust store) and offers felix/1 when asked; the\nPython (offer_alpn=True) and TypeScript (offerAlpn) clients build theirs\nthrough it and expose the same switch.\n\nOff by default: a broker older than ALPN support lists none on its client\nlistener, and QUIC refuses a handshake where the client offered a protocol\nand the server picked none, so offering by default would lock clients out of\nold brokers instead. docs/protocol.md and the env reference say to turn it on\nin every client before requiring ALPN on the brokers.\n\nThe new broker-side test dials a REQUIRE_ALPN broker with the SDK's own\nconfig: served with the offer on, refused with it off.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T09:55:56-07:00",
+          "tree_id": "2d00b280af5cd354f5e58f2e6901087fdcd270d2",
+          "url": "https://github.com/gabloe/felix/commit/f64f9d584858e7bf9270073afb0fddbe72d5e649"
+        },
+        "date": 1790528469168,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 169,
+            "range": "4.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 169.00\nmean: 167.40\nstdev: 4.83\ncv: 2.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 210,
+            "range": "26.08",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 210.00\nmean: 220.60\nstdev: 26.08\ncv: 11.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 241,
+            "range": "538.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 241.00\nmean: 480.20\nstdev: 538.87\ncv: 112.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 205,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 205.00\nmean: 204.80\nstdev: 1.30\ncv: 0.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 419,
+            "range": "10.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 419.00\nmean: 412.80\nstdev: 10.50\ncv: 2.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 937,
+            "range": "352.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 937.00\nmean: 962.00\nstdev: 352.98\ncv: 36.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
