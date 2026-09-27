@@ -304,6 +304,13 @@ difference between "lost a port" and "the control plane refused this identity".
 Broker output goes to `broker.log` in each node's data directory rather than
 being discarded, so that reason exists to be quoted.
 
+## Fault campaigns
+
+`felix_cluster::history` runs clients against `Quorum` streams while a nemesis
+kills, pauses and partitions brokers at random. It then checks the recorded
+history for lost, duplicated, reordered, phantom and failed-but-present
+writes. See [the history checker](history-checker.md).
+
 ## The conformance suite
 
 `crates/testing/felix-cluster/tests/conformance.rs` runs one set of assertions against

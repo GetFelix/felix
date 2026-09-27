@@ -70,6 +70,9 @@ claims it failed.
 > stop it, which is the case `Quorum` exists to tolerate.
 > `a_quorum_acknowledged_record_survives_its_leader` — the acknowledged record
 > is readable after the acknowledging broker is killed.
+> `a_fault_campaign_keeps_quorum_histories_valid` — the same holds for every
+> record acknowledged during a randomized run of kills, pauses and partitions,
+> checked with the [history checker](history-checker.md).
 
 The suite's faults do not reach one interleaving: a leader that acknowledges and
 dies before its next report, leaving a fresh report that names a replica without
