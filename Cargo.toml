@@ -135,3 +135,10 @@ tempfile = "3"
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio-rustls = { version = "0.26", default-features = false }
 tracing-opentelemetry = "0.33.0"
+
+# kafka-protocol 0.18 reserves Vec capacity from a client-supplied array count
+# before reading any element, so a tiny frame can ask for tens of gigabytes.
+# The vendored copy caps each reservation at the bytes left in the buffer.
+# Drop this once upstream ships the same bound.
+[patch.crates-io]
+kafka-protocol = { path = "vendor/kafka-protocol" }
