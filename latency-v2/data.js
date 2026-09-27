@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790470267746,
+  "lastUpdate": 1790472322133,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -21582,6 +21582,72 @@ window.BENCHMARK_DATA = {
             "range": "789.43",
             "unit": "us",
             "extra": "trials: 5\nmedian: 256.00\nmean: 822.20\nstdev: 789.43\ncv: 96.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "50370d4b29b3cbb312c9ac47d29ae59db4c3e2ea",
+          "message": "Commit-path integrity: one lease gate, per-shard report outcomes, readers stop at the quorum mark (#738)\n\n* fix(broker): one commit gate checks the lease on every write path\n\nThe shard fence already sat in front of every write (publish, forwarded\npublish, cache put/delete, counter add, group ack/nack/dead-letter, Kafka\nproduce) and checked the generation, but the lease was only read on the\ndirect publish worker and Kafka. A broker partitioned from the control\nplane kept acking forwarded, cache, counter and group writes for as long as\nthe partition lasted.\n\nThe fence now also holds the broker's lease and reads it against the clock\non entry, and again when a write that took its place at admission claims\nits offsets. A lapse refuses every write with the retryable\nshard_unavailable/fenced error until the lease is renewed. A Quorum ack\nre-checks the lease when the mark releases it and answers \"unknown\" if it\nlapsed during the wait.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(controlplane): per-shard replica report outcomes; monotonic reports\n\nThe control plane answered 204 to every replica report, including shards it\ndiscarded (reporter not the leader, a generation ahead of or behind the\nassignment, no assignment). The broker read 204 as \"landed\" and moved its\nquorum mark, so a deposed leader could release Quorum acks on a report\nfailover never sees.\n\nThe endpoint now answers each shard (accepted, stale, not_leader,\nunassigned, future_generation) in request order: 200 when every shard was\nstored, 409 when any was not. The broker moves a shard's mark only when\nthat shard's own entry says accepted and matches what it sent.\n\nCompatibility: an old broker reads 409 as the whole batch failing and holds\nevery mark in it, which is safe and costs one pass. A new broker talking to\nan old control plane gets 204 and falls back to treating the batch as\nlanded, the previous behaviour.\n\nStored reports are now monotonic on every backend: a report replaces the\nheld one only at a later generation, or at the same generation with a\nleader tail at least as far along (`ReplicaReport::supersedes`), so a slow\nrequest can no longer put back a view where a lagging follower still looks\ncaught up. A report behind the assignment's generation is refused as stale.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(broker): group polls and Kafka Fetch stop at the quorum mark\n\nOn a Quorum stream the commit point is the quorum mark, not the leader's\nlocal tail, but group polls and Kafka Fetch/ListOffsets read to the tail. A\nrecord past the mark can be lost at failover and its offset reused for a\ndifferent record, which a consumer that had already moved past it never\nsees.\n\n`quorum::read_bound` gives the committed high-water mark for a shard: the\nquorum mark at this broker's generation for a replicated Quorum shard\n(zero until one is published), and no bound for Leader streams, shards\nwithout replicas and single-node brokers. Group polls hand out nothing at\nor past it (`GroupReader::poll_below`), and Kafka reports it as the high\nwatermark and last stable offset, answers offsets between it and the log\nend with an empty fetch, and uses it for ListOffsets latest. The driver\nwakes a stream's readers when it moves the mark, so a waiting fetch\nreturns when the mark moves rather than at its max wait.\n\nQUIC subscriptions (live fanout, the replay ring and disk history) are not\ngated yet; see the PR description.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(broker): a cancelled publish completion still reaches the ring and fanout\n\nA publish whose caller was cancelled after it claimed its offsets skipped\nthe replay-ring append and the fanout, while its bytes still became durable\nand replicated. Live subscribers never heard of the batch, and the ring had\na hole a resuming subscriber fell into.\n\nThe second half of a publish (commit, ring append, fanout) now runs in a\n`Completion` held by a `Finisher`. If the caller goes away first, the\nfinisher hands the rest to a detached task that keeps the commit turn until\nit is done, so later batches still wait behind it. Progress is kept, so a\ncompletion cancelled mid-fanout under the Block policy resumes with the\nnext subscriber rather than appending or delivering twice. Mirrors the\ncache write finisher in felix-storage.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(replication): a follower stores a batch only at the tail it checked\n\nA follower decides what to store from the tail it read: whether the batch\nleaves a gap, how much of it overlaps what it holds, and where the new\nsuffix goes. The append itself was unconditional, so a resend on a second\nlane landing between the read and the write put this batch after it, at\noffsets the leader never assigned to these records.\n\n`DiskLog::append_pending_at` writes only when the batch would start at the\ngiven offset, checked under the segment lock the write takes. The follower\nuses it with the tail it read, and on losing the race decides again from\nthe new tail, where the other copy is an overlap to verify.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* docs: the commit rule as built; model acts on the report answer\n\nsemantics.md and replication-design.md describe the single commit gate\n(lease and generation on every write path, re-checked at Quorum ack\nrelease), per-shard report outcomes and monotonic reports, the committed\nhigh-water mark readers stop at (groups and Kafka, not yet subscriptions),\nand the Leader loss window at any failover rather than only on storage\nloss. control-plane.md describes the report endpoint's per-shard answer.\n\nFelixShard.tla: a Quorum ack counts the stored report only when it is the\nacknowledging broker's own, at its generation, which is what the broker now\nlearns from the per-shard answer. FelixShardRealMargins.cfg runs the\nmargins the code has (broker Eps = L/4, control plane Margin = 0) and pins\nthe AtMostOneServing violation TLC finds with them. The spec-pairing check\nnow also covers serving/, broker and control-plane membership, and the\nreport endpoint.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* test(controlplane): replica-report auth tests expect per-shard statuses\n\nA refused shard now makes the request a 409 and a stored one a 200, where\nboth used to be 204.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* test(cluster): run loadgen without blocking the harness runtime; don't size report outcomes from the request\n\nrun_loadgen waited on felix-loadgen with a blocking std::process call inside\na current-thread tokio test. The in-process control plane stopped answering\nheartbeats for the whole run, every broker's lease lapsed, and with the\nlease now gating writes the loadgen cases failed with \"lease lapsed\".\n\nCodeQL flagged Vec::with_capacity(request.shards.len()) in the replica\nreport handler as an allocation sized by the caller; grow it instead.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-26T18:22:11-07:00",
+          "tree_id": "0c76ef1f9f0fe742a4d6442089eefe4d8ef1cca2",
+          "url": "https://github.com/gabloe/felix/commit/50370d4b29b3cbb312c9ac47d29ae59db4c3e2ea"
+        },
+        "date": 1790472320189,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 172,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 172.00\nmean: 171.40\nstdev: 0.89\ncv: 0.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 213,
+            "range": "3.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 213.00\nmean: 214.00\nstdev: 3.32\ncv: 1.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 255,
+            "range": "186.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 255.00\nmean: 338.60\nstdev: 186.66\ncv: 55.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 206,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 206.00\nmean: 206.60\nstdev: 1.52\ncv: 0.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 414,
+            "range": "8.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 414.00\nmean: 414.40\nstdev: 8.68\ncv: 2.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 584,
+            "range": "55.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 584.00\nmean: 569.60\nstdev: 55.88\ncv: 9.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
