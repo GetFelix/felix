@@ -167,6 +167,51 @@ async fn a_lost_node_has_its_ephemeral_shards_replaced() {
     }
 }
 
+/// After an outage the first broker back is the only eligible node. It must
+/// not be handed every orphaned shard in one pass: the rest go over later
+/// passes, by which time the other brokers are usually back to share them.
+#[tokio::test]
+async fn failovers_to_an_empty_node_are_spread_over_passes() {
+    let store = cluster(&["broker-a"]).await;
+    let shards = FAILOVERS_PER_PASS as u32 + 10;
+    // Not durable, so a lost leader is replaced outright rather than waiting
+    // for a replica that holds the log.
+    store
+        .create_stream(Stream {
+            durable: false,
+            ..stream("burst", shards)
+        })
+        .await
+        .expect("stream");
+    reconcile_once(&store, &Default::default(), MovePolicy::default()).await;
+
+    store
+        .set_node_lifecycle("broker-a", NodeLifecycle::Down)
+        .await
+        .expect("down");
+    let mut back = node("broker-b", NodeLifecycle::Live, None);
+    back.spec.advertise_addr = "10.0.0.5:7600".to_string();
+    store.register_node(back).await.expect("node");
+
+    let first = reconcile_once(&store, &Default::default(), MovePolicy::default()).await;
+    assert_eq!(first.placed, FAILOVERS_PER_PASS, "{first:?}");
+    assert!(first.deferred >= 10, "{first:?}");
+
+    // Nothing is lost by deferring: the next passes place the rest.
+    for _ in 0..3 {
+        reconcile_once(&store, &Default::default(), MovePolicy::default()).await;
+    }
+    let burst: Vec<_> = store
+        .list_shard_assignments()
+        .await
+        .expect("list")
+        .into_iter()
+        .filter(|a| a.key.stream == "burst")
+        .collect();
+    assert_eq!(burst.len(), shards as usize);
+    assert!(burst.iter().all(|a| a.leader == "broker-b"));
+}
+
 #[tokio::test]
 async fn an_empty_cluster_places_nothing_and_says_so() {
     let store = cluster(&[]).await;

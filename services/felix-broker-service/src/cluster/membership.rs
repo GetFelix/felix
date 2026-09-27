@@ -33,6 +33,19 @@ use crate::config::MembershipConfig;
 /// doubling interval measured in hours.
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(30);
 
+/// Retries during an outage are also capped at this fraction of the lease.
+///
+/// The control plane expires a node one full window after its last accepted
+/// heartbeat, so once it answers again the broker has to get a heartbeat in
+/// quickly. A fifth, not a quarter, so that jitter cannot push a retry past a
+/// quarter of the lease.
+const LEASE_RETRY_FRACTION: u32 = 5;
+
+/// A single heartbeat is abandoned after this fraction of the lease. Retried
+/// on the capped backoff above, a stalled control plane still gets at least
+/// two attempts per lease.
+const LEASE_REQUEST_FRACTION: u32 = 4;
+
 /// Fraction of a delay that jitter may add.
 ///
 /// Restarting a cluster puts every broker on the same schedule; without jitter
@@ -217,13 +230,25 @@ pub async fn register(
     })
 }
 
-/// Report health until `shutdown` fires.
+/// Why [`run_heartbeat`] returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeartbeatEnd {
+    /// `shutdown` fired.
+    Shutdown,
+    /// The control plane answered that this node is `down`. The registration
+    /// is spent: the broker has to register again, under a new incarnation,
+    /// before placement will use it.
+    MarkedDown,
+}
+
+/// Report health until `shutdown` fires or the control plane says this node is
+/// down.
 ///
 /// A failed heartbeat is retried with bounded exponential backoff. It is never
 /// fatal: the control plane being briefly unreachable must not take down a
 /// broker that is otherwise serving fine. If it stays unreachable past the
-/// expiry timeout the control plane marks this node down on its own, which is
-/// the correct outcome and needs no help from here.
+/// expiry timeout the control plane marks this node down on its own, and the
+/// next answer says so.
 pub async fn run_heartbeat(
     client: reqwest::Client,
     base_url: String,
@@ -231,7 +256,7 @@ pub async fn run_heartbeat(
     shutdown: CancellationToken,
     consecutive_failures: Arc<AtomicU64>,
     lease: Arc<crate::cluster::lease::LeaseState>,
-) {
+) -> HeartbeatEnd {
     let base_url = base_url.trim_end_matches('/').to_string();
     let url = format!("{base_url}/v1/nodes/{}/heartbeat", registration.node_id);
     let mut interval = Duration::from_millis(registration.heartbeat_interval_ms.max(1));
@@ -242,11 +267,11 @@ pub async fn run_heartbeat(
         let delay = if failures == 0 {
             interval
         } else {
-            backoff(interval, failures)
+            backoff(interval, failures).min(retry_cap(lease.usable()))
         };
 
         tokio::select! {
-            _ = shutdown.cancelled() => return,
+            _ = shutdown.cancelled() => return HeartbeatEnd::Shutdown,
             _ = tokio::time::sleep(jittered(delay)) => {}
         }
 
@@ -259,6 +284,7 @@ pub async fn run_heartbeat(
             &url,
             &registration.token.bearer(),
             registration.incarnation,
+            lease.usable() / LEASE_REQUEST_FRACTION,
         )
         .await
         {
@@ -279,9 +305,6 @@ pub async fn run_heartbeat(
                 // effect without touching broker configuration.
                 interval = Duration::from_millis(response.heartbeat_interval_ms.max(1));
 
-                // Being told we are down means expiry already removed this node
-                // from placement. Registering again is the broker's job, not
-                // this loop's, so make the state visible and keep reporting.
                 let placeable = response.lifecycle.is_placeable();
                 mm::record_membership_live(placeable);
                 if !placeable {
@@ -295,6 +318,13 @@ pub async fn run_heartbeat(
                         "the control plane no longer considers this broker live; \
                          surrendering the lease",
                     );
+                }
+                // A heartbeat never revives a down node, so carrying on here
+                // would keep a healthy broker out of the cluster for good.
+                // `left` is not handed back: that is a deregistration someone
+                // asked for, and registering over it would undo it.
+                if response.lifecycle == NodeLifecycle::Down {
+                    return HeartbeatEnd::MarkedDown;
                 }
             }
             Err(err) => {
@@ -355,6 +385,10 @@ pub struct MembershipTask {
 /// `serving` gates registration: advertising a node before it can answer means
 /// placement may route to it and get nothing. A registration refused with a 4xx
 /// cancels `fatal` instead of retrying, because a wrong identity stays wrong.
+///
+/// A broker the control plane has marked down registers again, which is the
+/// only way back into placement. Without that, any outage longer than the
+/// expiry window would leave every broker running but out of the cluster.
 pub fn spawn(
     client: reqwest::Client,
     base_url: String,
@@ -376,48 +410,61 @@ pub fn spawn(
                 _ = serving.cancelled() => {}
             }
 
-            let mut attempt = 0u64;
-            let registration = loop {
-                match register(&client, &base_url, &config, &credential).await {
-                    Ok(registration) => break registration,
-                    Err(MembershipError::Rejected(message)) => {
-                        mm::record_registration(mm::KIND_REJECTED);
-                        mm::record_membership_live(false);
-                        tracing::error!(
-                            node_id = %config.node_id,
-                            error = %message,
-                            "the control plane refused this identity; the broker is not a cluster member",
-                        );
-                        fatal.cancel();
-                        return;
-                    }
-                    Err(MembershipError::Unavailable(err)) => {
-                        attempt += 1;
-                        mm::record_registration(mm::KIND_UNAVAILABLE);
-                        tracing::warn!(
-                            node_id = %config.node_id,
-                            attempt,
-                            error = %err,
-                            "could not reach the control plane to register; retrying",
-                        );
-                        let delay = jittered(backoff(Duration::from_millis(500), attempt));
-                        tokio::select! {
-                            _ = shutdown.cancelled() => return,
-                            _ = tokio::time::sleep(delay) => {}
+            loop {
+                let mut attempt = 0u64;
+                let registration = loop {
+                    match register(&client, &base_url, &config, &credential).await {
+                        Ok(registration) => break registration,
+                        Err(MembershipError::Rejected(message)) => {
+                            mm::record_registration(mm::KIND_REJECTED);
+                            mm::record_membership_live(false);
+                            tracing::error!(
+                                node_id = %config.node_id,
+                                error = %message,
+                                "the control plane refused this identity; the broker is not a cluster member",
+                            );
+                            fatal.cancel();
+                            return;
+                        }
+                        Err(MembershipError::Unavailable(err)) => {
+                            attempt += 1;
+                            mm::record_registration(mm::KIND_UNAVAILABLE);
+                            tracing::warn!(
+                                node_id = %config.node_id,
+                                attempt,
+                                error = %err,
+                                "could not reach the control plane to register; retrying",
+                            );
+                            let delay = backoff(Duration::from_millis(500), attempt)
+                                .min(retry_cap(lease.usable()));
+                            tokio::select! {
+                                _ = shutdown.cancelled() => return,
+                                _ = tokio::time::sleep(jittered(delay)) => {}
+                            }
                         }
                     }
-                }
-            };
+                };
+                consecutive_failures.store(0, Ordering::Release);
 
-            run_heartbeat(
-                client,
-                base_url,
-                registration,
-                shutdown,
-                consecutive_failures,
-                lease,
-            )
-            .await;
+                match run_heartbeat(
+                    client.clone(),
+                    base_url.clone(),
+                    registration,
+                    shutdown.clone(),
+                    Arc::clone(&consecutive_failures),
+                    Arc::clone(&lease),
+                )
+                .await
+                {
+                    HeartbeatEnd::Shutdown => return,
+                    HeartbeatEnd::MarkedDown => {
+                        tracing::warn!(
+                            node_id = %config.node_id,
+                            "the control plane marked this broker down; registering again",
+                        );
+                    }
+                }
+            }
         }
     });
 
@@ -460,9 +507,11 @@ async fn send_heartbeat(
     url: &str,
     token: &str,
     incarnation: u64,
+    timeout: Duration,
 ) -> std::result::Result<HeartbeatResponse, MembershipError> {
     let response = client
         .post(url)
+        .timeout(timeout)
         .bearer_auth(token)
         .json(&HeartbeatRequest { incarnation })
         .send()
@@ -519,6 +568,14 @@ fn backoff(interval: Duration, failures: u64) -> Duration {
     interval
         .saturating_mul(2u32.saturating_pow(shift))
         .min(MAX_RETRY_BACKOFF)
+}
+
+/// The longest a retry may wait under a lease of `usable`. Never zero, so a
+/// degenerate lease cannot turn the retry loop into a spin.
+fn retry_cap(usable: Duration) -> Duration {
+    (usable / LEASE_RETRY_FRACTION)
+        .min(MAX_RETRY_BACKOFF)
+        .max(Duration::from_millis(10))
 }
 
 /// Spread a delay so a restarted fleet does not report in lockstep.

@@ -10,4 +10,5 @@ mod failover;
 mod faults;
 mod fencing;
 mod kafka_produce;
+mod membership;
 mod partition;

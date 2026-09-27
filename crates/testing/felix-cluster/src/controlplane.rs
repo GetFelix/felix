@@ -69,6 +69,35 @@ impl ControlPlane {
             .await
             .context("seed tenant signing keys")?;
 
+        let addr = ports::free_tcp()?;
+        Self::serve(store, keys, addr).await
+    }
+
+    /// Stop this control plane, stay down for `downtime`, and start a new one
+    /// on the same address over the same store.
+    ///
+    /// The new instance is a restart in every sense brokers can see: their
+    /// connections are cut, requests fail while it is down, and its expiry
+    /// sweep starts fresh against heartbeat stamps as old as the outage.
+    pub async fn restart(self, downtime: Duration) -> Result<Self> {
+        let store = Arc::clone(&self.store);
+        let keys = self.keys.clone();
+        let addr = self
+            .base_url
+            .trim_start_matches("http://")
+            .parse()
+            .context("parse control plane address")?;
+        self.shutdown().await;
+        tokio::time::sleep(downtime).await;
+        Self::serve(store, keys, addr).await
+    }
+
+    /// Serve `store` on `addr`, with the expiry sweep running.
+    async fn serve(
+        store: Arc<InMemoryStore>,
+        keys: TenantSigningKeys,
+        addr: std::net::SocketAddr,
+    ) -> Result<Self> {
         let state = AppState {
             region: Region {
                 region_id: "local".to_string(),
@@ -98,7 +127,6 @@ impl ControlPlane {
         };
         let placement_wakes = Arc::clone(&state.placement_wakes);
 
-        let addr = ports::free_tcp()?;
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .with_context(|| format!("bind control plane on {addr}"))?;

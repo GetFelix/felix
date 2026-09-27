@@ -29,6 +29,11 @@
 (* planners each starting a copy on a different shard from a read with one *)
 (* free slot. The steps after a start take no slot, so they are written    *)
 (* from the store as it stands, and advance the token like any write.      *)
+(*                                                                         *)
+(* Out of scope: failing a lost leader's shard over to a node that holds no *)
+(* copy. That writes an assignment rather than starting a copy, takes no   *)
+(* slot here, and is paced separately (`FAILOVERS_PER_PASS` in the          *)
+(* reconciler); its safety is the generation check the shard model covers. *)
 (***************************************************************************)
 
 EXTENDS Naturals, FiniteSets, TLC

@@ -78,15 +78,20 @@ No Felix-side action is required at any point — that is the design.
 3. The Postgres platform promotes a standby and moves the endpoint.
 4. Instances reconnect through the same URL; the first readiness check that
    succeeds puts each back in rotation.
-5. Brokers retry heartbeats with backoff and keep their last-known catalog —
-   a control-plane blip does not take down brokers that are serving fine.
+5. Brokers retry heartbeats and keep their last-known catalog. They keep
+   serving the shards they lead only while their lease holds (0.75 ×
+   `FELIX_NODE_EXPIRY_TIMEOUT_MS` from the last accepted heartbeat), so with
+   the defaults they stop serving those shards between about 5s and 11s into
+   the outage.
+6. Once the database is back, each broker's next heartbeat lands within about
+   3s and renews its lease. The expiry sweep waits one full expiry window
+   after it can read the store again, so the outage itself does not mark
+   brokers down.
 
-One interaction to size deliberately: broker heartbeats fail while the
-database is down, and the first sweep after recovery compares each broker's
-*last accepted* heartbeat against `FELIX_NODE_EXPIRY_TIMEOUT_MS` (default
-15s). Keep promotion time plus one heartbeat interval (default 5s) under the
-expiry timeout — or raise the timeout — so a database failover alone can
-never expire brokers that were serving fine throughout.
+A promotion shorter than about 5s is usually absorbed by the lease; a longer
+one makes shards unavailable for the rest of the outage but does not take
+brokers out of the cluster. A broker that is marked down for any other reason
+registers again on its next heartbeat.
 
 ## Probes
 

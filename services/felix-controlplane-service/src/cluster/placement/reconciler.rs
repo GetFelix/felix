@@ -53,6 +53,16 @@ pub const PLACEMENT_LEASE_TAKEOVERS_TOTAL: &str = "felix_placement_lease_takeove
 /// stops without releasing it holds the timed passes up for this long.
 pub const PLACEMENT_LEASE_INTERVALS: u64 = 3;
 
+/// Most shards one pass fails over to a node that holds no copy of them.
+///
+/// Brokers come back from an outage one at a time, and the first one back is
+/// the only eligible node: without a limit it is handed every orphaned shard
+/// in one pass, and the rebalancing that follows moves them all again. Spread
+/// over passes, the rest of the fleet is back before most of them are placed.
+/// Promotions to a caught-up replica are not limited; the data is already
+/// there and the replica set was spread when it was chosen.
+pub const FAILOVERS_PER_PASS: usize = 64;
+
 /// What one reconciliation pass did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReconcileOutcome {
@@ -70,6 +80,8 @@ pub struct ReconcileOutcome {
     /// Whether another placement write landed after this pass read the
     /// store, so the rest of the pass was not written.
     pub fenced: bool,
+    /// Failovers left for a later pass by [`FAILOVERS_PER_PASS`].
+    pub deferred: usize,
 }
 
 /// A plan, and the generation of every assignment it was planned from.
@@ -82,6 +94,9 @@ pub(super) struct PlannedPass {
     read: HashMap<ShardKey, u64>,
     /// Shards that had a successor staged when the pass read.
     staged: HashSet<ShardKey>,
+    /// Placements that take an assigned shard to a node that held no copy of
+    /// it: the failovers [`FAILOVERS_PER_PASS`] limits.
+    unseeded: HashSet<ShardKey>,
 }
 
 impl PlannedPass {
@@ -234,11 +249,25 @@ pub(super) async fn plan_pass(
         .filter(|assignment| assignment.successor.is_some())
         .map(|assignment| assignment.key.clone())
         .collect();
+    let previous: HashMap<&ShardKey, &ShardAssignment> = existing
+        .iter()
+        .map(|assignment| (&assignment.key, assignment))
+        .collect();
+    let unseeded = plan
+        .to_place()
+        .filter(|(key, leader, _)| {
+            previous
+                .get(key)
+                .is_some_and(|previous| !previous.nodes().any(|node| node == leader))
+        })
+        .map(|(key, _, _)| key.clone())
+        .collect();
     Some(PlannedPass {
         fence,
         plan,
         read,
         staged,
+        unseeded,
     })
 }
 
@@ -342,9 +371,17 @@ pub(super) async fn apply_pass(
         );
     }
 
+    let mut failovers = 0;
     for (key, leader, replicas) in plan.to_place() {
         if outcome.fenced {
             break;
+        }
+        if pass.unseeded.contains(key) {
+            if failovers == FAILOVERS_PER_PASS {
+                outcome.deferred += 1;
+                continue;
+            }
+            failovers += 1;
         }
         match store
             .put_shard_assignment_if(
@@ -390,6 +427,14 @@ pub(super) async fn apply_pass(
                 );
             }
         }
+    }
+
+    if outcome.deferred > 0 {
+        tracing::info!(
+            deferred = outcome.deferred,
+            limit = FAILOVERS_PER_PASS,
+            "failovers left for the next pass",
+        );
     }
 
     for (key, reason) in plan.unplaceable() {

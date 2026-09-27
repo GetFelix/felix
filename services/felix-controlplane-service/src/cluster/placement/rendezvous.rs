@@ -20,7 +20,8 @@ use crate::model::{Node, ShardAssignment, ShardKey, ShardKind};
 /// node is full) and placement stays a deterministic function of the snapshot,
 /// because `plan` walks the shards in sorted order and `load` accumulates the
 /// same way on every instance. `None` only when no node has capacity at all — the
-/// second pass drops the balance cap so a full-but-uncapped cluster still places.
+/// last pass drops the balance cap so a full-but-uncapped cluster still places,
+/// and goes to the least loaded node so the overflow is spread too.
 ///
 /// Ties break on `node_id`, which cannot itself tie: node identity is unique.
 pub(super) fn choose<'a>(
@@ -42,11 +43,11 @@ pub(super) fn choose<'a>(
     // leader on one node would be moved apart again by the next pass.
     let under_leader_share =
         |node: &Node| leaders.get(node.node_id.as_str()).copied().unwrap_or(0) < leader_share;
-    let best = |balanced: bool, led: bool| {
+    let best = |led: bool| {
         eligible
             .iter()
             .filter(|node| has_capacity(node))
-            .filter(|node| !balanced || under_share(node))
+            .filter(|node| under_share(node))
             .filter(|node| !led || under_leader_share(node))
             .max_by(|a, b| {
                 score(key, &a.node_id)
@@ -54,9 +55,24 @@ pub(super) fn choose<'a>(
                     .then_with(|| a.node_id.cmp(&b.node_id))
             })
     };
-    best(true, true)
-        .or_else(|| best(true, false))
-        .or_else(|| best(false, false))
+    // Every node is at its share. Take the least loaded rather than the best
+    // scoring, or the one node that scores highest for most of the remaining
+    // shards collects all of them.
+    let least_loaded = || {
+        eligible
+            .iter()
+            .filter(|node| has_capacity(node))
+            .min_by(|a, b| {
+                let load_of = |node: &Node| load.get(node.node_id.as_str()).copied().unwrap_or(0);
+                load_of(a)
+                    .cmp(&load_of(b))
+                    .then_with(|| score(key, &b.node_id).cmp(&score(key, &a.node_id)))
+                    .then_with(|| a.node_id.cmp(&b.node_id))
+            })
+    };
+    best(true)
+        .or_else(|| best(false))
+        .or_else(least_loaded)
         .map(|n| n.node_id.as_str())
 }
 

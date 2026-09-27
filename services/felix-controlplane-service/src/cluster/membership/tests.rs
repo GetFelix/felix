@@ -225,6 +225,83 @@ async fn the_census_counts_exactly_what_the_listing_returns() {
     assert_eq!((live, draining), (1, 1));
 }
 
+/// The window starts at the first look, and only a full window of watching
+/// lets a sweep run.
+#[test]
+fn the_grace_window_runs_from_the_first_look() {
+    let window = Duration::from_millis(TIMEOUT_MS);
+    let start = tokio::time::Instant::now();
+    let mut grace = SweepGrace::new(window);
+
+    assert!(!grace.may_sweep(start));
+    assert!(!grace.may_sweep(start + window - Duration::from_millis(1)));
+    assert!(grace.may_sweep(start + window));
+    assert!(grace.may_sweep(start + window * 10));
+}
+
+/// Losing leadership or the store and getting it back is the same as a fresh
+/// start: nobody could heartbeat in between, so the window starts over.
+#[test]
+fn losing_the_store_or_leadership_restarts_the_window() {
+    let window = Duration::from_millis(TIMEOUT_MS);
+    let start = tokio::time::Instant::now();
+    let mut grace = SweepGrace::new(window);
+    assert!(!grace.may_sweep(start));
+    assert!(grace.may_sweep(start + window));
+
+    grace.lost("test");
+    let back = start + window * 3;
+    assert!(!grace.may_sweep(back));
+    assert!(!grace.may_sweep(back + window / 2));
+    assert!(grace.may_sweep(back + window));
+}
+
+/// The outage case end to end: a control plane starting over a store whose
+/// heartbeat stamps are all old must not mark those brokers down on its first
+/// sweep. Without the grace this one expires the node at once.
+#[tokio::test(start_paused = true)]
+async fn a_restarted_sweep_waits_a_window_before_expiring() {
+    let store = Arc::new(InMemoryStore::new(StoreConfig {
+        changes_limit: 100,
+        change_retention_max_rows: Some(1_000),
+    }));
+    // Last heard from long before this instance started.
+    let mut broker = node("broker-a", 7001);
+    broker.status.last_heartbeat_at_millis = store.now_millis().await.expect("clock") - 60_000;
+    store.register_node(broker).await.expect("register");
+
+    let shutdown = CancellationToken::new();
+    let sweep = spawn_expiry_sweep(
+        Arc::clone(&store) as Arc<dyn ControlPlaneStore + Send + Sync>,
+        liveness(),
+        crate::raft::LeadershipGate::Always,
+        shutdown.clone(),
+    );
+
+    // Several sweeps inside the window: the node is left alone.
+    tokio::time::sleep(Duration::from_millis(TIMEOUT_MS - 600)).await;
+    let lifecycle = store
+        .get_node("broker-a")
+        .await
+        .expect("get")
+        .status
+        .lifecycle;
+    assert_eq!(lifecycle, NodeLifecycle::Live);
+
+    // Still silent a full window after start: expired as usual.
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    let lifecycle = store
+        .get_node("broker-a")
+        .await
+        .expect("get")
+        .status
+        .lifecycle;
+    assert_eq!(lifecycle, NodeLifecycle::Down);
+
+    shutdown.cancel();
+    sweep.await.expect("sweep");
+}
+
 /// A broker failure has to become observable within the expiry bound, not at
 /// some later reconciliation.
 #[tokio::test]
