@@ -6,9 +6,10 @@
 //! therefore holds its connection, which is why a consumer keeps one
 //! connection per broker for fetching.
 
-mod connection;
+pub(crate) mod connection;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use felix_broker::Broker;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -23,7 +24,7 @@ pub struct KafkaService {
 }
 
 /// How the service behaves, beyond what the cluster answers.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Settings {
     /// Serve unauthenticated connections as this tenant, with read and write
     /// access to every stream in it. A development switch: without it, a
@@ -33,6 +34,21 @@ pub struct Settings {
     pub default_namespace: Option<String>,
     /// Reported as the Kafka cluster id.
     pub cluster_id: String,
+    /// How long a connection has to authenticate before it is closed. Until
+    /// it does, its requests are also capped at a few kilobytes, so an
+    /// unauthenticated peer can hold neither a connection slot nor memory.
+    pub auth_timeout: Duration,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            anonymous_tenant: None,
+            default_namespace: None,
+            cluster_id: String::new(),
+            auth_timeout: Duration::from_secs(10),
+        }
+    }
 }
 
 /// What every connection shares.

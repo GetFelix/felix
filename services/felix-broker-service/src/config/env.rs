@@ -376,6 +376,7 @@ impl BrokerConfig {
             shard_move_hold_ms,
             shard_move_hold_max,
             shard_move_bytes_per_sec,
+            limits: super::LimitsConfig::from_env()?,
         })
     }
 }

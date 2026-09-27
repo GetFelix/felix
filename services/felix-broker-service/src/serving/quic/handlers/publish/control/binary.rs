@@ -21,7 +21,7 @@ use crate::serving::quic::handlers::publish::ack::{
     AckEncoding, AckTimeoutState, AckWaiterMessage, Outgoing, handle_ack_enqueue_result,
     send_outgoing_critical,
 };
-use crate::serving::quic::handlers::publish::ingress::enqueue_publish;
+use crate::serving::quic::handlers::publish::ingress::enqueue_tenant_publish;
 use crate::serving::quic::handlers::publish::route::{
     publish_target, resolve_route, resolve_shard,
 };
@@ -135,8 +135,9 @@ pub(crate) async fn handle_binary_publish_batch_control(
             .collect::<Vec<_>>();
         let payload_bytes = payload_len_sum(&payloads);
         let fanout_start = t_now_if(sample);
-        let r = enqueue_publish(
+        let r = enqueue_tenant_publish(
             publish_ctx,
+            &batch.tenant_id,
             PublishJob {
                 target,
                 payloads,

@@ -163,6 +163,8 @@ pub(crate) async fn start_broker(auth: &AuthFixture) -> Result<BrokerHarness> {
         let connections = connections.clone();
         let auth = Arc::clone(&auth.broker_auth);
         tokio::spawn(async move {
+            let limits =
+                felix_broker_service::serving::limits::ListenerLimits::from_config(&config);
             if let Err(err) = felix_broker_service::serving::quic::serve_with_shutdown(
                 server,
                 broker,
@@ -174,6 +176,7 @@ pub(crate) async fn start_broker(auth: &AuthFixture) -> Result<BrokerHarness> {
                 // against, and no peers to forward to.
                 Default::default(),
                 limit,
+                limits,
             )
             .await
             {

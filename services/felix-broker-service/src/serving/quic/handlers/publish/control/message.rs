@@ -21,7 +21,7 @@ use crate::serving::quic::handlers::publish::ack::{
     AckEncoding, AckTimeoutState, AckWaiterMessage, EnqueuePolicy, Outgoing,
     handle_ack_enqueue_result, send_outgoing_best_effort, send_outgoing_critical,
 };
-use crate::serving::quic::handlers::publish::ingress::{PublishTarget, enqueue_publish};
+use crate::serving::quic::handlers::publish::ingress::{PublishTarget, enqueue_tenant_publish};
 use crate::serving::quic::handlers::publish::route::{
     internal_ack, needs_quorum, publish_target, resolve_route, resolve_shard,
 };
@@ -233,8 +233,9 @@ pub(crate) async fn handle_publish_message(
         }
         return Ok(());
     };
-    let enqueue_result = enqueue_publish(
+    let enqueue_result = enqueue_tenant_publish(
         publish_ctx,
+        &tenant_id,
         PublishJob {
             target,
             payloads: vec![Bytes::from(payload)],

@@ -108,8 +108,8 @@ Anything that breaks a property Felix claims to enforce:
   These are documented gaps, not vulnerabilities: no encryption at rest (log
   segments are plaintext on disk), no end-to-end payload encryption, no peer
   authentication for a broker started with
-  `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`, and no audit logging, quotas,
-  or rate limits. A *new* concrete attack these enable in a deployment that
+  `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`, no audit logging, and no
+  per-tenant quotas beyond the publish rate. A *new* concrete attack these enable in a deployment that
   follows the deployment guidance is still worth reporting — a restatement of
   the gap is not.
 - **Everything under `demos/`.** The demo crates exist to illustrate a failure

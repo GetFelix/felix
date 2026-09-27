@@ -586,12 +586,19 @@ not launder the credential it arrived with.
 - Cache operations
 - Control plane operations
 
-Per-tenant quotas are a separate thing and are **not** enforced; see below.
+Per-tenant quotas are a separate thing, and only the publish rate is
+enforced; see below.
 
-### Quota Enforcement (Planned)
+### Quota Enforcement
 
-Not implemented. Nothing limits what a tenant can publish, subscribe to, or
-cache. The shape it would take:
+Publish rate only. With `FELIX_TENANT_PUBLISH_BYTES_PER_SEC`,
+`FELIX_TENANT_PUBLISH_MSGS_PER_SEC` or `FELIX_TENANT_PUBLISH_QUOTAS` set, each
+broker keeps a token bucket per tenant and checks it before a publish is
+queued: an acknowledged publish over quota is refused as `overloaded` with
+reason `tenant_quota` and a `retry_after_ms`, and a Kafka produce is throttled
+with `throttle_time_ms`. The rate is per broker and set in its environment.
+Nothing limits what a tenant can subscribe to, cache or store. The fuller
+shape, not built:
 
 ```yaml
 quotas:
@@ -759,7 +766,7 @@ assert!(fast_count >= expected_count);
 | **TTL precision** | Lazy on access, against an absolute expiry | Sweeping expiry |
 | **Durability** | Per stream: ephemeral, or `Leader` or `Quorum` acknowledgement | — |
 | **Authorization** | Tenant-scoped tokens, RBAC per resource, OIDC exchange | — |
-| **Quotas** | None | Per-tenant, per-namespace |
+| **Quotas** | Per-tenant publish rate, per broker | Per-namespace; subscriptions, cache and storage; set in the control plane |
 | **Multi-key operations** | None | Transactions |
 
 ## Recommendations

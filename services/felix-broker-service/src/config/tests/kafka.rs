@@ -31,6 +31,8 @@ fn defaults_are_tls_on_and_advertise_the_bind_address() {
     assert_eq!(config.anonymous_tenant, None);
     assert_eq!(config.default_namespace, None);
     assert_eq!(config.max_connections, 1024);
+    assert_eq!(config.max_connections_per_ip, 128);
+    assert_eq!(config.auth_timeout_ms, 10_000);
 }
 
 #[test]
@@ -45,6 +47,8 @@ fn every_setting_is_read() {
         ("FELIX_KAFKA_ANONYMOUS_TENANT", "dev"),
         ("FELIX_KAFKA_DEFAULT_NAMESPACE", "orders"),
         ("FELIX_KAFKA_MAX_CONNECTIONS", "10"),
+        ("FELIX_KAFKA_MAX_CONNECTIONS_PER_IP", "0"),
+        ("FELIX_KAFKA_AUTH_TIMEOUT_MS", "2500"),
     ])
     .expect("parse")
     .expect("on");
@@ -53,6 +57,8 @@ fn every_setting_is_read() {
     assert_eq!(config.anonymous_tenant.as_deref(), Some("dev"));
     assert_eq!(config.default_namespace.as_deref(), Some("orders"));
     assert_eq!(config.max_connections, 10);
+    assert_eq!(config.max_connections_per_ip, 0, "zero is unlimited");
+    assert_eq!(config.auth_timeout_ms, 2_500);
 }
 
 #[test]
@@ -65,6 +71,8 @@ fn malformed_values_fail_startup_rather_than_defaulting() {
         vec![listen, ("FELIX_KAFKA_TLS", "yes")],
         vec![listen, ("FELIX_KAFKA_MAX_CONNECTIONS", "0")],
         vec![listen, ("FELIX_KAFKA_MAX_CONNECTIONS", "many")],
+        vec![listen, ("FELIX_KAFKA_MAX_CONNECTIONS_PER_IP", "-1")],
+        vec![listen, ("FELIX_KAFKA_AUTH_TIMEOUT_MS", "0")],
     ] {
         assert!(parse(&bad).is_err(), "{bad:?}");
     }

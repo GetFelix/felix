@@ -371,3 +371,48 @@ async fn legacy_formats_and_transactions_are_refused_with_a_reason() {
         "a refused produce wrote"
     );
 }
+
+/// **A tenant over its publish quota is throttled the way Kafka does it**:
+/// the produce is written and answered with `throttle_time_ms`, and the
+/// connection reads nothing more until that time has passed.
+#[tokio::test]
+async fn a_produce_over_quota_is_answered_with_a_throttle_and_the_connection_muted() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    *fixture.cluster.produce_hold.lock().expect("lock") = std::time::Duration::from_millis(300);
+    let mut client = fixture.connect();
+
+    let response = client
+        .call(
+            &request(
+                1,
+                0,
+                batch(Producer::Plain, &["ab", "cde"], Compression::None),
+            ),
+            9,
+        )
+        .await;
+    assert_eq!(response.throttle_time_ms, 300);
+    assert_eq!(response.responses[0].partition_responses[0].error_code, 0);
+    assert_eq!(
+        fixture
+            .cluster
+            .produce_charges
+            .lock()
+            .expect("lock")
+            .as_slice(),
+        &[("t1".to_string(), 2, 5)],
+        "charged the tenant's records and payload bytes",
+    );
+
+    *fixture.cluster.produce_hold.lock().expect("lock") = std::time::Duration::ZERO;
+    let started = std::time::Instant::now();
+    let versions = client.call(&ApiVersionsRequest::default(), 3).await;
+    assert_eq!(versions.error_code, 0);
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(250),
+        "the next request waited out the throttle, after {:?}",
+        started.elapsed()
+    );
+    assert_eq!(stored(&mut client).await, owned(&[(0, "ab"), (1, "cde")]));
+}

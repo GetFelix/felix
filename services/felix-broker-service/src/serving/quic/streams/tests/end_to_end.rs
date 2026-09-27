@@ -742,6 +742,7 @@ async fn handle_stream_drain_timeout_sleep_branch() -> Result<()> {
             preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
                 &crate::config::BrokerConfig::default(),
             )),
+            tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
         };
         let config = BrokerConfig {
             ack_on_commit: true,

@@ -1019,6 +1019,37 @@ export FELIX_PUB_INGRESS_WAIT="1"
 export FELIX_CORE_SHARDS="4"
 ```
 
+## Connection Limits and Tenant Quotas
+
+Every limit here is per broker. A tenant publishing through three brokers gets
+three times its quota; divide by the number of brokers a tenant's clients spread
+across when you pick a number. Invalid values fail startup rather than falling
+back to "unlimited".
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `FELIX_MAX_CONNECTIONS_PER_IP` | `512` | Client QUIC connections one source IP may hold across all of this broker's QUIC listeners. The next one is refused before its handshake (the client sees a QUIC connection refusal) and counted in `felix_quic_connections_refused_total{reason="per_ip_limit"}`. Applies alongside the broker-wide `FELIX_MAX_CLIENT_CONNECTIONS`. IPv4-mapped IPv6 addresses count as the IPv4 address. `0` is unlimited. |
+| `FELIX_TENANT_PUBLISH_BYTES_PER_SEC` | `0` | Payload bytes per second every tenant may publish, unless `FELIX_TENANT_PUBLISH_QUOTAS` names it. `0` is unlimited. |
+| `FELIX_TENANT_PUBLISH_MSGS_PER_SEC` | `0` | Messages per second every tenant may publish, the same way. Either rate refuses on its own. |
+| `FELIX_TENANT_PUBLISH_QUOTAS` | unset | Per-tenant rates that replace the defaults: comma-separated `tenant:bytes_per_sec:msgs_per_sec`, `0` meaning unlimited, e.g. `acme:10485760:5000,beta:0:100`. A tenant named twice fails startup. |
+| `FELIX_TENANT_PUBLISH_BURST_MS` | `1000` | How far a tenant may run ahead of its rate, as time at that rate. A publish is admitted whenever the tenant is not already over, and takes its whole cost, so one batch larger than the burst still goes through and the tenant then waits it out. The overdraft is capped at five seconds of rate. |
+| `FELIX_TENANT_METRICS_MAX` | `100` | Tenants that get their own `tenant` label on the `felix_tenant_*` metrics. Later tenants are counted together under `tenant="_overflow"`, and `felix_tenant_metrics_overflow_total` counts those recordings. |
+
+What a publish over its tenant's quota gets, by path:
+
+- **Acknowledged QUIC publish**: refused before anything is queued, as
+  `overloaded` with `detail.reason = "tenant_quota"` and `detail.retry_after_ms`
+  set to when the tenant is back under. A client that did not negotiate error
+  codes sees the same text as any other overload.
+- **Fire-and-forget QUIC publish**: shed like any other overload, unless
+  `FELIX_PUB_INGRESS_WAIT` is on; then it waits for the quota, which slows the
+  publisher through QUIC flow control instead of dropping.
+- **Kafka produce**: written and answered with `throttle_time_ms`; the
+  connection reads nothing more until that time has passed, as a Kafka broker
+  enforces its own quotas.
+
+Every case is counted in `felix_tenant_publish_throttled_total{tenant,action}`.
+
 ## QUIC Transport Tuning
 
 Process-wide levers read by every Felix QUIC endpoint (broker, client, demos). See [Benchmarks](/felix/features/benchmarks/) for measured impact.
@@ -1822,6 +1853,8 @@ absent; they are listed in that script rather than here.
 | `FELIX_KAFKA_ANONYMOUS_TENANT` | unset | Development switch: a Kafka connection that does not authenticate reads and writes every stream of this tenant. Leave unset in production. |
 | `FELIX_KAFKA_DEFAULT_NAMESPACE` | unset | Namespace a topic name without a dot is looked up in. Unset means such a topic names nothing. |
 | `FELIX_KAFKA_MAX_CONNECTIONS` | `1024` | Kafka connections served at once; the next one is closed on arrival and counted in `felix_kafka_refused_total{reason="connection_limit"}`. |
+| `FELIX_KAFKA_MAX_CONNECTIONS_PER_IP` | `128` | Kafka connections one source IP may hold, checked before the total, so one host cannot take every slot. Refusals are counted in `felix_kafka_refused_total{reason="per_ip_limit"}`. `0` is unlimited. |
+| `FELIX_KAFKA_AUTH_TIMEOUT_MS` | `10000` | How long a Kafka connection has to finish SASL. Until it does, each request is capped at 64 KiB. A connection past the deadline is closed and counted under `reason="auth_timeout"`, an oversized unauthenticated request under `reason="unauthenticated_frame_size"`. Does not apply with `FELIX_KAFKA_ANONYMOUS_TENANT`, where every connection starts authenticated. |
 | `FELIX_REGION_BRIDGES` | unset | The same allowlist as the control plane's. A broker forwards a request to a shard's leader only in its own `FELIX_REGION_ID` or a region it has a bridge to, and refuses the rest as `shard_unavailable` with reason `region_not_routable`. Unset forwards within the broker's own region only, which is what a broker has always done. A malformed pair fails startup. |
 | `FELIX_NODE_TOKEN` / `FELIX_NODE_TOKEN_FILE` | — | Access credential this broker presents to the control plane, on every call including the metadata feeds it seeds from (which require `node.view:cluster:*`). Required with `FELIX_NODE_ID`; a standalone broker may omit it, but then its sync is refused and it says so at startup. **The file form is re-read** every 30s, so whatever mints the credential — a Vault agent, SPIRE, a sidecar — can rotate it without a restart; a replacement that is already expired is declined rather than adopted. **A broker joining a cluster refuses to start** with an expiring token supplied by value and no refresh file, because nothing could then renew it. |
 | `FELIX_NODE_REFRESH_TOKEN_FILE` | — | Path to this broker's refresh token. With it the broker re-mints its access token before expiry and stays registered indefinitely. **A path, not a value:** refreshing spends the token and mints a replacement, so the broker writes the replacement back here — a restart that presented a spent one would be read as a replay and revoke the whole chain. The path must be writable. Setting `FELIX_NODE_REFRESH_TOKEN` instead fails startup, rather than locking the broker out at its first restart. Either this or `FELIX_NODE_TOKEN_FILE` is required when the credential carries an `exp` and `FELIX_NODE_ID` is set. |

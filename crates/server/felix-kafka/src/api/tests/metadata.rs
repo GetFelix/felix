@@ -139,6 +139,7 @@ async fn a_default_namespace_lets_a_bare_topic_name_a_stream() {
         anonymous_tenant: Some(super::TENANT.to_string()),
         default_namespace: Some("orders".to_string()),
         cluster_id: "c".to_string(),
+        ..Settings::default()
     })
     .await;
     fixture.stream("orders", "created", 2, true).await;

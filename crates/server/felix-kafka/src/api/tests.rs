@@ -6,6 +6,7 @@
 
 mod fetch;
 mod groups;
+mod limits;
 mod list_offsets;
 mod metadata;
 mod parse;
@@ -49,6 +50,10 @@ pub(super) struct FakeCluster {
     pub(super) consistency_error: Mutex<Option<WriteError>>,
     /// Commit points by `(stream, shard)`; a shard without one is unbounded.
     committed: Mutex<HashMap<(String, u32), u64>>,
+    /// What `admit_produce` answers.
+    pub(super) produce_hold: Mutex<std::time::Duration>,
+    /// Every `admit_produce` call, as `(tenant, records, bytes)`.
+    pub(super) produce_charges: Mutex<Vec<(String, u64, u64)>>,
 }
 
 #[async_trait]
@@ -108,6 +113,14 @@ impl Cluster for FakeCluster {
             .get(&(shard.stream.to_string(), shard.shard))
             .copied()
     }
+
+    fn admit_produce(&self, tenant_id: &str, records: u64, bytes: u64) -> std::time::Duration {
+        self.produce_charges
+            .lock()
+            .expect("lock")
+            .push((tenant_id.to_string(), records, bytes));
+        *self.produce_hold.lock().expect("lock")
+    }
 }
 
 impl FakeCluster {
@@ -149,6 +162,7 @@ impl Fixture {
             anonymous_tenant: Some(TENANT.to_string()),
             default_namespace: None,
             cluster_id: "test-cluster".to_string(),
+            ..Settings::default()
         })
         .await
     }
@@ -161,6 +175,7 @@ impl Fixture {
                 anonymous_tenant: None,
                 default_namespace: None,
                 cluster_id: "test-cluster".to_string(),
+                ..Settings::default()
             },
             permissions.iter().map(|p| p.to_string()).collect(),
         )
@@ -192,6 +207,8 @@ impl Fixture {
             consistency_waits: AtomicUsize::new(0),
             consistency_error: Mutex::new(None),
             committed: Mutex::new(HashMap::new()),
+            produce_hold: Mutex::new(std::time::Duration::ZERO),
+            produce_charges: Mutex::new(Vec::new()),
         });
         cluster.add_broker(LOCAL, "kafka-a.test", 9092);
         let service = KafkaService::new(Arc::clone(&broker), cluster.clone(), settings);
@@ -290,6 +307,11 @@ impl Client {
         request.encode(&mut body, version).expect("encode request");
         self.send_raw(&body).await;
         correlation_id
+    }
+
+    /// Write bytes as they are, with no length prefix.
+    pub(super) async fn write_raw(&mut self, bytes: &[u8]) {
+        self.stream.write_all(bytes).await.expect("write");
     }
 
     pub(super) async fn send_raw(&mut self, body: &[u8]) {

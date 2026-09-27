@@ -10,7 +10,7 @@ use felix_broker::Broker;
 use felix_wire::Frame;
 
 use crate::serving::auth::AuthContext;
-use crate::serving::quic::handlers::publish::ingress::enqueue_publish;
+use crate::serving::quic::handlers::publish::ingress::enqueue_tenant_publish;
 use crate::serving::quic::handlers::publish::route::{
     UNKEYED_SHARD, publish_target, resolve_route, resolve_shard,
 };
@@ -105,8 +105,9 @@ pub(crate) async fn handle_binary_publish_batch_uni(
         .map(Bytes::from)
         .collect::<Vec<_>>();
     let payload_bytes = payload_len_sum(&payloads);
-    match enqueue_publish(
+    match enqueue_tenant_publish(
         publish_ctx,
+        &batch.tenant_id,
         PublishJob {
             target,
             payloads,
@@ -182,8 +183,9 @@ pub(crate) async fn handle_publish_message_uni(
     };
 
     let payload_bytes = payload.len() as u64;
-    let r = enqueue_publish(
+    let r = enqueue_tenant_publish(
         publish_ctx,
+        &tenant_id,
         PublishJob {
             target,
             payloads: vec![Bytes::from(payload)],
@@ -263,8 +265,9 @@ pub(crate) async fn handle_publish_batch_message_uni(
     let payloads = payloads.into_iter().map(Bytes::from).collect::<Vec<_>>();
     let payload_bytes = payload_len_sum(&payloads);
 
-    let r = enqueue_publish(
+    let r = enqueue_tenant_publish(
         publish_ctx,
+        &tenant_id,
         PublishJob {
             target,
             payloads,

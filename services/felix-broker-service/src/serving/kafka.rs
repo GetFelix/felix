@@ -25,8 +25,10 @@ use tokio_util::task::TaskTracker;
 use crate::cluster::client_endpoints::ClientEndpoints;
 use crate::cluster::lease::LeaseState;
 use crate::config::KafkaListenerConfig;
+use crate::observability::tenants;
 use crate::replication::quorum::{QuorumError, QuorumMarks};
 use crate::serving::auth::BrokerAuth;
+use crate::serving::limits::{PerIpLimiter, TenantRates};
 use crate::shards::lifecycle::fence;
 use crate::shards::routing::{Dispatch, IngressRouter, Reason, dispatch, dispatch_write};
 use crate::shards::{ShardKey, ShardKind};
@@ -47,6 +49,7 @@ pub struct BrokerCluster {
     lease: Option<Arc<LeaseState>>,
     marks: Option<Arc<QuorumMarks>>,
     quorum_timeout: Duration,
+    quotas: Arc<TenantRates>,
 }
 
 impl BrokerCluster {
@@ -69,7 +72,15 @@ impl BrokerCluster {
             lease: None,
             marks: None,
             quorum_timeout: Duration::from_secs(5),
+            quotas: Arc::new(TenantRates::unlimited()),
         })
+    }
+
+    /// The tenant publish quotas a produce is charged to: the broker's own,
+    /// so a tenant's QUIC and Kafka publishes share one budget.
+    pub(crate) fn with_quotas(mut self, quotas: Arc<TenantRates>) -> Self {
+        self.quotas = quotas;
+        self
     }
 
     /// What a write checks and waits on, as the QUIC publish path does: the
@@ -239,6 +250,15 @@ impl Cluster for BrokerCluster {
             self.ingress.as_deref(),
         )
     }
+
+    fn admit_produce(&self, tenant_id: &str, records: u64, bytes: u64) -> Duration {
+        tenants::record_published(tenant_id, records, bytes);
+        let hold = self.quotas.charge(tenant_id, records, bytes);
+        if !hold.is_zero() {
+            tenants::record_throttled(tenant_id, tenants::THROTTLE_DELAYED);
+        }
+        hold
+    }
 }
 
 /// A bound Kafka listener, not yet accepting.
@@ -247,6 +267,7 @@ pub struct KafkaListener {
     tls: Option<TlsAcceptor>,
     service: KafkaService,
     max_connections: usize,
+    per_ip: Arc<PerIpLimiter>,
 }
 
 impl KafkaListener {
@@ -273,6 +294,7 @@ impl KafkaListener {
                 anonymous_tenant: config.anonymous_tenant.clone(),
                 default_namespace: config.default_namespace.clone(),
                 cluster_id,
+                auth_timeout: Duration::from_millis(config.auth_timeout_ms),
             },
         );
         Ok(Self {
@@ -280,6 +302,7 @@ impl KafkaListener {
             tls,
             service,
             max_connections: config.max_connections,
+            per_ip: PerIpLimiter::new(config.max_connections_per_ip),
         })
     }
 
@@ -305,6 +328,14 @@ impl KafkaListener {
                     continue;
                 }
             };
+            // Per address first, so one host at its cap is refused without
+            // taking a slot from the shared pool even briefly.
+            let Some(per_ip) = self.per_ip.try_acquire(peer.ip()) else {
+                tracing::debug!(%peer, max = self.per_ip.max(), "kafka per-address connection limit reached; closing");
+                metrics::counter!("felix_kafka_refused_total", "reason" => "per_ip_limit")
+                    .increment(1);
+                continue;
+            };
             let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
                 tracing::warn!(%peer, max = self.max_connections, "kafka connection limit reached; closing");
                 metrics::counter!("felix_kafka_refused_total", "reason" => "connection_limit")
@@ -317,6 +348,7 @@ impl KafkaListener {
             let shutdown = shutdown.clone();
             connections.spawn(async move {
                 let _slot = slot;
+                let _per_ip = per_ip;
                 match tls {
                     None => service.serve_connection(socket, shutdown).await,
                     Some(tls) => {
@@ -350,3 +382,6 @@ pub fn tls_config(
     .context("kafka TLS certificate")?;
     Ok(Arc::new(config))
 }
+
+#[cfg(test)]
+mod tests;

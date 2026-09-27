@@ -231,6 +231,7 @@ async fn build_publish_context(broker: Arc<Broker>) -> PublishContext {
         preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
             &crate::config::BrokerConfig::default(),
         )),
+        tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
     }
 }
 

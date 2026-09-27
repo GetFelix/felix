@@ -125,6 +125,7 @@ async fn uni_loop_breaks_on_enqueue_error() -> Result<()> {
         preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
             &crate::config::BrokerConfig::default(),
         )),
+        tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
     };
     let mut scratch = BytesMut::with_capacity(64 * 1024);
     let binary =
