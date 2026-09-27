@@ -11,7 +11,10 @@
 // A report is sent by the shard's *leader*, because it is the only party that
 // knows both ends of the comparison: its own tail, and how far each follower
 // has acknowledged. A follower knows where it is, not whether that is caught up.
-pub use felix_common::membership::{ReplicaOffset, ReplicaStatusRequest, ShardReplicaStatus};
+pub use felix_common::membership::{
+    ReplicaOffset, ReplicaStatusRequest, ReplicaStatusResponse, ReportOutcome, ShardReplicaStatus,
+    ShardReportOutcome,
+};
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;

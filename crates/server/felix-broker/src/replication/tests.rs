@@ -339,3 +339,48 @@ async fn marks_are_stored_as_shipped_and_a_different_mark_is_a_conflict() {
         .expect_err("a record with a different mark was taken as the same");
     assert!(matches!(refused, Divergence::Conflict { offset: 0, .. }));
 }
+
+/// **A resend racing the original lands once, at the leader's offsets.** Each
+/// apply decides from the tail it read; without the write being conditional
+/// on that tail, two copies of one batch that both read tail 0 would both be
+/// appended, the second at offsets the leader never assigned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn racing_resends_of_one_batch_land_once() {
+    let (log, _dir) = follower().await;
+    let log = std::sync::Arc::new(log);
+    for round in 0..20u64 {
+        let first = round * 2;
+        let values = [format!("r{round}a"), format!("r{round}b")];
+        let copies: Vec<_> = (0..4)
+            .map(|_| {
+                let log = std::sync::Arc::clone(&log);
+                let values = values.clone();
+                tokio::spawn(async move {
+                    let values: Vec<&str> = values.iter().map(String::as_str).collect();
+                    ship(&log, first, &values).await
+                })
+            })
+            .collect();
+        for copy in copies {
+            let applied = copy.await.expect("task").expect("applied");
+            assert_eq!(applied.durable_offset, first + 2);
+        }
+        assert_eq!(log.tail_offset().await.expect("tail"), first + 2);
+    }
+    let held = stored(&log).await;
+    assert_eq!(held.len(), 40, "a resend was stored twice: {held:?}");
+}
+
+/// The conditional append refuses a batch whose tail moved, and writes
+/// nothing.
+#[tokio::test]
+async fn an_append_at_a_stale_tail_writes_nothing() {
+    let (log, _dir) = follower().await;
+    ship(&log, 0, &["a"]).await.expect("first");
+    let refused = log
+        .begin_append_marked_at(0, &batch(&["b"]), &[RecordMark::None])
+        .await
+        .expect("append");
+    assert!(refused.is_none());
+    assert_eq!(stored(&log).await, vec!["a".to_string()]);
+}

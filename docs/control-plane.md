@@ -359,6 +359,13 @@ the reporting node, and the node must lead the shard it reports on; a report
 naming a generation ahead of the assignment is refused, since one claiming
 `u64::MAX` would otherwise block every real report after it.
 
+The answer is per shard, in request order: each entry names the shard and
+generation and says `accepted`, `stale`, `not_leader`, `unassigned` or
+`future_generation`. The status is 200 when every shard was accepted and 409
+when any was not. The leader moves a shard's quorum mark only on `accepted`,
+because a `Quorum` acknowledgement must rest on a report failover will read.
+Control planes before this answered 204 whatever they did with each shard.
+
 **Reports live in the store**, keyed like the assignment they describe and
 cascading from it, not in the memory of the instance that received them. With
 several instances over one Postgres, the instance a report reaches and the
@@ -366,9 +373,12 @@ instance that runs placement need not be the same process, and a report only
 one of them had seen was a position no promoter could use — a `Quorum`
 acknowledgement released on it could not be made good at failover. Under Raft
 the report is a log command, restamped with the leader's clock as a heartbeat
-is. The latest report replaces the previous one; one from an older generation
-is dropped, because leadership moved on and it describes a replica set that
-may no longer exist.
+is. Reports only move forward: one replaces the held report at a later
+generation, or at the same generation with a leader tail at least as far
+along, so a slow request cannot put back an older view of who is caught up.
+One from an older generation than the assignment's is refused as stale,
+because leadership moved on and it describes a replica set that may no longer
+exist.
 
 **One clock on both sides.** A report is stamped with the store's clock and its
 freshness is judged, by whichever instance plans, against the store's clock —

@@ -46,6 +46,8 @@ pub(super) struct FakeCluster {
     pub(super) consistency_waits: AtomicUsize,
     /// What the next consistency wait answers, when not success.
     pub(super) consistency_error: Mutex<Option<WriteError>>,
+    /// Commit points by `(stream, shard)`; a shard without one is unbounded.
+    committed: Mutex<HashMap<(String, u32), u64>>,
 }
 
 #[async_trait]
@@ -97,6 +99,14 @@ impl Cluster for FakeCluster {
             None => Ok(()),
         }
     }
+
+    fn committed_until(&self, shard: &ShardRef<'_>, _handle: &StreamHandle) -> Option<u64> {
+        self.committed
+            .lock()
+            .expect("lock")
+            .get(&(shard.stream.to_string(), shard.shard))
+            .copied()
+    }
 }
 
 impl FakeCluster {
@@ -105,6 +115,14 @@ impl FakeCluster {
             .lock()
             .expect("lock")
             .insert((stream.to_string(), shard), placement);
+    }
+
+    /// Set a shard's commit point, as a `Quorum` stream's quorum mark would.
+    pub(super) fn commit_until(&self, stream: &str, shard: u32, offset: u64) {
+        self.committed
+            .lock()
+            .expect("lock")
+            .insert((stream.to_string(), shard), offset);
     }
 
     pub(super) fn add_broker(&self, node_id: &str, host: &str, port: u16) {
@@ -172,6 +190,7 @@ impl Fixture {
             permissions,
             consistency_waits: AtomicUsize::new(0),
             consistency_error: Mutex::new(None),
+            committed: Mutex::new(HashMap::new()),
         });
         cluster.add_broker(LOCAL, "kafka-a.test", 9092);
         let service = KafkaService::new(Arc::clone(&broker), cluster.clone(), settings);

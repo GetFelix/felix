@@ -15,7 +15,8 @@
 //! which is when they are worth having, and an idle broker waits for nothing.
 //! `disk_log/sync.rs` makes the same trade for the same reason.
 use felix_common::membership::{
-    ReplicaOffset, ReplicaStatusRequest, ShardKind as WireShardKind, ShardReplicaStatus,
+    ReplicaOffset, ReplicaStatusRequest, ReplicaStatusResponse, ShardKind as WireShardKind,
+    ShardReplicaStatus,
 };
 use felix_router::ShardKey;
 use tokio::sync::{mpsc, oneshot};
@@ -160,11 +161,10 @@ async fn flush_loop(to: ReportTo, mut rx: mpsc::Receiver<Pending>, shutdown: Can
             batch.iter().map(|pending| pending.report.clone()).collect();
         let landed = send_reports(&to, &reports).await;
 
-        // One answer for the whole request, which is what the endpoint gives:
-        // it walks the list, skips a shard it will not accept, and answers for
-        // the request as a whole. A shard it skipped is not an error to the
-        // caller either way — the next pass sends a fresher report.
-        for pending in batch {
+        // Each caller hears about its own shard: a report the control plane
+        // refused must not move that shard's mark, whatever happened to the
+        // rest of the batch.
+        for (pending, landed) in batch.into_iter().zip(landed) {
             let _ = pending.landed.send(landed);
         }
     }
@@ -178,16 +178,17 @@ async fn flush_loop(to: ReportTo, mut rx: mpsc::Receiver<Pending>, shutdown: Can
 }
 
 /// Tell the control plane which replicas could take each shard over, and say
-/// whether it took the report.
+/// for each whether it stored the report.
 ///
 /// Not retried here: the next pass sends a fresher one, and a queue of stale
 /// reports is worse than none, since promotion is gated on *recent* positions.
 /// The answer instead gates the quorum mark, so "could not tell" reads as
 /// false — see the caller.
-async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> bool {
+async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
     if reports.is_empty() {
-        return true;
+        return Vec::new();
     }
+    let refused = || vec![false; reports.len()];
     // The shared type, not a `json!` literal: the control plane parses this
     // same definition, so a field renamed on one side stops compiling instead
     // of quietly arriving as a missing one.
@@ -204,10 +205,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> bool {
                 // under the stream of the same name, so placement finds no
                 // caught-up replica for the cache and its shard is never
                 // promoted -- the contents are unreachable after a failover.
-                kind: match report.key.kind {
-                    felix_router::ShardKind::Cache => WireShardKind::Cache,
-                    felix_router::ShardKind::Stream => WireShardKind::Stream,
-                },
+                kind: wire_kind(report.key.kind),
                 generation: report.generation,
                 caught_up: report.caught_up.to_vec(),
                 drained: report.drained,
@@ -228,19 +226,75 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> bool {
     if let Some(token) = &to.token {
         request = request.bearer_auth(token.bearer());
     }
-    match request.send().await {
-        Ok(response) if response.status().is_success() => true,
-        Ok(response) => {
-            tracing::warn!(
-                status = %response.status(),
-                "the control plane refused a replica report",
-            );
-            false
-        }
+    let response = match request.send().await {
+        Ok(response) => response,
         Err(err) => {
             tracing::warn!(error = %err, "could not send a replica report");
-            false
+            return refused();
         }
+    };
+    let status = response.status();
+    // A control plane that predates per-shard answers says 204 and nothing
+    // else. It stored what it accepted and skipped the rest without saying,
+    // which is all this broker can go on; see "Replica reports" in
+    // `docs/replication-design.md` for what that costs during an upgrade.
+    if status == reqwest::StatusCode::NO_CONTENT {
+        return vec![true; reports.len()];
+    }
+    if status != reqwest::StatusCode::OK && status != reqwest::StatusCode::CONFLICT {
+        tracing::warn!(%status, "the control plane refused a replica report");
+        return refused();
+    }
+    match response.json::<ReplicaStatusResponse>().await {
+        Ok(answer) => landed_per_shard(reports, &answer),
+        Err(err) => {
+            tracing::warn!(%status, error = %err, "unreadable answer to a replica report");
+            refused()
+        }
+    }
+}
+
+/// Which of `reports` the control plane says it stored.
+///
+/// Matched by position and checked by key: an answer that does not line up
+/// with what was sent is not evidence that anything landed.
+fn landed_per_shard(reports: &[ShardReport], answer: &ReplicaStatusResponse) -> Vec<bool> {
+    if answer.shards.len() != reports.len() {
+        tracing::warn!(
+            sent = reports.len(),
+            answered = answer.shards.len(),
+            "the control plane answered a different number of replica reports than were sent",
+        );
+        return vec![false; reports.len()];
+    }
+    reports
+        .iter()
+        .zip(&answer.shards)
+        .map(|(report, outcome)| {
+            let same = outcome.tenant_id == report.key.tenant_id
+                && outcome.namespace == report.key.namespace
+                && outcome.stream == report.key.stream
+                && outcome.shard == report.key.shard
+                && outcome.kind == wire_kind(report.key.kind)
+                && outcome.generation == report.generation;
+            if same && !outcome.outcome.accepted() {
+                tracing::warn!(
+                    stream = %report.key.stream,
+                    shard = report.key.shard,
+                    generation = report.generation,
+                    outcome = ?outcome.outcome,
+                    "the control plane did not store a replica report",
+                );
+            }
+            same && outcome.outcome.accepted()
+        })
+        .collect()
+}
+
+fn wire_kind(kind: felix_router::ShardKind) -> WireShardKind {
+    match kind {
+        felix_router::ShardKind::Cache => WireShardKind::Cache,
+        felix_router::ShardKind::Stream => WireShardKind::Stream,
     }
 }
 

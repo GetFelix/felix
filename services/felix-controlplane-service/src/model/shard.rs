@@ -343,5 +343,26 @@ pub struct ReplicaReport {
     pub leader_offset: Option<u64>,
 }
 
+impl ReplicaReport {
+    /// Whether this report may replace `held` in the store.
+    ///
+    /// Reports only move forward: a later generation, or at the same one a
+    /// leader tail at least as far along. Otherwise a slow request that lands
+    /// after a newer one could put back a view in which a follower that has
+    /// since fallen behind still looks caught up, and failover would promote
+    /// it. A report without a tail (from a broker that predates it) is ordered
+    /// by generation alone. Every backend applies this same rule.
+    pub fn supersedes(&self, held: &ReplicaReport) -> bool {
+        match self.generation.cmp(&held.generation) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Equal => match (self.leader_offset, held.leader_offset) {
+                (Some(new), Some(old)) => new >= old,
+                _ => true,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

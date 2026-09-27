@@ -158,6 +158,21 @@ impl StreamLog {
             .map_err(storage_error)
     }
 
+    /// [`Self::begin_append_marked`], only if the batch starts at exactly
+    /// `first_offset`. `None`, and nothing written, otherwise.
+    pub async fn begin_append_marked_at(
+        &self,
+        first_offset: Offset,
+        payloads: &[Bytes],
+        marks: &[RecordMark],
+    ) -> Result<Option<PendingAppend>> {
+        let records = records(payloads, marks)?;
+        self.log
+            .append_pending_at(first_offset, &records)
+            .await
+            .map_err(storage_error)
+    }
+
     /// Write the rest of a producer batch the log holds only the start of,
     /// without waiting for durability. `None`, and nothing written, when the
     /// batch is no longer the last thing in the log. See

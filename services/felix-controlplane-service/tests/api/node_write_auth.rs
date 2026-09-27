@@ -454,7 +454,7 @@ async fn a_broker_cannot_report_positions_for_a_shard_it_does_not_lead() {
         ))
         .await
         .expect("report");
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.status(), StatusCode::CONFLICT);
 
     let key = felix_controlplane_service::model::ShardKey {
         tenant_id: "t1".to_string(),
@@ -490,7 +490,7 @@ async fn a_generation_ahead_of_the_assignment_is_refused() {
         ))
         .await
         .expect("report");
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.status(), StatusCode::CONFLICT);
 
     // The genuine report that follows must still land.
     let response = app
@@ -502,7 +502,7 @@ async fn a_generation_ahead_of_the_assignment_is_refused() {
         ))
         .await
         .expect("report");
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.status(), StatusCode::OK);
 
     let key = felix_controlplane_service::model::ShardKey {
         tenant_id: "t1".to_string(),
@@ -536,7 +536,7 @@ async fn the_leader_of_a_shard_can_report_it() {
         ))
         .await
         .expect("report");
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.status(), StatusCode::OK);
 
     let key = felix_controlplane_service::model::ShardKey {
         tenant_id: "t1".to_string(),

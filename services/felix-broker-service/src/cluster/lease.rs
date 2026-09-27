@@ -25,7 +25,10 @@
 //! - **Commit** ([`LeaseState::is_valid_now`]) reads the clock. It is the
 //!   authoritative one, and it is the reason a process suspended past its expiry
 //!   cannot write on waking: the cached flag would still say yes, and the clock
-//!   says no. It sits behind an fsync, so its cost is not measurable.
+//!   says no. It sits behind an fsync, so its cost is not measurable. The
+//!   shard fence makes it, because every write path (publish, forward, cache,
+//!   counter, group) enters the fence; a `Quorum` ack makes it once more
+//!   before it is released.
 pub mod metrics;
 
 use std::sync::Arc;
@@ -49,6 +52,7 @@ const SAFETY_MARGIN_FRACTION: u32 = 4;
 const REFRESH_FRACTION: u32 = 4;
 
 /// Whether this broker may currently serve the shards it leads.
+#[derive(Debug)]
 pub struct LeaseState {
     /// Millis since `base` of the last accepted heartbeat, **plus one**.
     ///

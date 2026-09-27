@@ -19,6 +19,19 @@ pub(super) struct Readable {
     pub(super) log: StreamLog,
     /// Woken when a publish to the shard commits.
     pub(super) appended: Arc<tokio::sync::Notify>,
+    /// Asked on every read, because the mark moves while a fetch waits.
+    committed: Arc<dyn Fn() -> Option<u64> + Send + Sync>,
+}
+
+impl Readable {
+    /// Where readers stop: `tail`, or the shard's commit point if that is
+    /// lower. See [`crate::cluster::Cluster::committed_until`].
+    pub(super) fn high_watermark(&self, tail: u64) -> u64 {
+        // Never below the log start: a mark behind retention's trim says
+        // nothing new is readable, not that trimmed offsets are.
+        let floor = self.log.base_offset().min(tail);
+        (self.committed)().map_or(tail, |committed| committed.clamp(floor, tail))
+    }
 }
 
 pub(super) async fn resolve(
@@ -41,9 +54,12 @@ pub(super) async fn resolve(
         .log()
         .cloned()
         .ok_or(ResponseError::UnknownTopicOrPartition)?;
+    let appended = handle.appended();
+    let cluster = Arc::clone(&shared.cluster);
     Ok(Readable {
         log,
-        appended: handle.appended(),
+        appended,
+        committed: Arc::new(move || cluster.committed_until(&located.shard_ref(), &handle)),
     })
 }
 

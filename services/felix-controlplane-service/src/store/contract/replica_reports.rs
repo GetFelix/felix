@@ -1,7 +1,7 @@
 //! What leaders report about their replicas, as every backend must keep it.
 use super::shards::{assignment, key};
 use crate::model::ReplicaReport;
-use crate::store::{ControlPlaneStore, StoreError};
+use crate::store::{ControlPlaneStore, ReportWrite, StoreError};
 
 /// A report is read back exactly as recorded, by whichever instance asks:
 /// that is the property promotion depends on across several control planes.
@@ -29,10 +29,14 @@ pub(super) async fn a_report_from_a_superseded_leader_is_dropped(store: &dyn Con
         .record_replica_report(current.clone())
         .await
         .expect("record");
-    store
-        .record_replica_report(report(shard, 4, &["broker-b"], 6_100))
-        .await
-        .expect("an old report is dropped, not refused");
+    assert_eq!(
+        store
+            .record_replica_report(report(shard, 4, &["broker-b"], 6_100))
+            .await
+            .expect("an old report is dropped, not refused"),
+        ReportWrite::Stale,
+        "a dropped report must not read as stored",
+    );
 
     assert_eq!(
         report_for(store, shard).await,
@@ -46,12 +50,51 @@ pub(super) async fn a_report_from_a_superseded_leader_is_dropped(store: &dyn Con
 pub(super) async fn a_report_at_the_same_generation_is_an_update(store: &dyn ControlPlaneStore) {
     let shard = 3;
     let later = report(shard, 5, &["broker-b"], 6_200);
-    store
-        .record_replica_report(later.clone())
-        .await
-        .expect("record");
+    assert_eq!(
+        store
+            .record_replica_report(later.clone())
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
 
     assert_eq!(report_for(store, shard).await, Some(unstamped(later)));
+}
+
+/// **Within a generation, reports only move forward.** A request that lands
+/// after a newer one, with a smaller leader tail, is dropped: it would put
+/// back a view in which a follower that has since fallen behind looks caught
+/// up, and failover promotes on that view.
+pub(super) async fn a_report_behind_the_held_one_is_dropped(store: &dyn ControlPlaneStore) {
+    let shard = 3;
+    let mut newer = report(shard, 6, &[], 6_300);
+    newer.leader_offset = Some(40);
+    assert_eq!(
+        store
+            .record_replica_report(newer.clone())
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    let mut late = report(shard, 6, &["broker-b"], 6_400);
+    late.leader_offset = Some(30);
+    assert_eq!(
+        store.record_replica_report(late).await.expect("record"),
+        ReportWrite::Stale
+    );
+    assert_eq!(report_for(store, shard).await, Some(unstamped(newer)));
+
+    // The same tail again is the normal case of a quiet shard, and updates.
+    let mut level = report(shard, 6, &["broker-b"], 6_500);
+    level.leader_offset = Some(40);
+    assert_eq!(
+        store
+            .record_replica_report(level.clone())
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    assert_eq!(report_for(store, shard).await, Some(unstamped(level)));
 }
 
 /// Nobody leads an unassigned shard, so nobody can report on it; and a

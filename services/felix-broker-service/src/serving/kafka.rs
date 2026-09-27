@@ -229,6 +229,16 @@ impl Cluster for BrokerCluster {
             _ => WriteError::LeadershipLost,
         })
     }
+
+    fn committed_until(&self, shard: &ShardRef<'_>, handle: &StreamHandle) -> Option<u64> {
+        let key = Self::key(shard);
+        crate::replication::quorum::read_bound(
+            Some(handle.consistency()),
+            &key,
+            self.marks.as_deref(),
+            self.ingress.as_deref(),
+        )
+    }
 }
 
 /// A bound Kafka listener, not yet accepting.

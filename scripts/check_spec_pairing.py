@@ -32,12 +32,19 @@ import re
 import subprocess
 import sys
 
-# The implementation of what docs/formal/FelixShard.tla models: the lease, the
-# replication and quorum mark, the reports, promotion, and the planned handoff.
+# The implementation of what docs/formal/FelixShard.tla models: the lease and
+# the heartbeats that renew it, the control plane's expiry clock, the write
+# paths that check the lease and the generation, the replication and quorum
+# mark, the reports and the control plane's answer to them, promotion, and the
+# planned handoff.
 MODELLED = (
     "services/felix-broker-service/src/cluster/lease",
+    "services/felix-broker-service/src/cluster/membership",
     "services/felix-broker-service/src/replication",
+    "services/felix-broker-service/src/serving",
     "services/felix-broker-service/src/shards/lifecycle",
+    "services/felix-controlplane-service/src/api/nodes/reports",
+    "services/felix-controlplane-service/src/cluster/membership",
     "services/felix-controlplane-service/src/cluster/placement",
 )
 SPEC = "docs/formal/"

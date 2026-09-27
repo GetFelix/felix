@@ -92,32 +92,62 @@ pub async fn apply(
     payloads: &[Bytes],
     marks: &[ProducerMark],
 ) -> Result<std::result::Result<Applied, Divergence>> {
+    // Everything below is decided from one reading of the tail, and the write
+    // is made only if the tail is still there. A resend on a second lane can
+    // land in between; without the check this batch would then be appended
+    // after it, at offsets the leader never gave these records. A lost race
+    // is decided again from the new tail, where the other copy is an overlap
+    // to verify.
+    for _ in 0..MAX_APPLY_RACES {
+        if let Some(applied) = apply_at_tail(log, first_offset, checksum, payloads, marks).await? {
+            return Ok(applied);
+        }
+    }
+    Err(BrokerError::Storage(format!(
+        "the follower log kept moving under a replication batch at {first_offset}"
+    )))
+}
+
+/// How often [`apply`] re-reads the tail after losing a race before giving up.
+/// Each loss means another batch for this log was stored, and a leader only
+/// has so many in flight.
+const MAX_APPLY_RACES: usize = 16;
+
+/// One attempt at [`apply`]. `None` when another append moved the tail after
+/// it was read.
+async fn apply_at_tail(
+    log: &StreamLog,
+    first_offset: u64,
+    checksum: u64,
+    payloads: &[Bytes],
+    marks: &[ProducerMark],
+) -> Result<Option<std::result::Result<Applied, Divergence>>> {
     let tail = log.tail_offset().await?;
 
     // Checked before the tail is consulted for anything else: a batch that did
     // not survive the trip says nothing reliable about position either.
     let computed = felix_wire::internal::batch_checksum(payloads, marks);
     if computed != checksum {
-        return Ok(Err(Divergence::Corrupt {
+        return Ok(Some(Err(Divergence::Corrupt {
             leader: checksum,
             computed,
-        }));
+        })));
     }
 
     if payloads.is_empty() {
         // Nothing to store, and nothing wrong: an empty batch is a position
         // probe, and the tail is the answer.
-        return Ok(Ok(Applied {
+        return Ok(Some(Ok(Applied {
             durable_offset: tail,
             appended: 0,
-        }));
+        })));
     }
 
     if first_offset > tail {
-        return Ok(Err(Divergence::Gap {
+        return Ok(Some(Err(Divergence::Gap {
             expected: tail,
             first_offset,
-        }));
+        })));
     }
 
     // The batch reaches back into what is already stored. That is a retry, so
@@ -137,7 +167,7 @@ pub async fn apply(
         )
         .await?
     {
-        return Ok(Err(divergence));
+        return Ok(Some(Err(divergence)));
     }
 
     let fresh = &payloads[overlap..];
@@ -148,19 +178,24 @@ pub async fn apply(
         // kept an uncommitted record from a dead leader has exactly that shape,
         // and the skip is what lets the new leader reuse the offset without
         // ever noticing they disagree.
-        return Ok(Ok(Applied {
+        return Ok(Some(Ok(Applied {
             durable_offset: first_offset + payloads.len() as u64,
             appended: 0,
-        }));
+        })));
     }
 
-    let pending = log.begin_append_marked(fresh, &marks[overlap..]).await?;
+    let Some(pending) = log
+        .begin_append_marked_at(tail, fresh, &marks[overlap..])
+        .await?
+    else {
+        return Ok(None);
+    };
     log.commit(&pending).await?;
 
-    Ok(Ok(Applied {
+    Ok(Some(Ok(Applied {
         durable_offset: tail + fresh.len() as u64,
         appended: fresh.len(),
-    }))
+    })))
 }
 
 /// Compare a batch's overlapping prefix against what is already stored.

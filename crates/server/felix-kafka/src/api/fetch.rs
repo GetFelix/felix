@@ -182,9 +182,13 @@ async fn read_partition(
         Ok(tail) => tail,
         Err(err) => return answer.with_error_code(crate::errors::from_broker(&err).code()),
     };
+    // Consumers read to the high watermark, which on a `Quorum` shard is the
+    // commit point rather than the log's end. An offset between the two is
+    // not out of range, only not readable yet, so it is answered empty.
+    let high_watermark = readable.high_watermark(tail);
     let answer = answer
-        .with_high_watermark(tail as i64)
-        .with_last_stable_offset(tail as i64)
+        .with_high_watermark(high_watermark as i64)
+        .with_last_stable_offset(high_watermark as i64)
         .with_log_start_offset(base as i64);
     let Ok(offset) = u64::try_from(fetch_offset) else {
         return answer.with_error_code(ResponseError::OffsetOutOfRange.code());
@@ -192,13 +196,14 @@ async fn read_partition(
     if offset < base || offset > tail {
         return answer.with_error_code(ResponseError::OffsetOutOfRange.code());
     }
-    if offset == tail || budget == 0 {
+    if offset >= high_watermark || budget == 0 {
         return answer;
     }
-    let records = match log.read_from(offset, budget).await {
+    let mut records = match log.read_from(offset, budget).await {
         Ok(records) => records,
         Err(err) => return answer.with_error_code(crate::errors::from_broker(&err).code()),
     };
+    records.retain(|record| record.offset < high_watermark);
     match crate::records::encode_batch(&records) {
         Ok(batch) => {
             pass.bytes += batch.len();

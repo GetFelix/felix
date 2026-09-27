@@ -27,7 +27,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use felix_router::{Resolution, ShardRouter, Unavailable};
 
-use crate::shards::lifecycle::fence::{FenceGuard, ShardFence};
+use crate::shards::lifecycle::fence::{FenceGuard, Fenced, ShardFence};
 use crate::shards::routing::hold::MoveHold;
 use crate::shards::{ShardKey, ShardKind};
 
@@ -308,11 +308,14 @@ impl IngressRouter {
             let view = self.view.load();
             let dispatch = self.dispatch_in(&view, key);
             let moving = match &dispatch {
-                Dispatch::Local { generation } => match self.fence.enter(key, *generation) {
-                    Some(fenced) => return (settled(held, dispatch), Some(fenced)),
+                Dispatch::Local { generation } => match self.fence.admit(key, *generation) {
+                    Ok(fenced) => return (settled(held, dispatch), Some(fenced)),
+                    // No move to wait out: the write goes on without a place
+                    // in the fence and is refused when it tries to enter it.
+                    Err(Fenced::LeaseLapsed) => return (settled(held, dispatch), None),
                     // The lifecycle closed the fence and the view that says
                     // why is a moment behind it.
-                    None => true,
+                    Err(Fenced::NotServing) => true,
                 },
                 Dispatch::Unavailable(Reason::Moving) => true,
                 // The leader named here is fenced and will not take it,

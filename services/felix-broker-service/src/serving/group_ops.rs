@@ -65,8 +65,23 @@ pub(crate) async fn poll(
             Err(refused) => return Err(refused),
         };
         first = false;
+        // Read each round: the mark moves while a poll waits.
+        let committed = crate::replication::quorum::read_bound(
+            broker
+                .stream_consistency(tenant_id, namespace, stream)
+                .await,
+            &owned.key,
+            publish_ctx.marks.as_deref(),
+            publish_ctx.ingress.as_deref(),
+        );
         let claimed = reader
-            .poll(&key, &log, max_records, Instant::now())
+            .poll_below(
+                &key,
+                &log,
+                committed.unwrap_or(u64::MAX),
+                max_records,
+                Instant::now(),
+            )
             .await
             .map_err(storage);
         drop(fenced);

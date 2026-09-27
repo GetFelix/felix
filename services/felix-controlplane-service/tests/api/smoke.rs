@@ -1085,7 +1085,10 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
-    async fn record_replica_report(&self, _report: ReplicaReport) -> StoreResult<()> {
+    async fn record_replica_report(
+        &self,
+        _report: ReplicaReport,
+    ) -> StoreResult<felix_controlplane_service::store::ReportWrite> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 

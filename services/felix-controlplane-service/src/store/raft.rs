@@ -37,8 +37,8 @@ use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{MetaCommand, MetaResponse, decode_result, encode_command};
 use crate::store::raft::state_machine::MetadataStateMachine;
 use crate::store::{
-    AssignmentWrite, AuthStore, ChangeSet, ControlPlaneStore, PlacementLease, Snapshot, StoreError,
-    StoreResult, TenantAuthSeed,
+    AssignmentWrite, AuthStore, ChangeSet, ControlPlaneStore, PlacementLease, ReportWrite,
+    Snapshot, StoreError, StoreResult, TenantAuthSeed,
 };
 
 pub struct RaftStore {
@@ -373,12 +373,13 @@ impl ControlPlaneStore for RaftStore {
         self.local().shard_assignment_changes(since).await
     }
 
-    async fn record_replica_report(&self, report: ReplicaReport) -> StoreResult<()> {
+    async fn record_replica_report(&self, report: ReplicaReport) -> StoreResult<ReportWrite> {
         match self
             .propose(MetaCommand::RecordReplicaReport { report })
             .await?
         {
-            MetaResponse::Unit => Ok(()),
+            MetaResponse::Unit => Ok(ReportWrite::Stored),
+            MetaResponse::StaleReport => Ok(ReportWrite::Stale),
             _ => Err(unexpected_shape("unit")),
         }
     }

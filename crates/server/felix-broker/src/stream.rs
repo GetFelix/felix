@@ -17,4 +17,4 @@ pub use subscription::{Subscription, SubscriptionGuard, SubscriptionReceiver};
 
 pub(crate) use delivery::QueuedDelivery;
 pub(crate) use producers::Sequenced;
-pub(crate) use state::StreamState;
+pub(crate) use state::{StreamState, SubscriberEntry};

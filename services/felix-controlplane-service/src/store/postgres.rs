@@ -41,7 +41,8 @@ use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 use super::{
-    AuthStore, ChangeSet, ControlPlaneStore, Snapshot, StoreConfig, StoreError, StoreResult,
+    AuthStore, ChangeSet, ControlPlaneStore, ReportWrite, Snapshot, StoreConfig, StoreError,
+    StoreResult,
 };
 use crate::auth::felix_token::TenantSigningKeys;
 use crate::auth::idp_registry::IdpIssuerConfig;
@@ -356,7 +357,7 @@ impl ControlPlaneStore for PostgresStore {
         shards::shard_assignment_changes(self, since).await
     }
 
-    async fn record_replica_report(&self, report: ReplicaReport) -> StoreResult<()> {
+    async fn record_replica_report(&self, report: ReplicaReport) -> StoreResult<ReportWrite> {
         shards::record_replica_report(self, report).await
     }
 

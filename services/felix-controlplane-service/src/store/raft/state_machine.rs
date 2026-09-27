@@ -230,7 +230,10 @@ impl MetadataStateMachine {
             MetaCommand::RecordReplicaReport { report } => store
                 .record_replica_report(report)
                 .await
-                .map(|()| MetaResponse::Unit)
+                .map(|written| match written {
+                    crate::store::ReportWrite::Stored => MetaResponse::Unit,
+                    crate::store::ReportWrite::Stale => MetaResponse::StaleReport,
+                })
                 .map_err(Into::into),
             MetaCommand::SetMovesPaused { paused } => store
                 .set_moves_paused(paused)

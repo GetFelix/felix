@@ -5,6 +5,7 @@
 //! a batch holds its place from the moment it has one, and fanout comes only
 //! after the batch is durable.
 
+mod completion;
 mod per_record;
 
 pub use per_record::RECORD_SEQUENCE_WRAP;
@@ -20,7 +21,7 @@ use felix_storage::log::RecordMark;
 use super::Broker;
 use super::shards::StreamHandle;
 use crate::error::{BrokerError, Result};
-use crate::stream::{DeliveryEnvelope, QueuedDelivery, Sequenced, SubQueuePolicy};
+use crate::stream::Sequenced;
 use crate::telemetry::{t_histogram, t_now_if, t_should_sample};
 use crate::timings;
 
@@ -181,196 +182,25 @@ impl Broker {
     /// the commit turn claimed in [`Broker::claim_publish`] is what keeps disk
     /// order, cursor order and delivery order in agreement, so overlapping the
     /// flushes does not disturb what anybody observes.
+    ///
+    /// Cancelling the returned future does not cancel the batch: once its
+    /// offsets are claimed its records exist, so the ring append and fanout
+    /// finish on a detached task. See `publish/completion.rs`.
     pub async fn complete_publish(&self, claimed: ClaimedPublish) -> Result<PublishOutcome> {
-        let ClaimedPublish {
-            handle,
-            payloads,
-            durable,
-            sample,
-        } = claimed;
-        let payloads = payloads.as_slice();
-        let stream_state = &handle.state;
-
-        if payloads.is_empty() {
-            return Ok(PublishOutcome {
-                subscribers: 0,
-                offsets: None,
-            });
-        }
-
-        let mut durable_first_offset = None;
-        let _commit_turn = match (durable, &stream_state.durable) {
-            (Some(claimed), Some(log)) => {
-                let ClaimedDurable {
-                    pending,
-                    turn,
-                    durable_start,
-                } = claimed;
-                durable_first_offset = Some(pending.first_offset());
-
-                // From here every exit path -- `?`, a panic, or this future
-                // being dropped mid-await -- releases the range through `turn`.
-                log.commit(&pending).await?;
-                turn.wait().await;
-                // Replication waits on this. Under `Quorum` the publish is
-                // about to block on a majority, so the shipping that produces
-                // it should already be under way rather than waiting out a
-                // tick.
-                //
-                // `notify_one`, not `notify_waiters`: the latter wakes only
-                // waiters already registered, so an append landing while
-                // replication is mid-pass would be lost and that record would
-                // wait for the tick after all. `notify_one` leaves a permit, so
-                // the next wait returns at once -- and it stores only one, so a
-                // burst becomes a single extra pass rather than a storm.
-                self.appended.notify_one();
-                // `notify_waiters` here, unlike above: an offset reader
-                // registers before it reads the tail, so it cannot miss this,
-                // and one that is not waiting has nothing to be told.
-                stream_state.appended.notify_waiters();
-
-                if let Some(start) = durable_start {
-                    let durable_ns = start.elapsed().as_nanos() as u64;
-                    t_histogram!("broker_publish_durable_append_ns").record(durable_ns as f64);
-                }
-                Some(turn)
-            }
-            _ => None,
-        };
-
-        let append_start = t_now_if(sample);
-        // Append to the in-memory log so cursors can replay without touching
-        // disk. A durable stream pins the sequence numbers to the offsets the
-        // log assigned, so a cursor and a disk offset are the same value no
-        // matter what happened to any publish in between.
-        let senders =
-            stream_state.append_batch_at(payloads, durable_first_offset, self.log_capacity);
-
-        if let Some(start) = append_start {
-            let append_ns = start.elapsed().as_nanos() as u64;
-            timings::record_append_ns(append_ns);
-            t_histogram!("broker_publish_append_ns").record(append_ns as f64);
-        }
-
-        let send_start = t_now_if(sample);
-        let fanout = senders.len();
-        #[cfg(feature = "telemetry")]
-        let payload_bytes: usize = payloads.iter().map(Bytes::len).sum();
-        #[cfg(feature = "telemetry")]
-        let fanout_label = fanout.to_string();
-        #[cfg(feature = "telemetry")]
-        let payload_bytes_label = payload_bytes.to_string();
-        #[cfg(not(feature = "telemetry"))]
-        let _ = fanout;
-
-        let fanout_start = t_now_if(sample);
-        let mut closed_subscribers = Vec::new();
-        let mut sent = 0usize;
-        // The offsets the log just assigned travel with the batch, so live
-        // delivery can report them exactly as replay does. Without this a
-        // resumed subscriber gets offsets for its history and then nothing once
-        // it reaches the live edge, which is precisely where it needs to start
-        // checkpointing.
-        let envelope = DeliveryEnvelope::with_base_offset(payloads, durable_first_offset);
-        let item_count = envelope.len();
-        let enqueue_start = t_now_if(sample);
-        for subscriber in senders.iter() {
-            match stream_state.subscriber_queue_policy {
-                SubQueuePolicy::Block => {
-                    if let Ok(permit) = subscriber.sender.reserve().await {
-                        metrics::counter!("felix_sub_shared_batch_handles_total").increment(1);
-                        stream_state.increment_queue_depth(item_count);
-                        permit.send(QueuedDelivery::new(
-                            envelope.clone(),
-                            Arc::clone(&stream_state.queued_items),
-                        ));
-                        sent += item_count;
-                    } else {
-                        closed_subscribers.push(subscriber.id);
-                    }
-                }
-                SubQueuePolicy::DropNew | SubQueuePolicy::DropOld => {
-                    match subscriber.sender.try_reserve() {
-                        Ok(permit) => {
-                            metrics::counter!("felix_sub_shared_batch_handles_total").increment(1);
-                            stream_state.increment_queue_depth(item_count);
-                            permit.send(QueuedDelivery::new(
-                                envelope.clone(),
-                                Arc::clone(&stream_state.queued_items),
-                            ));
-                            sent += item_count;
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            metrics::counter!("felix_subscribe_dropped_total")
-                                .increment(item_count as u64);
-                            metrics::counter!("felix_sub_queue_dropped_total")
-                                .increment(item_count as u64);
-                            if matches!(
-                                stream_state.subscriber_queue_policy,
-                                SubQueuePolicy::DropOld
-                            ) {
-                                metrics::counter!("felix_sub_queue_drop_old_emulated_total")
-                                    .increment(item_count as u64);
-                            }
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                            closed_subscribers.push(subscriber.id);
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(start) = enqueue_start {
-            let enqueue_ns = start.elapsed().as_nanos() as u64;
-            timings::record_enqueue_ns(enqueue_ns);
-            #[cfg(feature = "telemetry")]
-            {
-                t_histogram!(
-                    "broker_publish_enqueue_ns",
-                    "fanout" => fanout_label.clone(),
-                    "payload_bytes" => payload_bytes_label.clone()
-                )
-                .record(enqueue_ns as f64);
-            }
-        }
-
-        if !closed_subscribers.is_empty() {
-            closed_subscribers.sort_unstable();
-            closed_subscribers.dedup();
-            stream_state.remove_subscribers(&closed_subscribers);
-        }
-        if let Some(start) = fanout_start {
-            let fanout_ns = start.elapsed().as_nanos() as u64;
-            timings::record_fanout_ns(fanout_ns);
-            #[cfg(feature = "telemetry")]
-            {
-                t_histogram!(
-                    "broker_publish_fanout_total_ns",
-                    "fanout" => fanout_label.clone(),
-                    "payload_bytes" => payload_bytes_label.clone()
-                )
-                .record(fanout_ns as f64);
-            }
-        }
+        let send_start = t_now_if(claimed.sample);
+        let outcome = completion::Finisher::new(completion::Completion::new(
+            claimed,
+            self.log_capacity,
+            Arc::clone(&self.appended),
+        ))
+        .run()
+        .await;
         if let Some(start) = send_start {
             let send_ns = start.elapsed().as_nanos() as u64;
             timings::record_send_ns(send_ns);
-            #[cfg(feature = "telemetry")]
-            {
-                t_histogram!(
-                    "broker_publish_send_ns",
-                    "fanout" => fanout_label,
-                    "payload_bytes" => payload_bytes_label
-                )
-                .record(send_ns as f64);
-            }
+            t_histogram!("broker_publish_send_ns").record(send_ns as f64);
         }
-        Ok(PublishOutcome {
-            subscribers: sent,
-            // Inclusive, and contiguous by construction: a batch consumes one
-            // run of offsets.
-            offsets: durable_first_offset.map(|first| (first, first + item_count as u64 - 1)),
-        })
+        outcome
     }
 
     /// A producer id no other producer of this broker holds.
@@ -551,8 +381,10 @@ pub struct PublishOutcome {
 /// other publishes claim and complete freely around it -- so several
 /// completions overlap and group commit has something to coalesce (#535).
 ///
-/// Complete it. Dropping a claim releases its commit range so later publishes
-/// are not stranded, but the offsets it consumed are gone either way.
+/// Complete it. Dropping a claim without completing it releases its commit
+/// range so later publishes are not stranded, but the offsets it consumed are
+/// gone either way; once [`Broker::complete_publish`] has started, the batch
+/// finishes even if its caller goes away.
 pub struct ClaimedPublish {
     handle: StreamHandle,
     payloads: Vec<Bytes>,

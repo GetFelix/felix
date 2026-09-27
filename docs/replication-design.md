@@ -140,6 +140,21 @@ queue, a slow fsync, a VM pause — and a lease that was valid on admission may
 have expired by the time the bytes reach the disk. Fencing only at the routing
 boundary leaves exactly the window this design exists to close.
 
+**As built, the commit check is one gate.** Every write path already enters the
+shard's write fence right before it claims its place in the log: a direct or
+idempotent publish, a forwarded publish on the owner, a cache put or delete, a
+counter add, a consumer-group ack, nack or dead-letter change, and a Kafka
+produce. The fence checks the generation (condition 3) and reads the lease
+against the clock (conditions 1 and 2), so no path can skip either. A write
+that took its place at admission and waited in a queue has the lease read
+again when it claims its offsets. While the lease has lapsed the fence refuses
+everything, retryably, and serves again once a heartbeat renews it.
+
+For a `Quorum` write, condition 4 is followed by the lease once more, when the
+mark releases the acknowledgement: a broker whose lease lapsed while it waited
+answers "unknown" rather than acknowledging, which is `AckQuorum` requiring
+`LeaseValid` in `FelixShard.tla`.
+
 The commit check refuses a publish even when it was acknowledged on enqueue
 (`ack_on_commit` off), since writing it would be the split brain. So admission
 reads the clock for such a publish and, with little lease left, waits for the
@@ -302,8 +317,13 @@ memory, find the promoted broker storing it again.
 ### The `Leader` loss window, precisely
 
 For `ConsistencyLevel::Leader`, a record is acknowledged once it is durable on
-the leader alone. If the leader's storage is permanently lost, records
-acknowledged but not yet shipped are lost.
+the leader alone. Records acknowledged but not yet shipped are lost at **any**
+failover, not only when the leader's storage is lost: the promoted replica
+writes new records at those offsets, and when the old leader returns as a
+follower its unshipped suffix belongs to a previous generation and disagrees
+with the new leader, so it is truncated (see
+[Divergence and truncation](#divergence-and-truncation)). Losing the disk is
+one way to reach that; a lease lapse is another.
 
 The window is bounded by the leader's **replication lag**: the byte range between
 its durable high-water mark and the lowest follower's acknowledged mark. It must
@@ -313,6 +333,49 @@ large it currently is.
 
 `Quorum` has no such window: a majority including the leader holds every
 acknowledged record, so any failure within the configured majority preserves it.
+
+### Replica reports and the committed mark
+
+A `Quorum` acknowledgement is only as good as the report failover will read, so
+the leader moves its quorum mark only once the control plane has **stored** a
+report naming the replicas that hold the records. The report endpoint answers
+each shard separately, in request order: `accepted`, `stale`, `not_leader`,
+`unassigned` or `future_generation`. The status is 200 when every shard was
+accepted and 409 when any was not. The leader moves a shard's mark only when
+that shard's entry says `accepted` and names the shard and generation it sent.
+
+Stored reports only move forward. A report replaces the held one at a later
+generation, or at the same generation with a leader tail at least as far along
+(`ReplicaReport::supersedes`, applied the same way by the memory, Postgres and
+Raft stores). A slow request can otherwise land after a newer one and put back
+a view in which a follower that has since fallen behind still looks caught up.
+A report from a generation older than the assignment's is refused as stale.
+
+A restarted leader whose unsynced tail was lost can report a lower tail than
+the one held for the same generation; those reports are refused until its tail
+passes the old one, and its `Quorum` publishes wait meanwhile. That is a
+liveness cost, not a safety one: the held report describes records the
+followers do have.
+
+Across versions: a broker that predates per-shard answers treats 409 as the
+whole batch failing and holds every mark in it for a pass, which is safe. A
+new broker talking to a control plane that predates them gets 204 and treats
+the batch as stored, which is the old behaviour and the old exposure, until
+the control plane is upgraded.
+
+**Readers stop at the committed mark.** On a `Quorum` shard with replicas, the
+quorum mark at the leader's generation is the committed high-water mark:
+consumer-group polls hand out nothing at or past it, Kafka `Fetch` returns
+nothing past it and reports it as the high watermark and last stable offset,
+and `ListOffsets` latest is the mark. Before the first mark of a generation it
+is zero. `Leader` streams, shards placed without replicas and single-node
+brokers are unbounded, as their commit point is local durability.
+
+QUIC subscriptions are not gated: live fanout happens when a batch is durable
+on the leader, and the replay ring and disk history are read to the local
+tail. Gating them needs fanout held per stream until the mark passes, released
+in offset order, with the ring append moved with it so the ordering rules in
+[Delivery to subscribers](semantics.md#delivery-to-subscribers) still hold.
 
 ### Divergence and truncation
 

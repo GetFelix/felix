@@ -7,7 +7,9 @@ use crate::model::{
     MoveReason, ReplicaReport, ShardAssignment, ShardAssignmentChange, ShardAssignmentChangeOp,
     ShardKey, ShardKind, ShardState, ShardValidationError,
 };
-use crate::store::{AssignmentWrite, ChangeSet, PlacementLease, Snapshot, StoreError, StoreResult};
+use crate::store::{
+    AssignmentWrite, ChangeSet, PlacementLease, ReportWrite, Snapshot, StoreError, StoreResult,
+};
 
 #[derive(Debug, Clone, FromRow)]
 struct DbShardAssignment {
@@ -389,10 +391,10 @@ pub(super) async fn shard_assignment_changes(
 pub(super) async fn record_replica_report(
     store: &PostgresStore,
     report: ReplicaReport,
-) -> StoreResult<()> {
-    // The upsert keeps the newer generation: an older leader's report is
-    // dropped by the WHERE, which is a no-op rather than an error. The
-    // foreign key is what answers "no assignment" -- and what removes the
+) -> StoreResult<ReportWrite> {
+    // The WHERE is `ReplicaReport::supersedes` in SQL: a report that does not
+    // supersede the held one updates no row, which is how it is told apart.
+    // The foreign key is what answers "no assignment" -- and what removes the
     // report when the assignment goes.
     let result = sqlx::query(
         r#"INSERT INTO replica_reports
@@ -406,7 +408,11 @@ pub(super) async fn record_replica_report(
                    reported_at_millis = EXCLUDED.reported_at_millis,
                    drained = EXCLUDED.drained,
                    leader_offset = EXCLUDED.leader_offset
-               WHERE EXCLUDED.generation >= replica_reports.generation"#,
+               WHERE EXCLUDED.generation > replica_reports.generation
+                  OR (EXCLUDED.generation = replica_reports.generation
+                      AND (EXCLUDED.leader_offset IS NULL
+                           OR replica_reports.leader_offset IS NULL
+                           OR EXCLUDED.leader_offset >= replica_reports.leader_offset))"#,
     )
     .bind(&report.key.tenant_id)
     .bind(&report.key.namespace)
@@ -422,7 +428,8 @@ pub(super) async fn record_replica_report(
     .execute(&store.pool)
     .await;
     match result {
-        Ok(_) => Ok(()),
+        Ok(done) if done.rows_affected() == 0 => Ok(ReportWrite::Stale),
+        Ok(_) => Ok(ReportWrite::Stored),
         Err(sqlx::Error::Database(err)) if err.is_foreign_key_violation() => {
             Err(StoreError::NotFound("shard assignment".into()))
         }

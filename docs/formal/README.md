@@ -41,7 +41,11 @@ One shard, three brokers, one control plane, discrete time.
   holds the record; under `Leader`, on the leader's own commit.
 - **Reports.** The leader tells the control plane which followers hold every
   record it does. The report travels on its own: it may arrive after the
-  acknowledgements it describes, or never.
+  acknowledgements it describes, or never. With `ReportBeforeAck` a `Quorum`
+  ack counts only a report the control plane stored for the acknowledging
+  broker's own generation: the broker learns that from the per-shard answer
+  (`accepted`), not from the request's status, so a deposed leader cannot
+  release an ack on a report that belongs to its successor.
 - **Promotion.** After the lapse and the margin, the control plane names a new
   leader. `Promotion = "leader-report"` is the design as written: a follower
   the last report named as caught up. `Promotion = "log-order"` is the live
@@ -115,6 +119,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardLease.cfg` | drifting clocks, no writes: heartbeats, lapses, promotions | pass `AtMostOneServing` and `NoStaleCommit` (0.8M states) |
 | `FelixShardLogOrder.cfg` | both lease checks, `Quorum`, two writes, promotion by log order | pass every invariant (2.0M states) |
 | `FelixShardThinMargin.cfg` | drifting clocks with `Margin = 0` and `Eps = 0` | violate `AtMostOneServing` |
+| `FelixShardRealMargins.cfg` | the margins the code runs: the broker gives up a quarter of the lease (`Eps = 1` of `L = 4`), the control plane regrants with no wait (`Margin = 0`) | violate `AtMostOneServing`: the broker's quarter alone is not a safety interval under drift; pinned until the control plane waits out a margin of its own |
 | `FelixShardNoCommitCheck.cfg` | commit-time lease check removed | violate `NoStaleCommit` |
 | `FelixShardNoReportOrder.cfg` | the design *before* #268: a `Quorum` ack released before the report describing it lands | violate `AckedSurvive` |
 | `FelixShard.cfg` | the design as implemented: report-before-mark, followers reported against the offset a majority holds, promotion from the leader's report | pass every invariant (1.5M states) |
@@ -176,9 +181,9 @@ test proving the check they remove is really there.
 
 Citations do not catch the change that actually drifted: #268 changed the
 protocol without renaming a cited test. So a pull request that touches the
-code this model describes — `services/felix-broker-service/src/{cluster/lease,replication,shards/lifecycle}`
-and `services/felix-controlplane-service/src/cluster/placement`, tests and
-metrics aside — must also touch `docs/formal/`, or carry a line
+code this model describes — `services/felix-broker-service/src/{cluster/lease,cluster/membership,replication,serving,shards/lifecycle}`
+and `services/felix-controlplane-service/src/{api/nodes/reports,cluster/membership,cluster/placement}`,
+tests and metrics aside — must also touch `docs/formal/`, or carry a line
 
 ```
 Spec-Unaffected: <why>

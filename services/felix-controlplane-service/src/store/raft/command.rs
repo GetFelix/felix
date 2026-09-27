@@ -300,6 +300,9 @@ pub enum MetaResponse {
     Count {
         count: u64,
     },
+    /// `RecordReplicaReport` kept the report already held. A stored report
+    /// answers `Unit`, so an older leader's answer still reads as stored.
+    StaleReport,
 }
 
 /// `StoreError`, flattened into something that serializes and compares.

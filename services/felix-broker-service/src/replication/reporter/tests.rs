@@ -209,3 +209,111 @@ fn a_follower_that_is_not_reached_is_not_reported_as_close() {
     assert_eq!(report.offsets, vec![("broker-c".to_string(), 7)]);
     assert_eq!(report.tail, 10);
 }
+
+/// A control plane that stores reports for streams named `led-*` and refuses
+/// the rest as not led by this broker, answering per shard as the real one
+/// does. `answers` rewrites the body before it goes out.
+fn judging_control_plane(
+    answers: fn(ReplicaStatusResponse) -> ReplicaStatusResponse,
+) -> (ReportTo, tokio::task::JoinHandle<()>) {
+    use felix_common::membership::{ReportOutcome, ShardReportOutcome};
+
+    let app = axum::Router::new().route(
+        "/v1/nodes/{node_id}/replica-status",
+        axum::routing::post(move |body: axum::Json<ReplicaStatusRequest>| async move {
+            let shards: Vec<ShardReportOutcome> = body
+                .0
+                .shards
+                .into_iter()
+                .map(|shard| ShardReportOutcome {
+                    outcome: if shard.stream.starts_with("led-") {
+                        ReportOutcome::Accepted
+                    } else {
+                        ReportOutcome::NotLeader
+                    },
+                    tenant_id: shard.tenant_id,
+                    namespace: shard.namespace,
+                    stream: shard.stream,
+                    shard: shard.shard,
+                    kind: shard.kind,
+                    generation: shard.generation,
+                })
+                .collect();
+            let status = if shards.iter().all(|shard| shard.outcome.accepted()) {
+                axum::http::StatusCode::OK
+            } else {
+                axum::http::StatusCode::CONFLICT
+            };
+            (
+                status,
+                axum::Json(answers(ReplicaStatusResponse { shards })),
+            )
+        }),
+    );
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let addr = listener.local_addr().expect("addr");
+    let listener = tokio::net::TcpListener::from_std(listener).expect("adopt");
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app.into_make_service()).await;
+    });
+    (
+        ReportTo {
+            client: reqwest::Client::new(),
+            base_url: format!("http://{addr}"),
+            node_id: "broker-a".to_string(),
+            token: None,
+            incarnation: 0,
+        },
+        server,
+    )
+}
+
+/// **Only a stored report moves its shard's mark.** A batch answered 409
+/// because one shard was refused still landed the others, and the refused one
+/// must not read as landed however the rest went: its leader would release
+/// `Quorum` acks on a report failover never sees.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_caller_hears_whether_its_own_report_was_stored() {
+    let (to, server) = judging_control_plane(|answer| answer);
+    let reports = [report("led-a"), report("orphan"), report("led-b")];
+
+    assert_eq!(send_reports(&to, &reports).await, vec![true, false, true]);
+
+    let shutdown = CancellationToken::new();
+    let (reporter, task) = Reporter::spawn(to, shutdown.clone());
+    assert!(reporter.send(report("led-a")).await);
+    assert!(
+        !reporter.send(report("orphan")).await,
+        "a report the control plane refused read as landed",
+    );
+
+    shutdown.cancel();
+    let _ = task.await;
+    server.abort();
+}
+
+/// An answer that does not line up with the request is no evidence anything
+/// landed, even when it says `accepted`.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_that_does_not_match_the_request_lands_nothing() {
+    let (short, server) = judging_control_plane(|mut answer| {
+        answer.shards.pop();
+        answer
+    });
+    assert_eq!(
+        send_reports(&short, &[report("led-a"), report("led-b")]).await,
+        vec![false, false]
+    );
+    server.abort();
+
+    let (renamed, server) = judging_control_plane(|mut answer| {
+        answer.shards[0].generation += 1;
+        answer
+    });
+    assert_eq!(
+        send_reports(&renamed, &[report("led-a"), report("led-b")]).await,
+        vec![false, true]
+    );
+    server.abort();
+}

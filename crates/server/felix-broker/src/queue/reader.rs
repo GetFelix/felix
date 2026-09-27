@@ -117,7 +117,25 @@ impl GroupReader {
         max: usize,
         now: Instant,
     ) -> Result<Vec<Claimed>> {
-        let tail = log.tail_offset().await?;
+        self.poll_below(key, log, u64::MAX, max, now).await
+    }
+
+    /// [`Self::poll`], handing out nothing at or past `committed`.
+    ///
+    /// For a shard whose records count as written only once a majority holds
+    /// them: a record past that point can still be lost at failover, and a
+    /// group that had consumed it would have moved on from an offset the next
+    /// leader fills with something else. Records already handed out are
+    /// redelivered as usual; they were committed when they went out.
+    pub async fn poll_below(
+        &self,
+        key: &GroupKey,
+        log: &crate::durable::StreamLog,
+        committed: u64,
+        max: usize,
+        now: Instant,
+    ) -> Result<Vec<Claimed>> {
+        let tail = log.tail_offset().await?.min(committed);
         let tracker = self.tracker_for(key).await?;
         let claim = {
             let mut tracker = tracker.lock().await;

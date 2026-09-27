@@ -13,11 +13,11 @@
 //!
 //! Run with `cargo build -p felix-loadgen && cargo test -p felix-cluster --test loadgen`.
 use std::path::PathBuf;
-use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
 use felix_cluster::{CacheSpec, Cluster, ClusterConfig, StreamSpec};
 use serial_test::serial;
+use tokio::process::Command;
 
 fn loadgen_binary() -> Result<PathBuf> {
     let mut dir = std::env::current_exe().context("locate the running executable")?;
@@ -35,7 +35,10 @@ fn loadgen_binary() -> Result<PathBuf> {
     ))
 }
 
-fn run_loadgen(cluster: &Cluster, args: &[&str]) -> Result<(String, String)> {
+/// Async so the test's runtime keeps serving the in-process control plane
+/// while loadgen runs: a blocking wait stalls heartbeats and every broker's
+/// lease lapses mid-run.
+async fn run_loadgen(cluster: &Cluster, args: &[&str]) -> Result<(String, String)> {
     let brokers: Vec<String> = cluster
         .nodes
         .iter()
@@ -54,6 +57,7 @@ fn run_loadgen(cluster: &Cluster, args: &[&str]) -> Result<(String, String)> {
         .arg("local-harness")
         .args(args)
         .output()
+        .await
         .context("run felix-loadgen")?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -134,6 +138,7 @@ async fn pubsub_accounts_for_every_delivery() {
             "3",
         ],
     )
+    .await
     .expect("pubsub run");
 
     assert!(
@@ -172,6 +177,7 @@ async fn cache_and_counter_round_trips_complete() {
             "4",
         ],
     )
+    .await
     .expect("cache run");
     let row = result_json(&stdout).expect("json row");
     for half in ["put", "get"] {
@@ -196,6 +202,7 @@ async fn cache_and_counter_round_trips_complete() {
             "4",
         ],
     )
+    .await
     .expect("counter run");
     let row = result_json(&stdout).expect("json row");
     for half in ["add", "get"] {
@@ -229,6 +236,7 @@ async fn watch_delivers_every_put_to_every_watcher() {
             "5",
         ],
     )
+    .await
     .expect("watch run");
     let row = result_json(&stdout).expect("json row");
     assert_eq!(
@@ -269,6 +277,7 @@ async fn queue_drains_everything_it_enqueued() {
             "64",
         ],
     )
+    .await
     .expect("queue run");
 
     let row = result_json(&stdout).expect("json row");
@@ -319,6 +328,7 @@ async fn a_retained_join_completes_the_roster() {
                 "64",
             ],
         )
+        .await
         .expect("retained run");
 
         let row = result_json(&stdout).expect("json row");
@@ -371,6 +381,7 @@ async fn ingest_reports_what_it_published() {
             "64",
         ],
     )
+    .await
     .expect("ingest run");
 
     let row = result_json(&stdout).expect("json row");

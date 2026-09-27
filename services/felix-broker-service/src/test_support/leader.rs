@@ -28,6 +28,9 @@ pub(crate) const NAMESPACE: &str = "ns";
 pub(crate) const DURABLE: &str = "orders";
 /// An ephemeral stream, whose publishes complete inline.
 pub(crate) const EPHEMERAL: &str = "events";
+/// A durable `Quorum` stream placed with a follower ([`SUCCESSOR`]), so its
+/// commit point is the quorum mark rather than the local tail.
+pub(crate) const QUORUM: &str = "ledger";
 pub(crate) const CACHE: &str = "sessions";
 pub(crate) const GENERATION: u64 = 1;
 const NODE: &str = "broker-a";
@@ -85,7 +88,11 @@ impl Leader {
             .register_namespace(TENANT, NAMESPACE)
             .await
             .expect("namespace");
-        for (stream, durable) in [(DURABLE, true), (EPHEMERAL, false)] {
+        for (stream, durable, consistency) in [
+            (DURABLE, true, felix_broker::ConsistencyLevel::Leader),
+            (EPHEMERAL, false, felix_broker::ConsistencyLevel::Leader),
+            (QUORUM, true, felix_broker::ConsistencyLevel::Quorum),
+        ] {
             broker
                 .register_stream(
                     TENANT,
@@ -93,6 +100,7 @@ impl Leader {
                     stream,
                     StreamMetadata {
                         durable,
+                        consistency,
                         ..Default::default()
                     },
                 )
@@ -104,10 +112,21 @@ impl Leader {
             .await
             .expect("cache");
 
-        let keys = [stream_key(DURABLE), stream_key(EPHEMERAL), cache_key()];
+        let keys = [
+            stream_key(DURABLE),
+            stream_key(EPHEMERAL),
+            stream_key(QUORUM),
+            cache_key(),
+        ];
         let assignments: HashMap<ShardKey, ShardAssignment> = keys
             .iter()
-            .map(|key| (key.clone(), assignment(key, "active")))
+            .map(|key| {
+                let mut placed = assignment(key, "active");
+                if key.stream == QUORUM {
+                    placed.replicas = vec![SUCCESSOR.to_string()];
+                }
+                (key.clone(), placed)
+            })
             .collect();
         let nodes: HashMap<String, NodeRef> = [(NODE, 7001), (SUCCESSOR, 7002)]
             .into_iter()
@@ -159,6 +178,17 @@ impl Leader {
             .await
             .expect("tail")
             .next_seq()
+    }
+
+    /// Bind a freshly renewed lease to the fence, as a running broker does,
+    /// and hand it back so a test can let it lapse.
+    pub(crate) fn hold_lease(&self) -> Arc<crate::cluster::lease::LeaseState> {
+        let lease = Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+            3600,
+        )));
+        lease.renew();
+        self.ingress.fence().bind_lease(Arc::clone(&lease));
+        lease
     }
 
     /// What a move does to the old leader: the same generation, now draining.

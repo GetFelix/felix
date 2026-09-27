@@ -44,6 +44,16 @@ pub trait Cluster: Send + Sync + 'static {
         handle: &StreamHandle,
         outcome: &PublishOutcome,
     ) -> Result<(), WriteError>;
+
+    /// The offset below which a shard's records are committed, which is where
+    /// a fetch stops and what it reports as the high watermark. `None` when
+    /// everything durable here is committed: a `Leader` stream, or a shard
+    /// with no replicas. A `Quorum` shard's is its quorum mark, since a record
+    /// past it can be lost at failover and its offset reused.
+    fn committed_until(&self, shard: &ShardRef<'_>, handle: &StreamHandle) -> Option<u64> {
+        let _ = (shard, handle);
+        None
+    }
 }
 
 /// A write's place in its shard's fence. Dropping it lets a move proceed.
