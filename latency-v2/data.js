@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790548561915,
+  "lastUpdate": 1790549454990,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -23100,6 +23100,72 @@ window.BENCHMARK_DATA = {
             "range": "662.83",
             "unit": "us",
             "extra": "trials: 5\nmedian: 556.00\nmean: 866.80\nstdev: 662.83\ncv: 76.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1ce2fbc82a6742b66f63318d7643989cdaa717ec",
+          "message": "fix(groups): settle claims made before a shard moved, failed over or was evicted (#776)\n\nA group's in-flight claims live in memory and do not move with the shard. The\ntracker a new owner builds starts from the durable cursor, so an ack for a\nclaim the old owner handed out just before the fence -- held, then redirected\nto the new owner -- was refused as `stale_claim`. main's CI failed on exactly\nthat (`handoff::writes_of_every_kind_through_a_move_are_never_refused`: \"offset\n2 was not handed out by this group (next is 2)\"), and the status table promises\na group's polls and acks see no refusal through a move. The race is as old as\nthe test (#687); #765's timing changes only made it show.\n\nA tracker now remembers the log tail the first time it sees one. Every claim a\npredecessor could have made is below that, so a settle there is taken; an\noffset written later and not yet polled is still `stale_claim`, and one past\nthe tail is still `invalid_request`. The poll path records the tail itself,\nand the serving layer does before an ack or nack, which may be the first\noperation on the new owner. A claim then skips offsets already settled or in\nplay through a predecessor's claim, so an early ack is not handed out again.\n\nThe trade-off: an ack for an offset below that tail that the consumer never\nreceived now finishes it instead of being refused. The tracker already takes\nan ack from any consumer for any offset it handed out, so this widens what it\ncannot tell apart rather than a check it made.\n\nTests, each failing with its piece reverted:\n- reader: claims from before a reset are acked and nacked out of order, a\n  settled record is not handed out again, and a record written after the\n  reset is still refused;\n- serving: an ack after the tracker is rebuilt lands and moves the cursor; an\n  ack for a record newer than the tracker is `stale_claim`, past the tail\n  `invalid_request`.\n\nSpec-Unaffected: consumer-group claim bookkeeping only; the model has no consumer groups, and replication, leases, fencing and the quorum mark are untouched.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T15:48:25-07:00",
+          "tree_id": "39455615540a3e762f551f0be02aae2d4701d955",
+          "url": "https://github.com/gabloe/felix/commit/1ce2fbc82a6742b66f63318d7643989cdaa717ec"
+        },
+        "date": 1790549452739,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 68,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 68.00\nmean: 67.80\nstdev: 1.30\ncv: 1.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 90,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 90.20\nstdev: 1.48\ncv: 1.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 118,
+            "range": "4.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 118.00\nmean: 118.40\nstdev: 4.04\ncv: 3.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 87,
+            "range": "2.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 87.00\nmean: 86.20\nstdev: 2.05\ncv: 2.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 204,
+            "range": "11.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 201.80\nstdev: 11.19\ncv: 5.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 739,
+            "range": "594.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 739.00\nmean: 755.80\nstdev: 594.38\ncv: 78.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
