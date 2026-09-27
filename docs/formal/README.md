@@ -3,8 +3,9 @@
 `FelixShard.tla` is a TLA+ model of the protocol in
 [`docs/replication-design.md`](../replication-design.md): the lease that lets a
 broker serve a shard, the replication that puts its records on a majority, and
-the promotion that names the next leader when the lease lapses. TLC checks it
-in about a minute, and `task tla:check` runs it locally and in CI.
+the promotion that names the next leader when the lease lapses. `task tla:check`
+runs TLC over every configuration, locally and in CI: about seven minutes on
+sixteen cores, and about half an hour on a four-core CI runner.
 
 Prose about a safety interval is an argument; a model checker either finds the
 interleaving that breaks it or runs out of interleavings to try. This one found
@@ -42,11 +43,23 @@ One shard, three brokers, one control plane, discrete time.
   halts it. A follower refuses a leader older than one it has heard from.
   The model reads "heard from" off the follower's log (`LastGen`); the code
   keeps the highest generation it accepted in a file beside the log, which is
-  never below that and survives a restart, so it only refuses more. The
+  never below that and survives a restart, so it only refuses more. Under
+  `AckByFollowers` the model keeps that generation too (`promised`). The
   follower's high-water mark is learned from the leader, as the code's
   follower learns the commit offset each batch carries.
 - **Acknowledgement.** Under `Quorum`, once a majority including the leader
-  holds the record; under `Leader`, on the leader's own commit.
+  holds the record; under `Leader`, on the leader's own commit. With
+  `AckByFollowers`, once a majority holds it and still holds the leader's
+  generation as the highest it accepted (`promised`), with no report and no
+  lease in the condition. Only a record of the leader's own generation is
+  counted, taking the ones below it along, as in Raft.
+- **Promotion fence**, under `FenceOnPromote`. A promoted leader persists its
+  generation, then asks the others to: each that has not accepted a newer one
+  persists it, answers with its log, and from then on refuses the older
+  leader. The new leader takes the log of any answer ahead of its own by (last
+  generation, length), and opens for writes, and ships, only once a majority,
+  itself included, has answered. Modelled on promotion only: the handoff and
+  cancel configurations do not turn it on.
 - **Reports.** The leader tells the control plane which followers hold every
   record it does. The report travels on its own: it may arrive after the
   acknowledgements it describes, or never. With `ReportBeforeAck` a `Quorum`
@@ -113,6 +126,7 @@ bootstrap of a follower below the leader's base.
 | --- | --- |
 | `AtMostOneServing` | No two brokers serve the shard at once. |
 | `AckedSurvive` | Whoever is serving holds every acknowledged record. |
+| `AckedHeldByLeader` | The leader at the current generation holds every acknowledged record once it may serve. `AckedSurvive` without the lease, for configurations where two brokers can serve at once. |
 | `AckedAgree` | Two brokers never hold different acknowledged records at one offset. |
 | `AckedOnMajority` | Every acknowledged `Quorum` record is on a majority. |
 | `NoTruncationBelowHwm` | A follower never discards a record below its high-water mark. |
@@ -130,48 +144,52 @@ that quietly became a pass would be a model that stopped saying anything.
 
 | Configuration | Knobs | Must |
 | --- | --- | --- |
-| `FelixShardLease.cfg` | drifting clocks, no writes: heartbeats, lapses, promotions | pass `AtMostOneServing` and `NoStaleCommit` (0.8M states) |
-| `FelixShardLogOrder.cfg` | both lease checks, `Quorum`, two writes, promotion by log order | pass every invariant (2.0M states) |
+| `FelixShardLease.cfg` | drifting clocks, no writes: heartbeats, lapses, promotions | pass `AtMostOneServing` and `NoStaleCommit` (0.78M distinct states) |
+| `FelixShardLogOrder.cfg` | both lease checks, `Quorum`, two writes, promotion by log order | pass every invariant (1.52M distinct states) |
 | `FelixShardThinMargin.cfg` | drifting clocks with `Margin = 0` and `Eps = 0` | violate `AtMostOneServing` |
-| `FelixShardRealMargins.cfg` | the margins the code runs: the broker gives up a quarter of the lease (`Eps = 1` of `L = 4`), and the control plane marks it down a quarter past its expiry (`Margin = 1`), against clocks that drift by a quarter | pass `AtMostOneServing` and `NoStaleCommit` (2.1M states); with `Margin = 0` it finds two brokers serving |
+| `FelixShardRealMarginsLease.cfg` | the margins the code runs: the broker gives up a quarter of the lease (`Eps = 1` of `L = 4`), and the control plane marks it down a quarter past its expiry (`Margin = 1`), against clocks that drift by a quarter; no writes | pass `AtMostOneServing` and `NoStaleCommit` (2.10M distinct states); with `Margin = 0` it finds two brokers serving |
+| `FelixShardRealMargins.cfg` | the same margins and drift with one `Quorum` write carried across a promotion, acknowledged on the report's answer and a valid lease, as the code does | pass every invariant (2.38M distinct states) |
+| `FelixShardAckWithoutLease.cfg` | the same with the lease taken out of the acknowledgement: the report alone releases it | pass every invariant (2.38M distinct states, the same ones: the report is only sent on a valid lease) |
+| `FelixShardFencedAck.cfg` | acknowledged by follower acks at the leader's generation, no lease or report in it, and the promotion fence; no margin on either side of the lease, drifting clocks, no commit check, two writes | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (2.62M distinct states) |
+| `FelixShardUnfencedAck.cfg` | the same without the fence | violate `AckedHeldByLeader` |
 | `FelixShardNoCommitCheck.cfg` | commit-time lease check removed | violate `NoStaleCommit` |
 | `FelixShardNoReportOrder.cfg` | the design *before* #268: a `Quorum` ack released before the report describing it lands | violate `AckedSurvive` |
-| `FelixShard.cfg` | the design as implemented: report-before-mark, followers reported against the offset a majority holds, promotion from the leader's report | pass every invariant (1.5M states) |
+| `FelixShard.cfg` | the design as implemented: report-before-mark, followers reported against the offset a majority holds, promotion from the leader's report, the leader acting on the answer its report got | pass every invariant (5.38M distinct states) |
 | `FelixShardReportAtTail.cfg` | the same with followers reported only when level with the leader's tail | violate `QuorumReportNamesASuccessor` |
 | `FelixShardReportUnpaired.cfg` | followers measured at the majority's offset, but the report claiming the whole log | violate `AckedSurvive` |
-| `FelixShardHandoff.cfg` | a planned move off a live leader: fence, drained report, cut over; writes hold the fence from admission | pass every invariant (2.6M states) |
+| `FelixShardHandoff.cfg` | a planned move off a live leader: fence, drained report, cut over; writes hold the fence from admission | pass every invariant (2.39M distinct states) |
 | `FelixShardHandoffNoWait.cfg` | the same move cutting over without waiting for the drained report | violate `AtMostOneServing` |
-| `FelixShardStalePlannerCas.cfg` | two instances moving the shard, one acting on a held read; writes conditional on the generation read | pass every invariant (2.6M states) |
+| `FelixShardStalePlannerCas.cfg` | two instances moving the shard, one acting on a held read; writes conditional on the generation read | pass every invariant (3.30M distinct states) |
 | `FelixShardStalePlanner.cfg` | the same, writing unconditionally | violate `AtMostOneServing` |
-| `FelixShardStalePromotionCas.cfg` | two instances failing the shard over, one acting on a held read; writes conditional | pass every invariant (29K states) |
+| `FelixShardStalePromotionCas.cfg` | two instances failing the shard over, one acting on a held read; writes conditional | pass every invariant (29K distinct states) |
 | `FelixShardStalePromotion.cfg` | the same, writing unconditionally | violate `AtMostOneServing` |
-| `FelixShardHandoffLeaderAck.cfg` | a planned move under `Leader` acknowledgement, the claim checking the fence | pass every invariant (1.3M states) |
+| `FelixShardHandoffLeaderAck.cfg` | a planned move under `Leader` acknowledgement, the claim checking the fence | pass every invariant (1.32M distinct states) |
 | `FelixShardHandoffNoClaimFence.cfg` | the same move with the fence checked at admission only | violate `AckedSurvive` |
-| `FelixShardHandoffAdmitAck.cfg` | the same move with the write acknowledged on admission and holding the fence from there | pass every invariant (1.2M states) |
+| `FelixShardHandoffAdmitAck.cfg` | the same move with the write acknowledged on admission and holding the fence from there | pass every invariant (1.25M distinct states) |
 | `FelixShardHandoffAdmitAckClaimFence.cfg` | acknowledged on admission, fenced at the claim | violate `AckedSurvive` |
-| `FelixShardStagedMove.cfg` | two replicas and a staged destination left out of the quorum while it copies, then the move | pass every invariant (2.3M states) |
-| `FelixShardStagedMoveSingle.cfg` | the same with one replica: the leader alone is the quorum | pass every invariant (0.8M states) |
+| `FelixShardStagedMove.cfg` | two replicas and a staged destination left out of the quorum while it copies, then the move | pass every invariant (1.99M distinct states) |
+| `FelixShardStagedMoveSingle.cfg` | the same with one replica: the leader alone is the quorum | pass every invariant (0.75M distinct states) |
 | `FelixShardStagedMoveVotes.cfg` | one replica, with the destination counted toward the quorum | violate `StagedCopyNeverDelaysAck` |
-| `FelixShardCancel.cfg` | writes acknowledged on admission, a fenced move cancelled and the shard taken back, a second move after | pass every invariant (5.6M states) |
-| `FelixShardCancelStalePlannerCas.cfg` | a cancel decided from a held read while the move cuts over; every write conditional | pass every invariant (447K states) |
+| `FelixShardCancel.cfg` | writes acknowledged on admission, a fenced move cancelled and the shard taken back, a second move after | pass every invariant (6.28M distinct states) |
+| `FelixShardCancelStalePlannerCas.cfg` | a cancel decided from a held read while the move cuts over; every write conditional | pass every invariant (447K distinct states) |
 | `FelixShardCancelStalePlanner.cfg` | the same with the cancel written unconditionally | violate `AtMostOneServing` |
 | `FelixPlacementPacing.cfg` | `FelixPlacementPacing.tla`: moves and follower replacements across four shards, two copies at once, one per node, one planner | pass `CopiesWithinLimit` and `FencedNeverTimesOut` (313 distinct states) |
 | `FelixPlacementPacingUncountedReplacement.cfg` | the same with a follower replacement invisible to the count, as it used to be written | violate `CopiesWithinLimit` |
 | `FelixPlacementPacingTwoPlanners.cfg` | two planners over three shards and one slot, the lease changing hands at any step, one also reading without it as an operator does; every start fenced by the placement token | pass `CopiesWithinLimit` and `FencedNeverTimesOut` (56K distinct states) |
 | `FelixPlacementPacingUnfenced.cfg` | the same with starts conditional only on their shard's generation | violate `CopiesWithinLimit` |
-| `FelixShardIdempotentFailover.cfg` | a write re-sent across a failover, checked against the promoted broker's log | pass every invariant and `NoDuplicate` (0.28M distinct states) |
+| `FelixShardIdempotentFailover.cfg` | a write re-sent across a failover, checked against the promoted broker's log | pass every invariant and `NoDuplicate` (0.20M distinct states) |
 | `FelixShardIdempotentFailoverMemory.cfg` | the same with the sequences in the leader's memory | violate `NoDuplicate` |
-| `FelixShardIdempotentHandoff.cfg` | a write re-sent across a planned move, checked against the new leader's log | pass every invariant and `NoDuplicate` (2.7M distinct states) |
+| `FelixShardIdempotentHandoff.cfg` | a write re-sent across a planned move, checked against the new leader's log | pass every invariant and `NoDuplicate` (2.39M distinct states) |
 | `FelixShardIdempotentHandoffMemory.cfg` | the same with the sequences in the leader's memory | violate `NoDuplicate` |
-| `FelixShardCancelResend.cfg` | `FelixShardCancel.cfg` with writes re-sent, checked against the retaken leader's log | pass every invariant and `NoDuplicate` (5.6M states) |
+| `FelixShardCancelResend.cfg` | `FelixShardCancel.cfg` with writes re-sent, checked against the retaken leader's log | pass every invariant and `NoDuplicate` (6.28M distinct states) |
 | `FelixShardCancelResendMemory.cfg` | the same with the sequences in the leader's memory | violate `NoDuplicate` |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting
-clocks is affordable; the replication configurations carry writes and
-synchronised clocks, because nothing about which replica holds which record
-depends on what time a broker thinks it is. One configuration with both ran
-past four hundred million states without finishing.
+clocks is affordable; most replication configurations carry writes and
+synchronised clocks. `FelixShardRealMargins.cfg`, `FelixShardAckWithoutLease.cfg`
+and the fenced pair carry both, bought with one write and time to 5, or two
+writes and one promotion.
 
 ### What ties this to the code, and what does not
 
@@ -314,6 +332,32 @@ The control plane's quarter is measured on its own monotonic clock as well as
 the store's, which is what makes its expiry real time here rather than a wall
 clock that can step.
 
+### The fence that takes the clock out
+
+Under `Quorum` today, an acknowledged record survives because the report
+orders the ack and promotion reads the report, and the lease keeps a deposed
+leader from writing. `FelixShardAckWithoutLease.cfg` shows the lease check at
+release is not what does it. `FelixShardFencedAck.cfg` goes further: the ack
+counts followers at the leader's generation, no report and no lease, and the
+promoted leader fences a majority before it serves. It passes with no margin
+on either side of the lease, so two brokers do serve at once, and with the
+commit not checking the lease at all. The old leader keeps writing; it just
+cannot find a majority for it.
+
+`FelixShardUnfencedAck.cfg` drops the fence and TLC finds the record lost in
+eleven steps: the old leader's clock runs slow, the control plane promotes a
+follower, and the old leader commits, ships to the other follower, which has
+never heard of the new generation, and acknowledges on that majority.
+
+The catch-up is load-bearing too. Checked by hand with the fence answering but
+the new leader not taking the log ahead of its own, TLC finds a record a
+majority acknowledged before the fence missing from the new leader.
+
+The CI bounds allow one promotion. Two (`L = 2`) with drift did not finish;
+with `Drift = 0` as well the configuration passes by hand in 14.3M distinct
+states, about six minutes on sixteen cores. That is kept out of CI: on a runner
+it would roughly double the job.
+
 ### The check that is load-bearing
 
 With `CheckAtCommit = FALSE`, TLC finds a broker that admits a write while its
@@ -333,7 +377,7 @@ was meant to keep it.
 What closes it is the leader saying it stopped. `WaitForDrained = TRUE` holds
 the cut-over until a report at the fenced generation says the leader has
 stopped serving and its log is not growing, and the same configuration then
-explores 2.7M states without a violation. The generation on the report matters
+explores 2.39M distinct states without a violation. The generation on the report matters
 as much as the flag: an earlier leader's drained report is about a leadership
 that has ended, and believing it lets the next move skip its wait.
 
@@ -440,7 +484,7 @@ then moves the quorum mark that releases the acknowledgement. That is
 `publish_mark` in `services/felix-broker-service/src/replication/driver/shard.rs`, which moves the
 mark only `if reported`, and `await_quorum`, which blocks the publish on the
 mark. With `ReportBeforeAck = TRUE` — `FelixShard.cfg`, the implemented design
-— TLC explores 2.0M distinct states and finds no violation.
+— TLC explores 5.4M distinct states and finds no violation.
 
 So the pair is the point. The ordering is not merely present in the code; the
 model shows the guarantee fails without it.
@@ -473,7 +517,7 @@ java -jar target/tla/tla2tools-v1.7.4.jar -deadlock -workers auto \
 ```
 
 The bounds (`MaxTime`, `MaxWrites`, and the `SYMMETRY` over brokers) keep the
-whole check to about a minute. Widening them widens what is checked; the
+whole suite inside the CI job's hour. Widening them widens what is checked; the
 invariants do not change. The script runs TLC with checkpoints off and its
 scratch directory outside the tree. Run by hand without `-metadir`, TLC writes
 a `states/` directory beside the spec that reaches gigabytes; `.gitignore`

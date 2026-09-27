@@ -13,6 +13,8 @@
 (*   AckedSurvive       -- a record acknowledged to a client is held by     *)
 (*                         the broker serving the shard, always, including *)
 (*                         after a promotion.                              *)
+(*   AckedHeldByLeader  -- the same of the current leader once it may       *)
+(*                         serve, whatever any lease says.                 *)
 (*   AckedAgree         -- two brokers never hold different acknowledged   *)
 (*                         records at one offset.                          *)
 (*   NoTruncationBelowHwm -- a follower never discards a record below its   *)
@@ -101,6 +103,14 @@
 (* FALSE` only the cancel writes unconditionally, and TLC finds one read   *)
 (* while the move was fenced and written after its cut-over, handing the   *)
 (* shard back to a leader that never saw what the new one acknowledged.   *)
+(*                                                                         *)
+(* `AckByFollowers` and `FenceOnPromote` are the design without the clock  *)
+(* in `Quorum` safety. A write is acknowledged once a majority holds it at *)
+(* the leader's generation, with no report and no lease in the condition;  *)
+(* a promoted leader fences a majority and catches up before it serves.    *)
+(* Without the fence, TLC finds a deposed leader whose slow clock still    *)
+(* lets it write acknowledging on a follower the new one never fenced      *)
+(* (AckedHeldByLeader).                                                    *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -131,7 +141,11 @@ CONSTANTS
     SequencesInLog, \* whether a re-send is checked against the log, or the leader's own writes
     Cancel,         \* whether an operator may cancel a fenced move
     CancelCas,      \* whether that cancel, too, lands only at the generation it read
-    ReportBound     \* what a follower must hold to be reported: "acknowledged", "tail", "unpaired"
+    ReportBound,    \* what a follower must hold to be reported: "acknowledged", "tail", "unpaired"
+    AckChecksLease, \* whether a Quorum acknowledgement needs a valid lease, or only the report
+    AckOnResponse,  \* whether the leader judges its report by the answer it got, or by the store
+    AckByFollowers, \* whether a Quorum ack counts followers at this generation instead of the report
+    FenceOnPromote  \* whether a promoted leader fences a majority and catches up before serving
 
 ASSUME Promotion \in {"leader-report", "log-order"}
 ASSUME ReportBeforeAck \in BOOLEAN
@@ -142,6 +156,12 @@ ASSUME StageMove \in BOOLEAN /\ LearnerVotes \in BOOLEAN
 ASSUME Resends \in BOOLEAN /\ SequencesInLog \in BOOLEAN
 ASSUME Cancel \in BOOLEAN /\ CancelCas \in BOOLEAN
 ASSUME ReportBound \in {"acknowledged", "tail", "unpaired"}
+ASSUME AckChecksLease \in BOOLEAN /\ AckOnResponse \in BOOLEAN
+ASSUME AckByFollowers \in BOOLEAN /\ FenceOnPromote \in BOOLEAN
+\* The fence is modelled on promotion only. A planned move and a cancel name a
+\* leader without one, so neither is checked alongside follower acks.
+ASSUME FenceOnPromote => AckByFollowers
+ASSUME AckByFollowers => ~Handoff /\ ~Cancel
 ASSUME Eps < L /\ Margin >= 0
 
 VARIABLES
@@ -170,14 +190,22 @@ VARIABLES
     moves,      \* how many planned moves have been started
     ver,        \* the store's generation for the assignment: bumped by every write
     cpView,     \* the read each planner holds: {} or {view}
-    staged      \* a move's destination added to the replica set and still copying: {} or {f}
+    staged,     \* a move's destination added to the replica set and still copying: {} or {f}
+    heard,      \* the last report each broker was told the control plane stored
+    promised,   \* the highest generation each broker has durably accepted
+    fencing,    \* a promoted leader that has not finished its fence
+    answered    \* who has answered each broker's fence at the generation it leads
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
-           draining, successor, stopped, moves, ver, cpView, staged >>
+           draining, successor, stopped, moves, ver, cpView, staged, heard,
+           promised, fencing, answered >>
 
 \* Placement's state, which only the control plane's decisions change.
 handoffVars == << draining, successor, stopped, moves, ver, cpView, staged >>
+
+\* The promotion fence's state.
+fenceVars == << promised, fencing, answered >>
 
 NoReport == [holders |-> {}, len |-> 0, drained |-> FALSE, gen |-> 0]
 
@@ -197,8 +225,9 @@ Symm == Permutations(Brokers) \cup Permutations(Planners)
 \* short of its own expiry by the margin it gives up.
 LeaseValid(b) == bgen[b] > 0 /\ clock[b] + Eps < bexpiry[b]
 
-\* It serves the shard on that lease until it has seen a fence.
-Serving(b) == LeaseValid(b) /\ ~stopped[b]
+\* It serves the shard on that lease until it has seen a fence, and not before
+\* its own promotion fence is done.
+Serving(b) == LeaseValid(b) /\ ~stopped[b] /\ ~fencing[b]
 
 Record(g, id) == [g |-> g, id |-> id]
 
@@ -233,6 +262,10 @@ Init ==
     /\ ver = 0
     /\ cpView = [p \in Planners |-> {}]
     /\ staged \in IF StageMove THEN {{f} : f \in Brokers \ {leader}} ELSE {{}}
+    /\ heard = [b \in Brokers |-> NoReport]
+    /\ promised = [b \in Brokers |-> IF b = leader THEN 1 ELSE 0]
+    /\ fencing = [b \in Brokers |-> FALSE]
+    /\ answered = [b \in Brokers |-> {}]
 
 -----------------------------------------------------------------------------
 (* Time. Real time ticks, and with it each broker's clock moves by zero,   *)
@@ -251,7 +284,7 @@ Tick ==
                                         /\ c[b] <= now + 1 + Drift }
     /\ UNCHANGED << gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED handoffVars
+    /\ UNCHANGED << handoffVars, fenceVars >>
 
 -----------------------------------------------------------------------------
 (* The lease is the heartbeat. A broker that believes it leads sends one,  *)
@@ -267,7 +300,7 @@ SendHeartbeat(b) ==
     /\ hbAt' = [hbAt EXCEPT ![b] = clock[b]]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     log, hwm, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED handoffVars
+    /\ UNCHANGED << handoffVars, fenceVars >>
 
 AcceptHeartbeat(b) ==
     /\ hbOut[b]
@@ -278,14 +311,14 @@ AcceptHeartbeat(b) ==
     /\ bexpiry' = [bexpiry EXCEPT ![b] = hbAt[b] + L]
     /\ UNCHANGED << now, clock, gen, leader, report, inflight, bgen, hbAt,
                     log, hwm, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED handoffVars
+    /\ UNCHANGED << handoffVars, fenceVars >>
 
 LoseHeartbeat(b) ==
     /\ hbOut[b]
     /\ hbOut' = [hbOut EXCEPT ![b] = FALSE]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED handoffVars
+    /\ UNCHANGED << handoffVars, fenceVars >>
 
 \* A broker that finds its lease lapsed, or that hears of a newer generation,
 \* stops believing it leads. Modelled as the broker noticing; the safety
@@ -297,9 +330,10 @@ StepDown(b) ==
     /\ queued' = [queued EXCEPT ![b] = 0]
     /\ pending' = [pending EXCEPT ![b] = 0]
     /\ stopped' = [stopped EXCEPT ![b] = FALSE]
+    /\ fencing' = [fencing EXCEPT ![b] = FALSE]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
                     hbOut, hbAt, log, hwm, halted, acked, writes, staleCommit,
-                    draining, successor, moves, ver, cpView, staged >>
+                    draining, successor, moves, ver, cpView, staged, promised, answered >>
 
 -----------------------------------------------------------------------------
 (* Writes. Admission checks the broker is serving; the write then waits,  *)
@@ -321,7 +355,7 @@ Admit(b) ==
     /\ acked' = IF AckOnAdmit /\ ~Quorum THEN acked \cup {writes + 1} ELSE acked
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, pending, staleCommit >>
-    /\ UNCHANGED handoffVars
+    /\ UNCHANGED << handoffVars, fenceVars >>
 
 \* The claim, and with `FenceAtClaim` the fence checked again: a broker that
 \* has seen the fence refuses a write it admitted before it. This is
@@ -339,7 +373,7 @@ Claim(b) ==
     /\ queued' = [queued EXCEPT ![b] = 0]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, acked, writes, staleCommit >>
-    /\ UNCHANGED handoffVars
+    /\ UNCHANGED << handoffVars, fenceVars >>
 
 Commit(b) ==
     /\ pending[b] /= 0
@@ -353,7 +387,7 @@ Commit(b) ==
     /\ staleCommit' = (staleCommit \/ bgen[b] < gen)
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, hwm, halted, queued, writes >>
-    /\ UNCHANGED handoffVars
+    /\ UNCHANGED << handoffVars, fenceVars >>
 
 \* The writes a broker would answer a re-send of without appending. With
 \* `SequencesInLog`, every write its log holds: the broker's producer state is
@@ -380,7 +414,7 @@ Resend(b) ==
         /\ queued' = [queued EXCEPT ![b] = w]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED handoffVars
+    /\ UNCHANGED << handoffVars, fenceVars >>
 
 -----------------------------------------------------------------------------
 (* Replication. The leader ships the next record a follower is missing. A  *)
@@ -395,10 +429,16 @@ Diverge(a, c) ==
         d == { i \in 1..n : a[i] /= c[i] }
     IN IF d = {} THEN n + 1 ELSE CHOOSE i \in d : \A j \in d : i <= j
 
+\* Under `AckByFollowers` the follower also refuses a leader older than the
+\* generation it persisted, and persists the leader's. A leader still fencing
+\* does not ship: it may yet take a tail from a follower it would truncate.
 Ship(b, f) ==
     /\ bgen[b] > 0 /\ f /= b /\ f \notin halted
     /\ bgen[f] = 0
     /\ bgen[b] >= LastGen(f)
+    /\ ~fencing[b]
+    /\ AckByFollowers => promised[f] <= bgen[b]
+    /\ promised' = IF AckByFollowers THEN [promised EXCEPT ![f] = bgen[b]] ELSE promised
     /\ LET i == Diverge(log[b], log[f]) IN
        \/ /\ i > Len(log[f])
           /\ i <= Len(log[b])
@@ -413,7 +453,7 @@ Ship(b, f) ==
                   /\ UNCHANGED log
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, hwm, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED handoffVars
+    /\ UNCHANGED << handoffVars, fencing, answered >>
 
 \* Under `Quorum`, a record is acknowledged once a majority including the
 \* leader holds it, and the leader's mark moves up to it.
@@ -437,22 +477,50 @@ Ship(b, f) ==
 \* this broker's, at the generation it leads. A report stored by a later
 \* leader says nothing to a deposed one, whose own reports are answered
 \* `not_leader` and whose mark stays where it was.
+\*
+\* With `AckOnResponse` the broker goes by the answer instead, as the code
+\* does: `heard` is what it was told was stored, and it stays true for the
+\* broker after the control plane has moved on -- promoted someone else,
+\* stored a newer report -- until the broker learns otherwise.
 AckReadyOver(b, i, of) ==
+    LET r == IF AckOnResponse THEN heard[b] ELSE report IN
     /\ MajorityOf({ m \in Brokers : Len(log[m]) >= i /\ log[m][i] = log[b][i] } \cup {b}, of)
-    /\ ReportBeforeAck => /\ report.gen = bgen[b]
-                          /\ i <= report.len
-                          /\ MajorityOf(report.holders \cup {b}, of)
+    /\ ReportBeforeAck => /\ r.gen = bgen[b]
+                          /\ i <= r.len
+                          /\ MajorityOf(r.holders \cup {b}, of)
 
+\* The ack decided by the followers alone: a majority, the leader counted
+\* like anyone, holds the record and still holds the leader's generation as
+\* the highest it accepted. A broker fenced by a newer leader has moved past
+\* it, so a deposed leader cannot count it, nor itself once fenced.
+\*
+\* Only a record written at the leader's own generation is counted, taking the
+\* ones below it along, as in Raft. Counting an older record it inherited
+\* would let a later leader whose last record is newer overwrite it.
+HeldAtGen(b, i) ==
+    /\ log[b][i].g = bgen[b]
+    /\ Majority({ m \in Brokers : /\ Len(log[m]) >= i
+                                  /\ log[m][i] = log[b][i]
+                                  /\ promised[m] = bgen[b] })
+
+\* With `AckChecksLease = FALSE` the lease plays no part: a broker that still
+\* believes it leads acknowledges on the report alone, however lapsed its own
+\* clock says the lease is. That admits more than the code does, which moves
+\* the mark without looking at the lease (`publish_mark`) and checks it only
+\* when the acknowledgement is released (`quorum::release`).
+\*
+\* With `AckByFollowers` the report plays no part either: see HeldAtGen.
 AckQuorum(b) ==
     /\ Quorum
-    /\ LeaseValid(b)
+    /\ bgen[b] > 0
+    /\ AckChecksLease => LeaseValid(b)
     /\ \E i \in (hwm[b] + 1)..Len(log[b]) :
-        /\ AckReadyOver(b, i, QuorumSet)
+        /\ IF AckByFollowers THEN HeldAtGen(b, i) ELSE AckReadyOver(b, i, QuorumSet)
         /\ acked' = acked \cup { log[b][j].id : j \in 1..i }
         /\ hwm' = [hwm EXCEPT ![b] = i]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, halted, queued, pending, writes, staleCommit >>
-    /\ UNCHANGED handoffVars
+    /\ UNCHANGED << handoffVars, fenceVars >>
 
 \* A follower learns the mark from the leader, never past what it holds.
 LearnHwm(b, f) ==
@@ -463,7 +531,7 @@ LearnHwm(b, f) ==
     /\ hwm' = [hwm EXCEPT ![f] = hwm[b]]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED handoffVars
+    /\ UNCHANGED << handoffVars, fenceVars >>
 
 -----------------------------------------------------------------------------
 (* Reports. The leader tells the control plane which followers hold every  *)
@@ -500,7 +568,10 @@ ReportAt(b) ==
     THEN IF MajorityLen(b) >= hwm[b] THEN MajorityLen(b) ELSE hwm[b]
     ELSE Len(log[b])
 
+\* With follower acks and a promotion that does not read it, nothing reads the
+\* report, so it is not sent: that keeps the fenced configurations small.
 Report(b) ==
+    /\ AckByFollowers => Promotion = "leader-report"
     /\ LeaseValid(b)
     /\ leader = b /\ bgen[b] = gen
     /\ inflight = <<>>
@@ -512,22 +583,27 @@ Report(b) ==
                        gen     |-> bgen[b]] >>
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED handoffVars
+    /\ UNCHANGED << handoffVars, fenceVars >>
 
+\* A stored report is answered to the leader that sent it, the one leading at
+\* its generation. The answer can be lost, leaving the broker with an older one.
 DeliverReport ==
     /\ inflight /= <<>>
     /\ report' = IF inflight[1].gen = gen THEN inflight[1] ELSE report
     /\ inflight' = <<>>
+    /\ heard' \in IF AckOnResponse /\ inflight[1].gen = gen
+                  THEN {[heard EXCEPT ![leader] = inflight[1]], heard}
+                  ELSE {heard}
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED handoffVars
+    /\ UNCHANGED << handoffVars, fenceVars >>
 
 LoseReport ==
     /\ inflight /= <<>>
     /\ inflight' = <<>>
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED handoffVars
+    /\ UNCHANGED << handoffVars, fenceVars >>
 
 -----------------------------------------------------------------------------
 (* Promotion. Once the lease has lapsed and the margin has passed, the      *)
@@ -563,6 +639,7 @@ Snapshot(p) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
                     draining, successor, stopped, moves, ver, staged >>
+    /\ UNCHANGED fenceVars
 
 \* A write decided from read `v` lands only if nothing was written since,
 \* when the store compares generations.
@@ -591,8 +668,51 @@ Promote(v, f, views) ==
     /\ stopped' = [stopped EXCEPT ![f] = FALSE]
     \* A promoted destination leads, so it is part of the set from here.
     /\ staged' = staged \ {f}
+    \* The new leader persists its generation itself first; with
+    \* `FenceOnPromote` it then fences the others before it serves.
+    /\ promised' = IF AckByFollowers THEN [promised EXCEPT ![f] = gen + 1] ELSE promised
+    /\ fencing' = [fencing EXCEPT ![f] = FenceOnPromote]
+    /\ answered' = [answered EXCEPT ![f] = {}]
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted, acked, writes,
                     staleCommit, successor, moves >>
+
+-----------------------------------------------------------------------------
+(* The promotion fence, under `FenceOnPromote`. The promoted leader asks    *)
+(* the replicas to take its generation; each that has not accepted a newer *)
+(* one persists it, answers with its log, and from then on refuses the     *)
+(* older leader. The new leader takes the tail of any answer ahead of its  *)
+(* own log, and opens for writes once a majority, itself included, has     *)
+(* answered. Any majority that acknowledged a record shares a replica with *)
+(* that one, which either held the record when it answered or refused it  *)
+(* after, so no clock is needed to keep the old leader out.                *)
+
+\* Ahead by (last generation, length), the order promotion by log order uses.
+Ahead(f, b) ==
+    \/ LastGen(f) > LastGen(b)
+    \/ LastGen(f) = LastGen(b) /\ Len(log[f]) > Len(log[b])
+
+\* One replica answers the fence, and the leader takes its log if it is ahead.
+\* That is the catch-up: whatever a majority acknowledged is in the answer
+\* furthest ahead.
+AnswerFence(b, f) ==
+    /\ fencing[b] /\ bgen[b] > 0 /\ f /= b /\ f \notin halted
+    /\ promised[f] < bgen[b]
+    /\ promised' = [promised EXCEPT ![f] = bgen[b]]
+    /\ answered' = [answered EXCEPT ![b] = @ \cup {f}]
+    /\ log' = IF Ahead(f, b) THEN [log EXCEPT ![b] = log[f]] ELSE log
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, hwm, halted, queued, pending, acked, writes, staleCommit,
+                    fencing >>
+    /\ UNCHANGED handoffVars
+
+OpenForWrites(b) ==
+    /\ fencing[b]
+    /\ Majority(answered[b] \cup {b})
+    /\ fencing' = [fencing EXCEPT ![b] = FALSE]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
+                    promised, answered >>
+    /\ UNCHANGED handoffVars
 
 -----------------------------------------------------------------------------
 (* Planned handoff. The control plane fences the leader so the shard can    *)
@@ -638,6 +758,7 @@ Fence(v, f, views) ==
     /\ moves' = moves + 1
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted, acked, writes,
                     staleCommit, staged >>
+    /\ UNCHANGED fenceVars
 
 \* The leader sees the fence. Modelled as the broker noticing; the cut-over
 \* below does not rely on it noticing in time.
@@ -648,6 +769,7 @@ ObserveFence(b) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
                     draining, successor, moves, ver, cpView, staged >>
+    /\ UNCHANGED fenceVars
 
 CutOver(v, f, views) ==
     /\ v.draining /\ v.successor = f
@@ -669,6 +791,7 @@ CutOver(v, f, views) ==
     /\ staged' = staged \ {f}
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted, acked, writes,
                     staleCommit, successor, moves >>
+    /\ UNCHANGED fenceVars
 
 \* An operator cancels a fenced move (`cancel_move` in
 \* services/felix-controlplane-service/src/cluster/placement/operator.rs): the
@@ -695,6 +818,7 @@ Retake(v, f, views) ==
     /\ stopped' = [stopped EXCEPT ![f] = FALSE]
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted, queued, pending,
                     acked, writes, staleCommit, successor, moves, staged >>
+    /\ UNCHANGED fenceVars
 
 \* A placement write, from a read taken in the same step or from one a
 \* planner has held since.
@@ -703,7 +827,8 @@ Decide(v, f, views) ==
 
 -----------------------------------------------------------------------------
 
-Next ==
+\* Only a report's delivery changes what a broker has heard.
+Step ==
     \/ Tick
     \/ \E b \in Brokers :
         \/ SendHeartbeat(b)
@@ -717,12 +842,14 @@ Next ==
         \/ AckQuorum(b)
         \/ Report(b)
         \/ ObserveFence(b)
+        \/ OpenForWrites(b)
         \/ Decide(Now, b, cpView)
         \/ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
-        \/ \E f \in Brokers : Ship(b, f) \/ LearnHwm(b, f)
-    \/ DeliverReport
+        \/ \E f \in Brokers : Ship(b, f) \/ LearnHwm(b, f) \/ AnswerFence(b, f)
     \/ LoseReport
     \/ \E p \in Planners : Snapshot(p)
+
+Next == (Step /\ UNCHANGED heard) \/ DeliverReport
 
 Spec == Init /\ [][Next]_vars
 
@@ -740,6 +867,13 @@ AckedSurvive ==
         \A id \in acked :
             \/ \E i \in 1..Len(log[b]) : log[b][i].id = id
             \/ AckOnAdmit /\ id \in {queued[b], pending[b]}
+
+\* The leader at the current generation holds every acknowledged record once
+\* it may serve. Unlike AckedSurvive this says nothing about the lease, so it
+\* holds or fails whatever a deposed leader's clock tells it.
+AckedHeldByLeader ==
+    \A b \in Brokers : (bgen[b] = gen /\ ~fencing[b]) =>
+        \A id \in acked : \E i \in 1..Len(log[b]) : log[b][i].id = id
 
 \* Under `Quorum`, a report from a leader still serving names a follower that
 \* may take over whenever a majority of the replicas is still replicating.
@@ -809,5 +943,9 @@ TypeOK ==
     /\ ver \in Nat
     /\ \A p \in Planners : Cardinality(cpView[p]) <= 1
     /\ staged \subseteq Brokers /\ Cardinality(staged) <= 1
+    /\ heard \in [Brokers -> [holders : SUBSET Brokers, len : Nat, drained : BOOLEAN, gen : Nat]]
+    /\ promised \in [Brokers -> Nat]
+    /\ fencing \in [Brokers -> BOOLEAN]
+    /\ answered \in [Brokers -> SUBSET Brokers]
 
 =============================================================================
