@@ -139,10 +139,7 @@ impl SparseIndex {
             writer.write_all(&entry.encode())?;
         }
         writer.flush()?;
-        writer
-            .into_inner()
-            .map_err(|e| e.into_error())?
-            .sync_all()?;
+        crate::io::sync_all(&writer.into_inner().map_err(|e| e.into_error())?)?;
         Ok(())
     }
 }
@@ -249,7 +246,7 @@ impl IndexWriter {
     /// sync is amortised over the whole segment.
     pub fn sync(&mut self) -> Result<()> {
         self.flush()?;
-        self.file.sync_all()?;
+        crate::io::sync_all(&self.file)?;
         Ok(())
     }
 

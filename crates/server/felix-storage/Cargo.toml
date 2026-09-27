@@ -13,6 +13,11 @@ categories = ["network-programming", "caching"]
 # Built into the services, not consumed from a registry.
 publish = false
 
+[features]
+# Test-only faults at the I/O seam (see `src/fault.rs`). Debug builds have them
+# regardless; this puts them in an optimised build for a fault-testing run.
+fault-injection = []
+
 [dependencies]
 bytes = { workspace = true }
 tokio = { workspace = true }

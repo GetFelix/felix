@@ -38,6 +38,8 @@ mod commit_order;
 pub mod counter_log;
 pub mod disk_log;
 mod error;
+#[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+pub mod fault;
 pub(crate) mod io;
 pub mod log;
 mod log_swap;

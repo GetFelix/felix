@@ -146,6 +146,10 @@ type Waiting = HashMap<u64, (Arc<File>, oneshot::Sender<io::Result<()>>)>;
 /// `IORING_OP_FSYNC`, and a broker that cannot build a ring must keep working,
 /// so this stays opt-in until it has run somewhere real.
 pub(crate) fn enabled() -> bool {
+    #[cfg(test)]
+    if FORCED.load(Ordering::SeqCst) > 0 {
+        return true;
+    }
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
         std::env::var("FELIX_STORAGE_IO_URING")
@@ -154,11 +158,50 @@ pub(crate) fn enabled() -> bool {
     })
 }
 
+/// While one is held, every log's flushes go through the ring whatever the
+/// environment says. For tests that must cover this path; a test running
+/// alongside simply flushes through the ring too, which is a correct path.
+#[cfg(test)]
+pub(crate) struct ForceForTests(());
+
+#[cfg(test)]
+static FORCED: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+impl ForceForTests {
+    pub(crate) fn hold() -> Self {
+        FORCED.fetch_add(1, Ordering::SeqCst);
+        Self(())
+    }
+}
+
+#[cfg(test)]
+impl Drop for ForceForTests {
+    fn drop(&mut self) {
+        FORCED.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Whether a ring could be (or has been) built in this process.
+#[cfg(test)]
+pub(crate) fn available() -> bool {
+    ring().is_some()
+}
+
 /// `fdatasync` the file through the ring.
 ///
 /// `None` means the ring is unavailable and the caller should use its own
 /// fallback.
 pub(crate) async fn fsync(file: Arc<File>) -> Option<io::Result<()>> {
+    // Checked first so a missing ring falls back before the fault hooks run:
+    // the fallback runs them itself.
+    ring()?;
+    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+    if let Some(delay) = crate::fault::fsync_delay() {
+        tokio::time::sleep(delay).await;
+    }
+    #[cfg(test)]
+    super::power_loss::observe_file(&file, super::SyncKind::Uring);
     submit(file, Op::Fsync).await
 }
 
