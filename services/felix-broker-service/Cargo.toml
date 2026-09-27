@@ -119,7 +119,7 @@ serial_test = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 # The tests use the demo signing key; see the `demo` feature.
-felix-broker-service = { path = ".", features = ["demo"] }
+felix-broker-service = { path = ".", version = "0.6.0-preview", features = ["demo"] }
 # The membership integration test drives the real control-plane router rather
 # than a stub, so a mismatch in the HTTP contract between the two services fails
 # here instead of in a cluster.
