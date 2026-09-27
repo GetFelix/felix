@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790469237900,
+  "lastUpdate": 1790470267746,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -21516,6 +21516,72 @@ window.BENCHMARK_DATA = {
             "range": "1258.41",
             "unit": "us",
             "extra": "trials: 5\nmedian: 266.00\nmean: 1087.40\nstdev: 1258.41\ncv: 115.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "67a3b9835ed9b02878d9b0f17fac315012bd0235",
+          "message": "Fix case of 'claude' in allowlist (#740)",
+          "timestamp": "2026-09-26T17:48:08-07:00",
+          "tree_id": "1c9bedd29549d67c763baf37ade57fef969fa0f2",
+          "url": "https://github.com/gabloe/felix/commit/67a3b9835ed9b02878d9b0f17fac315012bd0235"
+        },
+        "date": 1790470264086,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 60,
+            "range": "2.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 60.00\nmean: 59.20\nstdev: 2.39\ncv: 4.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 81,
+            "range": "55.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 81.00\nmean: 105.40\nstdev: 55.70\ncv: 52.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 106,
+            "range": "115.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 106.00\nmean: 156.00\nstdev: 115.97\ncv: 74.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 80,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 80.00\nmean: 80.20\nstdev: 0.45\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 168,
+            "range": "12.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 168.00\nmean: 176.40\nstdev: 12.46\ncv: 7.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 256,
+            "range": "789.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 256.00\nmean: 822.20\nstdev: 789.43\ncv: 96.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
