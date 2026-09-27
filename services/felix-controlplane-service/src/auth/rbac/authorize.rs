@@ -279,6 +279,96 @@ pub fn object_within_scope(scope: &ParsedObject, target: &ParsedObject) -> bool 
     }
 }
 
+/// The part of `granted` that `requested` also covers, as the same kind of
+/// object as `granted`; `None` when they do not overlap.
+///
+/// The kind is kept so a narrowed permission still names what its action
+/// acts on: `tenant.manage` narrowed to a stream would be a permission no
+/// check ever matches.
+pub fn narrow_object(granted: &ParsedObject, requested: &ParsedObject) -> Option<ParsedObject> {
+    if object_within_scope(requested, granted) {
+        return Some(granted.clone());
+    }
+    let narrowed = if object_within_scope(granted, requested) {
+        requested.clone()
+    } else {
+        // Not nested either way, but a namespace can still cut across a
+        // tenant-wide leaf grant: `stream:t1/*/*` within `namespace:t1/ns`
+        // is `stream:t1/ns/*`.
+        match (granted, requested) {
+            (
+                ParsedObject::Stream {
+                    tenant_id,
+                    namespace: Segment::Any,
+                    stream,
+                },
+                ParsedObject::Namespace {
+                    tenant_id: requested_tenant,
+                    namespace: namespace @ Segment::Exact(_),
+                },
+            ) if tenant_id == requested_tenant => ParsedObject::Stream {
+                tenant_id: tenant_id.clone(),
+                namespace: namespace.clone(),
+                stream: stream.clone(),
+            },
+            (
+                ParsedObject::Cache {
+                    tenant_id,
+                    namespace: Segment::Any,
+                    cache,
+                },
+                ParsedObject::Namespace {
+                    tenant_id: requested_tenant,
+                    namespace: namespace @ Segment::Exact(_),
+                },
+            ) if tenant_id == requested_tenant => ParsedObject::Cache {
+                tenant_id: tenant_id.clone(),
+                namespace: namespace.clone(),
+                cache: cache.clone(),
+            },
+            _ => return None,
+        }
+    };
+    (std::mem::discriminant(&narrowed) == std::mem::discriminant(granted)).then_some(narrowed)
+}
+
+/// The canonical string for an object; the inverse of [`parse_object`].
+pub fn format_object(object: &ParsedObject) -> String {
+    fn segment(value: &Segment) -> &str {
+        match value {
+            Segment::Exact(value) => value,
+            Segment::Any => "*",
+        }
+    }
+    match object {
+        ParsedObject::Cluster => "cluster:*".to_string(),
+        ParsedObject::Node { node_id } => format!("node:{node_id}"),
+        ParsedObject::Tenant { tenant_id } => format!("tenant:{tenant_id}"),
+        ParsedObject::Namespace {
+            tenant_id,
+            namespace,
+        } => format!("namespace:{tenant_id}/{}", segment(namespace)),
+        ParsedObject::Stream {
+            tenant_id,
+            namespace,
+            stream,
+        } => format!(
+            "stream:{tenant_id}/{}/{}",
+            segment(namespace),
+            segment(stream)
+        ),
+        ParsedObject::Cache {
+            tenant_id,
+            namespace,
+            cache,
+        } => format!(
+            "cache:{tenant_id}/{}/{}",
+            segment(namespace),
+            segment(cache)
+        ),
+    }
+}
+
 /// Validate that a new/updated policy rule stays inside caller delegation scope.
 pub fn validate_new_rule_allowed(
     caller_scopes: &[ParsedObject],

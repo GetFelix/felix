@@ -59,7 +59,8 @@ async fn satisfies_the_shard_store_contract() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = single_node_store(dir.path()).await;
     crate::store::contract::shards::run_shard_contract(store.clone()).await;
-    crate::store::contract::shards::run_shard_concurrency_contract(store).await;
+    crate::store::contract::shards::run_shard_concurrency_contract(store.clone()).await;
+    crate::store::contract::shards::run_node_delete_race_contract(store, 20).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -67,6 +68,13 @@ async fn satisfies_the_signing_key_contract() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = single_node_store(dir.path()).await;
     crate::store::contract::signing_keys::run_signing_key_contract(store).await;
+}
+
+#[tokio::test]
+async fn satisfies_the_rbac_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    crate::store::contract::rbac::run_rbac_contract(store).await;
 }
 
 #[tokio::test]

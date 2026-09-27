@@ -16,7 +16,9 @@ use axum::response::IntoResponse;
 
 use crate::api::AppState;
 use crate::api::ensure_tenant_exists;
-use crate::api::error::{ApiError, api_conflict, api_internal, api_not_found};
+use crate::api::error::{
+    ApiError, api_conflict, api_internal, api_not_found, api_validation_error,
+};
 use crate::api::types::{
     NamespaceChangesResponse, NamespaceCreateRequest, NamespaceListResponse,
     NamespaceSnapshotResponse,
@@ -25,7 +27,7 @@ use crate::auth::bearer::{require_cluster_action, require_tenant_action, tenant_
 use crate::auth::rbac::authorize::{
     ACTION_NODE_VIEW, ACTION_NS_MANAGE, ParsedObject, Segment, object_within_scope,
 };
-use crate::model::{Namespace, NamespaceKey};
+use crate::model::{Namespace, NamespaceKey, validate_identifier};
 use crate::store::StoreError;
 
 #[utoipa::path(
@@ -89,6 +91,7 @@ pub(crate) async fn create_namespace(
     Json(body): Json<NamespaceCreateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_ns_manage(&state, &tenant_id, &headers, &body.namespace).await?;
+    validate_identifier("namespace", &body.namespace).map_err(|err| api_validation_error(&err))?;
     ensure_tenant_exists(&state, &tenant_id).await?;
     let namespace = Namespace {
         tenant_id,

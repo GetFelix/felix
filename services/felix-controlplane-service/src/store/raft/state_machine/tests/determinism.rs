@@ -92,3 +92,62 @@ async fn an_evicted_change_window_reads_the_same_after_restore() {
     assert_eq!(before.items[0].seq, after.items[0].seq);
     assert_eq!(before.next_seq, after.next_seq);
 }
+
+/// A follower that installs a snapshot holds the leader's refresh tokens, in
+/// the leader's state: a revoked token stays revoked there, and a live one
+/// can be spent once.
+#[tokio::test]
+async fn a_restored_machine_has_the_leaders_refresh_tokens() {
+    use crate::auth::refresh_token::{RefreshToken, RefreshTokenTake};
+
+    let token = |id: &str, principal: &str| RefreshToken {
+        token_id: id.to_string(),
+        tenant_id: "t-a".to_string(),
+        principal_id: principal.to_string(),
+        groups: Vec::new(),
+        secret_hash: "hash".to_string(),
+        family_id: format!("family-{id}"),
+        issued_at_secs: 1_000,
+        expires_at_secs: 10_000,
+        used: false,
+        revoked: false,
+    };
+    let leader = machine();
+    for command in [
+        MetaCommand::CreateTenant {
+            tenant: tenant("t-a"),
+        },
+        MetaCommand::InsertRefreshToken {
+            token: token("live", "p:alice"),
+        },
+        MetaCommand::InsertRefreshToken {
+            token: token("revoked", "p:mallory"),
+        },
+        MetaCommand::RevokeRefreshTokensForPrincipal {
+            tenant_id: "t-a".to_string(),
+            principal_id: "p:mallory".to_string(),
+        },
+    ] {
+        leader.dispatch(command).await.expect("apply");
+    }
+
+    let snapshot = crate::raft::AppStateMachine::snapshot(&leader).await;
+    let follower = machine();
+    crate::raft::AppStateMachine::restore(&follower, &snapshot).await;
+
+    let store = follower.store();
+    assert!(matches!(
+        store
+            .take_refresh_token("t-a", "live", 2_000)
+            .await
+            .expect("take"),
+        RefreshTokenTake::Taken(_)
+    ));
+    assert_eq!(
+        store
+            .take_refresh_token("t-a", "revoked", 2_000)
+            .await
+            .expect("take"),
+        RefreshTokenTake::Unusable
+    );
+}

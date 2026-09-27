@@ -106,6 +106,7 @@ fn refresh_refusals_are_counted() {
                     State(state),
                     Json(TokenRefreshRequest {
                         refresh_token: token,
+                        audience: None,
                     }),
                 )
                 .await
@@ -136,4 +137,60 @@ fn refresh_refusals_are_counted() {
     );
     assert_eq!(recorder.count("felix_refresh_token_bad_secret_total"), 1);
     assert_eq!(recorder.count("felix_refresh_token_replays_total"), 1);
+}
+
+#[test]
+fn debug_never_shows_a_token() {
+    let request = TokenRefreshRequest {
+        refresh_token: "refresh-secret".to_string(),
+        audience: None,
+    };
+    let response = TokenRefreshResponse {
+        felix_token: "access-secret".to_string(),
+        expires_in: 900,
+        token_type: "Bearer".to_string(),
+        refresh_token: "refresh-secret".to_string(),
+        refresh_expires_in: 60,
+    };
+    for rendered in [format!("{request:?}"), format!("{response:?}")] {
+        assert!(!rendered.contains("secret"), "{rendered}");
+    }
+}
+
+fn issuer(url: &str) -> crate::auth::idp_registry::IdpIssuerConfig {
+    crate::auth::idp_registry::IdpIssuerConfig {
+        issuer: url.to_string(),
+        audiences: vec!["felix".to_string()],
+        discovery_url: None,
+        jwks_url: None,
+        claim_mappings: Default::default(),
+    }
+}
+
+/// A refresh honours only groups from issuers the tenant still trusts, and
+/// never a bare name unless the legacy switch says so.
+#[test]
+fn a_refresh_honours_only_groups_from_trusted_issuers() {
+    let recorded = vec![
+        "https://corp.example#ops".to_string(),
+        "https://removed.example#ops".to_string(),
+        // A prefix of a trusted issuer is not that issuer.
+        "https://corp.example.evil#ops".to_string(),
+        "ops".to_string(),
+    ];
+    let issuers = [issuer("https://corp.example")];
+    assert_eq!(
+        refreshable_groups(&recorded, &issuers, false),
+        vec!["https://corp.example#ops".to_string()]
+    );
+    assert_eq!(
+        refreshable_groups(&recorded, &issuers, true),
+        vec![
+            "https://corp.example#ops".to_string(),
+            "ops".to_string(),
+            "https://removed.example#ops".to_string(),
+            "https://corp.example.evil#ops".to_string(),
+            "ops".to_string(),
+        ]
+    );
 }

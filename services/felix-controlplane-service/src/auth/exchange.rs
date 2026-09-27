@@ -5,21 +5,22 @@
 //! issuers, RBAC decides the effective permissions, and the result is a Felix
 //! EdDSA token for the broker. The request body can narrow those permissions
 //! but can never widen them.
+use std::collections::HashSet;
 use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use casbin::function_map::key_match2;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::api::AppState;
 use crate::api::error::{ApiError, api_internal, api_internal_message};
 use crate::auth::bearer::{Refusal, extract_bearer, refused};
-use crate::auth::felix_token::mint_token;
+use crate::auth::felix_token::{BROKER_AUDIENCE, CONTROLPLANE_AUDIENCE, mint_token_for};
 use crate::auth::oidc::OidcError;
 use crate::auth::principal;
+use crate::auth::rbac::authorize::{format_object, narrow_object, parse_object};
 use crate::auth::rbac::enforcer::build_enforcer;
 use crate::auth::rbac::permissions::effective_permissions;
 use crate::auth::rbac::policy_store::GroupingRule;
@@ -30,10 +31,15 @@ use crate::auth::rbac::policy_store::GroupingRule;
 pub struct TokenExchangeRequest {
     pub requested: Option<Vec<String>>,
     pub resources: Option<Vec<String>>,
+    /// Who the token is for: `felix-broker` (the default) to connect to
+    /// brokers, or `felix-controlplane` for this API. A token is accepted by
+    /// one of the two, never both.
+    #[serde(default)]
+    pub audience: Option<String>,
 }
 
 /// The minted Felix bearer token plus expiry. Treat `felix_token` as a secret.
-#[derive(Debug, Serialize, ToSchema, Clone)]
+#[derive(Serialize, ToSchema, Clone)]
 pub struct TokenExchangeResponse {
     pub felix_token: String,
     pub expires_in: u64,
@@ -42,6 +48,18 @@ pub struct TokenExchangeResponse {
     /// IdP round trip. Single-use: refreshing mints its replacement.
     pub refresh_token: String,
     pub refresh_expires_in: u64,
+}
+
+impl std::fmt::Debug for TokenExchangeResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenExchangeResponse")
+            .field("felix_token", &"<redacted>")
+            .field("expires_in", &self.expires_in)
+            .field("token_type", &self.token_type)
+            .field("refresh_token", &"<redacted>")
+            .field("refresh_expires_in", &self.refresh_expires_in)
+            .finish()
+    }
 }
 
 /// Exchange an upstream IdP token for a Felix EdDSA token.
@@ -68,6 +86,8 @@ pub async fn exchange_token(
     body: Option<Json<TokenExchangeRequest>>,
 ) -> Result<Json<TokenExchangeResponse>, ApiError> {
     let bearer = extract_bearer(&headers)?;
+    let request = body.map(|Json(value)| value).unwrap_or_default();
+    let audience = token_audience(request.audience.as_deref())?;
 
     // Forbidden (not 404) for unknown tenants, so callers can't probe which
     // tenants exist.
@@ -104,7 +124,15 @@ pub async fn exchange_token(
         Err(_) => return Err(refused(Refusal::InvalidToken, "invalid token")),
     };
 
-    let principal = principal::from_claims(&validated.issuer, &validated.subject, validated.groups);
+    // Scoped by issuer before anything else sees them: a tenant can trust
+    // several IdPs, and a group name is only as trustworthy as the IdP that
+    // asserted it.
+    let scoped = validated
+        .groups
+        .iter()
+        .map(|group| scoped_group(&validated.issuer, group))
+        .collect();
+    let principal = principal::from_claims(&validated.issuer, &validated.subject, scoped);
 
     let policies = state
         .store
@@ -116,7 +144,11 @@ pub async fn exchange_token(
         .list_rbac_groupings(&tenant_id)
         .await
         .map_err(|err| api_internal("failed to load groupings", &err))?;
-    add_group_claim_groupings(&mut groupings, &principal.principal_id, &principal.groups);
+    add_group_claim_groupings(
+        &mut groupings,
+        &principal.principal_id,
+        &with_legacy_names(&principal.groups, legacy_unscoped_groups()),
+    );
 
     let enforcer = build_enforcer(&policies, &groupings, &tenant_id)
         .await
@@ -127,9 +159,7 @@ pub async fn exchange_token(
 
     let mut perms = effective_permissions(&enforcer, &principal.principal_id, &tenant_id);
 
-    if let Some(request) = body.map(|Json(value)| value) {
-        perms = filter_permissions(perms, &request);
-    }
+    perms = filter_permissions(perms, &request, &tenant_id);
 
     // A token with no permissions is useless and usually masks a
     // misconfiguration; reject instead.
@@ -144,8 +174,15 @@ pub async fn exchange_token(
         .map_err(|err| api_internal("failed to load signing keys", &err))?;
 
     let ttl = access_token_ttl();
-    let felix_token = mint_token(&keys, &tenant_id, &principal.principal_id, perms, ttl)
-        .map_err(|_| api_internal_message("failed to mint token"))?;
+    let felix_token = mint_token_for(
+        &keys,
+        &tenant_id,
+        &principal.principal_id,
+        perms,
+        ttl,
+        audience,
+    )
+    .map_err(|_| api_internal_message("failed to mint token"))?;
 
     // The refresh token is what makes the short access TTL above workable for
     // anything long-running. Its group claims are recorded rather than its
@@ -176,6 +213,17 @@ pub async fn exchange_token(
     }))
 }
 
+/// The audience a caller asked for, `felix-broker` when it did not say.
+pub(crate) fn token_audience(requested: Option<&str>) -> Result<&'static str, ApiError> {
+    match requested {
+        None | Some(BROKER_AUDIENCE) => Ok(BROKER_AUDIENCE),
+        Some(CONTROLPLANE_AUDIENCE) => Ok(CONTROLPLANE_AUDIENCE),
+        Some(_) => Err(crate::api::error::api_validation_error(
+            "audience must be felix-broker or felix-controlplane",
+        )),
+    }
+}
+
 /// How long a minted access token is good for.
 ///
 /// Short by default (900s) to limit blast radius if one leaks. Refresh is what
@@ -191,36 +239,93 @@ pub fn access_token_ttl() -> Duration {
     )
 }
 
-fn filter_permissions(perms: Vec<String>, request: &TokenExchangeRequest) -> Vec<String> {
-    let requested_actions = request.requested.as_ref().map(|actions| {
-        actions
+/// Keep what was granted AND requested. `requested` filters by action;
+/// `resources` narrows each grant to the part a resource hint covers, so
+/// asking for one stream out of a namespace grant yields that stream, not the
+/// namespace. Never widens: a hint outside every grant yields nothing, and a
+/// hint that does not parse matches nothing.
+fn filter_permissions(
+    perms: Vec<String>,
+    request: &TokenExchangeRequest,
+    tenant_id: &str,
+) -> Vec<String> {
+    let requested_actions = request
+        .requested
+        .as_ref()
+        .map(|actions| actions.iter().map(String::as_str).collect::<HashSet<_>>());
+    let hints = request.resources.as_ref().map(|resources| {
+        resources
             .iter()
-            .cloned()
-            .collect::<std::collections::HashSet<String>>()
+            .filter_map(|hint| parse_object(hint, tenant_id).ok())
+            .collect::<Vec<_>>()
     });
-    let resources = request.resources.as_ref();
 
-    // Intersection only: a permission survives if it was already granted AND
-    // the request asked for it.
-    perms
-        .into_iter()
-        .filter(|perm| {
-            let Some((action, object)) = perm.split_once(':') else {
-                return false;
-            };
-            if let Some(actions) = &requested_actions
-                && !actions.contains(action)
-            {
-                return false;
+    let mut kept = Vec::new();
+    let mut seen = HashSet::new();
+    for perm in perms {
+        let Some((action, object)) = perm.split_once(':') else {
+            continue;
+        };
+        if let Some(actions) = &requested_actions
+            && !actions.contains(action)
+        {
+            continue;
+        }
+        let Some(hints) = &hints else {
+            if seen.insert(perm.clone()) {
+                kept.push(perm);
             }
-            if let Some(resources) = resources
-                && !resources.iter().any(|hint| key_match2(hint, object))
-            {
-                return false;
+            continue;
+        };
+        let Ok(granted) = parse_object(object, tenant_id) else {
+            continue;
+        };
+        for hint in hints {
+            if let Some(narrowed) = narrow_object(&granted, hint) {
+                let narrowed = format!("{action}:{}", format_object(&narrowed));
+                if seen.insert(narrowed.clone()) {
+                    kept.push(narrowed);
+                }
             }
-            true
-        })
-        .collect()
+        }
+    }
+    kept
+}
+
+/// Set to `true` to also link each IdP group under its bare, unscoped name
+/// (`group:{name}`), for the migration from before groups were scoped. It
+/// reopens the hole scoping closes, so turn it off once groupings are moved.
+pub const LEGACY_UNSCOPED_GROUPS_ENV: &str = "FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS";
+
+pub(crate) fn legacy_unscoped_groups() -> bool {
+    std::env::var(LEGACY_UNSCOPED_GROUPS_ENV)
+        .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes"))
+        .unwrap_or(false)
+}
+
+/// An IdP group's name as RBAC sees it: `{issuer}#{group}`, so the RBAC
+/// subject is `group:{issuer}#{group}`.
+///
+/// Without the issuer, any IdP a tenant admin registers could assert
+/// `groups: ["ops"]` and inherit every grant made to `group:ops`, including
+/// cluster scope granted to operators in the same tenant. The issuer comes
+/// from the validated token, and issuers are refused with a `#`, so the
+/// split is unambiguous.
+pub(crate) fn scoped_group(issuer: &str, group: &str) -> String {
+    format!("{issuer}#{group}")
+}
+
+/// `scoped` plus, when `legacy` is set, each one's bare name.
+pub(crate) fn with_legacy_names(scoped: &[String], legacy: bool) -> Vec<String> {
+    let mut names = scoped.to_vec();
+    if legacy {
+        names.extend(
+            scoped
+                .iter()
+                .filter_map(|group| group.split_once('#').map(|(_, name)| name.to_string())),
+        );
+    }
+    names
 }
 
 // Group claims from the IdP become ephemeral Casbin groupings for this

@@ -51,12 +51,13 @@ async fn fleet_token(store: &InMemoryStore) -> String {
         .set_tenant_signing_keys("t1", keys.clone())
         .await
         .expect("keys");
-    felix_controlplane_service::auth::felix_token::mint_token(
+    felix_controlplane_service::auth::felix_token::mint_token_for(
         &keys,
         "t1",
         "p:operator",
         vec!["node.manage:cluster:*".to_string()],
         Duration::from_secs(900),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
     )
     .expect("token")
 }

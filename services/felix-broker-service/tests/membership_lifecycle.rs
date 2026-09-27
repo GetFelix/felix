@@ -51,12 +51,13 @@ impl Cluster {
             .expect("keys");
         // Scoped to this broker's own identity, which is what a real deployment
         // would hand it. `broker-b` cases below rely on that being a real limit.
-        let token = felix_controlplane_service::auth::felix_token::mint_token(
+        let token = felix_controlplane_service::auth::felix_token::mint_token_for(
             &keys,
             "t1",
             "p:broker-a",
             vec!["node.manage:node:broker-a".to_string()],
             Duration::from_secs(900),
+            felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
         )
         .expect("token");
         let state = AppState {
@@ -118,12 +119,13 @@ impl Cluster {
 
     /// A credential covering every node, for cases that are not about scope.
     fn fleet_token(&self) -> String {
-        felix_controlplane_service::auth::felix_token::mint_token(
+        felix_controlplane_service::auth::felix_token::mint_token_for(
             &self.keys,
             "t1",
             "p:operator",
             vec!["node.manage:cluster:*".to_string()],
             Duration::from_secs(900),
+            felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
         )
         .expect("token")
     }

@@ -103,23 +103,30 @@ pub(super) async fn patch_node(
 }
 
 pub(super) async fn delete_node(store: &InMemoryStore, node_id: &str) -> StoreResult<()> {
+    // Nodes before shards, the order an assignment write takes them in, and
+    // held across the check: released in between, a write could validate
+    // this node and land an assignment to it after the count.
+    let mut state = store.nodes.write().await;
+    if !state.records.contains_key(node_id) {
+        return Err(StoreError::NotFound("node".into()));
+    }
+
     // Refused rather than cascaded: deleting the assignment would erase the
     // only record of where that shard's data lives.
-    let led = store
+    let held = store
         .shards
         .read()
         .await
         .records
         .values()
-        .filter(|assignment| assignment.leader == node_id)
+        .filter(|assignment| assignment.nodes().any(|node| node == node_id))
         .count();
-    if led > 0 {
+    if held > 0 {
         return Err(StoreError::Conflict(format!(
-            "node {node_id} still leads {led} shard(s); reassign them first"
+            "node {node_id} still holds {held} shard(s); reassign them first"
         )));
     }
 
-    let mut state = store.nodes.write().await;
     if state.records.remove(node_id).is_none() {
         return Err(StoreError::NotFound("node".into()));
     }

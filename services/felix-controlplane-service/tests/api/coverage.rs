@@ -381,3 +381,56 @@ async fn a_cache_keeps_the_consistency_it_was_created_with() {
         );
     }
 }
+
+/// A name that means something in an RBAC object, a URL or a path is refused
+/// at creation: a stream named `*` would turn every grant written for it into
+/// a namespace-wide one.
+#[tokio::test]
+async fn names_outside_the_identifier_grammar_are_refused() {
+    let h = harness().await;
+    let tenant = json_request_as(
+        "POST",
+        "/v1/tenants",
+        &h.operator(),
+        serde_json::json!({"tenant_id": "a/b", "display_name": "Slash"}),
+    );
+    let response = h.app.clone().oneshot(tenant).await.expect("tenant");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    create_tenant(&h).await;
+    let namespace = json_request_as(
+        "POST",
+        "/v1/tenants/t1/namespaces",
+        &h.admin("t1"),
+        serde_json::json!({"namespace": "*", "display_name": "Star"}),
+    );
+    let response = h.app.clone().oneshot(namespace).await.expect("namespace");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    create_namespace(&h).await;
+    let stream = json_request_as(
+        "POST",
+        "/v1/tenants/t1/namespaces/default/streams",
+        &h.admin("t1"),
+        serde_json::json!({
+            "stream": "*",
+            "kind": "Stream",
+            "shards": 1,
+            "retention": {"max_age_seconds": null, "max_size_bytes": null},
+            "consistency": "Leader",
+            "delivery": "AtMostOnce",
+            "durable": false
+        }),
+    );
+    let response = h.app.clone().oneshot(stream).await.expect("stream");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let cache = json_request_as(
+        "POST",
+        "/v1/tenants/t1/namespaces/default/caches",
+        &h.admin("t1"),
+        serde_json::json!({"cache": "a:b", "display_name": "Colon"}),
+    );
+    let response = h.app.clone().oneshot(cache).await.expect("cache");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

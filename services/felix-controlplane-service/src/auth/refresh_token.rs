@@ -33,7 +33,8 @@ pub struct RefreshToken {
     pub tenant_id: String,
     /// Who the refreshed access token will be minted for.
     pub principal_id: String,
-    /// The IdP group claims this principal presented at exchange.
+    /// The IdP group claims this principal presented at exchange, scoped by
+    /// issuer (`{issuer}#{group}`).
     ///
     /// Kept because RBAC is re-evaluated on every refresh and group-derived
     /// grants cannot be recomputed without them. They are claims, not

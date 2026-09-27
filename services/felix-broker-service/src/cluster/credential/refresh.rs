@@ -15,11 +15,21 @@ use tokio_util::sync::CancellationToken;
 use super::{NodeCredential, now_secs, read_claims, refresh_delay};
 use crate::cluster::membership::metrics as mm;
 
-/// What `/token/refresh` answers with.
-#[derive(Debug, Deserialize)]
+/// What `/token/refresh` answers with. Both fields are live credentials, so
+/// `Debug` shows neither.
+#[derive(Deserialize)]
 struct RefreshResponse {
     felix_token: String,
     refresh_token: String,
+}
+
+impl std::fmt::Debug for RefreshResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RefreshResponse")
+            .field("felix_token", &"<redacted>")
+            .field("refresh_token", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Everything the loop needs.
@@ -164,7 +174,13 @@ async fn refresh_once(
 
     let response = client
         .post(url)
-        .json(&serde_json::json!({ "refresh_token": refresh_token }))
+        // The node credential is for the control plane's API, which refuses
+        // broker-audience tokens. A control plane that predates audiences
+        // ignores the field.
+        .json(&serde_json::json!({
+            "refresh_token": refresh_token,
+            "audience": "felix-controlplane",
+        }))
         .send()
         .await
         .context("send refresh request")?;

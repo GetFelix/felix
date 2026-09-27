@@ -304,15 +304,18 @@ them.
 Felix tokens are JWTs minted by the control plane and validated by brokers.
 
 - `iss`: `felix-auth`
-- `aud`: `felix-broker`
+- `aud`: `felix-broker` for tokens presented to brokers, `felix-controlplane`
+  for the control plane's API. Each side refuses the other's, so a broker
+  cannot replay a client's token against the API.
 - `sub`: `principal_id` (sha256 of `iss|sub`)
 - `tid`: tenant id
 - `exp`, `iat`
 - `perms`: effective permissions
 - **Algorithm**: EdDSA (Ed25519) only; Felix-issued tokens never use RSA.
-  The tenant JWKS publishes the current key and any previous ones, and
-  verification tries them all. There is no operator command to rotate a
-  tenant's signing key yet; a tenant keeps the key it was created with.
+  The tenant JWKS publishes the current key and any others still verifying,
+  and verification tries them all. Keys rotate in three steps (stage,
+  activate, retire) through `/v1/tenants/{tenant_id}/signing-keys`, so brokers
+  learn a key before any token carries it.
 
 ### RBAC Model (Casbin)
 
@@ -360,11 +363,12 @@ tenant.manage:tenant:t1
 ### Group-Based RBAC from IdP Claims
 
 If tenant issuer config sets `groups_claim`, exchange maps each incoming group
-to `group:<name>` (always prefixed, so `group:ops` and `ops` stay distinct) and adds a
-transient grouping edge for evaluation:
+to `group:<issuer>#<name>` (always prefixed, so `group:ops` and `ops` stay
+distinct, and scoped by the token's issuer, so one IdP cannot claim another's
+groups) and adds a transient grouping edge for evaluation:
 
 ```text
-g, <principal_id>, group:<name>, <tenant>
+g, <principal_id>, group:<issuer>#<name>, <tenant>
 ```
 
 This enables role assignment by group without per-user policy writes.

@@ -21,7 +21,7 @@ use utoipa::ToSchema;
 use crate::api::AppState;
 use crate::api::error::{ApiError, api_internal, api_internal_message};
 use crate::auth::bearer::{Refusal, refused};
-use crate::auth::felix_token::mint_token;
+use crate::auth::felix_token::mint_token_for;
 use crate::auth::rbac::enforcer::build_enforcer;
 use crate::auth::rbac::permissions::effective_permissions;
 use crate::auth::refresh_token::{self, RefreshToken, RefreshTokenTake};
@@ -44,13 +44,16 @@ pub fn refresh_ttl() -> Duration {
     )
 }
 
-#[derive(Debug, Deserialize, ToSchema, Clone)]
+#[derive(Deserialize, ToSchema, Clone)]
 pub struct TokenRefreshRequest {
     /// The refresh token handed out by exchange or by a previous refresh.
     pub refresh_token: String,
+    /// As for exchange: `felix-broker` (the default) or `felix-controlplane`.
+    #[serde(default)]
+    pub audience: Option<String>,
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone)]
+#[derive(Serialize, ToSchema, Clone)]
 pub struct TokenRefreshResponse {
     pub felix_token: String,
     pub expires_in: u64,
@@ -58,6 +61,27 @@ pub struct TokenRefreshResponse {
     /// The replacement refresh token. The one just presented is spent.
     pub refresh_token: String,
     pub refresh_expires_in: u64,
+}
+
+impl std::fmt::Debug for TokenRefreshRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenRefreshRequest")
+            .field("refresh_token", &"<redacted>")
+            .field("audience", &self.audience)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for TokenRefreshResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenRefreshResponse")
+            .field("felix_token", &"<redacted>")
+            .field("expires_in", &self.expires_in)
+            .field("token_type", &self.token_type)
+            .field("refresh_token", &"<redacted>")
+            .field("refresh_expires_in", &self.refresh_expires_in)
+            .finish()
+    }
 }
 
 /// Mint a refresh token for a principal, returning the record to store and the
@@ -104,6 +128,36 @@ pub fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// The recorded group claims a refresh still honours.
+///
+/// Only names scoped by an issuer the tenant still trusts: removing an IdP
+/// takes its groups with it at the next refresh, and a record from before
+/// groups were scoped carries bare names, which are dropped unless the
+/// legacy switch is on.
+pub(crate) fn refreshable_groups(
+    recorded: &[String],
+    issuers: &[crate::auth::idp_registry::IdpIssuerConfig],
+    legacy: bool,
+) -> Vec<String> {
+    let mut honoured = Vec::new();
+    for group in recorded {
+        let trusted = issuers.iter().any(|issuer| {
+            group
+                .strip_prefix(issuer.issuer.as_str())
+                .is_some_and(|rest| rest.starts_with('#'))
+        });
+        if trusted {
+            honoured.extend(crate::auth::exchange::with_legacy_names(
+                std::slice::from_ref(group),
+                legacy,
+            ));
+        } else if legacy {
+            honoured.push(group.clone());
+        }
+    }
+    honoured
+}
+
 #[utoipa::path(
     post,
     path = "/v1/tenants/{tenant_id}/token/refresh",
@@ -124,6 +178,9 @@ pub async fn refresh_token_handler(
     // expired, revoked, wrong secret. Distinguishing them would let a caller
     // probe which token ids exist and which secrets are close.
     let unusable = || refused(Refusal::RefreshRefused, "refresh token is not usable");
+    // Before the token is spent, so a bad request does not cost the caller
+    // its chain.
+    let audience = crate::auth::exchange::token_audience(request.audience.as_deref())?;
 
     let Some((token_id, secret)) = refresh_token::split(&request.refresh_token) else {
         return Err(unusable());
@@ -181,10 +238,19 @@ pub async fn refresh_token_handler(
         .list_rbac_groupings(&tenant_id)
         .await
         .map_err(|err| api_internal("failed to load groupings", &err))?;
+    let issuers = state
+        .store
+        .list_idp_issuers(&tenant_id)
+        .await
+        .map_err(|err| api_internal("failed to load issuers", &err))?;
     crate::auth::exchange::add_group_claim_groupings(
         &mut groupings,
         &record.principal_id,
-        &record.groups,
+        &refreshable_groups(
+            &record.groups,
+            &issuers,
+            crate::auth::exchange::legacy_unscoped_groups(),
+        ),
     );
 
     let enforcer = build_enforcer(&policies, &groupings, &tenant_id)
@@ -213,8 +279,15 @@ pub async fn refresh_token_handler(
         .map_err(|err| api_internal("failed to load signing keys", &err))?;
 
     let access_ttl = crate::auth::exchange::access_token_ttl();
-    let felix_token = mint_token(&keys, &tenant_id, &record.principal_id, perms, access_ttl)
-        .map_err(|_| api_internal_message("failed to mint token"))?;
+    let felix_token = mint_token_for(
+        &keys,
+        &tenant_id,
+        &record.principal_id,
+        perms,
+        access_ttl,
+        audience,
+    )
+    .map_err(|_| api_internal_message("failed to mint token"))?;
 
     // The replacement stays in the same family, so a replay of any token in the
     // chain can end the whole chain.

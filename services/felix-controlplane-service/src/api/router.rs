@@ -226,11 +226,32 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/v1/tenants/{tenant_id}/rbac/policies",
-            axum::routing::get(auth::admin::list_policies).post(auth::admin::add_policy),
+            axum::routing::get(auth::admin::list_policies)
+                .post(auth::admin::add_policy)
+                .delete(auth::admin::remove_policy),
         )
         .route(
             "/v1/tenants/{tenant_id}/rbac/groupings",
-            axum::routing::get(auth::admin::list_groupings).post(auth::admin::add_grouping),
+            axum::routing::get(auth::admin::list_groupings)
+                .post(auth::admin::add_grouping)
+                .delete(auth::admin::remove_grouping),
+        )
+        .route(
+            "/v1/tenants/{tenant_id}/refresh-tokens/revoke",
+            axum::routing::post(auth::admin::revoke_principal_refresh_tokens),
+        )
+        .route(
+            "/v1/tenants/{tenant_id}/signing-keys",
+            axum::routing::get(auth::signing_keys::list_signing_keys)
+                .post(auth::signing_keys::stage_signing_key),
+        )
+        .route(
+            "/v1/tenants/{tenant_id}/signing-keys/{kid}",
+            axum::routing::delete(auth::signing_keys::retire_signing_key),
+        )
+        .route(
+            "/v1/tenants/{tenant_id}/signing-keys/{kid}/activate",
+            axum::routing::post(auth::signing_keys::activate_signing_key),
         )
         .merge(
             utoipa_swagger_ui::SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()),

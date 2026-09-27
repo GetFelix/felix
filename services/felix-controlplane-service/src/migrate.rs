@@ -75,9 +75,9 @@ async fn export_postgres(out: &str) -> Result<()> {
         .map_err(|err| anyhow::anyhow!("{err}"))
         .context("export state")?;
     let summary = state.summary();
-    std::fs::write(
-        out,
-        serde_json::to_vec_pretty(&state).context("serialize state")?,
+    write_private(
+        std::path::Path::new(out),
+        &serde_json::to_vec_pretty(&state).context("serialize state")?,
     )
     .with_context(|| format!("write {out}"))?;
     println!("exported {summary} to {out}");
@@ -131,3 +131,23 @@ async fn import(file: &str, target: &str, overwrite: bool) -> Result<()> {
         Err(err) => bail!("the state machine refused the import: {err}"),
     }
 }
+
+/// Write a file only its owner can read.
+///
+/// An export holds every tenant's signing-key seed, so anyone who can read
+/// it can mint tokens for any tenant. Created with the mode rather than
+/// chmodded after, so there is no moment it is readable by others. A file
+/// that already exists keeps its mode.
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+#[cfg(test)]
+mod tests;

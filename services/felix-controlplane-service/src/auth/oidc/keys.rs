@@ -8,7 +8,7 @@ use jsonwebtoken::jwk::{AlgorithmParameters, EllipticCurve, JwkSet, KeyAlgorithm
 use serde::Deserialize;
 
 use super::{OidcError, UpstreamOidcValidator};
-use crate::auth::idp_registry::IdpIssuerConfig;
+use crate::auth::idp_registry::{IdpIssuerConfig, check_fetch_url};
 
 #[derive(Debug, Clone)]
 pub(super) struct CachedJwks {
@@ -36,6 +36,7 @@ pub(super) struct CachedDiscovery {
 
 #[derive(Debug, Deserialize)]
 struct DiscoveryDocument {
+    issuer: String,
     jwks_uri: String,
 }
 
@@ -45,16 +46,18 @@ impl UpstreamOidcValidator {
         issuer: &str,
         issuer_cfg: &IdpIssuerConfig,
     ) -> Result<String, OidcError> {
+        // Checked here as well as when the issuer is stored: a config written
+        // before the rule existed, or a discovery document, can name any URL.
+        let allowed = |url: &str| {
+            check_fetch_url(url, self.allow_insecure_http).map_err(OidcError::UrlNotAllowed)
+        };
         // An explicit JWKS URL skips discovery entirely.
         if let Some(url) = &issuer_cfg.jwks_url {
+            allowed(url)?;
             return Ok(url.to_string());
         }
-        let discovery_url = issuer_cfg.discovery_url.clone().unwrap_or_else(|| {
-            format!(
-                "{}/.well-known/openid-configuration",
-                issuer.trim_end_matches('/')
-            )
-        });
+        let discovery_url = issuer_cfg.discovery_url();
+        allowed(&discovery_url)?;
 
         if let Some(entry) = self.discovery_cache.get(&discovery_url)
             && entry.expires_at > Instant::now()
@@ -62,7 +65,20 @@ impl UpstreamOidcValidator {
             return Ok(entry.jwks_url.clone());
         }
 
-        let doc: DiscoveryDocument = self.client.get(&discovery_url).send().await?.json().await?;
+        let doc: DiscoveryDocument = self
+            .client
+            .get(&discovery_url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        // OIDC Discovery 1.0 section 4.3: the document must be for the issuer
+        // it was fetched for, or its keys are someone else's.
+        if doc.issuer != issuer {
+            return Err(OidcError::DiscoveryIssuerMismatch);
+        }
+        allowed(&doc.jwks_uri)?;
         self.discovery_cache.insert(
             discovery_url,
             CachedDiscovery {

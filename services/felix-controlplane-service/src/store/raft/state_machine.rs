@@ -303,6 +303,34 @@ impl MetadataStateMachine {
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
+            MetaCommand::RemoveRbacPolicy { tenant_id, policy } => store
+                .remove_rbac_policy(&tenant_id, policy)
+                .await
+                .map(|()| MetaResponse::Unit)
+                .map_err(Into::into),
+            MetaCommand::RemoveRbacGrouping {
+                tenant_id,
+                grouping,
+            } => store
+                .remove_rbac_grouping(&tenant_id, grouping)
+                .await
+                .map(|()| MetaResponse::Unit)
+                .map_err(Into::into),
+            MetaCommand::StageSigningKey { tenant_id, key } => store
+                .stage_signing_key(&tenant_id, key)
+                .await
+                .map(|keys| MetaResponse::SigningKeys { keys })
+                .map_err(Into::into),
+            MetaCommand::ActivateSigningKey { tenant_id, kid } => store
+                .activate_signing_key(&tenant_id, &kid)
+                .await
+                .map(|keys| MetaResponse::SigningKeys { keys })
+                .map_err(Into::into),
+            MetaCommand::RetireSigningKey { tenant_id, kid } => store
+                .retire_signing_key(&tenant_id, &kid)
+                .await
+                .map(|keys| MetaResponse::SigningKeys { keys })
+                .map_err(Into::into),
             MetaCommand::SetTenantSigningKeys { tenant_id, keys } => store
                 .set_tenant_signing_keys(&tenant_id, keys)
                 .await

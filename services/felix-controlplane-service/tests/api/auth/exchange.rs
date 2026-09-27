@@ -449,7 +449,7 @@ async fn exchange_supports_group_claim_based_rbac() {
         .add_rbac_grouping(
             "t1",
             GroupingRule {
-                user: "group:g1".to_string(),
+                user: format!("group:{issuer}#g1"),
                 role: "role:stream-reader".to_string(),
             },
         )
@@ -592,7 +592,7 @@ async fn exchange_group_claim_rbac_requires_groups_claim_mapping() {
         .add_rbac_grouping(
             "t1",
             GroupingRule {
-                user: "group:g1".to_string(),
+                user: format!("group:{issuer}#g1"),
                 role: "role:stream-reader".to_string(),
             },
         )
@@ -716,7 +716,7 @@ async fn exchange_does_not_map_a_prefixed_group_claim_onto_the_bare_group() {
         .add_rbac_grouping(
             "t1",
             GroupingRule {
-                user: "group:g1".to_string(),
+                user: format!("group:{issuer}#g1"),
                 role: "role:stream-reader".to_string(),
             },
         )

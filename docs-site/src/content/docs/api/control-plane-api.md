@@ -78,6 +78,10 @@ Content-Type: application/json
 }
 ```
 
+Discovery and JWKS URLs must be `https` (plain `http` only on a loopback host,
+unless `FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP=true`), and the issuer must
+not contain `#`.
+
 Delete an issuer:
 
 ```http
@@ -92,6 +96,28 @@ RBAC endpoints are split by capability:
 - `GET /v1/tenants/{tenant_id}/rbac/groupings` -> requires `rbac.view`
 - `POST /v1/tenants/{tenant_id}/rbac/policies` -> requires `rbac.policy.manage`
 - `POST /v1/tenants/{tenant_id}/rbac/groupings` -> requires `rbac.assignment.manage`
+- `DELETE /v1/tenants/{tenant_id}/rbac/policies` -> requires `rbac.policy.manage`
+  (body: the rule, as for `POST`; `404` if absent)
+- `DELETE /v1/tenants/{tenant_id}/rbac/groupings` -> requires `rbac.assignment.manage`
+  (body: the grouping, as for `POST`; `404` if absent)
+
+### Admin API: Refresh-token revocation and signing keys
+
+Both require `tenant.manage` on `tenant:{tenant_id}`.
+
+- `POST /v1/tenants/{tenant_id}/refresh-tokens/revoke` with
+  `{"principal_id": "..."}` ends every refresh chain the principal holds.
+- `GET /v1/tenants/{tenant_id}/signing-keys` lists the current key and the
+  keys that only verify.
+- `POST /v1/tenants/{tenant_id}/signing-keys` stages a new key: published, not
+  signing.
+- `POST /v1/tenants/{tenant_id}/signing-keys/{kid}/activate` makes it sign.
+- `DELETE /v1/tenants/{tenant_id}/signing-keys/{kid}` retires a key that no
+  longer signs (`409` for the current one).
+
+The waits between the steps are in the auth design doc's rotation section.
+
+Every admin endpoint needs a token minted with `"audience": "felix-controlplane"`.
 
 Scope is enforced server-side. Callers can only mutate rules/assignments within
 their own RBAC scope (tenant/namespace/stream/cache).

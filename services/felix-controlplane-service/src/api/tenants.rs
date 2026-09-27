@@ -15,7 +15,7 @@ use axum::response::IntoResponse;
 
 use crate::api::AppState;
 use crate::api::error::{
-    ApiError, api_conflict, api_internal, api_internal_message, api_not_found,
+    ApiError, api_conflict, api_internal, api_internal_message, api_not_found, api_validation_error,
 };
 use crate::api::types::{
     TenantChangesResponse, TenantCreateRequest, TenantListResponse, TenantSnapshotResponse,
@@ -23,7 +23,7 @@ use crate::api::types::{
 use crate::auth::bearer::require_cluster_action;
 use crate::auth::keys::generate_signing_keys;
 use crate::auth::rbac::authorize::{ACTION_NODE_VIEW, ACTION_TENANT_MANAGE};
-use crate::model::Tenant;
+use crate::model::{Tenant, validate_identifier};
 use crate::store::StoreError;
 
 #[utoipa::path(
@@ -67,6 +67,7 @@ pub(crate) async fn create_tenant(
     Json(body): Json<TenantCreateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_cluster_action(&state, &headers, ACTION_TENANT_MANAGE).await?;
+    validate_identifier("tenant_id", &body.tenant_id).map_err(|err| api_validation_error(&err))?;
     let tenant = Tenant {
         tenant_id: body.tenant_id,
         display_name: body.display_name,

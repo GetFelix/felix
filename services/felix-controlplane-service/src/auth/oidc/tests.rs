@@ -499,3 +499,85 @@ fn alg_name(alg: Algorithm) -> &'static str {
         _ => "unknown",
     }
 }
+
+/// A discovery server at `127.0.0.1`, answering with `document(own_base)`.
+async fn spawn_discovery_server(
+    document: impl Fn(&str) -> Value + Send + Sync + 'static,
+) -> (String, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let base = format!("http://{}", listener.local_addr().expect("addr"));
+    let body = document(&base);
+    let app = Router::new().route(
+        "/.well-known/openid-configuration",
+        get(move || {
+            let body = body.clone();
+            async move { Json(body) }
+        }),
+    );
+    let server = axum::serve(listener, app.into_make_service());
+    let handle = tokio::spawn(async move {
+        let _ = server.await;
+    });
+    (base, handle)
+}
+
+fn discovery_cfg(issuer: &str) -> IdpIssuerConfig {
+    IdpIssuerConfig {
+        jwks_url: None,
+        ..issuer_cfg(issuer, "aud1")
+    }
+}
+
+/// A discovery document for another issuer is not this issuer's: its keys
+/// would let that issuer's tokens pass as this one's.
+#[tokio::test]
+async fn discovery_for_another_issuer_is_refused() {
+    let (base, _handle) = spawn_discovery_server(|base| {
+        json!({"issuer": "https://someone-else.example", "jwks_uri": format!("{base}/jwks")})
+    })
+    .await;
+    let err = UpstreamOidcValidator::default()
+        .resolve_jwks_url(&base, &discovery_cfg(&base))
+        .await
+        .expect_err("mismatched issuer");
+    assert!(matches!(err, OidcError::DiscoveryIssuerMismatch), "{err:?}");
+}
+
+/// Discovery can name any URL, so the JWKS URL it hands back is held to the
+/// same rule as a configured one.
+#[tokio::test]
+async fn discovery_cannot_point_the_jwks_at_plain_http() {
+    let (base, _handle) = spawn_discovery_server(
+        |base| json!({"issuer": base, "jwks_uri": "http://idp.example.com/jwks"}),
+    )
+    .await;
+    let err = UpstreamOidcValidator::default()
+        .resolve_jwks_url(&base, &discovery_cfg(&base))
+        .await
+        .expect_err("plain http jwks");
+    assert!(matches!(err, OidcError::UrlNotAllowed(_)), "{err:?}");
+
+    let (base, _handle) =
+        spawn_discovery_server(|base| json!({"issuer": base, "jwks_uri": format!("{base}/jwks")}))
+            .await;
+    assert_eq!(
+        UpstreamOidcValidator::default()
+            .resolve_jwks_url(&base, &discovery_cfg(&base))
+            .await
+            .expect("matching discovery"),
+        format!("{base}/jwks")
+    );
+}
+
+#[tokio::test]
+async fn a_configured_jwks_url_over_plain_http_is_not_fetched() {
+    let cfg = IdpIssuerConfig {
+        jwks_url: Some("http://idp.example.com/jwks".to_string()),
+        ..issuer_cfg("https://idp.example.com", "aud1")
+    };
+    let err = UpstreamOidcValidator::default()
+        .resolve_jwks_url("https://idp.example.com", &cfg)
+        .await
+        .expect_err("plain http");
+    assert!(matches!(err, OidcError::UrlNotAllowed(_)), "{err:?}");
+}

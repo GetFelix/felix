@@ -16,7 +16,9 @@ use axum::response::IntoResponse;
 
 use crate::api::AppState;
 use crate::api::ensure_tenant_namespace;
-use crate::api::error::{ApiError, api_conflict, api_internal, api_not_found};
+use crate::api::error::{
+    ApiError, api_conflict, api_internal, api_not_found, api_validation_error,
+};
 use crate::api::types::{
     CacheChangesResponse, CacheCreateRequest, CacheListResponse, CacheSnapshotResponse,
 };
@@ -24,7 +26,7 @@ use crate::auth::bearer::{require_cluster_action, require_tenant_action, tenant_
 use crate::auth::rbac::authorize::{
     ACTION_CACHE_MANAGE, ACTION_NODE_VIEW, ParsedObject, Segment, object_within_scope,
 };
-use crate::model::{Cache, CacheKey, CachePatchRequest};
+use crate::model::{Cache, CacheKey, CachePatchRequest, validate_identifier};
 use crate::store::StoreError;
 
 #[utoipa::path(
@@ -86,6 +88,7 @@ pub(crate) async fn create_cache(
     Json(body): Json<CacheCreateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_cache_manage(&state, &tenant_id, &headers, &namespace, &body.cache).await?;
+    validate_identifier("cache", &body.cache).map_err(|err| api_validation_error(&err))?;
     ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
     let cache = Cache {
         tenant_id,

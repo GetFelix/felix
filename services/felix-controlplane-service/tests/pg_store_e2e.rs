@@ -2067,12 +2067,13 @@ async fn pg_assignment_long_polls_do_not_hold_connections() -> Result<()> {
         move_policy: Default::default(),
     };
     let app = api::build_router(state);
-    let bearer = felix_controlplane_service::auth::felix_token::mint_token(
+    let bearer = felix_controlplane_service::auth::felix_token::mint_token_for(
         &keys,
         "t1",
         "p:test",
         vec!["node.view:cluster:*".to_string()],
         Duration::from_secs(900),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
     )?;
 
     // The fixture's pool has five connections.

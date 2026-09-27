@@ -73,12 +73,12 @@ async fn write_shard_assignment(
 
     // Checked here rather than by a foreign key: the node reference has none
     // deliberately, so that deleting a node cannot cascade an assignment away.
-    {
-        let nodes = store.nodes.read().await;
-        for node_id in assignment.nodes() {
-            if !nodes.records.contains_key(node_id) {
-                return Err(StoreError::NotFound(format!("node {node_id}")));
-            }
+    // The guard is held until the write lands, so `delete_node` cannot remove
+    // a node between this check and the write.
+    let nodes = store.nodes.read().await;
+    for node_id in assignment.nodes() {
+        if !nodes.records.contains_key(node_id) {
+            return Err(StoreError::NotFound(format!("node {node_id}")));
         }
     }
 

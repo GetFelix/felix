@@ -1,6 +1,6 @@
 //! Per-tenant auth: IdP issuers, RBAC rules, signing keys and bootstrap.
 use super::InMemoryStore;
-use crate::auth::felix_token::TenantSigningKeys;
+use crate::auth::felix_token::{SigningKey, TenantSigningKeys};
 use crate::auth::idp_registry::IdpIssuerConfig;
 use crate::auth::rbac::policy_store::{GroupingRule, PolicyRule};
 use crate::store::{AuthStore, StoreError, StoreResult};
@@ -101,6 +101,26 @@ pub(super) async fn add_rbac_grouping(
     Ok(())
 }
 
+pub(super) async fn remove_rbac_policy(
+    store: &InMemoryStore,
+    tenant_id: &str,
+    policy: &PolicyRule,
+) -> StoreResult<()> {
+    let mut all = store.rbac_policies.write().await;
+    let entries = all.get_mut(tenant_id);
+    remove_all(entries, policy, "policy")
+}
+
+pub(super) async fn remove_rbac_grouping(
+    store: &InMemoryStore,
+    tenant_id: &str,
+    grouping: &GroupingRule,
+) -> StoreResult<()> {
+    let mut all = store.rbac_groupings.write().await;
+    let entries = all.get_mut(tenant_id);
+    remove_all(entries, grouping, "grouping")
+}
+
 pub(super) async fn get_tenant_signing_keys(
     store: &InMemoryStore,
     tenant_id: &str,
@@ -126,6 +146,73 @@ pub(super) async fn set_tenant_signing_keys(
         .insert(tenant_id.to_string(), keys);
     crate::auth::felix_token::invalidate_tenant_cache(tenant_id);
     Ok(())
+}
+
+pub(super) async fn stage_signing_key(
+    store: &InMemoryStore,
+    tenant_id: &str,
+    key: SigningKey,
+) -> StoreResult<TenantSigningKeys> {
+    let mut all = store.tenant_signing_keys.write().await;
+    let keys = all
+        .get_mut(tenant_id)
+        .ok_or_else(|| StoreError::NotFound("signing keys".into()))?;
+    if keys.all_keys().any(|existing| existing.kid == key.kid) {
+        return Err(StoreError::Conflict("kid already in use".into()));
+    }
+    keys.previous.push(key);
+    let staged = keys.clone();
+    drop(all);
+    crate::auth::felix_token::invalidate_tenant_cache(tenant_id);
+    Ok(staged)
+}
+
+pub(super) async fn activate_signing_key(
+    store: &InMemoryStore,
+    tenant_id: &str,
+    kid: &str,
+) -> StoreResult<TenantSigningKeys> {
+    let mut all = store.tenant_signing_keys.write().await;
+    let keys = all
+        .get_mut(tenant_id)
+        .ok_or_else(|| StoreError::NotFound("signing keys".into()))?;
+    if keys.current.kid != kid {
+        let position = keys
+            .previous
+            .iter()
+            .position(|key| key.kid == kid)
+            .ok_or_else(|| StoreError::NotFound("signing key".into()))?;
+        std::mem::swap(&mut keys.current, &mut keys.previous[position]);
+    }
+    let activated = keys.clone();
+    drop(all);
+    crate::auth::felix_token::invalidate_tenant_cache(tenant_id);
+    Ok(activated)
+}
+
+pub(super) async fn retire_signing_key(
+    store: &InMemoryStore,
+    tenant_id: &str,
+    kid: &str,
+) -> StoreResult<TenantSigningKeys> {
+    let mut all = store.tenant_signing_keys.write().await;
+    let keys = all
+        .get_mut(tenant_id)
+        .ok_or_else(|| StoreError::NotFound("signing keys".into()))?;
+    if keys.current.kid == kid {
+        return Err(StoreError::Conflict(
+            "the current signing key cannot be retired".into(),
+        ));
+    }
+    let before = keys.previous.len();
+    keys.previous.retain(|key| key.kid != kid);
+    if keys.previous.len() == before {
+        return Err(StoreError::NotFound("signing key".into()));
+    }
+    let retired = keys.clone();
+    drop(all);
+    crate::auth::felix_token::invalidate_tenant_cache(tenant_id);
+    Ok(retired)
 }
 
 pub(super) async fn tenant_auth_is_bootstrapped(
@@ -246,4 +333,18 @@ async fn install_signing_keys_if_absent(
     drop(all);
     crate::auth::felix_token::invalidate_tenant_cache(tenant_id);
     candidate
+}
+
+/// Remove every copy of `rule`; `NotFound` when there was none. Every copy,
+/// because a removed grant that survives as a duplicate is still a grant.
+fn remove_all<T: PartialEq>(entries: Option<&mut Vec<T>>, rule: &T, what: &str) -> StoreResult<()> {
+    let Some(entries) = entries else {
+        return Err(StoreError::NotFound(what.to_string()));
+    };
+    let before = entries.len();
+    entries.retain(|entry| entry != rule);
+    if entries.len() == before {
+        return Err(StoreError::NotFound(what.to_string()));
+    }
+    Ok(())
 }

@@ -6,7 +6,7 @@ use axum::http::Request;
 use axum::http::StatusCode;
 use felix_controlplane_service::api::types::{FeatureFlags, Region};
 use felix_controlplane_service::api::{AppState, build_router};
-use felix_controlplane_service::auth::felix_token::{TenantSigningKeys, mint_token};
+use felix_controlplane_service::auth::felix_token::{TenantSigningKeys, mint_token_for};
 use felix_controlplane_service::auth::keys::generate_signing_keys;
 use felix_controlplane_service::auth::oidc::UpstreamOidcValidator;
 use felix_controlplane_service::auth::rbac::policy_store::{GroupingRule, PolicyRule};
@@ -46,7 +46,7 @@ fn build_state(store: Arc<InMemoryStore>) -> AppState {
     }
 }
 
-async fn setup() -> (
+pub(super) async fn setup() -> (
     axum::routing::RouterIntoService<Body, ()>,
     Arc<InMemoryStore>,
     TenantSigningKeys,
@@ -81,17 +81,18 @@ async fn setup() -> (
     (app, store, keys)
 }
 
-fn token(keys: &TenantSigningKeys, perms: Vec<&str>) -> String {
+pub(super) fn token(keys: &TenantSigningKeys, perms: Vec<&str>) -> String {
     token_for_tenant(keys, "t1", perms)
 }
 
 fn token_for_tenant(keys: &TenantSigningKeys, tenant_id: &str, perms: Vec<&str>) -> String {
-    mint_token(
+    mint_token_for(
         keys,
         tenant_id,
         "p:admin",
         perms.into_iter().map(|value| value.to_string()).collect(),
         Duration::from_secs(900),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
     )
     .expect("token")
 }
@@ -454,7 +455,7 @@ async fn add_grouping_enforces_scope_and_role_policies() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
-fn add_auth(mut request: Request<Body>, token: &str) -> Request<Body> {
+pub(super) fn add_auth(mut request: Request<Body>, token: &str) -> Request<Body> {
     request.headers_mut().insert(
         axum::http::header::AUTHORIZATION,
         format!("Bearer {token}").parse().expect("auth header"),

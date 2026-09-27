@@ -113,7 +113,8 @@ JSON
 #     refused at the broker's client control stream ("invalid action: node.view").
 echo ">> exchange the IdP token for the Felix admin token"
 CODE=$(curl -s -o "$RESP" -w '%{http_code}' -X POST "$CP/v1/tenants/$TENANT/token/exchange" \
-  -H "Authorization: Bearer $IDP_TOKEN" -H 'Content-Type: application/json' -d '{}')
+  -H "Authorization: Bearer $IDP_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"audience":"felix-controlplane"}')
 [ "$CODE" = 200 ] || { echo "!! admin token exchange -> HTTP $CODE" >&2; cat "$RESP" >&2; echo >&2; exit 1; }
 TOKEN=$(python3 -c 'import json; print(json.load(open("/tmp/felix-seed-resp"))["felix_token"])')
 [ -n "$TOKEN" ] || { echo "!! exchange returned no felix_token" >&2; exit 1; }

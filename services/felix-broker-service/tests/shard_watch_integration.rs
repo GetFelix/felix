@@ -11,7 +11,7 @@ use felix_broker_service::shards::watch::{self as shard_watch, ShardOwnership};
 use felix_broker_service::shards::{ShardKey as WatchedShardKey, ShardKind as WatchedShardKind};
 use felix_controlplane_service::api::types::{FeatureFlags, Region};
 use felix_controlplane_service::api::{AppState, build_router};
-use felix_controlplane_service::auth::felix_token::{TenantSigningKeys, mint_token};
+use felix_controlplane_service::auth::felix_token::{TenantSigningKeys, mint_token_for};
 use felix_controlplane_service::auth::keys::generate_signing_keys;
 use felix_controlplane_service::config::NodeLivenessConfig;
 use felix_controlplane_service::model::{
@@ -95,12 +95,13 @@ impl Cluster {
                 .await;
         });
 
-        let bearer = mint_token(
+        let bearer = mint_token_for(
             &keys,
             "t1",
             "p:broker",
             vec!["node.view:cluster:*".to_string()],
             Duration::from_secs(900),
+            felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
         )
         .expect("token");
 

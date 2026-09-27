@@ -5,4 +5,5 @@ mod bootstrap;
 mod bootstrap_mtls;
 mod exchange;
 mod jwks;
+mod lifecycle;
 mod refresh;
