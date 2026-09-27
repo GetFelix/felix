@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790539763724,
+  "lastUpdate": 1790542013779,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -22902,6 +22902,72 @@ window.BENCHMARK_DATA = {
             "range": "741.57",
             "unit": "us",
             "extra": "trials: 5\nmedian: 566.00\nmean: 1020.60\nstdev: 741.57\ncv: 72.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "13bea78bba5fb162ce3fef1f22b191b8010872bb",
+          "message": "Peer handlers off the QUIC I/O runtime; paged control-plane listings (#767)\n\n* Broker: run peer request handlers on the main runtime, not the QUIC I/O one\n\nWith the I/O runtime enabled (the macOS default), each peer stream's\npump runs on that single thread, and it awaited the handler inline, so\nauth checks and quorum waits ran on the thread that also drives the\ninternal endpoint. A handler that held its thread stalled every peer.\n\nPeerServer now captures the runtime it is bound from and spawns each\nrequest's handler there; the pump only reads, awaits and writes. A\nstream still carries one request at a time.\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\n* Control plane: page the list endpoints with limit and cursor\n\nTenants, namespaces, streams, caches, nodes, shard assignments and the\nRBAC rule listings returned everything in one response. They now take\n`limit` (1..=10000, default 1000) and `cursor`, and a response with more\nto come carries `next_cursor`.\n\nPaging is keyset in the store on every backend: Postgres reads an index\nrange (`WHERE key > $cursor ORDER BY key LIMIT n + 1`), memory and Raft\nsort what is past the cursor. Filtering by the caller's rights fills the\npage from further on instead of leaving it short, so a cursor only ever\nnames an entry the caller was shown.\n\nCompatibility: the object-shaped listings keep their fields and gain an\noptional `next_cursor`. The RBAC listings answered with a bare array, so\nthey still do, in full, when neither parameter is given. The broker's\nnode catalog and the felix-cluster harness follow cursors.\n\nDocumented in docs/control-plane.md and the OpenAPI document, which now\nalso describes the two RBAC listings.\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T13:43:22-07:00",
+          "tree_id": "3ba8ebbd45432311232074503bf63856357c5dbe",
+          "url": "https://github.com/gabloe/felix/commit/13bea78bba5fb162ce3fef1f22b191b8010872bb"
+        },
+        "date": 1790542010727,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 172,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 172.00\nmean: 172.20\nstdev: 1.30\ncv: 0.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 220,
+            "range": "3.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 219.60\nstdev: 3.21\ncv: 1.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 272,
+            "range": "5.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 272.00\nmean: 270.40\nstdev: 5.50\ncv: 2.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 207,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 207.00\nmean: 207.60\nstdev: 0.89\ncv: 0.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 419,
+            "range": "14.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 419.00\nmean: 423.20\nstdev: 14.52\ncv: 3.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1330,
+            "range": "537.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1330.00\nmean: 1309.20\nstdev: 537.27\ncv: 41.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
