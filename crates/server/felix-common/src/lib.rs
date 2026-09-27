@@ -13,6 +13,9 @@
 //! - [`lifecycle`] — start-up, readiness and bounded drain, shared by both
 //!   service binaries. Feature-gated behind `lifecycle` so a library that
 //!   never runs a process does not pull in tokio.
+//! - [`tls`] — certificate and key files that are re-read when they change,
+//!   shared by the broker's listeners and the control plane's. Behind the
+//!   `tls` feature.
 //! - [`ids`] and [`Error`] — the region id and its parse error.
 
 pub mod env_registry;
@@ -25,5 +28,7 @@ pub mod lifecycle;
 // Not gated: they are serde types, and the two ends need them whether or not
 // either runs a process.
 pub mod membership;
+#[cfg(feature = "tls")]
+pub mod tls;
 
 pub use error::{Error, Result};

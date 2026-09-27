@@ -10,6 +10,7 @@ use crate::config::{
 fn config() -> ControlPlaneConfig {
     ControlPlaneConfig {
         bind_addr: "127.0.0.1:0".parse().expect("bind"),
+        api_tls: None,
         metrics_bind: "127.0.0.1:0".parse().expect("metrics"),
         region_id: "local".to_string(),
         storage: StorageBackend::Memory,
@@ -100,4 +101,105 @@ async fn run_with_shutdown_starts_and_stops_with_bootstrap() {
     })
     .await
     .expect("run should stop cleanly");
+}
+
+/// A CA on disk and a certificate for `localhost` it issued.
+fn api_pki(dir: &std::path::Path) -> (crate::config::ApiTlsConfig, reqwest::Certificate) {
+    let ca_key = rcgen::KeyPair::generate().expect("ca key");
+    let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("ca params");
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca_cert = params.self_signed(&ca_key).expect("ca");
+    let ca = rcgen::Issuer::new(params, ca_key);
+    let key = rcgen::KeyPair::generate().expect("key");
+    let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+        .expect("params")
+        .signed_by(&key, &ca)
+        .expect("sign");
+    let cert_path = dir.join("api.pem");
+    let key_path = dir.join("api.key.pem");
+    std::fs::write(&cert_path, cert.pem()).expect("write cert");
+    std::fs::write(&key_path, key.serialize_pem()).expect("write key");
+    (
+        crate::config::ApiTlsConfig {
+            cert_path: cert_path.display().to_string(),
+            key_path: key_path.display().to_string(),
+        },
+        reqwest::Certificate::from_pem(ca_cert.pem().as_bytes()).expect("ca"),
+    )
+}
+
+/// With a certificate configured, the API answers over TLS to a client that
+/// trusts the issuing CA, and not over plain HTTP.
+#[tokio::test]
+#[serial]
+async fn the_api_serves_the_configured_certificate() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (api_tls, ca) = api_pki(dir.path());
+    // `run` does not report its port, so take a free one first.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("probe")
+        .local_addr()
+        .expect("addr")
+        .port();
+    let config = ControlPlaneConfig {
+        bind_addr: format!("127.0.0.1:{port}").parse().expect("bind"),
+        api_tls: Some(api_tls),
+        ..config()
+    };
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(run(config, async move {
+        let _ = stopped.await;
+    }));
+
+    let trusting = reqwest::Client::builder()
+        .add_root_certificate(ca)
+        .build()
+        .expect("client");
+    let url = format!("https://localhost:{port}/v1/system/live");
+    let mut answered = None;
+    for _ in 0..100 {
+        if let Ok(response) = trusting.get(&url).send().await {
+            answered = Some(response.status());
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let status = answered.expect("the API never answered over TLS");
+    assert!(status.is_success(), "{status}");
+
+    let untrusting = reqwest::Client::new();
+    assert!(
+        untrusting.get(&url).send().await.is_err(),
+        "a client without the CA accepted the certificate"
+    );
+    let plain = untrusting
+        .get(format!("http://localhost:{port}/v1/system/live"))
+        .send()
+        .await;
+    assert!(
+        plain.map(|r| !r.status().is_success()).unwrap_or(true),
+        "the API answered plain HTTP"
+    );
+
+    let _ = stop.send(());
+    server.await.expect("join").expect("run");
+}
+
+#[tokio::test]
+#[serial]
+async fn unreadable_api_key_material_fails_startup() {
+    let config = ControlPlaneConfig {
+        api_tls: Some(crate::config::ApiTlsConfig {
+            cert_path: "/nonexistent/api.pem".to_string(),
+            key_path: "/nonexistent/api.key.pem".to_string(),
+        }),
+        ..config()
+    };
+    let err = run(config, std::future::pending())
+        .await
+        .expect_err("started without its certificate");
+    assert!(
+        format!("{err:#}").contains("FELIX_CONTROLPLANE_TLS_CERT"),
+        "{err:#}"
+    );
 }

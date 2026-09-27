@@ -296,6 +296,8 @@ impl BrokerConfig {
             controlplane_url,
             controlplane_token,
             controlplane_sync_interval_ms,
+            controlplane_ca: super::tls::controlplane_ca_from_env(),
+            client_tls: super::ClientTlsConfig::from_env()?,
             membership,
             peer_transport,
             ack_on_commit,

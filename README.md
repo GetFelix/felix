@@ -160,8 +160,12 @@ latency/backpressure behavior early to keep p99/p999 predictable.
   [Kafka compatibility](https://gabloe.github.io/felix/features/kafka/)
 - Mutually authenticated broker-to-broker QUIC, with each certificate's name
   checked against the node id in both directions
-  (`FELIX_INTERNAL_TLS_CERT` / `_KEY` / `_CA`). Left unset, the peer link is
-  encrypted but not authenticated, and startup says so
+  (`FELIX_INTERNAL_TLS_CERT` / `_KEY` / `_CA`). A cluster member refuses to
+  start without them unless `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`
+- Operator-supplied client-facing certificates (`FELIX_TLS_CERT` / `_KEY`,
+  optional client certificates with `FELIX_TLS_CLIENT_CA`), re-read on
+  rotation, and optional TLS on the control-plane API
+  (`FELIX_CONTROLPLANE_TLS_CERT` / `_KEY`)
 
 ## What does not exist yet
 

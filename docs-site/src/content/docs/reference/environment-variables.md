@@ -72,6 +72,72 @@ export FELIX_QUIC_LISTENERS=4          # binds 5000, 5001, 5002, 5003
   too small puts every listener's driver back on a single thread. Startup
   refuses that combination.
 
+### `FELIX_TLS_CERT`
+
+**Description**: PEM certificate chain (leaf first) the client-facing QUIC
+listeners, and the Kafka listener when it serves TLS, present to clients.
+
+**Type**: File path
+
+**Default**: unset — the broker generates a self-signed `localhost`
+certificate at startup, for development only
+
+**Example**:
+```bash
+export FELIX_TLS_CERT="/etc/felix/tls/tls.crt"
+export FELIX_TLS_KEY="/etc/felix/tls/tls.key"
+```
+
+**Notes**:
+- Set with [`FELIX_TLS_KEY`](#felix_tls_key); one without the other fails
+  startup.
+- Re-read with the key every 30s. A renewal written over the same paths (a
+  cert-manager Secret volume, for instance) is used by the next handshake
+  without a restart; connections already up keep theirs.
+- The certificate must carry every name clients dial: the load-balanced
+  Service name and each broker's advertised name.
+- Unreadable files, or a key that does not match, fail startup.
+
+### `FELIX_TLS_KEY`
+
+**Description**: PEM private key for [`FELIX_TLS_CERT`](#felix_tls_cert).
+
+**Type**: File path
+
+**Default**: unset
+
+### `FELIX_TLS_CLIENT_CA`
+
+**Description**: PEM CA bundle client certificates must chain to. When set,
+every client of the QUIC and Kafka listeners must present a certificate
+issued by it, or the handshake is refused.
+
+**Type**: File path
+
+**Default**: unset — clients are not asked for a certificate
+
+**Notes**:
+- Needs `FELIX_TLS_CERT` and `FELIX_TLS_KEY`; set alone it fails startup.
+- Read once at startup: trust roots change at a restart.
+- Bearer tokens are still required; this adds a transport factor, it does not
+  replace authentication.
+- The Rust client presents a certificate through its `quinn::ClientConfig`.
+  The Python and TypeScript bindings do not offer client certificates yet.
+
+### `FELIX_TLS_REQUIRE_CERT`
+
+**Description**: Refuse to start on the generated development certificate.
+
+**Type**: Boolean (`true`/`false`)
+
+**Default**: `false`
+
+**Notes**:
+- Set it in production. Without `FELIX_TLS_CERT` a broker serves a
+  self-signed certificate that changes on every start and that clients cannot
+  verify, and says so in a startup warning; this turns the warning into a
+  refusal.
+
 ### `FELIX_TLS_CERT_EXPORT`
 
 **Description**: Write the broker's generated self-signed certificate to this
@@ -95,8 +161,9 @@ export FELIX_TLS_CERT_EXPORT="/tmp/felix-dev-ca.pem"
 - Startup **fails** if the file cannot be written. A deployment that asked for
   the export has clients configured to read it, and coming up without it turns
   into connection failures far from their cause.
-- Not a substitute for real certificates. Operator-supplied broker certificates
-  are not wired up yet.
+- Not a substitute for real certificates; see
+  [`FELIX_TLS_CERT`](#felix_tls_cert). Setting both fails startup: a
+  configured certificate is trusted through the CA that issued it.
 
 ### `FELIX_BROKER_METRICS_BIND`
 
@@ -135,7 +202,25 @@ export FELIX_CONTROLPLANE_URL="https://cp.example.com:8443"
 - Also where `felix-controlplane admin` sends its requests, unless `--url` is given (default `http://127.0.0.1:8443`)
 - Optional for single-node deployments
 - Required for multi-broker clusters
-- Include scheme (`http://` or `https://`)
+- Include scheme (`http://` or `https://`). Over `http://`, node credentials,
+  token exchange and tenant JWKS cross the network in clear text; use
+  `https://` anywhere the network is not trusted.
+
+### `FELIX_CONTROLPLANE_CA`
+
+**Description**: PEM CA bundle trusted, in addition to the public roots, when
+`FELIX_CONTROLPLANE_URL` is `https://`. Read by brokers and by
+`felix-controlplane admin`.
+
+**Type**: File path
+
+**Default**: unset — public roots only
+
+**Notes**:
+- Set it when the control plane's certificate comes from a private CA
+  (cert-manager, an internal PKI).
+- Startup fails if the bundle cannot be read or is empty, and if it is set
+  while `FELIX_CONTROLPLANE_URL` is `http://`.
 
 ### `FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`
 
@@ -1628,6 +1713,8 @@ absent; they are listed in that script rather than here.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `FELIX_CONTROLPLANE_BIND` | `0.0.0.0:8443` | Address the control-plane API listens on. |
+| `FELIX_CONTROLPLANE_TLS_CERT` | — | PEM certificate chain the API listener serves. Set with the key below, or neither; without them the API is plain HTTP and startup warns. Re-read every 30s, so a renewal on disk reaches the next handshake. The Raft peer listener is separate and has its own `FELIX_RAFT_TLS_CERT`, `_KEY` and `_CA`. |
+| `FELIX_CONTROLPLANE_TLS_KEY` | — | PEM private key for `FELIX_CONTROLPLANE_TLS_CERT`. |
 | `FELIX_CONTROLPLANE_METRICS_BIND` | — | Separate address for the metrics endpoint. |
 | `FELIX_CONTROLPLANE_CONFIG` | — | Path to a config file; environment variables override it. |
 | `FELIX_CONTROLPLANE_STORAGE_BACKEND` | `memory` | `memory` or `postgres`. `memory` loses everything on restart. |
@@ -1704,7 +1791,8 @@ absent; they are listed in that script rather than here.
 | `FELIX_INTERNAL_BIND` | — | Address for the broker-to-broker QUIC endpoint. Separate from the client one. |
 | `FELIX_INTERNAL_TLS_CERT` | — | PEM certificate chain this broker presents to peers, leaf first. Its DNS name must be the broker's `FELIX_NODE_ID`. Set with the two below, or none of the three. |
 | `FELIX_INTERNAL_TLS_KEY` | — | PEM private key for that certificate. Re-read with the certificate every 30s, so a renewal on disk is picked up by the next handshake without a restart. |
-| `FELIX_INTERNAL_TLS_CA` | — | PEM bundle every peer's certificate must chain to. With all three set, every peer connection is mutually authenticated and the certificate's name is checked against the node id in both directions. Without them the peer link is encrypted but unauthenticated, and startup warns. |
+| `FELIX_INTERNAL_TLS_CA` | — | PEM bundle every peer's certificate must chain to. With all three set, every peer connection is mutually authenticated and the certificate's name is checked against the node id in both directions. Without them the peer link is encrypted but unauthenticated, and a broker with `FELIX_NODE_ID` refuses to start unless `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`. |
+| `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED` | `false` | Let a cluster member start without peer mTLS. Anything that can reach `FELIX_INTERNAL_BIND` is then treated as a broker and can forward writes and rebuild replicas, so set it only when a network policy keeps that port reachable from brokers alone. |
 | `FELIX_INTERNAL_CONNS_PER_PEER` | `1` | Connections held to each peer. |
 | `FELIX_INTERNAL_STREAMS_PER_CONN` | `4` | Multiplexed streams per peer connection, so one large forwarded batch does not block smaller requests. |
 | `FELIX_INTERNAL_MAX_INFLIGHT` | `1024` | Outstanding requests allowed per peer. |

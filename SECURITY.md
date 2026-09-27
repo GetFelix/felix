@@ -106,22 +106,23 @@ Anything that breaks a property Felix claims to enforce:
 - **Anything on the "not built" list** in
   [docs-site — Security](https://gabloe.github.io/felix/features/security/).
   These are documented gaps, not vulnerabilities: no encryption at rest (log
-  segments are plaintext on disk), no end-to-end payload encryption, no
-  broker-to-broker mTLS (peers encrypt but do not authenticate each other), no
-  operator-supplied client-facing broker certificate (it is generated at
-  startup), and no audit logging, quotas, or rate limits. A *new* concrete
-  attack these enable in a deployment that follows the deployment guidance is
-  still worth reporting — a restatement of the gap is not.
+  segments are plaintext on disk), no end-to-end payload encryption, no peer
+  authentication for a broker started with
+  `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`, and no audit logging, quotas,
+  or rate limits. A *new* concrete attack these enable in a deployment that
+  follows the deployment guidance is still worth reporting — a restatement of
+  the gap is not.
 - **Everything under `demos/`.** The demo crates exist to illustrate a failure
   mode or a feature; they are outside the workspace, deliberately
   under-hardened, and not for production.
 - **Test fixtures, benchmark harnesses, the cluster harness
   (`crates/testing/felix-cluster`), and the load generator (`crates/testing/felix-loadgen`)** —
   local development tooling that assumes a trusted operator.
-- **Defaults that are documented as development-only** — self-signed
-  certificates, permissive local configs, the compose/Kubernetes examples'
-  sample secrets. Report it if the docs actually recommend the insecure setting
-  for production.
+- **Defaults that are documented as development-only** — the broker's
+  generated self-signed certificate (set `FELIX_TLS_CERT`), a plain-HTTP
+  control-plane API (set `FELIX_CONTROLPLANE_TLS_CERT`), permissive local
+  configs, the compose/Kubernetes examples' sample secrets. Report it if the
+  docs actually recommend the insecure setting for production.
 - **Known advisory exceptions** recorded with rationale in
   [`deny.toml`](deny.toml). They're re-reviewed when the upstream chain clears;
   a report that an exception is no longer necessary is welcome as a normal

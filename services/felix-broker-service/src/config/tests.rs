@@ -9,6 +9,7 @@ mod listeners;
 mod membership;
 mod peer_transport;
 mod printing;
+mod tls;
 mod yaml_file;
 mod yaml_overrides;
 

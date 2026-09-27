@@ -15,3 +15,4 @@ pub mod forward;
 pub(crate) mod group_ops;
 pub mod kafka;
 pub mod quic;
+pub(crate) mod tls;

@@ -3,11 +3,14 @@ title: "Security"
 ---
 
 What Felix secures today, exactly how the authentication chain works, and
-what is not built yet. The one-line summary: every connection is TLS 1.3
-because QUIC allows nothing less; identity comes from your own IdP via OIDC
+what is not built yet. The one-line summary: every QUIC connection is TLS 1.3
+because QUIC allows nothing less, but a broker only proves *who it is* to
+clients once you give it a certificate; the control-plane REST API is plain
+HTTP unless you give it one too; identity comes from your own IdP via OIDC
 token exchange; authorization is tenant-scoped RBAC enforced at the broker;
-brokers authenticate each other with mTLS when given certificates. Encryption
-at rest and audit logging are **not** built.
+brokers authenticate each other with mTLS when given certificates, and refuse
+to join a cluster without it unless told otherwise. Encryption at rest and
+audit logging are **not** built.
 
 :::note[Security Maturity]
 Felix is in early development and has not been through an external security
@@ -18,25 +21,28 @@ kept current per capability.
 
 ## Transport security
 
-QUIC integrates TLS 1.3 into the protocol itself: there is no unencrypted
-mode, no downgrade to older TLS versions, and forward secrecy comes with the
-handshake. All Felix traffic — client-to-broker, broker-to-broker,
-everything — is encrypted in transit.
+What is encrypted, and what is authenticated, by default and with
+configuration:
 
-**Certificates, honestly.** Today the broker generates a **self-signed
-certificate at startup**; there is no configuration key for operator-supplied
-certificates yet. The demos and the cluster harness distribute trust for that
-certificate to their clients. The broker-internal transport is different:
-given `FELIX_INTERNAL_TLS_CERT`, `FELIX_INTERNAL_TLS_KEY` and
-`FELIX_INTERNAL_TLS_CA`, peers authenticate each other with mTLS, and the
-certificate's DNS name is the broker's identity, checked against its node id
-in both directions. Without those three the internal link is encrypted with
-generated certificates and not authenticated, and startup warns — so set them
-for any deployment where the network between brokers is not already trusted.
+| Link | Default | With configuration |
+| --- | --- | --- |
+| Client ↔ broker (QUIC) | Encrypted (TLS 1.3). The broker serves a **self-signed `localhost` certificate generated at every start**, so clients cannot verify which broker they reached, and startup warns. | `FELIX_TLS_CERT` / `FELIX_TLS_KEY`: a real certificate, re-read on rotation. `FELIX_TLS_CLIENT_CA`: clients must also present a certificate. `FELIX_TLS_REQUIRE_CERT=true` refuses to start without one. |
+| Client ↔ broker (Kafka listener) | TLS with the same certificate as QUIC (`FELIX_KAFKA_TLS=false` turns it off). | Same variables as QUIC. |
+| Broker ↔ broker (internal port) | Encrypted, not authenticated. A broker with a node id **refuses to start** this way unless `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`. | `FELIX_INTERNAL_TLS_CERT` / `_KEY` / `_CA`: mutual TLS, the certificate's DNS name checked against the node id in both directions. |
+| Broker / admin CLI ↔ control-plane API | **Plain HTTP**, and the control plane warns at startup. Node credentials, token exchange and tenant JWKS cross it. | `FELIX_CONTROLPLANE_TLS_CERT` / `_KEY` on the control plane, an `https://` `FELIX_CONTROLPLANE_URL` on brokers, and `FELIX_CONTROLPLANE_CA` when the certificate comes from a private CA. |
+| Control-plane bootstrap listener | Plain HTTP, off by default. | `FELIX_BOOTSTRAP_TLS_*`: mutual TLS, described below. |
 
-The one place operator-supplied certificates *are* wired up is the control
-plane's bootstrap listener, below — because that endpoint hands out
-admin-equivalent power and got hardened first.
+So every QUIC connection is encrypted out of the box, the control-plane API
+is not, and "authenticated" holds only for what you configure. Without a
+configured broker certificate, a client that trusts the generated one trusts
+whoever answers on that address, and hands it a bearer token. Set `FELIX_TLS_CERT`
+for anything but development; the demos and the cluster harness distribute
+trust for the generated certificate through `FELIX_TLS_CERT_EXPORT`.
+
+Certificate and key files are re-read every 30 seconds on every listener that
+takes them, so a renewal written over the same paths (cert-manager, a
+Kubernetes Secret volume) is used by the next handshake without a restart.
+CA bundles are read at startup.
 
 Client-side, certificate verification is Quinn's:
 
@@ -45,8 +51,19 @@ Client-side, certificate verification is Quinn's:
 let quinn = quinn::ClientConfig::with_platform_verifier();
 let config = ClientConfig::optimized_defaults(quinn);
 
-// Development: configure Quinn with a test CA or custom verifier
+// A private CA: trust its bundle, and dial with a name the certificate carries
+let mut roots = rustls::RootCertStore::empty();
+for cert in rustls::pki_types::CertificateDer::pem_file_iter("ca.pem")? {
+    roots.add(cert?)?;
+}
+let quinn = quinn::ClientConfig::with_root_certificates(Arc::new(roots))?;
+let client = ClusterClient::connect(&seeds, "broker.example.com", ClientConfig::optimized_defaults(quinn)).await?;
 ```
+
+The Python and TypeScript bindings take the same two choices: the platform
+trust store, or a CA file, plus the server name to verify. Neither presents a
+client certificate yet, so they cannot connect to a broker with
+`FELIX_TLS_CLIENT_CA` set.
 
 ## Multi-tenancy and isolation
 
@@ -381,10 +398,10 @@ Stated plainly, so nobody designs around a protection that is not there:
   broker treats them as opaque bytes either way — but Felix ships no key
   management for it.
 - **Broker-to-broker authentication without certificates.** mTLS is built
-  and is the recommended mode; without `FELIX_INTERNAL_TLS_*` peers encrypt
-  but do not authenticate each other and the internal network is trusted.
-- **Operator-supplied broker certificates.** The client-facing certificate
-  is generated at startup.
+  and required by default; with `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`
+  peers encrypt but do not authenticate each other and the internal network
+  is trusted.
+- **Client certificates from the Python and TypeScript bindings.**
 - **Audit logging, quotas, and rate limits.**
 
 ## Reporting a vulnerability

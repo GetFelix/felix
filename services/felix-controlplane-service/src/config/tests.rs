@@ -153,6 +153,37 @@ fn an_unworkable_liveness_config_fails_startup() {
 
 #[serial]
 #[test]
+fn api_tls_is_both_paths_or_neither() {
+    let _env = clear_felix_env();
+    assert!(
+        ControlPlaneConfig::from_env()
+            .expect("none")
+            .api_tls
+            .is_none()
+    );
+
+    unsafe {
+        env::set_var("FELIX_CONTROLPLANE_TLS_CERT", "/etc/felix/api/tls.crt");
+    }
+    let err = ControlPlaneConfig::from_env().expect_err("cert without key");
+    assert!(
+        err.to_string().contains("FELIX_CONTROLPLANE_TLS_KEY"),
+        "{err}"
+    );
+
+    unsafe {
+        env::set_var("FELIX_CONTROLPLANE_TLS_KEY", "/etc/felix/api/tls.key");
+    }
+    let tls = ControlPlaneConfig::from_env()
+        .expect("both")
+        .api_tls
+        .expect("api tls");
+    assert_eq!(tls.cert_path, "/etc/felix/api/tls.crt");
+    assert_eq!(tls.key_path, "/etc/felix/api/tls.key");
+}
+
+#[serial]
+#[test]
 fn from_env_uses_defaults() {
     let _env = clear_felix_env();
     let config = ControlPlaneConfig::from_env().expect("from_env");
@@ -516,6 +547,9 @@ mod yaml_overrides {
             .apply(parse(
                 r#"
 bind_addr: "127.0.0.1:9443"
+tls:
+  cert_path: "/etc/felix/api/tls.crt"
+  key_path: "/etc/felix/api/tls.key"
 metrics_bind: "127.0.0.1:9444"
 region_id: "eu-west-1"
 changes_limit: 4096
@@ -540,6 +574,10 @@ bootstrap:
             .expect("apply");
 
         assert_eq!(config.bind_addr, "127.0.0.1:9443".parse().unwrap());
+        assert_eq!(
+            config.api_tls.as_ref().map(|tls| tls.key_path.as_str()),
+            Some("/etc/felix/api/tls.key")
+        );
         assert_eq!(config.metrics_bind, "127.0.0.1:9444".parse().unwrap());
         assert_eq!(config.region_id, "eu-west-1");
         assert_eq!(config.changes_limit, 4096);

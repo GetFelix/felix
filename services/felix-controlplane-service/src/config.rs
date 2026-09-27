@@ -2,12 +2,14 @@
 //! file named by `FELIX_CONTROLPLANE_CONFIG` folded over it, then validation.
 //!
 //! Defaults keep a dev setup simple while still bounding resource use.
+mod api_tls;
 mod bootstrap;
 mod env;
 mod file;
 mod liveness;
 mod storage;
 
+pub use api_tls::ApiTlsConfig;
 pub use bootstrap::{BootstrapConfig, BootstrapTlsConfig};
 pub use liveness::NodeLivenessConfig;
 pub use storage::{PostgresConfig, RaftBackendConfig, StorageBackend};
@@ -66,6 +68,8 @@ const DEFAULT_OIDC_ALLOWED_ALGORITHMS: [Algorithm; 1] = [Algorithm::ES256];
 #[derive(Debug, Clone)]
 pub struct ControlPlaneConfig {
     pub bind_addr: SocketAddr,
+    /// When set, the API listener serves TLS with this certificate.
+    pub api_tls: Option<ApiTlsConfig>,
     pub metrics_bind: SocketAddr,
     pub region_id: String,
     pub storage: StorageBackend,

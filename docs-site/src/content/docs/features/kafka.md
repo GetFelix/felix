@@ -106,8 +106,10 @@ sasl.mechanisms=PLAIN
 sasl.username=t1
 ```
 
-The certificate is the broker's generated self-signed one, and its name is
-`localhost`. librdkafka 2.0 and later check the hostname, so add
+The certificate is the one the QUIC listeners serve. With `FELIX_TLS_CERT`
+set, point `ssl.ca.location` at the CA that issued it and connect by a name it
+carries. Without it, the broker's generated self-signed certificate is named
+`localhost`: librdkafka 2.0 and later check the hostname, so add
 `-X ssl.endpoint.identification.algorithm=none` there. librdkafka before 2.0
 does not check it.
 
@@ -566,9 +568,12 @@ neither. See [Feeding Felix from Kafka producers you already
 have](#feeding-felix-from-kafka-producers-you-already-have).
 
 **SSL handshake failed.** Either the client does not trust the broker's
-certificate (point `ssl.ca.location` at the file `FELIX_TLS_CERT_EXPORT`
-wrote) or it is checking the hostname against a certificate named `localhost`
-(set `ssl.endpoint.identification.algorithm=none` on librdkafka 2.0 and later).
+certificate (point `ssl.ca.location` at the CA that issued `FELIX_TLS_CERT`,
+or at the file `FELIX_TLS_CERT_EXPORT` wrote), it is checking the hostname
+against the generated certificate named `localhost` (set
+`ssl.endpoint.identification.algorithm=none` on librdkafka 2.0 and later), or
+the broker has `FELIX_TLS_CLIENT_CA` set and the client presented no
+certificate from it.
 
 **Connection closed right after connecting.** The client and broker disagree
 about TLS: a `SASL_SSL` client against a broker with `FELIX_KAFKA_TLS=false`, or
@@ -617,8 +622,6 @@ you can see whether a producer relies on them.
   and leader epochs are reported as unknown. The ISR is the leader alone.
 - SASL mechanisms other than PLAIN: no OAUTHBEARER, no SCRAM, and no
   re-authentication on a long-lived connection.
-- A certificate of your own for TLS. The listener uses the broker's generated
-  self-signed certificate.
 
 **Behaves differently from Kafka**
 

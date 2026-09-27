@@ -100,6 +100,9 @@ pub struct PeerTransportConfig {
     /// Certificates for peer connections. `None` is the unauthenticated mode:
     /// encrypted, and anything that can reach the port is a peer.
     pub tls: Option<PeerTlsConfig>,
+    /// `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED`: the operator accepts running
+    /// without `tls`. Startup refuses a cluster member that has neither.
+    pub allow_unauthenticated: bool,
     pub conns_per_peer: usize,
     pub streams_per_conn: usize,
     pub max_inflight_per_peer: usize,
@@ -152,6 +155,7 @@ impl Default for PeerTransportConfig {
         Self {
             bind: "0.0.0.0:5001".parse().expect("literal address"),
             tls: None,
+            allow_unauthenticated: false,
             conns_per_peer: DEFAULT_CONNS_PER_PEER,
             streams_per_conn: DEFAULT_STREAMS_PER_CONN,
             max_inflight_per_peer: DEFAULT_MAX_INFLIGHT_PER_PEER,
@@ -232,6 +236,22 @@ impl PeerTransportConfig {
             })?;
         }
         config.tls = tls_from_env()?;
+        config.allow_unauthenticated = match std::env::var("FELIX_INTERNAL_ALLOW_UNAUTHENTICATED")
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("" | "0" | "false" | "no") => false,
+            Some("1" | "true" | "yes") => true,
+            Some(other) => {
+                return Err(std::io::Error::new(
+                    ErrorKind::InvalidInput,
+                    format!(
+                        "FELIX_INTERNAL_ALLOW_UNAUTHENTICATED must be true or false, not {other:?}"
+                    ),
+                ));
+            }
+        };
         config.partition_file = std::env::var("FELIX_PEER_PARTITION_FILE")
             .ok()
             .filter(|value| !value.trim().is_empty())

@@ -50,7 +50,8 @@ cosign verify ghcr.io/gabloe/felix-broker:0.5.0 \
 | Disruption | PodDisruptionBudgets | At most one broker at a time, which is what keeps a replication-factor-three shard's quorum through node maintenance. A wider budget refuses to render. |
 | Placement | Anti-affinity by node, spread by zone | `soft` prefers, `hard` refuses to co-locate. |
 | The internal port | On the headless Service only, and a NetworkPolicy admitting it from broker pods | Without peer mTLS, anything that reaches the port is a broker. With it, this is the second fence. |
-| Peer mTLS | A cert-manager CSI volume per pod, off by default | Each broker needs a certificate issued to its own name. See [Peer mTLS](#peer-mtls). |
+| Peer mTLS | A cert-manager CSI volume per pod, or an explicit opt-out | Each broker needs a certificate issued to its own name. Brokers refuse to start with neither. See [Peer mTLS](#peer-mtls). |
+| Client and API certificates | Secrets you provide, off by default | See [Clients](#clients) and [Control-plane TLS](#control-plane-tls). |
 
 ## Topology
 
@@ -77,10 +78,11 @@ What depends on what, in the order it matters during an incident:
   it leads or follows. Losing it is recoverable from replicas when the
   replication factor is above one, and is data loss when it is not.
 
-Certificates: clients verify each broker's self-generated certificate
-(see [Clients](#clients)); brokers verify each other only with peer mTLS on
-(see [Peer mTLS](#peer-mtls)); the control plane's API is plain HTTP in the
-chart, so put TLS in front of it if it leaves the cluster. Load balancing:
+Certificates: clients verify brokers with `broker.clientTls`, or else each
+broker's self-generated certificate (see [Clients](#clients)); brokers verify
+each other with peer mTLS (see [Peer mTLS](#peer-mtls)); the control plane's
+API is plain HTTP unless `controlplane.tls` is on (see
+[Control-plane TLS](#control-plane-tls)). Load balancing:
 the client Service must balance **UDP**, and only for the first connection —
 clients then connect to the broker that owns a shard by that broker's own
 address, so every broker must be individually reachable by whoever the
@@ -196,9 +198,15 @@ under the budget). Give the brokers an IdP refresh token under
 helm upgrade felix deploy/helm/felix -n felix --reuse-values \
   --set broker.enabled=true \
   --set broker.credential.existingSecret=felix-broker-credential \
+  --set broker.peerTls.enabled=true \
   --set controlplane.bootstrap.enabled=false
 kubectl -n felix rollout status statefulset/felix-broker
 ```
+
+`broker.peerTls.enabled=true` needs the peer Issuer from
+[Peer mTLS](#peer-mtls). Without cert-manager, pass
+`broker.peerTls.allowUnauthenticated=true` instead; brokers refuse to start
+with neither, and the chart refuses to render.
 
 Each broker comes up, registers under its pod name, seeds the catalog from the
 control plane, and only then reports ready, so it is never routed traffic for
@@ -224,9 +232,47 @@ provider that balances **UDP**, and `broker.clientAdvertiseAddr` to what
 each broker is reachable as from outside, with `$(POD_NAME)` expanded per pod
 (`"$(POD_NAME).brokers.example.com:5000"`, say, with one record per broker).
 
-A broker generates its own client-facing certificate at start and exports it
-to `/var/lib/felix/export/broker-cert.pem`; clients verify against it. Copy
-it out with `kubectl exec felix-broker-0 -- cat ...`.
+Give brokers a real certificate with `broker.clientTls`: one
+`kubernetes.io/tls` Secret shared by every broker, whose certificate names the
+client Service and each broker's advertised name. With cert-manager:
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: felix-broker-tls
+spec:
+  secretName: felix-broker-tls
+  issuerRef: { name: felix-ca, kind: Issuer }
+  dnsNames:
+    - felix-broker.felix.svc.cluster.local
+    - "*.felix-broker-headless.felix.svc.cluster.local"
+```
+
+```bash
+helm upgrade felix deploy/helm/felix -n felix --reuse-values \
+  --set broker.clientTls.enabled=true --set broker.clientTls.existingSecret=felix-broker-tls
+```
+
+Clients then trust the issuing CA and dial by one of those names. Renewals are
+picked up without a restart. `broker.clientTls.clientCaKey` names a key in the
+Secret holding a CA that clients must present a certificate from.
+
+Without it, a broker generates its own self-signed certificate at every start
+and exports it to `/var/lib/felix/export/broker-cert.pem`; clients verify
+against it. Copy it out with `kubectl exec felix-broker-0 -- cat ...`. Each
+broker's is different and changes on restart, so this is for trying the chart
+out.
+
+## Control-plane TLS
+
+Brokers send their node credential, and clients exchange tokens, over the
+control-plane API. `controlplane.tls` serves it over TLS from a
+`kubernetes.io/tls` Secret whose certificate names the API Service
+(`felix-controlplane.felix.svc.cluster.local`); brokers then use `https://` and
+trust the Secret's `ca.crt` (`controlplane.tls.caKey`). It does not cover
+the Raft members' peer port, which is separate and authenticated by the peer
+token.
 
 ## Peer mTLS
 
@@ -234,8 +280,11 @@ it out with `kubectl exec felix-broker-0 -- cat ...`.
 replication to each other. With `FELIX_INTERNAL_TLS_CERT`, `_KEY` and `_CA`
 set, every peer connection is mutually authenticated: a peer is a broker
 holding a certificate the cluster's CA issued to its own node id, checked in
-both directions. Without them the port is encrypted but unauthenticated,
-anything that can reach it is a broker, and the broker warns at startup.
+both directions. Without them the port is encrypted but unauthenticated and
+anything that can reach it is a broker, so the broker refuses to start unless
+told that is intended. The chart makes the same choice at render time: set
+`broker.peerTls.enabled=true`, or `broker.peerTls.allowUnauthenticated=true` to
+run on the NetworkPolicy alone.
 
 Each broker needs a certificate issued to its own pod name, and a Secret
 cannot vary per pod of one StatefulSet, so the chart uses cert-manager's CSI

@@ -549,8 +549,10 @@ variable and the path.
 
 Without the three variables the transport runs **unauthenticated**: the link
 is encrypted, brokers present self-signed certificates and accept any, and
-anything that can reach the port is a peer. Startup says so, as a warning. In
-that mode the internal listener must be on a network only brokers can reach.
+anything that can reach the port is a peer. A broker with `FELIX_NODE_ID`
+refuses to start in that mode unless `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`
+says the operator has put the internal listener on a network only brokers can
+reach.
 
 **Connections are pooled and reused.** Repeated requests to one peer share a
 connection; several multiplexed streams carry them, because a QUIC stream is

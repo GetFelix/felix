@@ -10,6 +10,8 @@ broker:
   replicas: 3
   credential:
     existingSecret: felix-broker-credential
+  peerTls:
+    allowUnauthenticated: true
   storage:
     storageClassName: fast-ssd
   config:

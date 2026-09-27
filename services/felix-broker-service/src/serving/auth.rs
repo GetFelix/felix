@@ -117,7 +117,7 @@ impl ControlPlaneKeyStore {
     pub fn new(base_url: String, key_cache: Arc<TenantKeyCache>) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
+            client: crate::cluster::controlplane_http::client(),
             cache: Arc::new(DashMap::new()),
             ttl: Duration::from_secs(3600),
             key_cache,

@@ -18,6 +18,8 @@ broker:
     existingSecret: felix-broker-credentials
     perBroker: true
     refreshTokenKey: refresh
+  peerTls:
+    allowUnauthenticated: true
   antiAffinity: hard
   topologySpread:
     whenUnsatisfiable: DoNotSchedule

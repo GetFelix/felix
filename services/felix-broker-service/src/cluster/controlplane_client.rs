@@ -25,9 +25,10 @@ pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// catalog snapshot from a busy control plane.
 pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A client with [`CONNECT_TIMEOUT`] and [`REQUEST_TIMEOUT`] applied.
+/// A client with [`CONNECT_TIMEOUT`] and [`REQUEST_TIMEOUT`] applied, trusting
+/// the configured control-plane CA.
 pub(crate) fn build() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    crate::cluster::controlplane_http::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .build()
