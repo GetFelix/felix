@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790542017111,
+  "lastUpdate": 1790542304801,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18096,6 +18096,58 @@ window.BENCHMARK_DATA = {
             "range": "7772.85",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 868563.71\nmean: 869641.77\nstdev: 7772.85\ncv: 0.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e34baa64b66ed52292673c18df42cd1f8d203923",
+          "message": "Publish scheduler: per-shard ordered lanes fed by a per-tenant fair queue (#774)\n\nReplace the broker's fixed pool of publish workers with a scheduler. Every\npublish belongs to a lane (the stream shard it writes, or the remote shard it\nis forwarded to); a lane runs one job at a time in arrival order, different\nlanes run side by side, and executors pick the next ready lane per tenant by\nbyte-weighted deficit round robin.\n\nAn executor holds a lane only for the ordered step. Flushes, quorum waits,\nidempotent writes and forwards run on tasks of their own, so a slow disk, peer\nor replica set holds up its own shard and nothing else. A forward keeps its\nlane for the whole round trip: it can be retried or redirected, so pipelining\nthe next batch could reorder them.\n\nThe queue holds pub_queue_depth x pub_workers_per_conn jobs; each tenant is\nguaranteed pub_queue_depth and may borrow idle room but never the last\npub_queue_depth slots. An acked publish that finds no room is answered with\nthe existing retryable `overloaded`, now with detail.reason\n\"publish_queue_full\" and a short retry_after_ms; refusals and sheds are\ncounted in felix_tenant_publish_queue_full_total{tenant,action} under the\nexisting tenant label cap. No wire code or flag changes. Existing env vars\nkeep working with their meanings updated in the docs.\n\nSpec-Unaffected: scheduling and queueing only. Each shard's offsets are still claimed one publish at a time in arrival order (begin_append -> commit, CommitSequencer untouched), the fence/lease check still happens at the claim, and quorum waits, lease, forward and report semantics are unchanged.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T13:45:46-07:00",
+          "tree_id": "33ee879780802545354b72899f3958c07556b49a",
+          "url": "https://github.com/gabloe/felix/commit/e34baa64b66ed52292673c18df42cd1f8d203923"
+        },
+        "date": 1790542303962,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359837.38,
+            "range": "17848.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359837.38\nmean: 365131.32\nstdev: 17848.15\ncv: 4.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359837.38,
+            "range": "17848.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359837.38\nmean: 365131.32\nstdev: 17848.15\ncv: 4.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 91692.25,
+            "range": "2359.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 91692.25\nmean: 90718.54\nstdev: 2359.24\ncv: 2.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 916922.47,
+            "range": "23592.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 916922.47\nmean: 907185.37\nstdev: 23592.43\ncv: 2.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
