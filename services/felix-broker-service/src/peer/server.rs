@@ -134,11 +134,17 @@ pub struct PeerServer {
     /// `Some` when peers must present a certificate, and the name a peer
     /// claims in `Hello` is held to it.
     tls: Option<Arc<tls::PeerTls>>,
+    /// The runtime handlers run on. Stream pumps sit on the QUIC I/O runtime
+    /// when one is enabled, which is a single thread shared with the
+    /// endpoint's driver; an auth check or quorum wait there stalls every
+    /// peer's socket I/O.
+    app: tokio::runtime::Handle,
 }
 
 impl PeerServer {
     /// Bind the internal listener without peer authentication: encrypted, and
-    /// anything that can reach the port is a peer. See [`Self::bind_with_tls`].
+    /// anything that can reach the port is a peer. See [`Self::bind_with_tls`],
+    /// including which runtime it must be called from.
     pub fn bind(
         node_id: String,
         config: &PeerTransportConfig,
@@ -149,12 +155,16 @@ impl PeerServer {
 
     /// Bind the internal listener, requiring every peer to present a
     /// certificate from the configured CA when `tls` is set.
+    ///
+    /// Must be called from the runtime request handlers should run on.
     pub fn bind_with_tls(
         node_id: String,
         config: &PeerTransportConfig,
         handler: Arc<dyn PeerRequestHandler>,
         tls: Option<Arc<tls::PeerTls>>,
     ) -> Result<Self> {
+        let app = tokio::runtime::Handle::try_current()
+            .context("the internal listener must be bound from inside a tokio runtime")?;
         let server = QuicServer::bind(
             config.bind,
             tls::server_config(tls.as_deref())?,
@@ -168,6 +178,7 @@ impl PeerServer {
             max_inbound_connections: config.max_inbound_connections,
             max_inbound_per_source: config.max_inbound_per_source,
             tls,
+            app,
         })
     }
 
@@ -250,11 +261,12 @@ impl PeerServer {
             let shutdown = shutdown.clone();
             let served = connection.clone();
             let tls = self.tls.clone();
+            let app = self.app.clone();
             connection.spawn_pump(async move {
                 // The guard lives as long as the connection is served, and
                 // gives its place back however that ends.
                 let _admission = admission;
-                serve_connection(served, node_id, handler, tls, shutdown).await;
+                serve_connection(served, node_id, handler, tls, app, shutdown).await;
             });
         }
     }
@@ -266,6 +278,7 @@ async fn serve_connection(
     node_id: String,
     handler: Arc<dyn PeerRequestHandler>,
     tls: Option<Arc<tls::PeerTls>>,
+    app: tokio::runtime::Handle,
     shutdown: CancellationToken,
 ) {
     // Read once: the chain does not change for the life of a connection.
@@ -287,6 +300,7 @@ async fn serve_connection(
         let tls = tls.clone();
         let peer_certs = peer_certs.clone();
         let stream_connection = connection.clone();
+        let app = app.clone();
         connection.spawn_pump(async move {
             let connection = stream_connection;
             let (mut send, mut recv) = stream;
@@ -368,7 +382,23 @@ async fn serve_connection(
                             node_id: node_id.clone(),
                         })
                     }
-                    request => handler.handle(request).await,
+                    // Off the pump's runtime; the pump only waits. The stream
+                    // stays one request at a time, as the requester expects.
+                    request => {
+                        let handler = Arc::clone(&handler);
+                        match app.spawn(async move { handler.handle(request).await }).await {
+                            Ok(response) => response,
+                            // A handler that panicked may have applied the
+                            // write, so no answer here is safe to retry on.
+                            // Drop the stream, as the panic did when it ran
+                            // inline.
+                            Err(err) => {
+                                tracing::warn!(error = %err, "internal request handler failed");
+                                metrics::record_served(metrics::OUTCOME_ERROR);
+                                break;
+                            }
+                        }
+                    }
                 };
 
                 if write_frame(&mut send, &response).await.is_err() {
