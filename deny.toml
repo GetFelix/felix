@@ -1,4 +1,8 @@
 [advisories]
+# Patched-in path crates (vendor/) have no registry source, so advisories never
+# match them here. vendor/VENDORED.toml names their upstream versions (currently
+# kafka-protocol 0.18.0) and `task deny` runs this same advisory config against
+# those versions from crates.io. See scripts/check_vendored.py.
 db-path = "$CARGO_HOME/advisory-dbs"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 ignore = [

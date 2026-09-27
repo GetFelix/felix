@@ -174,10 +174,15 @@ tasks:
     cmds:
       - "cargo install cargo-deny --version 0.19.0 --locked"
       - "cargo-deny check"
+      # Vendored crates are path crates, which cargo-deny never matches against
+      # advisories; check the upstream versions they were taken from instead.
+      - "python3 scripts/check_vendored.py --advisory-crate target/vendored-advisories"
+      - "cargo-deny --manifest-path target/vendored-advisories/Cargo.toml check --config deny.toml -A advisory-not-detected advisories"
   publish:check:
-    desc: "Assert the LICENSING.md licence split and crates.io publish-readiness"
+    desc: "Assert the LICENSING.md licence split (labels and dependency graph) and crates.io publish-readiness"
     cmds:
       - "python3 scripts/check_publish_metadata.py"
+      - "python3 scripts/check_license_graph.py"
   ci:toolchains:
     desc: "Assert every workflow's Rust setup matches rust-toolchain.toml"
     cmds:

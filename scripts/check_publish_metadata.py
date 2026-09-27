@@ -34,7 +34,6 @@ APACHE = {
     "felix-client",
     "felix-transport",
     "felix-common",
-    "felix-conformance",
 }
 COPYLEFT = {
     "felix-broker",
@@ -43,6 +42,7 @@ COPYLEFT = {
     "felix-router",
     "felix-kafka",
     "felix-cluster",
+    "felix-conformance",
     "felix-loadgen",
     "felix-broker-service",
     "felix-controlplane-service",

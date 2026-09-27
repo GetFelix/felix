@@ -98,14 +98,13 @@ worse than not claiming it.
 **New languages are gated on this rather than on review.** "Looks correct" is
 exactly the standard that produces divergence.
 
-### Why the kit is Apache-2.0
+### Licensing of the kit
 
-Most of Felix's server-side code is AGPL-3.0. The conformance catalogue and
-verifier are **Apache-2.0** on purpose: someone writing a Felix client for a
-language nobody here has considered should be able to vendor the specification
-and check their work without taking a copyleft dependency. The fixture *server*
-needs a broker, so it stays AGPL — but running a broker to test against was
-always going to require a broker.
+The conformance kit is **AGPL-3.0**, like the broker it links to run its suite.
+That does not reach your client: you run `felix-conformance verify` over a
+results file your client produced, and nothing from the kit is linked into what
+you ship. The specification itself is Apache-2.0: the wire protocol in
+`felix-wire`, its byte-level test vectors, and `docs/protocol.md`.
 
 ## The three clients
 

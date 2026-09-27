@@ -2,7 +2,8 @@
 name = "felix-conformance"
 version.workspace = true
 edition.workspace = true
-license = "Apache-2.0"
+# AGPL because it links the broker to run its suite; see LICENSING.md.
+license = "AGPL-3.0-only"
 rust-version.workspace = true
 description = "Conformance runner validating third-party Felix protocol implementations"
 repository.workspace = true
@@ -10,8 +11,7 @@ homepage.workspace = true
 readme.workspace = true
 keywords = ["felix", "conformance", "protocol"]
 categories = ["network-programming", "development-tools"]
-# Not a library anyone consumes from a registry: service binaries and a
-# dev/CI tool with hard AGPL-3.0 dependencies.
+# A dev/CI tool, not a library anyone consumes from a registry.
 publish = false
 
 [dependencies]

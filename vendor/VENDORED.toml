@@ -1,0 +1,16 @@
+# Crates built from vendor/ through [patch.crates-io] instead of crates.io.
+#
+# A path crate has no registry source, so cargo-deny and cargo-audit skip it:
+# a RustSec advisory against the upstream version would never fire here.
+# `task deny` runs `scripts/check_vendored.py`, which checks each entry below
+# matches the vendored copy and then runs the advisory check against the named
+# upstream version from crates.io.
+#
+# Upgrading: re-vendor, don't edit in place. Unpack the new upstream release
+# into vendor/<name>/, re-apply the patch, bump `version` here, and run
+# `task deny`. The check fails while this file and the vendored copy disagree.
+
+[[crate]]
+name = "kafka-protocol"
+version = "0.18.0"
+patch = "Caps each Vec reservation at the bytes left in the buffer, so a client-supplied array count cannot ask for gigabytes."

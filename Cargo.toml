@@ -144,5 +144,10 @@ x509-parser = { version = "0.18", default-features = false }
 # before reading any element, so a tiny frame can ask for tens of gigabytes.
 # The vendored copy caps each reservation at the bytes left in the buffer.
 # Drop this once upstream ships the same bound.
+#
+# The vendored copy is kafka-protocol 0.18.0. As a path crate it is invisible to
+# cargo-deny's advisory check, so vendor/VENDORED.toml records that version and
+# `task deny` checks advisories against it. Upgrade by re-vendoring and bumping
+# the version there; the check fails while the two disagree.
 [patch.crates-io]
 kafka-protocol = { path = "vendor/kafka-protocol" }
