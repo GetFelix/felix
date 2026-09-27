@@ -121,6 +121,7 @@ Actions:
 - `stream.publish`, `stream.subscribe`
 - `cache.read`, `cache.write`
 - `group.consume`, `group.manage` — consumer groups, over the stream's object
+  or one group's `group:{tenant_id}/{namespace}/{stream}/{group}`
 - `node.view` — cluster-scoped only
 - `node.manage` — over `node:{node_id}` or `cluster:*`
 
@@ -135,6 +136,10 @@ Consumer-group operations are split in two, over the stream's object:
 
 A broker that predates these actions refuses a token carrying either one, so
 upgrade brokers before writing policies that use them.
+
+Granting either action on a `group:` object scopes a principal to those groups:
+its stream grants then stop covering the stream's other groups for that action.
+The exact rule is in [security/rbac.md](security/rbac.md#granting-one-group).
 
 ### Cluster scope
 

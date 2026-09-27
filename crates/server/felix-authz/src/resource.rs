@@ -1,7 +1,7 @@
 //! Canonical resource strings for policies. Always build them through these
 //! helpers — a hand-rolled string that drops the `/` separator or the kind
 //! prefix silently stops matching wildcards.
-use crate::{CacheScope, Namespace, StreamName, TenantId};
+use crate::{CacheScope, GroupName, Namespace, StreamName, TenantId};
 
 /// `tenant:{id}`
 pub fn tenant_resource(tenant_id: &TenantId) -> String {
@@ -17,6 +17,37 @@ pub fn namespace_resource(tenant_id: &TenantId, namespace: &Namespace) -> String
 pub fn stream_resource(tenant_id: &TenantId, namespace: &Namespace, stream: &StreamName) -> String {
     format!(
         "stream:{}/{}/{}",
+        tenant_id.as_str(),
+        namespace.as_str(),
+        stream.as_str()
+    )
+}
+
+/// `group:{tenant}/{namespace}/{stream}/{group}`: one consumer group of one
+/// stream, across all its shards. See [`crate::PermissionMatcher::allows_group`]
+/// for how stream grants reach it.
+pub fn group_resource(
+    tenant_id: &TenantId,
+    namespace: &Namespace,
+    stream: &StreamName,
+    group: &GroupName,
+) -> String {
+    format!(
+        "{}{}",
+        group_prefix(tenant_id, namespace, stream),
+        group.as_str()
+    )
+}
+
+/// `group:{tenant}/{namespace}/{stream}/`, what every group of the stream
+/// starts with.
+pub(crate) fn group_prefix(
+    tenant_id: &TenantId,
+    namespace: &Namespace,
+    stream: &StreamName,
+) -> String {
+    format!(
+        "group:{}/{}/{}/",
         tenant_id.as_str(),
         namespace.as_str(),
         stream.as_str()

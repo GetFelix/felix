@@ -1,5 +1,5 @@
-//! Newtype wrappers for tenant, namespace, stream, and cache identifiers, so
-//! the four kinds of string can't be swapped by accident. None of them
+//! Newtype wrappers for tenant, namespace, stream, cache, and consumer-group
+//! identifiers, so the kinds of string can't be swapped by accident. None of them
 //! validate — that happens at the API boundary — and `Display`/`as_str` are
 //! raw passthroughs, not sanitized output.
 use serde::{Deserialize, Serialize};
@@ -79,6 +79,26 @@ impl CacheScope {
 }
 
 impl std::fmt::Display for CacheScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Consumer group name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GroupName(String);
+
+impl GroupName {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for GroupName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }

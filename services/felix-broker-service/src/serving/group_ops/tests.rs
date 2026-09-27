@@ -320,3 +320,138 @@ async fn a_waiting_poll_that_loses_its_shard_answers_empty() {
         .expect("poll task");
     assert_eq!(answered.expect("an empty answer, not an error"), Vec::new());
 }
+
+/// Longer than any test waits, so a poll that answers was woken rather than
+/// finding the work on a recheck.
+const NEVER: Duration = Duration::from_secs(3600);
+
+/// A poll waiting for records, with no recheck to fall back on.
+fn waiting_poll(
+    leader: &Leader,
+    publish_ctx: &PublishContext,
+) -> tokio::task::JoinHandle<Result<Vec<GroupRecord>, ClientError>> {
+    let broker = Arc::clone(&leader.broker);
+    let publish_ctx = publish_ctx.clone();
+    tokio::spawn(async move {
+        poll_rechecking(
+            &broker,
+            &publish_ctx,
+            None,
+            TENANT,
+            NAMESPACE,
+            DURABLE,
+            0,
+            GROUP,
+            10,
+            Duration::from_secs(60),
+            NEVER,
+        )
+        .await
+    })
+}
+
+async fn answered(
+    waiting: tokio::task::JoinHandle<Result<Vec<GroupRecord>, ClientError>>,
+    why: &str,
+) -> Vec<u64> {
+    tokio::time::timeout(Duration::from_secs(10), waiting)
+        .await
+        .unwrap_or_else(|_| panic!("the poll was not woken by {why}"))
+        .expect("poll task")
+        .expect("poll")
+        .iter()
+        .map(|record| record.offset)
+        .collect()
+}
+
+/// A waiting poll is woken by the shard's append, not by looking again later.
+#[tokio::test]
+async fn a_waiting_poll_is_woken_by_a_publish() {
+    let leader = Leader::start().await;
+    let publish_ctx = context(&leader);
+    let waiting = waiting_poll(&leader, &publish_ctx);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    leader
+        .broker
+        .publish_batch(
+            TENANT,
+            NAMESPACE,
+            DURABLE,
+            0,
+            &[Bytes::from_static(b"late")],
+        )
+        .await
+        .expect("publish");
+    assert_eq!(answered(waiting, "a publish").await, vec![0]);
+}
+
+/// A record handed back is owed at once, and a poll already waiting gets it.
+#[tokio::test]
+async fn a_waiting_poll_is_woken_by_a_hand_back() {
+    let (leader, publish_ctx) = claimed_one().await;
+    let rest = poll(
+        &leader.broker,
+        &publish_ctx,
+        None,
+        TENANT,
+        NAMESPACE,
+        DURABLE,
+        0,
+        GROUP,
+        10,
+        Duration::ZERO,
+    )
+    .await
+    .expect("poll");
+    assert_eq!(rest.len(), 1);
+    let waiting = waiting_poll(&leader, &publish_ctx);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    settle(
+        &leader.broker,
+        &publish_ctx,
+        None,
+        TENANT,
+        NAMESPACE,
+        DURABLE,
+        0,
+        GROUP,
+        0,
+        false,
+    )
+    .await
+    .expect("nack");
+    assert_eq!(answered(waiting, "a hand-back").await, vec![0]);
+}
+
+/// A poll held back by the in-flight cap is woken when an acknowledgement
+/// makes room.
+#[tokio::test]
+async fn a_poll_at_the_cap_is_woken_by_an_ack() {
+    let (leader, publish_ctx) = claimed_one().await;
+    leader
+        .broker
+        .group_reader()
+        .expect("groups")
+        .set_max_in_flight(1);
+    let waiting = waiting_poll(&leader, &publish_ctx);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!waiting.is_finished(), "handed out past the cap");
+
+    settle(
+        &leader.broker,
+        &publish_ctx,
+        None,
+        TENANT,
+        NAMESPACE,
+        DURABLE,
+        0,
+        GROUP,
+        0,
+        true,
+    )
+    .await
+    .expect("ack");
+    assert_eq!(answered(waiting, "an ack").await, vec![1]);
+}

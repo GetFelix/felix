@@ -279,6 +279,16 @@ fn demo_auth_for_tenants(tenants: &[&str], ttl: Duration) -> Result<DemoAuthBund
             format!("{tenant}:consumer"),
             issuer.mint(&TenantId::new(*tenant), "p:consumer", consumer)?,
         );
+        // A consumer scoped to one group of the queue.
+        let worker = vec![
+            format!("stream.publish:stream:{tenant}/*/*"),
+            format!("stream.subscribe:stream:{tenant}/*/*"),
+            format!("group.consume:group:{tenant}/default/{QUEUE}/workers"),
+        ];
+        tokens.insert(
+            format!("{tenant}:worker"),
+            issuer.mint(&TenantId::new(*tenant), "p:worker", worker)?,
+        );
     }
 
     let key_store = Arc::new(
@@ -831,6 +841,48 @@ async fn a_consumer_works_a_group_but_cannot_operate_it() -> Result<()> {
         discard.expect_err("a consumer discarded a dead letter")
     );
     assert_refused_for_authz(&discard);
+
+    running.stop().await;
+    Ok(())
+}
+
+/// **A group grant scopes a consumer to that group.** Its `stream.subscribe`
+/// still reads the stream, but no longer works the stream's other groups.
+#[tokio::test]
+async fn a_consumer_granted_one_group_works_only_that_group() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let running = start(dir.path()).await?;
+    let worker = running.client_as("t1:worker").await?;
+    worker
+        .publisher()
+        .await?
+        .publish(
+            "t1",
+            "default",
+            QUEUE,
+            b"job".to_vec(),
+            felix_wire::AckMode::PerMessage,
+        )
+        .await?;
+
+    let claimed = worker
+        .group_poll("t1", "default", QUEUE, 0, "workers", 10)
+        .await?;
+    assert_eq!(claimed.len(), 1, "the worker could not poll its own group");
+    worker
+        .group_ack("t1", "default", QUEUE, 0, "workers", claimed[0].offset)
+        .await?;
+
+    let other = running
+        .client_as("t1:worker")
+        .await?
+        .group_poll("t1", "default", QUEUE, 0, "billing", 10)
+        .await;
+    let other = format!("{:#}", other.expect_err("the worker polled another group"));
+    assert!(
+        other.contains("forbidden") || other.contains("closed"),
+        "refused for the wrong reason: {other}"
+    );
 
     running.stop().await;
     Ok(())

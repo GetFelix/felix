@@ -122,6 +122,11 @@ impl BrokerConfig {
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(DEFAULT_GROUP_MAX_WAIT_MS);
+        let group_max_in_flight = std::env::var("FELIX_GROUP_MAX_IN_FLIGHT")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_GROUP_MAX_IN_FLIGHT);
         let disable_timings = std::env::var("FELIX_DISABLE_TIMINGS")
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
@@ -331,6 +336,7 @@ impl BrokerConfig {
             group_visibility_timeout_ms,
             group_max_attempts,
             group_max_wait_ms,
+            group_max_in_flight,
             disable_timings,
             control_stream_drain_timeout_ms,
             shutdown_drain_timeout_ms,

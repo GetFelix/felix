@@ -106,7 +106,9 @@ it fails its attempts again and goes back on the list.
 Redrive and discard change what every consumer of the group sees, so they need
 `group.manage` (or `stream.manage`) on the stream. Polling, acknowledging,
 handing back and listing dead letters need `group.consume`, which
-`stream.subscribe` also grants. See [Security](/felix/features/security/).
+`stream.subscribe` also grants. Either can be granted on one group
+(`group:{tenant}/{namespace}/{stream}/{group}`) to keep a principal to the
+groups it runs. See [Security](/felix/features/security/).
 
 > `a_record_is_given_up_on_after_the_attempt_bound`,
 > `a_redriven_record_is_handed_out_again`,
@@ -119,6 +121,10 @@ handing back and listing dead letters need `group.consume`, which
   out. Anything else, such as an offset at or past the tail, is refused with
   `invalid_request`: acknowledging a record that does not exist yet would skip
   it when it is written.
+- A group on a shard has at most `FELIX_GROUP_MAX_IN_FLIGHT` records handed
+  out and unsettled at once. A poll past it answers empty, and is counted in
+  `felix_group_polls_capped_total`, until acknowledgements, hand-backs or
+  lapsed claims free room; a poll waiting at the cap is woken when they do.
 - One poll hands out at most 1,000 records and stops reading after about 4 MiB
   of payload, whatever `max_records` asks for. The rest stay owed for the next
   poll.
@@ -160,6 +166,7 @@ promotion forgot exactly the records an operator had been told to look at.
 | `FELIX_GROUP_VISIBILITY_TIMEOUT_MS` | `30000` | How long a claim stands before the record is owed again. Too short redelivers work still being done; too long leaves a dead consumer's records stuck. |
 | `FELIX_GROUP_MAX_ATTEMPTS` | `5` | Deliveries before a record is dead-lettered. |
 | `FELIX_GROUP_MAX_WAIT_MS` | `30000` | Cap on how long a polling client may ask the broker to wait. |
+| `FELIX_GROUP_MAX_IN_FLIGHT` | `10000` | Most records one group may have handed out and unsettled on a shard. Keeps one consumer that never answers from claiming the whole backlog. |
 
 Groups need durable storage: without `FELIX_DURABLE_STORAGE_DIR` the broker does
 not advertise the feature at all, because a position lost on every restart would

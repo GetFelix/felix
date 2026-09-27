@@ -452,3 +452,59 @@ fn an_empty_assignment_is_refused() {
     };
     assert!(validate_assignment_allowed(&caller, "t1", &assignment, &[]).is_err());
 }
+
+/// A group object names one consumer group of one stream, with a wildcard
+/// allowed only under wildcards, as for a stream.
+#[test]
+fn a_group_object_parses_with_the_stream_wildcard_rule() {
+    for object in [
+        "group:t1/ns/orders/workers",
+        "group:t1/ns/orders/*",
+        "group:t1/ns/*/*",
+        "group:t1/*/*/*",
+    ] {
+        assert!(parse_object(object, "t1").is_ok(), "{object:?} was refused");
+    }
+    for object in [
+        "group:t1/ns/*/workers",
+        "group:t1/*/orders/*",
+        "group:t1/ns/orders",
+        "group:t1/ns/orders/workers/extra",
+        "group:t2/ns/orders/workers",
+        "group:t1/ns/orders/a:b",
+    ] {
+        assert!(
+            parse_object(object, "t1").is_err(),
+            "{object:?} was accepted"
+        );
+    }
+}
+
+/// A delegated admin can grant a group inside whatever scope they hold over
+/// its stream, and a group scope reaches only its own groups.
+#[test]
+fn a_group_sits_under_its_stream_namespace_and_tenant() {
+    let group = parse_object("group:t1/ns/orders/workers", "t1").expect("parse");
+    for scope in [
+        "tenant:t1",
+        "namespace:t1/ns",
+        "stream:t1/ns/orders",
+        "stream:t1/ns/*",
+        "group:t1/ns/orders/*",
+        "group:t1/ns/orders/workers",
+    ] {
+        let scope = parse_object(scope, "t1").expect("parse");
+        assert!(object_within_scope(&scope, &group), "{scope:?}");
+    }
+    for scope in [
+        "stream:t1/ns/refunds",
+        "group:t1/ns/orders/billing",
+        "cache:t1/ns/*",
+    ] {
+        let scope = parse_object(scope, "t1").expect("parse");
+        assert!(!object_within_scope(&scope, &group), "{scope:?}");
+    }
+    let stream = parse_object("stream:t1/ns/orders", "t1").expect("parse");
+    let all_groups = parse_object("group:t1/ns/orders/*", "t1").expect("parse");
+    assert!(!object_within_scope(&all_groups, &stream));
+}

@@ -680,3 +680,100 @@ async fn an_idle_tracker_is_evicted_and_rebuilt() {
         "the rebuilt group repeated work"
     );
 }
+
+/// A group at its in-flight cap answers empty, and counts it, until an
+/// acknowledgement frees room.
+#[tokio::test]
+async fn a_group_at_its_in_flight_cap_gets_nothing_more() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    fx.reader.set_max_in_flight(2);
+    publish(&fx.log, &["a", "b", "c", "d"]).await;
+    let now = Instant::now();
+
+    let first = fx
+        .reader
+        .poll(&key(), &fx.log, 10, now)
+        .await
+        .expect("poll");
+    assert_eq!(payloads(&first), vec!["a", "b"]);
+    let full = fx
+        .reader
+        .poll(&key(), &fx.log, 10, now)
+        .await
+        .expect("poll");
+    assert!(full.is_empty(), "handed out past the cap");
+    assert_eq!(fx.reader.capped_polls(), 2);
+
+    fx.reader.ack(&key(), 0).await.expect("ack");
+    let freed = fx
+        .reader
+        .poll(&key(), &fx.log, 10, now)
+        .await
+        .expect("poll");
+    assert_eq!(payloads(&freed), vec!["c"]);
+}
+
+/// A waiting poll is woken by what frees work in the group itself: an
+/// acknowledgement (room under the cap), a hand-back, a redrive.
+#[tokio::test]
+async fn settling_a_claim_wakes_a_waiting_poll() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    publish(&fx.log, &["a", "b"]).await;
+    let now = Instant::now();
+    let changed = fx.reader.changed(&key());
+    fx.reader
+        .poll(&key(), &fx.log, 10, now)
+        .await
+        .expect("poll");
+
+    for settle in ["nack", "ack"] {
+        let mut woken = std::pin::pin!(changed.notified());
+        woken.as_mut().enable();
+        match settle {
+            "nack" => fx.reader.nack(&key(), 0).await.expect("nack"),
+            _ => fx.reader.ack(&key(), 1).await.expect("ack"),
+        }
+        tokio::time::timeout(Duration::from_secs(5), woken)
+            .await
+            .unwrap_or_else(|_| panic!("a {settle} did not wake the group"));
+    }
+}
+
+/// The earliest standing claim bounds how long a waiting poll sleeps.
+#[tokio::test]
+async fn next_lapse_is_the_earliest_standing_claim() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    assert_eq!(fx.reader.next_lapse(&key()).await, None);
+    publish(&fx.log, &["a", "b"]).await;
+    let now = Instant::now();
+
+    fx.reader.poll(&key(), &fx.log, 1, now).await.expect("poll");
+    fx.reader
+        .poll(&key(), &fx.log, 1, now + Duration::from_secs(5))
+        .await
+        .expect("poll");
+    assert_eq!(fx.reader.next_lapse(&key()).await, Some(now + VIS));
+
+    fx.reader.ack(&key(), 0).await.expect("ack");
+    assert_eq!(
+        fx.reader.next_lapse(&key()).await,
+        Some(now + Duration::from_secs(5) + VIS)
+    );
+}
+
+/// A poll waiting on the group keeps it from being evicted as idle: dropping
+/// it would leave the poll listening to a notifier nobody signals.
+#[tokio::test]
+async fn a_waited_on_group_is_not_evicted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    let changed = fx.reader.changed(&key());
+    let later = Instant::now() + fx.reader.idle_after() + Duration::from_secs(1);
+
+    assert_eq!(fx.reader.evict_idle(later), 0);
+    drop(changed);
+    assert_eq!(fx.reader.evict_idle(later), 1);
+}

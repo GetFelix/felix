@@ -186,6 +186,7 @@ Canonical RBAC object formats:
 - `namespace:{tenant_id}/{namespace}`
 - `stream:{tenant_id}/{namespace}/{stream_or_*}`
 - `cache:{tenant_id}/{namespace}/{cache_or_*}`
+- `group:{tenant_id}/{namespace}/{stream_or_*}/{group_or_*}` — one consumer group; a `*` only after other `*`s
 - `cluster:*` — the cluster itself, outside the tenant hierarchy
 - `node:{node_id}` — one broker, also outside it
 
@@ -326,6 +327,7 @@ Casbin is used with domains for tenant scoping. Policies and groupings are store
 - `namespace:{tenant_id}/{namespace}` or `namespace:{tenant_id}/*`
 - `stream:{tenant_id}/{namespace}/{stream}` or `stream:{tenant_id}/{namespace}/*`
 - `cache:{tenant_id}/{namespace}/{cache}` or `cache:{tenant_id}/{namespace}/*`
+- `group:{tenant_id}/{namespace}/{stream}/{group}` or `group:{tenant_id}/{namespace}/{stream}/*`
 
 **Actions**:
 - `rbac.view`, `rbac.policy.manage`, `rbac.assignment.manage`
@@ -345,6 +347,12 @@ Consumer-group operations are split in two, over the stream's object:
 
 A broker that predates these actions refuses a token carrying either one, so
 upgrade brokers before writing policies that use them.
+
+Either action can also be granted on one group,
+`group:{tenant_id}/{namespace}/{stream}/{group}`. A principal holding a group
+grant for an action on a stream is scoped to those groups there: its stream
+grants stop covering that stream's other groups for that action. Principals
+with no group grants keep the stream-wide behaviour.
 
 **Permission strings** embedded in Felix tokens:
 

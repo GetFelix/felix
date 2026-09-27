@@ -1,6 +1,10 @@
 //! Wildcard permission matching. `*` matches zero or more bytes; there is no
 //! `?` or character-class syntax. Matching is byte-based and case-sensitive.
-use crate::{Action, AuthzResult, PermissionPattern};
+use crate::resource::group_prefix;
+use crate::{
+    Action, AuthzResult, GroupName, Namespace, PermissionPattern, StreamName, TenantId,
+    group_resource, stream_resource,
+};
 
 /// A set of permission patterns checked against action/resource requests.
 /// Grants only — there is no deny rule, so any match allows.
@@ -33,6 +37,35 @@ impl PermissionMatcher {
             action.is_granted_by(pattern.action)
                 && wildcard_match(&pattern.resource_pattern, resource)
         })
+    }
+
+    /// Whether `action` is allowed on one consumer group of a stream.
+    ///
+    /// A grant on the group's own object (`group:{tenant}/{ns}/{stream}/{group}`)
+    /// allows it. Failing that, a grant on the stream does, as it always has --
+    /// unless this matcher holds a group-object grant for `action` that could
+    /// name some group of the same stream. Then the principal has been scoped
+    /// to particular groups there, and the stream grant stops speaking for the
+    /// others. Without that, a policy granting one group would be silently
+    /// widened by the `stream.subscribe` a consumer holds anyway.
+    pub fn allows_group(
+        &self,
+        action: Action,
+        tenant_id: &TenantId,
+        namespace: &Namespace,
+        stream: &StreamName,
+        group: &GroupName,
+    ) -> bool {
+        if self.allows(action, &group_resource(tenant_id, namespace, stream, group)) {
+            return true;
+        }
+        let prefix = group_prefix(tenant_id, namespace, stream);
+        let narrowed = self.patterns.iter().any(|pattern| {
+            action.is_granted_by(pattern.action)
+                && pattern.resource_pattern.starts_with("group:")
+                && matches_some_extension(&pattern.resource_pattern, &prefix)
+        });
+        !narrowed && self.allows(action, &stream_resource(tenant_id, namespace, stream))
     }
 
     /// The parsed patterns, for inspection and tests.
@@ -86,6 +119,44 @@ pub fn wildcard_match(pattern: &str, value: &str) -> bool {
     }
 
     p_idx == pattern_bytes.len()
+}
+
+/// Whether `pattern` matches `prefix` followed by something: some value
+/// starting with `prefix` that [`wildcard_match`] would accept.
+///
+/// Runs the pattern as a set of positions over the prefix. Any position still
+/// live at the end can finish on the pattern's remaining literal bytes, with
+/// every `*` left empty.
+fn matches_some_extension(pattern: &str, prefix: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let mut live = vec![false; pattern.len() + 1];
+    live[0] = true;
+    close_over_stars(pattern, &mut live);
+    for &byte in prefix.as_bytes() {
+        let mut next = vec![false; pattern.len() + 1];
+        for (at, _) in live.iter().enumerate().filter(|(_, live)| **live) {
+            match pattern.get(at) {
+                Some(b'*') => next[at] = true,
+                Some(&literal) if literal == byte => next[at + 1] = true,
+                _ => {}
+            }
+        }
+        close_over_stars(pattern, &mut next);
+        if !next.contains(&true) {
+            return false;
+        }
+        live = next;
+    }
+    true
+}
+
+/// A `*` can match nothing, so a live position at one is live past it too.
+fn close_over_stars(pattern: &[u8], live: &mut [bool]) {
+    for at in 0..pattern.len() {
+        if live[at] && pattern[at] == b'*' {
+            live[at + 1] = true;
+        }
+    }
 }
 
 #[cfg(test)]

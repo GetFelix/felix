@@ -26,6 +26,10 @@ pub(crate) struct GroupTracker {
     high_water: u64,
     /// Handed out and unsettled, with the instant its claim lapses.
     in_flight: BTreeMap<u64, Instant>,
+    /// The same claims ordered by when they lapse, so finding the lapsed ones
+    /// costs what lapsed rather than everything in flight. Kept in step with
+    /// `in_flight` by `hand_out` and `take_in_flight`, the only two writers.
+    lapses: BTreeSet<(Instant, u64)>,
     /// Acknowledged, but above an offset that is not. Held until the run below
     /// them closes, because the cursor can only move over a contiguous prefix:
     /// advancing past a gap would drop a record nobody has finished.
@@ -46,6 +50,11 @@ pub(crate) struct GroupTracker {
     /// Without a bound a record that always fails is redelivered for ever and
     /// the group never gets past it — one poison record stops the queue.
     max_attempts: u32,
+    /// Most offsets handed out and unsettled at once. A consumer that polls
+    /// and never answers would otherwise pull the whole backlog into
+    /// `in_flight`, holding memory and keeping every other consumer idle until
+    /// its claims lapse.
+    max_in_flight: usize,
 }
 
 impl GroupTracker {
@@ -56,12 +65,25 @@ impl GroupTracker {
             committed,
             high_water: committed,
             in_flight: BTreeMap::new(),
+            lapses: BTreeSet::new(),
             acked_ahead: BTreeSet::new(),
             redeliver: BTreeSet::new(),
             attempts: BTreeMap::new(),
             redriven: BTreeSet::new(),
             max_attempts: max_attempts.max(1),
+            max_in_flight: usize::MAX,
         }
+    }
+
+    /// Bound how many offsets may be handed out and unsettled at once.
+    pub(crate) fn set_max_in_flight(&mut self, max_in_flight: usize) {
+        self.max_in_flight = max_in_flight.max(1);
+    }
+
+    /// When the earliest standing claim lapses, if any does. A waiting poll
+    /// sleeps no longer than this, since that record is owed from then on.
+    pub(crate) fn next_lapse(&self) -> Option<Instant> {
+        self.lapses.first().map(|(deadline, _)| *deadline)
     }
 
     /// Whether `offset` has been handed out by this tracker, or is below the
@@ -104,11 +126,14 @@ impl GroupTracker {
     ) -> Claim {
         self.expire(now);
 
-        let max = max.min(MAX_CLAIM);
+        let wanted = max.min(MAX_CLAIM);
+        let room = self.max_in_flight.saturating_sub(self.in_flight.len());
+        let max = wanted.min(room);
         let deadline = now + visibility;
         let mut claim = Claim {
             offsets: Vec::with_capacity(max.min(16)),
             dead_lettered: Vec::new(),
+            capped: false,
         };
 
         while claim.offsets.len() < max
@@ -135,6 +160,9 @@ impl GroupTracker {
             claim.offsets.push(offset);
         }
 
+        // Only when the cap is what stopped it: work was left behind that the
+        // consumer asked for and would otherwise have had.
+        claim.capped = max < wanted && (!self.redeliver.is_empty() || self.high_water < tail);
         claim
     }
 
@@ -149,12 +177,12 @@ impl GroupTracker {
             // an ordinary duplicate — or a redriven record being finished, which
             // settles it without the cursor moving, since the cursor was never
             // waiting on it.
-            self.in_flight.remove(&offset);
+            self.take_in_flight(offset);
             self.redeliver.remove(&offset);
             self.attempts.remove(&offset);
             return None;
         }
-        self.in_flight.remove(&offset);
+        self.take_in_flight(offset);
         // No longer owed: it has been finished by whoever answered first.
         self.redeliver.remove(&offset);
         self.attempts.remove(&offset);
@@ -176,7 +204,7 @@ impl GroupTracker {
         if offset < self.committed || self.acked_ahead.contains(&offset) {
             return;
         }
-        self.in_flight.remove(&offset);
+        self.take_in_flight(offset);
         self.redeliver.insert(offset);
     }
 
@@ -243,7 +271,7 @@ impl GroupTracker {
     /// Take back a claim that never reached the consumer. Its attempt is not
     /// counted, since nobody tried the record.
     pub(crate) fn unclaim(&mut self, offset: u64) {
-        if self.in_flight.remove(&offset).is_none() {
+        if !self.take_in_flight(offset) {
             return;
         }
         if let Some(attempts) = self.attempts.get_mut(&offset) {
@@ -257,21 +285,39 @@ impl GroupTracker {
     /// This is what makes a consumer that stopped answering recoverable rather
     /// than a permanent hole in the group's progress.
     pub(crate) fn expire(&mut self, now: Instant) {
-        let lapsed: Vec<u64> = self
-            .in_flight
-            .iter()
-            .filter(|(_, deadline)| **deadline <= now)
-            .map(|(offset, _)| *offset)
-            .collect();
-        for offset in lapsed {
+        while let Some(&(deadline, offset)) = self.lapses.first()
+            && deadline <= now
+        {
+            self.lapses.pop_first();
             self.in_flight.remove(&offset);
             self.redeliver.insert(offset);
         }
     }
 
+    /// How many offsets are handed out and unsettled.
+    #[cfg(test)]
+    pub(crate) fn in_flight(&self) -> usize {
+        debug_assert_eq!(self.in_flight.len(), self.lapses.len());
+        self.in_flight.len()
+    }
+
     fn hand_out(&mut self, offset: u64, deadline: Instant) {
+        // A redelivery replaces the claim it was owed under, if one stands.
+        self.take_in_flight(offset);
         self.in_flight.insert(offset, deadline);
+        self.lapses.insert((deadline, offset));
         *self.attempts.entry(offset).or_insert(0) += 1;
+    }
+
+    /// Drop the claim on `offset`, returning whether there was one.
+    fn take_in_flight(&mut self, offset: u64) -> bool {
+        match self.in_flight.remove(&offset) {
+            Some(deadline) => {
+                self.lapses.remove(&(deadline, offset));
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -288,6 +334,8 @@ pub(crate) struct Claim {
     /// Offsets given up on, having been delivered too many times. The caller
     /// records them and then settles them.
     pub(crate) dead_lettered: Vec<DeadLettered>,
+    /// The in-flight cap held this claim short of what was available.
+    pub(crate) capped: bool,
 }
 
 /// A record the group has given up on.

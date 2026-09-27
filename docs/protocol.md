@@ -257,7 +257,10 @@ The wait bounds how long the broker looks, not whether it answers: an empty
 `group_records` after the wait still means nothing was available.
 
 The broker hands out at most 1,000 records per poll, and stops early once it has
-read about 4 MiB of payload, whatever `max_records` asks for.
+read about 4 MiB of payload, whatever `max_records` asks for. A group also has
+at most `FELIX_GROUP_MAX_IN_FLIGHT` records handed out and unsettled on a shard;
+a poll at that cap is answered empty (after its wait) until acknowledgements,
+hand-backs or lapsed claims free room.
 
 ### GroupRecords (server -> client)
 ```

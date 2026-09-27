@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use felix_authz::{
-    Action, CacheScope, Namespace, StreamName, TenantId, cache_resource, stream_resource,
+    Action, CacheScope, GroupName, Namespace, StreamName, TenantId, cache_resource, stream_resource,
 };
 
 use super::responder::{Responder, send_control_error};
@@ -124,6 +124,49 @@ pub(super) async fn authorize_stream_simple(
         ctx.ack_timeout_state,
         ctx.cancel_tx,
         ClientError::forbidden("forbidden"),
+    )
+    .await?;
+    Ok(false)
+}
+
+/// [`authorize_stream_simple`] for one consumer group of the stream, by
+/// [`felix_authz::PermissionMatcher::allows_group`]'s rule: a grant on the
+/// group, or on the stream unless the principal is scoped to particular
+/// groups there.
+pub(super) async fn authorize_group(
+    auth_ctx: Option<&AuthContext>,
+    tenant_id: &str,
+    action: Action,
+    namespace: &str,
+    stream: &str,
+    group: &str,
+    ctx: &Responder<'_>,
+) -> Result<bool> {
+    let refused = match auth_ctx {
+        None => ClientError::unauthenticated("auth required"),
+        Some(auth_ctx) if auth_ctx.tenant_id != tenant_id => {
+            ClientError::forbidden("tenant mismatch")
+        }
+        Some(auth_ctx)
+            if auth_ctx.matcher.allows_group(
+                action,
+                &TenantId::new(tenant_id),
+                &Namespace::new(namespace),
+                &StreamName::new(stream),
+                &GroupName::new(group),
+            ) =>
+        {
+            return Ok(true);
+        }
+        Some(_) => ClientError::forbidden("forbidden"),
+    };
+    send_control_error(
+        ctx.out_ack_tx,
+        ctx.out_ack_depth,
+        ctx.ack_throttle_tx,
+        ctx.ack_timeout_state,
+        ctx.cancel_tx,
+        refused,
     )
     .await?;
     Ok(false)
