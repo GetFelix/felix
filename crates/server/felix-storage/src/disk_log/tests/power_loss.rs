@@ -16,10 +16,12 @@
 //! same interleaving; that is why each test runs many seeds.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use super::*;
 
 use crate::io::power_loss::{PowerLoss, SplitMix64, Writeback};
+use crate::log::SegmentId;
 
 /// Crashes built from each workload checkpoint.
 const CRASHES_PER_CHECKPOINT: u64 = 6;
@@ -256,6 +258,240 @@ async fn periodic_survives_any_writeback() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn periodic_with_background_roll_survives_any_writeback() {
     run_seeds(PERIODIC, true, Writeback::AnySubset).await;
+}
+
+/// A log whose next background roll is parked before it seals the segment it
+/// retired, so a crash can be taken inside that window every time.
+struct ParkedSeal {
+    _dir: tempfile::TempDir,
+    observer: Arc<PowerLoss>,
+    log: DiskLog,
+    config: LogConfig,
+    scenario: Scenario,
+    /// Sending, or dropping it (a failed assertion does), lets the seal go.
+    release: std::sync::mpsc::Sender<()>,
+    next: Offset,
+}
+
+impl ParkedSeal {
+    /// No flush but the one explicit sync, so the retired segment keeps a
+    /// synced prefix and an unsynced tail until its seal runs.
+    async fn open() -> Self {
+        let scenario = Scenario {
+            fsync_mode: FsyncMode::None,
+            background_roll: true,
+            writeback: Writeback::InOrder,
+            seed: BASE_SEED,
+        };
+        let config = scenario.config();
+        let dir = tempdir().expect("dir");
+        let root = dir.path().join("log");
+        std::fs::create_dir_all(&root).expect("log dir");
+        let observer = PowerLoss::install(&root).expect("install the power-loss observer");
+        let log = DiskLog::open(&root, "t/ns/s/0", config.clone()).expect("open");
+        let (release, held) = std::sync::mpsc::channel();
+        *log.inner.hold_next_seal.lock() = Some(held);
+        let mut this = Self {
+            _dir: dir,
+            observer,
+            log,
+            config,
+            scenario,
+            release,
+            next: 0,
+        };
+
+        while this.log.inner.roll_state.load(Ordering::Acquire) == RollState::Idle as u8 {
+            this.append().await;
+            if this.next == 4 {
+                this.log.sync().await.expect("sync");
+            }
+        }
+        // The roll has started; with nothing appending, it installs its
+        // segment and reaches the seal.
+        for _ in 0..5_000 {
+            if this.log.inner.hold_next_seal.lock().is_none()
+                && this.log.inner.roll_state.load(Ordering::Acquire) == RollState::Sealing as u8
+            {
+                return this;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        panic!("the background roll never reached its seal");
+    }
+
+    async fn append(&mut self) {
+        let record = AppendRecord {
+            payload: Bytes::from(payload(self.scenario.seed, self.next)),
+            timestamp_micros: 1_700_000_000 + self.next,
+            mark: Default::default(),
+        };
+        self.log.append(&[record]).await.expect("append");
+        self.next += 1;
+    }
+
+    /// Crash with every seed in `seeds` and check what each recovers to.
+    /// Returns how many images match `shape`.
+    async fn crash_all(&self, seeds: std::ops::Range<u64>, shape: impl Fn(&Path) -> bool) -> usize {
+        let acknowledged = self.log.durable_offset();
+        let mut matched = 0;
+        for seed in seeds {
+            let image = tempdir().expect("image dir");
+            self.observer
+                .crash(seed, self.scenario.writeback, image.path())
+                .expect("build the crash image");
+            if shape(image.path()) {
+                matched += 1;
+            }
+            verify(
+                image.path(),
+                &self.config,
+                self.scenario,
+                seed,
+                acknowledged,
+                self.next,
+            )
+            .await;
+        }
+        matched
+    }
+
+    async fn finish(self) {
+        self.release.send(()).expect("release the seal");
+        self.log.shutdown().await.expect("shutdown");
+    }
+}
+
+/// The CI failure, pinned: power goes while a background roll is sealing.
+/// The retired segment's unsynced tail and the new segment's records reach
+/// the device independently, so a crash can keep the new segment and cut the
+/// old one back to its last sync -- an offset gap between them. Nothing past
+/// that sync was ever reported durable, so recovery must take the log back to
+/// it rather than refuse.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_crash_while_sealing_can_cut_the_retired_segment_short() {
+    let mut parked = ParkedSeal::open().await;
+    let segments = parked.log.segments();
+    let [.., retired, active] = segments.as_slice() else {
+        panic!("the roll installed no segment");
+    };
+    let (retired, active, active_base) = (retired.id, active.id, active.base_offset);
+    for _ in 0..3 {
+        parked.append().await;
+    }
+    assert!(
+        parked.log.durable_offset() < active_base,
+        "the retired segment's tail must be unsynced"
+    );
+
+    let config = parked.config.clone();
+    let cut_short = |image: &Path| retired_ends_before(image, &config, retired, active);
+    let matched = parked.crash_all(0..64, cut_short).await;
+    assert!(matched > 0, "no crash image cut the retired segment short");
+    parked.finish().await;
+}
+
+/// The segment the parked roll retired and the one it installed.
+fn retired_and_installed(log: &DiskLog) -> (SegmentId, SegmentId) {
+    let segments = log.segments();
+    let [.., retired, installed] = segments.as_slice() else {
+        panic!("the roll installed no segment");
+    };
+    (retired.id, installed.id)
+}
+
+/// An inline roll while a background seal is parked seals the newer segment.
+/// It has to sync the retired one first: otherwise a crash can keep the newer
+/// segment whole and cut the older one short, and a gap in front of a sealed
+/// segment is indistinguishable from lost records.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_inline_roll_while_sealing_syncs_the_retired_segment_first() {
+    let mut parked = ParkedSeal::open().await;
+    let (retired, installed) = retired_and_installed(&parked.log);
+    // Past the overshoot ceiling, so the next append has to roll inline.
+    while parked.log.segments().len() == 2 {
+        parked.append().await;
+    }
+
+    let config = parked.config.clone();
+    let cut_short = |image: &Path| retired_ends_before(image, &config, retired, installed);
+    let matched = parked.crash_all(0..64, cut_short).await;
+    assert_eq!(
+        matched, 0,
+        "a crash kept the sealed segment and cut the one before it"
+    );
+    parked.finish().await;
+}
+
+/// `seal` seals the active segment too, so it owes the same sync.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sealing_while_a_background_seal_is_parked_syncs_the_retired_segment_first() {
+    let mut parked = ParkedSeal::open().await;
+    let (retired, installed) = retired_and_installed(&parked.log);
+    for _ in 0..3 {
+        parked.append().await;
+    }
+    parked.log.seal().await.expect("seal");
+
+    let config = parked.config.clone();
+    let cut_short = |image: &Path| retired_ends_before(image, &config, retired, installed);
+    let matched = parked.crash_all(0..64, cut_short).await;
+    assert_eq!(
+        matched, 0,
+        "a crash kept the sealed segment and cut the one before it"
+    );
+    parked.finish().await;
+}
+
+/// While a background seal runs, the segment it installed may overshoot its
+/// size up to the ceiling. Rolling at the plain size instead would seal the
+/// new segment ahead of the retired one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_segment_overshoots_rather_than_rolls_while_a_seal_is_parked() {
+    let mut parked = ParkedSeal::open().await;
+    let size = parked.config.segment_size_bytes;
+    loop {
+        let segments = parked.log.segments();
+        assert_eq!(
+            segments.len(),
+            2,
+            "rolled inline below the overshoot ceiling"
+        );
+        if segments[1].size_bytes > size + 1_000 {
+            break;
+        }
+        parked.append().await;
+    }
+    parked.finish().await;
+}
+
+/// Whether segment `retired` in `image` is intact but ends before segment
+/// `active`, which holds records, begins.
+fn retired_ends_before(
+    image: &Path,
+    config: &LogConfig,
+    retired: SegmentId,
+    active: SegmentId,
+) -> bool {
+    use crate::segment::{ScanStart, scan_segment, segment_file_name};
+    let scan = |id| {
+        scan_segment(
+            &image.join(segment_file_name(id)),
+            id,
+            "t/ns/s/0",
+            config.index_spacing_bytes,
+            ScanStart::Full,
+            false,
+        )
+    };
+    match (scan(retired), scan(active)) {
+        (Ok(retired), Ok(active)) => {
+            retired.torn_tail.is_none()
+                && active.record_count > 0
+                && active.header.base_offset > retired.next_offset
+        }
+        _ => false,
+    }
 }
 
 /// `None` acknowledges without flushing; only an explicit `sync` makes

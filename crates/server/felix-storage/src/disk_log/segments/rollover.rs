@@ -51,15 +51,6 @@ impl SegmentSet {
             && records.iter().any(|record| record.mark != RecordMark::None))
     }
 
-    /// Whether appending `records` would first require a rollover.
-    ///
-    /// Exposed so the async layer can perform the roll — which seals a segment,
-    /// creates another, and fsyncs both plus the directory — on a blocking
-    /// thread instead of inline on a reactor worker.
-    pub(crate) fn would_roll(&self, records: &[AppendRecord]) -> bool {
-        self.would_roll_within(records, false)
-    }
-
     /// Whether the active segment has crossed the point where a rollover should
     /// be started in the background.
     ///

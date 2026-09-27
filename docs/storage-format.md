@@ -259,12 +259,18 @@ because only there can a record have been mid-write when the process died:
   one, so a power loss in that window can leave only unflushed bytes damaged.
   A newest segment whose header is all zeros is discarded as an uninstalled
   roll. A torn or zero-filled tail (the two cases above) on the segment just
-  before the newest is cut back; the newest segment is kept if it starts
+  before the newest is cut back. So is that segment coming back intact but
+  ending before the newest one begins: its size and its pages reach the
+  device separately, so the loss can land on a record boundary. The newest
+  segment is kept if it starts
   exactly at the cut and discarded otherwise, since records past a gap cannot
   be kept in order. Any other damage there is still fatal, and so is a tear in
   bytes the durable mark says were synced: the mark only reaches the newest
   segment once the one before it was synced whole, so this repair never cuts
-  below the mark or deletes a segment the mark vouches for.
+  below the mark or deletes a segment the mark vouches for. For the same
+  reason, anything that seals the newest segment while that seal is still
+  running (an inline roll past the overshoot ceiling, or `seal`) syncs the
+  older segment first; a gap in front of a sealed segment is not repairable.
 - **An empty segment inside the chain.** A background roll that loses the race
   to an inline one deletes the blank segment it built. The blank's directory
   entry was synced at creation, and the unlink is synced too, but a power loss
