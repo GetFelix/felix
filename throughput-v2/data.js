@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790530979132,
+  "lastUpdate": 1790539554499,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -17940,6 +17940,58 @@ window.BENCHMARK_DATA = {
             "range": "16496.74",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 918302.54\nmean: 914140.52\nstdev: 16496.74\ncv: 1.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f676db6e7a0138d64e5b3de394bde114d1712946",
+          "message": "Storage: close shard logs when a shard moves away, and open shards in parallel (#765)\n\n* fix(storage,broker): close shard logs when a shard moves away; per-shard open locks\n\nThe stream provider, cache and counters keep one slot per shard, so opens of\ndifferent shards run in parallel and two opens of the same shard happen once.\nclose_shard flushes, fences old handles with StorageError::Closed, and a later\nopen starts fresh from disk. The shard lifecycle closes a shard once this node\nis no longer its leader, a replica or a move's destination.\n\nSpec-Unaffected: resource cleanup only; no phase, fence, generation or lease change.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(replication): don't report a follower's position before it has answered\n\nA new follower cursor starts at the offset shipping will begin from and\nwas not marked stalled until a batch to it failed. While the first dial to\na move's destination was still pending (a suspended or unreachable\nbroker), the leader reported that start offset as the destination's\nposition. Placement read it as a copy within the fence's lag bound\n(1,000 records) and fenced the leader toward a destination it could not\nreach; the leader stopped serving, publishes were refused as \"leadership\nmoved\", and the move was abandoned back to the leader at a new\ngeneration. Seen as rebalance::a_quorum_publish_during_a_copy_is_not_held_by_it\nfailing under coverage, where the slower build widens the window.\n\nA cursor now starts stalled, so its offset is reported only once the\nfollower has answered a batch.\n\nRevert-checked: with cursors starting un-stalled the new reporter test\nfails.\n\nSpec-Unaffected: the model's move fence already requires the destination's reported position; this stops the broker reporting a position it never heard.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T13:01:30-07:00",
+          "tree_id": "ac1ea14ca7d5c1e618635f26c49e2b84fbbe47fb",
+          "url": "https://github.com/gabloe/felix/commit/f676db6e7a0138d64e5b3de394bde114d1712946"
+        },
+        "date": 1790539553625,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 499899.17,
+            "range": "51111.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 499899.17\nmean: 489888.09\nstdev: 51111.76\ncv: 10.43%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 499899.17,
+            "range": "51111.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 499899.17\nmean: 489888.09\nstdev: 51111.76\ncv: 10.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118607.71,
+            "range": "3575.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118607.71\nmean: 117470.19\nstdev: 3575.16\ncv: 3.04%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1186077.12,
+            "range": "35751.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1186077.12\nmean: 1174701.87\nstdev: 35751.59\ncv: 3.04%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
