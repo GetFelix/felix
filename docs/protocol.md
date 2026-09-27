@@ -298,12 +298,11 @@ Sent only to a broker that advertised `FEATURE_GROUP_DEAD_LETTERS`.
 ```
 
 An offset at or past the shard's log tail was never handed out and is refused
-with `invalid_request`. The group's in-flight state is kept in memory, so
-after it is evicted (idle for 10 minutes) or the shard moves or fails over, a
-fresh one is built. It takes a settle for any offset below the log tail it
-first saw, since a claim made before it could be any of those. An offset
-written after that and not yet handed out is refused with `stale_claim`
-(`retry`): nothing was applied and the record will be delivered. An offset below the group's position is a harmless
+with `invalid_request`. An offset the log holds but the group has no record of
+handing out is refused with `stale_claim` (`retry`): the group's in-flight state
+is kept in memory, so after it is evicted (idle for 10 minutes) or the shard
+fails over, earlier claims are forgotten. Nothing was applied and the record
+will be delivered again. An offset below the group's position is a harmless
 duplicate and answered `ok`.
 
 ### CacheDelete
@@ -1055,7 +1054,7 @@ client MUST act on the class it received, not on this table.
 | `draining` | `retry` | 12 | The broker is shutting down and takes no new work. | In answer to `auth` on a control stream opened while the connection drains. Connect to another broker. |
 | `internal` | `outcome_unknown` | 13 | Something failed inside the broker. | Anything not covered above. Sent as `retry` for reads and failures before any write, `fatal` for configuration the request cannot change. |
 | `storage` | `outcome_unknown` | 14 | The storage layer failed. | A durable write, a group's state, or a cache log that could not be read. `retry` for reads. |
-| `stale_claim` | `retry` | 15 | The group has no record of handing this offset out. Nothing was applied; the record will be delivered again. | A `group_ack` or `group_nack` for an offset the log holds that was written after the group's in-flight state was last rebuilt and not yet handed out. A client that does not know the code sees an unknown code with `retry`. |
+| `stale_claim` | `retry` | 15 | The group has no record of handing this offset out. Nothing was applied; the record will be delivered again. | A `group_ack` or `group_nack` for a claim made before the group's in-flight state was evicted or the shard failed over. A client that does not know the code sees an unknown code with `retry`. |
 
 `Number` is the `u16` the binary ack carries. `0` is never sent.
 

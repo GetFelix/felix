@@ -495,6 +495,21 @@ holds and the boundary is checked rather than assumed — the same check Raft
 makes at `prevLogIndex`. A follower further behind than that still says so with
 a `LogGap`, and the leader rewinds in that one exchange.
 
+The follower holds the other end of that check, because the leader's starting
+point is only a guess about the follower: a batch can still begin at the
+follower's tail with records it wrote under an older generation sitting just
+below. Accepting it would leave those records uncompared, and one of them may
+be a dead leader's unacknowledged write at an offset the new leader filled
+differently: two brokers disagreeing at a committed offset. So a batch from a newer generation that begins past them is
+answered with a `LogGap` naming the first uncompared record — the later of
+where the older generation began here and the commit offset. The leader rewinds
+and the overlap is compared like any other, so a conflict is found and repaired
+as above. When that takes several batches, the follower remembers in memory how
+far it has got, and it records the new generation's start only once it is level
+with the leader, so a conflict found partway is still the older generation's
+suffix and repairable. A restart forgets the progress and costs a re-compare,
+not correctness.
+
 Without a history entry for the generation it falls back to zero, which is slow
 rather than wrong. A shard's consumer-group cursors, dead letters and counters
 still start there: those logs are written only when group state changes, so the

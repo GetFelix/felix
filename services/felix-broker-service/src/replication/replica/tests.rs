@@ -541,10 +541,18 @@ mod divergence {
             .apply(batch(4, 2, &["orphan"]), felix_broker::LogKind::Stream)
             .await;
 
-        // The old leader dies and generation 5 reuses offset 2.
+        // The old leader dies and generation 5 reuses offset 2. Nothing here
+        // is committed, so the new leader is sent back to compare from 0.
         advance_to(&router, 5);
         let answer = handler
             .apply(batch(5, 2, &["committed"]), felix_broker::LogKind::Stream)
+            .await;
+        assert_eq!(refusal(&answer).expected_offset, 0);
+        let answer = handler
+            .apply(
+                batch(5, 0, &["a", "b", "committed"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
 
         match answer {
@@ -586,10 +594,14 @@ mod divergence {
         handler
             .apply(batch(4, 0, &["a", "b", "c"]), felix_broker::LogKind::Stream)
             .await;
-        // Generation 5 starts cleanly at 3, so the history says 5 begins there.
+        // Generation 5 compares 0..3 and appends at 3, so the history says 5
+        // begins there.
         advance_to(&router, 5);
         handler
-            .apply(batch(5, 3, &["d"]), felix_broker::LogKind::Stream)
+            .apply(
+                batch(5, 0, &["a", "b", "c", "d"]),
+                felix_broker::LogKind::Stream,
+            )
             .await;
 
         // Now a batch disagreeing at offset 1 — well before generation 5.
@@ -970,4 +982,82 @@ mod replica_state {
         assert_eq!(refusal(&answer).code, ErrorCode::LogConflict);
         assert_eq!(stored(&broker).await, vec!["a", "b", "c"]);
     }
+}
+
+/// The records `LOCAL` holds for the shard, as strings.
+async fn held(broker: &Broker) -> Vec<String> {
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    log.read_from(0, 1 << 20)
+        .await
+        .expect("read")
+        .iter()
+        .map(|record| String::from_utf8(record.payload.to_vec()).expect("utf8"))
+        .collect()
+}
+
+/// **A newer leader is sent back to what this follower wrote under an older
+/// generation.** Offset 2 is a dead leader's unacknowledged write; the new
+/// leader holds something else there. A batch starting at this follower's
+/// tail would compare nothing and keep it, so the follower answers with a gap
+/// at the first record past its commit offset, and the resend finds and drops
+/// the stale one.
+#[tokio::test]
+async fn a_newer_leader_compares_what_an_older_generation_left() {
+    let (broker, _dir) = broker_with_storage().await;
+    let old = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+    let mut first = batch(4, 0, &["a", "b"]);
+    first.commit_offset = Some(2);
+    old.apply(first, felix_broker::LogKind::Stream).await;
+    old.apply(batch(4, 2, &["stale"]), felix_broker::LogKind::Stream)
+        .await;
+
+    let new = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6));
+    let answer = new
+        .apply(batch(6, 3, &["d"]), felix_broker::LogKind::Stream)
+        .await;
+    let refused = refusal(&answer);
+    assert_eq!(refused.code, ErrorCode::LogGap);
+    assert_eq!(
+        refused.expected_offset, 2,
+        "sent back past the commit offset"
+    );
+
+    new.apply(batch(6, 2, &["c", "d"]), felix_broker::LogKind::Stream)
+        .await;
+    assert_eq!(held(&broker).await, ["a", "b", "c", "d"]);
+}
+
+/// Comparing can take several batches. The older generation stays the last
+/// one recorded until it is done, so a conflict in a later batch is still its
+/// suffix and dropped, rather than read as the new leader disagreeing with
+/// itself.
+#[tokio::test]
+async fn comparing_an_older_generation_over_several_batches_still_repairs() {
+    let (broker, _dir) = broker_with_storage().await;
+    let old = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+    old.apply(
+        batch(4, 0, &["a", "b", "c", "stale"]),
+        felix_broker::LogKind::Stream,
+    )
+    .await;
+
+    let new = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6));
+    let answer = new
+        .apply(batch(6, 4, &["e"]), felix_broker::LogKind::Stream)
+        .await;
+    assert_eq!(refusal(&answer).expected_offset, 0);
+    let answer = new
+        .apply(batch(6, 0, &["a", "b"]), felix_broker::LogKind::Stream)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{:?}",
+        answer.kind()
+    );
+    new.apply(batch(6, 2, &["c", "d", "e"]), felix_broker::LogKind::Stream)
+        .await;
+    assert_eq!(held(&broker).await, ["a", "b", "c", "d", "e"]);
 }

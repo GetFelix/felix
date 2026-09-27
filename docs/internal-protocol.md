@@ -329,6 +329,7 @@ exactly at the follower's tail.
 | --- | --- | --- |
 | begins at the tail | `ReplicateOk` | send the next batch from `durable_offset` |
 | begins past the tail | `LogGap`, with `expected_offset` | resume from `expected_offset` |
+| comes from a newer generation and begins past records the follower wrote under an older one, above the commit offset | `LogGap`, with the first such record | resume from `expected_offset`, so those records are compared |
 | lies entirely below the tail | `ReplicateOk` | nothing; it was already stored |
 | straddles the tail | `ReplicateOk` | nothing; the new suffix was stored |
 | disagrees on stored bytes | `LogConflict` | **stop** |
@@ -461,7 +462,7 @@ Typed, because they need different responses:
 | `ProtocolVersion` | version not understood | do not retry; close |
 | `Malformed` | the body did not decode | do not retry; close |
 | `StorageFailed` | the responder tried and its own disk failed | do not retry; nothing is wrong with the request |
-| `LogGap` | a replication batch starts past the follower's tail | resume from `expected_offset` |
+| `LogGap` | a replication batch starts past the follower's tail, or past its uncompared older-generation records | resume from `expected_offset` |
 | `LogConflict` | a replication batch disagrees with stored bytes | do not retry; the logs have diverged |
 | `FencedEpoch` | the sender named an epoch older than the responder's | do not retry; it is no longer the leader |
 | `UnsupportedKind` | the responder predates the kind that was sent | do not retry with that kind; a forwarder falls back to the legacy forward kind once |

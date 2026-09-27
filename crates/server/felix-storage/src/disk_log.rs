@@ -342,18 +342,18 @@ impl DiskLog {
                     commit,
                 });
             }
-            segments.check_open()?;
-            let rewound = (|| {
-                segments.reset_to(base_offset)?;
-                segments.active_mut().sync()?;
-                operation.note_rewound(&segments)?;
-                operation.durability.reset_after_truncate(base_offset);
-                let mut epochs = operation.epochs.lock();
-                *epochs = epochs::EpochMap::default();
-                epochs::store(&operation.dir, &epochs)?;
-                operation.reset_producers(&segments)
-            })();
-            operation.poison_after_rewind(rewound)
+            segments.reset_to(base_offset)?;
+            if let Err(err) = segments.active_mut().sync() {
+                operation.poison_after_writer_failure(&segments);
+                return Err(err);
+            }
+            operation.note_rewound(&segments)?;
+            operation.durability.reset_after_truncate(base_offset);
+            let mut epochs = operation.epochs.lock();
+            *epochs = epochs::EpochMap::default();
+            epochs::store(&operation.dir, &epochs)?;
+            operation.reset_producers(&segments)?;
+            Ok(())
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
@@ -615,8 +615,6 @@ impl DiskLog {
             #[cfg(test)]
             fail_next_flush: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
-            fail_next_rewind_sync: std::sync::atomic::AtomicBool::new(false),
-            #[cfg(test)]
             pause_next_read: Mutex::new(None),
             #[cfg(test)]
             slow_inline_roll_millis: std::sync::atomic::AtomicU64::new(0),
@@ -792,22 +790,21 @@ impl AppendOnlyLog for DiskLog {
                 if offset < commit.min(segments.tail_offset()) {
                     return Err(StorageError::BelowCommit { offset, commit });
                 }
-                segments.check_open()?;
-                let rewound = (|| {
-                    segments.truncate(offset)?;
-                    segments.active_mut().sync()?;
-                    operation.note_rewound(&segments)?;
-                    let tail = segments.tail_offset();
-                    operation.durability.reset_after_truncate(tail);
-                    // The history cannot outlive the records it describes, or
-                    // it would answer with a start offset the log no longer
-                    // holds.
-                    let mut epochs = operation.epochs.lock();
-                    epochs.truncate_from(offset);
-                    epochs::store(&operation.dir, &epochs)?;
-                    operation.reset_producers(&segments)
-                })();
-                operation.poison_after_rewind(rewound)
+                segments.truncate(offset)?;
+                if let Err(err) = segments.active_mut().sync() {
+                    operation.poison_after_writer_failure(&segments);
+                    return Err(err);
+                }
+                operation.note_rewound(&segments)?;
+                let tail = segments.tail_offset();
+                operation.durability.reset_after_truncate(tail);
+                // The history cannot outlive the records it describes, or it
+                // would answer with a start offset the log no longer holds.
+                let mut epochs = operation.epochs.lock();
+                epochs.truncate_from(offset);
+                epochs::store(&operation.dir, &epochs)?;
+                operation.reset_producers(&segments)?;
+                Ok(())
             })
             .await
             .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
@@ -954,9 +951,6 @@ struct LogInner {
     /// Makes the next flush report a failed fsync after the real one ran.
     #[cfg(test)]
     fail_next_flush: std::sync::atomic::AtomicBool,
-    /// Makes the next truncation or reset fail to sync the durable mark.
-    #[cfg(test)]
-    fail_next_rewind_sync: std::sync::atomic::AtomicBool,
     /// Stops the next read between planning and reading: it waits on the
     /// barrier once to say it has planned, and again to go on.
     #[cfg(test)]

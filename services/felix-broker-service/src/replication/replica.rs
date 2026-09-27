@@ -15,6 +15,7 @@
 //! The order matters. Position is only meaningful once the sender is
 //! established as the current leader: applying first and checking after would
 //! let a fenced leader's bytes reach the disk, and records are never rewritten.
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use felix_broker::Broker;
@@ -32,11 +33,26 @@ use crate::peer::metrics;
 pub struct ReplicaHandler {
     broker: Arc<Broker>,
     router: Arc<ShardRouter>,
+    /// How far each shard's records from before the current leader's
+    /// generation have been compared with it, while that takes more than one
+    /// batch. See [`unverified_from`].
+    verified: parking_lot::Mutex<HashMap<felix_router::ShardKey, Verified>>,
+}
+
+/// Progress comparing a follower's older records with a newer leader's.
+#[derive(Debug, Clone, Copy)]
+struct Verified {
+    generation: u64,
+    through: u64,
 }
 
 impl ReplicaHandler {
     pub fn new(broker: Arc<Broker>, router: Arc<ShardRouter>) -> Self {
-        Self { broker, router }
+        Self {
+            broker,
+            router,
+            verified: parking_lot::Mutex::new(HashMap::new()),
+        }
     }
 
     /// Begin this shard's log where the leader's surviving log begins.
@@ -321,17 +337,44 @@ impl ReplicaHandler {
         // A generation this follower has not seen before starts here. Recorded
         // before the apply, because the apply is what may need it: the divergent
         // suffix it finds belongs to whatever generation was newest until now.
-        let generation_start = batch.first_offset;
         let previous_generation = log.generations().last().copied();
 
-        let mut outcome = replication::apply(
-            &log,
-            batch.first_offset,
-            batch.checksum,
-            &batch.payloads,
-            &batch.marks,
-        )
-        .await;
+        // A newer leader's batch that starts past records this follower wrote
+        // under an older generation would leave them uncompared, and one of
+        // them may be a dead leader's unacknowledged write at an offset the new
+        // leader filled differently. Send the leader back to the first of them.
+        let verified = self
+            .verified
+            .lock()
+            .get(&key)
+            .filter(|verified| verified.generation == batch.shard.generation)
+            .map(|verified| verified.through);
+        let unverified = match log.tail_offset().await {
+            Ok(tail) => unverified_from(
+                previous_generation,
+                batch.shard.generation,
+                log.commit_offset(),
+                verified,
+                tail,
+            ),
+            Err(_) => None,
+        };
+        let mut outcome = match unverified {
+            Some(expected) if batch.first_offset > expected => Ok(Err(Divergence::Gap {
+                expected,
+                first_offset: batch.first_offset,
+            })),
+            _ => {
+                replication::apply(
+                    &log,
+                    batch.first_offset,
+                    batch.checksum,
+                    &batch.payloads,
+                    &batch.marks,
+                )
+                .await
+            }
+        };
 
         // A divergent suffix left by a leader that is gone is droppable: no
         // majority acknowledged it, and dropping it lets this follower rejoin
@@ -445,10 +488,34 @@ impl ReplicaHandler {
                         "could not write the commit offset through; it holds in memory",
                     );
                 }
+                // Still comparing older records: the older generation stays the
+                // last one recorded, so a conflict further on is still its
+                // suffix and repairable.
+                let level = log
+                    .tail_offset()
+                    .await
+                    .is_ok_and(|tail| applied.durable_offset >= tail);
+                if unverified.is_some() && !level {
+                    self.verified.lock().insert(
+                        key.clone(),
+                        Verified {
+                            generation: batch.shard.generation,
+                            through: applied.durable_offset,
+                        },
+                    );
+                } else {
+                    self.verified.lock().remove(&key);
+                }
                 // Now that the batch is stored, note where this generation
                 // began here — so a later divergence can be bounded the same
-                // way this one was.
-                if let Err(err) = log.record_generation(batch.shard.generation, generation_start) {
+                // way this one was. That is where its own records begin, not
+                // the batch's first offset, which may reach back over older
+                // records it only compared.
+                let generation_start = applied.durable_offset - applied.appended as u64;
+                if level
+                    && let Err(err) =
+                        log.record_generation(batch.shard.generation, generation_start)
+                {
                     tracing::warn!(
                         stream = %key.stream,
                         error = %err,
@@ -594,6 +661,26 @@ async fn accept_sender(
             ))
         }
     }
+}
+
+/// Where a batch from a leader at `generation` must start for every record
+/// this follower wrote under an older generation to be compared, or `None`
+/// when there is nothing uncompared.
+///
+/// Records below the commit offset were compared when they were committed.
+/// Past it, those written since the last recorded generation began came from
+/// that generation's leader, or were this broker's own writes as leader; a
+/// newer leader shipping only past them would never learn they disagree.
+fn unverified_from(
+    previous: Option<felix_storage::log::Epoch>,
+    generation: u64,
+    commit: u64,
+    verified: Option<u64>,
+    tail: u64,
+) -> Option<u64> {
+    let previous = previous.filter(|previous| generation > previous.generation)?;
+    let from = previous.start_offset.max(commit).max(verified.unwrap_or(0));
+    (from < tail).then_some(from)
 }
 
 /// The commit offset, when cutting this log from `from` would discard a
