@@ -229,12 +229,23 @@ pub(super) async fn shard_assignment_changes(
 pub(super) async fn record_replica_report(
     store: &InMemoryStore,
     report: ReplicaReport,
+    leader: Option<&str>,
 ) -> StoreResult<ReportWrite> {
-    // Held across the existence check so a concurrent delete either sees
-    // the report and removes it, or runs after this and finds nothing.
+    // Held across the leadership check and the write, so a promotion or
+    // delete either lands first and is seen, or waits for the report.
     let shards = store.shards.read().await;
-    if !shards.records.contains_key(&report.key) {
+    let Some(assignment) = shards.records.get(&report.key) else {
         return Err(StoreError::NotFound("shard assignment".into()));
+    };
+    // `None` only from a Raft entry proposed before the check existed, which
+    // must apply as it did then.
+    if let Some(leader) = leader {
+        if assignment.leader != leader {
+            return Ok(ReportWrite::NotLeader);
+        }
+        if assignment.generation != report.generation {
+            return Ok(ReportWrite::Stale);
+        }
     }
     let mut reports = store.replica_reports.write().await;
     if let Some(held) = reports.get(&report.key)

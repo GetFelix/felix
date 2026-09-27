@@ -215,6 +215,12 @@ pub trait ControlPlaneStore: Send + Sync {
 
     /// Record what a shard's leader reports about its replicas.
     ///
+    /// Stored only if `leader` still leads the shard at `report.generation`,
+    /// checked atomically with the write: a report judged against an earlier
+    /// read could land after a promotion and speak for a deposed leader.
+    /// Another leader is [`ReportWrite::NotLeader`]; another generation is
+    /// [`ReportWrite::Stale`].
+    ///
     /// A report that does not supersede the one held is dropped and answered
     /// [`ReportWrite::Stale`], not an error: an older generation's view is
     /// about a replica set that may no longer exist, and an older report in
@@ -228,7 +234,11 @@ pub trait ControlPlaneStore: Send + Sync {
     /// against that same clock by whichever instance runs placement, which
     /// is the whole reason the report is in the store. Under Raft the leader
     /// overwrites the stamp as it accepts the proposal, as for a heartbeat.
-    async fn record_replica_report(&self, report: ReplicaReport) -> StoreResult<ReportWrite>;
+    async fn record_replica_report(
+        &self,
+        report: ReplicaReport,
+        leader: &str,
+    ) -> StoreResult<ReportWrite>;
     /// Every report held, fresh or not; the reader judges freshness.
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>>;
 
@@ -497,8 +507,11 @@ pub enum ReportWrite {
     /// The report is now the one held for its shard.
     Stored,
     /// The store holds a report this one does not supersede (see
-    /// [`ReplicaReport::supersedes`]), and kept it.
+    /// [`ReplicaReport::supersedes`]), and kept it; or the assignment is no
+    /// longer at the report's generation.
     Stale,
+    /// The reporting node does not lead the shard.
+    NotLeader,
 }
 
 /// What [`ControlPlaneStore::acquire_placement_lease`] granted.

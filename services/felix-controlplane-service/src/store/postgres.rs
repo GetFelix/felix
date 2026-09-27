@@ -357,8 +357,12 @@ impl ControlPlaneStore for PostgresStore {
         shards::shard_assignment_changes(self, since).await
     }
 
-    async fn record_replica_report(&self, report: ReplicaReport) -> StoreResult<ReportWrite> {
-        shards::record_replica_report(self, report).await
+    async fn record_replica_report(
+        &self,
+        report: ReplicaReport,
+        leader: &str,
+    ) -> StoreResult<ReportWrite> {
+        shards::record_replica_report(self, report, leader).await
     }
 
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>> {

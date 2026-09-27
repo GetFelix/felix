@@ -142,6 +142,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     replica_reports::a_report_from_a_superseded_leader_is_dropped(store).await;
     replica_reports::a_report_at_the_same_generation_is_an_update(store).await;
     replica_reports::a_report_behind_the_held_one_is_dropped(store).await;
+    replica_reports::a_report_from_a_deposed_leader_is_refused(store).await;
     replica_reports::a_report_needs_an_assignment_and_goes_with_it(store).await;
     a_move_in_progress_is_persisted(store).await;
     a_replacement_in_progress_is_persisted(store).await;

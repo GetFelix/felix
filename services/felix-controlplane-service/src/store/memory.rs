@@ -145,6 +145,16 @@ pub struct InMemoryStore {
 }
 
 impl InMemoryStore {
+    /// [`ControlPlaneStore::record_replica_report`], with the leadership
+    /// check optional for the Raft apply of entries that predate it.
+    pub(crate) async fn apply_replica_report(
+        &self,
+        report: ReplicaReport,
+        leader: Option<&str>,
+    ) -> StoreResult<ReportWrite> {
+        shards::record_replica_report(self, report, leader).await
+    }
+
     pub fn new(config: StoreConfig) -> Self {
         let capacity = config.change_window();
         // The change window is a retention bound for incremental sync consumers.
@@ -416,8 +426,12 @@ impl ControlPlaneStore for InMemoryStore {
         shards::shard_assignment_changes(self, since).await
     }
 
-    async fn record_replica_report(&self, report: ReplicaReport) -> StoreResult<ReportWrite> {
-        shards::record_replica_report(self, report).await
+    async fn record_replica_report(
+        &self,
+        report: ReplicaReport,
+        leader: &str,
+    ) -> StoreResult<ReportWrite> {
+        shards::record_replica_report(self, report, Some(leader)).await
     }
 
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>> {

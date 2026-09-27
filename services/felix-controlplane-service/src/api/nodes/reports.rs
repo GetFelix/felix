@@ -212,23 +212,22 @@ async fn record_one(
         shard,
         state.placement_wakes.fence_max_lag_records(),
     );
-    match state
-        .store
-        .record_replica_report(crate::model::ReplicaReport {
-            key,
-            generation: shard.generation,
-            caught_up: shard.caught_up.iter().cloned().collect(),
-            drained: shard.drained,
-            offsets: shard
-                .replica_offsets
-                .iter()
-                .map(|replica| (replica.node_id.clone(), replica.durable_offset))
-                .collect(),
-            reported_at_millis: now,
-            leader_offset: shard.leader_offset,
-        })
-        .await
-    {
+    let report = crate::model::ReplicaReport {
+        key,
+        generation: shard.generation,
+        caught_up: shard.caught_up.iter().cloned().collect(),
+        drained: shard.drained,
+        offsets: shard
+            .replica_offsets
+            .iter()
+            .map(|replica| (replica.node_id.clone(), replica.durable_offset))
+            .collect(),
+        reported_at_millis: now,
+        leader_offset: shard.leader_offset,
+    };
+    // The store checks leadership again as it writes: the checks above read
+    // an assignment a promotion may have replaced since.
+    match state.store.record_replica_report(report, node_id).await {
         Ok(ReportWrite::Stored) => {
             // The next step of a move waits on exactly this report, so
             // placement runs now rather than at its next tick.
@@ -238,6 +237,7 @@ async fn record_one(
             Ok(ReportOutcome::Accepted)
         }
         Ok(ReportWrite::Stale) => Ok(ReportOutcome::Stale),
+        Ok(ReportWrite::NotLeader) => Ok(ReportOutcome::NotLeader),
         // The assignment went between the read above and the write: the
         // shard is nobody's to report on any more.
         Err(StoreError::NotFound(_)) => Ok(ReportOutcome::Unassigned),

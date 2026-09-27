@@ -152,6 +152,12 @@ pub enum MetaCommand {
     /// not necessarily that one.
     RecordReplicaReport {
         report: ReplicaReport,
+        /// The node the report must come from. Checked against the
+        /// replicated assignment when the entry applies, not against the
+        /// proposer's possibly lagging copy. Absent in entries from members
+        /// that predate the check, which apply unchecked as they did then.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        leader: Option<String>,
     },
     SetMovesPaused {
         paused: bool,
@@ -356,6 +362,8 @@ pub enum MetaResponse {
     /// `RecordReplicaReport` kept the report already held. A stored report
     /// answers `Unit`, so an older leader's answer still reads as stored.
     StaleReport,
+    /// `RecordReplicaReport` came from a node that does not lead the shard.
+    NotLeaderReport,
     /// The placement lease is held by someone else and has not expired.
     NoPlacementLease,
 }
