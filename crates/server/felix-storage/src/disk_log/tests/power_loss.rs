@@ -228,13 +228,11 @@ async fn periodic_survives_in_order_writeback() {
     run(scenario(PERIODIC, true, Writeback::InOrder)).await;
 }
 
-#[ignore = "known failure: recovery refuses a lost-writeback hole followed by written pages (zero run then data in the newest segment); see the PR"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn periodic_survives_any_writeback() {
     run(scenario(PERIODIC, false, Writeback::AnySubset)).await;
 }
 
-#[ignore = "known failure: recovery refuses a lost-writeback hole followed by written pages (zero run then data in the newest segment); see the PR"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn periodic_with_background_roll_survives_any_writeback() {
     run(scenario(PERIODIC, true, Writeback::AnySubset)).await;
@@ -242,8 +240,8 @@ async fn periodic_with_background_roll_survives_any_writeback() {
 
 /// `None` acknowledges without flushing; only an explicit `sync` makes
 /// anything durable, and that is what the test holds it to.
-#[ignore = "known failure: recovery refuses a lost-writeback hole followed by written pages (zero run then data in the newest segment); see the PR"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "known failure under FsyncMode::None even with the durable mark: a record checksum mismatch in segment 0 is still fatal (seed 0x5eed0005); see #746"]
 async fn no_fsync_keeps_what_explicit_syncs_covered() {
     run(scenario(FsyncMode::None, false, Writeback::AnySubset)).await;
 }
