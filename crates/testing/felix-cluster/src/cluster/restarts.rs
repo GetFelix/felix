@@ -89,6 +89,7 @@ impl Cluster {
             &self.config,
             self._root.path(),
             index,
+            self.links.as_ref(),
         )
         .with_context(|| format!("restart {node_id}"))?;
         self.nodes[index] = node;

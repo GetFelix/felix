@@ -5,16 +5,18 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, anyhow};
 
-use super::{BrokerNode, partition_file};
+use super::{BrokerNode, clock_fault_file, partition_file, storage_fault_file};
+use crate::proxy::Links;
 use crate::{ClusterConfig, ControlPlane, pki, ports};
 
-/// Start one broker process.
+/// Start one broker process, behind `links` when the cluster proxies them.
 pub(crate) fn spawn_broker(
     binary: &PathBuf,
     control_plane: &ControlPlane,
     config: &ClusterConfig,
     root: &Path,
     index: usize,
+    links: Option<&Links>,
 ) -> Result<BrokerNode> {
     let node_id = format!("broker-{index}");
     // A run, not a single port: with several listeners the broker binds
@@ -25,6 +27,13 @@ pub(crate) fn spawn_broker(
         ports::free_udp()?
     };
     let internal_addr = ports::free_udp()?;
+    let (advertise_addr, control_plane_url) = match links {
+        Some(links) => {
+            let route = links.route(&node_id, internal_addr)?;
+            (route.advertise, route.control_plane_url)
+        }
+        None => (internal_addr, control_plane.base_url.clone()),
+    };
     let metrics_addr = ports::free_tcp()?;
     let data_dir = root.join(&node_id);
     std::fs::create_dir_all(&data_dir)
@@ -48,11 +57,11 @@ pub(crate) fn spawn_broker(
         .env("FELIX_INTERNAL_TLS_CERT", &cert.cert)
         .env("FELIX_INTERNAL_TLS_KEY", &cert.key)
         .env("FELIX_INTERNAL_TLS_CA", &cert.ca)
-        // The advertised address is the internal listener's: it is what peers
-        // forward to, not what clients connect to.
-        .env("FELIX_NODE_ADVERTISE_ADDR", internal_addr.to_string())
+        // The advertised address is the internal listener's (or its proxy's):
+        // it is what peers forward to, not what clients connect to.
+        .env("FELIX_NODE_ADVERTISE_ADDR", advertise_addr.to_string())
         .env("FELIX_NODE_TOKEN_FILE", &node_token_file)
-        .env("FELIX_CONTROLPLANE_URL", &control_plane.base_url)
+        .env("FELIX_CONTROLPLANE_URL", &control_plane_url)
         .env(
             "FELIX_REGION_ID",
             config.regions.get(index).map_or("local", String::as_str),
@@ -63,8 +72,10 @@ pub(crate) fn spawn_broker(
         // harness binds a concrete loopback port rather than 0.0.0.0, so the
         // bind address is also the reachable one.
         .env("FELIX_CLIENT_ADVERTISE_ADDR", client_addr.to_string())
-        // Test-only peer severing, off until a test writes the file.
+        // Test-only faults, each off until a test writes its file.
         .env("FELIX_PEER_PARTITION_FILE", partition_file(&data_dir))
+        .env("FELIX_CLOCK_FAULT_FILE", clock_fault_file(&data_dir))
+        .env("FELIX_STORAGE_FAULT_FILE", storage_fault_file(&data_dir))
         // Each broker generates its own certificate, so each needs its own
         // file: one shared path would leave every broker but the last
         // exporting a certificate nobody can read. The client fixture
@@ -110,6 +121,9 @@ pub(crate) fn spawn_broker(
     let process = command
         .spawn()
         .with_context(|| format!("spawn {}", binary.display()))?;
+    if let Some(links) = links {
+        links.track(&node_id, Some(process.id()));
+    }
 
     Ok(BrokerNode {
         node_id,

@@ -6,6 +6,7 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use super::{Cluster, READY_TIMEOUT};
 use crate::node::{broker_binary, spawn_broker};
+use crate::proxy::Links;
 use crate::{ClusterConfig, ControlPlane, wait};
 
 /// How many times a broker may be started before the cluster gives up on it.
@@ -48,11 +49,23 @@ impl Cluster {
 
         let root = tempfile::tempdir().context("create cluster data root")?;
         let binary = broker_binary()?;
+        let links = if config.proxy_links {
+            Some(Links::start(control_plane.addr()?)?)
+        } else {
+            None
+        };
         let mut nodes = Vec::with_capacity(config.nodes);
         for index in 0..config.nodes {
             nodes.push(
-                spawn_broker(&binary, &control_plane, &config, root.path(), index)
-                    .with_context(|| format!("start broker {index}"))?,
+                spawn_broker(
+                    &binary,
+                    &control_plane,
+                    &config,
+                    root.path(),
+                    index,
+                    links.as_ref(),
+                )
+                .with_context(|| format!("start broker {index}"))?,
             );
         }
 
@@ -69,6 +82,8 @@ impl Cluster {
             http,
             binary: binary.clone(),
             config: config.clone(),
+            links,
+            faults: Default::default(),
             _root: root,
         };
 
@@ -144,6 +159,7 @@ impl Cluster {
             &self.config,
             self._root.path(),
             index,
+            self.links.as_ref(),
         )?;
         self.nodes[index] = replacement;
         Ok(())

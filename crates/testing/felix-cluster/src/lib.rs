@@ -25,7 +25,9 @@
 //!
 //! [`Cluster`] is what a test holds. Its operations live in one file per
 //! concern under `cluster/`: start-up, streams, groups, caches, ownership,
-//! placement, metrics, and faults. [`BrokerNode`] is one broker process and
+//! placement, metrics, and faults. [`Fault`] is the vocabulary a test injects
+//! faults in, and `proxy` the network the link faults act on.
+//! [`BrokerNode`] is one broker process and
 //! [`ClusterConfig`] is what a test asks for. [`scenarios`] holds the
 //! assertions that must hold on any deployment, and [`session`] is how the
 //! `felix-cluster` CLI finds a cluster started in another terminal.
@@ -36,10 +38,12 @@ pub mod client;
 mod cluster;
 mod config;
 pub mod controlplane;
+mod fault;
 pub mod history;
 mod node;
 pub mod pki;
 pub mod ports;
+mod proxy;
 pub mod scenarios;
 pub mod session;
 pub mod wait;
@@ -47,4 +51,5 @@ pub mod wait;
 pub use cluster::{Assignment, Cluster};
 pub use config::{CacheSpec, ClusterConfig, StreamSpec};
 pub use controlplane::ControlPlane;
+pub use fault::{ClockFault, Endpoint, Fault, FsyncFault};
 pub use node::BrokerNode;

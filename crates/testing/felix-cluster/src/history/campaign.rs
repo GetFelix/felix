@@ -78,8 +78,19 @@ impl Campaign {
         })
     }
 
-    /// Three brokers, and every list a `Quorum` stream on all three.
-    pub fn cluster_config(&self) -> ClusterConfig {
+    /// Three brokers, and every list a `Quorum` stream on all three, set up
+    /// for whatever `nemesis` may inject: proxied links for link faults, and
+    /// flush-and-acknowledge-on-commit for fsync faults.
+    pub fn cluster_config(&self, nemesis: &impl Nemesis) -> ClusterConfig {
+        let mut broker_env = Vec::new();
+        if nemesis.needs_fsync_on_commit() {
+            for (name, value) in [
+                ("FELIX_DURABLE_FSYNC_MODE", "on_commit"),
+                ("FELIX_ACK_ON_COMMIT", "true"),
+            ] {
+                broker_env.push((name.to_string(), value.to_string()));
+            }
+        }
         ClusterConfig {
             nodes: 3,
             streams: self
@@ -87,6 +98,8 @@ impl Campaign {
                 .iter()
                 .map(|list| StreamSpec::quorum(list, 1, 3))
                 .collect(),
+            proxy_links: nemesis.needs_proxy_links(),
+            broker_env,
             ..ClusterConfig::default()
         }
     }

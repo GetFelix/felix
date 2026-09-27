@@ -219,13 +219,168 @@ starts one more broker against the running control plane and waits until it
 is placeable, which is the join half of a rebalance. `shard_successors` reads
 each shard's staged destination, for a test that wants to kill it mid-move.
 
-Skewing a broker's clock is not supported. Lease expiry is read from the system
-clock, so testing expiry against a skewed one needs either an injectable clock
-in the broker or `libfaketime` around the process, and neither is in place.
+`partition_node` and `heal_partitions` cut a broker off from every other
+broker, both ways, while it keeps running and heartbeating. They work through
+the broker's test-only partition file (`FELIX_PEER_PARTITION_FILE`), so a
+severed request fails at once rather than timing out.
 
-Blocking a peer link without stopping the process is not supported yet; it needs
-either a proxy in front of the internal listener or platform firewall rules, and
-nothing so far has required it.
+### The fault API
+
+Every fault above, and the ones below, is also a value. `Cluster::inject`
+applies one and returns once it is in effect, `Cluster::heal` undoes it, and
+`Cluster::heal_all` undoes everything still injected, newest first. Faults of
+different families compose, which is the point: a scenario is built from
+several.
+
+```rust
+let cluster = Cluster::start(ClusterConfig { proxy_links: true, ..Default::default() }).await?;
+for follower in &followers {
+    cluster
+        .inject(&Fault::Drop { from: Endpoint::node(&leader), to: Endpoint::node(follower) })
+        .await?;
+}
+cluster
+    .inject(&Fault::Clock { process: Endpoint::node(&leader), fault: ClockFault::Rate(2.0) })
+    .await?;
+// ...
+cluster.heal_all().await?;
+```
+
+| Fault | What the process sees | How |
+| --- | --- | --- |
+| `Drop { from, to }` | Traffic one way lost, the other way untouched | Harness proxy; needs `proxy_links` |
+| `Delay { from, to, by }` | Traffic one way late by `by` | Harness proxy; needs `proxy_links` |
+| `Refuse { node, peers }` | `node`'s own requests to `peers` fail at once | Partition file |
+| `Suspend { node }` | `SIGSTOP`: alive, silent, holding its lease | Signal |
+| `Clock { process, fault }` | Time stepped (`StepMillis`, forward only on a broker) or running at a `Rate` | Clock fault file |
+| `Fsync { node, fault }` | Flushes slow (`Delay`), failing with `EIO` (`Fail`), or failing once (`FailOnce`) | Storage fault file |
+
+An endpoint is a broker (`Endpoint::node(id)`) or the control plane. A fault
+naming a broker the cluster does not have, or a link fault on a cluster
+started without proxies, is an error rather than a no-op.
+
+`Suspend` signals the broker's process alone. Brokers start no children, so
+that is the whole of it, and they stay in the harness's process group so a
+Ctrl-C of the test still reaches them.
+
+`crates/testing/felix-cluster/tests/failures/` has one module per family
+(`links`, `clocks`, `fsync`, and `faults` for suspend and composition). Each
+test checks the fault took effect before anything else and heals it; each
+fails when `inject` is stubbed to do nothing.
+
+#### Links
+
+With `ClusterConfig::proxy_links`, every broker-to-broker and
+broker-to-control-plane link runs through proxies the harness owns, without
+any change to the broker. A broker learns its peers' addresses from the
+catalog, which holds whatever each advertised, so each broker advertises a UDP
+proxy in front of its internal listener; and it reaches the control plane at
+the URL it is given, so each is given its own TCP proxy. Client traffic and the
+harness's own HTTP calls do not go through them. The proxies run on their own
+runtime thread, so a test that blocks its own runtime does not stall the
+cluster's network.
+
+The peer proxy relays QUIC datagrams one at a time, with a session per source
+so replies find their way back, and drops or holds each datagram by the rule
+for its direction. Which broker a datagram came from is not on the wire (the
+node id is inside the TLS handshake), so the proxy asks the OS which of the
+harness's broker processes holds the source port: `/proc` on Linux, `lsof`
+elsewhere. A datagram whose sender it cannot find is delivered, since
+guessing would fault a link the test never named, but it is counted and
+logged: `Cluster::unattributed_datagrams` should be zero in a test that relies
+on a link fault holding, and healing a link fault warns when it is not.
+
+The control-plane proxy is per broker, so the port says whose connection it
+is. A dropped direction is a black hole: bytes are accepted and never arrive,
+and the sender learns nothing until its own timeout, as on a real partition. A
+connection that lost bytes cannot carry a valid stream again, so it is closed
+when the link heals and the broker reconnects.
+
+Dropping only the control plane's replies to one broker is the asymmetric case
+worth having: the control plane hears every heartbeat and keeps the broker
+live, while the broker hears nothing back and lets its lease lapse.
+
+#### Clocks
+
+Brokers and the control plane read lease and expiry time through
+`felix_common::clock`: a broker's lease clock (`CLOCK_BOOTTIME`), and the
+control plane's wall clock, which stamps heartbeats and sets the expiry
+threshold. With `FELIX_CLOCK_FAULT_FILE` set, a process re-reads that file at
+most every 50 ms and skews both readings by it:
+
+```text
+offset_ms=-2500   # added to every reading; changing it is a step
+rate=2.0          # how fast the clock runs from the moment it is seen
+```
+
+Missing or empty is the true clock. The control plane runs in the harness
+process, whose environment the harness does not own, so it follows its file
+through `felix_common::clock::fault::follow` instead, from the first clock
+fault a test aims at it. That skews the whole test process, which is safe only
+because cluster tests are `#[serial]`.
+
+The fault seam is compiled into debug builds and builds with felix-common's
+`fault-injection` feature. A plain release build has no such module: it reads
+the real clocks directly and ignores `FELIX_CLOCK_FAULT_FILE`. The brokers the
+harness starts are debug builds; to skew the in-process control plane from an
+optimised test build, enable felix-cluster's `fault-injection` feature, or a
+control-plane clock fault is an error.
+
+A broker's lease clock is `CLOCK_BOOTTIME`, which never goes backwards, so the
+harness only lets it run forward: `inject` refuses a negative `StepMillis` on
+a broker, and healing a broker's clock fault keeps what the fault already did.
+A healed `Rate` goes back to 1x with its drift kept; a healed forward step
+stays taken. A stepped-back lease clock would stretch the broker's lease and
+report unsafety no real machine can produce. The control plane's wall clock
+can be stepped either way, and healing it returns it to the true clock at
+once, which is itself a step.
+
+Not skewed: tokio's timers, and the control plane's silence watch, which runs
+on tokio's monotonic clock on purpose. That watch is why a wall-clock step
+forward does not expire a heartbeating broker
+(`a_control_plane_clock_stepped_forward_expires_no_live_broker`). A step
+*back* does delay expiry: heartbeat stamps never move backwards, so a broker
+that dies within the step keeps a stamp newer than any threshold the clock can
+produce until real time catches up, and stays placeable for the length of the
+step. `a_control_plane_clock_stepped_back_still_expires_a_dead_broker` shows
+it and is ignored until that is fixed.
+
+#### Disks
+
+With `FELIX_STORAGE_FAULT_FILE` set, a broker's storage re-reads that file on
+its next flush once 50 ms have passed since the last reading. Every flush the
+storage crate issues goes through the same seam as the power-loss layer, so a
+fault reaches segment data, indexes, directory entries and the durable mark
+alike:
+
+```text
+fsync_delay_ms=300   # each flush waits first
+fsync=fail           # every flush fails with EIO; or fail_once for the next one only
+generation=1         # a new value arms fail_once again
+```
+
+A failure is reported instead of flushing; the dirty pages are not dropped.
+The fault is process-wide: `fail_once` fails whichever flush on that broker
+comes next, on any of its logs. Only debug builds and builds with the storage
+crate's `fault-injection` feature compile the hook in. The fsync tests run under
+`FELIX_DURABLE_FSYNC_MODE=on_commit` and `FELIX_ACK_ON_COMMIT=true`, since by
+default a `Leader` publish is acknowledged once it is queued and so could not
+fail on the disk.
+
+> `a_failed_fsync_fails_the_publish` -- a broker whose every fsync fails
+> acknowledges nothing.
+
+> `a_retry_after_a_failed_fsync_is_not_trusted` -- after one failed fsync the
+> log stays stopped, though the next fsync would succeed.
+
+> `a_quorum_leader_with_a_failed_fsync_does_not_ack` -- a `Quorum` leader whose
+> own flush fails does not acknowledge, whatever its followers hold.
+
+All three files are read only when their variable is set. The harness sets
+them for every broker it starts and writes them only to inject a fault. A
+release build compiles the clock and storage seams out and ignores their
+files; the partition file is honoured in any build, and a deployment that does
+not set it pays nothing for it.
 
 ## The failover demo
 
@@ -307,9 +462,13 @@ being discarded, so that reason exists to be quoted.
 ## Fault campaigns
 
 `felix_cluster::history` runs clients against `Quorum` streams while a nemesis
-kills, pauses and partitions brokers at random. It then checks the recorded
-history for lost, duplicated, reordered, phantom and failed-but-present
-writes. See [the history checker](history-checker.md).
+kills, pauses and partitions brokers at random, and with
+`RandomNemesis::all_faults` also injects the link, clock and disk faults
+above through `Cluster::inject`. It then checks the recorded history for lost,
+duplicated, reordered, phantom and failed-but-present writes. The campaign has
+a `Fault` type of its own (`history::Fault`): a fault with its target chosen,
+built from this crate's `Fault` values. See
+[the history checker](history-checker.md).
 
 ## The conformance suite
 
