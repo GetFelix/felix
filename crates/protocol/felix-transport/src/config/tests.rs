@@ -34,15 +34,21 @@ fn the_keep_alive_fits_inside_the_idle_window() {
     assert_eq!(config.effective_keep_alive(), Some(keep_alive));
 }
 
-/// A WAN stall of several seconds must not tear down every connection.
+/// The idle timeout is how long a publish waits on a leader that died without
+/// closing, so the default must leave room to fail over well inside ten
+/// seconds, while the keep-alive stays under half of it.
 #[test]
-fn the_default_idle_timeout_outlasts_a_short_stall() {
+fn the_defaults_notice_a_dead_peer_quickly_and_keep_a_quiet_one() {
     let config = TransportConfig {
         max_idle_timeout: Some(DEFAULT_MAX_IDLE_TIMEOUT),
         keep_alive_interval: Some(DEFAULT_KEEP_ALIVE_INTERVAL),
         ..TransportConfig::default()
     };
-    assert!(config.max_idle_timeout.unwrap() >= Duration::from_secs(20));
+    assert!(DEFAULT_MAX_IDLE_TIMEOUT <= Duration::from_secs(6));
+    assert_eq!(
+        config.effective_keep_alive(),
+        Some(DEFAULT_KEEP_ALIVE_INTERVAL)
+    );
 }
 
 #[test]
