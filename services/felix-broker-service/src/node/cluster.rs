@@ -207,6 +207,14 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
         (Some((router, ingress, lifecycle, ownership)), Some(base_url), storage) => {
             let readers = shard_lifecycle::ShardReaders::new(Arc::clone(broker))
                 .with_endpoints(Arc::clone(client_endpoints));
+            // A lapsed lease ends the readers of every shard this broker led.
+            if let Some(lease) = ingress.fence().lease() {
+                tokio::spawn(readers.clone().end_on_lapse(
+                    Arc::clone(lease),
+                    Arc::clone(lifecycle),
+                    sync_shutdown.clone(),
+                ));
+            }
             let store: Arc<dyn shard_lifecycle::ShardStore> = match storage {
                 Some(storage) => Arc::new(
                     shard_lifecycle::DurableShardStore::new(Arc::new(storage.clone()))

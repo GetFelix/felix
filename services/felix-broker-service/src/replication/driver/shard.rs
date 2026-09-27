@@ -225,6 +225,24 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
         quorum_offset_without(tail, followers, learner.as_deref())
             .max(marks.offset(&watch_key(key), route.generation).unwrap_or(0))
     };
+    // Counters on a `Quorum` cache are acknowledged at their own mark, under
+    // the same rule as the shard's: shipped first, so the reports below can
+    // leave out a follower missing an acknowledged counter update.
+    let counters = if acks_at_quorum && key.kind == felix_router::ShardKind::Cache {
+        counter_level(
+            requester,
+            broker,
+            marks,
+            key,
+            route,
+            &mut aux,
+            learner.as_deref(),
+            rebuilds,
+        )
+        .await
+    } else {
+        None
+    };
     let mut positions: Vec<FollowerCursor> = entry.followers.clone();
     let (log_ref, shard_ref) = (&log, &shard);
     // Not once the leader is fenced: the shard is not serving until the
@@ -369,7 +387,10 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
             rest
         },
         async {
-            let (report, offset) = majority?;
+            let (mut report, offset) = majority?;
+            if let Some(counters) = &counters {
+                counters.limit(&mut report);
+            }
 
             // **Reported before the mark is published, and awaited.**
             //
@@ -388,7 +409,7 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
             // by another route. The publish waits, the next pass retries, and a
             // client is told a timeout rather than an acknowledgement this
             // broker cannot stand behind.
-            publish_mark(
+            if publish_mark(
                 broker,
                 reporter,
                 marks,
@@ -397,7 +418,11 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
                 &report,
                 offset,
             )
-            .await;
+            .await
+                && let Some(counters) = &counters
+            {
+                counters.publish(marks, key, route.generation);
+            }
             Some(report)
         },
     )
@@ -453,6 +478,9 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
     settled
         .caught_up
         .retain(|node| !aux_behind.iter().any(|(_, behind)| behind == node));
+    if let Some(counters) = &counters {
+        counters.limit(&mut settled);
+    }
     let behind = settled.caught_up.is_empty()
         && entry
             .followers
@@ -463,7 +491,7 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
         // majority already moved it — but with five replicas a second follower
         // answering raises the offset a majority holds, and that is this pass's
         // to publish rather than the next one's.
-        publish_mark(
+        if publish_mark(
             broker,
             reporter,
             marks,
@@ -472,7 +500,11 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
             &settled,
             quorum_offset_without(tail, &entry.followers, learner.as_deref()),
         )
-        .await;
+        .await
+            && let Some(counters) = &counters
+        {
+            counters.publish(marks, key, route.generation);
+        }
         report_out = Some(settled);
     }
 
@@ -534,6 +566,79 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
         drain_pending: route.draining && !drained,
         behind,
     }
+}
+
+/// How far a majority holds a `Quorum` cache's counter log, and who holds it
+/// that far.
+pub(super) struct CounterLevel {
+    /// The counter mark to publish once a report lands.
+    acknowledged: u64,
+    /// Followers holding the counter log up to `acknowledged`.
+    level: Vec<String>,
+}
+
+impl CounterLevel {
+    /// Leave out of a report's candidates any follower missing a counter
+    /// update that may have been acknowledged: promoted, it would lose it.
+    fn limit(&self, report: &mut ShardReport) {
+        report
+            .caught_up
+            .retain(|node| self.level.iter().any(|level| level == node));
+    }
+
+    /// Release counter adds up to the level, now that a report naming only
+    /// followers that hold them has landed.
+    fn publish(&self, marks: &QuorumMarks, key: &ShardKey, generation: u64) {
+        marks
+            .counters()
+            .publish(&watch_key(key), generation, self.acknowledged);
+    }
+}
+
+/// Ship a cache shard's counter log and measure it, for [`CounterLevel`].
+/// `None` when the shard has no counter log here.
+#[allow(clippy::too_many_arguments)]
+async fn counter_level<R: PeerRequester>(
+    requester: &R,
+    broker: &Arc<Broker>,
+    marks: &QuorumMarks,
+    key: &ShardKey,
+    route: &Route,
+    aux: &mut AuxCursors,
+    learner: Option<&str>,
+    rebuilds: &Rebuilds,
+) -> Option<CounterLevel> {
+    let log = broker
+        .shard_log(
+            felix_broker::LogKind::Counters,
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+            key.shard,
+        )
+        .await?;
+    ship_aux_log(
+        requester,
+        broker,
+        key,
+        route,
+        felix_broker::LogKind::Counters,
+        &mut aux.counters,
+        rebuilds,
+    )
+    .await;
+    let tail = log.tail_offset().await.ok()?;
+    // Never below a mark already published: those updates were acknowledged.
+    let acknowledged = quorum_offset_without(tail, &aux.counters.followers, learner).max(
+        marks
+            .counters()
+            .offset(&watch_key(key), route.generation)
+            .unwrap_or(0),
+    );
+    Some(CounterLevel {
+        acknowledged,
+        level: caught_up(acknowledged, &aux.counters.followers),
+    })
 }
 
 /// Ship the logs that ride a shard's replica set, and say which followers
@@ -857,12 +962,14 @@ pub(super) async fn publish_mark(
         marks.publish(&watch_key(key), generation, offset);
         // A `Quorum` stream's readers stop at the mark (see
         // `quorum::read_bound`), so a fetch waiting for records is waiting
-        // for this as much as for the append.
+        // for this as much as for the append, and the batches the stream held
+        // back from its subscribers go out now.
         if key.kind == felix_router::ShardKind::Stream
             && let Ok(handle) = broker
                 .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
                 .await
         {
+            handle.release_committed();
             handle.appended().notify_waiters();
         }
     } else {

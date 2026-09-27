@@ -21,6 +21,11 @@
 //! `CacheWatchLagged` naming the first missed offset, because filtering makes
 //! offsets sparse and a drop would otherwise be indistinguishable from other
 //! keys' traffic. Re-watching from that offset is gapless.
+//!
+//! On a `Quorum` cache a watch hands out nothing past the committed mark: the
+//! catch-up waits for the mark to reach the tail, and each live change waits
+//! for the mark to pass it ([`CommitGate`]). A change past the mark can be
+//! lost at failover and its offset reused.
 
 use std::sync::Arc;
 
@@ -288,6 +293,29 @@ pub(crate) async fn handle_cache_watch_message(
     };
     let base = log.base_offset();
 
+    // Everything the catch-up hands out is below the tail, so on a `Quorum`
+    // cache it waits for the mark to get there first.
+    let gate = CommitGate {
+        broker: Arc::clone(&broker),
+        key: crate::shards::ShardKey {
+            tenant_id: request.tenant_id.clone(),
+            namespace: request.namespace.clone(),
+            stream: request.cache.clone(),
+            shard,
+            kind: crate::shards::ShardKind::Cache,
+        },
+        marks: publish_ctx.marks.clone(),
+        ingress: publish_ctx.ingress.clone(),
+        timeout: publish_ctx.quorum_timeout,
+    };
+    if let Err(err) = gate.wait(tail).await {
+        subscriptions.release();
+        responder
+            .send(ClientError::from_anyhow(&anyhow::Error::new(err)).into_message())
+            .await?;
+        return Ok(true);
+    }
+
     // What fills the gap between the requested position and the live edge.
     enum CatchUp {
         None,
@@ -432,8 +460,53 @@ pub(crate) async fn handle_cache_watch_message(
         tail,
         subscriptions,
         shard_moved,
+        gate,
     ));
     Ok(true)
+}
+
+/// What a watch of a `Quorum` cache waits on before handing out a change.
+struct CommitGate {
+    broker: Arc<Broker>,
+    key: crate::shards::ShardKey,
+    marks: Option<Arc<crate::replication::quorum::QuorumMarks>>,
+    ingress: Option<Arc<crate::shards::routing::IngressRouter>>,
+    timeout: std::time::Duration,
+}
+
+impl CommitGate {
+    /// Wait until every change below `end` is committed. Returns at once for
+    /// a cache that is not `Quorum`, or a broker with no replicas to wait for.
+    async fn wait(&self, end: u64) -> Result<(), crate::replication::quorum::QuorumError> {
+        let consistency = self
+            .broker
+            .cache_consistency(&self.key.tenant_id, &self.key.namespace, &self.key.stream)
+            .await;
+        crate::replication::quorum::await_readable(
+            consistency,
+            &self.key,
+            self.marks.as_deref(),
+            self.ingress.as_deref(),
+            end,
+            self.timeout,
+        )
+        .await
+    }
+
+    /// [`Self::wait`] for as long as it takes, for a live change. False once
+    /// this broker stops serving the shard: the change is not committed here
+    /// and never will be.
+    async fn wait_live(&self, end: u64) -> bool {
+        loop {
+            match self.wait(end).await {
+                Ok(()) => return true,
+                Err(crate::replication::quorum::QuorumError::TimedOut { .. }) => continue,
+                Err(crate::replication::quorum::QuorumError::LeadershipLost { .. }) => {
+                    return false;
+                }
+            }
+        }
+    }
 }
 
 /// Replay `[from, tail)` from the shard log, delivering only matching changes.
@@ -552,6 +625,7 @@ async fn run_watch_delivery(
     subscriptions: Arc<super::publish::SubscriptionLimiter>,
     // The watch's id, when the client offered `FEATURE_SHARD_MOVED`.
     shard_moved: Option<u64>,
+    gate: CommitGate,
 ) {
     loop {
         match watch.recv().await {
@@ -561,6 +635,32 @@ async fn run_watch_delivery(
                     // covered it; the offset is what makes the duplicate cheap
                     // to detect.
                     continue;
+                }
+                if !gate.wait_live(event.offset + 1).await {
+                    // Not committed here, and this broker has stopped serving
+                    // the shard: the client resumes from this change wherever
+                    // it is served now. Without `shard_moved` a reset, which a
+                    // client reads as a lost watch, not a finished one.
+                    match shard_moved {
+                        Some(subscription_id) => {
+                            let to = watch.moved().map(|moved| moved.to.clone());
+                            let _ = write_message(
+                                &mut event_send,
+                                Message::ShardMoved {
+                                    subscription_id,
+                                    resume_from: Some(event.offset),
+                                    node_id: to.as_ref().and_then(|to| to.node_id.clone()),
+                                    addr: to.as_ref().and_then(|to| to.addr.clone()),
+                                    generation: to.map_or(0, |to| to.generation),
+                                },
+                            )
+                            .await;
+                        }
+                        None => {
+                            let _ = event_send.reset(quinn::VarInt::from_u32(1));
+                        }
+                    }
+                    break;
                 }
                 let message = Message::CacheEvent {
                     key: event.key,

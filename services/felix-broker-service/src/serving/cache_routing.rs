@@ -155,16 +155,28 @@ pub(crate) async fn apply_cache_op(
                         marks,
                         ingress,
                         quorum_timeout,
+                        "write",
                     )
                     .await?;
                     None
                 }
                 CacheRequest::Get => {
-                    // A read does not hold the fence.
+                    // A read does not hold the fence, but it follows the lease.
                     drop(fenced);
-                    cache_store
+                    refuse_read_on_lapse(ingress)?;
+                    let value = cache_store
                         .get(tenant_id, namespace, cache, shard, key)
-                        .await
+                        .await;
+                    crate::replication::quorum::await_cache_quorum(
+                        broker,
+                        &written,
+                        marks,
+                        ingress,
+                        quorum_timeout,
+                        "read",
+                    )
+                    .await?;
+                    value
                 }
                 CacheRequest::Delete => {
                     let fenced =
@@ -180,6 +192,7 @@ pub(crate) async fn apply_cache_op(
                         marks,
                         ingress,
                         quorum_timeout,
+                        "write",
                     )
                     .await?;
                     removed
@@ -235,6 +248,12 @@ pub(crate) async fn apply_cache_op(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn apply_counter_op(
     broker: &felix_broker::Broker,
+    // As for a cache op: a `Quorum` cache acknowledges a counter add, and
+    // answers a counter read, only once a majority holds the counter log.
+    quorum: (
+        Option<&crate::replication::quorum::QuorumMarks>,
+        std::time::Duration,
+    ),
     ingress: Option<&IngressRouter>,
     peers: Option<&crate::peer::PeerPool>,
     credential: &str,
@@ -257,31 +276,55 @@ pub(crate) async fn apply_counter_op(
                 .with_retry(felix_wire::RetryClass::Fatal)
                 .into());
             };
+            let (marks, quorum_timeout) = quorum;
+            // A counter lives on its cache's shard, so it is fenced by it.
+            let shard_key = ShardKey {
+                tenant_id: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                stream: cache.to_string(),
+                shard,
+                kind: ShardKind::Cache,
+            };
             match request {
                 CacheRequest::CounterAdd { delta } => {
-                    // A counter lives on its cache's shard, so it is fenced by it.
-                    let shard_key = ShardKey {
-                        tenant_id: tenant_id.to_string(),
-                        namespace: namespace.to_string(),
-                        stream: cache.to_string(),
-                        shard,
-                        kind: ShardKind::Cache,
-                    };
-                    let _fenced =
+                    let fenced =
                         fence::enter_or_keep(&mut fenced, ingress, Some(&shard_key), generation)
                             .map_err(ClientError::from)?;
-                    counters
+                    let (sum, offset) = counters
                         .add(tenant_id, namespace, cache, shard, key, delta)
                         .await
-                        .map(|(sum, _)| Some(sum))
-                        .map_err(storage)
+                        .map_err(storage)?;
+                    drop(fenced);
+                    crate::replication::quorum::await_counter_quorum(
+                        broker,
+                        &shard_key,
+                        marks,
+                        ingress,
+                        quorum_timeout,
+                        Some(offset + 1),
+                        "counter add",
+                    )
+                    .await?;
+                    Ok(Some(sum))
                 }
                 CacheRequest::CounterGet => {
                     drop(fenced);
-                    counters
+                    refuse_read_on_lapse(ingress)?;
+                    let sum = counters
                         .get(tenant_id, namespace, cache, shard, key)
                         .await
-                        .map_err(storage)
+                        .map_err(storage)?;
+                    crate::replication::quorum::await_counter_quorum(
+                        broker,
+                        &shard_key,
+                        marks,
+                        ingress,
+                        quorum_timeout,
+                        None,
+                        "read",
+                    )
+                    .await?;
+                    Ok(sum)
                 }
                 // The counter path never builds these; reaching here is a bug
                 // in this file, not in the caller.
@@ -332,6 +375,17 @@ pub(crate) fn put_request(value: Bytes, ttl: Option<std::time::Duration>) -> Cac
 
 #[cfg(test)]
 mod tests;
+
+/// A read of a shard this broker leads is refused while its lease has
+/// lapsed: another broker may be leading it, with writes this one never saw.
+fn refuse_read_on_lapse(ingress: Option<&IngressRouter>) -> Result<(), ClientError> {
+    if ingress.is_some_and(|ingress| !ingress.fence().lease_valid()) {
+        use crate::cluster::lease::metrics;
+        metrics::record_refusal(metrics::BOUNDARY_READ);
+        return Err(ClientError::from(fence::Fenced::LeaseLapsed));
+    }
+    Ok(())
+}
 
 fn refused(reason: &crate::shards::routing::Reason) -> anyhow::Error {
     ClientError::unavailable(reason, reason.to_string()).into()

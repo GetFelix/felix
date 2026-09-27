@@ -292,6 +292,7 @@ mod fence {
     ) -> Result<Option<i64>, ClientError> {
         apply_counter_op(
             &leader.broker,
+            (None, std::time::Duration::from_secs(1)),
             Some(&leader.ingress),
             None,
             "",
@@ -355,9 +356,9 @@ mod fence {
 
     /// A broker whose lease lapsed may already have been replaced as leader,
     /// so cache puts, deletes and counter adds are refused like a publish is,
-    /// and served again once the lease is renewed.
+    /// and so are reads; all are served again once the lease is renewed.
     #[tokio::test]
-    async fn cache_and_counter_writes_after_the_lease_lapses_are_refused() {
+    async fn cache_and_counter_reads_and_writes_after_the_lease_lapses_are_refused() {
         let leader = Leader::start().await;
         let lease = leader.hold_lease();
         cache_op(&leader, put_request(Bytes::from_static(b"v1"), None))
@@ -387,16 +388,25 @@ mod fence {
                 .expect_err("a counter add landed without a lease"),
             "counter add",
         );
+        // Reads follow the lease too: another broker may lead the shard now.
+        assert_fenced(
+            cache_op(&leader, CacheRequest::Get)
+                .await
+                .expect_err("a get was served without a lease"),
+            "get",
+        );
+        assert_fenced(
+            counter_op(&leader, CacheRequest::CounterGet)
+                .await
+                .expect_err("a counter read was served without a lease"),
+            "counter get",
+        );
+
+        lease.renew();
         assert_eq!(
             cache_op(&leader, CacheRequest::Get).await,
             Ok(Some(Bytes::from_static(b"v1")))
         );
-        assert_eq!(
-            counter_op(&leader, CacheRequest::CounterGet).await,
-            Ok(Some(5))
-        );
-
-        lease.renew();
         assert_eq!(
             counter_op(&leader, CacheRequest::CounterAdd { delta: 1 }).await,
             Ok(Some(6))

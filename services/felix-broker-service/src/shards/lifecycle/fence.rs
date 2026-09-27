@@ -51,6 +51,11 @@ impl ShardFence {
         let _ = self.lease.set(lease);
     }
 
+    /// The lease bound with [`Self::bind_lease`], if any.
+    pub fn lease(&self) -> Option<&Arc<LeaseState>> {
+        self.lease.get()
+    }
+
     /// Whether the lease, if one is bound, is valid right now against the
     /// clock. The same check a write makes when it enters, for callers that
     /// must re-check before acknowledging.

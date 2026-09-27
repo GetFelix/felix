@@ -56,6 +56,10 @@ use config::EventWriterConfig;
 use feeder::run_lane_feeder;
 use replay::{CountingSink, write_replay};
 
+/// Application code on an event stream reset because this broker stopped
+/// serving the shard before the subscription went live.
+const NOT_SERVING_HERE: quinn::VarInt = quinn::VarInt::from_u32(1);
+
 /// Handle a subscribe request received on the bi-directional control stream.
 ///
 /// This function is invoked from the control stream read loop when a `Message::Subscribe`
@@ -323,6 +327,18 @@ pub(crate) async fn handle_subscribe_message(
         {
             subscriptions.release();
             tracing::info!(error = %err, "subscription replay failed");
+            // Stopped serving the shard mid-replay (lease lapsed, shard moved).
+            // Finishing the stream would read as a clean end; a reset reads
+            // as a lost subscription, which the client resumes from its last
+            // offset wherever the shard is served now.
+            if err.chain().any(|cause| {
+                matches!(
+                    cause.downcast_ref::<felix_broker::BrokerError>(),
+                    Some(felix_broker::BrokerError::NotReadable { .. })
+                )
+            }) {
+                let _ = event_send.reset(NOT_SERVING_HERE);
+            }
             return Ok(true);
         }
 

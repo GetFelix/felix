@@ -9,6 +9,11 @@
 //! [`Finisher`] dropped early hands what is left to a detached task, which
 //! keeps the commit turn until it is done, so later batches still wait
 //! behind this one.
+//!
+//! A batch past the committed mark of a `Quorum` stream stops after the
+//! commit: it joins the stream's `CommitHold` in commit order, and
+//! [`release`] appends and fans it out once the mark passes it. See
+//! `stream/committed.rs`.
 
 use std::sync::Arc;
 
@@ -17,7 +22,7 @@ use bytes::Bytes;
 use super::{ClaimedDurable, ClaimedPublish, PublishOutcome};
 use crate::broker::shards::StreamHandle;
 use crate::error::Result;
-use crate::stream::{DeliveryEnvelope, QueuedDelivery, SubQueuePolicy, SubscriberEntry};
+use crate::stream::{DeliveryEnvelope, HeldBatch, QueuedDelivery, SubQueuePolicy, SubscriberEntry};
 use crate::telemetry::{t_histogram, t_now_if};
 use crate::timings;
 
@@ -34,6 +39,9 @@ pub(super) struct Completion {
     /// Set once the batch is in the ring: from then on only the fanout is
     /// left, and appending again would duplicate it.
     delivery: Option<Delivery>,
+    /// Where a released batch's offsets start. A claimed batch reads them
+    /// from its claim instead.
+    released_at: Option<u64>,
 }
 
 /// A batch in the ring, part way through its fanout.
@@ -67,6 +75,22 @@ impl Completion {
             log_capacity,
             replication,
             delivery: None,
+            released_at: None,
+        }
+    }
+
+    /// A held batch the mark has passed: committed, turn long released, and
+    /// only the ring append and the fanout left.
+    fn released(handle: StreamHandle, batch: HeldBatch, log_capacity: usize) -> Self {
+        Self {
+            handle,
+            payloads: batch.payloads,
+            durable: None,
+            sample: false,
+            log_capacity,
+            replication: Arc::default(),
+            delivery: None,
+            released_at: Some(batch.first_offset),
         }
     }
 
@@ -81,8 +105,44 @@ impl Completion {
         }
         if self.delivery.is_none() {
             self.commit().await?;
+            if let Some(held) = self.hold() {
+                return Ok(held);
+            }
             self.append();
         }
+        self.deliver().await
+    }
+
+    /// Hold the batch back from readers if the stream's committed mark has
+    /// not passed it. Runs under the commit turn, so batches join the hold in
+    /// the order they take their offsets.
+    ///
+    /// The answer reports no subscribers: none has the batch yet.
+    fn hold(&mut self) -> Option<PublishOutcome> {
+        let claimed = self.durable.as_ref()?;
+        let state = &self.handle.state;
+        let first_offset = claimed.pending.first_offset();
+        let end = first_offset + self.payloads.len() as u64;
+        // A `Leader` stream with nothing held never asks for a bound, so it
+        // costs one atomic load here.
+        if !state.held.is_busy() && state.read_bound().covers(end) {
+            return None;
+        }
+        let batch = HeldBatch {
+            payloads: std::mem::take(&mut self.payloads),
+            first_offset,
+        };
+        if state.held.push(batch) {
+            spawn_release(&self.handle);
+        }
+        Some(PublishOutcome {
+            subscribers: 0,
+            offsets: Some((first_offset, end - 1)),
+        })
+    }
+
+    /// Fan the batch out and settle what the fanout found.
+    async fn deliver(&mut self) -> Result<PublishOutcome> {
         self.fan_out().await;
         let delivery = self.delivery.as_mut().expect("appended above");
         if !delivery.closed.is_empty() {
@@ -140,7 +200,8 @@ impl Completion {
         let first_offset = self
             .durable
             .as_ref()
-            .map(|claimed| claimed.pending.first_offset());
+            .map(|claimed| claimed.pending.first_offset())
+            .or(self.released_at);
         let senders =
             self.handle
                 .state
@@ -223,6 +284,41 @@ impl Completion {
             timings::record_enqueue_ns(fanout_ns);
             timings::record_fanout_ns(fanout_ns);
             t_histogram!("broker_publish_fanout_total_ns").record(fanout_ns as f64);
+        }
+    }
+}
+
+/// Start releasing `handle`'s held batches on a task of their own.
+///
+/// Never inline in a caller's future: a release cancelled half way would
+/// leave the hold marked as releasing, and nothing after it would ever go
+/// out. Outside a runtime the process is going down and the batches are on
+/// disk for whoever opens the log next.
+pub(crate) fn spawn_release(handle: &StreamHandle) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    runtime.spawn(release(handle.clone()));
+}
+
+/// Append and fan out, in order, every held batch the bound covers, until
+/// none is left that it does.
+///
+/// One per stream at a time (`CommitHold` sees to it), which is what keeps
+/// released batches in offset order across subscribers and the ring.
+async fn release(handle: StreamHandle) {
+    let state = &handle.state;
+    let log_capacity = state.held.log_capacity().unwrap_or(1);
+    loop {
+        state.held.begin_pass();
+        let bound = state.read_bound();
+        let Some(ready) = state.held.take_ready(bound) else {
+            return;
+        };
+        for batch in ready {
+            let mut completion = Completion::released(handle.clone(), batch, log_capacity);
+            completion.append();
+            let _ = completion.deliver().await;
         }
     }
 }

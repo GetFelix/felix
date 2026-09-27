@@ -542,6 +542,7 @@ pub trait ShardStore: Send + Sync {
 }
 
 /// Ends the readers of a released shard, for the stores that serve them.
+#[derive(Clone)]
 pub struct ShardReaders {
     broker: std::sync::Arc<felix_broker::Broker>,
     endpoints: Option<Arc<crate::cluster::client_endpoints::ClientEndpoints>>,
@@ -562,6 +563,46 @@ impl ShardReaders {
     ) -> Self {
         self.endpoints = Some(endpoints);
         self
+    }
+
+    /// End the readers of every shard this broker serves, each time the
+    /// lease lapses, until `shutdown`.
+    ///
+    /// A lapsed lease means another broker may lead these shards by now, so a
+    /// reader here could be following a log the new leader has moved past.
+    /// Each subscription and watch ends the way a moved one does, with where
+    /// to resume and no named owner, and the client finds the shard again
+    /// through its entry broker. New reads are refused until the lease comes
+    /// back (`redirect_for`). What a `Quorum` stream held back stays held: if
+    /// the lease is renewed at the same generation the mark releases it, and
+    /// if the shard goes, releasing it drops it.
+    pub async fn end_on_lapse(
+        self,
+        lease: Arc<crate::cluster::lease::LeaseState>,
+        lifecycle: Arc<tokio::sync::Mutex<ShardLifecycle>>,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) {
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => return,
+                _ = lease.lapsed() => {}
+            }
+            let led: Vec<(ShardKey, u64)> = {
+                let lifecycle = lifecycle.lock().await;
+                lifecycle
+                    .active()
+                    .filter_map(|key| Some((key.clone(), lifecycle.generation(key)?)))
+                    .collect()
+            };
+            for (key, generation) in led {
+                let to = felix_broker::ShardHandoff {
+                    node_id: None,
+                    addr: None,
+                    generation,
+                };
+                self.end(&key, Some(to), false).await;
+            }
+        }
     }
 
     /// Forget the consumer groups' in-flight state for a stream shard, so it
@@ -615,6 +656,28 @@ impl ShardReaders {
                 );
             }
         });
+    }
+
+    /// End a shard's readers because this broker stopped serving it, and
+    /// drop what a `Quorum` stream held back from them: it was never
+    /// committed under this broker's leadership, and the readers resume on
+    /// the next owner's log.
+    async fn stop(&self, key: &ShardKey, handoff: Option<felix_broker::ShardHandoff>, quiet: bool) {
+        self.end(key, handoff, quiet).await;
+        if key.kind == ShardKind::Stream {
+            let dropped = self
+                .broker
+                .discard_uncommitted(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .await;
+            if dropped > 0 {
+                tracing::info!(
+                    name = %key.stream,
+                    shard = key.shard,
+                    dropped,
+                    "dropped batches held for a quorum that this broker no longer leads",
+                );
+            }
+        }
     }
 
     async fn end(&self, key: &ShardKey, handoff: Option<felix_broker::ShardHandoff>, quiet: bool) {
@@ -791,7 +854,7 @@ impl ShardStore for DurableShardStore {
         quiet: bool,
     ) {
         if let Some(readers) = &self.readers {
-            readers.end(key, handoff, quiet).await;
+            readers.stop(key, handoff, quiet).await;
         }
     }
 
@@ -844,7 +907,7 @@ impl ShardStore for EphemeralShardStore {
         quiet: bool,
     ) {
         if let Some(readers) = &self.readers {
-            readers.end(key, handoff, quiet).await;
+            readers.stop(key, handoff, quiet).await;
         }
     }
 }

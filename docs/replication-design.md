@@ -399,11 +399,20 @@ and `ListOffsets` latest is the mark. Before the first mark of a generation it
 is zero. `Leader` streams, shards placed without replicas and single-node
 brokers are unbounded, as their commit point is local durability.
 
-QUIC subscriptions are not gated: live fanout happens when a batch is durable
-on the leader, and the replay ring and disk history are read to the local
-tail. Gating them needs fanout held per stream until the mark passes, released
-in offset order, with the ring append moved with it so the ordering rules in
-[Delivery to subscribers](semantics.md#delivery-to-subscribers) still hold.
+QUIC subscriptions are gated too. A durable batch past the mark joins a
+per-stream hold under its commit turn, so the hold is in offset order; when the
+mark moves, the driver releases what it covers, appending to the replay ring
+and fanning out together, with one shared envelope as an unheld publish does.
+The ring therefore holds only committed records. `Latest` and `cursor_tail`
+are the mark, and resumed history is read with `Broker::read_committed`, which
+stops at the mark and waits for it. Registration still happens before any
+history is read. A broker that just took a shard has no mark for its
+generation yet (`Settling`): a `Latest` subscribe is refused as retryable until
+the first mark. Held batches are dropped when the shard is released (never
+delivered as committed); subscribers are ended with where to resume and pick
+up on the next leader. While the lease is lapsed the bound is `Refused`: new
+subscribes, watches and cache reads are refused (`felix_broker_lease_refusals_total{boundary="read"}`),
+and the readers of every led shard are ended as for a move.
 
 ### Divergence and truncation
 

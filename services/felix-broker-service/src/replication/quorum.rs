@@ -26,8 +26,64 @@ use super::FollowerCursor;
 use crate::shards::ShardKey;
 
 /// The quorum-durable high-water mark for each shard this broker leads.
+///
+/// Two tables: the shard's own log, and the counter log that rides a cache
+/// shard. A counter add on a `Quorum` cache waits on the second, published by
+/// the same pass and under the same rule (after a report the control plane
+/// stored), since a counter is acknowledged as a write to the shard.
 #[derive(Debug, Default)]
 pub struct QuorumMarks {
+    shards: MarkTable,
+    counters: MarkTable,
+}
+
+impl QuorumMarks {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The marks of the counter logs that ride cache shards.
+    pub fn counters(&self) -> &MarkTable {
+        &self.counters
+    }
+
+    /// See [`MarkTable::publish`].
+    pub fn publish(&self, key: &ShardKey, generation: u64, offset: u64) {
+        self.shards.publish(key, generation, offset);
+    }
+
+    /// Stop tracking a shard this broker no longer leads, in both tables.
+    pub fn forget(&self, key: &ShardKey) {
+        self.shards.forget(key);
+        self.counters.forget(key);
+    }
+
+    /// Keep only the shards named, in both tables.
+    pub fn retain(&self, live: &[ShardKey]) {
+        self.shards.retain(live);
+        self.counters.retain(live);
+    }
+
+    /// See [`MarkTable::offset`].
+    pub fn offset(&self, key: &ShardKey, generation: u64) -> Option<u64> {
+        self.shards.offset(key, generation)
+    }
+
+    /// See [`MarkTable::wait_for`].
+    pub async fn wait_for(
+        &self,
+        key: &ShardKey,
+        generation: u64,
+        offset: u64,
+        timeout: std::time::Duration,
+    ) -> QuorumWait {
+        self.shards.wait_for(key, generation, offset, timeout).await
+    }
+}
+
+/// One high-water mark per shard, for one of the logs a shard has.
+#[derive(Debug, Default)]
+pub struct MarkTable {
     shards: Mutex<HashMap<ShardKey, ShardMark>>,
 }
 
@@ -37,11 +93,7 @@ struct ShardMark {
     offset: watch::Sender<u64>,
 }
 
-impl QuorumMarks {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
+impl MarkTable {
     /// Record how far the majority has got for `key` at `generation`.
     ///
     /// A generation change restarts the mark at zero rather than carrying the
@@ -261,12 +313,17 @@ pub async fn await_quorum(
 /// shard's tail as read after the write. That is at or past the write, so a
 /// mark at the tail covers it; a concurrent later write can only make the wait
 /// longer, never make it end before this write is on a majority.
+///
+/// A read of a `Quorum` cache waits the same way, after it has read its
+/// value: every write that value reflects is below the tail read afterwards,
+/// so the answer is never one a failover could take back. `what` names which.
 pub async fn await_cache_quorum(
     broker: &felix_broker::Broker,
     shard: &crate::shards::ShardKey,
     marks: Option<&QuorumMarks>,
     ingress: Option<&crate::shards::routing::IngressRouter>,
     timeout: std::time::Duration,
+    what: &'static str,
 ) -> Result<(), anyhow::Error> {
     let consistency = broker
         .cache_consistency(&shard.tenant_id, &shard.namespace, &shard.stream)
@@ -294,7 +351,7 @@ pub async fn await_cache_quorum(
     let tail = log.tail_offset().await?;
     let Some(generation) = ingress.generation(shard) else {
         return Err(QuorumError::LeadershipLost {
-            what: "write",
+            what,
             detail: "shard ownership changed",
         }
         .into());
@@ -303,23 +360,19 @@ pub async fn await_cache_quorum(
         return Ok(());
     }
     match marks.wait_for(shard, generation, tail, timeout).await {
-        QuorumWait::Reached => release(ingress, "write"),
+        QuorumWait::Reached => release(ingress, what),
         QuorumWait::TimedOut => {
             crate::replication::metrics::record_quorum(
                 crate::replication::metrics::QUORUM_TIMED_OUT,
             );
-            Err(QuorumError::TimedOut {
-                what: "write",
-                timeout,
-            }
-            .into())
+            Err(QuorumError::TimedOut { what, timeout }.into())
         }
         QuorumWait::NotLeading => {
             crate::replication::metrics::record_quorum(
                 crate::replication::metrics::QUORUM_NOT_LEADING,
             );
             Err(QuorumError::LeadershipLost {
-                what: "write",
+                what,
                 detail: "shard leadership moved",
             }
             .into())
@@ -358,6 +411,218 @@ pub fn read_bound(
         return Some(0);
     };
     Some(marks.offset(shard, generation).unwrap_or(0))
+}
+
+/// Hold a counter add on a `Quorum` cache until a majority of the shard's
+/// replica set holds the counter log up to `end`, or answer a counter read
+/// only once it does (`end` `None`: the counter log's tail as read now, after
+/// the value was).
+///
+/// Counters ride the cache shard's replica set in their own log, with their
+/// own mark in [`QuorumMarks::counters`], published only after a report the
+/// control plane stored names no follower missing them as caught up.
+#[allow(clippy::too_many_arguments)]
+pub async fn await_counter_quorum(
+    broker: &felix_broker::Broker,
+    shard: &crate::shards::ShardKey,
+    marks: Option<&QuorumMarks>,
+    ingress: Option<&crate::shards::routing::IngressRouter>,
+    timeout: std::time::Duration,
+    end: Option<u64>,
+    what: &'static str,
+) -> Result<(), anyhow::Error> {
+    let consistency = broker
+        .cache_consistency(&shard.tenant_id, &shard.namespace, &shard.stream)
+        .await;
+    if consistency != Some(felix_broker::ConsistencyLevel::Quorum) {
+        return Ok(());
+    }
+    let (Some(marks), Some(ingress)) = (marks, ingress) else {
+        return Ok(());
+    };
+    let end = match end {
+        Some(end) => end,
+        None => {
+            let Some(log) = broker
+                .shard_log(
+                    felix_broker::LogKind::Counters,
+                    &shard.tenant_id,
+                    &shard.namespace,
+                    &shard.stream,
+                    shard.shard,
+                )
+                .await
+            else {
+                return Ok(());
+            };
+            log.tail_offset().await?
+        }
+    };
+    let Some(generation) = ingress.generation(shard) else {
+        return Err(QuorumError::LeadershipLost {
+            what,
+            detail: "shard ownership changed",
+        }
+        .into());
+    };
+    if !ingress.replicated(shard) {
+        return Ok(());
+    }
+    // The counter log ships on a replication pass; start one now rather than
+    // wait out the tick.
+    broker.appended().notify_one();
+    match marks
+        .counters()
+        .wait_for(shard, generation, end, timeout)
+        .await
+    {
+        QuorumWait::Reached => release(ingress, what),
+        QuorumWait::TimedOut => {
+            crate::replication::metrics::record_quorum(
+                crate::replication::metrics::QUORUM_TIMED_OUT,
+            );
+            Err(QuorumError::TimedOut { what, timeout }.into())
+        }
+        QuorumWait::NotLeading => {
+            crate::replication::metrics::record_quorum(
+                crate::replication::metrics::QUORUM_NOT_LEADING,
+            );
+            Err(QuorumError::LeadershipLost {
+                what,
+                detail: "shard leadership moved",
+            }
+            .into())
+        }
+    }
+}
+
+/// The committed mark for readers of one shard, as the broker core asks for
+/// it (see `felix_broker::ReadBound`).
+///
+/// [`read_bound`] with two more answers. `Settling` while this broker leads
+/// the shard but has no mark for its generation: zero would tell a new reader
+/// to start at the beginning of the log. `Refused` once it may not serve the
+/// shard at all -- its lease lapsed, or the shard is led elsewhere -- so a
+/// reader waiting on the mark stops and resumes where the shard is served.
+/// Only asked for `Quorum` shards.
+pub fn committed_bound(
+    key: &crate::shards::ShardKey,
+    marks: &QuorumMarks,
+    ingress: &crate::shards::routing::IngressRouter,
+) -> felix_broker::ReadBound {
+    use felix_broker::ReadBound;
+    if !ingress.replicated(key) {
+        return ReadBound::Unbounded;
+    }
+    let Some(generation) = ingress.generation(key) else {
+        return ReadBound::Refused;
+    };
+    if !ingress.fence().lease_valid() {
+        return ReadBound::Refused;
+    }
+    match marks.offset(key, generation) {
+        Some(mark) => ReadBound::Committed(mark),
+        None => ReadBound::Settling,
+    }
+}
+
+/// [`committed_bound`] for the broker core's stream readers.
+pub struct CommittedReads {
+    marks: std::sync::Arc<QuorumMarks>,
+    ingress: std::sync::Arc<crate::shards::routing::IngressRouter>,
+}
+
+impl CommittedReads {
+    pub fn new(
+        marks: std::sync::Arc<QuorumMarks>,
+        ingress: std::sync::Arc<crate::shards::routing::IngressRouter>,
+    ) -> Self {
+        Self { marks, ingress }
+    }
+}
+
+impl std::fmt::Debug for CommittedReads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommittedReads").finish_non_exhaustive()
+    }
+}
+
+impl felix_broker::ReadBounds for CommittedReads {
+    fn stream_bound(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> felix_broker::ReadBound {
+        let key = crate::shards::ShardKey {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+            kind: crate::shards::ShardKind::Stream,
+        };
+        committed_bound(&key, &self.marks, &self.ingress)
+    }
+}
+
+/// Wait until every offset below `end` of a `Quorum` shard is committed, for
+/// a reader about to hand out something that `end` bounds. Returns at once
+/// when the shard is unbounded.
+///
+/// Errors when the shard stops being served here, and after `timeout` with
+/// the mark short of `end`: either way the reader has nothing it can stand
+/// behind, and says so rather than answering from records a failover may
+/// replace.
+pub async fn await_readable(
+    consistency: Option<felix_broker::ConsistencyLevel>,
+    key: &crate::shards::ShardKey,
+    marks: Option<&QuorumMarks>,
+    ingress: Option<&crate::shards::routing::IngressRouter>,
+    end: u64,
+    timeout: std::time::Duration,
+) -> Result<(), QuorumError> {
+    if consistency != Some(felix_broker::ConsistencyLevel::Quorum) {
+        return Ok(());
+    }
+    let (Some(marks), Some(ingress)) = (marks, ingress) else {
+        return Ok(());
+    };
+    use felix_broker::ReadBound;
+    /// How long to wait before looking again for a mark this generation has
+    /// not published yet; there is no watch to wake on until it has.
+    const SETTLING_RECHECK: std::time::Duration = std::time::Duration::from_millis(50);
+
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        // Read again after every wait: the lease or the leadership can go
+        // while the mark comes.
+        let settling = match committed_bound(key, marks, ingress) {
+            ReadBound::Unbounded => return Ok(()),
+            ReadBound::Committed(mark) if mark >= end => return Ok(()),
+            ReadBound::Refused => {
+                return Err(QuorumError::LeadershipLost {
+                    what: "read",
+                    detail: "this broker is not serving the shard",
+                });
+            }
+            ReadBound::Committed(_) => false,
+            ReadBound::Settling => true,
+        };
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return Err(QuorumError::TimedOut {
+                what: "read",
+                timeout,
+            });
+        }
+        match ingress.generation(key) {
+            Some(generation) if !settling => {
+                let _ = marks.wait_for(key, generation, end, left).await;
+            }
+            _ => tokio::time::sleep(left.min(SETTLING_RECHECK)).await,
+        }
+    }
 }
 
 /// The lease re-check at ack release.

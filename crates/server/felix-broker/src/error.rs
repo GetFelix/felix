@@ -86,6 +86,26 @@ pub enum BrokerError {
     /// acknowledged or handed back.
     #[error("offset {offset} was not handed out by this group (next is {next})")]
     GroupOffsetNotHandedOut { offset: u64, next: u64 },
+    /// This broker cannot say what is committed on the shard, so it serves no
+    /// read that depends on it. Retry: here once it can, or on the shard's
+    /// owner.
+    #[error("reads of {stream} shard {shard} are unavailable here: {reason}")]
+    NotReadable {
+        stream: String,
+        shard: u32,
+        reason: NotReadable,
+    },
+}
+
+/// Why [`BrokerError::NotReadable`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum NotReadable {
+    /// The shard was just taken and has no committed mark yet.
+    #[error("no committed mark yet for this leadership")]
+    Settling,
+    /// The lease lapsed or the shard is led elsewhere.
+    #[error("this broker is not serving the shard")]
+    Refused,
 }
 
 /// Shorthand for results carrying a [`BrokerError`].

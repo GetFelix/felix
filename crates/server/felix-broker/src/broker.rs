@@ -128,6 +128,9 @@ pub struct Broker {
     /// *something* landed, and coalescing a burst into one wake-up is the
     /// behaviour wanted rather than a queue of them to drain.
     appended: Arc<tokio::sync::Notify>,
+    /// How far readers of a `Quorum` stream may see, once the cluster side
+    /// says. Shared with every stream state, which asks it per shard.
+    read_bounds: Arc<std::sync::OnceLock<Arc<dyn crate::stream::ReadBounds>>>,
     /// Seeds producer ids; randomly keyed at construction.
     producer_ids: ahash::RandomState,
     producer_id_counter: std::sync::atomic::AtomicU64,
@@ -170,6 +173,7 @@ impl Broker {
             counters: None,
             cache_watches,
             appended: Arc::new(tokio::sync::Notify::new()),
+            read_bounds: Arc::default(),
             producer_ids: ahash::RandomState::new(),
             producer_id_counter: std::sync::atomic::AtomicU64::new(0),
         }
@@ -231,6 +235,26 @@ impl Broker {
     pub fn with_counters(mut self, counters: Arc<felix_storage::CounterStore>) -> Self {
         self.counters = Some(counters);
         self
+    }
+
+    /// Bound what readers of `Quorum` streams see to what `bounds` says is
+    /// committed. Set once, when the cluster side starts; a second call is
+    /// ignored. Until it is set every stream is unbounded, which is right for
+    /// a broker with no replicas.
+    pub fn set_read_bounds(&self, bounds: Arc<dyn crate::stream::ReadBounds>) {
+        let _ = self.read_bounds.set(bounds);
+    }
+
+    /// Tie a new stream state to the broker's read bounds.
+    pub(crate) fn bind_reads(&self, state: &StreamState, topic: &TopicKey) {
+        state.held.bind(crate::stream::ReadSource {
+            bounds: Arc::clone(&self.read_bounds),
+            tenant_id: topic.tenant_id.clone(),
+            namespace: topic.namespace.clone(),
+            stream: topic.stream.clone(),
+            shard: topic.shard,
+            log_capacity: self.log_capacity,
+        });
     }
 
     /// The cache store.

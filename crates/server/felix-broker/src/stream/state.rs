@@ -12,6 +12,7 @@ use felix_storage::log::LogRecord;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
+use super::committed::{CommitHold, ReadBound};
 use super::delivery::{QueuedDelivery, SubQueuePolicy};
 use super::producers::ProducerTable;
 use super::subscription::SubscriptionReceiver;
@@ -62,6 +63,9 @@ pub(crate) struct StreamState {
     /// the log by offset (the Kafka listener's long-poll fetch) rather than
     /// holding a subscription.
     pub(crate) appended: Arc<tokio::sync::Notify>,
+    /// Durable batches past the committed mark, kept from the ring and from
+    /// subscribers until it passes them. Empty unless the stream is `Quorum`.
+    pub(crate) held: CommitHold,
 }
 
 impl StreamState {
@@ -89,6 +93,7 @@ impl StreamState {
             commit_sequencer: Arc::new(CommitSequencer::new(0)),
             producers: ProducerTable::default(),
             appended: Arc::new(tokio::sync::Notify::new()),
+            held: CommitHold::default(),
         }
     }
 
@@ -107,6 +112,29 @@ impl StreamState {
     pub(crate) fn set_consistency(&self, consistency: ConsistencyLevel) {
         self.consistency
             .store(consistency.as_u8(), Ordering::Release);
+    }
+
+    /// How far readers of this shard may see. Only a `Quorum` stream asks the
+    /// service; everything else is bounded by local durability alone.
+    pub(crate) fn read_bound(&self) -> ReadBound {
+        if self.consistency() != ConsistencyLevel::Quorum {
+            return ReadBound::Unbounded;
+        }
+        self.held.bound()
+    }
+
+    /// Drop the held batches and the replay ring, keeping `next_seq`.
+    ///
+    /// The ring goes too so it cannot end up with a hole where the dropped
+    /// batches were: the next batch released here pins its own offsets, and
+    /// a reader below it is served from disk.
+    pub(crate) fn discard_held(&self) -> usize {
+        let mut state = self.log_state.lock();
+        let dropped = self.held.discard();
+        if dropped > 0 {
+            state.log.clear();
+        }
+        dropped
     }
 
     pub(crate) fn deactivate(&self) {
@@ -212,6 +240,9 @@ impl StreamState {
         }
         state.log.clear();
         state.next_seq = next_seq;
+        // Writes arriving as a follower: whatever this broker held as a
+        // leader was not committed under it.
+        self.held.discard();
         drop(state);
         self.commit_sequencer.reset(next_seq);
     }
@@ -225,6 +256,7 @@ impl StreamState {
         let mut state = self.log_state.lock();
         state.log.clear();
         state.next_seq = next_seq;
+        self.held.discard();
         drop(state);
         self.commit_sequencer.reset(next_seq);
     }
