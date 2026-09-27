@@ -18,6 +18,13 @@ impl Display for NotEnoughBytesError {
 
 impl Error for NotEnoughBytesError {}
 
+/// How many `T`s to reserve for a count the peer claims: no more than the bytes
+/// left in `buf` could back. Capping the element count alone is not enough, as
+/// an element can be hundreds of bytes in memory but one byte on the wire.
+pub(crate) fn bounded_capacity<T, B: Buf + ?Sized>(count: usize, buf: &B) -> usize {
+    count.min(buf.remaining() / std::mem::size_of::<T>().max(1))
+}
+
 /// Extension for working with [`bytes::Buf`].
 pub trait ByteBuf: Buf {
     /// Peek ahead in the buffer by the provided range.
