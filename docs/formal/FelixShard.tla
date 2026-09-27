@@ -695,7 +695,7 @@ Ahead(f, b) ==
 \* That is the catch-up: whatever a majority acknowledged is in the answer
 \* furthest ahead.
 AnswerFence(b, f) ==
-    /\ fencing[b] /\ bgen[b] > 0 /\ f /= b
+    /\ fencing[b] /\ bgen[b] > 0 /\ f /= b /\ f \notin halted
     /\ promised[f] < bgen[b]
     /\ promised' = [promised EXCEPT ![f] = bgen[b]]
     /\ answered' = [answered EXCEPT ![b] = @ \cup {f}]
@@ -943,5 +943,9 @@ TypeOK ==
     /\ ver \in Nat
     /\ \A p \in Planners : Cardinality(cpView[p]) <= 1
     /\ staged \subseteq Brokers /\ Cardinality(staged) <= 1
+    /\ heard \in [Brokers -> [holders : SUBSET Brokers, len : Nat, drained : BOOLEAN, gen : Nat]]
+    /\ promised \in [Brokers -> Nat]
+    /\ fencing \in [Brokers -> BOOLEAN]
+    /\ answered \in [Brokers -> SUBSET Brokers]
 
 =============================================================================
