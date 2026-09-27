@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790468139991,
+  "lastUpdate": 1790469237900,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -21450,6 +21450,72 @@ window.BENCHMARK_DATA = {
             "range": "634.40",
             "unit": "us",
             "extra": "trials: 5\nmedian: 546.00\nmean: 981.20\nstdev: 634.40\ncv: 64.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d3f30b853003fcd13a00a7ef4d66d36a4a121a5b",
+          "message": "fix(client): idempotent in-doubt batches, subscription loss, frame flags, publish pool and budget, MTU clamp (#737)\n\n* fix(client): never send a different batch under an idempotent sequence in doubt\n\nA publish that failed without a typed refusal may still have landed under\nits sequence, and the leader answers a remembered sequence from memory. The\nproducer left the cursor where it was, so the next call - with a different\nbatch - went out under the spent number, was acknowledged, and was never\nappended. The producer now keeps the batch in doubt: the same batch may be\nre-sent under the sequence, anything else is refused without being sent.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(client): a lost connection ends a subscription with an error, and ClusterSubscription resumes\n\nThe subscription's I/O task treated a transport error like a clean end of\nstream, so next_event returned Ok(None) after a broker crash or idle\ntimeout and a consumer loop exited as if the stream had finished. The error\nis now reported as SubscriptionLost after the frames already read; a stream\nthe broker finishes is still Ok(None).\n\nClusterSubscription resubscribes on a lost connection from the offset after\nthe last one it delivered (or where the subscription started, if it\ndelivered nothing), reconnecting the cluster client when the broker it held\nis the one that died. Without an offset to resume from it returns the error\nrather than skipping records silently. Both bindings classify\nSubscriptionLost as a connection error.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(wire): refuse unknown frame flags in FrameHeader::decode\n\nOnly the broker's control stream checked for flag bits this version does\nnot define; uni streams and every client and conformance decode path\ntested single bits and read on. FrameHeader::decode now refuses them, with\ndecode_allowing_unknown_flags for the broker reader that consumes the body\nso the control stream can answer and stay on a frame boundary. The uni\nstream loop, which has no reply channel, ends the stream instead.\n\ndecode_publish_batch also refuses FLAG_BINARY_PUBLISH_ACKED: read as a\nplain batch, the acked prefix's request id became the tenant length.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(client): route around a publish writer that has died\n\nA writer that hit a broken stream (a bad ack frame, a failed write) fails\nwhat it holds and exits, but stayed in the hash pool, so every stream\nhashed to it failed from then on. Selection now probes forward from the\nhashed slot to the first writer still running: a stream keeps one writer,\nand moves only once that writer is gone.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(client): publish payloads larger than the in-flight budget\n\nThe shared in-flight budget defaults to 4 MiB while the frame cap is\n16 MiB, and admission refused any publish larger than the budget, so\npayloads between the two could never be sent. Such a publish now waits for\nthe whole budget and goes out alone; the frame cap still bounds its size.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(transport): clamp MTU overrides to the Linux GSO ceiling\n\nFELIX_INITIAL_MTU and FELIX_MTU_UPPER_BOUND were clamped only to 65527, so\nan override could reopen the GSO EMSGSIZE stall the 4096 default avoids:\none batch of quinn's 10 segments must fit a 65535-byte IP datagram. On\nLinux both are now clamped to 6553, with a warning; macOS, which has no\nGSO, keeps the QUIC maximum.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-26T17:31:47-07:00",
+          "tree_id": "bec4afd47fc38bc10616683c4166a87212385a54",
+          "url": "https://github.com/gabloe/felix/commit/d3f30b853003fcd13a00a7ef4d66d36a4a121a5b"
+        },
+        "date": 1790469235798,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 60,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 60.00\nmean: 60.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 79,
+            "range": "4.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 79.00\nmean: 81.20\nstdev: 4.66\ncv: 5.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 95,
+            "range": "330.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 246.20\nstdev: 330.95\ncv: 134.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 81,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 81.00\nmean: 81.00\nstdev: 1.00\ncv: 1.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 175,
+            "range": "14.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 175.00\nmean: 180.60\nstdev: 14.52\ncv: 8.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 266,
+            "range": "1258.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 266.00\nmean: 1087.40\nstdev: 1258.41\ncv: 115.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
