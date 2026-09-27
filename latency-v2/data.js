@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790549454990,
+  "lastUpdate": 1790549613252,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -23166,6 +23166,72 @@ window.BENCHMARK_DATA = {
             "range": "594.38",
             "unit": "us",
             "extra": "trials: 5\nmedian: 739.00\nmean: 755.80\nstdev: 594.38\ncv: 78.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0fb075a3770b83b737a5dd3bca03eb19ff834fb3",
+          "message": "fix(storage): poison the log when a truncation or reset fails partway (#777)\n\ndocs/durable-storage.md says a failed fsync poisons the log whichever path\nissued it, a truncation included. Only a failed sync of the active segment\ndid. The directory fsync inside the truncation, the durable mark's sync and\nthe epoch file's all returned the error and left the log taking appends.\n\nThat is the case the rule exists for. Linux may drop the dirty pages behind a\nfailed fsync, so a later one can succeed over data that never reached the\ndevice; and a truncation that stopped halfway leaves its segments, mark and\nepoch history disagreeing with memory. Any failure after a truncation or reset\nstarts now poisons the log, so it refuses writes until a restart re-reads the\ndisk. A closed log and a cut below the commit offset are refused before\nanything is touched, and poison nothing.\n\nTests (a hook fails the durable mark's sync): an append after a failed\ntruncation, and after a failed reset, is refused. Both fail with the poison\nreverted.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T15:48:42-07:00",
+          "tree_id": "4a5dbbc71c485e07b885cfe25e3d208e5b4768e2",
+          "url": "https://github.com/gabloe/felix/commit/0fb075a3770b83b737a5dd3bca03eb19ff834fb3"
+        },
+        "date": 1790549609536,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 68.20\nstdev: 1.10\ncv: 1.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 90,
+            "range": "1.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 90.20\nstdev: 1.79\ncv: 1.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 108,
+            "range": "3.11",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 108.00\nmean: 109.20\nstdev: 3.11\ncv: 2.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 88,
+            "range": "1.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 88.00\nmean: 87.00\nstdev: 1.73\ncv: 1.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 196,
+            "range": "6.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 196.00\nmean: 198.20\nstdev: 6.18\ncv: 3.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 270,
+            "range": "193.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 270.00\nmean: 359.80\nstdev: 193.72\ncv: 53.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
