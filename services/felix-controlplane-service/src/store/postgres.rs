@@ -41,8 +41,8 @@ use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 use super::{
-    AuthStore, ChangeSet, ControlPlaneStore, ReportWrite, Snapshot, StoreConfig, StoreError,
-    StoreResult,
+    AuthStore, ChangeSet, ControlPlaneStore, Page, PageRequest, ReportWrite, Snapshot, StoreConfig,
+    StoreError, StoreResult,
 };
 use crate::auth::felix_token::{SigningKey, TenantSigningKeys};
 use crate::auth::idp_registry::IdpIssuerConfig;
@@ -55,6 +55,12 @@ use crate::model::{
     ShardAssignmentChange, ShardKey, Stream, StreamChange, StreamKey, StreamPatchRequest, Tenant,
     TenantChange,
 };
+
+/// The `LIMIT` for a page of `limit` entries: one more, so the page knows
+/// whether anything follows without a second query.
+fn page_fetch(limit: usize) -> i64 {
+    i64::try_from(limit).unwrap_or(i64::MAX - 1) + 1
+}
 
 #[cfg(feature = "pg-tests")]
 const RETENTION_TICK: Duration = Duration::from_secs(1);
@@ -162,6 +168,10 @@ impl ControlPlaneStore for PostgresStore {
         tenants::list_tenants(self).await
     }
 
+    async fn list_tenants_page(&self, page: PageRequest<String>) -> StoreResult<Page<Tenant>> {
+        tenants::list_tenants_page(self, page).await
+    }
+
     async fn create_tenant(&self, tenant: Tenant) -> StoreResult<Tenant> {
         tenants::create_tenant(self, tenant).await
     }
@@ -182,6 +192,14 @@ impl ControlPlaneStore for PostgresStore {
         namespaces::list_namespaces(self, tenant_id).await
     }
 
+    async fn list_namespaces_page(
+        &self,
+        tenant_id: &str,
+        page: PageRequest<String>,
+    ) -> StoreResult<Page<Namespace>> {
+        namespaces::list_namespaces_page(self, tenant_id, page).await
+    }
+
     async fn create_namespace(&self, namespace: Namespace) -> StoreResult<Namespace> {
         namespaces::create_namespace(self, namespace).await
     }
@@ -200,6 +218,15 @@ impl ControlPlaneStore for PostgresStore {
 
     async fn list_streams(&self, tenant_id: &str, namespace: &str) -> StoreResult<Vec<Stream>> {
         streams::list_streams(self, tenant_id, namespace).await
+    }
+
+    async fn list_streams_page(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        page: PageRequest<String>,
+    ) -> StoreResult<Page<Stream>> {
+        streams::list_streams_page(self, tenant_id, namespace, page).await
     }
 
     async fn get_stream(&self, key: &StreamKey) -> StoreResult<Stream> {
@@ -232,6 +259,15 @@ impl ControlPlaneStore for PostgresStore {
 
     async fn list_caches(&self, tenant_id: &str, namespace: &str) -> StoreResult<Vec<Cache>> {
         caches::list_caches(self, tenant_id, namespace).await
+    }
+
+    async fn list_caches_page(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        page: PageRequest<String>,
+    ) -> StoreResult<Page<Cache>> {
+        caches::list_caches_page(self, tenant_id, namespace, page).await
     }
 
     async fn get_cache(&self, key: &CacheKey) -> StoreResult<Cache> {
@@ -268,6 +304,10 @@ impl ControlPlaneStore for PostgresStore {
 
     async fn list_nodes(&self) -> StoreResult<Vec<Node>> {
         nodes::list_nodes(self).await
+    }
+
+    async fn list_nodes_page(&self, page: PageRequest<String>) -> StoreResult<Page<Node>> {
+        nodes::list_nodes_page(self, page).await
     }
 
     async fn patch_node(&self, node_id: &str, patch: NodePatchRequest) -> StoreResult<Node> {
@@ -333,6 +373,14 @@ impl ControlPlaneStore for PostgresStore {
 
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
         shards::list_shard_assignments(self).await
+    }
+
+    async fn list_shard_assignments_page(
+        &self,
+        leader: Option<&str>,
+        page: PageRequest<ShardKey>,
+    ) -> StoreResult<Page<ShardAssignment>> {
+        shards::list_shard_assignments_page(self, leader, page).await
     }
 
     async fn list_shard_assignments_for_node(
@@ -457,6 +505,22 @@ impl AuthStore for PostgresStore {
 
     async fn list_rbac_groupings(&self, tenant_id: &str) -> StoreResult<Vec<GroupingRule>> {
         auth::list_rbac_groupings(self, tenant_id).await
+    }
+
+    async fn list_rbac_policies_page(
+        &self,
+        tenant_id: &str,
+        page: PageRequest<PolicyRule>,
+    ) -> StoreResult<Page<PolicyRule>> {
+        auth::list_rbac_policies_page(self, tenant_id, page).await
+    }
+
+    async fn list_rbac_groupings_page(
+        &self,
+        tenant_id: &str,
+        page: PageRequest<GroupingRule>,
+    ) -> StoreResult<Page<GroupingRule>> {
+        auth::list_rbac_groupings_page(self, tenant_id, page).await
     }
 
     async fn add_rbac_policy(&self, tenant_id: &str, policy: PolicyRule) -> StoreResult<()> {

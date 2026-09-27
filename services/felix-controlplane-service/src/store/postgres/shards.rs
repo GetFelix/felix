@@ -2,13 +2,14 @@
 use anyhow::anyhow;
 use sqlx::FromRow;
 
-use super::{PostgresStore, begin_consistent_read};
+use super::{PostgresStore, begin_consistent_read, page_fetch};
 use crate::model::{
     MoveReason, ReplicaReport, ShardAssignment, ShardAssignmentChange, ShardAssignmentChangeOp,
     ShardKey, ShardKind, ShardState, ShardValidationError,
 };
 use crate::store::{
-    AssignmentWrite, ChangeSet, PlacementLease, ReportWrite, Snapshot, StoreError, StoreResult,
+    AssignmentWrite, ChangeSet, Page, PageRequest, PlacementLease, ReportWrite, Snapshot,
+    StoreError, StoreResult,
 };
 
 #[derive(Debug, Clone, FromRow)]
@@ -285,6 +286,49 @@ pub(super) async fn list_shard_assignments(
     .fetch_all(&store.pool)
     .await?;
     rows.into_iter().map(shard_from_db).collect()
+}
+
+/// Pages in primary-key order, so each is an index range scan; the leader
+/// filter, when there is one, applies within it.
+pub(super) async fn list_shard_assignments_page(
+    store: &PostgresStore,
+    leader: Option<&str>,
+    page: PageRequest<ShardKey>,
+) -> StoreResult<Page<ShardAssignment>> {
+    let fetch = page_fetch(page.limit);
+    let rows = match &page.after {
+        None => sqlx::query_as::<_, DbShardAssignment>(
+            r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
+                      joining, move_started_at_millis, move_reason
+               FROM shard_assignments WHERE ($1::text IS NULL OR leader = $1)
+               ORDER BY tenant_id, namespace, kind, stream, shard LIMIT $2"#,
+        )
+        .bind(leader)
+        .bind(fetch),
+        Some(after) => sqlx::query_as::<_, DbShardAssignment>(
+            r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
+                      joining, move_started_at_millis, move_reason
+               FROM shard_assignments WHERE ($1::text IS NULL OR leader = $1)
+                 AND (tenant_id, namespace, kind, stream, shard) > ($2, $3, $4, $5, $6)
+               ORDER BY tenant_id, namespace, kind, stream, shard LIMIT $7"#,
+        )
+        .bind(leader)
+        .bind(&after.tenant_id)
+        .bind(&after.namespace)
+        .bind(after.kind.as_str())
+        .bind(&after.stream)
+        // Past every real shard when out of range, which is the right answer
+        // for a cursor beyond the last one.
+        .bind(i32::try_from(after.shard).unwrap_or(i32::MAX))
+        .bind(fetch),
+    }
+    .fetch_all(&store.pool)
+    .await?;
+    let items = rows
+        .into_iter()
+        .map(shard_from_db)
+        .collect::<StoreResult<Vec<_>>>()?;
+    Ok(Page::from_overfetch(items, page.limit))
 }
 
 pub(super) async fn list_shard_assignments_for_node(

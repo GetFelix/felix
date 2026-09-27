@@ -185,6 +185,8 @@ async fn shard_owners(session: &Session) -> Result<HashMap<String, String>> {
     #[derive(serde::Deserialize)]
     struct Response {
         items: Vec<Row>,
+        #[serde(default)]
+        next_cursor: Option<String>,
     }
     #[derive(serde::Deserialize)]
     struct Row {
@@ -195,21 +197,29 @@ async fn shard_owners(session: &Session) -> Result<HashMap<String, String>> {
         leader: String,
     }
 
-    let url = format!("{}/v1/shard-assignments", session.control_plane);
-    let response = http()
-        .await
-        .get(&url)
-        .bearer_auth(&session.admin_token)
-        .send()
-        .await
-        .with_context(|| format!("GET {url}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        bail!("GET {url}: {status}");
+    let base = format!("{}/v1/shard-assignments", session.control_plane);
+    let mut url = base.clone();
+    let mut rows = Vec::new();
+    loop {
+        let response = http()
+            .await
+            .get(&url)
+            .bearer_auth(&session.admin_token)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            bail!("GET {url}: {status}");
+        }
+        let page: Response = response.json().await.context("decode assignments")?;
+        rows.extend(page.items);
+        match page.next_cursor {
+            Some(cursor) => url = format!("{base}?cursor={cursor}"),
+            None => break,
+        }
     }
-    let response: Response = response.json().await.context("decode assignments")?;
-    Ok(response
-        .items
+    Ok(rows
         .into_iter()
         .map(|row| {
             (

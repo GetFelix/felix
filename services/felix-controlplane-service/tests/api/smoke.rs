@@ -15,7 +15,7 @@ use felix_controlplane_service::model::{
     TenantChange,
 };
 use felix_controlplane_service::store::{
-    AuthStore, ChangeSet, ControlPlaneStore, Snapshot, StoreError, StoreResult,
+    AuthStore, ChangeSet, ControlPlaneStore, Page, PageRequest, Snapshot, StoreError, StoreResult,
 };
 use tower::ServiceExt;
 
@@ -899,6 +899,10 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
+    async fn list_tenants_page(&self, _page: PageRequest<String>) -> StoreResult<Page<Tenant>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
     async fn create_tenant(&self, _tenant: Tenant) -> StoreResult<Tenant> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
@@ -919,6 +923,14 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
+    async fn list_namespaces_page(
+        &self,
+        _tenant_id: &str,
+        _page: PageRequest<String>,
+    ) -> StoreResult<Page<Namespace>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
     async fn create_namespace(&self, _namespace: Namespace) -> StoreResult<Namespace> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
@@ -936,6 +948,15 @@ impl ControlPlaneStore for FailingStore {
     }
 
     async fn list_streams(&self, _tenant_id: &str, _namespace: &str) -> StoreResult<Vec<Stream>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn list_streams_page(
+        &self,
+        _tenant_id: &str,
+        _namespace: &str,
+        _page: PageRequest<String>,
+    ) -> StoreResult<Page<Stream>> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
@@ -971,6 +992,15 @@ impl ControlPlaneStore for FailingStore {
     }
 
     async fn list_caches(&self, _tenant_id: &str, _namespace: &str) -> StoreResult<Vec<Cache>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn list_caches_page(
+        &self,
+        _tenant_id: &str,
+        _namespace: &str,
+        _page: PageRequest<String>,
+    ) -> StoreResult<Page<Cache>> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
@@ -1010,6 +1040,10 @@ impl ControlPlaneStore for FailingStore {
     }
 
     async fn list_nodes(&self) -> StoreResult<Vec<Node>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn list_nodes_page(&self, _page: PageRequest<String>) -> StoreResult<Page<Node>> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
@@ -1071,6 +1105,14 @@ impl ControlPlaneStore for FailingStore {
     }
 
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn list_shard_assignments_page(
+        &self,
+        _leader: Option<&str>,
+        _page: PageRequest<ShardKey>,
+    ) -> StoreResult<Page<ShardAssignment>> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
@@ -1176,6 +1218,22 @@ impl AuthStore for FailingStore {
     }
 
     async fn list_rbac_groupings(&self, _tenant_id: &str) -> StoreResult<Vec<GroupingRule>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn list_rbac_policies_page(
+        &self,
+        _tenant_id: &str,
+        _page: PageRequest<PolicyRule>,
+    ) -> StoreResult<Page<PolicyRule>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn list_rbac_groupings_page(
+        &self,
+        _tenant_id: &str,
+        _page: PageRequest<GroupingRule>,
+    ) -> StoreResult<Page<GroupingRule>> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 

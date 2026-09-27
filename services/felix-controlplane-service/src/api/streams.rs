@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
@@ -19,6 +19,7 @@ use crate::api::ensure_tenant_namespace;
 use crate::api::error::{
     ApiError, api_conflict, api_internal, api_not_found, api_validation_error,
 };
+use crate::api::pagination::{PageParams, list_visible};
 use crate::api::types::{
     StreamChangesResponse, StreamCreateRequest, StreamListResponse, StreamSnapshotResponse,
 };
@@ -35,10 +36,12 @@ use crate::store::StoreError;
     tag = "streams",
     params(
         ("tenant_id" = String, Path, description = "Tenant identifier"),
-        ("namespace" = String, Path, description = "Namespace identifier")
+        ("namespace" = String, Path, description = "Namespace identifier"),
+        PageParams
     ),
     responses(
-        (status = 200, description = "List streams", body = StreamListResponse),
+        (status = 200, description = "A page of the streams the caller may manage, in name order", body = StreamListResponse),
+        (status = 400, description = "Invalid limit or cursor", body = crate::api::types::ErrorResponse),
         (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse)
     )
 )]
@@ -46,24 +49,29 @@ pub(crate) async fn list_streams(
     Path((tenant_id, namespace)): Path<(String, String)>,
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(page): Query<PageParams>,
 ) -> Result<Json<StreamListResponse>, ApiError> {
     let scopes = tenant_scopes_for(&state, &tenant_id, &headers, ACTION_STREAM_MANAGE).await?;
+    let request = page.request()?;
     ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
-    let items = state
-        .store
-        .list_streams(&tenant_id, &namespace)
-        .await
-        .map_err(|err| api_internal("failed to list streams", &err))?
-        .into_iter()
+    let listed = list_visible(
+        request,
+        |page| state.store.list_streams_page(&tenant_id, &namespace, page),
         // Only what the caller could manage.
-        .filter(|stream| {
+        |stream: &Stream| {
             let target = stream_object(&tenant_id, &namespace, &stream.stream);
             scopes
                 .iter()
                 .any(|scope| object_within_scope(scope, &target))
-        })
-        .collect();
-    Ok(Json(StreamListResponse { items }))
+        },
+        |stream: &Stream| stream.stream.clone(),
+    )
+    .await
+    .map_err(|err| api_internal("failed to list streams", &err))?;
+    Ok(Json(StreamListResponse {
+        items: listed.items,
+        next_cursor: listed.next_cursor,
+    }))
 }
 
 #[utoipa::path(

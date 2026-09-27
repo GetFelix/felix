@@ -17,7 +17,7 @@
 use std::collections::HashSet;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,8 @@ use crate::api::ensure_tenant_exists;
 use crate::api::error::{
     ApiError, api_conflict, api_forbidden, api_internal, api_not_found, api_validation_error,
 };
+use crate::api::pagination::{PageParams, list_visible};
+use crate::api::types::{GroupingListResponse, GroupingListing, PolicyListResponse, PolicyListing};
 use crate::auth::bearer::{Refusal, refused, require_cluster_action, tenant_permissions};
 use crate::auth::idp_registry::IdpIssuerConfig;
 use crate::auth::rbac::authorize::{
@@ -141,41 +143,74 @@ pub async fn delete_idp_issuer(
     get,
     path = "/v1/tenants/{tenant_id}/rbac/policies",
     tag = "auth",
-    params(("tenant_id" = String, Path, description = "Tenant identifier")),
-    responses((status = 200, body = Vec<PolicyRule>), (status = 404))
+    params(("tenant_id" = String, Path, description = "Tenant identifier"), PageParams),
+    responses(
+        (status = 200, description = "The rules the caller may see: every one as a bare array \
+            when neither `limit` nor `cursor` is given, otherwise a page ordered by subject, \
+            object and action", body = PolicyListing),
+        (status = 400, description = "Invalid limit or cursor", body = crate::api::types::ErrorResponse),
+        (status = 404)
+    )
 )]
-pub async fn list_policies(
+pub(crate) async fn list_policies(
     Path(tenant_id): Path<String>,
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Vec<PolicyRule>>, ApiError> {
+    Query(page): Query<PageParams>,
+) -> Result<Json<PolicyListing>, ApiError> {
     let scope = require_action_scope(&state, &tenant_id, &headers, ACTION_RBAC_VIEW).await?;
+    // Unpaged unless asked: this listing answered with a bare array before
+    // paging existed, and a caller that knows no cursor must still get it.
+    let request = (!page.is_absent()).then(|| page.request()).transpose()?;
     ensure_tenant_exists(&state, &tenant_id).await?;
-    let policies = state
-        .store
-        .list_rbac_policies(&tenant_id)
-        .await
-        .map_err(|err| api_internal("failed to list policies", &err))?;
-    Ok(Json(filter_policies_by_scope(
-        &policies,
-        &scope.scopes,
-        &tenant_id,
-    )))
+    let Some(request) = request else {
+        let policies = state
+            .store
+            .list_rbac_policies(&tenant_id)
+            .await
+            .map_err(|err| api_internal("failed to list policies", &err))?;
+        return Ok(Json(PolicyListing::All(filter_policies_by_scope(
+            &policies,
+            &scope.scopes,
+            &tenant_id,
+        ))));
+    };
+    let listed = list_visible(
+        request,
+        |page| state.store.list_rbac_policies_page(&tenant_id, page),
+        |policy| policy_in_scope(policy, &scope.scopes, &tenant_id),
+        PolicyRule::clone,
+    )
+    .await
+    .map_err(|err| api_internal("failed to list policies", &err))?;
+    Ok(Json(PolicyListing::Page(PolicyListResponse {
+        items: listed.items,
+        next_cursor: listed.next_cursor,
+    })))
 }
 
 #[utoipa::path(
     get,
     path = "/v1/tenants/{tenant_id}/rbac/groupings",
     tag = "auth",
-    params(("tenant_id" = String, Path, description = "Tenant identifier")),
-    responses((status = 200, body = Vec<GroupingRule>), (status = 404))
+    params(("tenant_id" = String, Path, description = "Tenant identifier"), PageParams),
+    responses(
+        (status = 200, description = "The role assignments the caller may see: every one as a \
+            bare array when neither `limit` nor `cursor` is given, otherwise a page ordered by \
+            user and role", body = GroupingListing),
+        (status = 400, description = "Invalid limit or cursor", body = crate::api::types::ErrorResponse),
+        (status = 404)
+    )
 )]
-pub async fn list_groupings(
+pub(crate) async fn list_groupings(
     Path(tenant_id): Path<String>,
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Vec<GroupingRule>>, ApiError> {
+    Query(page): Query<PageParams>,
+) -> Result<Json<GroupingListing>, ApiError> {
     let scope = require_action_scope(&state, &tenant_id, &headers, ACTION_RBAC_VIEW).await?;
+    // Unpaged unless asked, as for policies.
+    let request = (!page.is_absent()).then(|| page.request()).transpose()?;
     ensure_tenant_exists(&state, &tenant_id).await?;
     let policies = state
         .store
@@ -188,17 +223,31 @@ pub async fn list_groupings(
             .into_iter()
             .map(|policy| policy.subject)
             .collect();
+    if let Some(request) = request {
+        let listed = list_visible(
+            request,
+            |page| state.store.list_rbac_groupings_page(&tenant_id, page),
+            |grouping| visible_roles.contains(&grouping.role),
+            GroupingRule::clone,
+        )
+        .await
+        .map_err(|err| api_internal("failed to list groupings", &err))?;
+        return Ok(Json(GroupingListing::Page(GroupingListResponse {
+            items: listed.items,
+            next_cursor: listed.next_cursor,
+        })));
+    }
     let groupings = state
         .store
         .list_rbac_groupings(&tenant_id)
         .await
         .map_err(|err| api_internal("failed to list groupings", &err))?;
-    Ok(Json(
+    Ok(Json(GroupingListing::All(
         groupings
             .into_iter()
             .filter(|grouping| visible_roles.contains(&grouping.role))
             .collect(),
-    ))
+    )))
 }
 
 #[utoipa::path(
@@ -492,16 +541,18 @@ fn filter_policies_by_scope(
 ) -> Vec<PolicyRule> {
     policies
         .iter()
-        .filter(|policy| {
-            parse_object(&policy.object, tenant_id)
-                .ok()
-                .map(|target| {
-                    scopes
-                        .iter()
-                        .any(|scope| object_within_scope(scope, &target))
-                })
-                .unwrap_or(false)
-        })
+        .filter(|policy| policy_in_scope(policy, scopes, tenant_id))
         .cloned()
         .collect()
+}
+
+fn policy_in_scope(policy: &PolicyRule, scopes: &[ParsedObject], tenant_id: &str) -> bool {
+    parse_object(&policy.object, tenant_id)
+        .ok()
+        .map(|target| {
+            scopes
+                .iter()
+                .any(|scope| object_within_scope(scope, &target))
+        })
+        .unwrap_or(false)
 }

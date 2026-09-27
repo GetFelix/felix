@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
@@ -17,6 +17,7 @@ use crate::api::AppState;
 use crate::api::error::{
     ApiError, api_conflict, api_internal, api_internal_message, api_not_found, api_validation_error,
 };
+use crate::api::pagination::{PageParams, list_visible};
 use crate::api::types::{
     TenantChangesResponse, TenantCreateRequest, TenantListResponse, TenantSnapshotResponse,
 };
@@ -30,8 +31,10 @@ use crate::store::StoreError;
     get,
     path = "/v1/tenants",
     tag = "tenants",
+    params(PageParams),
     responses(
-        (status = 200, description = "List tenants", body = TenantListResponse),
+        (status = 200, description = "A page of tenants, in id order", body = TenantListResponse),
+        (status = 400, description = "Invalid limit or cursor", body = crate::api::types::ErrorResponse),
         (status = 401, description = "Missing or invalid bearer token", body = crate::api::types::ErrorResponse),
         (status = 403, description = "Missing tenant.manage:cluster:*", body = crate::api::types::ErrorResponse)
     )
@@ -39,14 +42,21 @@ use crate::store::StoreError;
 pub(crate) async fn list_tenants(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(page): Query<PageParams>,
 ) -> Result<Json<TenantListResponse>, ApiError> {
     require_cluster_action(&state, &headers, ACTION_TENANT_MANAGE).await?;
-    let items = state
-        .store
-        .list_tenants()
-        .await
-        .map_err(|err| api_internal("failed to list tenants", &err))?;
-    Ok(Json(TenantListResponse { items }))
+    let listed = list_visible(
+        page.request()?,
+        |page| state.store.list_tenants_page(page),
+        |_| true,
+        |tenant: &Tenant| tenant.tenant_id.clone(),
+    )
+    .await
+    .map_err(|err| api_internal("failed to list tenants", &err))?;
+    Ok(Json(TenantListResponse {
+        items: listed.items,
+        next_cursor: listed.next_cursor,
+    }))
 }
 
 #[utoipa::path(

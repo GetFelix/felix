@@ -31,18 +31,33 @@ use crate::model::{
 #[async_trait]
 pub trait ControlPlaneStore: Send + Sync {
     async fn list_tenants(&self) -> StoreResult<Vec<Tenant>>;
+    /// Tenants in `tenant_id` order, one page at a time.
+    async fn list_tenants_page(&self, page: PageRequest<String>) -> StoreResult<Page<Tenant>>;
     async fn create_tenant(&self, tenant: Tenant) -> StoreResult<Tenant>;
     async fn delete_tenant(&self, tenant_id: &str) -> StoreResult<()>;
     async fn tenant_snapshot(&self) -> StoreResult<Snapshot<Tenant>>;
     async fn tenant_changes(&self, since: u64) -> StoreResult<ChangeSet<TenantChange>>;
 
     async fn list_namespaces(&self, tenant_id: &str) -> StoreResult<Vec<Namespace>>;
+    /// A tenant's namespaces in name order, one page at a time.
+    async fn list_namespaces_page(
+        &self,
+        tenant_id: &str,
+        page: PageRequest<String>,
+    ) -> StoreResult<Page<Namespace>>;
     async fn create_namespace(&self, namespace: Namespace) -> StoreResult<Namespace>;
     async fn delete_namespace(&self, key: &NamespaceKey) -> StoreResult<()>;
     async fn namespace_snapshot(&self) -> StoreResult<Snapshot<Namespace>>;
     async fn namespace_changes(&self, since: u64) -> StoreResult<ChangeSet<NamespaceChange>>;
 
     async fn list_streams(&self, tenant_id: &str, namespace: &str) -> StoreResult<Vec<Stream>>;
+    /// A namespace's streams in name order, one page at a time.
+    async fn list_streams_page(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        page: PageRequest<String>,
+    ) -> StoreResult<Page<Stream>>;
     async fn get_stream(&self, key: &StreamKey) -> StoreResult<Stream>;
     async fn create_stream(&self, stream: Stream) -> StoreResult<Stream>;
     async fn patch_stream(&self, key: &StreamKey, patch: StreamPatchRequest)
@@ -52,6 +67,13 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn stream_changes(&self, since: u64) -> StoreResult<ChangeSet<StreamChange>>;
 
     async fn list_caches(&self, tenant_id: &str, namespace: &str) -> StoreResult<Vec<Cache>>;
+    /// A namespace's caches in name order, one page at a time.
+    async fn list_caches_page(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        page: PageRequest<String>,
+    ) -> StoreResult<Page<Cache>>;
     async fn get_cache(&self, key: &CacheKey) -> StoreResult<Cache>;
     async fn create_cache(&self, cache: Cache) -> StoreResult<Cache>;
     async fn patch_cache(&self, key: &CacheKey, patch: CachePatchRequest) -> StoreResult<Cache>;
@@ -70,6 +92,8 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn register_node(&self, node: Node) -> StoreResult<Node>;
     async fn get_node(&self, node_id: &str) -> StoreResult<Node>;
     async fn list_nodes(&self) -> StoreResult<Vec<Node>>;
+    /// Nodes in `node_id` order, one page at a time.
+    async fn list_nodes_page(&self, page: PageRequest<String>) -> StoreResult<Page<Node>>;
     /// Apply an operator patch. Rejects a lifecycle transition the model
     /// disallows, and never touches heartbeat-derived fields.
     async fn patch_node(&self, node_id: &str, patch: NodePatchRequest) -> StoreResult<Node>;
@@ -199,6 +223,13 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment>;
     /// Every assignment, ordered by stream then shard.
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>>;
+    /// Assignments ordered by tenant, namespace, kind, name, then shard, one
+    /// page at a time; only those `leader` leads when it is set.
+    async fn list_shard_assignments_page(
+        &self,
+        leader: Option<&str>,
+        page: PageRequest<ShardKey>,
+    ) -> StoreResult<Page<ShardAssignment>>;
     /// Assignments a node currently leads. The question placement asks when a
     /// node fails or is drained.
     async fn list_shard_assignments_for_node(
@@ -291,6 +322,20 @@ pub trait AuthStore: Send + Sync {
 
     async fn list_rbac_policies(&self, tenant_id: &str) -> StoreResult<Vec<PolicyRule>>;
     async fn list_rbac_groupings(&self, tenant_id: &str) -> StoreResult<Vec<GroupingRule>>;
+    /// A tenant's policy rules ordered by subject, object, then action, one
+    /// page at a time.
+    async fn list_rbac_policies_page(
+        &self,
+        tenant_id: &str,
+        page: PageRequest<PolicyRule>,
+    ) -> StoreResult<Page<PolicyRule>>;
+    /// A tenant's role assignments ordered by user, then role, one page at a
+    /// time.
+    async fn list_rbac_groupings_page(
+        &self,
+        tenant_id: &str,
+        page: PageRequest<GroupingRule>,
+    ) -> StoreResult<Page<GroupingRule>>;
     async fn add_rbac_policy(&self, tenant_id: &str, policy: PolicyRule) -> StoreResult<()>;
     async fn add_rbac_grouping(&self, tenant_id: &str, grouping: GroupingRule) -> StoreResult<()>;
     /// Remove one policy rule, matched on all three fields. `NotFound` when
@@ -441,6 +486,61 @@ pub struct TenantAuthSeed {
 pub trait ControlPlaneAuthStore: ControlPlaneStore + AuthStore {}
 
 impl<T> ControlPlaneAuthStore for T where T: ControlPlaneStore + AuthStore {}
+
+/// Where a page of a listing starts, and how long it may be.
+///
+/// Keyset rather than offset: `after` is the key of the last entry the caller
+/// already has, so a write between two pages cannot make the next one repeat or
+/// skip an entry that was there all along.
+#[derive(Debug, Clone)]
+pub struct PageRequest<K> {
+    /// Only entries ordered strictly after this key; `None` from the start.
+    pub after: Option<K>,
+    /// At most this many entries.
+    pub limit: usize,
+}
+
+impl<K> PageRequest<K> {
+    /// The first `limit` entries.
+    pub fn first(limit: usize) -> Self {
+        Self { after: None, limit }
+    }
+}
+
+/// One page of a listing, in key order.
+#[derive(Debug, Clone)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    /// Whether entries follow the last one here.
+    pub more: bool,
+}
+
+impl<T> Page<T> {
+    /// Build a page from entries past the cursor, in key order, of which up to
+    /// `limit + 1` were read: the extra one only says there is more.
+    pub(crate) fn from_overfetch(mut items: Vec<T>, limit: usize) -> Self {
+        let more = items.len() > limit;
+        items.truncate(limit);
+        Self { items, more }
+    }
+
+    /// Page a listing held in no particular order, as the in-memory maps are.
+    pub(crate) fn from_unordered<K: Ord>(
+        items: impl IntoIterator<Item = T>,
+        key: impl Fn(&T) -> K,
+        after: Option<&K>,
+        limit: usize,
+    ) -> Self {
+        let mut keyed: Vec<(K, T)> = items
+            .into_iter()
+            .map(|item| (key(&item), item))
+            .filter(|(k, _)| after.is_none_or(|after| k > after))
+            .collect();
+        keyed.sort_by(|a, b| a.0.cmp(&b.0));
+        keyed.truncate(limit.saturating_add(1));
+        Self::from_overfetch(keyed.into_iter().map(|(_, item)| item).collect(), limit)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Snapshot<T> {

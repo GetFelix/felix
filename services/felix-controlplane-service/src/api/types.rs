@@ -125,6 +125,10 @@ impl Default for CacheCreateRequest {
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct TenantListResponse {
     pub items: Vec<Tenant>,
+    /// Where the next page starts; absent on the last page. Pass it back as
+    /// `cursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -142,6 +146,10 @@ pub struct TenantChangesResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct NamespaceListResponse {
     pub items: Vec<Namespace>,
+    /// Where the next page starts; absent on the last page. Pass it back as
+    /// `cursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -159,6 +167,10 @@ pub struct NamespaceChangesResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct StreamListResponse {
     pub items: Vec<Stream>,
+    /// Where the next page starts; absent on the last page. Pass it back as
+    /// `cursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -176,6 +188,10 @@ pub struct StreamChangesResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct CacheListResponse {
     pub items: Vec<Cache>,
+    /// Where the next page starts; absent on the last page. Pass it back as
+    /// `cursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -281,11 +297,19 @@ pub struct NodeView {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct NodeListResponse {
     pub items: Vec<NodeView>,
+    /// Where the next page starts; absent on the last page. Pass it back as
+    /// `cursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ShardAssignmentListResponse {
     pub items: Vec<crate::model::ShardAssignment>,
+    /// Where the next page starts; absent on the last page. Pass it back as
+    /// `cursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -400,4 +424,43 @@ pub struct PlacementPlanResponse {
 pub struct PlacementStatusResponse {
     /// Whether placement's own moves are paused.
     pub paused: bool,
+}
+
+/// A page of RBAC policy rules, answered when the request names `limit` or
+/// `cursor`.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct PolicyListResponse {
+    pub items: Vec<crate::auth::rbac::policy_store::PolicyRule>,
+    /// Where the next page starts; absent on the last page. Pass it back as
+    /// `cursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// A page of RBAC role assignments, answered when the request names `limit`
+/// or `cursor`.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct GroupingListResponse {
+    pub items: Vec<crate::auth::rbac::policy_store::GroupingRule>,
+    /// Where the next page starts; absent on the last page. Pass it back as
+    /// `cursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// The RBAC policy listing: every rule as a bare array when the request names
+/// neither `limit` nor `cursor`, as it always has, and a page otherwise.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+#[serde(untagged)]
+pub enum PolicyListing {
+    All(Vec<crate::auth::rbac::policy_store::PolicyRule>),
+    Page(PolicyListResponse),
+}
+
+/// The RBAC role-assignment listing, shaped as [`PolicyListing`] is.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+#[serde(untagged)]
+pub enum GroupingListing {
+    All(Vec<crate::auth::rbac::policy_store::GroupingRule>),
+    Page(GroupingListResponse),
 }

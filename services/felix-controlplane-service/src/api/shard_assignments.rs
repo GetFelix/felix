@@ -11,9 +11,11 @@ use axum::http::HeaderMap;
 use crate::api::AppState;
 use crate::api::error::{ApiError, api_internal};
 use crate::api::nodes::require_cluster_node_view;
+use crate::api::pagination::{PageParams, list_visible};
 use crate::api::types::{
     ShardAssignmentChangesResponse, ShardAssignmentListResponse, ShardAssignmentSnapshotResponse,
 };
+use crate::model::ShardAssignment;
 
 /// The longest a changes request waits. Under the usual 30 s idle timeout of
 /// proxies and HTTP clients, so a wait ends in an answer rather than a cut
@@ -27,8 +29,14 @@ const CHANGES_RECHECK: Duration = Duration::from_millis(50);
     get,
     path = "/v1/shard-assignments",
     tag = "nodes",
-    params(("leader" = Option<String>, Query, description = "Only shards this node leads")),
-    responses((status = 200, description = "List shard assignments", body = ShardAssignmentListResponse))
+    params(
+        ("leader" = Option<String>, Query, description = "Only shards this node leads"),
+        PageParams
+    ),
+    responses(
+        (status = 200, description = "A page of shard assignments, by tenant, namespace, kind, name and shard", body = ShardAssignmentListResponse),
+        (status = 400, description = "Invalid limit or cursor", body = crate::api::types::ErrorResponse)
+    )
 )]
 /// List shard ownership.
 ///
@@ -38,21 +46,30 @@ const CHANGES_RECHECK: Duration = Duration::from_millis(50);
 /// are the same view of the cluster.
 ///
 /// # Errors
+/// - 400 for an invalid `limit` or `cursor`.
 /// - 500 when the store cannot be read.
 pub(crate) async fn list_shard_assignments(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<HashMap<String, String>>,
+    Query(page): Query<PageParams>,
 ) -> Result<Json<ShardAssignmentListResponse>, ApiError> {
     require_cluster_node_view(&state, &headers).await?;
 
-    let items = match query.get("leader") {
-        Some(leader) => state.store.list_shard_assignments_for_node(leader).await,
-        None => state.store.list_shard_assignments().await,
-    }
+    let leader = query.get("leader").map(String::as_str);
+    let listed = list_visible(
+        page.request()?,
+        |page| state.store.list_shard_assignments_page(leader, page),
+        |_| true,
+        |assignment: &ShardAssignment| assignment.key.clone(),
+    )
+    .await
     .map_err(|ref err| api_internal("failed to list shard assignments", err))?;
 
-    Ok(Json(ShardAssignmentListResponse { items }))
+    Ok(Json(ShardAssignmentListResponse {
+        items: listed.items,
+        next_cursor: listed.next_cursor,
+    }))
 }
 
 #[utoipa::path(

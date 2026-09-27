@@ -171,6 +171,54 @@ mod over_http {
         task.abort();
     }
 
+    /// Every page is read. Stopping at the first would drop brokers past it
+    /// from the catalog, and routes to them with it.
+    #[tokio::test]
+    async fn every_page_of_the_node_list_is_fetched() {
+        let app = Router::new().route(
+            "/v1/nodes",
+            get(
+                |axum::extract::Query(query): axum::extract::Query<
+                    std::collections::HashMap<String, String>,
+                >| async move {
+                    axum::Json(match query.get("cursor").map(String::as_str) {
+                        None => serde_json::json!({
+                            "items": [node("broker-a", "10.0.0.4:7000", true)],
+                            "next_cursor": "after-a",
+                        }),
+                        Some("after-a") => serde_json::json!({
+                            "items": [node("broker-b", "10.0.0.5:7000", true)],
+                        }),
+                        Some(other) => panic!("unexpected cursor {other}"),
+                    })
+                },
+            ),
+        );
+        let (base, task) = serve(app).await;
+
+        let catalog = fetch(&client(), &base, None).await.expect("fetch");
+        assert!(catalog.nodes.contains_key("broker-a"));
+        assert!(
+            catalog.nodes.contains_key("broker-b"),
+            "the second page was not read"
+        );
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_cursor_that_does_not_advance_is_an_error() {
+        let app = Router::new().route(
+            "/v1/nodes",
+            get(|| async { axum::Json(serde_json::json!({ "items": [], "next_cursor": "same" })) }),
+        );
+        let (base, task) = serve(app).await;
+
+        assert!(fetch(&client(), &base, None).await.is_err());
+
+        task.abort();
+    }
+
     /// The credential is sent. Without it the control plane answers 403 and the
     /// broker silently loses every route it could forward to.
     #[tokio::test]

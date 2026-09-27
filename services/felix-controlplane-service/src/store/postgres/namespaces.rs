@@ -5,12 +5,12 @@ use sqlx::FromRow;
 use super::codec::{
     DbCache, DbNamespace, DbStream, parse_consistency, parse_delivery, parse_stream_kind,
 };
-use super::{PostgresStore, is_unique_violation};
+use super::{PostgresStore, is_unique_violation, page_fetch};
 use crate::model::{
     Cache, CacheKey, Namespace, NamespaceChange, NamespaceChangeOp, NamespaceKey, RetentionPolicy,
     Stream, StreamKey,
 };
-use crate::store::{ChangeSet, Snapshot, StoreError, StoreResult};
+use crate::store::{ChangeSet, Page, PageRequest, Snapshot, StoreError, StoreResult};
 
 /// Row shape for the `namespace_changes` table.
 #[derive(Debug, Clone, FromRow)]
@@ -42,6 +42,40 @@ pub(super) async fn list_namespaces(
             display_name: row.display_name,
         })
         .collect())
+}
+
+pub(super) async fn list_namespaces_page(
+    store: &PostgresStore,
+    tenant_id: &str,
+    page: PageRequest<String>,
+) -> StoreResult<Page<Namespace>> {
+    let fetch = page_fetch(page.limit);
+    let rows = match &page.after {
+        None => sqlx::query_as::<_, DbNamespace>(
+            "SELECT tenant_id, namespace, display_name FROM namespaces WHERE tenant_id = $1 \
+             ORDER BY namespace LIMIT $2",
+        )
+        .bind(tenant_id)
+        .bind(fetch),
+        Some(after) => sqlx::query_as::<_, DbNamespace>(
+            "SELECT tenant_id, namespace, display_name FROM namespaces \
+             WHERE tenant_id = $1 AND namespace > $2 ORDER BY namespace LIMIT $3",
+        )
+        .bind(tenant_id)
+        .bind(after)
+        .bind(fetch),
+    }
+    .fetch_all(&store.pool)
+    .await?;
+    let items = rows
+        .into_iter()
+        .map(|row| Namespace {
+            tenant_id: row.tenant_id,
+            namespace: row.namespace,
+            display_name: row.display_name,
+        })
+        .collect();
+    Ok(Page::from_overfetch(items, page.limit))
 }
 
 pub(super) async fn create_namespace(

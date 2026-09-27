@@ -409,7 +409,8 @@ async fn satisfies_the_shard_store_contract() -> anyhow::Result<()> {
     crate::store::contract::shards::run_shard_concurrency_contract(store.clone()).await;
     crate::store::contract::shards::run_node_delete_race_contract(store.clone(), 300).await;
     crate::store::contract::refresh_tokens::run_refresh_contract(store.clone()).await;
-    crate::store::contract::rbac::run_rbac_contract(store).await;
+    crate::store::contract::rbac::run_rbac_contract(store.clone()).await;
+    crate::store::contract::pagination::run_pagination_contract(store).await;
     Ok(())
 }
 

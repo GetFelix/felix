@@ -36,6 +36,7 @@ mod change_log;
 mod export;
 mod namespaces;
 mod nodes;
+mod pages;
 mod refresh_tokens;
 mod shards;
 mod streams;
@@ -48,7 +49,8 @@ use async_trait::async_trait;
 use tokio::sync::RwLock;
 
 use super::{
-    AuthStore, ChangeSet, ControlPlaneStore, ReportWrite, Snapshot, StoreConfig, StoreResult,
+    AuthStore, ChangeSet, ControlPlaneStore, Page, PageRequest, ReportWrite, Snapshot, StoreConfig,
+    StoreResult,
 };
 use crate::auth::felix_token::{SigningKey, TenantSigningKeys};
 use crate::auth::idp_registry::IdpIssuerConfig;
@@ -235,6 +237,10 @@ impl ControlPlaneStore for InMemoryStore {
         tenants::list_tenants(self).await
     }
 
+    async fn list_tenants_page(&self, page: PageRequest<String>) -> StoreResult<Page<Tenant>> {
+        pages::tenants(self, page).await
+    }
+
     async fn create_tenant(&self, tenant: Tenant) -> StoreResult<Tenant> {
         tenants::create_tenant(self, tenant).await
     }
@@ -255,6 +261,14 @@ impl ControlPlaneStore for InMemoryStore {
         namespaces::list_namespaces(self, tenant_id).await
     }
 
+    async fn list_namespaces_page(
+        &self,
+        tenant_id: &str,
+        page: PageRequest<String>,
+    ) -> StoreResult<Page<Namespace>> {
+        pages::namespaces(self, tenant_id, page).await
+    }
+
     async fn create_namespace(&self, namespace: Namespace) -> StoreResult<Namespace> {
         namespaces::create_namespace(self, namespace).await
     }
@@ -273,6 +287,15 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn list_streams(&self, tenant_id: &str, namespace: &str) -> StoreResult<Vec<Stream>> {
         streams::list_streams(self, tenant_id, namespace).await
+    }
+
+    async fn list_streams_page(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        page: PageRequest<String>,
+    ) -> StoreResult<Page<Stream>> {
+        pages::streams(self, tenant_id, namespace, page).await
     }
 
     async fn get_stream(&self, key: &StreamKey) -> StoreResult<Stream> {
@@ -305,6 +328,15 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn list_caches(&self, tenant_id: &str, namespace: &str) -> StoreResult<Vec<Cache>> {
         caches::list_caches(self, tenant_id, namespace).await
+    }
+
+    async fn list_caches_page(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        page: PageRequest<String>,
+    ) -> StoreResult<Page<Cache>> {
+        pages::caches(self, tenant_id, namespace, page).await
     }
 
     async fn get_cache(&self, key: &CacheKey) -> StoreResult<Cache> {
@@ -341,6 +373,10 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn list_nodes(&self) -> StoreResult<Vec<Node>> {
         nodes::list_nodes(self).await
+    }
+
+    async fn list_nodes_page(&self, page: PageRequest<String>) -> StoreResult<Page<Node>> {
+        pages::nodes(self, page).await
     }
 
     async fn patch_node(&self, node_id: &str, patch: NodePatchRequest) -> StoreResult<Node> {
@@ -402,6 +438,14 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
         shards::list_shard_assignments(self).await
+    }
+
+    async fn list_shard_assignments_page(
+        &self,
+        leader: Option<&str>,
+        page: PageRequest<ShardKey>,
+    ) -> StoreResult<Page<ShardAssignment>> {
+        pages::shard_assignments(self, leader, page).await
     }
 
     async fn list_shard_assignments_for_node(
@@ -513,6 +557,22 @@ impl AuthStore for InMemoryStore {
 
     async fn list_rbac_groupings(&self, tenant_id: &str) -> StoreResult<Vec<GroupingRule>> {
         auth::list_rbac_groupings(self, tenant_id).await
+    }
+
+    async fn list_rbac_policies_page(
+        &self,
+        tenant_id: &str,
+        page: PageRequest<PolicyRule>,
+    ) -> StoreResult<Page<PolicyRule>> {
+        pages::rbac_policies(self, tenant_id, page).await
+    }
+
+    async fn list_rbac_groupings_page(
+        &self,
+        tenant_id: &str,
+        page: PageRequest<GroupingRule>,
+    ) -> StoreResult<Page<GroupingRule>> {
+        pages::rbac_groupings(self, tenant_id, page).await
     }
 
     async fn add_rbac_policy(&self, tenant_id: &str, policy: PolicyRule) -> StoreResult<()> {
