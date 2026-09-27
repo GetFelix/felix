@@ -47,6 +47,7 @@ fn liveness_needs_all_three_conditions() {
         expires_at_secs: 100,
         used: false,
         revoked: false,
+        narrowing: None,
     };
     assert!(base.is_live(50));
 

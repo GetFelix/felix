@@ -3,7 +3,7 @@
 //! Defines IdP issuer settings and claim mapping configuration used by OIDC
 //! validation and bootstrap/admin endpoints, and the rules an issuer's URLs
 //! are held to.
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -12,6 +12,12 @@ use utoipa::ToSchema;
 /// For development only: a JWKS fetched over plain HTTP can be swapped in
 /// transit, and whoever swaps it can mint tokens for the tenant.
 pub const ALLOW_INSECURE_HTTP_ENV: &str = "FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP";
+
+/// Set to `true` to allow IdP URLs on private, link-local and unique-local
+/// addresses. Off by default because the control plane fetches whatever an
+/// issuer config names, which would otherwise reach internal services and
+/// cloud metadata endpoints. [`ALLOW_INSECURE_HTTP_ENV`] implies it.
+pub const ALLOW_PRIVATE_IDP_ENV: &str = "FELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP";
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ClaimMappings {
@@ -55,7 +61,7 @@ impl IdpIssuerConfig {
     ///
     /// # Errors
     /// What is wrong, fit to return to the caller.
-    pub fn validate(&self, allow_insecure_http: bool) -> Result<(), String> {
+    pub fn validate(&self, allow_insecure_http: bool, allow_private: bool) -> Result<(), String> {
         let issuer = self.issuer.trim();
         if issuer.is_empty() {
             return Err("issuer must not be empty".to_string());
@@ -66,8 +72,8 @@ impl IdpIssuerConfig {
             return Err("issuer must not contain '#'".to_string());
         }
         match &self.jwks_url {
-            Some(url) => check_fetch_url(url, allow_insecure_http),
-            None => check_fetch_url(&self.discovery_url(), allow_insecure_http),
+            Some(url) => check_fetch_url(url, allow_insecure_http, allow_private),
+            None => check_fetch_url(&self.discovery_url(), allow_insecure_http, allow_private),
         }
     }
 }
@@ -75,7 +81,17 @@ impl IdpIssuerConfig {
 /// Whether plain HTTP is allowed beyond loopback, from
 /// [`ALLOW_INSECURE_HTTP_ENV`].
 pub fn allow_insecure_http_from_env() -> bool {
-    std::env::var(ALLOW_INSECURE_HTTP_ENV)
+    env_flag(ALLOW_INSECURE_HTTP_ENV)
+}
+
+/// Whether IdP URLs may name private addresses, from [`ALLOW_PRIVATE_IDP_ENV`]
+/// or [`ALLOW_INSECURE_HTTP_ENV`].
+pub fn allow_private_idp_from_env() -> bool {
+    env_flag(ALLOW_PRIVATE_IDP_ENV) || allow_insecure_http_from_env()
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
         .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes"))
         .unwrap_or(false)
 }
@@ -85,11 +101,17 @@ pub fn allow_insecure_http_from_env() -> bool {
 /// HTTPS only, because the JWKS is what decides who may mint tokens for the
 /// tenant. Plain HTTP is allowed on a loopback host (a local IdP in tests and
 /// demos) or everywhere when `allow_insecure_http` is set. No credentials in
-/// the URL: they would be sent to whatever the host is.
+/// the URL: they would be sent to whatever the host is. A literal private,
+/// link-local or unique-local address is refused unless `allow_private`;
+/// hostnames get the same check at fetch time, in the validator's resolver.
 ///
 /// # Errors
 /// Why the URL is refused.
-pub fn check_fetch_url(raw: &str, allow_insecure_http: bool) -> Result<(), String> {
+pub fn check_fetch_url(
+    raw: &str,
+    allow_insecure_http: bool,
+    allow_private: bool,
+) -> Result<(), String> {
     let url = reqwest::Url::parse(raw).map_err(|err| format!("invalid IdP URL: {err}"))?;
     if !url.username().is_empty() || url.password().is_some() {
         return Err("IdP URLs must not carry credentials".to_string());
@@ -97,6 +119,17 @@ pub fn check_fetch_url(raw: &str, allow_insecure_http: bool) -> Result<(), Strin
     let Some(host) = url.host_str() else {
         return Err("IdP URLs must name a host".to_string());
     };
+    if !allow_private
+        && let Ok(ip) = host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<IpAddr>()
+        && is_private_address(ip)
+    {
+        return Err(format!(
+            "IdP URLs must not name a private address (allowed with {ALLOW_PRIVATE_IDP_ENV}=true)"
+        ));
+    }
     match url.scheme() {
         "https" => Ok(()),
         "http" if allow_insecure_http || is_loopback(host) => Ok(()),
@@ -112,6 +145,26 @@ fn is_loopback(host: &str) -> bool {
     let host = host.trim_start_matches('[').trim_end_matches(']');
     host.eq_ignore_ascii_case("localhost")
         || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Private, link-local, unique-local or unspecified: where an IdP URL must not
+/// point unless [`ALLOW_PRIVATE_IDP_ENV`] is set. Loopback is left out, since
+/// a local IdP is how tests and demos run.
+pub(crate) fn is_private_address(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => is_private_v4(v4),
+        IpAddr::V6(v6) => is_private_v6(v6),
+    }
+}
+
+fn is_private_v4(ip: Ipv4Addr) -> bool {
+    ip.is_private() || ip.is_link_local() || ip.is_unspecified() || ip.is_broadcast()
+}
+
+fn is_private_v6(ip: Ipv6Addr) -> bool {
+    let first = ip.segments()[0];
+    // fc00::/7 unique local, fe80::/10 link local.
+    ip.is_unspecified() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
 }
 
 #[cfg(test)]

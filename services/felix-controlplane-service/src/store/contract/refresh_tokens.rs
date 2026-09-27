@@ -7,7 +7,7 @@
 //! token.
 use std::sync::Arc;
 
-use crate::auth::refresh_token::{RefreshToken, RefreshTokenTake, hash_secret};
+use crate::auth::refresh_token::{Narrowing, RefreshToken, RefreshTokenTake, hash_secret};
 use crate::model::Tenant;
 use crate::store::ControlPlaneStore;
 
@@ -27,6 +27,15 @@ fn token(token_id: &str, family_id: &str) -> RefreshToken {
         expires_at_secs: NOW + 3_600,
         used: false,
         revoked: false,
+        narrowing: Some(narrowing()),
+    }
+}
+
+fn narrowing() -> Narrowing {
+    Narrowing {
+        requested: Some(vec!["stream.publish".to_string()]),
+        resources: Some(vec!["stream:refresh-t/payments/orders".to_string()]),
+        audience: "felix-controlplane".to_string(),
     }
 }
 
@@ -267,6 +276,8 @@ async fn the_stored_record_carries_the_claims_a_refresh_needs(
     assert_eq!(record.principal_id, PRINCIPAL);
     assert_eq!(record.secret_hash, hash_secret("the-secret"));
     assert_eq!(record.family_id, "family-claims");
+    // Dropping it would let every refresh widen back to full RBAC rights.
+    assert_eq!(record.narrowing, Some(narrowing()));
 }
 
 async fn purging_removes_only_what_has_expired(store: &dyn crate::store::ControlPlaneAuthStore) {

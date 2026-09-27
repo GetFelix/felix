@@ -49,7 +49,8 @@ impl UpstreamOidcValidator {
         // Checked here as well as when the issuer is stored: a config written
         // before the rule existed, or a discovery document, can name any URL.
         let allowed = |url: &str| {
-            check_fetch_url(url, self.allow_insecure_http).map_err(OidcError::UrlNotAllowed)
+            check_fetch_url(url, self.allow_insecure_http, self.allow_private)
+                .map_err(OidcError::UrlNotAllowed)
         };
         // An explicit JWKS URL skips discovery entirely.
         if let Some(url) = &issuer_cfg.jwks_url {

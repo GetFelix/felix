@@ -75,7 +75,10 @@ pub async fn initialize(
     }
     for issuer in &body.idp_issuers {
         issuer
-            .validate(state.oidc_validator.allow_insecure_http())
+            .validate(
+                state.oidc_validator.allow_insecure_http(),
+                state.oidc_validator.allow_private(),
+            )
             .map_err(|err| api_validation_error(&err))?;
     }
 

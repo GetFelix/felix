@@ -206,7 +206,8 @@ principal to it, then exchange an IdP token for that principal:
 
 The exchanged token goes in `./felix-node-token`. It expires like any Felix
 token; give the broker `FELIX_NODE_REFRESH_TOKEN_FILE` for it to re-mint, or
-rotate the file. The [bootstrap flow](/felix/features/security/#bootstrap-mode-day-0)
+rotate the file. A refresh keeps the audience its exchange chose, so exchange
+with `"audience": "felix-controlplane"` for the node credential. The [bootstrap flow](/felix/features/security/#bootstrap-mode-day-0)
 covers the rest of that request.
 
 ### Full Stack with Observability

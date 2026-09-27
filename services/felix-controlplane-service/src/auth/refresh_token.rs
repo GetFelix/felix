@@ -51,6 +51,24 @@ pub struct RefreshToken {
     /// Spent by a refresh. A spent token presented again is a replay.
     pub used: bool,
     pub revoked: bool,
+    /// The narrowing the exchange applied, re-applied on every refresh so a
+    /// refresh cannot widen what the exchange asked for. `None` on records
+    /// written before it was recorded, which refresh to full RBAC rights.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrowing: Option<Narrowing>,
+}
+
+/// What an exchange asked for, kept with its refresh chain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Narrowing {
+    /// Actions the token was limited to, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested: Option<Vec<String>>,
+    /// Resource hints the token was limited to, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<Vec<String>>,
+    /// The audience the exchange minted for. A refresh keeps it.
+    pub audience: String,
 }
 
 impl RefreshToken {

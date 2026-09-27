@@ -233,7 +233,8 @@ async fn exchange_returns_tenant_scoped_token() {
         .uri("/v1/tenants/t1/token/exchange")
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
-        .body(Body::from("{}"))
+        // Narrowed, so the refresh below has to carry the narrowing forward.
+        .body(Body::from(r#"{"requested":["stream.publish"]}"#))
         .expect("request");
     let response = app.oneshot(req).await.expect("exchange");
     assert_eq!(response.status(), StatusCode::OK);

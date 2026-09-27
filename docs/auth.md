@@ -282,6 +282,14 @@ The group claims presented at exchange are recorded on the refresh token,
 because group-derived grants cannot be recomputed without them. They are claims
 to re-check, not permissions to reuse.
 
+So is the exchange's narrowing: its `requested` actions, `resources` hints and
+`audience`. A refresh applies the same narrowing to current RBAC, so a narrowed
+token's refresh token never yields more than the narrowed token did, and the
+chain keeps its audience for life. Asking a refresh for a different audience is
+a `400`; exchange again for the other one. A refresh token issued before the
+narrowing was recorded refreshes to the principal's full RBAC rights, as it
+always did.
+
 `FELIX_REFRESH_TOKEN_TTL_SECONDS` (default 30 days) bounds a refresh token that
 is stolen and *never used* — one that is used produces a replay, which ends the
 chain immediately.
@@ -465,6 +473,10 @@ IdP trust is **configured per tenant**. The control plane only accepts tokens fr
 ### Admin API (preferred)
 
 IdP issuer endpoints require a Felix token with `tenant.manage` for the tenant.
+Changing an existing issuer's `jwks_url` or `discovery_url` additionally
+requires `tenant.manage:cluster:*`. Principal ids are
+`sha256(iss|sub)`, so whoever controls an issuer's keys can mint tokens as any
+of its subjects, including ones holding cluster grants.
 RBAC endpoints require explicit RBAC actions (`rbac.view`, `rbac.policy.manage`, `rbac.assignment.manage`).
 
 Use the control plane admin endpoints to manage IdP issuers per tenant:
@@ -533,6 +545,14 @@ Notes:
   tenant. The rule is checked when an issuer is added (`400`) and again before
   every fetch, including the `jwks_uri` a discovery document returns, so an
   issuer stored before the rule existed is held to it too.
+- Discovery and JWKS URLs must not point at a private (RFC 1918), link-local
+  (including `169.254.169.254`), unique-local (`fc00::/7`) or unspecified
+  address, whether as a literal or through what the hostname resolves to at
+  fetch time. Loopback stays allowed. `FELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP=true`
+  (or `FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP=true`) lifts this for an IdP
+  on an internal network. The resolver check does not apply when fetches go
+  through an HTTP proxy, which resolves the name itself.
+- Redirects are not followed: a discovery or JWKS URL must answer directly.
 - A discovery document's `issuer` must equal the configured issuer exactly
   (OIDC Discovery 1.0, section 4.3), or the exchange fails.
 - The issuer must not contain `#`; see
@@ -606,8 +626,10 @@ Content-Type: application/json
 ```
 
 No `Authorization` header: the refresh token *is* the credential. `audience`
-is optional and defaults to `felix-broker`, as for exchange; a broker's
-credential refresh asks for `felix-controlplane`.
+is optional; the new token always has the audience the exchange chose, and
+naming a different one is a `400`. A broker's credential refresh asks for
+`felix-controlplane`, so its refresh token must come from an exchange that asked
+for `felix-controlplane` too.
 
 Response:
 

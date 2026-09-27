@@ -179,7 +179,11 @@ Until the gaps above close, the deployment-side controls that matter most:
 - **Use HTTPS for every IdP discovery and JWKS URL.** The control plane refuses
   plain HTTP except on loopback unless
   `FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP` is set; leave it unset outside
-  development.
+  development. IdP URLs on private or link-local addresses are refused unless
+  `FELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP` is set, and redirects are never
+  followed.
+- **Keep `tenant.manage:cluster:*` for operators.** Besides creating tenants,
+  it is what lets a caller re-point an existing IdP issuer's keys.
 - **Give API callers `felix-controlplane` tokens** and brokers' clients
   `felix-broker` ones, and leave `FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE`
   unset once migrated, so a broker cannot replay a client's token against the
