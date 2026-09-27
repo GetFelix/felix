@@ -27,10 +27,6 @@ pub(super) struct Completion {
     payloads: Vec<Bytes>,
     /// Holds the commit turn until the batch is fanned out.
     durable: Option<ClaimedDurable>,
-    /// An in-memory stream's stand-in for the commit turn, over the same
-    /// span: taken before the ring append, released once the fanout is done
-    /// (or the detached finisher is), so every subscriber sees ring order.
-    in_memory_turn: Option<tokio::sync::OwnedMutexGuard<()>>,
     sample: bool,
     log_capacity: usize,
     /// The broker's replication wake-up.
@@ -67,7 +63,6 @@ impl Completion {
             handle,
             payloads,
             durable,
-            in_memory_turn: None,
             sample,
             log_capacity,
             replication,
@@ -85,13 +80,6 @@ impl Completion {
             });
         }
         if self.delivery.is_none() {
-            if self.durable.is_none() && self.in_memory_turn.is_none() {
-                self.in_memory_turn = Some(
-                    Arc::clone(&self.handle.state.fanout_order)
-                        .lock_owned()
-                        .await,
-                );
-            }
             self.commit().await?;
             self.append();
         }

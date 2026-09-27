@@ -47,12 +47,6 @@ pub(crate) struct StreamState {
     /// `Arc` so a claim can outlive the call that made it: see
     /// `CommitSequencer::reserve_owned` and `Broker::claim_publish` (#535).
     pub(crate) commit_sequencer: Arc<CommitSequencer>,
-    /// The in-memory stream's stand-in for the commit turn: held from the
-    /// ring append through fanout, so every subscriber receives batches in
-    /// ring order. Without it two publishes could append in one order and
-    /// fan out in the other, and different subscribers saw different orders.
-    /// Fair, so publishers queue in arrival order.
-    pub(crate) fanout_order: Arc<tokio::sync::Mutex<()>>,
     /// What an acknowledgement of a publish to this stream means. Carried on
     /// the state so the publish path reads it from the handle it already has,
     /// rather than looking the stream up again on the hot path.
@@ -93,7 +87,6 @@ impl StreamState {
             queued_items: Arc::new(AtomicUsize::new(0)),
             durable,
             commit_sequencer: Arc::new(CommitSequencer::new(0)),
-            fanout_order: Arc::new(tokio::sync::Mutex::new(())),
             producers: ProducerTable::default(),
             appended: Arc::new(tokio::sync::Notify::new()),
         }
