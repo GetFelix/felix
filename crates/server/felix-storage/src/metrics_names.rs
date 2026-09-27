@@ -52,6 +52,9 @@ pub const SEGMENT_ROLL_FAILED_TOTAL: &str = "felix_storage_segment_roll_failed_t
 pub const SEGMENT_ROLL_DISCARDED_TOTAL: &str = "felix_storage_segment_roll_discarded_total";
 /// Segments currently on disk for a shard.
 pub const SEGMENT_COUNT: &str = "felix_storage_segment_count";
+/// Sealed segments whose file and index are open, across every log. Bounded
+/// by `LogConfig::max_open_sealed_segments` per storage root.
+pub const OPEN_SEALED_SEGMENTS: &str = "felix_storage_open_sealed_segments";
 
 /// Sealed segments deleted by retention.
 pub const RETENTION_SEGMENTS_DELETED_TOTAL: &str = "felix_storage_retention_segments_deleted_total";

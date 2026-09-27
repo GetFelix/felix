@@ -501,6 +501,14 @@ cursors.
 | `FELIX_DURABLE_MAX_RECORDS_PER_READ` | `10000` | Record cap on one range read |
 | `FELIX_DURABLE_PREALLOCATE` | `true` | Reserve segment blocks at creation |
 | `FELIX_DURABLE_VERIFY_ALL_ON_OPEN` | `false` | Checksum every segment at startup |
+
+Sealed segments are opened lazily: an open reads only each sealed segment's
+header and last index entry, and the first read that reaches a segment opens
+its file and loads its sparse index into a cache shared per storage root,
+bounded by `LogConfig::max_open_sealed_segments` (default 256, least recently
+used evicted). Retention chooses segments and deletes their files outside the
+segment lock; the lock is held only to drop them from the list. A log can be
+closed (`DiskLog::close`); afterwards every handle to it fails with `Closed`.
 | `FELIX_DURABLE_REPAIR_CHECKSUM_TAIL` | `false` | Truncate a complete trailing record that fails its checksum (see below) |
 | `FELIX_STORAGE_IO_URING` | `0` | Submit device flushes to `io_uring` instead of the log's flush thread (Linux only) |
 

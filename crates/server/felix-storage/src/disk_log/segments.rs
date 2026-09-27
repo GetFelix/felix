@@ -17,10 +17,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub(crate) use super::sealed::SealedEntry;
+use super::sealed::{SealedFiles, SealedLocator};
 use crate::io::read_at;
 use crate::log::{AppendRecord, LogConfig, LogRecord, Offset, SegmentDescriptor, SegmentId};
 use crate::segment::{
-    ReadBudget, SegmentReader, SegmentWriter, SparseIndex, index_file_name, segment_file_name,
+    ReadBudget, SegmentReader, SegmentWriter, index_file_name, segment_file_name,
 };
 use crate::{Result, StorageError, metrics_names};
 
@@ -32,6 +34,9 @@ pub(super) struct SegmentSet {
     config: LogConfig,
     /// Ordered by `base_offset`, oldest first.
     sealed: Vec<SealedEntry>,
+    /// Where the sealed segments' files and indexes are opened, shared with
+    /// every other log under the same root.
+    files: Arc<SealedFiles>,
     active: SegmentWriter,
     /// Read handle on the active segment. Recreated on every roll.
     active_reader: Arc<SegmentReader>,
@@ -46,6 +51,10 @@ pub(super) struct SegmentSet {
     /// the same id would both try to create the same file, with the loser
     /// failing on `create_new`.
     next_segment_id: AtomicU64,
+    /// Set by `DiskLog::close`. Checked by everything that changes the files,
+    /// under the write lock those changes take, so once it is set and the lock
+    /// released nothing more is written here and another log may open them.
+    closed: bool,
 }
 
 impl SegmentSet {
@@ -56,6 +65,7 @@ impl SegmentSet {
         config: LogConfig,
         sealed: Vec<SealedEntry>,
         active: SegmentWriter,
+        files: Arc<SealedFiles>,
     ) -> Result<Self> {
         let active_reader = Arc::new(SegmentReader::open(
             active.path(),
@@ -69,11 +79,36 @@ impl SegmentSet {
             label,
             config,
             sealed,
+            files,
             active,
             active_reader,
             generation: 0,
             next_segment_id,
+            closed: false,
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn open_sealed_segments(&self) -> usize {
+        self.files.len()
+    }
+
+    /// Refuse every later change to the files, and let go of the sealed
+    /// segments' cached handles.
+    pub(super) fn close(&mut self) {
+        self.closed = true;
+        for entry in &self.sealed {
+            self.files.remove(entry.key());
+        }
+    }
+
+    /// Fails once the log is closed. Every path that writes, renames or
+    /// deletes a file checks this under the write lock first.
+    pub(super) fn check_open(&self) -> Result<()> {
+        if self.closed {
+            return Err(StorageError::Closed(self.label.clone()));
+        }
+        Ok(())
     }
 
     /// Offset the next appended record will take.
@@ -122,6 +157,7 @@ impl SegmentSet {
     /// way, but keeping a batch whole means one `write` call and one index
     /// update per append regardless of where the boundary falls.
     pub(super) fn append(&mut self, records: &[AppendRecord]) -> Result<(Offset, Offset)> {
+        self.check_open()?;
         // An empty active segment must accept the batch even when it is
         // oversized — otherwise a record larger than `segment_size_bytes` could
         // never be written at all. Such a record gets a segment to itself and
@@ -156,14 +192,12 @@ impl SegmentSet {
                 .sealed
                 .partition_point(|entry| entry.next_offset() <= start);
             for entry in &self.sealed[first..] {
-                spans.push(ReadSpan {
-                    reader: Arc::clone(&entry.reader),
-                    position: entry.index.seek_position(start),
-                    valid_bytes: entry.descriptor.size_bytes,
-                });
+                spans.push(ReadSpan::Sealed(
+                    entry.locator(&self.dir, self.config.index_spacing_bytes),
+                ));
             }
             if self.active.next_offset() > start {
-                spans.push(ReadSpan {
+                spans.push(ReadSpan::Active {
                     reader: Arc::clone(&self.active_reader),
                     position: self.active.index().seek_position(start),
                     valid_bytes: self.active.size_bytes(),
@@ -173,6 +207,7 @@ impl SegmentSet {
         ReadPlan {
             generation: self.generation,
             spans,
+            files: Arc::clone(&self.files),
         }
     }
 
@@ -184,98 +219,62 @@ impl SegmentSet {
 
     /// Seal the active segment and report a verifiable summary of it.
     pub(super) fn seal_active(&mut self) -> Result<(SegmentDescriptor, u64)> {
+        self.check_open()?;
         let descriptor = self.active.seal()?;
         let checksum = checksum_file(self.active.path())?;
         Ok((descriptor, checksum))
     }
 
-    /// Delete whole sealed segments from the head until the configured
-    /// retention bounds are satisfied.
-    ///
-    /// Head-only and whole-segment: partial segments are never rewritten, which
-    /// is what lets recovery keep trusting "valid bytes end at EOF". The active
-    /// segment is never a candidate, so a log always retains at least the
-    /// records written since the last roll.
-    ///
-    /// Advancing `base_offset` is a side effect of removing the head entry, and
-    /// both happen under the caller's write lock — so a reader either sees a
-    /// segment and can read it, or sees a raised base offset and gets
-    /// `Trimmed`. It never sees a descriptor whose file is gone.
-    pub(super) fn enforce_retention(&mut self, now_micros: u64) -> Result<RetentionOutcome> {
-        let max_bytes = self.config.retention_bytes;
-        let max_age_micros = self
-            .config
-            .retention_age
-            .map(|age| age.as_micros().min(u128::from(u64::MAX)) as u64);
-        let mut outcome = RetentionOutcome::default();
-        if max_bytes.is_none() && max_age_micros.is_none() {
-            outcome.base_offset = self.base_offset();
-            return Ok(outcome);
+    /// The sealed segments retention may look at, oldest first, and the log's
+    /// size. Copied out so the pass can read timestamps without the lock.
+    pub(super) fn retention_plan(&self) -> RetentionPlan {
+        RetentionPlan {
+            total_bytes: self
+                .sealed
+                .iter()
+                .map(|entry| entry.descriptor.size_bytes)
+                .sum::<u64>()
+                + self.active.size_bytes(),
+            candidates: self
+                .sealed
+                .iter()
+                .map(|entry| entry.locator(&self.dir, self.config.index_spacing_bytes))
+                .collect(),
+            files: Arc::clone(&self.files),
         }
-
-        let mut total_bytes: u64 = self
-            .sealed
-            .iter()
-            .map(|entry| entry.descriptor.size_bytes)
-            .sum::<u64>()
-            + self.active.size_bytes();
-
-        while let Some(head) = self.sealed.first() {
-            let id = head.descriptor.id;
-            let size = head.descriptor.size_bytes;
-
-            let over_size = max_bytes.is_some_and(|max| total_bytes > max);
-            let too_old = match max_age_micros {
-                // The newest record decides: a segment is only expired once
-                // every record in it is, so nothing younger than the bound goes.
-                Some(max_age) => match self.newest_timestamp(head)? {
-                    Some(newest) => now_micros.saturating_sub(newest) > max_age,
-                    // A sealed segment always holds a record; treat an
-                    // unreadable timestamp as "keep" rather than deleting on
-                    // missing evidence.
-                    None => false,
-                },
-                None => false,
-            };
-            if !over_size && !too_old {
-                break;
-            }
-
-            // Drop the entry first: it owns the reader's descriptor, and
-            // closing before unlinking keeps this correct on platforms that
-            // refuse to remove an open file.
-            self.sealed.remove(0);
-            self.remove_segment_files(id)?;
-            total_bytes = total_bytes.saturating_sub(size);
-            outcome.segments_deleted += 1;
-            outcome.bytes_reclaimed += size;
-        }
-
-        outcome.base_offset = self.base_offset();
-        if outcome.segments_deleted > 0 {
-            metrics::counter!(metrics_names::RETENTION_SEGMENTS_DELETED_TOTAL)
-                .increment(outcome.segments_deleted as u64);
-            metrics::counter!(metrics_names::RETENTION_BYTES_RECLAIMED_TOTAL)
-                .increment(outcome.bytes_reclaimed);
-            metrics::gauge!(metrics_names::SEGMENT_COUNT).set((self.sealed.len() + 1) as f64);
-        }
-        metrics::gauge!(metrics_names::RETENTION_BASE_OFFSET).set(outcome.base_offset as f64);
-        Ok(outcome)
     }
 
-    /// Timestamp of the newest record in a sealed segment.
-    fn newest_timestamp(&self, entry: &SealedEntry) -> Result<Option<u64>> {
-        let mut out = Vec::new();
-        let mut budget = ReadBudget::new(usize::MAX, 1);
-        entry.reader.read_from(
-            &entry.index,
-            entry.descriptor.last_offset,
-            entry.descriptor.size_bytes,
-            &mut budget,
-            &self.label,
-            &mut out,
-        )?;
-        Ok(out.first().map(|record| record.timestamp_micros))
+    /// Drop `ids` from the head of the list, stopping at the first that is no
+    /// longer there: something else changed the log since they were chosen.
+    /// Returns what was dropped; the caller deletes the files.
+    ///
+    /// Advancing `base_offset` is a side effect of removing the head entry,
+    /// and this runs under the caller's write lock, so a reader either sees a
+    /// segment and can read it, or sees a raised base offset and gets
+    /// `Trimmed`. A read planned before this is redone because the generation
+    /// moves, so none trusts a file about to be deleted.
+    pub(super) fn remove_head(&mut self, ids: &[SegmentId]) -> Result<Vec<SegmentDescriptor>> {
+        self.check_open()?;
+        let mut removed = Vec::new();
+        for id in ids {
+            if self.sealed.first().map(|entry| entry.descriptor.id) != Some(*id) {
+                break;
+            }
+            let entry = self.sealed.remove(0);
+            self.forget(&entry);
+            removed.push(entry.descriptor);
+        }
+        if !removed.is_empty() {
+            self.generation += 1;
+            metrics::gauge!(metrics_names::SEGMENT_COUNT).set((self.sealed.len() + 1) as f64);
+        }
+        Ok(removed)
+    }
+
+    /// Drop a sealed entry's cached handle. Every path that takes an entry
+    /// out of the list calls this.
+    pub(super) fn forget(&self, entry: &SealedEntry) {
+        self.files.remove(entry.key());
     }
 
     fn bump_next_segment_id(&self, at_least: SegmentId) {
@@ -283,17 +282,7 @@ impl SegmentSet {
     }
 
     fn remove_segment_files(&self, id: SegmentId) -> Result<()> {
-        for path in [
-            self.dir.join(segment_file_name(id)),
-            self.dir.join(index_file_name(id)),
-        ] {
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(StorageError::Io(err)),
-            }
-        }
-        Ok(())
+        remove_segment_files(&self.dir, id)
     }
 }
 
@@ -302,15 +291,20 @@ impl SegmentSet {
 pub(super) struct ReadPlan {
     pub(super) generation: u64,
     spans: Vec<ReadSpan>,
+    files: Arc<SealedFiles>,
 }
 
 #[derive(Debug)]
-struct ReadSpan {
-    reader: Arc<SegmentReader>,
-    /// A record boundary at or before the read's start, from the index.
-    position: u64,
-    /// Bytes of the segment that held records when the plan was made.
-    valid_bytes: u64,
+enum ReadSpan {
+    /// Opened, and its index consulted, only when the read reaches it.
+    Sealed(SealedLocator),
+    Active {
+        reader: Arc<SegmentReader>,
+        /// A record boundary at or before the read's start, from the index.
+        position: u64,
+        /// Bytes of the segment that held records when the plan was made.
+        valid_bytes: u64,
+    },
 }
 
 impl ReadPlan {
@@ -325,36 +319,85 @@ impl ReadPlan {
             if budget.is_spent() {
                 break;
             }
-            span.reader.read_from_position(
-                span.position,
-                start,
-                span.valid_bytes,
-                budget,
-                label,
-                &mut out,
-            )?;
+            match span {
+                ReadSpan::Sealed(locator) => {
+                    let handle = locator.open(&self.files, label)?;
+                    handle.reader.read_from(
+                        &handle.index,
+                        start,
+                        locator.valid_bytes(),
+                        budget,
+                        label,
+                        &mut out,
+                    )?;
+                }
+                ReadSpan::Active {
+                    reader,
+                    position,
+                    valid_bytes,
+                } => reader.read_from_position(
+                    *position,
+                    start,
+                    *valid_bytes,
+                    budget,
+                    label,
+                    &mut out,
+                )?,
+            }
         }
         Ok(out)
     }
 }
 
-/// A finished segment: immutable bytes plus the index needed to seek into them.
+/// The sealed segments a retention pass may delete, captured under the lock.
 #[derive(Debug)]
-pub(super) struct SealedEntry {
-    pub descriptor: SegmentDescriptor,
-    pub index: SparseIndex,
-    pub reader: Arc<SegmentReader>,
-    /// A v3 segment, which may hold producer marks. A v2 one cannot, so a
-    /// rebuild of producer state never has to read it.
-    pub holds_marks: bool,
+pub(super) struct RetentionPlan {
+    total_bytes: u64,
+    candidates: Vec<SealedLocator>,
+    files: Arc<SealedFiles>,
 }
 
-impl SealedEntry {
-    /// Offset one past the last record, matching `SegmentWriter::next_offset`.
-    fn next_offset(&self) -> Offset {
-        // A sealed segment always holds at least one record, so `last_offset`
-        // is real rather than the empty-segment placeholder.
-        self.descriptor.last_offset + 1
+impl RetentionPlan {
+    /// The head segments the configured bounds say to delete, oldest first.
+    ///
+    /// Head-only and whole-segment: partial segments are never rewritten,
+    /// which is what lets recovery keep trusting "valid bytes end at EOF". The
+    /// active segment is never a candidate, so a log always retains at least
+    /// the records written since the last roll. Runs without the lock: an age
+    /// check reads the newest record of each candidate, which may be cold.
+    pub(super) fn choose(
+        &self,
+        config: &LogConfig,
+        now_micros: u64,
+        label: &str,
+    ) -> Result<Vec<SegmentId>> {
+        let max_bytes = config.retention_bytes;
+        let max_age_micros = config
+            .retention_age
+            .map(|age| age.as_micros().min(u128::from(u64::MAX)) as u64);
+        let mut total_bytes = self.total_bytes;
+        let mut chosen = Vec::new();
+        for candidate in &self.candidates {
+            let over_size = max_bytes.is_some_and(|max| total_bytes > max);
+            let too_old = match max_age_micros {
+                // The newest record decides: a segment is only expired once
+                // every record in it is, so nothing younger than the bound goes.
+                Some(max_age) => match candidate.newest_timestamp(&self.files, label)? {
+                    Some(newest) => now_micros.saturating_sub(newest) > max_age,
+                    // A sealed segment always holds a record; treat an
+                    // unreadable timestamp as "keep" rather than deleting on
+                    // missing evidence.
+                    None => false,
+                },
+                None => false,
+            };
+            if !over_size && !too_old {
+                break;
+            }
+            total_bytes = total_bytes.saturating_sub(candidate.valid_bytes());
+            chosen.push(candidate.id());
+        }
+        Ok(chosen)
     }
 }
 
@@ -365,6 +408,21 @@ pub struct RetentionOutcome {
     pub bytes_reclaimed: u64,
     /// Oldest offset still readable after the pass.
     pub base_offset: Offset,
+}
+
+/// Delete a segment and its index. Either may already be gone.
+pub(super) fn remove_segment_files(dir: &Path, id: SegmentId) -> Result<()> {
+    for path in [
+        dir.join(segment_file_name(id)),
+        dir.join(index_file_name(id)),
+    ] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(StorageError::Io(err)),
+        }
+    }
+    Ok(())
 }
 
 /// CRC-32 of an entire file, streamed in fixed chunks.

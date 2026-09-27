@@ -35,6 +35,7 @@ pub(super) fn new_set(dir: &TempDir, segment_size_bytes: u64) -> SegmentSet {
         config,
         Vec::new(),
         active,
+        crate::disk_log::sealed::SealedFiles::new(16),
     )
     .expect("set")
 }

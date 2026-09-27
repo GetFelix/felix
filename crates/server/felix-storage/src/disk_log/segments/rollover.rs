@@ -10,9 +10,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use super::{SealedEntry, SegmentSet};
+use super::SegmentSet;
 use crate::Result;
 use crate::disk_log::now_micros;
+use crate::disk_log::sealed::{SealedEntry, SealedHandle};
 use crate::log::{AppendRecord, RecordMark, SegmentId};
 use crate::segment::writer::BlankSegment;
 use crate::segment::{SegmentReader, SegmentWriter, index_file_name};
@@ -130,8 +131,12 @@ impl SegmentSet {
     /// the segment this one was built to retire.
     pub(crate) fn commit_roll(&mut self, prepared: PreparedSegment) -> Result<RollOutcome> {
         // Rolling an empty segment would push a `SealedEntry` with no
-        // `last_offset` to describe, and gains nothing.
-        if prepared.previous_active_id != self.active.id() || self.active.record_count() == 0 {
+        // `last_offset` to describe, and gains nothing. A closed log installs
+        // nothing, so the caller deletes the prepared files.
+        if prepared.previous_active_id != self.active.id()
+            || self.active.record_count() == 0
+            || self.check_open().is_err()
+        {
             return Ok(RollOutcome::Stale(prepared));
         }
         let descriptor = self.active.descriptor();
@@ -148,16 +153,7 @@ impl SegmentSet {
         )?);
 
         // Guaranteed non-empty by the check above, so `last_offset` is real.
-        self.sealed.push(SealedEntry {
-            descriptor,
-            index: retired.index().clone(),
-            reader: Arc::new(SegmentReader::open(
-                retired.path(),
-                retired.id(),
-                retired.base_offset(),
-            )?),
-            holds_marks: retired.holds_marks(),
-        });
+        self.push_sealed(descriptor, &retired)?;
 
         metrics::counter!(metrics_names::SEGMENT_ROLL_TOTAL).increment(1);
         metrics::gauge!(metrics_names::SEGMENT_COUNT).set((self.sealed.len() + 1) as f64);
@@ -171,6 +167,7 @@ impl SegmentSet {
     /// several fsyncs; the split `roll_plan`/`commit_roll` pair is what the
     /// async log uses to keep that off the append path.
     pub(crate) fn roll(&mut self) -> Result<()> {
+        self.check_open()?;
         let descriptor = self.active.seal()?;
         let base_offset = self.active.next_offset();
         let id = self.next_segment_id.fetch_add(1, Ordering::AcqRel);
@@ -196,16 +193,7 @@ impl SegmentSet {
         // leaving the file behind would put an empty segment in the middle of
         // the chain, where recovery reads its base offset as a break.
         if retired.record_count() > 0 {
-            self.sealed.push(SealedEntry {
-                descriptor,
-                index: retired.index().clone(),
-                reader: Arc::new(SegmentReader::open(
-                    retired.path(),
-                    retired.id(),
-                    retired.base_offset(),
-                )?),
-                holds_marks: retired.holds_marks(),
-            });
+            self.push_sealed(descriptor, &retired)?;
         } else {
             let path = retired.path().to_path_buf();
             let index = self.dir.join(index_file_name(retired.id()));
@@ -221,6 +209,26 @@ impl SegmentSet {
 
         metrics::counter!(metrics_names::SEGMENT_ROLL_TOTAL).increment(1);
         metrics::gauge!(metrics_names::SEGMENT_COUNT).set((self.sealed.len() + 1) as f64);
+        Ok(())
+    }
+
+    /// List a retired writer's segment as sealed. Its index is already in
+    /// memory and its records are the likeliest to be read next, by a follower
+    /// catching up, so the cache starts with it rather than reading it back.
+    fn push_sealed(
+        &mut self,
+        descriptor: crate::log::SegmentDescriptor,
+        retired: &SegmentWriter,
+    ) -> Result<()> {
+        let entry = SealedEntry::new(descriptor, retired.holds_marks());
+        self.files.seed(
+            entry.key(),
+            SealedHandle {
+                reader: SegmentReader::open(retired.path(), retired.id(), retired.base_offset())?,
+                index: retired.index().clone(),
+            },
+        );
+        self.sealed.push(entry);
         Ok(())
     }
 

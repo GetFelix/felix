@@ -123,6 +123,9 @@ impl LogInner {
             metrics::gauge!(metrics_names::UNSYNCED_BYTES)
                 .set(segments.active().unsynced_bytes() as f64);
         }
+        // Only now that the sync has returned, so the mark never runs ahead of
+        // the device. Flushes are serialised, so marks land in order.
+        self.note_synced(segment_id, synced_bytes);
 
         // Rechecked after the flush, not only before it. A rollover can fail
         // while this flush is in flight, and `durable_upto` spans the retired

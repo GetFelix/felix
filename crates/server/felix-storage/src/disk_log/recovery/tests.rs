@@ -38,6 +38,7 @@ fn populate(dir: &TempDir, count: usize) -> u64 {
         config(),
         recovered.sealed,
         recovered.active,
+        crate::disk_log::sealed::SealedFiles::new(16),
     )
     .expect("set");
     for i in 0..count {
@@ -501,10 +502,12 @@ fn a_missing_index_is_rebuilt() {
     assert!(dir.path().join(index_file_name(sealed_id)).exists());
 
     // The rebuilt index seeks to the same places as the original.
-    let entry = &recovered.sealed[0];
-    for indexed in entry.index.entries() {
-        assert_eq!(entry.index.seek_position(indexed.offset), indexed.position);
+    let index = SparseIndex::load(&dir.path().join(index_file_name(sealed_id)), 0).expect("index");
+    assert!(!index.is_empty());
+    for indexed in index.entries() {
+        assert_eq!(index.seek_position(indexed.offset), indexed.position);
     }
+    drop(recovered);
 }
 
 #[test]
@@ -518,10 +521,9 @@ fn a_stale_index_is_replaced() {
         .persist(&dir.path().join(index_file_name(sealed_id)))
         .expect("persist");
 
-    let recovered = reopen(&dir).expect("recover");
+    reopen(&dir).expect("recover");
     let reloaded = SparseIndex::load(&dir.path().join(index_file_name(sealed_id)), 0);
-    assert!(reloaded.is_some());
-    assert!(!recovered.sealed[0].index.is_empty());
+    assert!(reloaded.is_some_and(|index| !index.is_empty()));
 }
 
 /// An index that loads but points somewhere wrong is still only an index: the
@@ -556,7 +558,6 @@ fn a_sealed_index_pointing_at_the_wrong_place_is_rebuilt() {
         index.persist(&index_path).expect("persist");
 
         let recovered = reopen(&dir).expect("a bad index is rebuilt, not fatal");
-        assert_eq!(recovered.sealed[0].index.entries(), good.entries());
         drop(recovered);
         assert_eq!(
             SparseIndex::load(&index_path, 0)
@@ -608,6 +609,7 @@ fn a_log_recovered_from_a_torn_tail_accepts_new_appends() {
         config(),
         recovered.sealed,
         recovered.active,
+        crate::disk_log::sealed::SealedFiles::new(16),
     )
     .expect("set");
     let tail = set.tail_offset();

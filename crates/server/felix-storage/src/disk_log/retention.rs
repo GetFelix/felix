@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use tokio::sync::Notify;
 
-use super::segments::RetentionOutcome;
+use super::segments::{RetentionOutcome, remove_segment_files};
 use super::{LogInner, now_micros};
 use crate::{Result, StorageError, metrics_names};
 
@@ -109,15 +109,44 @@ impl LogInner {
     /// Deleting files is a syscall per file and can block on a busy device, so
     /// it never runs on a reactor worker — the same rule the rollover path
     /// follows for its flushes.
+    ///
+    /// The segment lock is held only to take the chosen segments out of the
+    /// list. Choosing them may read a cold record per segment for its age, and
+    /// deleting them is a syscall per file; appends wait on neither.
     pub(super) async fn sweep_retention(self: Arc<Self>) -> Result<RetentionOutcome> {
         let inner = Arc::clone(&self);
         tokio::task::spawn_blocking(move || {
-            let now = now_micros();
-            let mut segments = inner.segments.write();
-            let outcome = segments.enforce_retention(now)?;
-            if outcome.segments_deleted > 0 {
-                inner.producers.lock().prune(segments.base_offset());
+            let mut outcome = RetentionOutcome::default();
+            if inner.config.retention_bytes.is_none() && inner.config.retention_age.is_none() {
+                outcome.base_offset = inner.segments.read().base_offset();
+                return Ok(outcome);
             }
+            let plan = inner.segments.read().retention_plan();
+            let chosen = plan.choose(&inner.config, now_micros(), &inner.label)?;
+            let removed = {
+                let mut segments = inner.segments.write();
+                let removed = segments.remove_head(&chosen)?;
+                if !removed.is_empty() {
+                    inner.producers.lock().prune(segments.base_offset());
+                }
+                outcome.base_offset = segments.base_offset();
+                removed
+            };
+            // Out of the list first, so nothing new can reach these files; a
+            // crash before the unlinks leaves them as a longer log, which the
+            // next pass trims again.
+            for descriptor in &removed {
+                remove_segment_files(&inner.dir, descriptor.id)?;
+                outcome.segments_deleted += 1;
+                outcome.bytes_reclaimed += descriptor.size_bytes;
+            }
+            if !removed.is_empty() {
+                metrics::counter!(metrics_names::RETENTION_SEGMENTS_DELETED_TOTAL)
+                    .increment(outcome.segments_deleted as u64);
+                metrics::counter!(metrics_names::RETENTION_BYTES_RECLAIMED_TOTAL)
+                    .increment(outcome.bytes_reclaimed);
+            }
+            metrics::gauge!(metrics_names::RETENTION_BASE_OFFSET).set(outcome.base_offset as f64);
             Ok(outcome)
         })
         .await

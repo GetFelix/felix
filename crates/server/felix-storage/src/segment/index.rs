@@ -60,6 +60,32 @@ impl SparseIndex {
         Some(index)
     }
 
+    /// The last whole entry of an index file, reading only the header and
+    /// that entry. `None` when the file is absent, unusable or empty.
+    ///
+    /// For validating a sealed segment at open without holding its index in
+    /// memory: the entry is only a place to resume a scan from, and the scan
+    /// decides whether it was right.
+    pub fn load_last(path: &Path, base_offset: Offset) -> Option<IndexEntry> {
+        let file = File::open(path).ok()?;
+        let len = file.metadata().ok()?.len();
+        let mut header = [0u8; INDEX_HEADER_LEN as usize];
+        if crate::io::read_at(&file, &mut header, 0).ok()? < header.len() {
+            return None;
+        }
+        if IndexHeader::decode(&header).ok()?.base_offset != base_offset {
+            return None;
+        }
+        let entries = len.checked_sub(INDEX_HEADER_LEN)? / INDEX_ENTRY_LEN;
+        let at = INDEX_HEADER_LEN + entries.checked_sub(1)? * INDEX_ENTRY_LEN;
+        let mut entry = [0u8; INDEX_ENTRY_LEN as usize];
+        if crate::io::read_at(&file, &mut entry, at).ok()? < entry.len() {
+            return None;
+        }
+        let entry = IndexEntry::decode(&entry).ok()?;
+        (entry.position >= SEGMENT_HEADER_LEN).then_some(entry)
+    }
+
     pub fn base_offset(&self) -> Offset {
         self.base_offset
     }

@@ -55,6 +55,7 @@ a segment — should be rejected on its first four bytes rather than misparsed.
     00000000000000000001.index
     epochs                                   ← where each generation began
     replica                                  ← accepted generation and commit offset, once replicated
+    durable.mark                             ← how far the active segment was synced
     producers                                ← producer snapshot, when any producer wrote here
 ```
 
@@ -245,8 +246,13 @@ because only there can a record have been mid-write when the process died:
   inside the damaged record and run to end of file. Nothing past those zeros
   can have been acknowledged, because an fsync that covered a later record
   covered the zeroed bytes too. Zeros followed by any non-zero byte are not
-  this case and stay fatal, as do stale (non-zero) blocks at the tail: recovery
-  cannot tell those from rot on an acknowledged record.
+  this case and stay fatal, unless they lie past the durable mark (below).
+- **Anything past the durable mark is repairable**, whatever it looks like.
+  The `durable.mark` file records how far the active segment had been synced;
+  bytes past it were never reported durable, so stale (non-zero) blocks or any
+  other damage there is an unfinished write, not rot. Damage before the mark
+  keeps the strict rules. A shard without a mark (written by an older build)
+  keeps the strict rules everywhere.
 - **An unfinished background roll.** The background roll installs the new
   segment before it flushes the retired one, and writes the new header without
   a flush of its own. Every flush syncs the retired segment before the active
@@ -422,3 +428,27 @@ its batches is in the log; retention that removes the last of them forgets it,
 on every replica alike. Each producer keeps its last 64 batches, and past 4096
 producers the one whose newest batch is oldest is forgotten.
 
+
+## `durable.mark` — how far the log was synced
+
+A 32-byte file, rewritten in place after every flush:
+
+```text
+ 0   4  magic         u32  "FLSM"
+ 4   2  version       u16
+ 6   2  reserved      u16
+ 8   8  segment       u64  segment id the mark refers to
+16   8  synced_bytes  u64  bytes of that segment known to be on the device
+24   4  crc           u32  crc32 over bytes 0..24
+28   4  reserved      u32
+```
+
+Recovery reads it before repairing anything. For segment `id`: equal to the
+mark's segment, damage at or past `synced_bytes` is a torn tail; newer than
+it, anything after the header is; older, the strict rules apply (a sealed
+segment was synced whole). The mark is written only after the sync it
+describes returns, so it never runs ahead of the device. It is not itself
+fsynced per flush (that would double the flush cost), so after a power loss it
+can lag by the filesystem's writeback delay; it is synced at open, at clean
+shutdown and close, and after a truncation or reset. A missing or corrupt mark
+reads as absent.

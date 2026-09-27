@@ -79,6 +79,7 @@ impl DiskLog {
                         }
                         // `roll` sealed the retired segment, so the snapshot
                         // describes only records already on the device.
+                        roller.note_sealed_before(segments.active().id());
                         let snapshot = roller.producer_snapshot(&segments);
                         drop(segments);
                         roller.store_producer_snapshot(snapshot);
@@ -215,7 +216,7 @@ impl LogInner {
             let plan = { inner.segments.read().roll_plan() };
             let prepared = plan.build()?;
 
-            let (retired, snapshot) = {
+            let (retired, snapshot, active) = {
                 let mut segments = inner.segments.write();
                 match segments.commit_roll(prepared)? {
                     RollOutcome::Installed(retired) => {
@@ -225,7 +226,8 @@ impl LogInner {
                         *inner.pending_seal.lock() = Some(retired.sync_handle());
                         // As of the new segment's base: everything it covers
                         // is in segments that are sealed once this roll is.
-                        (retired, inner.producer_snapshot(&segments))
+                        let active = segments.active().id();
+                        (retired, inner.producer_snapshot(&segments), active)
                     }
                     // The tail moved past the offset this segment was built
                     // for. Delete it here — leaving it for recovery to clean up
@@ -250,6 +252,7 @@ impl LogInner {
                     // Only now: these records are on the device, so a flush no
                     // longer has to cover them.
                     *inner.pending_seal.lock() = None;
+                    inner.note_sealed_before(active);
                     // Saved only once they are, so the snapshot never vouches
                     // for a batch a crash could still take away.
                     inner.store_producer_snapshot(snapshot);
@@ -343,6 +346,9 @@ impl LogInner {
     /// fail while an append is already in flight, and that append must not be
     /// acknowledged on the strength of a flush that did not cover it.
     pub(super) fn check_healthy(&self) -> Result<()> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(StorageError::Closed(self.label.clone()));
+        }
         if let Some(reason) = self.failure.lock().as_deref() {
             return Err(StorageError::SyncFailed(format!(
                 "{}: {reason}; the log is no longer accepting appends",
