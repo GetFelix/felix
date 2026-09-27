@@ -112,7 +112,21 @@ impl BrokerCluster {
 #[async_trait]
 impl Cluster for BrokerCluster {
     async fn authenticate(&self, tenant_id: &str, token: &str) -> Result<Principal, String> {
-        match self.auth.authenticate(tenant_id, token).await {
+        self.authenticate_peer(tenant_id, token, &[]).await
+    }
+
+    async fn authenticate_peer(
+        &self,
+        tenant_id: &str,
+        token: &str,
+        peer_certs: &[Vec<u8>],
+    ) -> Result<Principal, String> {
+        let certs: Vec<rustls::pki_types::CertificateDer<'_>> = peer_certs
+            .iter()
+            .map(|der| rustls::pki_types::CertificateDer::from(der.as_slice()))
+            .collect();
+        let peer = (!certs.is_empty()).then_some(certs.as_slice());
+        match self.auth.authenticate_peer(tenant_id, token, peer).await {
             Ok(context) => Ok(Principal::with_permissions(tenant_id, context.matcher)),
             // The token's own fault is safe to say. Anything else is the
             // control plane being unreachable, whose error text can carry its
@@ -354,7 +368,19 @@ impl KafkaListener {
                     Some(tls) => {
                         match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, tls.accept(socket)).await
                         {
-                            Ok(Ok(stream)) => service.serve_connection(stream, shutdown).await,
+                            Ok(Ok(stream)) => {
+                                // Kept for SASL, which binds the token to the
+                                // certificate when the broker is set to.
+                                let peer_certs = stream
+                                    .get_ref()
+                                    .1
+                                    .peer_certificates()
+                                    .map(|chain| chain.iter().map(|der| der.to_vec()).collect())
+                                    .unwrap_or_default();
+                                service
+                                    .serve_connection_with_peer(stream, peer_certs, shutdown)
+                                    .await;
+                            }
                             Ok(Err(err)) => {
                                 tracing::debug!(%peer, error = %err, "kafka TLS handshake failed");
                             }

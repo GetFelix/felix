@@ -421,7 +421,10 @@ All of these are read by the broker. The listener is off unless
 With TLS on, the listener serves the same certificate the QUIC listeners do:
 `FELIX_TLS_CERT` and `FELIX_TLS_KEY` when set, with `FELIX_TLS_CLIENT_CA`
 requiring a client certificate on this listener too (librdkafka's
-`ssl.certificate.location` and `ssl.key.location`). Point `ssl.ca.location` at
+`ssl.certificate.location` and `ssl.key.location`). With
+`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true` as well, SASL/PLAIN refuses a token
+whose `sub` that certificate was not issued to, as the QUIC listeners do.
+Point `ssl.ca.location` at
 the CA that issued it. Without them the broker generates a self-signed
 certificate named `localhost`, which `FELIX_TLS_CERT_EXPORT` writes out for
 clients to trust; librdkafka 2.0 and later verify hostnames and need

@@ -77,8 +77,23 @@ impl KafkaService {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send,
     {
+        self.serve_connection_with_peer(stream, Vec::new(), shutdown)
+            .await;
+    }
+
+    /// [`Self::serve_connection`] for a TLS connection whose client presented
+    /// `peer_certs` (DER, leaf first). SASL hands them to
+    /// [`Cluster::authenticate_peer`] with the token.
+    pub async fn serve_connection_with_peer<S>(
+        &self,
+        stream: S,
+        peer_certs: Vec<Vec<u8>>,
+        shutdown: CancellationToken,
+    ) where
+        S: AsyncRead + AsyncWrite + Unpin + Send,
+    {
         crate::metrics::connection_opened();
-        if let Err(err) = connection::serve(&self.shared, stream, &shutdown).await {
+        if let Err(err) = connection::serve(&self.shared, stream, peer_certs, &shutdown).await {
             tracing::debug!(error = %err, "kafka connection ended");
         }
         crate::metrics::connection_closed();

@@ -20,6 +20,19 @@ pub trait Cluster: Send + Sync + 'static {
     /// frame gets.
     async fn authenticate(&self, tenant_id: &str, token: &str) -> Result<Principal, String>;
 
+    /// [`Self::authenticate`] for a connection whose TLS client presented
+    /// `peer_certs` (DER, leaf first; empty without TLS or without a client
+    /// certificate), so the broker can bind the token to that certificate.
+    async fn authenticate_peer(
+        &self,
+        tenant_id: &str,
+        token: &str,
+        peer_certs: &[Vec<u8>],
+    ) -> Result<Principal, String> {
+        let _ = peer_certs;
+        self.authenticate(tenant_id, token).await
+    }
+
     /// Every broker a Kafka client may be sent to, this one included.
     fn brokers(&self) -> Vec<Endpoint>;
 

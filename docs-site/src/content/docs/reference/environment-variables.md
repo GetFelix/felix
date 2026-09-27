@@ -157,9 +157,10 @@ certificate to be issued to its token's subject (`sub`).
 - Control-plane tokens carry a 64-hex principal id, longer than a DNS label
   may be, so issue those clients' certificates with the URI SAN.
 - Needs `FELIX_TLS_CLIENT_CA`; set without it, startup fails.
-- Applies to the QUIC client listeners. The Kafka listener does not bind: its
-  SASL path has no access to the TLS connection's peer certificate, and
-  startup logs a warning when both are on.
+- Applies to the QUIC client listeners, and to the Kafka listener when it
+  serves TLS: SASL/PLAIN checks the token against the certificate the client
+  presented in the TLS handshake. Over `SASL_PLAINTEXT` there is no certificate
+  to bind to.
 
 ### `FELIX_TLS_REQUIRE_CERT`
 

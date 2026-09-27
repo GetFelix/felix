@@ -49,7 +49,7 @@ pub(super) async fn authenticate(
         match parse_plain(&request.auth_bytes) {
             Some((tenant, token)) => shared
                 .cluster
-                .authenticate(&tenant, &token)
+                .authenticate_peer(&tenant, &token, &session.peer_certs)
                 .await
                 .map_err(|reason| (ResponseError::SaslAuthenticationFailed, reason)),
             None => Err((

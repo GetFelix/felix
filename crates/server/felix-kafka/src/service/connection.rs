@@ -23,12 +23,13 @@ const INITIAL_BODY_CAPACITY: usize = 64 * 1024;
 pub(super) async fn serve<S>(
     shared: &Shared,
     mut stream: S,
+    peer_certs: Vec<Vec<u8>>,
     shutdown: &CancellationToken,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let mut session = Session::new(shared);
+    let mut session = Session::new(shared, peer_certs);
     let auth_deadline = Instant::now() + shared.settings.auth_timeout;
     loop {
         let authenticated = session.authenticated();

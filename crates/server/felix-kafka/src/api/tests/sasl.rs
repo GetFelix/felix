@@ -165,3 +165,28 @@ async fn a_v0_handshake_is_refused_because_its_exchange_is_unframed() {
         .await;
     assert_eq!(handshake.error_code, 33);
 }
+
+/// The TLS client's certificate reaches the cluster with the token, so the
+/// broker can refuse a token issued to someone else.
+#[tokio::test]
+async fn sasl_hands_the_client_certificate_to_the_cluster() {
+    let fixture = Fixture::secured(&[READ_ORDERS]).await;
+    let leaf = vec![0x30, 0x82, 0x01];
+    let mut client = fixture.connect_as(
+        vec![leaf.clone()],
+        tokio_util::sync::CancellationToken::new(),
+    );
+
+    assert_eq!(client.login(TENANT, TOKEN).await, 0);
+    let seen = fixture
+        .cluster
+        .peer_certs_seen
+        .lock()
+        .expect("lock")
+        .clone();
+    assert_eq!(
+        seen,
+        vec![vec![leaf]],
+        "the certificate did not reach the cluster"
+    );
+}

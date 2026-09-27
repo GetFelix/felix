@@ -24,7 +24,8 @@ pub struct ClientTlsConfig {
     pub require_alpn: bool,
     /// When a client presents a certificate, it must be issued to its token's
     /// subject: a `felix:principal:<sub>` URI SAN, or a DNS/IP SAN
-    /// (`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`). QUIC listeners only.
+    /// (`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`). QUIC listeners, and the Kafka
+    /// listener when it serves TLS.
     /// Needs `FELIX_TLS_CLIENT_CA`: without it no client presents one.
     pub bind_subject: bool,
 }
