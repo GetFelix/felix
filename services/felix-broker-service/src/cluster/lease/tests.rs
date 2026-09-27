@@ -2,8 +2,8 @@
 //!
 //! `start_paused` gives tokio's clock to the test, so expiry is driven by
 //! advancing time rather than by sleeping through it. That is what makes these
-//! exact rather than approximate, and it is why `LeaseState` reads
-//! `tokio::time::Instant` rather than `std::time::Instant`.
+//! exact rather than approximate. Production leases run on `CLOCK_BOOTTIME`,
+//! so these build theirs on tokio's clock with `on_tokio_clock`.
 use super::*;
 
 const LEASE: Duration = Duration::from_secs(4);
@@ -21,14 +21,14 @@ fn a_quarter_of_the_lease_is_surrendered_as_margin() {
 /// full lease period.
 #[tokio::test(start_paused = true)]
 async fn a_lease_starts_invalid() {
-    let lease = LeaseState::new(LEASE);
+    let lease = LeaseState::on_tokio_clock(LEASE);
     assert!(!lease.looks_valid());
     assert!(!lease.is_valid_now());
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_renewed_lease_is_valid_until_its_usable_life_elapses() {
-    let lease = LeaseState::new(LEASE);
+    let lease = LeaseState::on_tokio_clock(LEASE);
     lease.renew();
     assert!(lease.is_valid_now());
 
@@ -48,7 +48,7 @@ async fn a_renewed_lease_is_valid_until_its_usable_life_elapses() {
 /// strength of the stale flag.
 #[tokio::test(start_paused = true)]
 async fn a_broker_suspended_past_expiry_fails_the_commit_check_while_admission_still_passes() {
-    let lease = LeaseState::new(LEASE);
+    let lease = LeaseState::on_tokio_clock(LEASE);
     lease.renew();
 
     // Nothing refreshes the cached flag: this is the suspension.
@@ -67,7 +67,7 @@ async fn a_broker_suspended_past_expiry_fails_the_commit_check_while_admission_s
 /// Renewal extends the lease, which is what a heartbeat is for.
 #[tokio::test(start_paused = true)]
 async fn renewing_extends_the_lease() {
-    let lease = LeaseState::new(LEASE);
+    let lease = LeaseState::on_tokio_clock(LEASE);
     lease.renew();
 
     for _ in 0..5 {
@@ -86,7 +86,7 @@ async fn renewing_extends_the_lease() {
 /// A late renewal must not resurrect an expired lease into the past.
 #[tokio::test(start_paused = true)]
 async fn renewal_never_moves_backwards() {
-    let lease = LeaseState::new(LEASE);
+    let lease = LeaseState::on_tokio_clock(LEASE);
     tokio::time::advance(Duration::from_secs(10)).await;
     lease.renew();
     let late = lease.is_valid_now();
@@ -104,7 +104,7 @@ async fn renewal_never_moves_backwards() {
 /// Surrender is immediate, for a broker told it is no longer a member.
 #[tokio::test(start_paused = true)]
 async fn surrender_takes_effect_at_once() {
-    let lease = LeaseState::new(LEASE);
+    let lease = LeaseState::on_tokio_clock(LEASE);
     lease.renew();
     assert!(lease.is_valid_now());
 
@@ -120,7 +120,7 @@ async fn surrender_takes_effect_at_once() {
 /// path stops accepting without needing a publish to discover it.
 #[tokio::test(start_paused = true)]
 async fn the_refresh_task_invalidates_the_cached_flag() {
-    let lease = Arc::new(LeaseState::new(LEASE));
+    let lease = Arc::new(LeaseState::on_tokio_clock(LEASE));
     lease.renew();
     let shutdown = CancellationToken::new();
     let task = Arc::clone(&lease).spawn_refresh(shutdown.clone());
@@ -145,10 +145,10 @@ async fn the_refresh_task_invalidates_the_cached_flag() {
 /// for the lease *plus* the stall — past what the control plane granted.
 #[tokio::test(start_paused = true)]
 async fn a_pause_between_sending_and_handling_does_not_extend_the_lease() {
-    let lease = LeaseState::new(LEASE);
+    let lease = LeaseState::on_tokio_clock(LEASE);
 
     // The heartbeat goes out, and the control plane records it here.
-    let sent = Instant::now();
+    let sent = lease.now();
 
     // The broker then stalls for most of the usable lease before it gets round
     // to handling the response.
@@ -178,11 +178,11 @@ async fn a_pause_between_sending_and_handling_does_not_extend_the_lease() {
 /// older one must not win.
 #[tokio::test(start_paused = true)]
 async fn an_older_heartbeat_handled_late_does_not_move_the_anchor_back() {
-    let lease = LeaseState::new(LEASE);
+    let lease = LeaseState::on_tokio_clock(LEASE);
 
-    let first = Instant::now();
+    let first = lease.now();
     tokio::time::advance(Duration::from_millis(1_000)).await;
-    let second = Instant::now();
+    let second = lease.now();
 
     // The later heartbeat is handled first, then the earlier one arrives.
     lease.renew_at(second);
@@ -200,7 +200,7 @@ async fn an_older_heartbeat_handled_late_does_not_move_the_anchor_back() {
 
 #[tokio::test(start_paused = true)]
 async fn remaining_counts_down_from_the_usable_life_to_zero() {
-    let lease = LeaseState::new(LEASE);
+    let lease = LeaseState::on_tokio_clock(LEASE);
     assert_eq!(lease.remaining(), Duration::ZERO, "never renewed");
     lease.renew();
     assert_eq!(lease.remaining(), Duration::from_secs(3));
@@ -209,5 +209,38 @@ async fn remaining_counts_down_from_the_usable_life_to_zero() {
     assert_eq!(lease.remaining(), Duration::from_millis(500));
 
     tokio::time::advance(Duration::from_secs(1)).await;
+    assert_eq!(lease.remaining(), Duration::ZERO);
+}
+
+/// A production lease is judged on the system (boottime) clock.
+#[test]
+fn a_production_lease_runs_on_the_system_clock() {
+    let lease = LeaseState::new(LEASE);
+    assert!(matches!(lease.clock, LeaseClock::System));
+}
+
+/// Validity is read from the lease clock and nothing else: tokio's clock
+/// standing still (as `CLOCK_MONOTONIC` does across a suspend) must not keep a
+/// lease alive once the lease clock has moved past it.
+#[tokio::test(start_paused = true)]
+async fn validity_follows_the_lease_clock_not_tokio() {
+    let millis = Arc::new(AtomicU64::new(1_000));
+    let lease = LeaseState::with_clock(LEASE, LeaseClock::Manual(Arc::clone(&millis)));
+    lease.renew();
+    assert!(lease.is_valid_now());
+
+    // Tokio time moves; the lease clock does not. Still valid.
+    tokio::time::advance(Duration::from_secs(10)).await;
+    assert!(
+        lease.is_valid_now(),
+        "the lease is not measured on tokio's clock"
+    );
+
+    // The host was suspended: the lease clock jumped, tokio's did not.
+    millis.fetch_add(3_001, Ordering::AcqRel);
+    assert!(
+        !lease.is_valid_now(),
+        "a lease must lapse on the clock that counts suspended time",
+    );
     assert_eq!(lease.remaining(), Duration::ZERO);
 }

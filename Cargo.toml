@@ -137,6 +137,8 @@ tempfile = "3"
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio-rustls = { version = "0.26", default-features = false }
 tracing-opentelemetry = "0.33.0"
+# Reads client certificates' URI SANs for token binding; already in the tree via rcgen.
+x509-parser = { version = "0.18", default-features = false }
 
 # kafka-protocol 0.18 reserves Vec capacity from a client-supplied array count
 # before reading any element, so a tiny frame can ask for tens of gigabytes.

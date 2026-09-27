@@ -22,8 +22,9 @@ pub struct ClientTlsConfig {
     /// (`FELIX_TLS_REQUIRE_ALPN`). Off by default, because clients built
     /// before ALPN offer none and are otherwise still served.
     pub require_alpn: bool,
-    /// When a client presents a certificate, its token's subject must be a
-    /// name that certificate is valid for (`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`).
+    /// When a client presents a certificate, it must be issued to its token's
+    /// subject: a `felix:principal:<sub>` URI SAN, or a DNS/IP SAN
+    /// (`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`). QUIC listeners only.
     /// Needs `FELIX_TLS_CLIENT_CA`: without it no client presents one.
     pub bind_subject: bool,
 }

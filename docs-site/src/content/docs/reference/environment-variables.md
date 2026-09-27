@@ -139,16 +139,23 @@ issued by it, or the handshake is refused.
 
 ### `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`
 
-**Description**: When a client presents a certificate, require its token's
-subject (`sub`) to be a DNS or IP name that certificate is valid for.
+**Description**: When a client presents a certificate, require that
+certificate to be issued to its token's subject (`sub`).
 
 **Type**: Boolean (`true`/`false`)
 
 **Default**: `false`
 
 **Notes**:
+- A certificate binds `sub` if its subject alternative names include the URI
+  `felix:principal:<sub>`, with `sub` verbatim (exact, case-sensitive match),
+  or a DNS or IP name that `sub` matches the way a server name would.
+- Control-plane tokens carry a 64-hex principal id, longer than a DNS label
+  may be, so issue those clients' certificates with the URI SAN.
 - Needs `FELIX_TLS_CLIENT_CA`; set without it, startup fails.
-- Applies to the QUIC client listeners. The Kafka listener does not bind yet.
+- Applies to the QUIC client listeners. The Kafka listener does not bind: its
+  SASL path has no access to the TLS connection's peer certificate, and
+  startup logs a warning when both are on.
 
 ### `FELIX_TLS_REQUIRE_CERT`
 

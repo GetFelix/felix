@@ -1077,6 +1077,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "x509-parser",
 ]
 
 [[package]]

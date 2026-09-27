@@ -10,8 +10,9 @@
 //! No separate protocol. A broker renews by heartbeating, which it already
 //! does, and the control plane grants by keeping the node live, which it already
 //! decides. The lease is the time since the last *accepted* heartbeat, measured
-//! on the broker's own monotonic clock — so the two ends never compare wall
-//! clocks, and no clock synchronisation is assumed.
+//! on the broker's own clock — so the two ends never compare wall clocks, and
+//! no clock synchronisation is assumed. That clock keeps running through host
+//! suspend; see [`clock`].
 //!
 //! # Two checks, and why they differ
 //!
@@ -29,14 +30,16 @@
 //!   shard fence makes it, because every write path (publish, forward, cache,
 //!   counter, group) enters the fence; a `Quorum` ack makes it once more
 //!   before it is released.
+pub(crate) mod clock;
 pub mod metrics;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+
+use self::clock::{LeaseClock, LeaseInstant};
 
 /// How much of the lease is given up as safety margin.
 ///
@@ -65,9 +68,11 @@ pub struct LeaseState {
     /// the negative direction, since it can lag a renewal but is re-derived
     /// from the clock before any commit.
     looks_valid: AtomicBool,
-    /// Monotonic origin. `Instant` has no representation to store, so
-    /// everything is kept as a duration from here.
-    base: Instant,
+    /// Where validity is measured. Not tokio's clock: that one stops while
+    /// the host is suspended.
+    clock: LeaseClock,
+    /// Origin on `clock`; everything is kept as a duration from here.
+    base: LeaseInstant,
     /// How long a lease lasts without renewal, already net of the margin, in
     /// millis. Atomic because the control plane owns this cadence and can change
     /// it, exactly as it owns the heartbeat interval.
@@ -84,10 +89,21 @@ impl LeaseState {
     /// is accepted. Starting valid would let a broker that never successfully
     /// registered serve for a full lease period.
     pub fn new(lease: Duration) -> Self {
+        Self::with_clock(lease, LeaseClock::System)
+    }
+
+    /// A lease driven by tokio's clock, for tests that run on paused time.
+    #[cfg(test)]
+    pub(crate) fn on_tokio_clock(lease: Duration) -> Self {
+        Self::with_clock(lease, LeaseClock::Tokio(tokio::time::Instant::now()))
+    }
+
+    fn with_clock(lease: Duration, clock: LeaseClock) -> Self {
         Self {
             renewed_at_millis: AtomicU64::new(0),
             looks_valid: AtomicBool::new(false),
-            base: Instant::now(),
+            base: clock.now(),
+            clock,
             usable_millis: AtomicU64::new(usable_millis(lease)),
             lapsed: tokio::sync::Notify::new(),
         }
@@ -111,6 +127,11 @@ impl LeaseState {
             .store(usable_millis(expiry_timeout), Ordering::Release);
     }
 
+    /// The lease clock's current reading, for anchoring a renewal.
+    pub(crate) fn now(&self) -> LeaseInstant {
+        self.clock.now()
+    }
+
     /// How long a renewal is good for, net of the margin.
     pub fn usable(&self) -> Duration {
         Duration::from_millis(self.usable_millis.load(Ordering::Acquire))
@@ -121,7 +142,7 @@ impl LeaseState {
     /// Anchoring at arrival instead would add the round trip — and any pause in
     /// it — to a lease the control plane already started counting, which is the
     /// safety interval being spent.
-    pub fn renew_at(&self, sent: Instant) {
+    pub(crate) fn renew_at(&self, sent: LeaseInstant) {
         let stamp = sent.saturating_duration_since(self.base).as_millis() as u64 + 1;
         // `fetch_max`, not `store`: two heartbeat responses can race, and an
         // out-of-order one must not move the anchor backwards and shorten the
@@ -134,7 +155,7 @@ impl LeaseState {
     /// path has a send instant, and using it is the point.
     #[cfg(test)]
     pub fn renew(&self) {
-        self.renew_at(Instant::now());
+        self.renew_at(self.now());
     }
 
     /// Give up the lease immediately.
@@ -171,7 +192,7 @@ impl LeaseState {
         if stamp == 0 {
             return Duration::ZERO;
         }
-        let elapsed = self.base.elapsed().as_millis() as u64 + 1;
+        let elapsed = self.now().saturating_duration_since(self.base).as_millis() as u64 + 1;
         self.usable()
             .saturating_sub(Duration::from_millis(elapsed.saturating_sub(stamp)))
     }

@@ -215,6 +215,15 @@ pub(super) async fn bind_kafka(
             "kafka listener without TLS (FELIX_KAFKA_TLS=false): SASL/PLAIN sends tokens in clear text"
         );
     }
+    // SASL authenticates after the handshake, and the SASL path has no handle
+    // on the TLS session's peer certificate, so there is nothing to bind to.
+    if config.client_tls.bind_subject {
+        tracing::warn!(
+            "FELIX_TLS_CLIENT_CERT_BIND_SUBJECT applies to the QUIC listeners only: the kafka \
+             listener does not bind tokens to client certificates, because its SASL path has \
+             no access to the TLS connection's peer certificate"
+        );
+    }
     if let Some(tenant) = &kafka.anonymous_tenant {
         tracing::warn!(
             tenant = %tenant,
