@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790463751530,
+  "lastUpdate": 1790468142849,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -16848,6 +16848,58 @@ window.BENCHMARK_DATA = {
             "range": "20699.01",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1511773.73\nmean: 1503931.89\nstdev: 20699.01\ncv: 1.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e65a5e4526fe98a0f3e5d6f11acc81b0d168bee3",
+          "message": "fix(membership): brokers rejoin after being marked down; no fleet expiry on control-plane recovery (#730)\n\n* fix(broker): register again after being marked down; bound control-plane calls\n\nA broker answered `down` surrendered its lease and kept heartbeating, but a\nheartbeat never revives a down node, so it stayed out of the cluster for good.\nThe heartbeat loop now returns on `down` and membership registers again under\na new incarnation. `left` is still not undone.\n\nHeartbeat and registration retries are capped at a fifth of the lease, and\neach heartbeat times out after a quarter of it. The 30 s backoff ceiling\noutlived the 15 s expiry window, so a broker could miss the control plane's\nreturn entirely.\n\nEvery other control-plane call goes through one client with a 2 s connect and\n5 s request deadline, so a control plane that accepts and stalls cannot hang\nthe reporter or the catalog sync.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(controlplane): expiry grace after start, election or store loss; spread failovers\n\nThe expiry sweep ran on its first tick after the control plane came back,\nagainst heartbeat stamps as old as the outage, and marked the whole fleet\ndown. It now waits one expiry window after it starts watching: at startup,\nwhen the Raft leadership gate starts holding again, and after it could not\nread the store.\n\nA pass now writes at most 64 failovers to a node holding no copy of the\nshard, so the first broker back from an outage is not handed every orphan.\nPromotions to a recorded replica are not limited. Once every node is past its\nbalanced share, choose() picks the least-loaded node instead of the\nhighest-scoring one.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* test(cluster): restart the control plane; membership survives outages\n\nCluster::restart_control_plane serves the same store on the same address\nafter a downtime, with a fresh expiry sweep. Two scenarios use it and\npause_node: a broker marked down rejoins under a new incarnation, and a\nrestart three expiry windows long leaves every broker live on its original\nincarnation.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* docs: state the control-plane outage brokers actually tolerate\n\nha-postgres.md said a control-plane blip does not take down brokers, while\nreplication-design.md said shards go unavailable once leases run out. The\nlatter is right: with the defaults, brokers stop serving the shards they lead\n5 to 11 s into an outage. Both now say that, and that brokers renew within\nabout 3 s of recovery and are not marked down by the outage. control-plane.md\ncovers the sweep grace window, the retry cap, request deadlines and\nre-registration; the env reference and harness docs follow.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* docs(formal): say failovers to a node without a copy are outside the pacing model\n\nThe membership change rate-limits those failovers in the reconciler and\nmakes choose()'s overflow fallback least-loaded. Neither starts a copy,\ntakes a pacing slot, or changes the lease, quorum mark, reports, promotion\nor handoff.\n\nSpec-Unaffected: failover pacing and the overflow fallback only defer or pick among conditional assignment writes; each is still fenced by the generation check the shard model covers.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-26T17:10:33-07:00",
+          "tree_id": "81de276e65967dd19c0db325d862435a774aa8f3",
+          "url": "https://github.com/gabloe/felix/commit/e65a5e4526fe98a0f3e5d6f11acc81b0d168bee3"
+        },
+        "date": 1790468142346,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 368170.06,
+            "range": "12734.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 368170.06\nmean: 376360.74\nstdev: 12734.44\ncv: 3.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 368170.06,
+            "range": "12734.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 368170.06\nmean: 376360.74\nstdev: 12734.44\ncv: 3.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93014.53,
+            "range": "4303.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93014.53\nmean: 91236.37\nstdev: 4303.43\ncv: 4.72%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 930145.31,
+            "range": "43034.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 930145.31\nmean: 912363.69\nstdev: 43034.29\ncv: 4.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
