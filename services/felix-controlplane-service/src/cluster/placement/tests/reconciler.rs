@@ -243,16 +243,24 @@ pub(super) async fn report(
     caught_up: &[&str],
     drained: bool,
 ) {
+    let leader = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("assignment")
+        .leader;
     store
-        .record_replica_report(crate::model::ReplicaReport {
-            key: shard_zero(),
-            generation,
-            caught_up: caught_up.iter().map(|id| id.to_string()).collect(),
-            offsets: Default::default(),
-            reported_at_millis: store.now_millis().await.expect("clock"),
-            drained,
-            leader_offset: None,
-        })
+        .record_replica_report(
+            crate::model::ReplicaReport {
+                key: shard_zero(),
+                generation,
+                caught_up: caught_up.iter().map(|id| id.to_string()).collect(),
+                offsets: Default::default(),
+                reported_at_millis: store.now_millis().await.expect("clock"),
+                drained,
+                leader_offset: None,
+            },
+            &leader,
+        )
         .await
         .expect("report");
 }

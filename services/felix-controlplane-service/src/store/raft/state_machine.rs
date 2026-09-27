@@ -247,12 +247,13 @@ impl MetadataStateMachine {
                     taken: lease.taken,
                 })
             }
-            MetaCommand::RecordReplicaReport { report } => store
-                .record_replica_report(report)
+            MetaCommand::RecordReplicaReport { report, leader } => store
+                .apply_replica_report(report, leader.as_deref())
                 .await
                 .map(|written| match written {
                     crate::store::ReportWrite::Stored => MetaResponse::Unit,
                     crate::store::ReportWrite::Stale => MetaResponse::StaleReport,
+                    crate::store::ReportWrite::NotLeader => MetaResponse::NotLeaderReport,
                 })
                 .map_err(Into::into),
             MetaCommand::SetMovesPaused { paused } => store

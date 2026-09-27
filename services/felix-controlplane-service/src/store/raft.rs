@@ -445,13 +445,21 @@ impl ControlPlaneStore for RaftStore {
         self.local().shard_assignment_changes(since).await
     }
 
-    async fn record_replica_report(&self, report: ReplicaReport) -> StoreResult<ReportWrite> {
+    async fn record_replica_report(
+        &self,
+        report: ReplicaReport,
+        leader: &str,
+    ) -> StoreResult<ReportWrite> {
         match self
-            .propose(MetaCommand::RecordReplicaReport { report })
+            .propose(MetaCommand::RecordReplicaReport {
+                report,
+                leader: Some(leader.to_string()),
+            })
             .await?
         {
             MetaResponse::Unit => Ok(ReportWrite::Stored),
             MetaResponse::StaleReport => Ok(ReportWrite::Stale),
+            MetaResponse::NotLeaderReport => Ok(ReportWrite::NotLeader),
             _ => Err(unexpected_shape("unit")),
         }
     }

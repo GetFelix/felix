@@ -395,11 +395,35 @@ pub(super) async fn shard_assignment_changes(
 pub(super) async fn record_replica_report(
     store: &PostgresStore,
     report: ReplicaReport,
+    leader: &str,
 ) -> StoreResult<ReportWrite> {
+    let mut tx = store.pool.begin().await?;
+    // `FOR SHARE` holds the assignment row until commit, so a promotion
+    // either committed before this read and is seen, or waits for the report.
+    let assignment: Option<(String, i64)> = sqlx::query_as(
+        r#"SELECT leader, generation FROM shard_assignments
+               WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND shard = $4 AND kind = $5
+               FOR SHARE"#,
+    )
+    .bind(&report.key.tenant_id)
+    .bind(&report.key.namespace)
+    .bind(&report.key.stream)
+    .bind(report.key.shard as i32)
+    .bind(report.key.kind.as_str())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((current_leader, generation)) = assignment else {
+        return Err(StoreError::NotFound("shard assignment".into()));
+    };
+    if current_leader != leader {
+        return Ok(ReportWrite::NotLeader);
+    }
+    if generation as u64 != report.generation {
+        return Ok(ReportWrite::Stale);
+    }
     // The WHERE is `ReplicaReport::supersedes` in SQL: a report that does not
     // supersede the held one updates no row, which is how it is told apart.
-    // The foreign key is what answers "no assignment" -- and what removes the
-    // report when the assignment goes.
+    // The foreign key is what removes the report when the assignment goes.
     let result = sqlx::query(
         r#"INSERT INTO replica_reports
                    (tenant_id, namespace, kind, stream, shard, generation, caught_up, offsets,
@@ -429,11 +453,14 @@ pub(super) async fn record_replica_report(
     .bind(report.reported_at_millis as i64)
     .bind(report.drained)
     .bind(report.leader_offset.map(|offset| offset as i64))
-    .execute(&store.pool)
+    .execute(&mut *tx)
     .await;
     match result {
         Ok(done) if done.rows_affected() == 0 => Ok(ReportWrite::Stale),
-        Ok(_) => Ok(ReportWrite::Stored),
+        Ok(_) => {
+            tx.commit().await?;
+            Ok(ReportWrite::Stored)
+        }
         Err(sqlx::Error::Database(err)) if err.is_foreign_key_violation() => {
             Err(StoreError::NotFound("shard assignment".into()))
         }

@@ -52,15 +52,18 @@ async fn a_requested_pass_runs_without_waiting_for_the_interval() {
     );
 
     store
-        .record_replica_report(crate::model::ReplicaReport {
-            key: shard_zero(),
-            generation: fenced.generation,
-            caught_up: ["broker-y".to_string()].into_iter().collect(),
-            offsets: Default::default(),
-            reported_at_millis: store.now_millis().await.expect("clock"),
-            drained: true,
-            leader_offset: None,
-        })
+        .record_replica_report(
+            crate::model::ReplicaReport {
+                key: shard_zero(),
+                generation: fenced.generation,
+                caught_up: ["broker-y".to_string()].into_iter().collect(),
+                offsets: Default::default(),
+                reported_at_millis: store.now_millis().await.expect("clock"),
+                drained: true,
+                leader_offset: None,
+            },
+            &fenced.leader,
+        )
         .await
         .expect("report");
     wakes.request_pass();

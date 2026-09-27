@@ -96,11 +96,16 @@ fn a_replica_report_is_restamped() {
     };
     let encoded = encode_command(&MetaCommand::RecordReplicaReport {
         report: report.clone(),
+        leader: Some("broker-a".to_string()),
     });
 
     let restamped = restamp(&encoded, 222).expect("a report carries a clock");
     match decode_command(&restamped).expect("decodes") {
-        MetaCommand::RecordReplicaReport { report: stamped } => {
+        MetaCommand::RecordReplicaReport {
+            report: stamped,
+            leader,
+        } => {
+            assert_eq!(leader.as_deref(), Some("broker-a"));
             assert_eq!(stamped.reported_at_millis, 222);
             assert_eq!(
                 crate::model::ReplicaReport {
@@ -113,6 +118,37 @@ fn a_replica_report_is_restamped() {
             );
         }
         other => panic!("restamping changed the command: {other:?}"),
+    }
+}
+
+/// A report entry written before the leadership check existed has no
+/// `leader`, and must still decode: it applies unchecked, as it did then.
+#[test]
+fn a_report_without_a_leader_is_the_old_wire_form() {
+    let report = crate::model::ReplicaReport {
+        key: crate::model::ShardKey {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+            shard: 0,
+            kind: crate::model::ShardKind::Stream,
+        },
+        generation: 4,
+        caught_up: Default::default(),
+        offsets: Default::default(),
+        reported_at_millis: 111,
+        drained: false,
+        leader_offset: None,
+    };
+    let encoded = encode_command(&MetaCommand::RecordReplicaReport {
+        report,
+        leader: None,
+    });
+    let json: serde_json::Value = serde_json::from_slice(&encoded).expect("json");
+    assert!(json.get("leader").is_none(), "{json}");
+    match decode_command(&encoded).expect("decodes") {
+        MetaCommand::RecordReplicaReport { leader, .. } => assert_eq!(leader, None),
+        other => panic!("decoded as {other:?}"),
     }
 }
 

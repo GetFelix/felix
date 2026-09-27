@@ -393,6 +393,20 @@ One from an older generation than the assignment's is refused as stale,
 because leadership moved on and it describes a replica set that may no longer
 exist.
 
+**The leadership check is repeated at the write.** The handler judges a report
+against the assignment it read, and a promotion can land between that read and
+the write. So every backend stores a report only if the reporting node still
+leads the shard at the report's generation, checked in the same step as the
+write: under the store lock in memory, against the assignment row held
+`FOR SHARE` in the same Postgres transaction, and in the Raft state machine as
+the command applies, against the replicated assignment rather than the
+proposing instance's copy. A report refused there answers `not_leader` (another
+node leads) or `stale` (another generation), so a deposed leader never sees
+`accepted` and does not move its quorum mark. Report commands from members
+that predate the check carry no reporting node and apply unchecked, as they
+did; a member still on that build ignores the node and applies every report,
+so finish the roll before relying on the check.
+
 **One clock on both sides.** A report is stamped with the store's clock and its
 freshness is judged, by whichever instance plans, against the store's clock —
 `clock_timestamp()` under Postgres, the leader's process clock under Raft. A

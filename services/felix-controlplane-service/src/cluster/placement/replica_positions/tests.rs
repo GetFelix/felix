@@ -204,16 +204,24 @@ async fn load_reads_the_store_on_the_stores_clock() {
         .await
         .expect("assign");
     let now = store.now_millis().await.expect("clock");
+    let generation = store
+        .get_shard_assignment(&key)
+        .await
+        .expect("get")
+        .generation;
     store
-        .record_replica_report(ReplicaReport {
-            key: key.clone(),
-            generation: 0,
-            caught_up: ["broker-b".to_string()].into_iter().collect(),
-            offsets: [("broker-b".to_string(), 7)].into_iter().collect(),
-            reported_at_millis: now,
-            drained: false,
-            leader_offset: None,
-        })
+        .record_replica_report(
+            ReplicaReport {
+                key: key.clone(),
+                generation,
+                caught_up: ["broker-b".to_string()].into_iter().collect(),
+                offsets: [("broker-b".to_string(), 7)].into_iter().collect(),
+                reported_at_millis: now,
+                drained: false,
+                leader_offset: None,
+            },
+            "broker-x",
+        )
         .await
         .expect("record");
 
