@@ -503,18 +503,55 @@ cursors.
 | `FELIX_DURABLE_MAX_RECORDS_PER_READ` | `10000` | Record cap on one range read |
 | `FELIX_DURABLE_PREALLOCATE` | `true` | Reserve segment blocks at creation |
 | `FELIX_DURABLE_VERIFY_ALL_ON_OPEN` | `false` | Checksum every segment at startup |
+| `FELIX_DURABLE_REPAIR_CHECKSUM_TAIL` | `false` | Truncate a complete trailing record that fails its checksum (see below) |
+| `FELIX_STORAGE_IO_URING` | `0` | Submit device flushes to `io_uring` instead of the log's flush thread (Linux only) |
+
+Invalid combinations fail at startup, not at the first publish.
 
 Sealed segments are opened lazily: an open reads only each sealed segment's
 header and last index entry, and the first read that reaches a segment opens
 its file and loads its sparse index into a cache shared per storage root,
 bounded by `LogConfig::max_open_sealed_segments` (default 256, least recently
 used evicted). Retention chooses segments and deletes their files outside the
-segment lock; the lock is held only to drop them from the list. A log can be
-closed (`DiskLog::close`); afterwards every handle to it fails with `Closed`.
-| `FELIX_DURABLE_REPAIR_CHECKSUM_TAIL` | `false` | Truncate a complete trailing record that fails its checksum (see below) |
-| `FELIX_STORAGE_IO_URING` | `0` | Submit device flushes to `io_uring` instead of the log's flush thread (Linux only) |
+segment lock; the lock is held only to drop them from the list.
 
-Invalid combinations fail at startup, not at the first publish.
+### Opening and closing shards
+
+The stream provider (`DiskLogProvider`), the cache (`LogCache`, which also
+holds group cursors and dead letters) and the counters (`CounterStore`) each
+keep one open log per shard. Two opens of the same shard coalesce into one,
+because two writers over one directory would corrupt it. Opens of *different*
+shards do not wait on each other: the store's map lock is held only to find a
+shard's slot, and the open, including the scan of the active segment, runs
+under that slot's own lock (`felix-storage/src/shard_slots.rs`).
+
+A shard is closed when the assignment feed shows this broker has no role left
+in it: not its leader, not one of its replicas, not the destination of a move
+(`ShardLifecycle::relinquished`). The close runs after the shard's release in
+the same pass, so its tail is already flushed and its readers ended. It closes
+the stream log and the shard's group cursor and dead-letter logs, or a cache
+shard's log and its counters, and drops the broker's in-memory `StreamState`.
+`DiskLog::close` flushes, then fences the files:
+
+- A handle given out earlier fails every read, append and flush with
+  `StorageError::Closed`.
+- An open of the shard while the close is running also fails with `Closed`
+  rather than opening a second writer over files still being flushed. It is
+  retryable: once the close finishes, the next open recovers the shard afresh
+  from disk.
+- A cache or counter operation that found the shard before the close and gets
+  its lock after it is refused with `Closed`, and a staged cache write does
+  not compact a closed shard.
+- A broker open racing the close either installs its state before the close
+  clears it, or sees its log closed and fails instead of installing it.
+
+The close runs on its own task, so a caller that stops waiting does not leave
+the shard stuck half closed.
+
+What this does not cover: a log opened while the broker has no role in the
+shard stays open until the broker gains and then loses a role in it, or
+restarts. Registration opens shard 0 of every stream, and replication working
+from a route it read before a close can reopen the log just closed.
 
 `FELIX_STORAGE_IO_URING=1` replaces the hand-off to the log's flush thread
 with `IORING_OP_FSYNC` (with `DATASYNC`, like the thread's `fdatasync`) on one

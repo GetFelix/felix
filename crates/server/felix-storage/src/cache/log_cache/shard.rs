@@ -56,6 +56,9 @@ impl CacheShard {
     /// indexes follow, and for the same reason: anything recomputable from the
     /// log must be, because then it cannot be stale in a way that matters.
     pub(super) async fn ensure_index(&self, state: &mut ShardState) -> Result<()> {
+        if state.closed {
+            return Err(StorageError::Closed(self.label.clone()));
+        }
         let tail = state.log.tail_offset().await?;
         // Align the sequencer with records that did not come through the
         // write path — recovery on open, compaction, or a leader shipping
@@ -244,6 +247,9 @@ pub(super) struct ShardState {
     /// and `ensure_index` resolves that gap so the sequence can walk past it.
     /// `None` until the first `ensure_index` aligns the sequencer to the tail.
     pub(super) sequenced_through: Option<u64>,
+    /// Set by `LogCache::close_shard`. A caller that found this shard before
+    /// the close must not touch the files: they may belong to a newer open.
+    pub(super) closed: bool,
 }
 
 /// The index over one cache's log, and the accounting compaction needs.

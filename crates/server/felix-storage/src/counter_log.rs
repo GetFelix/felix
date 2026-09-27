@@ -26,12 +26,12 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use parking_lot::Mutex as SyncMutex;
 use tokio::sync::Mutex;
 
 use crate::disk_log::{DiskLog, layout};
 use crate::log::{AppendOnlyLog, AppendRecord, LogConfig, Offset, ReadRange, ShardKey};
 use crate::log_swap::{recover_interrupted_swap, swap_in_compacted};
+use crate::shard_slots::ShardSlots;
 use crate::{Corruption, CorruptionKind, Result, StorageError};
 
 /// How much larger than its live bytes a log may grow before it is compacted.
@@ -50,7 +50,7 @@ const SCAN_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 pub struct CounterStore {
     root: PathBuf,
     config: LogConfig,
-    shards: SyncMutex<HashMap<CounterId, Arc<CounterShard>>>,
+    shards: ShardSlots<CounterId, Arc<CounterShard>>,
 }
 
 impl CounterStore {
@@ -65,7 +65,7 @@ impl CounterStore {
         Ok(Self {
             root,
             config,
-            shards: SyncMutex::new(HashMap::new()),
+            shards: ShardSlots::new(),
         })
     }
 
@@ -154,9 +154,35 @@ impl CounterStore {
             .await)
     }
 
+    /// Close one counter shard's log and forget it, for a shard this broker
+    /// no longer holds. Same contract as `LogCache::close_shard`: flushed
+    /// first, racing callers get [`StorageError::Closed`], and the next touch
+    /// recovers it afresh.
+    pub async fn close_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        scope: &str,
+        shard: u32,
+    ) -> Result<()> {
+        let id = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            scope.to_string(),
+            shard,
+        );
+        self.shards
+            .close(&id, |shard: Arc<CounterShard>| async move {
+                let mut state = shard.state.lock().await;
+                state.closed = true;
+                state.log.close().await
+            })
+            .await
+    }
+
     /// Flush every open shard. Call once during graceful shutdown.
     pub async fn shutdown(&self) -> Result<()> {
-        let shards: Vec<Arc<CounterShard>> = self.shards.lock().values().cloned().collect();
+        let shards = self.shards.open_values();
         for shard in shards {
             shard.state.lock().await.log.shutdown().await?;
         }
@@ -187,34 +213,38 @@ impl CounterStore {
             scope.to_string(),
             shard,
         );
-        let mut shards = self.shards.lock();
-        if let Some(open) = shards.get(&id) {
-            return Ok(Arc::clone(open));
-        }
-        let key = ShardKey {
+        let key = || ShardKey {
             tenant: tenant_id.to_string(),
             namespace: namespace.to_string(),
             stream: scope.to_string(),
             shard,
         };
-        let dir = layout::shard_dir(&self.root, &key);
-        let label = layout::shard_label(&key);
-        recover_interrupted_swap(&dir)?;
-        let log = match base_offset {
-            Some(base) => DiskLog::open_at(dir.clone(), label.clone(), self.config.clone(), base)?,
-            None => DiskLog::open(dir.clone(), label.clone(), self.config.clone())?,
-        };
-        let open = Arc::new(CounterShard {
-            dir,
-            label,
-            config: self.config.clone(),
-            state: Mutex::new(ShardState {
-                log,
-                index: Index::default(),
-            }),
-        });
-        shards.insert(id, Arc::clone(&open));
-        Ok(open)
+        self.shards.get_or_open(
+            &id,
+            || {
+                let key = key();
+                let dir = layout::shard_dir(&self.root, &key);
+                let label = layout::shard_label(&key);
+                recover_interrupted_swap(&dir)?;
+                let log = match base_offset {
+                    Some(base) => {
+                        DiskLog::open_at(dir.clone(), label.clone(), self.config.clone(), base)?
+                    }
+                    None => DiskLog::open(dir.clone(), label.clone(), self.config.clone())?,
+                };
+                Ok(Arc::new(CounterShard {
+                    dir,
+                    label,
+                    config: self.config.clone(),
+                    state: Mutex::new(ShardState {
+                        log,
+                        index: Index::default(),
+                        closed: false,
+                    }),
+                }))
+            },
+            || StorageError::Closed(layout::shard_label(&key())),
+        )
     }
 }
 
@@ -246,6 +276,11 @@ impl CounterShard {
     /// shipped them, and it may later be promoted and asked for the sum — the
     /// same rule the cache index follows, for the same reason.
     async fn ensure_index(&self, state: &mut ShardState) -> Result<()> {
+        // Every operation passes through here under the lock, compaction
+        // included, so this is the one check a closed shard needs.
+        if state.closed {
+            return Err(StorageError::Closed(self.label.clone()));
+        }
         let tail = state.log.tail_offset().await?;
         let resume = state.index.covered_through;
         if resume == Some(tail) {
@@ -407,6 +442,10 @@ impl std::fmt::Debug for CounterShard {
 struct ShardState {
     log: DiskLog,
     index: Index,
+    /// Set by `CounterStore::close_shard`. A caller that found this shard
+    /// before the close must not touch the files: they may belong to a newer
+    /// open.
+    closed: bool,
 }
 
 /// The fold over one shard's log, and the accounting compaction needs.

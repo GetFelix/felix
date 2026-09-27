@@ -490,6 +490,11 @@ impl DiskLog {
         flushed.and(marked)
     }
 
+    /// Whether [`Self::close`] has finished on this log or any clone of it.
+    pub fn is_closed(&self) -> bool {
+        self.inner.closed.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Stop background work and flush everything one last time.
     ///
     /// Call before dropping the process's last handle: without it, `Periodic`

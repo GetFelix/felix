@@ -163,8 +163,97 @@ impl Broker {
         if let Some(existing) = topics.get(&topic) {
             return Ok(Arc::clone(existing));
         }
+        // `close_stream_shard` closed the log while this was hydrating, and
+        // clears `topics` only after that, so it may already have passed.
+        // Installing this would leave the shard unwritable until the next
+        // close; the caller retries into a fresh open instead.
+        if state.durable.as_ref().is_some_and(StreamLog::is_closed) {
+            return Err(BrokerError::Storage(format!(
+                "stream {stream} shard {shard} was closed while opening"
+            )));
+        }
         topics.insert(topic, Arc::clone(&state));
         Ok(state)
+    }
+
+    /// Let go of everything this broker holds open for a stream shard it no
+    /// longer has any role in: its logs (records, group cursors, dead
+    /// letters) and its in-memory state.
+    ///
+    /// Anything still holding a handle fails with a storage error from here
+    /// on; the next request for the shard opens it afresh from disk. Readers
+    /// still attached are ended. Every part is attempted, and the first
+    /// failure is returned.
+    pub async fn close_stream_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Result<()> {
+        // Logs before `topics`: an open racing this either installs its state
+        // before the removal below, or sees its log closed and backs off.
+        let mut closed = Ok(());
+        if let Some(storage) = &self.durable_storage {
+            closed = closed.and(
+                storage
+                    .close_stream(tenant_id, namespace, stream, shard)
+                    .await,
+            );
+        }
+        if let Some(groups) = &self.consumer_groups {
+            closed = closed.and(
+                groups
+                    .close_shard(tenant_id, namespace, stream, shard)
+                    .await,
+            );
+        }
+        if let Some(reader) = &self.group_reader {
+            closed = closed.and(
+                reader
+                    .dead_letters()
+                    .close_shard(tenant_id, namespace, stream, shard)
+                    .await,
+            );
+            reader
+                .reset_shard(tenant_id, namespace, stream, shard)
+                .await;
+        }
+        let removed = self
+            .topics
+            .write()
+            .await
+            .remove(&TopicKeyRef::new(tenant_id, namespace, stream, shard));
+        if let Some(state) = removed {
+            state.deactivate();
+            state.end_subscribers(None);
+        }
+        closed
+    }
+
+    /// [`Self::close_stream_shard`] for a cache shard: its log and the
+    /// counters that ride its replica set.
+    pub async fn close_cache_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+    ) -> Result<()> {
+        let mut closed = self
+            .cache
+            .close_shard(tenant_id, namespace, cache, shard)
+            .await
+            .map_err(|err| BrokerError::Storage(err.to_string()));
+        if let Some(counters) = &self.counters {
+            closed = closed.and(
+                counters
+                    .close_shard(tenant_id, namespace, cache, shard)
+                    .await
+                    .map_err(|err| BrokerError::Storage(err.to_string())),
+            );
+        }
+        closed
     }
 
     /// Open the disk log for a stream, or `None` when it is not durable.

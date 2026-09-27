@@ -202,3 +202,29 @@ fn a_forwarded_sum_round_trips() {
     assert_eq!(decode_sum(&encode_sum(i64::MAX)).expect("decode"), i64::MAX);
     assert!(decode_sum(b"seven").is_err());
 }
+
+/// A shard that moved away is closed, refuses work that found it before the
+/// close, and comes back from disk with its sum.
+#[tokio::test]
+async fn a_closed_shard_is_refused_then_reopens_with_its_sum() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = store(dir.path());
+    store.add(T, NS, C, 0, "k", 5).await.expect("add");
+    let old = store.shard_log(T, NS, C, 0).await.expect("log");
+    let found = store.shard(T, NS, C, 0).expect("shard");
+
+    store.close_shard(T, NS, C, 0).await.expect("close");
+    assert!(old.is_closed());
+    {
+        let mut state = found.state.lock().await;
+        assert!(matches!(
+            found.ensure_index(&mut state).await,
+            Err(StorageError::Closed(_))
+        ));
+    }
+
+    assert_eq!(store.get(T, NS, C, 0, "k").await.expect("get"), Some(5));
+    let (sum, _) = store.add(T, NS, C, 0, "k", 2).await.expect("add");
+    assert_eq!(sum, 7);
+    assert!(!store.shard_log(T, NS, C, 0).await.expect("log").is_closed());
+}

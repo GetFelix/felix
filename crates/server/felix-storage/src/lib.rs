@@ -28,6 +28,7 @@
 //!   (positioned reads, preallocation, flushes).
 //! - Projections of a log: [`cache`] ([`StorageApi`] and its two stores) and
 //!   [`counter_log`], which both compact through `log_swap`.
+//! - `shard_slots`: the per-shard open and close every store above shares.
 //! - Ordering and reporting: `commit_order` ([`CommitSequencer`]),
 //!   [`metrics_names`], and the errors every call returns ([`StorageError`],
 //!   [`Corruption`]).
@@ -45,6 +46,7 @@ pub mod log;
 mod log_swap;
 pub mod metrics_names;
 pub mod segment;
+mod shard_slots;
 pub mod tiered;
 
 pub use cache::{

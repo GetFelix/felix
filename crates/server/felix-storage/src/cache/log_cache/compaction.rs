@@ -38,7 +38,9 @@ impl CacheShard {
         state: &mut ShardState,
         our_end: Offset,
     ) -> Result<()> {
-        if !Self::should_compact(&state.index) {
+        // Closed after this write staged: the directory is no longer ours
+        // to swap.
+        if state.closed || !Self::should_compact(&state.index) {
             return Ok(());
         }
         if state.sequenced_through != Some(our_end) {
