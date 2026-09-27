@@ -78,9 +78,10 @@ holds a record to land before moving the quorum mark that releases the
 acknowledgement (#268). The model check (`FelixShard.cfg`) verifies that design,
 and `FelixShardNoReportOrder.cfg` shows the loss without the ordering. See
 `docs/replication-design.md` under "Who may be promoted". The guarantee rests on
-"landed" meaning the control plane recorded the report; today it also answers
-success to a report it discarded (not leader, stale generation), which is a
-known gap.
+"landed" meaning the control plane recorded the report; it now answers each
+shard's report on its own merits rather than success for the whole batch, so a
+report it discarded (not leader, stale generation) no longer reads as landed —
+see "A `Quorum` ack rests on a report the control plane stored" below.
 
 **With `ack_on_commit` off, a `Leader` ack is sent when the publish is queued,
 before it is written.** The record is lost if the leader crashes before the

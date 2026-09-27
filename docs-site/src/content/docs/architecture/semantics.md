@@ -137,18 +137,18 @@ same log, with the same fsync policy. What changes is what the acknowledgement
 > A `Quorum` acknowledgement survives losing the leader. A `Leader`
 > acknowledgement is a promise only that one broker can keep.
 
-:::caution[One interleaving does not yet honour this]
+:::note[The one interleaving fault injection can't reach is closed by ordering]
 The guarantee holds against every fault the suite injects — kill, graceful
 stop, freeze and partition. A model check of the promotion protocol
-(`task tla:check`) finds one it does not reach: promotion picks from the
-leader's **last report**, so a leader that acknowledges a `Quorum` write and
-then dies before its next report leaves the control plane a *fresh* report
-naming a replica that never received the record. Report expiry does not
-close it — the report is recent, it is only older than the acknowledgement.
-
-Promotion by greatest (last generation, length) closes it, and the model
-finds no violating trace under that rule.
-[#527](https://github.com/gabloe/felix/issues/527) tracks the change.
+(`task tla:check`) finds one interleaving no injected fault reaches: a leader
+that acknowledges a `Quorum` write and dies before the control plane learns
+which replica holds it. The leader closes it by ordering rather than by
+testing: it waits for the report naming who holds the record to land *before*
+the mark that releases the acknowledgement moves, and the control plane
+answers each shard's report on its own merits, so a report it discarded (stale
+generation, not the leader) never counts as landed. `FelixShard.tla` explores
+2.0M distinct states of that design without violating it; the same model with
+the ordering removed loses an acknowledged record in a second.
 :::
 
 #### What each one costs
@@ -181,6 +181,16 @@ failover time, when the only copy is on a broker that is gone.
 
 [`task cluster:consistency`](/felix/demos/cluster-consistency/) runs exactly
 that: the same fault put to both, on a real three-node cluster.
+
+**What a reader sees of a `Quorum` stream.** A consumer group and a Kafka
+consumer read only up to the shard's quorum mark, the committed high-water
+mark: a record past it can be lost at failover and its offset reused by the
+next leader. A `Leader` stream's readers see everything durable on the leader,
+as before. Plain subscriptions are not gated by the mark yet — live delivery,
+the replay ring and history read for a subscription can include records past
+it, so a subscriber on a `Quorum` stream can see a record that a failover then
+replaces. A subscriber that checkpoints offsets and needs to be sure should
+read through a consumer group instead.
 
 ### Message Ordering
 
