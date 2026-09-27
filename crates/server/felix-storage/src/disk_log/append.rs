@@ -341,6 +341,16 @@ impl LogInner {
         }
     }
 
+    /// Poison the log if a truncation or reset failed partway. Its segment,
+    /// mark and epoch files may no longer agree with memory, and a failed
+    /// fsync may have dropped pages a later one would then claim.
+    pub(super) fn poison_after_rewind(&self, rewound: Result<()>) -> Result<()> {
+        if let Err(err) = &rewound {
+            self.poison(format!("a truncation or reset failed: {err}"));
+        }
+        rewound
+    }
+
     /// Poison the log if the active writer has poisoned itself, which it does
     /// when one of its own syncs fails.
     pub(super) fn poison_after_writer_failure(&self, segments: &SegmentSet) {
