@@ -38,8 +38,9 @@ use crate::serving::quic::GLOBAL_INGRESS_DEPTH;
 use crate::serving::quic::telemetry::t_gauge;
 use fair_queue::FairQueue;
 
-/// What a tenant earns per turn, in bytes. Big enough that a turn covers a
-/// typical batch, so tenants of similar size alternate job for job.
+/// What a tenant earns per turn, in bytes. A 64 × 1 KiB batch plus its job
+/// cost lands just over this, but a backlogged tenant carries its deficit
+/// forward, so tenants of similar size still alternate about job for job.
 const QUANTUM_BYTES: usize = 64 * 1024;
 /// Added to every job's byte cost, so a tenant sending empty or tiny batches
 /// still pays something for each turn it takes.
