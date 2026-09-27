@@ -124,7 +124,8 @@ pub(crate) async fn report_replica_status(
     // report from the same broker's previous life.
     let _ = request.incarnation;
 
-    let mut outcomes = Vec::with_capacity(request.shards.len());
+    // Grown, not sized from the request: the shard count is the caller's.
+    let mut outcomes = Vec::new();
     for shard in request.shards {
         let outcome = record_one(&state, &node_id, now, &shard).await?;
         if !outcome.accepted() {
