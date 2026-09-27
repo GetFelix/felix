@@ -24,6 +24,11 @@ pub(crate) struct GroupTracker {
     committed: u64,
     /// The next offset never yet handed to anyone.
     high_water: u64,
+    /// The log tail when this tracker was first used, once known. A tracker
+    /// rebuilt after a move, failover or eviction never saw its predecessor's
+    /// claims, and every one of them is below this, so a settle there is
+    /// taken rather than refused as stale.
+    inherited_below: Option<u64>,
     /// Handed out and unsettled, with the instant its claim lapses.
     in_flight: BTreeMap<u64, Instant>,
     /// The same claims ordered by when they lapse, so finding the lapsed ones
@@ -64,6 +69,7 @@ impl GroupTracker {
         Self {
             committed,
             high_water: committed,
+            inherited_below: None,
             in_flight: BTreeMap::new(),
             lapses: BTreeSet::new(),
             acked_ahead: BTreeSet::new(),
@@ -86,14 +92,18 @@ impl GroupTracker {
         self.lapses.first().map(|(deadline, _)| *deadline)
     }
 
-    /// Whether `offset` has been handed out by this tracker, or is below the
-    /// cursor. Anything else is not the consumer's to settle: an ack there
-    /// would finish a record nobody received, and a nack would make an offset
-    /// owed that may not exist yet. A fresh tracker (after eviction or
-    /// failover) says no to claims its predecessor made; the serving layer
-    /// tells those apart by the log tail.
+    /// Whether `offset` has been handed out by this tracker or a predecessor
+    /// (see [`Self::inherit_below`]), or is below the cursor. Anything else is
+    /// not the consumer's to settle: an ack there would finish a record nobody
+    /// received, and a nack would make an offset owed that may not exist yet.
     pub(crate) fn handed_out(&self, offset: u64) -> bool {
-        offset < self.high_water
+        offset < self.high_water || self.inherited_below.is_some_and(|below| offset < below)
+    }
+
+    /// Record the log tail the first time this tracker sees one. Later calls
+    /// do nothing: a record written after that was never a predecessor's.
+    pub(crate) fn inherit_below(&mut self, tail: u64) {
+        self.inherited_below.get_or_insert(tail);
     }
 
     /// The next offset never handed to anyone.
@@ -158,6 +168,13 @@ impl GroupTracker {
         while claim.offsets.len() < max && self.high_water < tail {
             let offset = self.high_water;
             self.high_water += 1;
+            // Already settled or in play through a predecessor's claim.
+            if self.acked_ahead.contains(&offset)
+                || self.in_flight.contains_key(&offset)
+                || self.redeliver.contains(&offset)
+            {
+                continue;
+            }
             self.hand_out(offset, deadline);
             claim.offsets.push(offset);
         }

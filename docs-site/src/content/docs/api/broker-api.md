@@ -743,10 +743,11 @@ only over a **contiguous run** of acks: acknowledging offset 42 while 41 is
 still in flight leaves the cursor at 41, which is what makes it safe to restart
 from.
 
-What a group has handed out is kept in memory. After a failover, or once an
-idle group's state is dropped, an ack or nack for an earlier claim is answered
-`stale_claim` (retryable): nothing was applied and the record comes round
-again.
+What a group has handed out is kept in memory. After a move or a failover, or
+once an idle group's state is dropped, the new state still takes an ack or
+nack for a claim made before it: anything below the log tail it first saw.
+An offset written after that and not yet handed out is answered `stale_claim`
+(retryable): nothing was applied and the record comes round.
 
 ### Dead Letters
 
