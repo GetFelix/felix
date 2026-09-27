@@ -482,6 +482,16 @@ for what the current release actually guarantees.
 
 ### Fixed
 
+- **A publish in flight when its shard's log is reset no longer reaches
+  readers.** A publish waiting behind earlier ones when the broker became a
+  follower (or its log was rebuilt) was woken by the reset and went on to put
+  its offsets from the old log into the cleared replay ring and fan them out.
+  It now fails with `unacknowledged` and applies nothing.
+- **Acks for forgotten group claims are retryable.** After a group's in-memory
+  state was evicted or the shard failed over, an ack or nack for an earlier
+  claim was refused as `invalid_request`, which is fatal. It is now the new
+  `stale_claim` code with retry class `retry`; an older client sees an unknown
+  code with that class. An offset past the log tail is still `invalid_request`.
 - **A traced publish no longer panics a stream handler.** The binary batch,
   JSON publish, JSON batch and subscribe handlers held a span guard across an
   `.await`. When the task resumed on another worker the guard exited there,

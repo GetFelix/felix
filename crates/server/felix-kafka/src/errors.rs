@@ -22,9 +22,9 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         | BrokerError::StreamNotDurable { .. } => ResponseError::UnknownTopicOrPartition,
         // The shard closed under the read: it is moving, or this broker
         // stopped leading it. A metadata refresh finds where it went.
-        BrokerError::StreamHandleInactive(_) | BrokerError::NotReadable { .. } => {
-            ResponseError::NotLeaderOrFollower
-        }
+        BrokerError::StreamHandleInactive(_)
+        | BrokerError::NotReadable { .. }
+        | BrokerError::PublishSuperseded { .. } => ResponseError::NotLeaderOrFollower,
         BrokerError::Storage(_) | BrokerError::DurableStorageNotConfigured { .. } => {
             ResponseError::KafkaStorageError
         }

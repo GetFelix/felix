@@ -86,6 +86,12 @@ pub enum BrokerError {
     /// acknowledged or handed back.
     #[error("offset {offset} was not handed out by this group (next is {next})")]
     GroupOffsetNotHandedOut { offset: u64, next: u64 },
+    /// The shard's log was reset (this broker became a follower, or its log
+    /// was rebuilt) while the publish waited for its turn. Nothing reached
+    /// the ring or a subscriber, but the records were written to the old log,
+    /// so whether they survive is unknown.
+    #[error("the shard's log was reset before the publish at offset {first_offset} completed")]
+    PublishSuperseded { first_offset: u64 },
     /// This broker cannot say what is committed on the shard, so it serves no
     /// read that depends on it. Retry: here once it can, or on the shard's
     /// owner.

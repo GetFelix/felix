@@ -52,13 +52,18 @@ pub enum ErrorCode {
     Internal,
     /// The storage layer failed.
     Storage,
+    /// A consumer-group ack or nack for a claim this broker does not know:
+    /// the group's in-memory state was rebuilt (evicted while idle, or the
+    /// shard failed over) after the record was handed out. Nothing was
+    /// applied, and the record will be delivered again.
+    StaleClaim,
     /// A code this version does not know. Its retry class still applies.
     Unknown(String),
 }
 
 impl ErrorCode {
     /// Every code this version defines, for tables and checks.
-    pub const ALL: [ErrorCode; 14] = [
+    pub const ALL: [ErrorCode; 15] = [
         ErrorCode::Unauthenticated,
         ErrorCode::Forbidden,
         ErrorCode::NotFound,
@@ -73,6 +78,7 @@ impl ErrorCode {
         ErrorCode::Draining,
         ErrorCode::Internal,
         ErrorCode::Storage,
+        ErrorCode::StaleClaim,
     ];
 
     /// The wire name.
@@ -92,6 +98,7 @@ impl ErrorCode {
             ErrorCode::Draining => "draining",
             ErrorCode::Internal => "internal",
             ErrorCode::Storage => "storage",
+            ErrorCode::StaleClaim => "stale_claim",
             ErrorCode::Unknown(name) => name,
         }
     }
@@ -123,6 +130,7 @@ impl ErrorCode {
             ErrorCode::Draining => 12,
             ErrorCode::Internal => 13,
             ErrorCode::Storage => 14,
+            ErrorCode::StaleClaim => 15,
             ErrorCode::Unknown(_) => 0,
         }
     }
@@ -147,7 +155,9 @@ impl ErrorCode {
             // A broker learns streams from the control plane, so a promoted
             // broker says "not found" for a stream it is about to serve.
             ErrorCode::NotFound | ErrorCode::Overloaded => RetryClass::RetryAfter,
-            ErrorCode::ShardUnavailable | ErrorCode::Draining => RetryClass::Retry,
+            ErrorCode::ShardUnavailable | ErrorCode::Draining | ErrorCode::StaleClaim => {
+                RetryClass::Retry
+            }
             ErrorCode::NotLeader => RetryClass::Redirect,
             ErrorCode::QuorumTimeout
             | ErrorCode::LeadershipLost

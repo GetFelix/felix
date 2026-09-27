@@ -21,7 +21,7 @@ use bytes::Bytes;
 
 use super::{ClaimedDurable, ClaimedPublish, PublishOutcome};
 use crate::broker::shards::StreamHandle;
-use crate::error::Result;
+use crate::error::{BrokerError, Result};
 use crate::stream::{DeliveryEnvelope, HeldBatch, QueuedDelivery, SubQueuePolicy, SubscriberEntry};
 use crate::telemetry::{t_histogram, t_now_if};
 use crate::timings;
@@ -105,10 +105,10 @@ impl Completion {
         }
         if self.delivery.is_none() {
             self.commit().await?;
-            if let Some(held) = self.hold() {
+            if let Some(held) = self.hold()? {
                 return Ok(held);
             }
-            self.append();
+            self.append()?;
         }
         self.deliver().await
     }
@@ -118,27 +118,37 @@ impl Completion {
     /// the order they take their offsets.
     ///
     /// The answer reports no subscribers: none has the batch yet.
-    fn hold(&mut self) -> Option<PublishOutcome> {
-        let claimed = self.durable.as_ref()?;
+    fn hold(&mut self) -> Result<Option<PublishOutcome>> {
+        let Some(claimed) = self.durable.as_ref() else {
+            return Ok(None);
+        };
         let state = &self.handle.state;
         let first_offset = claimed.pending.first_offset();
         let end = first_offset + self.payloads.len() as u64;
         // A `Leader` stream with nothing held never asks for a bound, so it
         // costs one atomic load here.
         if !state.held.is_busy() && state.read_bound().covers(end) {
-            return None;
+            return Ok(None);
+        }
+        // A reset discards the hold under the ring lock, so joining it is
+        // checked against the turn under that lock too.
+        let ring = state.log_state.lock();
+        if !claimed.turn.is_current() {
+            return Err(BrokerError::PublishSuperseded { first_offset });
         }
         let batch = HeldBatch {
             payloads: std::mem::take(&mut self.payloads),
             first_offset,
         };
-        if state.held.push(batch) {
+        let start = state.held.push(batch);
+        drop(ring);
+        if start {
             spawn_release(&self.handle);
         }
-        Some(PublishOutcome {
+        Ok(Some(PublishOutcome {
             subscribers: 0,
             offsets: Some((first_offset, end - 1)),
-        })
+        }))
     }
 
     /// Fan the batch out and settle what the fanout found.
@@ -169,7 +179,16 @@ impl Completion {
             return Ok(());
         };
         log.commit(&claimed.pending).await?;
-        claimed.turn.wait().await;
+        // A reset while this batch waited (the shard went to a follower, or
+        // its log was rebuilt) cleared the ring and the hold. Applying the
+        // batch now would put records from the old log in front of readers.
+        claimed
+            .turn
+            .wait()
+            .await
+            .map_err(|_| BrokerError::PublishSuperseded {
+                first_offset: claimed.pending.first_offset(),
+            })?;
         // Replication waits on this. Under `Quorum` the publish is about to
         // block on a majority, so the shipping that produces it should already
         // be under way rather than waiting out a tick.
@@ -195,17 +214,22 @@ impl Completion {
     /// Append to the in-memory ring so cursors can replay without touching
     /// disk. A durable stream pins the sequence numbers to the offsets the log
     /// assigned, so a cursor and a disk offset are the same value.
-    fn append(&mut self) {
+    fn append(&mut self) -> Result<()> {
         let append_start = t_now_if(self.sample);
         let first_offset = self
             .durable
             .as_ref()
             .map(|claimed| claimed.pending.first_offset())
             .or(self.released_at);
-        let senders =
-            self.handle
-                .state
-                .append_batch_at(&self.payloads, first_offset, self.log_capacity);
+        let turn = self.durable.as_ref().map(|claimed| &claimed.turn);
+        // `wait` passed, but a reset can still land before the ring lock.
+        let senders = self
+            .handle
+            .state
+            .append_batch_at(&self.payloads, first_offset, turn, self.log_capacity)
+            .ok_or(BrokerError::PublishSuperseded {
+                first_offset: first_offset.unwrap_or_default(),
+            })?;
         if let Some(start) = append_start {
             let append_ns = start.elapsed().as_nanos() as u64;
             timings::record_append_ns(append_ns);
@@ -221,6 +245,7 @@ impl Completion {
             sent: 0,
             closed: Vec::new(),
         });
+        Ok(())
     }
 
     /// Hand the batch to every subscriber the ring append saw, starting from
@@ -317,8 +342,10 @@ async fn release(handle: StreamHandle) {
         };
         for batch in ready {
             let mut completion = Completion::released(handle.clone(), batch, log_capacity);
-            completion.append();
-            let _ = completion.deliver().await;
+            // A released batch holds no turn, so the append cannot be refused.
+            if completion.append().is_ok() {
+                let _ = completion.deliver().await;
+            }
         }
     }
 }

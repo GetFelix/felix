@@ -148,6 +148,51 @@ async fn an_ack_after_the_lease_lapses_is_refused() {
     assert_eq!(committed(&leader).await, Some(1), "renewed, the ack lands");
 }
 
+/// **An ack for a claim the tracker forgot is a retryable `stale_claim`.**
+/// Offset 1 is in the log but past what this tracker handed out: exactly what
+/// an ack looks like after the tracker was evicted or the shard failed over.
+/// The consumer did nothing wrong, and the record will come round again.
+/// Past the tail nothing was ever handed out, so that stays a bad request.
+#[tokio::test]
+async fn an_ack_for_a_forgotten_claim_is_stale_not_invalid() {
+    let (leader, publish_ctx) = claimed_one().await;
+    for finish in [true, false] {
+        for (offset, code, retry) in [
+            (
+                1,
+                felix_wire::ErrorCode::StaleClaim,
+                felix_wire::RetryClass::Retry,
+            ),
+            (
+                7,
+                felix_wire::ErrorCode::InvalidRequest,
+                felix_wire::RetryClass::Fatal,
+            ),
+        ] {
+            let refused = settle(
+                &leader.broker,
+                &publish_ctx,
+                None,
+                TENANT,
+                NAMESPACE,
+                DURABLE,
+                0,
+                GROUP,
+                offset,
+                finish,
+            )
+            .await
+            .expect_err("settled an offset never handed out here");
+            assert_eq!(
+                (refused.code(), refused.retry()),
+                (&code, retry),
+                "offset {offset}, finish: {finish}"
+            );
+        }
+    }
+    assert_eq!(committed(&leader).await, None, "the cursor moved");
+}
+
 /// **A group on a `Quorum` stream reads only to the quorum mark.** A record
 /// past it can be lost at failover and its offset reused; a group that had
 /// consumed it would skip whatever the next leader writes there.

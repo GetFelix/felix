@@ -296,9 +296,13 @@ Sent only to a broker that advertised `FEATURE_GROUP_DEAD_LETTERS`.
 { "type": "group_nack", ... }
 ```
 
-An offset the group has not handed out (at or past the next offset it would
-hand out) is refused with `invalid_request`. An offset below the group's
-position is a harmless duplicate and answered `ok`.
+An offset at or past the shard's log tail was never handed out and is refused
+with `invalid_request`. An offset the log holds but the group has no record of
+handing out is refused with `stale_claim` (`retry`): the group's in-flight state
+is kept in memory, so after it is evicted (idle for 10 minutes) or the shard
+fails over, earlier claims are forgotten. Nothing was applied and the record
+will be delivered again. An offset below the group's position is a harmless
+duplicate and answered `ok`.
 
 ### CacheDelete
 ```
@@ -1026,12 +1030,13 @@ client MUST act on the class it received, not on this table.
 | `not_leader` | `redirect` | 6 | Another broker owns the shard. | Only where the `not_leader` message cannot be sent: to a client without `FEATURE_REDIRECT`, or a publish this broker cannot forward. |
 | `quorum_timeout` | `outcome_unknown` | 7 | The leader wrote the batch; a majority did not confirm it in time. It may survive. | A write to a `Quorum` stream or cache. |
 | `leadership_lost` | `outcome_unknown` | 8 | Leadership moved after the leader wrote the batch and before a majority held it. | A write to a `Quorum` stream or cache during a move. |
-| `unacknowledged` | `outcome_unknown` | 9 | The broker stopped waiting for the write's outcome. | A forwarded batch whose answer never came; a commit that outlasted the ack wait. |
+| `unacknowledged` | `outcome_unknown` | 9 | The broker stopped waiting for the write's outcome. | A forwarded batch whose answer never came; a commit that outlasted the ack wait; a publish whose shard's log was reset (the broker became a follower, or the log was rebuilt) while it waited behind earlier publishes. That publish reached no reader or subscriber. |
 | `overloaded` | `retry_after` | 10 | The broker is shedding load. | A full ingress queue or ack path. Sent as `outcome_unknown` when the batch was already queued for the worker before the broker ran out of room to track its ack. With `detail.reason = "tenant_quota"` when the publish's tenant is over its publish quota (`FELIX_TENANT_PUBLISH_*`); nothing was queued, and `detail.retry_after_ms` says when the tenant is back under. An older client sees the reason as text and backs off as for any other overload. |
 | `limit_exceeded` | `fatal` | 11 | The request exceeds a configured limit. | Too many subscriptions on one connection. |
 | `draining` | `retry` | 12 | The broker is shutting down and takes no new work. | In answer to `auth` on a control stream opened while the connection drains. Connect to another broker. |
 | `internal` | `outcome_unknown` | 13 | Something failed inside the broker. | Anything not covered above. Sent as `retry` for reads and failures before any write, `fatal` for configuration the request cannot change. |
 | `storage` | `outcome_unknown` | 14 | The storage layer failed. | A durable write, a group's state, or a cache log that could not be read. `retry` for reads. |
+| `stale_claim` | `retry` | 15 | The group has no record of handing this offset out. Nothing was applied; the record will be delivered again. | A `group_ack` or `group_nack` for a claim made before the group's in-flight state was evicted or the shard failed over. A client that does not know the code sees an unknown code with `retry`. |
 
 `Number` is the `u16` the binary ack carries. `0` is never sent.
 

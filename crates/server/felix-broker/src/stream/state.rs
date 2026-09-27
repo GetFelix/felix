@@ -7,8 +7,8 @@ use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
-use felix_storage::CommitSequencer;
 use felix_storage::log::LogRecord;
+use felix_storage::{CommitSequencer, CommitTurn};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
@@ -243,7 +243,8 @@ impl StreamState {
         // Writes arriving as a follower: whatever this broker held as a
         // leader was not committed under it.
         self.held.discard();
-        drop(state);
+        // Under the ring lock, so a publish that checks its turn under the
+        // same lock either lands before the clear or sees it superseded.
         self.commit_sequencer.reset(next_seq);
     }
 
@@ -257,7 +258,7 @@ impl StreamState {
         state.log.clear();
         state.next_seq = next_seq;
         self.held.discard();
-        drop(state);
+        // Under the ring lock, as in `advance_to`.
         self.commit_sequencer.reset(next_seq);
     }
 
@@ -286,14 +287,19 @@ impl StreamState {
     /// is contiguous. Pairing the append with the fanout list, and pairing
     /// registration with the backlog snapshot (see
     /// [`StreamState::register_with_backlog`]), removes the window.
+    ///
+    /// `turn` is the batch's commit turn, when it has one. `None` comes back,
+    /// and nothing is appended, if a reset superseded it: resets bump the
+    /// sequencer under this same lock, so the check cannot race one.
     pub(crate) fn append_batch_at(
         &self,
         payloads: &[Bytes],
         first_seq: Option<u64>,
+        turn: Option<&CommitTurn<'_>>,
         log_capacity: usize,
-    ) -> Arc<Vec<SubscriberEntry>> {
+    ) -> Option<Arc<Vec<SubscriberEntry>>> {
         if payloads.is_empty() {
-            return self.subscribers_snapshot.load_full();
+            return Some(self.subscribers_snapshot.load_full());
         }
 
         // Hot path: one lock per publish batch (instead of per payload).
@@ -311,6 +317,9 @@ impl StreamState {
             if let Some(last) = state.log.back() {
                 debug_assert!(last.seq < state.next_seq);
             }
+        }
+        if turn.is_some_and(|turn| !turn.is_current()) {
+            return None;
         }
 
         let mut seq = first_seq.unwrap_or(state.next_seq);
@@ -334,7 +343,7 @@ impl StreamState {
 
         // Captured while the log lock is still held, so any subscriber that
         // registers after this point takes these records as backlog instead.
-        self.subscribers_snapshot.load_full()
+        Some(self.subscribers_snapshot.load_full())
     }
 
     /// Append with sequence numbers drawn from the ring's own counter.
@@ -344,7 +353,7 @@ impl StreamState {
     /// exercise the ring without a log behind it.
     #[cfg(test)]
     pub(crate) fn append_batch(&self, payloads: &[Bytes], log_capacity: usize) {
-        self.append_batch_at(payloads, None, log_capacity);
+        self.append_batch_at(payloads, None, None, log_capacity);
     }
 
     pub(crate) fn register_subscriber(&self) -> (u64, SubscriptionReceiver) {

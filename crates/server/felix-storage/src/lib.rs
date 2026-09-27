@@ -50,7 +50,7 @@ pub mod tiered;
 pub use cache::{
     CacheChange, CacheObserver, CacheSnapshotEntry, EphemeralCache, LogCache, StorageApi,
 };
-pub use commit_order::{CommitSequencer, CommitTurn};
+pub use commit_order::{CommitSequencer, CommitTurn, Superseded};
 pub use counter_log::CounterStore;
 pub use disk_log::{DiskLog, DiskLogProvider};
 pub use error::{Corruption, CorruptionKind, CorruptionSite, Result, StorageError};

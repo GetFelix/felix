@@ -89,7 +89,9 @@ impl GroupTracker {
     /// Whether `offset` has been handed out by this tracker, or is below the
     /// cursor. Anything else is not the consumer's to settle: an ack there
     /// would finish a record nobody received, and a nack would make an offset
-    /// owed that may not exist yet.
+    /// owed that may not exist yet. A fresh tracker (after eviction or
+    /// failover) says no to claims its predecessor made; the serving layer
+    /// tells those apart by the log tail.
     pub(crate) fn handed_out(&self, offset: u64) -> bool {
         offset < self.high_water
     }
