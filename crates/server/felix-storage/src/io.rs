@@ -30,6 +30,8 @@
 //! submitted to `io_uring` instead (`uring_fsync`).
 
 pub(crate) mod flusher;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) mod power_loss;
 #[cfg(target_os = "linux")]
 pub(crate) mod uring_fsync;
 
@@ -172,6 +174,7 @@ pub(crate) fn preallocate(file: &File, len: u64) -> io::Result<()> {
 /// The measured cost is the same either way (~4ms per flush on APFS), which is
 /// itself the evidence that the flush is reaching the device.
 pub(crate) fn sync_data(file: &File) -> io::Result<()> {
+    before_sync(file, SyncKind::Data);
     #[cfg(target_os = "macos")]
     {
         use std::os::unix::io::AsRawFd;
@@ -201,6 +204,7 @@ pub(crate) fn sync_data(file: &File) -> io::Result<()> {
 /// entry is durable too; without this a crash can leave a segment that exists in
 /// the page cache but not in the directory after reboot.
 pub(crate) fn sync_dir(path: &std::path::Path) -> io::Result<()> {
+    before_sync_dir(path);
     #[cfg(unix)]
     {
         File::open(path)?.sync_all()
@@ -212,6 +216,49 @@ pub(crate) fn sync_dir(path: &std::path::Path) -> io::Result<()> {
         let _ = path;
         Ok(())
     }
+}
+
+/// Flush file data *and* metadata. For the small files written whole and
+/// renamed into place (indexes, generation history), where the extra metadata
+/// round trip does not matter.
+pub(crate) fn sync_all(file: &File) -> io::Result<()> {
+    before_sync(file, SyncKind::All);
+    file.sync_all()
+}
+
+/// Which flush a fault hook is looking at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SyncKind {
+    /// `sync_data`, including the macOS `F_FULLFSYNC` path.
+    Data,
+    /// `sync_all`.
+    All,
+    /// An `fdatasync` submitted to `io_uring`.
+    #[cfg_attr(any(not(test), not(target_os = "linux")), allow(dead_code))]
+    Uring,
+}
+
+/// The fault hooks every blocking file flush passes before it is issued. In a
+/// release build without `fault-injection` this is empty.
+fn before_sync(file: &File, kind: SyncKind) {
+    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+    if let Some(delay) = crate::fault::fsync_delay() {
+        std::thread::sleep(delay);
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    power_loss::observe_file(file, kind);
+    let _ = (file, kind);
+}
+
+/// [`before_sync`] for a directory flush.
+fn before_sync_dir(path: &std::path::Path) {
+    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+    if let Some(delay) = crate::fault::fsync_delay() {
+        std::thread::sleep(delay);
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    power_loss::observe_dir(path);
+    let _ = path;
 }
 
 #[cfg(test)]

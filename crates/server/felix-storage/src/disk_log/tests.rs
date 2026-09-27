@@ -5,6 +5,8 @@
 mod append_and_read;
 mod durability;
 mod placed_at_a_base_offset;
+#[cfg(target_os = "linux")]
+mod power_loss;
 mod producers;
 mod provider;
 mod retention;
