@@ -416,7 +416,10 @@ pub(super) async fn run_connection_writer(
                                 continue;
                             }
                             let queue = deliveries.entry(subscriber_id).or_default();
-                            if queue.len() >= max_queued_per_subscriber {
+                            // `Block` never drops: a batch taken just before the
+                            // bound was hit may overshoot it, and the writer then
+                            // stops taking more until this subscriber drains.
+                            if !block && queue.len() >= max_queued_per_subscriber {
                                 // This subscriber is not keeping up; the others
                                 // on the connection are not made to wait for it.
                                 metrics::counter!("felix_sub_queue_dropped_total")
