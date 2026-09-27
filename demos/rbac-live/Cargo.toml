@@ -36,3 +36,8 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# The root workspace's [patch] does not reach a separate workspace. Without
+# this, the vendored kafka-protocol's decoder bounds are not what gets built.
+[patch.crates-io]
+kafka-protocol = { path = "../../vendor/kafka-protocol" }
