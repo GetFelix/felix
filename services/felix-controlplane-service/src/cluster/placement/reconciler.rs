@@ -498,6 +498,12 @@ pub fn spawn_reconciler(
             // linearizable check also guarantees those reads are current
             // before any assignment is proposed.
             if !gate.holds().await {
+                if held {
+                    // Under Raft the next leader waits out a lease it did not
+                    // see released; releasing it (forwarded to that leader)
+                    // spares placement the wait.
+                    let _ = store.release_placement_lease(&holder).await;
+                }
                 held = hold(&holder, held, None);
                 continue;
             }

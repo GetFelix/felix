@@ -178,7 +178,42 @@ pub(super) async fn expire_stale_nodes(
     // change-log seq here, and a Raft replica applying this command must
     // hand the same node the same seq — HashMap order would not.
     stale.sort();
+    Ok(mark_down(&mut state, stale))
+}
 
+impl InMemoryStore {
+    /// Mark exactly `nodes` down, each only while it still serves at the
+    /// incarnation given; the Raft leader's expiry decision, applied.
+    ///
+    /// The incarnation check is what keeps a registration that commits
+    /// between the leader's judgement and this apply from being expired for
+    /// the silence of the process it replaced.
+    pub(crate) async fn expire_nodes(
+        &self,
+        nodes: &[crate::store::raft::command::NodeIncarnation],
+    ) -> Vec<Node> {
+        let mut state = self.nodes.write().await;
+        let mut stale: Vec<String> = nodes
+            .iter()
+            .filter(|wanted| {
+                state.records.get(&wanted.node_id).is_some_and(|node| {
+                    node.status.incarnation == wanted.incarnation
+                        && matches!(
+                            node.status.lifecycle,
+                            NodeLifecycle::Live | NodeLifecycle::Draining
+                        )
+                })
+            })
+            .map(|wanted| wanted.node_id.clone())
+            .collect();
+        stale.sort();
+        stale.dedup();
+        mark_down(&mut state, stale)
+    }
+}
+
+/// Move `stale` (sorted, every id present) down, publishing one change each.
+fn mark_down(state: &mut super::NodeState, stale: Vec<String>) -> Vec<Node> {
     let mut expired = Vec::with_capacity(stale.len());
     for node_id in stale {
         let node = state.records.get_mut(&node_id).expect("just listed");
@@ -192,7 +227,7 @@ pub(super) async fn expire_stale_nodes(
         metrics::counter!("felix_node_changes_total", "op" => "updated").increment(1);
         expired.push(moved);
     }
-    Ok(expired)
+    expired
 }
 
 pub(super) async fn set_node_lifecycle(

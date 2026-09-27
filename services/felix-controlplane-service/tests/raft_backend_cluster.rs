@@ -233,7 +233,7 @@ fn node_named(node_id: &str) -> Node {
 /// answer "what time is it".
 #[tokio::test]
 #[serial_test::serial(raft_cluster)]
-async fn a_heartbeat_carries_the_leaders_clock() {
+async fn a_heartbeat_through_a_follower_reaches_the_leader_not_the_log() {
     // Two members: a leader and a follower that is not it, which is the whole
     // shape this needs.
     let dirs: Vec<tempfile::TempDir> = (0..2)
@@ -270,26 +270,38 @@ async fn a_heartbeat_carries_the_leaders_clock() {
         .expect("register through a follower");
 
     // Straight at a follower's store trait, the way a heartbeat arrives when
-    // the load balancer picks that instance.
+    // the load balancer picks that instance. It reaches the leader's soft
+    // state, not the log.
+    let leader = nodes
+        .iter()
+        .find(|n| n.handle.status().id == leader_id)
+        .expect("leader");
+    let applied_before = leader.handle.status().last_applied_index;
     let recorded = follower
         .store
         .record_node_heartbeat("broker-1", 1, 999)
         .await
         .expect("heartbeat through a follower");
 
-    assert_eq!(
-        recorded.status.last_heartbeat_at_millis, leader_id,
-        "the stamp came from node {} rather than the leader",
-        recorded.status.last_heartbeat_at_millis,
-    );
-    assert_ne!(
-        recorded.status.last_heartbeat_at_millis,
-        follower.handle.status().id,
-        "the receiving follower stamped its own clock",
-    );
     assert_ne!(
         recorded.status.last_heartbeat_at_millis, 999,
-        "the value the caller passed survived to the log",
+        "the value the caller passed survived"
+    );
+    assert_eq!(
+        leader
+            .store
+            .get_node("broker-1")
+            .await
+            .expect("leader view")
+            .status
+            .last_heartbeat_at_millis,
+        recorded.status.last_heartbeat_at_millis,
+        "the leader holds the heartbeat the follower forwarded"
+    );
+    assert_eq!(
+        leader.handle.status().last_applied_index,
+        applied_before,
+        "a heartbeat became a log entry"
     );
 
     for node in &nodes {

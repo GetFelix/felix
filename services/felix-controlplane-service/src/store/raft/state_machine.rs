@@ -90,13 +90,33 @@ struct Snapshot {
 pub struct MetadataStateMachine {
     store: Arc<InMemoryStore>,
     applied: tokio::sync::RwLock<AppliedIds>,
+    node_reset: std::sync::OnceLock<NodeReset>,
 }
+
+/// Called with a node id when that node's record is replaced or removed, and
+/// with `None` when the whole state is.
+pub(crate) type NodeReset = Box<dyn Fn(Option<&str>) + Send + Sync>;
 
 impl MetadataStateMachine {
     pub fn new(store: Arc<InMemoryStore>) -> Self {
         Self {
             store,
             applied: tokio::sync::RwLock::new(AppliedIds::default()),
+            node_reset: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Have `reset` told about node records being replaced, so state kept
+    /// beside the log (the leader's heartbeat view) never outlives the
+    /// record it describes. Not replicated state: nothing it does may feed
+    /// back into apply.
+    pub(crate) fn on_node_reset(&self, reset: NodeReset) {
+        let _ = self.node_reset.set(reset);
+    }
+
+    fn node_reset(&self, node_id: Option<&str>) {
+        if let Some(reset) = self.node_reset.get() {
+            reset(node_id);
         }
     }
 
@@ -162,21 +182,21 @@ impl MetadataStateMachine {
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
-            MetaCommand::RegisterNode { node } => store
-                .register_node(node)
-                .await
-                .map(|node| MetaResponse::Node { node })
-                .map_err(Into::into),
+            MetaCommand::RegisterNode { node } => {
+                let registered = store.register_node(node).await?;
+                self.node_reset(Some(&registered.node_id));
+                Ok(MetaResponse::Node { node: registered })
+            }
             MetaCommand::PatchNode { node_id, patch } => store
                 .patch_node(&node_id, patch)
                 .await
                 .map(|node| MetaResponse::Node { node })
                 .map_err(Into::into),
-            MetaCommand::DeleteNode { node_id } => store
-                .delete_node(&node_id)
-                .await
-                .map(|()| MetaResponse::Unit)
-                .map_err(Into::into),
+            MetaCommand::DeleteNode { node_id } => {
+                store.delete_node(&node_id).await?;
+                self.node_reset(Some(&node_id));
+                Ok(MetaResponse::Unit)
+            }
             MetaCommand::RecordNodeHeartbeat {
                 node_id,
                 incarnation,
@@ -370,6 +390,20 @@ impl MetadataStateMachine {
                 .await
                 .map(|keys| MetaResponse::SigningKeys { keys })
                 .map_err(Into::into),
+            MetaCommand::ExpireNodes { nodes } => {
+                let expired = store.expire_nodes(&nodes).await;
+                Ok(MetaResponse::Nodes { nodes: expired })
+            }
+            MetaCommand::CheckpointHeartbeats { beats } => {
+                for beat in beats {
+                    // A node deleted or re-registered since the leader saw it
+                    // answers an error here; that beat is simply moot.
+                    let _ = store
+                        .record_node_heartbeat(&beat.node_id, beat.incarnation, beat.at_millis)
+                        .await;
+                }
+                Ok(MetaResponse::Unit)
+            }
             MetaCommand::ImportState { state, overwrite } => {
                 // A store with any history has consumers whose checkpoints
                 // this would silently invalidate; only an operator saying
@@ -379,11 +413,9 @@ impl MetadataStateMachine {
                         "store already holds state; import requires overwrite".to_string(),
                     ));
                 }
-                store
-                    .import_state(*state)
-                    .await
-                    .map(|()| MetaResponse::Unit)
-                    .map_err(Into::into)
+                store.import_state(*state).await?;
+                self.node_reset(None);
+                Ok(MetaResponse::Unit)
             }
         }
     }
@@ -460,6 +492,7 @@ impl AppStateMachine for MetadataStateMachine {
             .await
             .expect("snapshot version produced by this cluster");
         *self.applied.write().await = applied;
+        self.node_reset(None);
     }
 
     fn restamp(&self, command: &[u8], now_millis: u64) -> Option<Vec<u8>> {

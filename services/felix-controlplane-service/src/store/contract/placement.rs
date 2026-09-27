@@ -21,8 +21,7 @@ pub(crate) async fn run_placement_contract(
     two_instances_cannot_both_take_the_last_move_slot(a.as_ref(), b.as_ref()).await;
 }
 
-/// A lease that expires by the store's clock: memory and Postgres. Under
-/// Raft the leader takes it at once, which the Raft tests check.
+/// A lease that expires by the store's clock. Every backend.
 pub(crate) async fn run_expiring_lease_contract(
     a: Arc<dyn ControlPlaneStore>,
     b: Arc<dyn ControlPlaneStore>,

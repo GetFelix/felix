@@ -184,6 +184,28 @@ fn script() -> Vec<MetaCommand> {
         node_id: "broker-1".to_string(),
         lifecycle: NodeLifecycle::Draining,
     });
+    // The soft-state pair: a checkpoint of heartbeats, and the leader's
+    // named expiry, listed out of order and with one stale incarnation.
+    commands.push(MetaCommand::CheckpointHeartbeats {
+        beats: (0..8u16)
+            .map(|i| crate::store::raft::command::HeartbeatSeen {
+                node_id: format!("broker-{i}"),
+                incarnation: 1,
+                at_millis: 20_000 + u64::from(i),
+            })
+            .collect(),
+    });
+    commands.push(MetaCommand::ExpireNodes {
+        nodes: [("broker-5", 0), ("broker-3", 0), ("broker-7", 1)]
+            .into_iter()
+            .map(
+                |(node_id, incarnation)| crate::store::raft::command::NodeIncarnation {
+                    node_id: node_id.to_string(),
+                    incarnation,
+                },
+            )
+            .collect(),
+    });
     // Conditional assignment writes, one of them stale: whether it lands is
     // decided by prior state alone, so every replica decides the same.
     for (leader, expected_generation) in [
