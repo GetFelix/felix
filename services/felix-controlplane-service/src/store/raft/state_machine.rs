@@ -202,7 +202,7 @@ impl MetadataStateMachine {
                 incarnation,
                 at_millis,
             } => store
-                .record_node_heartbeat(&node_id, incarnation, at_millis)
+                .apply_node_heartbeat(&node_id, incarnation, at_millis)
                 .await
                 .map(|node| MetaResponse::Node { node })
                 .map_err(Into::into),
@@ -400,7 +400,7 @@ impl MetadataStateMachine {
                     // A node deleted or re-registered since the leader saw it
                     // answers an error here; that beat is simply moot.
                     let _ = store
-                        .record_node_heartbeat(&beat.node_id, beat.incarnation, beat.at_millis)
+                        .apply_node_heartbeat(&beat.node_id, beat.incarnation, beat.at_millis)
                         .await;
                 }
                 Ok(MetaResponse::Unit)

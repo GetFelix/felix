@@ -264,6 +264,61 @@ async fn failover_completes_within_the_configured_bound() {
     cluster.shutdown().await;
 }
 
+/// **Deregistering a live leader does not make two leaders.** The broker
+/// keeps running on the lease it was granted before it was deregistered, so
+/// a follower is promoted only once that lease has provably run out -- and
+/// then it is, without the broker having to stop.
+#[serial]
+#[tokio::test]
+async fn a_deregistered_leader_is_replaced_only_after_its_lease() {
+    let cluster = Cluster::start(quorum_config())
+        .await
+        .expect("start cluster");
+    let leader = cluster.owner(STREAM).await.expect("owner");
+    let shipped_before = shipped_so_far(&cluster, &leader).await;
+    cluster
+        .publish_via(&leader, STREAM, b"before leaving".to_vec())
+        .await
+        .expect("publish");
+    replication_settled(&cluster, &leader, shipped_before).await;
+    // A broker still running would hand the shard over through a move as
+    // soon as it is fenced, which is safe and not what this is about. With
+    // moves paused only the lease can end the wait.
+    cluster.pause_placement().await.expect("pause moves");
+
+    cluster
+        .deregister_node(&leader)
+        .await
+        .expect("deregister the leader");
+    let deregistered = std::time::Instant::now();
+    // Stepped at once, as a pass woken by the change would be. A caught-up
+    // replica is on hand, so only the fence keeps it from being promoted.
+    cluster.place_shards().await;
+    assert_eq!(
+        cluster.owner(STREAM).await.expect("owner"),
+        leader,
+        "a follower was promoted while the deregistered leader's lease ran",
+    );
+
+    failover_from(&cluster, &leader, Duration::from_secs(30))
+        .await
+        .expect("the shard should move once the lease has run out");
+    // The harness waits 1.25 s of silence; the last heartbeat was at most an
+    // interval or so before the deregistration.
+    let waited = deregistered.elapsed();
+    assert!(
+        waited >= Duration::from_millis(800),
+        "promoted {waited:?} after deregistering, inside the lease",
+    );
+    let promoted = cluster.owner(STREAM).await.expect("owner");
+    let payloads = replay_until(&cluster, &promoted, Duration::from_secs(30)).await;
+    assert!(
+        payloads.iter().any(|payload| payload == b"before leaving"),
+        "the promoted broker replayed {payloads:?}",
+    );
+    cluster.shutdown().await;
+}
+
 /// **A shard with no replica to promote stays unavailable rather than being
 /// served empty.** The counterpart to the tests above: when there is nothing
 /// holding the log, the cluster declines to invent a leader.

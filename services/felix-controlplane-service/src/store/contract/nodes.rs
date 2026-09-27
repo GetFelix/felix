@@ -44,6 +44,7 @@ pub(crate) async fn run_node_contract(store: Arc<dyn ControlPlaneStore>) {
     a_heartbeat_publishes_no_change(store).await;
     a_heartbeat_from_a_superseded_incarnation_is_rejected(store).await;
     a_heartbeat_does_not_revive_a_down_node(store).await;
+    a_heartbeat_does_not_extend_a_departed_node(store).await;
     expiry_moves_only_stale_serving_nodes(store).await;
     expiry_is_idempotent_across_instances(store).await;
     set_lifecycle_is_idempotent(store).await;
@@ -597,6 +598,39 @@ async fn a_heartbeat_does_not_revive_a_down_node(store: &dyn ControlPlaneStore) 
     assert!(
         after.status.last_heartbeat_at_millis > registered.status.last_heartbeat_at_millis,
         "liveness is still recorded, so a later registration is judged fairly",
+    );
+}
+
+/// A node that has left is answered `left`, which renews no lease, so its
+/// heartbeat stays where it was when it left: placement waits out the lease
+/// from there, and a deregistered broker that keeps heartbeating must not
+/// hold its shards for as long as it runs.
+async fn a_heartbeat_does_not_extend_a_departed_node(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    store
+        .register_node(node("broker-a", 7001))
+        .await
+        .expect("register");
+    store
+        .set_node_lifecycle("broker-a", NodeLifecycle::Left)
+        .await
+        .expect("leave");
+    let left = store.get_node("broker-a").await.expect("get");
+
+    let answer = store
+        .record_node_heartbeat("broker-a", 0, 1_900_000_000_000)
+        .await
+        .expect("beat");
+    assert_eq!(answer.status.lifecycle, NodeLifecycle::Left);
+    assert_eq!(
+        store
+            .get_node("broker-a")
+            .await
+            .expect("get")
+            .status
+            .last_heartbeat_at_millis,
+        left.status.last_heartbeat_at_millis,
+        "a heartbeat after leaving moved the stamp placement waits from",
     );
 }
 

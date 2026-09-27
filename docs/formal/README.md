@@ -23,7 +23,10 @@ One shard, three brokers, one control plane, discrete time.
   extends its own belief from the instant it *sent* the heartbeat, on its own
   clock, and stops serving `Eps` before that belief expires. Heartbeats can be
   lost. The control plane grants the next generation no earlier than `Margin`
-  after the expiry it recorded.
+  after the expiry it recorded. Deregistering a node has no action of its
+  own: from then on the control plane renews nothing for it, which is every
+  later heartbeat lost, and placement still waits out the timeout and margin
+  from the node's last heartbeat before promoting (`left_within_lease`).
 - **Writes.** Admission checks the broker is serving. The write then waits,
   and claims its place in the log; with `FenceAtClaim` the claim checks the
   handoff fence again. `AckOnAdmit` acknowledges a `Leader` write when it is

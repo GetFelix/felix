@@ -357,7 +357,7 @@ impl ControlPlaneStore for InMemoryStore {
         incarnation: u64,
         at_millis: u64,
     ) -> StoreResult<Node> {
-        nodes::record_node_heartbeat(self, node_id, incarnation, at_millis).await
+        nodes::record_node_heartbeat(self, node_id, incarnation, at_millis, false).await
     }
 
     async fn expire_stale_nodes(&self, expiry_before_millis: u64) -> StoreResult<Vec<Node>> {

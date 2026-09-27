@@ -184,6 +184,13 @@ pub(crate) async fn drain_node(
 /// The record is kept either way, so the identity and its incarnation survive
 /// for the next boot.
 ///
+/// Heartbeats stop renewing the node's lease from here, but the lease it
+/// already holds runs on. Until it has provably run out (its last heartbeat
+/// plus the expiry timeout and regrant margin, the wait a silent node gets)
+/// placement treats the node as draining, so nothing it leads is handed to
+/// another broker. A node already silent that long has its shards failed over
+/// straight away.
+///
 /// # Errors
 /// - 404 when the node is not registered.
 pub(crate) async fn deregister_node(

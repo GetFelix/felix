@@ -150,6 +150,14 @@ impl Cluster {
         self.post_lifecycle(node_id, "drain").await
     }
 
+    /// Deregister a broker as an operator would, while it keeps running.
+    ///
+    /// The control plane stops renewing its lease; its shards move only once
+    /// the lease it already holds has run out.
+    pub async fn deregister_node(&self, node_id: &str) -> Result<()> {
+        self.post_lifecycle(node_id, "deregister").await
+    }
+
     /// Put a draining broker back into placement.
     pub async fn undrain_node(&self, node_id: &str) -> Result<()> {
         let url = format!("{}/v1/nodes/{node_id}", self.control_plane_url());

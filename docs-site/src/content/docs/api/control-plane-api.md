@@ -176,6 +176,11 @@ and, once the leader has been told to stop, `"state": "draining"`.
 drain. Nothing observed is patchable: a `down` or `left` broker is revived only
 by registering, so a patch cannot claim a silent broker is alive.
 
+`POST /v1/nodes/{node_id}/deregister` marks a broker `left`. Its heartbeats
+stop renewing its lease, but what it leads is not handed on until the lease it
+already holds has run out: placement treats it as draining until its last
+heartbeat is older than the expiry timeout plus the regrant margin.
+
 `DELETE /v1/nodes/{node_id}` removes a broker's record. It needs `node.manage`
 on `cluster:*`, and is refused (409) while the broker is `live` or `draining`
 or while any shard names it as leader or replica. See

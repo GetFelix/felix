@@ -176,9 +176,12 @@ impl PlacementRead {
         let (streams, caches, nodes, existing) = load(store).await?;
         // Read once, as of the store's clock: one instant for the whole pass,
         // so a report cannot be fresh for one shard and stale for the next
-        // within the same plan, and the same clock the reports were stamped
-        // with.
-        let positions = ReplicaPositions::load(store, liveness).await?;
+        // within the same plan, and the same clock the reports and heartbeats
+        // were stamped with.
+        let reports = store.list_replica_reports().await?;
+        let now_millis = store.now_millis().await?;
+        let positions = ReplicaPositions::new(reports, liveness, now_millis);
+        let nodes = fence_departed(nodes, liveness, now_millis);
         let paused = store.moves_paused().await?;
         Ok(Self {
             streams,
@@ -560,6 +563,25 @@ async fn load(
     let nodes = store.list_nodes().await?;
     let existing = store.list_shard_assignments().await?;
     Ok((streams, caches, nodes, existing))
+}
+
+/// The nodes as placement has to see them: one that left while its lease may
+/// still be running is draining until that lease has provably run out.
+///
+/// Draining, not gone: its shards stay where they are, or move only through a
+/// handoff it takes part in. Promoting a follower sooner is two leaders, and a
+/// deregistration involves no clock at all to stop that on its own.
+fn fence_departed(
+    mut nodes: Vec<Node>,
+    liveness: &crate::config::NodeLivenessConfig,
+    now_millis: u64,
+) -> Vec<Node> {
+    for node in &mut nodes {
+        if crate::cluster::membership::left_within_lease(node, liveness, now_millis) {
+            node.status.lifecycle = crate::model::NodeLifecycle::Draining;
+        }
+    }
+    nodes
 }
 
 fn fenced(key: &ShardKey, step: &str, fence: u64, token: u64) {

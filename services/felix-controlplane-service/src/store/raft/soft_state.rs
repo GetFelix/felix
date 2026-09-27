@@ -70,6 +70,8 @@ struct View {
     /// When this member began judging in `term`: the heartbeat every node is
     /// assumed to have sent, and the renewal the lease is assumed to have had.
     since: Instant,
+    /// `since` on the wall clock, which is what listings carry.
+    since_millis: u64,
     beats: HashMap<String, Beat>,
     lease: Option<LeaseView>,
     last_checkpoint: Instant,
@@ -113,18 +115,31 @@ impl SoftState {
 
     /// `node` with the last heartbeat this member saw as leader, if it has
     /// seen a newer one than the log holds. Unchanged on a follower.
+    ///
+    /// A node that has left and not been heard from this term is taken to
+    /// have heartbeated when this member began judging, as expiry takes
+    /// every node. Placement waits out a departed node's lease from its
+    /// stamp, and the log's copy can be a checkpoint behind a beat the
+    /// previous leader granted.
     pub(crate) fn overlay(&self, mut node: Node) -> Node {
         if !self.handle.is_leader() {
             return node;
         }
         let term = self.handle.current_term();
         let view = self.view.lock().expect("soft state lock");
-        if let Some(view) = view.as_ref().filter(|view| view.term == term)
-            && let Some(beat) = view.beats.get(&node.node_id)
-            && beat.incarnation >= node.status.incarnation
-        {
-            node.status.last_heartbeat_at_millis =
-                node.status.last_heartbeat_at_millis.max(beat.at_millis);
+        let view = view.as_ref().filter(|view| view.term == term);
+        let beat = view
+            .and_then(|view| view.beats.get(&node.node_id))
+            .filter(|beat| beat.incarnation >= node.status.incarnation);
+        let heard = match (beat, view) {
+            (Some(beat), _) => Some(beat.at_millis),
+            (None, _) if node.status.lifecycle != NodeLifecycle::Left => None,
+            // Not judging yet in this term: as good as starting now.
+            (None, None) => Some(crate::clock::now_millis()),
+            (None, Some(view)) => Some(view.since_millis),
+        };
+        if let Some(heard) = heard {
+            node.status.last_heartbeat_at_millis = node.status.last_heartbeat_at_millis.max(heard);
         }
         node
     }
@@ -175,6 +190,11 @@ impl SoftState {
                     "heartbeat for incarnation {incarnation} of {node_id}, which is now at {}",
                     node.status.incarnation
                 ))));
+            }
+            // The answer grants a node that has left no lease, so there is
+            // nothing to record; see `overlay`.
+            if node.status.lifecycle == NodeLifecycle::Left {
+                return Ok(Ok(MetaResponse::Node { node }));
             }
             let now_millis = crate::clock::now_millis();
             let mut guard = self.view.lock().expect("soft state lock");
@@ -444,6 +464,7 @@ fn view_for(slot: &mut Option<View>, term: u64) -> &mut View {
         *slot = Some(View {
             term,
             since: now,
+            since_millis: crate::clock::now_millis(),
             beats: HashMap::new(),
             lease: None,
             last_checkpoint: now,

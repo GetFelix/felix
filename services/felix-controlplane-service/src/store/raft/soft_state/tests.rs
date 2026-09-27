@@ -174,3 +174,48 @@ async fn a_recreated_node_does_not_inherit_old_heartbeats() {
         "the old record's heartbeat leaked into the new one"
     );
 }
+
+/// The log's heartbeat for a node that left can trail a beat the previous
+/// leader granted, and placement waits out the lease from it. So a new
+/// leader reads such a node as heard from when it began judging, as expiry
+/// does, and a heartbeat after leaving moves nothing.
+#[tokio::test]
+async fn a_departed_node_is_heard_from_no_earlier_than_this_leader_began() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    store
+        .register_node(registered("broker-a", 7001))
+        .await
+        .expect("register");
+    store
+        .set_node_lifecycle("broker-a", NodeLifecycle::Left)
+        .await
+        .expect("leave");
+    // Starts this leader's judging, so the reading below holds still.
+    store.expire_stale_nodes(0).await.expect("sweep");
+
+    let left = store
+        .get_node("broker-a")
+        .await
+        .expect("get")
+        .status
+        .last_heartbeat_at_millis;
+    assert!(left > 1, "read as last heard from before this leader began");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let answer = store
+        .record_node_heartbeat("broker-a", 0, 0)
+        .await
+        .expect("heartbeat");
+    assert_eq!(answer.status.lifecycle, NodeLifecycle::Left);
+    assert_eq!(
+        store
+            .get_node("broker-a")
+            .await
+            .expect("get")
+            .status
+            .last_heartbeat_at_millis,
+        left,
+        "a heartbeat after leaving moved the stamp",
+    );
+}

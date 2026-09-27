@@ -253,6 +253,12 @@ pub(super) async fn record_node_heartbeat(
             existing.status.incarnation
         )));
     }
+    // The answer to a node that has left grants no lease, and its stamp is
+    // what placement waits out before handing its shards on.
+    if existing.status.lifecycle == NodeLifecycle::Left {
+        tx.commit().await?;
+        return Ok(existing);
+    }
 
     // GREATEST, not assignment: heartbeats from two connections can arrive
     // out of order, and the newest observation is the one that matters.

@@ -16,6 +16,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::NodeLivenessConfig;
+use crate::model::{Node, NodeLifecycle};
 use crate::store::ControlPlaneStore;
 
 /// Run one expiry pass against `now_millis`, the store's clock.
@@ -67,6 +68,21 @@ pub async fn expire_observed(
         .spared(&nodes, window, at)
         .fold(by_clock, |before, stamp| before.min(stamp));
     expire_before(store, expiry_before).await
+}
+
+/// Whether a node that has left may still be serving on a lease it was
+/// granted before it left.
+///
+/// Deregistering stops a broker's lease from being renewed, not the lease it
+/// already holds, and nothing tells the control plane when the broker stopped.
+/// So a node that left is treated as a silent one: its last heartbeat is when
+/// its last lease was granted (a heartbeat to a node that has left grants and
+/// records nothing), and it may still serve until the same window
+/// [`expire_once`] waits out has passed on the store's clock.
+pub fn left_within_lease(node: &Node, liveness: &NodeLivenessConfig, now_millis: u64) -> bool {
+    node.status.lifecycle == NodeLifecycle::Left
+        && node.status.last_heartbeat_at_millis
+            >= now_millis.saturating_sub(liveness.silence_before_down_ms())
 }
 
 async fn expire_before(store: &dyn ControlPlaneStore, expiry_before: u64) -> usize {
