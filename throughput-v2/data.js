@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790515480064,
+  "lastUpdate": 1790516075895,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -17420,6 +17420,58 @@ window.BENCHMARK_DATA = {
             "range": "6732.20",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 930214.15\nmean: 931979.60\nstdev: 6732.20\ncv: 0.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bed351111ed2d83636a679902f97094342523d1a",
+          "message": "Client protocol: ALPN, unsupported replies, jump-hash mapping, keep-alive clamp, cert-bound tokens (#751)\n\n* feat(protocol): client ALPN, unsupported replies, jump-hash mapping, longer idle timeout, cert-bound tokens\n\n- felix/1 ALPN on client listeners, accepting clients that offer none\n  (FELIX_TLS_REQUIRE_ALPN to refuse them)\n- FEATURE_UNSUPPORTED: unknown request types and the new extension area are\n  answered with a typed unsupported message instead of closing the stream\n- ShardRouting::JumpHash mapping in felix-wire (not yet wired to stream metadata)\n- QUIC idle timeout 30s, keep-alive 5s, keep-alive clamped below idle/2\n- FELIX_TLS_CLIENT_CERT_BIND_SUBJECT binds token sub to the client cert\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSpec-Unaffected: client-listener TLS/ALPN, token binding and an unsupported-request reply; no change to leases, quorum marks, reports, promotion or handoff\n\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* test(wire): the client_message fuzz target does not re-encode Message::Unknown\n\nAn unknown type now decodes to Message::Unknown, which the broker answers\nwith unsupported (or a close) and never serializes. Exercise\nunknown_request on it instead of the round trip.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(transport): keep the 6 s idle timeout and 2 s keep-alive defaults\n\nThe idle timeout is how long a publish in flight to a leader that died\nwithout closing waits before it fails over; at 30 s the cluster failover\ntest took 30.3 s against its 10 s budget. Keep the short defaults and the\nkeep-alive clamp; a WAN deployment can raise both through\nFELIX_MAX_IDLE_TIMEOUT_MS and FELIX_KEEPALIVE_MS.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(broker): cert-binding errors do not echo the token subject\n\nThe messages reach logs; say what failed without the value.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* test(transport): ALPN test failure messages carry no handshake data\n\nCodeQL traces the formatted values back to the test certificate.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T06:22:53-07:00",
+          "tree_id": "cb52e2d8172d743fc60e7dae0b4d5bda0e134dda",
+          "url": "https://github.com/gabloe/felix/commit/bed351111ed2d83636a679902f97094342523d1a"
+        },
+        "date": 1790516075100,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 383877.52,
+            "range": "12909.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 383877.52\nmean: 388143.34\nstdev: 12909.59\ncv: 3.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 383877.52,
+            "range": "12909.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 383877.52\nmean: 388143.34\nstdev: 12909.59\ncv: 3.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93331.09,
+            "range": "703.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93331.09\nmean: 93103.48\nstdev: 703.57\ncv: 0.76%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 933310.9,
+            "range": "7035.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 933310.90\nmean: 931034.84\nstdev: 7035.67\ncv: 0.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
