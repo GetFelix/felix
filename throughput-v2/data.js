@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790525657463,
+  "lastUpdate": 1790528475116,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -17836,6 +17836,58 @@ window.BENCHMARK_DATA = {
             "range": "10135.08",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 924661.61\nmean: 923795.83\nstdev: 10135.08\ncv: 1.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f64f9d584858e7bf9270073afb0fddbe72d5e649",
+          "message": "Check the licence split by dependency graph, track the vendored kafka-protocol, let clients offer felix/1 (#763)\n\n* fix(licensing): check the licence split on the dependency graph\n\nThe publish check only compared each crate's own label, so an Apache-2.0\ncrate linking AGPL code passed. scripts/check_license_graph.py walks the\nfirst-party graph (normal and build deps, optional ones included) from\n`task publish:check` and fails if a permissive crate reaches an AGPL one.\n\nIt found felix-conformance: Apache-2.0 but linking felix-broker-service,\nfelix-broker, felix-storage and felix-authz. It is `publish = false`, so it\nis relabelled AGPL-3.0-only rather than split; running `verify` over a\nclient's results still puts nothing on that client.\n\nThe vendored kafka-protocol is a path crate, which cargo-deny never matches\nagainst advisories. vendor/VENDORED.toml records it as kafka-protocol 0.18.0;\nscripts/check_vendored.py fails `task deny` if that record disagrees with the\nvendored manifest, the [patch] entry or Cargo.lock, and writes a throwaway\ncrate depending on the upstream release so the advisory check runs against it.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* feat(client): let the shipped clients offer the felix/1 ALPN\n\nNo client offered felix/1, so FELIX_TLS_REQUIRE_ALPN=true locked out every\none of them. felix_client::quic_client_config builds the QUIC TLS config\n(given roots or the platform trust store) and offers felix/1 when asked; the\nPython (offer_alpn=True) and TypeScript (offerAlpn) clients build theirs\nthrough it and expose the same switch.\n\nOff by default: a broker older than ALPN support lists none on its client\nlistener, and QUIC refuses a handshake where the client offered a protocol\nand the server picked none, so offering by default would lock clients out of\nold brokers instead. docs/protocol.md and the env reference say to turn it on\nin every client before requiring ALPN on the brokers.\n\nThe new broker-side test dials a REQUIRE_ALPN broker with the SDK's own\nconfig: served with the offer on, refused with it off.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T09:55:56-07:00",
+          "tree_id": "2d00b280af5cd354f5e58f2e6901087fdcd270d2",
+          "url": "https://github.com/gabloe/felix/commit/f64f9d584858e7bf9270073afb0fddbe72d5e649"
+        },
+        "date": 1790528474584,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 377503.68,
+            "range": "7078.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 377503.68\nmean: 377644.59\nstdev: 7078.89\ncv: 1.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 377503.68,
+            "range": "7078.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 377503.68\nmean: 377644.59\nstdev: 7078.89\ncv: 1.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93790.53,
+            "range": "905.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93790.53\nmean: 93392.44\nstdev: 905.43\ncv: 0.97%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 937905.29,
+            "range": "9054.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 937905.29\nmean: 933924.40\nstdev: 9054.26\ncv: 0.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
