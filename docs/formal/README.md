@@ -42,11 +42,23 @@ One shard, three brokers, one control plane, discrete time.
   halts it. A follower refuses a leader older than one it has heard from.
   The model reads "heard from" off the follower's log (`LastGen`); the code
   keeps the highest generation it accepted in a file beside the log, which is
-  never below that and survives a restart, so it only refuses more. The
+  never below that and survives a restart, so it only refuses more. Under
+  `AckByFollowers` the model keeps that generation too (`promised`). The
   follower's high-water mark is learned from the leader, as the code's
   follower learns the commit offset each batch carries.
 - **Acknowledgement.** Under `Quorum`, once a majority including the leader
-  holds the record; under `Leader`, on the leader's own commit.
+  holds the record; under `Leader`, on the leader's own commit. With
+  `AckByFollowers`, once a majority holds it and still holds the leader's
+  generation as the highest it accepted (`promised`), with no report and no
+  lease in the condition. Only a record of the leader's own generation is
+  counted, taking the ones below it along, as in Raft.
+- **Promotion fence**, under `FenceOnPromote`. A promoted leader persists its
+  generation, then asks the others to: each that has not accepted a newer one
+  persists it, answers with its log, and from then on refuses the older
+  leader. The new leader takes the log of any answer ahead of its own by (last
+  generation, length), and opens for writes, and ships, only once a majority,
+  itself included, has answered. Modelled on promotion only: the handoff and
+  cancel configurations do not turn it on.
 - **Reports.** The leader tells the control plane which followers hold every
   record it does. The report travels on its own: it may arrive after the
   acknowledgements it describes, or never. With `ReportBeforeAck` a `Quorum`
@@ -113,6 +125,7 @@ bootstrap of a follower below the leader's base.
 | --- | --- |
 | `AtMostOneServing` | No two brokers serve the shard at once. |
 | `AckedSurvive` | Whoever is serving holds every acknowledged record. |
+| `AckedHeldByLeader` | The leader at the current generation holds every acknowledged record once it may serve. `AckedSurvive` without the lease, for configurations where two brokers can serve at once. |
 | `AckedAgree` | Two brokers never hold different acknowledged records at one offset. |
 | `AckedOnMajority` | Every acknowledged `Quorum` record is on a majority. |
 | `NoTruncationBelowHwm` | A follower never discards a record below its high-water mark. |
@@ -131,12 +144,16 @@ that quietly became a pass would be a model that stopped saying anything.
 | Configuration | Knobs | Must |
 | --- | --- | --- |
 | `FelixShardLease.cfg` | drifting clocks, no writes: heartbeats, lapses, promotions | pass `AtMostOneServing` and `NoStaleCommit` (0.8M states) |
-| `FelixShardLogOrder.cfg` | both lease checks, `Quorum`, two writes, promotion by log order | pass every invariant (2.0M states) |
+| `FelixShardLogOrder.cfg` | both lease checks, `Quorum`, two writes, promotion by log order | pass every invariant (1.5M states) |
 | `FelixShardThinMargin.cfg` | drifting clocks with `Margin = 0` and `Eps = 0` | violate `AtMostOneServing` |
-| `FelixShardRealMargins.cfg` | the margins the code runs: the broker gives up a quarter of the lease (`Eps = 1` of `L = 4`), and the control plane marks it down a quarter past its expiry (`Margin = 1`), against clocks that drift by a quarter | pass `AtMostOneServing` and `NoStaleCommit` (2.1M states); with `Margin = 0` it finds two brokers serving |
+| `FelixShardRealMarginsLease.cfg` | the margins the code runs: the broker gives up a quarter of the lease (`Eps = 1` of `L = 4`), and the control plane marks it down a quarter past its expiry (`Margin = 1`), against clocks that drift by a quarter; no writes | pass `AtMostOneServing` and `NoStaleCommit` (2.1M states); with `Margin = 0` it finds two brokers serving |
+| `FelixShardRealMargins.cfg` | the same margins and drift with one `Quorum` write carried across a promotion, acknowledged on the report's answer and a valid lease, as the code does | pass every invariant (2.4M states) |
+| `FelixShardAckWithoutLease.cfg` | the same with the lease taken out of the acknowledgement: the report alone releases it | pass every invariant (2.4M states, the same ones: the report is only sent on a valid lease) |
+| `FelixShardFencedAck.cfg` | acknowledged by follower acks at the leader's generation, no lease or report in it, and the promotion fence; no margin on either side of the lease, drifting clocks, no commit check, two writes | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority` (2.6M states) |
+| `FelixShardUnfencedAck.cfg` | the same without the fence | violate `AckedHeldByLeader` |
 | `FelixShardNoCommitCheck.cfg` | commit-time lease check removed | violate `NoStaleCommit` |
 | `FelixShardNoReportOrder.cfg` | the design *before* #268: a `Quorum` ack released before the report describing it lands | violate `AckedSurvive` |
-| `FelixShard.cfg` | the design as implemented: report-before-mark, followers reported against the offset a majority holds, promotion from the leader's report | pass every invariant (1.5M states) |
+| `FelixShard.cfg` | the design as implemented: report-before-mark, followers reported against the offset a majority holds, promotion from the leader's report, the leader acting on the answer its report got | pass every invariant (5.4M states) |
 | `FelixShardReportAtTail.cfg` | the same with followers reported only when level with the leader's tail | violate `QuorumReportNamesASuccessor` |
 | `FelixShardReportUnpaired.cfg` | followers measured at the majority's offset, but the report claiming the whole log | violate `AckedSurvive` |
 | `FelixShardHandoff.cfg` | a planned move off a live leader: fence, drained report, cut over; writes hold the fence from admission | pass every invariant (2.6M states) |
@@ -168,10 +185,10 @@ that quietly became a pass would be a model that stopped saying anything.
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting
-clocks is affordable; the replication configurations carry writes and
-synchronised clocks, because nothing about which replica holds which record
-depends on what time a broker thinks it is. One configuration with both ran
-past four hundred million states without finishing.
+clocks is affordable; most replication configurations carry writes and
+synchronised clocks. `FelixShardRealMargins.cfg`, `FelixShardAckWithoutLease.cfg`
+and the fenced pair carry both, bought with one write and time to 5, or two
+writes and one promotion.
 
 ### What ties this to the code, and what does not
 
@@ -314,6 +331,31 @@ The control plane's quarter is measured on its own monotonic clock as well as
 the store's, which is what makes its expiry real time here rather than a wall
 clock that can step.
 
+### The fence that takes the clock out
+
+Under `Quorum` today, an acknowledged record survives because the report
+orders the ack and promotion reads the report, and the lease keeps a deposed
+leader from writing. `FelixShardAckWithoutLease.cfg` shows the lease check at
+release is not what does it. `FelixShardFencedAck.cfg` goes further: the ack
+counts followers at the leader's generation, no report and no lease, and the
+promoted leader fences a majority before it serves. It passes with no margin
+on either side of the lease, so two brokers do serve at once, and with the
+commit not checking the lease at all. The old leader keeps writing; it just
+cannot find a majority for it.
+
+`FelixShardUnfencedAck.cfg` drops the fence and TLC finds the record lost in
+eleven steps: the old leader's clock runs slow, the control plane promotes a
+follower, and the old leader commits, ships to the other follower, which has
+never heard of the new generation, and acknowledges on that majority.
+
+The catch-up is load-bearing too. Checked by hand with the fence answering but
+the new leader not taking the log ahead of its own, TLC finds a record a
+majority acknowledged before the fence missing from the new leader.
+
+The CI bounds allow one promotion. Two (`L = 2`) with drift did not finish;
+with `Drift = 0` as well the configuration passes by hand in 14.3M states and
+about fourteen minutes.
+
 ### The check that is load-bearing
 
 With `CheckAtCommit = FALSE`, TLC finds a broker that admits a write while its
@@ -440,7 +482,7 @@ then moves the quorum mark that releases the acknowledgement. That is
 `publish_mark` in `services/felix-broker-service/src/replication/driver/shard.rs`, which moves the
 mark only `if reported`, and `await_quorum`, which blocks the publish on the
 mark. With `ReportBeforeAck = TRUE` — `FelixShard.cfg`, the implemented design
-— TLC explores 2.0M distinct states and finds no violation.
+— TLC explores 5.4M distinct states and finds no violation.
 
 So the pair is the point. The ordering is not merely present in the code; the
 model shows the guarantee fails without it.

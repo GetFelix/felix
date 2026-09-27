@@ -49,18 +49,22 @@ tlc() {
     FelixPlacementPacing*) module="FelixPlacementPacing" ;;
   esac
   local flags=(-deadlock -workers auto -checkpoint 0 -config "$cfg.cfg" "$module.tla")
+  local status=0
   if command -v java >/dev/null 2>&1 && java -version >/dev/null 2>&1; then
     (cd "$SPEC_DIR" && java -XX:+UseParallelGC -jar "../../$JAR" \
-      -metadir "$scratch" "${flags[@]}")
+      -metadir "$scratch" "${flags[@]}") || status=$?
   elif command -v docker >/dev/null 2>&1; then
     docker run --rm \
       -v "$PWD/$SPEC_DIR:/spec" -v "$PWD/$JAR:/tla2tools.jar" -v "$scratch:/scratch" \
       -w /spec eclipse-temurin:21-jre java -XX:+UseParallelGC -jar /tla2tools.jar \
-      -metadir /scratch "${flags[@]}"
+      -metadir /scratch "${flags[@]}" || status=$?
   else
     echo "check_tla.sh needs java or docker" >&2
     exit 1
   fi
+  # The larger configurations leave gigabytes in it, one run after another.
+  rm -rf "$scratch"
+  return "$status"
 }
 
 # Each configuration and what it must do. `pass`, or `violates <Invariant>`.
@@ -71,6 +75,8 @@ expectations=(
   "FelixShardRealMarginsLease pass"
   "FelixShardRealMargins pass"
   "FelixShardAckWithoutLease pass"
+  "FelixShardFencedAck pass"
+  "FelixShardUnfencedAck violates AckedHeldByLeader"
   "FelixShardNoCommitCheck violates NoStaleCommit"
   "FelixShardNoReportOrder violates AckedSurvive"
   "FelixShardReportAtTail violates QuorumReportNamesASuccessor"

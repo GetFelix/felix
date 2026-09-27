@@ -161,6 +161,15 @@ replaced, and no acknowledged record lost. What does keep it is the report:
 a leader acknowledges only on a report stored for its own generation, and
 promotion reads that generation's report.
 
+The lease still decides whether a deposed leader can write at all. The model
+has the design that takes the clock out of `Quorum` safety, which the broker
+does not implement yet: a promoted leader persists its generation on a
+majority and takes any tail ahead of its own before it serves, and a write is
+acknowledged once a majority holds it at the current generation.
+`FelixShardFencedAck.cfg` keeps every acknowledged record with no margin on
+either side of the lease; `FelixShardUnfencedAck.cfg`, the same without the
+fence, loses one. See [`docs/formal/README.md`](formal/README.md).
+
 The commit check refuses a publish even when it was acknowledged on enqueue
 (`ack_on_commit` off), since writing it would be the split brain. So admission
 reads the clock for such a publish and, with little lease left, waits for the
@@ -579,7 +588,7 @@ releases the acknowledgement — so the control plane cannot be behind a client.
 A report that does not land leaves the mark where it was, and the publish waits
 rather than being acknowledged on a report nobody received.
 
-Both halves are checked. `docs/formal/FelixShard.tla` explores 2.0M distinct
+Both halves are checked. `docs/formal/FelixShard.tla` explores 5.4M distinct
 states of the implemented design without violating `AckedSurvive`, and
 `FelixShardNoReportOrder.cfg` — the same design with the ordering removed —
 loses an acknowledged record in a second (`task tla:check`). Promotion then
