@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790516073091,
+  "lastUpdate": 1790520056165,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -22176,6 +22176,72 @@ window.BENCHMARK_DATA = {
             "range": "526.41",
             "unit": "us",
             "extra": "trials: 5\nmedian: 679.00\nmean: 859.80\nstdev: 526.41\ncv: 61.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1094ad40de5dc1526a5b597176dcb7e85b9b0d6d",
+          "message": "fix(storage,transport): sync the durable mark's directory; MTU override ceiling 6550 (#754)\n\n- The durable mark was created without syncing its directory, so a power\n  loss could drop the file and with it the repair rule it enables for a\n  shard's first segment. MarkFile::open now syncs the directory.\n- A GSO batch of 10 segments is one UDP datagram, whose payload is at most\n  65507 bytes over IPv4; 10 x 6553 exceeds that. The Linux override ceiling\n  is now 6550 and the test counts the IP and UDP headers.\n- Correct the commit-offset comment: an offset read back behind after a\n  crash weakens the truncation guard rather than tightening it.\n\nSpec-Unaffected: storage file durability and a transport MTU bound; no lease, quorum mark, report, promotion or handoff change.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T07:37:46-07:00",
+          "tree_id": "da6a86650e0e74645ddbb80b8a8a6831912cbb56",
+          "url": "https://github.com/gabloe/felix/commit/1094ad40de5dc1526a5b597176dcb7e85b9b0d6d"
+        },
+        "date": 1790520054194,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 170,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 170.00\nmean: 169.80\nstdev: 0.84\ncv: 0.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 209,
+            "range": "4.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 209.00\nmean: 210.00\nstdev: 4.36\ncv: 2.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 245,
+            "range": "10.08",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 245.00\nmean: 245.80\nstdev: 10.08\ncv: 4.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 203,
+            "range": "6.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 203.00\nmean: 205.20\nstdev: 6.14\ncv: 2.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 397,
+            "range": "271.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 397.00\nmean: 529.60\nstdev: 271.56\ncv: 51.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 593,
+            "range": "1004.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 593.00\nmean: 1265.20\nstdev: 1004.48\ncv: 79.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
