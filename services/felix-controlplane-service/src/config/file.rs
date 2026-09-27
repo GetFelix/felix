@@ -16,7 +16,7 @@ use super::{
 /// no error, and an instance listening somewhere they did not ask for. A typo
 /// inside `postgres:` is just as silent, which is why the nested ones carry it
 /// too.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ControlPlaneConfigOverride {
     bind_addr: Option<String>,
@@ -38,7 +38,7 @@ pub(super) struct ControlPlaneConfigOverride {
     shutdown_predrain_ms: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NodeLivenessOverride {
     heartbeat_interval_ms: Option<u64>,
@@ -47,13 +47,13 @@ struct NodeLivenessOverride {
     shard_reconcile_interval_ms: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StorageOverride {
     backend: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PostgresOverride {
     url: Option<String>,
@@ -62,7 +62,7 @@ struct PostgresOverride {
     acquire_timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BootstrapOverride {
     enabled: Option<bool>,
