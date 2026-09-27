@@ -10,7 +10,7 @@ use super::*;
 use crate::raft::{AppStateMachine, RaftHandle, RaftSettings};
 use crate::store::StoreConfig;
 
-async fn single_node_store(dir: &std::path::Path) -> Arc<RaftStore> {
+pub(super) async fn single_node_store(dir: &std::path::Path) -> Arc<RaftStore> {
     let inner = Arc::new(InMemoryStore::new(StoreConfig {
         changes_limit: 100,
         change_retention_max_rows: Some(1_000),
@@ -84,52 +84,20 @@ async fn satisfies_the_placement_contract() {
     crate::store::contract::placement::run_placement_contract(store.clone(), store).await;
 }
 
-/// Under Raft the lease is leadership: whoever the gate confirmed takes it at
-/// once, without waiting for the last leader's lease to run out, and a step
-/// the last leader planned is fenced once it has.
+/// The lease expires as it does on the other backends, even though its
+/// renewals are the leader's soft state.
 #[tokio::test]
-async fn the_confirmed_leader_takes_the_placement_lease_at_once() {
+async fn satisfies_the_expiring_lease_contract() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = single_node_store(dir.path()).await;
-    crate::store::contract::shards::seed(store.as_ref()).await;
+    crate::store::contract::placement::run_expiring_lease_contract(store.clone(), store).await;
+}
 
-    let old = store
-        .acquire_placement_lease("old-leader", 60_000)
-        .await
-        .expect("old")
-        .expect("granted");
-    assert!(old.taken);
-    let renewed = store
-        .acquire_placement_lease("old-leader", 60_000)
-        .await
-        .expect("renew")
-        .expect("granted");
-    assert_eq!(
-        renewed,
-        crate::store::PlacementLease {
-            token: old.token,
-            taken: false
-        }
-    );
-
-    let new = store
-        .acquire_placement_lease("new-leader", 60_000)
-        .await
-        .expect("new")
-        .expect("the leader is never refused");
-    assert!(new.taken);
-    assert_eq!(new.token, old.token + 1);
-    assert_eq!(
-        store
-            .put_shard_assignment_if(
-                crate::store::contract::shards::assignment(0, "broker-x"),
-                None,
-                old.token,
-            )
-            .await
-            .expect("late write"),
-        AssignmentWrite::Fenced { token: new.token },
-    );
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn satisfies_the_refresh_token_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    crate::store::contract::refresh_tokens::run_refresh_contract(store).await;
 }
 
 /// A snapshot carries the token and holder, so a replica restored from one

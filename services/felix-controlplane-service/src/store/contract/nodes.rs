@@ -70,7 +70,7 @@ async fn concurrent_sweeps_expire_a_node_exactly_once(store: Arc<dyn ControlPlan
     const SWEEPERS: usize = 6;
 
     clear(store.as_ref()).await;
-    let mut cutoff = 0;
+    let mut cutoff = past_every_window(store.as_ref()).await;
     for i in 0..NODES {
         let registered = store
             .register_node(node(&format!("broker-{i:03}"), 7400 + i))
@@ -177,6 +177,15 @@ async fn a_snapshot_taken_under_concurrent_writes_loses_nothing(store: Arc<dyn C
             "a snapshot at next_seq={since} plus the changes after it lost a node",
         );
     }
+}
+
+/// A cutoff no node can be fresh by: a minute past the store's clock.
+///
+/// Not just past the stored heartbeats. The Raft leader counts the moment it
+/// began leading as a heartbeat from every node, so a cutoff that only clears
+/// the fixture's timestamps would expire nothing there.
+async fn past_every_window(store: &dyn ControlPlaneStore) -> u64 {
+    store.now_millis().await.expect("store clock") + 60_000
 }
 
 async fn clear(store: &dyn ControlPlaneStore) {
@@ -593,12 +602,14 @@ async fn a_heartbeat_does_not_revive_a_down_node(store: &dyn ControlPlaneStore) 
 
 async fn expiry_moves_only_stale_serving_nodes(store: &dyn ControlPlaneStore) {
     clear(store).await;
-    let base = node("broker-fresh", 7301).status.last_heartbeat_at_millis;
+    // Ahead of the store's clock, so "fresh" and "stale" are decided by these
+    // timestamps and not by when a Raft leader started judging.
+    let base = past_every_window(store).await + 3_600_000;
 
-    store
-        .register_node(node("broker-stale", 7300))
-        .await
-        .expect("register");
+    let mut stale = node("broker-stale", 7300);
+    stale.status.last_heartbeat_at_millis = base;
+    store.register_node(stale).await.expect("register");
+
     let mut fresh = node("broker-fresh", 7301);
     fresh.status.last_heartbeat_at_millis = base + 10_000;
     store.register_node(fresh).await.expect("register");
@@ -648,7 +659,8 @@ async fn expiry_is_idempotent_across_instances(store: &dyn ControlPlaneStore) {
         .register_node(node("broker-a", 7001))
         .await
         .expect("register");
-    let cutoff = registered.status.last_heartbeat_at_millis + 1;
+    let cutoff =
+        (registered.status.last_heartbeat_at_millis + 1).max(past_every_window(store).await);
     let since = store.node_snapshot().await.expect("snapshot").next_seq;
 
     assert_eq!(

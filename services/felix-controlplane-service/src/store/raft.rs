@@ -12,10 +12,15 @@
 //! promise the HTTP API makes for the Postgres backend behind a load
 //! balancer.
 //!
+//! Heartbeats, expiry and the placement lease are the exception: they are
+//! the leader's soft state (`soft_state`), asked of the leader rather than
+//! proposed, and only their consequences reach the log.
+//!
 //! Nothing in this file interprets a command. It is a typed shim between
 //! two vocabularies that must not drift: the store traits on one side, the
 //! versioned command set on the other.
 pub mod command;
+mod soft_state;
 pub mod state_machine;
 
 use std::sync::Arc;
@@ -32,9 +37,10 @@ use crate::model::{
     ShardAssignmentChange, ShardKey, Stream, StreamChange, StreamKey, StreamPatchRequest, Tenant,
     TenantChange,
 };
-use crate::raft::RaftHandle;
+use crate::raft::{AskLeaderError, RaftHandle};
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{MetaCommand, MetaResponse, decode_result, encode_command};
+use crate::store::raft::soft_state::{LeaderRequest, SoftState};
 use crate::store::raft::state_machine::MetadataStateMachine;
 use crate::store::{
     AssignmentWrite, AuthStore, ChangeSet, ControlPlaneStore, PlacementLease, ReportWrite,
@@ -44,11 +50,19 @@ use crate::store::{
 pub struct RaftStore {
     handle: RaftHandle,
     machine: Arc<MetadataStateMachine>,
+    soft: Arc<SoftState>,
 }
 
 impl RaftStore {
+    /// Also registers this member's leader service with `handle`, so build
+    /// one store per handle.
     pub fn new(handle: RaftHandle, machine: Arc<MetadataStateMachine>) -> Self {
-        Self { handle, machine }
+        let soft = SoftState::install(handle.clone(), Arc::clone(&machine));
+        Self {
+            handle,
+            machine,
+            soft,
+        }
     }
 
     /// The local applied state, for reads.
@@ -71,6 +85,21 @@ impl RaftStore {
         match self.propose(command).await? {
             MetaResponse::SigningKeys { keys } => Ok(keys),
             _ => Err(unexpected_shape("signing keys")),
+        }
+    }
+
+    /// Ask the leader, wherever it is. `None` when the leader predates
+    /// leader-only requests, which only happens part-way through a rolling
+    /// upgrade; the caller then falls back to the log.
+    async fn ask_leader(&self, request: LeaderRequest) -> StoreResult<Option<MetaResponse>> {
+        let bytes = serde_json::to_vec(&request)?;
+        match self.handle.ask_leader(bytes).await {
+            Ok(bytes) => {
+                let result = decode_result(&bytes).map_err(StoreError::from)?;
+                result.map(Some).map_err(StoreError::from)
+            }
+            Err(AskLeaderError::Unsupported) => Ok(None),
+            Err(AskLeaderError::Failed(err)) => Err(StoreError::Unexpected(err)),
         }
     }
 }
@@ -227,12 +256,23 @@ impl ControlPlaneStore for RaftStore {
         }
     }
 
+    /// On the leader, with the latest heartbeat it has seen; elsewhere, as
+    /// last checkpointed into the log.
     async fn get_node(&self, node_id: &str) -> StoreResult<Node> {
-        self.local().get_node(node_id).await
+        self.local()
+            .get_node(node_id)
+            .await
+            .map(|node| self.soft.overlay(node))
     }
 
     async fn list_nodes(&self) -> StoreResult<Vec<Node>> {
-        self.local().list_nodes().await
+        Ok(self
+            .local()
+            .list_nodes()
+            .await?
+            .into_iter()
+            .map(|node| self.soft.overlay(node))
+            .collect())
     }
 
     async fn patch_node(&self, node_id: &str, patch: NodePatchRequest) -> StoreResult<Node> {
@@ -256,12 +296,25 @@ impl ControlPlaneStore for RaftStore {
         .map(|_| ())
     }
 
+    /// Soft state on the leader, not a log entry; `at_millis` is ignored in
+    /// favour of the leader's clock.
     async fn record_node_heartbeat(
         &self,
         node_id: &str,
         incarnation: u64,
         at_millis: u64,
     ) -> StoreResult<Node> {
+        match self
+            .ask_leader(LeaderRequest::Heartbeat {
+                node_id: node_id.to_string(),
+                incarnation,
+            })
+            .await?
+        {
+            Some(MetaResponse::Node { node }) => return Ok(node),
+            Some(_) => return Err(unexpected_shape("node")),
+            None => {}
+        }
         match self
             .propose(MetaCommand::RecordNodeHeartbeat {
                 node_id: node_id.to_string(),
@@ -275,7 +328,19 @@ impl ControlPlaneStore for RaftStore {
         }
     }
 
+    /// Judged by the leader from what it has heard since it began leading;
+    /// see `soft_state`.
     async fn expire_stale_nodes(&self, expiry_before_millis: u64) -> StoreResult<Vec<Node>> {
+        match self
+            .ask_leader(LeaderRequest::ExpireStaleNodes {
+                expiry_before_millis,
+            })
+            .await?
+        {
+            Some(MetaResponse::Nodes { nodes }) => return Ok(nodes),
+            Some(_) => return Err(unexpected_shape("nodes")),
+            None => {}
+        }
         match self
             .propose(MetaCommand::ExpireStaleNodes {
                 expiry_before_millis,
@@ -410,14 +475,31 @@ impl ControlPlaneStore for RaftStore {
         self.local().placement_token().await
     }
 
-    /// The caller is the confirmed leader (`LeadershipGate`), so it takes the
-    /// lease whatever the expiry. Proposed only when the holder changes: a
-    /// renewal needs no log entry, since nobody else takes a lease here.
+    /// Expires like the other backends' lease, by the leader's clock, but a
+    /// renewal is leader soft state: only a change of holder is proposed. A
+    /// new leader counts a lease it has not seen renewed as renewed when it
+    /// took over.
     async fn acquire_placement_lease(
         &self,
         holder: &str,
-        _ttl_millis: u64,
+        ttl_millis: u64,
     ) -> StoreResult<Option<PlacementLease>> {
+        match self
+            .ask_leader(LeaderRequest::AcquirePlacementLease {
+                holder: holder.to_string(),
+                ttl_millis,
+            })
+            .await?
+        {
+            Some(MetaResponse::PlacementLease { token, taken }) => {
+                return Ok(Some(PlacementLease { token, taken }));
+            }
+            Some(MetaResponse::NoPlacementLease) => return Ok(None),
+            Some(_) => return Err(unexpected_shape("placement lease")),
+            None => {}
+        }
+        // A leader from before leader-only requests: it takes the lease at
+        // once, as that build did.
         if self.local().placement_holder().await.as_deref() == Some(holder) {
             return Ok(Some(PlacementLease {
                 token: self.local().placement_token().await?,
@@ -437,10 +519,12 @@ impl ControlPlaneStore for RaftStore {
         }
     }
 
-    /// Nothing to give up: the next leader takes the lease when it is
-    /// confirmed.
-    async fn release_placement_lease(&self, _holder: &str) -> StoreResult<()> {
-        Ok(())
+    async fn release_placement_lease(&self, holder: &str) -> StoreResult<()> {
+        self.ask_leader(LeaderRequest::ReleasePlacementLease {
+            holder: holder.to_string(),
+        })
+        .await
+        .map(|_| ())
     }
 
     async fn tenant_exists(&self, tenant_id: &str) -> StoreResult<bool> {

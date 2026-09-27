@@ -143,16 +143,25 @@ commits on a majority, applies, and answers. Clients keep talking to one
 load-balanced URL. Forwarding is invisible, exactly as it is for
 broker-to-broker publishes on the data plane.
 
-Heartbeats go through the log like everything else. The volume argument:
-tens of brokers at one heartbeat per 5s is single-digit commands per second;
-even hundreds of brokers cost tens per second, on entries of a few dozen
-bytes. If that ever dominates, the answer is revisiting liveness (see the
-SWIM decision), not carving a side channel that would give the cluster two
-disagreeing views of membership. Heartbeats keep their existing rule of
-publishing no change-feed event; the state machine updates the row silently.
-Replicating them matters for exactly one reason: the expiry sweep on a
-newly elected leader must see recent heartbeat times, or a leader change
-would look like every broker going silent at once and expire the fleet.
+### Liveness is leader soft state
+
+Heartbeats do not go through the log. Each one would be an fsync on a
+majority for a fact that is stale seconds later. The leader keeps the last
+heartbeat per node in memory, aged on its monotonic clock, and answers a
+heartbeat only after a read-index round confirms it still leads, so a
+partitioned ex-leader cannot extend a broker's lease. A follower forwards
+heartbeats to the leader (`/internal/raft/leader`). If the leader is an older
+build without that route, the follower falls back to the old log command.
+
+The log carries only the consequences. `ExpireNodes` names the nodes the
+leader judged stale, each at an incarnation. `CheckpointHeartbeats`, written
+at most every 5 s for the whole fleet, keeps node listings on followers
+roughly current. A new leader starts knowing nothing and treats its own start
+as a heartbeat from every node. It expires nobody until a full window has
+passed under it, and its view resets on every term change. The placement
+lease works the same way: renewals are soft state, only a change of holder is
+written, and a new leader counts the recorded holder as renewed when it took
+over.
 
 ### Reads: local, because the contract already allows it
 
@@ -459,10 +468,9 @@ until the roll is done.
   apply).
 - **The contract suites run against the Raft backend** as they run against
   memory and Postgres (`contract::nodes`, `contract::shards`,
-  `contract::signing_keys`, `contract::placement`) — that is what the trait seam
-  is for. Two do not yet: the refresh-token contract and the expiring placement
-  lease contract run against memory and Postgres only, and there are no
-  contracts for tenants, streams, or RBAC on any backend.
+  `contract::signing_keys`, `contract::placement` including the expiring
+  lease, `contract::refresh_tokens`) — that is what the trait seam is for.
+  There are no contracts for tenants, streams, or RBAC on any backend yet.
 - **`rolling_restart.rs`, Raft variant**: three instances, no Postgres,
   same zero-failed-calls assertion, plus a hard kill of the leader
   specifically.

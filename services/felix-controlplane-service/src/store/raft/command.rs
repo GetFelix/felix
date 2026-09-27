@@ -270,6 +270,34 @@ pub enum MetaCommand {
     PurgeExpiredRefreshTokens {
         before_secs: i64,
     },
+    /// Mark these nodes down, each only while it is still serving at the
+    /// incarnation named. Heartbeats are the leader's soft state rather than
+    /// log entries, so the leader decides who is stale and the log carries
+    /// the decision, not a cutoff for replicas to judge against.
+    ExpireNodes {
+        nodes: Vec<NodeIncarnation>,
+    },
+    /// The last heartbeat the leader saw from each node, recorded now and
+    /// then so that node listings on followers do not freeze at registration.
+    /// Never moves a stored time backwards, and never changes a lifecycle.
+    CheckpointHeartbeats {
+        beats: Vec<HeartbeatSeen>,
+    },
+}
+
+/// A node, at the incarnation a decision about it was made against.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeIncarnation {
+    pub node_id: String,
+    pub incarnation: u64,
+}
+
+/// One node's last heartbeat as the leader saw it, by the leader's clock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeartbeatSeen {
+    pub node_id: String,
+    pub incarnation: u64,
+    pub at_millis: u64,
 }
 
 /// What a command returns, mirroring the store method it stands for.
@@ -328,6 +356,8 @@ pub enum MetaResponse {
     /// `RecordReplicaReport` kept the report already held. A stored report
     /// answers `Unit`, so an older leader's answer still reads as stored.
     StaleReport,
+    /// The placement lease is held by someone else and has not expired.
+    NoPlacementLease,
 }
 
 /// `StoreError`, flattened into something that serializes and compares.

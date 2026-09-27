@@ -1,8 +1,8 @@
 //! The server half of the Raft transport: three POST routes handing each
 //! RPC to the local node and shipping its whole `Result` back as JSON —
 //! the shape [`super::network`] expects on the other side — plus the
-//! proposal route and the two a member uses to enter the group
-//! ([`super::join`]).
+//! proposal route, the leader-only route ([`super::leader`]), and the two a
+//! member uses to enter the group ([`super::join`]).
 //!
 //! Served on the peer listener only, behind [`super::peer::require_peer`]:
 //! `propose` alone can replace the whole store, so nothing here is reachable
@@ -27,6 +27,7 @@ pub(super) fn router(handle: super::RaftHandle) -> Router {
         .route("/internal/raft/vote", post(vote))
         .route("/internal/raft/install-snapshot", post(install_snapshot))
         .route("/internal/raft/propose", post(propose))
+        .route(super::leader::LEADER_ROUTE, post(leader_request))
         .route("/internal/raft/standing", get(standing))
         .route("/internal/raft/catch-up-target", get(catch_up_target))
         // Axum's default body limit (2MB) is below openraft's default
@@ -51,6 +52,18 @@ async fn propose(State(handle): State<super::RaftHandle>, body: axum::body::Byte
     match handle.write(body.to_vec()).await {
         Ok(bytes) => (StatusCode::OK, bytes).into_response(),
         Err(err) => (StatusCode::SERVICE_UNAVAILABLE, format!("{err:#}")).into_response(),
+    }
+}
+
+/// A leader-only request forwarded by a follower. 503 from a member that
+/// does not lead, so the sender asks again once it knows who does.
+async fn leader_request(
+    State(handle): State<super::RaftHandle>,
+    body: axum::body::Bytes,
+) -> Response {
+    match handle.serve_leader_request(&body).await {
+        Some(bytes) => (StatusCode::OK, bytes).into_response(),
+        None => (StatusCode::SERVICE_UNAVAILABLE, "not the raft leader").into_response(),
     }
 }
 

@@ -34,6 +34,8 @@ pub struct RaftHandle {
     /// False while this member withholds its vote (`super::join`): vote
     /// requests are refused and it does not stand for election.
     pub(super) may_vote: Arc<AtomicBool>,
+    /// Answers `ask_leader` on this member; set once by the application.
+    pub(super) leader_service: Arc<std::sync::OnceLock<Arc<dyn super::LeaderService>>>,
 }
 
 impl RaftHandle {
@@ -128,6 +130,7 @@ impl RaftHandle {
             app,
             db: Arc::downgrade(&db),
             may_vote: Arc::new(AtomicBool::new(may_vote)),
+            leader_service: Arc::new(std::sync::OnceLock::new()),
         })
     }
 

@@ -11,6 +11,8 @@
 //! - `handle` — starting a member, forming and changing the group, stopping.
 //! - `proposal` — committing a command from any member, forwarding to the
 //!   leader when this one is not it.
+//! - `leader` — requests only the leader answers, from state it keeps
+//!   outside the log, forwarded there from any member.
 //! - `join` — entering the group at startup: forming it on first boot, or
 //!   catching up without a vote after starting empty.
 //! - `health` — whether this member is fit to serve, and its gauges.
@@ -28,6 +30,7 @@ mod handle;
 mod health;
 mod http;
 mod join;
+mod leader;
 mod network;
 mod peer;
 mod proposal;
@@ -35,6 +38,7 @@ mod store;
 mod types;
 
 pub use handle::RaftHandle;
+pub use leader::{AskLeaderError, LeaderService, NotLeader};
 pub use peer::{CLUSTER_ID_HEADER, PeerSecurity, PeerTls};
 
 use std::collections::BTreeMap;
