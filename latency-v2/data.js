@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790524159644,
+  "lastUpdate": 1790524369978,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -22374,6 +22374,72 @@ window.BENCHMARK_DATA = {
             "range": "184.66",
             "unit": "us",
             "extra": "trials: 5\nmedian: 564.00\nmean: 631.80\nstdev: 184.66\ncv: 29.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e7c4c38f1963bf718d3d3b078138dd9af4424acd",
+          "message": "fix(storage): drop empty mid-chain segments from lost roll races; guard retired repair with the mark (#759)\n\nA background roll that loses the race to an inline one deletes its blank\nsegment without a directory sync, so a power loss can bring it back as a\n0-byte file between two installed segments, and recovery refused to start\n(\"truncated: needed 32 bytes, 0 available\"). Recovery now deletes a\nsegment shorter than a header anywhere in the chain when its neighbours\nstill meet exactly; a segment that lost real records stays a fatal gap.\nThe discard itself now syncs the directory.\n\nrepair_unsealed_retired no longer cuts a retired segment below the\ndurable mark, which also keeps it from deleting an active segment the\nmark vouches for.\n\nThe mark file's directory entry is synced at open, so a fresh shard's\nfirst segment has a mark after a power loss.\n\nThe power-loss suite runs FELIX_POWER_LOSS_SEEDS workload seeds per test\n(default 8) from FELIX_POWER_LOSS_SEED (default 0x5eed0001), and the\nFsyncMode::None case is no longer ignored.\n\nSpec-Unaffected: storage recovery only; no lease, quorum, report, promotion or handoff semantics change.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T08:46:43-07:00",
+          "tree_id": "ac46553861df199ad533433894cb6a224870d9ce",
+          "url": "https://github.com/gabloe/felix/commit/e7c4c38f1963bf718d3d3b078138dd9af4424acd"
+        },
+        "date": 1790524367325,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 169,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 169.00\nmean: 168.80\nstdev: 0.84\ncv: 0.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 209,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 209.00\nmean: 209.20\nstdev: 1.92\ncv: 0.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 269,
+            "range": "417.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 269.00\nmean: 446.20\nstdev: 417.80\ncv: 93.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 201,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 201.40\nstdev: 1.67\ncv: 0.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 407,
+            "range": "5.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 407.00\nmean: 406.80\nstdev: 5.26\ncv: 1.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 684,
+            "range": "327.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 684.00\nmean: 761.60\nstdev: 327.04\ncv: 42.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
