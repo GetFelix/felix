@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790515271614,
+  "lastUpdate": 1790515480064,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -17368,6 +17368,58 @@ window.BENCHMARK_DATA = {
             "range": "13785.81",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 941465.02\nmean: 942396.90\nstdev: 13785.81\ncv: 1.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "01a3e6d954d7a5164d569cbaff5407f4840ea633",
+          "message": "fix(kafka): cap decoder preallocation at the bytes left in the frame (#752)\n\nkafka-protocol 0.18 reserves Vec capacity for a client-supplied array\ncount before reading any element. A request of a few dozen bytes can\ntherefore ask for well over 100 GB and abort the broker, before\nauthentication. Vendor the crate with each reservation (arrays, compact\narrays, record headers) capped at the buffer's remaining bytes; every\nelement takes at least one byte, so decoding is unchanged.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T06:17:16-07:00",
+          "tree_id": "615ee4a3a47824a84b12bed2368bc0c062877503",
+          "url": "https://github.com/gabloe/felix/commit/01a3e6d954d7a5164d569cbaff5407f4840ea633"
+        },
+        "date": 1790515479574,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 393226.77,
+            "range": "12492.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 393226.77\nmean: 389296.50\nstdev: 12492.31\ncv: 3.21%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 393226.77,
+            "range": "12492.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 393226.77\nmean: 389296.50\nstdev: 12492.31\ncv: 3.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93021.41,
+            "range": "673.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93021.41\nmean: 93197.96\nstdev: 673.22\ncv: 0.72%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 930214.15,
+            "range": "6732.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 930214.15\nmean: 931979.60\nstdev: 6732.20\ncv: 0.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
