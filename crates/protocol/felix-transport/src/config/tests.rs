@@ -172,7 +172,10 @@ fn the_default_mtu_bound_survives_a_larger_batch() {
 #[test]
 fn an_mtu_override_is_clamped_below_the_gso_ceiling() {
     let ceiling = mtu_override_ceiling_for(false);
-    assert!(u32::from(ceiling) * QUINN_MAX_TRANSMIT_SEGMENTS <= IP_DATAGRAM_MAX);
+    // The batch is one UDP datagram, so the IPv4 and UDP headers come out of
+    // the 65535: 6553 * 10 fits the IP limit but not the payload.
+    let udp_payload_max = IP_DATAGRAM_MAX - 20 - 8;
+    assert!(u32::from(ceiling) * QUINN_MAX_TRANSMIT_SEGMENTS <= udp_payload_max);
     assert_eq!(
         clamp_mtu_override("FELIX_MTU_UPPER_BOUND", 16384, ceiling),
         ceiling
