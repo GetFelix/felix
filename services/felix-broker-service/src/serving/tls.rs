@@ -202,13 +202,14 @@ pub(crate) fn check_subject_binding(
     let Some(leaf) = peer_certs.and_then(|certs| certs.first()) else {
         return Ok(());
     };
-    let name = rustls::pki_types::ServerName::try_from(subject).map_err(|_| {
-        format!("the token's subject {subject:?} is not a name a certificate can carry")
-    })?;
+    // The messages name no values: they end up in logs, and the subject comes
+    // from the token.
+    let name = rustls::pki_types::ServerName::try_from(subject)
+        .map_err(|_| "the token's subject is not a name a certificate can carry".to_string())?;
     let cert = webpki::EndEntityCert::try_from(leaf)
         .map_err(|err| format!("the client certificate does not parse: {err}"))?;
     cert.verify_is_valid_for_subject_name(&name)
-        .map_err(|_| format!("the client certificate is not issued to {subject:?}"))
+        .map_err(|_| "the client certificate is not issued to the token's subject".to_string())
 }
 
 /// Same provider as the peer transport; see `peer::tls::provider`.
