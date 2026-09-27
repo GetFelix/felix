@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790516075895,
+  "lastUpdate": 1790520058512,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -17472,6 +17472,58 @@ window.BENCHMARK_DATA = {
             "range": "7035.67",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 933310.90\nmean: 931034.84\nstdev: 7035.67\ncv: 0.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1094ad40de5dc1526a5b597176dcb7e85b9b0d6d",
+          "message": "fix(storage,transport): sync the durable mark's directory; MTU override ceiling 6550 (#754)\n\n- The durable mark was created without syncing its directory, so a power\n  loss could drop the file and with it the repair rule it enables for a\n  shard's first segment. MarkFile::open now syncs the directory.\n- A GSO batch of 10 segments is one UDP datagram, whose payload is at most\n  65507 bytes over IPv4; 10 x 6553 exceeds that. The Linux override ceiling\n  is now 6550 and the test counts the IP and UDP headers.\n- Correct the commit-offset comment: an offset read back behind after a\n  crash weakens the truncation guard rather than tightening it.\n\nSpec-Unaffected: storage file durability and a transport MTU bound; no lease, quorum mark, report, promotion or handoff change.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T07:37:46-07:00",
+          "tree_id": "da6a86650e0e74645ddbb80b8a8a6831912cbb56",
+          "url": "https://github.com/gabloe/felix/commit/1094ad40de5dc1526a5b597176dcb7e85b9b0d6d"
+        },
+        "date": 1790520058008,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 404134.17,
+            "range": "17809.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 404134.17\nmean: 395836.05\nstdev: 17809.88\ncv: 4.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 404134.17,
+            "range": "17809.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 404134.17\nmean: 395836.05\nstdev: 17809.88\ncv: 4.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93059.21,
+            "range": "793.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93059.21\nmean: 93054.31\nstdev: 793.13\ncv: 0.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 930592.08,
+            "range": "7931.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 930592.08\nmean: 930543.14\nstdev: 7931.27\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
