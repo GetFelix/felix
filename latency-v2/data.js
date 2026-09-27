@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790489574540,
+  "lastUpdate": 1790515269248,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -21978,6 +21978,72 @@ window.BENCHMARK_DATA = {
             "range": "127.57",
             "unit": "us",
             "extra": "trials: 5\nmedian: 530.00\nmean: 572.20\nstdev: 127.57\ncv: 22.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8f044ef9bba8315534907f99213988e0b290ab58",
+          "message": "fix(storage): durable mark, lazy sealed indexes with an fd LRU, retention off the segment lock (#746)\n\n* fix(storage): durable mark, lazy sealed indexes with an fd LRU, retention off the lock, DiskLog::close\n\n- durable.mark records how far the active segment was synced; recovery\n  repairs any damage past it (stale non-zero blocks after power loss).\n- Sealed segments no longer hold an fd and index from open: loaded on first\n  read into a per-root LRU bounded by max_open_sealed_segments.\n- Retention chooses and unlinks outside the segment lock.\n- DiskLog::close fences all file changes and releases sealed handles.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* test(storage): the durable mark makes Periodic survive any writeback\n\nUn-ignores the two Periodic power-loss tests #742 left ignored; both now\npass. FsyncMode::None still hits a fatal checksum mismatch in the first\nsegment, so that test stays ignored with the current reason.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T06:15:50-07:00",
+          "tree_id": "a6c797f0bb0c8178bfbaca6111e62327a35a3801",
+          "url": "https://github.com/gabloe/felix/commit/8f044ef9bba8315534907f99213988e0b290ab58"
+        },
+        "date": 1790515266999,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 154,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 153.80\nstdev: 0.84\ncv: 0.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 188,
+            "range": "2.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 188.00\nmean: 188.00\nstdev: 2.74\ncv: 1.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 222,
+            "range": "15.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 222.00\nmean: 227.40\nstdev: 15.53\ncv: 6.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 193,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 193.00\nmean: 192.80\nstdev: 0.84\ncv: 0.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 380,
+            "range": "9.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 380.00\nmean: 384.40\nstdev: 9.63\ncv: 2.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 522,
+            "range": "20.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 522.00\nmean: 526.80\nstdev: 20.13\ncv: 3.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
