@@ -56,6 +56,17 @@ impl DurableMark {
         }
     }
 
+    /// How many bytes of segment `id` the mark vouches were synced: all of a
+    /// segment older than the mark's, none of one newer, and none at all
+    /// without a mark. Recovery must not cut a segment below this.
+    pub(crate) fn synced_through(mark: Option<Self>, id: SegmentId) -> u64 {
+        match mark {
+            Some(mark) if id < mark.segment => u64::MAX,
+            Some(mark) if id == mark.segment => mark.synced_bytes,
+            _ => 0,
+        }
+    }
+
     fn encode(&self) -> [u8; MARK_LEN] {
         let mut buf = [0u8; MARK_LEN];
         buf[0..4].copy_from_slice(&MARK_MAGIC.to_be_bytes());

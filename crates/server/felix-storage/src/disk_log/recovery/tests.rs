@@ -620,3 +620,117 @@ fn a_log_recovered_from_a_torn_tail_accepts_new_appends() {
     assert_eq!(reread.active.next_offset(), tail + 1);
     assert_eq!(reread.truncated_bytes, 0);
 }
+
+/// Make room for a segment between the last two, so a test can plant one
+/// mid-chain. Returns the freed id.
+fn open_a_slot_before_the_active_segment(dir: &TempDir) -> SegmentId {
+    let active = *discover_segment_ids(dir.path())
+        .expect("ids")
+        .last()
+        .expect("ids");
+    for name in [segment_file_name, index_file_name] {
+        let from = dir.path().join(name(active));
+        if from.exists() {
+            std::fs::rename(&from, dir.path().join(name(active + 1))).expect("rename");
+        }
+    }
+    active
+}
+
+/// A background roll that lost the race to an inline one deleted its blank
+/// segment, and a power loss undid the unlink: an empty file now sits between
+/// two installed segments. It never held a record, so recovery drops it.
+#[test]
+fn an_empty_segment_left_mid_chain_by_a_lost_roll_race_is_discarded() {
+    let dir = tempdir().expect("dir");
+    let tail = populate(&dir, 20);
+    let blank = open_a_slot_before_the_active_segment(&dir);
+    std::fs::File::create(segment_path(dir.path(), blank)).expect("plant");
+
+    let recovered = reopen(&dir).expect("an empty mid-chain segment is not corruption");
+    assert_eq!(recovered.active.next_offset(), tail);
+    assert!(!segment_path(dir.path(), blank).exists());
+}
+
+/// A sealed segment that lost its bytes is not a blank preparation: dropping
+/// it would leave a hole where its records were, so it is still fatal.
+#[test]
+fn a_sealed_segment_that_lost_its_bytes_is_still_fatal() {
+    let dir = tempdir().expect("dir");
+    populate(&dir, 20);
+    let ids = discover_segment_ids(dir.path()).expect("ids");
+    assert!(ids.len() > 2, "need an interior segment");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(segment_path(dir.path(), ids[1]))
+        .expect("open")
+        .set_len(0)
+        .expect("truncate");
+
+    reopen(&dir).expect_err("records were lost");
+    assert!(segment_path(dir.path(), ids[1]).exists());
+}
+
+/// Zero the retired segment's last record, as a power loss mid-seal would.
+/// Returns the retired and active ids and the retired segment's length.
+fn tear_the_retired_segment(dir: &TempDir) -> (SegmentId, SegmentId, u64) {
+    let ids = discover_segment_ids(dir.path()).expect("ids");
+    let (retired, active) = (ids[ids.len() - 2], ids[ids.len() - 1]);
+    let path = segment_path(dir.path(), retired);
+    let mut bytes = std::fs::read(&path).expect("read");
+    let len = bytes.len();
+    let record = crate::segment::format::record_len(9, &Default::default()) as usize;
+    bytes[len - record..].fill(0);
+    std::fs::write(&path, &bytes).expect("write");
+    (retired, active, len as u64)
+}
+
+fn record_mark(dir: &TempDir, segment: SegmentId, synced_bytes: u64) {
+    crate::disk_log::durable_mark::MarkFile::open(dir.path())
+        .expect("mark")
+        .record(DurableMark {
+            segment,
+            synced_bytes,
+        })
+        .expect("record");
+}
+
+/// The mark says the active segment's records were synced, and every flush
+/// syncs the retired segment first. A torn retired segment is then corruption,
+/// and deleting the active segment to "repair" it would drop acked records.
+#[test]
+fn a_torn_retired_segment_does_not_delete_a_synced_active_segment() {
+    let dir = tempdir().expect("dir");
+    populate(&dir, 12);
+    let (retired, active, retired_len) = tear_the_retired_segment(&dir);
+    let active_len = std::fs::metadata(segment_path(dir.path(), active))
+        .expect("meta")
+        .len();
+    assert!(
+        active_len > SEGMENT_HEADER_LEN,
+        "the active segment holds records"
+    );
+    record_mark(&dir, active, active_len);
+
+    reopen(&dir).expect_err("synced records would be discarded");
+    let len_of = |id| {
+        std::fs::metadata(segment_path(dir.path(), id))
+            .expect("still there")
+            .len()
+    };
+    assert_eq!(len_of(active), active_len);
+    assert_eq!(len_of(retired), retired_len);
+}
+
+/// Nor may the retired segment itself be cut below what the mark vouches for.
+#[test]
+fn a_torn_retired_segment_is_not_cut_below_the_mark() {
+    let dir = tempdir().expect("dir");
+    populate(&dir, 12);
+    let (retired, _, retired_len) = tear_the_retired_segment(&dir);
+    record_mark(&dir, retired, retired_len);
+
+    reopen(&dir).expect_err("synced records would be discarded");
+    let path = segment_path(dir.path(), retired);
+    assert_eq!(std::fs::metadata(path).expect("meta").len(), retired_len);
+}

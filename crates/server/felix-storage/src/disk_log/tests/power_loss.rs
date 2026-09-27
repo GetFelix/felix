@@ -11,7 +11,9 @@
 //! - what recovery kept is a gap-free prefix of what was appended, and the
 //!   repaired log takes appends and reopens.
 //!
-//! Every failure names its seed, which replays the same crash.
+//! Every failure names its seed. The workload races a background roll against
+//! appends and flushes, so a seed replays the same crashes but not always the
+//! same interleaving; that is why each test runs many seeds.
 
 use std::path::Path;
 
@@ -24,6 +26,12 @@ const CRASHES_PER_CHECKPOINT: u64 = 6;
 /// Appends between checkpoints.
 const STEPS_PER_CHECKPOINT: u64 = 7;
 const CHECKPOINTS: u64 = 12;
+/// Workload seeds per test, from `FELIX_POWER_LOSS_SEED` upwards. Eight keeps
+/// the suite to a few seconds; `FELIX_POWER_LOSS_SEEDS` runs more.
+const DEFAULT_SEEDS: u64 = 8;
+/// The first workload seed: the one CI failed on, crash seed `0x5_5eed_0001`
+/// (checkpoint 5, trial 0), when a lost-race preparation came back mid-chain.
+const BASE_SEED: u64 = 0x5eed_0001;
 
 #[derive(Debug, Clone, Copy)]
 struct Scenario {
@@ -190,17 +198,29 @@ async fn verify(
     reopened.shutdown().await.expect("shutdown");
 }
 
-fn scenario(fsync_mode: FsyncMode, background_roll: bool, writeback: Writeback) -> Scenario {
-    // Fixed so CI is reproducible; `FELIX_POWER_LOSS_SEED` explores others.
-    let seed = std::env::var("FELIX_POWER_LOSS_SEED")
-        .ok()
-        .and_then(|seed| seed.parse().ok())
-        .unwrap_or(0x5eed_0001);
-    Scenario {
-        fsync_mode,
-        background_roll,
-        writeback,
-        seed,
+fn env_u64(name: &str) -> Option<u64> {
+    let value = std::env::var(name).ok()?;
+    match value.strip_prefix("0x") {
+        Some(hex) => u64::from_str_radix(hex, 16).ok(),
+        None => value.parse().ok(),
+    }
+}
+
+/// Run the scenario once per seed, sequentially: every run is a real log with
+/// its own observer, and interleaving them would only blur which seed failed.
+async fn run_seeds(fsync_mode: FsyncMode, background_roll: bool, writeback: Writeback) {
+    let base = env_u64("FELIX_POWER_LOSS_SEED").unwrap_or(BASE_SEED);
+    let count = env_u64("FELIX_POWER_LOSS_SEEDS")
+        .unwrap_or(DEFAULT_SEEDS)
+        .max(1);
+    for seed in base..base.saturating_add(count) {
+        run(Scenario {
+            fsync_mode,
+            background_roll,
+            writeback,
+            seed,
+        })
+        .await;
     }
 }
 
@@ -210,40 +230,39 @@ const PERIODIC: FsyncMode = FsyncMode::Periodic {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn on_commit_survives_in_order_writeback() {
-    run(scenario(FsyncMode::OnCommit, false, Writeback::InOrder)).await;
+    run_seeds(FsyncMode::OnCommit, false, Writeback::InOrder).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn on_commit_survives_any_writeback() {
-    run(scenario(FsyncMode::OnCommit, false, Writeback::AnySubset)).await;
+    run_seeds(FsyncMode::OnCommit, false, Writeback::AnySubset).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn on_commit_with_background_roll_survives_any_writeback() {
-    run(scenario(FsyncMode::OnCommit, true, Writeback::AnySubset)).await;
+    run_seeds(FsyncMode::OnCommit, true, Writeback::AnySubset).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn periodic_survives_in_order_writeback() {
-    run(scenario(PERIODIC, true, Writeback::InOrder)).await;
+    run_seeds(PERIODIC, true, Writeback::InOrder).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn periodic_survives_any_writeback() {
-    run(scenario(PERIODIC, false, Writeback::AnySubset)).await;
+    run_seeds(PERIODIC, false, Writeback::AnySubset).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn periodic_with_background_roll_survives_any_writeback() {
-    run(scenario(PERIODIC, true, Writeback::AnySubset)).await;
+    run_seeds(PERIODIC, true, Writeback::AnySubset).await;
 }
 
 /// `None` acknowledges without flushing; only an explicit `sync` makes
 /// anything durable, and that is what the test holds it to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "known failure under FsyncMode::None even with the durable mark: a record checksum mismatch in segment 0 is still fatal (seed 0x5eed0005); see #746"]
 async fn no_fsync_keeps_what_explicit_syncs_covered() {
-    run(scenario(FsyncMode::None, false, Writeback::AnySubset)).await;
+    run_seeds(FsyncMode::None, false, Writeback::AnySubset).await;
 }
 
 /// The same guarantee when flushes go through `io_uring`: the ring is its own
@@ -255,7 +274,7 @@ async fn on_commit_through_io_uring_survives_any_writeback() {
         return;
     }
     let _ring = crate::io::uring_fsync::ForceForTests::hold();
-    run(scenario(FsyncMode::OnCommit, true, Writeback::AnySubset)).await;
+    run_seeds(FsyncMode::OnCommit, true, Writeback::AnySubset).await;
 }
 
 /// Keeps the test above honest about which path ran: with the ring forced,
