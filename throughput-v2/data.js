@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790548564321,
+  "lastUpdate": 1790549458188,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18200,6 +18200,58 @@ window.BENCHMARK_DATA = {
             "range": "8825.51",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 917459.05\nmean: 920901.07\nstdev: 8825.51\ncv: 0.96%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1ce2fbc82a6742b66f63318d7643989cdaa717ec",
+          "message": "fix(groups): settle claims made before a shard moved, failed over or was evicted (#776)\n\nA group's in-flight claims live in memory and do not move with the shard. The\ntracker a new owner builds starts from the durable cursor, so an ack for a\nclaim the old owner handed out just before the fence -- held, then redirected\nto the new owner -- was refused as `stale_claim`. main's CI failed on exactly\nthat (`handoff::writes_of_every_kind_through_a_move_are_never_refused`: \"offset\n2 was not handed out by this group (next is 2)\"), and the status table promises\na group's polls and acks see no refusal through a move. The race is as old as\nthe test (#687); #765's timing changes only made it show.\n\nA tracker now remembers the log tail the first time it sees one. Every claim a\npredecessor could have made is below that, so a settle there is taken; an\noffset written later and not yet polled is still `stale_claim`, and one past\nthe tail is still `invalid_request`. The poll path records the tail itself,\nand the serving layer does before an ack or nack, which may be the first\noperation on the new owner. A claim then skips offsets already settled or in\nplay through a predecessor's claim, so an early ack is not handed out again.\n\nThe trade-off: an ack for an offset below that tail that the consumer never\nreceived now finishes it instead of being refused. The tracker already takes\nan ack from any consumer for any offset it handed out, so this widens what it\ncannot tell apart rather than a check it made.\n\nTests, each failing with its piece reverted:\n- reader: claims from before a reset are acked and nacked out of order, a\n  settled record is not handed out again, and a record written after the\n  reset is still refused;\n- serving: an ack after the tracker is rebuilt lands and moves the cursor; an\n  ack for a record newer than the tracker is `stale_claim`, past the tail\n  `invalid_request`.\n\nSpec-Unaffected: consumer-group claim bookkeeping only; the model has no consumer groups, and replication, leases, fencing and the quorum mark are untouched.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T15:48:25-07:00",
+          "tree_id": "39455615540a3e762f551f0be02aae2d4701d955",
+          "url": "https://github.com/gabloe/felix/commit/1ce2fbc82a6742b66f63318d7643989cdaa717ec"
+        },
+        "date": 1790549457571,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 596556.86,
+            "range": "12221.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 596556.86\nmean: 595571.88\nstdev: 12221.57\ncv: 2.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 596556.86,
+            "range": "12221.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 596556.86\nmean: 595571.88\nstdev: 12221.57\ncv: 2.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 148257.1,
+            "range": "2151.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 148257.10\nmean: 148935.61\nstdev: 2151.94\ncv: 1.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1482570.99,
+            "range": "21519.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1482570.99\nmean: 1489356.15\nstdev: 21519.43\ncv: 1.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
