@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790542304801,
+  "lastUpdate": 1790548564321,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18148,6 +18148,58 @@ window.BENCHMARK_DATA = {
             "range": "23592.43",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 916922.47\nmean: 907185.37\nstdev: 23592.43\ncv: 2.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "84124675ceeaf9a4522e34608602dbbdf5653520",
+          "message": "fix(storage): recover a retired segment cut short mid-seal; sync it before sealing past it (#775)\n\nA background roll installs segment N+1 and seals N afterwards, with no lock\nheld. The two files reach the device independently, so a power loss in that\nwindow can bring N back cut cleanly to its last sync, at a record boundary,\nwhile N+1's records survive. Recovery only accepted a torn tail there, so it\nsaw an offset gap in front of the active segment and refused to start. CI hit\nthis in power_loss::periodic_survives_in_order_writeback (\"offset out of order\n(expected 180, found 184)\", segment 10 at position 0). Nothing past N's last\nsync was reported durable, so recovery now cuts back to N's end and drops N+1,\nunder the same durable-mark guard as the torn-tail repair. A retired segment\nemptied to its header resumes at its base rather than one past it.\n\nThe same window had a second shape. Anything that sealed N+1 while N's seal\nwas still running synced N+1 ahead of N, and a crash could keep N+1 whole\nbehind a gap, which no rule may repair. Three paths did that: an inline roll\npast the overshoot ceiling, `seal`, and the fallback roll in\n`SegmentSet::append`, which checked the plain segment size rather than the\novershoot allowance and so rolled on nearly every append during a seal. The\nfirst two now sync the retired segment first; the third uses the allowance\nthe caller already checked.\n\nTests, each failing with its fix reverted:\n- recovery: a retired segment cut back cleanly, one cut to its header, and one\n  whose active segment the mark vouches for (still refused);\n- power loss, with the background seal parked at a test hook: a crash inside\n  the window recovers; an inline roll and a `seal` in the window never leave a\n  gap before a sealed segment; the new segment overshoots rather than rolls.\n\nSpec-Unaffected: storage recovery and rollover ordering only; the replication model does not describe segment files.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T15:32:45-07:00",
+          "tree_id": "797e4e97992added42bfeff92b69781621093aff",
+          "url": "https://github.com/gabloe/felix/commit/84124675ceeaf9a4522e34608602dbbdf5653520"
+        },
+        "date": 1790548563825,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 371211.25,
+            "range": "19169.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 371211.25\nmean: 370824.60\nstdev: 19169.64\ncv: 5.17%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 371211.25,
+            "range": "19169.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 371211.25\nmean: 370824.60\nstdev: 19169.64\ncv: 5.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 91745.91,
+            "range": "882.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 91745.91\nmean: 92090.11\nstdev: 882.55\ncv: 0.96%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 917459.05,
+            "range": "8825.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 917459.05\nmean: 920901.07\nstdev: 8825.51\ncv: 0.96%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
