@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790488978320,
+  "lastUpdate": 1790489577287,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -17264,6 +17264,58 @@ window.BENCHMARK_DATA = {
             "range": "8650.27",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 939306.92\nmean: 943617.57\nstdev: 8650.27\ncv: 0.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "80cbb899553a48ff5302bbbc511f2696ba35f7c6",
+          "message": "ci/kafka/controlplane: job timeouts, record-batch fuzzing, Postgres URL redaction (#748)\n\n* ci: give every workflow job a timeout-minutes ceiling\n\nA hung test or a broker that never exits otherwise holds a runner for\nGitHub's six-hour default. Ceilings sit well above each job's normal\nrun. scripts/check_workflow_timeouts.py (task ci:timeouts, run in the\ntest job) keeps new jobs from landing without one.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* test(kafka): fuzz the record-batch decoder; split request parsing from dispatch\n\napi::handle is split into parse (header and body into a typed Body, plus\nthe cluster-free group/transaction refusals) and dispatch. peek_header\nreturns an error on a short frame instead of indexing past it.\n\ncrates/server/felix-kafka/fuzz adds the kafka_records target, reached\nthrough a `fuzzing` feature, with committed seeds. api/tests/parse.rs\nchecks that every committed request and record seed decodes, and that\ntruncations and single-byte corruptions are refused without a panic.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(controlplane): redact the Postgres password in config Debug\n\nPostgresConfig prints its URL through redact_postgres_url (userinfo\npassword and a password= query parameter; a non-URL connection string\nis withheld whole). The YAML override structs drop their unused Debug derive. The new test also\ncovers the bootstrap tokens, which main already redacts.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* test(controlplane): redaction test failure messages name the field, not the secret\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-26T22:41:54-07:00",
+          "tree_id": "4dab96d8f7098e7a40766a7be72afade78f69e53",
+          "url": "https://github.com/gabloe/felix/commit/80cbb899553a48ff5302bbbc511f2696ba35f7c6"
+        },
+        "date": 1790489576495,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 392229.89,
+            "range": "17178.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 392229.89\nmean: 396487.56\nstdev: 17178.61\ncv: 4.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 392229.89,
+            "range": "17178.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 392229.89\nmean: 396487.56\nstdev: 17178.61\ncv: 4.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93722.57,
+            "range": "1066.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93722.57\nmean: 93430.57\nstdev: 1066.08\ncv: 1.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 937225.65,
+            "range": "10660.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 937225.65\nmean: 934305.74\nstdev: 10660.83\ncv: 1.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
