@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790549616534,
+  "lastUpdate": 1790549905114,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18304,6 +18304,58 @@ window.BENCHMARK_DATA = {
             "range": "13843.73",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1530388.09\nmean: 1528467.75\nstdev: 13843.73\ncv: 0.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fc00f74ffb129915b7650cf0fa9116785ee84451",
+          "message": "docs(scheduler): say what the fair-queue quantum actually buys (#778)\n\nA 64 x 1 KiB batch costs 65,792 bytes with its job cost, just over the\n64 KiB quantum, so the old claim that one turn covers a typical batch was\nwrong. Alternation still holds because a backlogged tenant keeps its\ndeficit between turns; the comment now says that.\n\nSpec-Unaffected: comment only.",
+          "timestamp": "2026-09-27T15:55:21-07:00",
+          "tree_id": "11d674e8577c476e539351439264051356205e00",
+          "url": "https://github.com/gabloe/felix/commit/fc00f74ffb129915b7650cf0fa9116785ee84451"
+        },
+        "date": 1790549904009,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 546954.91,
+            "range": "21158.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 546954.91\nmean: 536893.60\nstdev: 21158.15\ncv: 3.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 546954.91,
+            "range": "21158.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 546954.91\nmean: 536893.60\nstdev: 21158.15\ncv: 3.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 110945.04,
+            "range": "1648.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 110945.04\nmean: 110211.74\nstdev: 1648.09\ncv: 1.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1109450.36,
+            "range": "16480.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1109450.36\nmean: 1102117.45\nstdev: 16480.85\ncv: 1.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
