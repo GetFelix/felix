@@ -108,8 +108,9 @@ impl RaftBackendConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PostgresConfig {
+    /// Carries the password, so `Debug` prints it redacted.
     pub url: String,
     pub max_connections: u32,
     pub connect_timeout_ms: u64,
@@ -124,6 +125,17 @@ impl Default for PostgresConfig {
             connect_timeout_ms: DEFAULT_PG_CONNECT_TIMEOUT_MS,
             acquire_timeout_ms: DEFAULT_PG_ACQUIRE_TIMEOUT_MS,
         }
+    }
+}
+
+impl std::fmt::Debug for PostgresConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PostgresConfig")
+            .field("url", &redact_postgres_url(&self.url))
+            .field("max_connections", &self.max_connections)
+            .field("connect_timeout_ms", &self.connect_timeout_ms)
+            .field("acquire_timeout_ms", &self.acquire_timeout_ms)
+            .finish()
     }
 }
 
@@ -251,4 +263,45 @@ fn parse_raft_peers(value: &str) -> Result<std::collections::BTreeMap<u64, Strin
         return Err(anyhow!("FELIX_RAFT_PEERS is empty"));
     }
     Ok(peers)
+}
+
+/// A Postgres URL with its password replaced, for logs and `Debug`.
+///
+/// Covers both places libpq takes one: the userinfo
+/// (`postgres://user:secret@host`) and a `password` query parameter. It errs
+/// towards hiding too much: the userinfo ends at the last `@`, so a password
+/// holding an unencoded `/` or `@` is still hidden. Anything that is not a
+/// URL is withheld whole, since a key/value connection string can put the
+/// password anywhere.
+pub(crate) fn redact_postgres_url(url: &str) -> String {
+    const REDACTED: &str = "<redacted>";
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return if url.is_empty() {
+            String::new()
+        } else {
+            REDACTED.to_string()
+        };
+    };
+    let rest = match rest.rsplit_once('@') {
+        Some((userinfo, host)) => match userinfo.split_once(':') {
+            Some((user, _)) => format!("{user}:{REDACTED}@{host}"),
+            None => format!("{userinfo}@{host}"),
+        },
+        None => rest.to_string(),
+    };
+    let mut out = format!("{scheme}://");
+    // The first part is the host and path; the rest are query parameters.
+    for (i, part) in rest.split_inclusive(['?', '&']).enumerate() {
+        let body = part.strip_suffix(['?', '&']).unwrap_or(part);
+        match body.split_once('=') {
+            Some((key, _)) if i > 0 && key.eq_ignore_ascii_case("password") => {
+                out.push_str(key);
+                out.push('=');
+                out.push_str(REDACTED);
+            }
+            _ => out.push_str(body),
+        }
+        out.push_str(&part[body.len()..]);
+    }
+    out
 }

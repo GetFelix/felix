@@ -182,6 +182,10 @@ tasks:
     desc: "Assert every workflow's Rust setup matches rust-toolchain.toml"
     cmds:
       - "python3 scripts/check_workflow_toolchains.py"
+  ci:timeouts:
+    desc: "Assert every workflow job sets timeout-minutes"
+    cmds:
+      - "python3 scripts/check_workflow_timeouts.py"
   ts:packages:
     desc: "Assert the Node client's platform packages match what the release builds"
     cmds:
@@ -416,6 +420,13 @@ tasks:
       - for: ["frame", "internal_message", "binary_payload", "client_message"]
         cmd: >
           cd crates/protocol/felix-wire/fuzz &&
+          mkdir -p corpus/{{.ITEM}} &&
+          cargo +nightly fuzz run {{.ITEM}} corpus/{{.ITEM}} seeds/{{.ITEM}}
+          -- -max_total_time={{.SECONDS}}
+      # The Kafka listener's record-batch decoder: bytes from any Kafka client.
+      - for: ["kafka_records"]
+        cmd: >
+          cd crates/server/felix-kafka/fuzz &&
           mkdir -p corpus/{{.ITEM}} &&
           cargo +nightly fuzz run {{.ITEM}} corpus/{{.ITEM}} seeds/{{.ITEM}}
           -- -max_total_time={{.SECONDS}}

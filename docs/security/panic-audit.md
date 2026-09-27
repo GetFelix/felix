@@ -100,9 +100,11 @@ path involved no `unwrap` at all. Counting `unwrap` would not have found it.
   in default builds; if `telemetry` is ever enabled in production, they need their own
   pass.
 - The frame and message decoders are fuzzed (`crates/protocol/felix-wire/fuzz/`, four
-  targets, plus three storage targets), but CI runs each target for only 30 s on every
-  PR. That is a regression gate, not a sustained campaign. The Kafka request decoders
-  also parse untrusted input and have no fuzz target.
+  targets), as is the Kafka listener's record-batch decoder
+  (`crates/server/felix-kafka/fuzz/`), plus three storage targets. CI runs each target
+  for only 30 s on every PR. That is a regression gate, not a sustained campaign. The
+  Kafka request decoder has deterministic seed and truncation tests but no fuzz target
+  yet.
 - Sustained-load, connection-churn, and resource-leak evidence is not covered by this
   document; it is tracked in [#154](https://github.com/gabloe/felix/issues/154). Until
   that lands, M0's "no known concurrency or leak issues" criterion rests on this static

@@ -742,3 +742,80 @@ postgres:
         );
     }
 }
+
+/// `Debug` on the config is what ends up in a startup log or a panic message,
+/// so it must not carry the database password or the bootstrap tokens.
+mod debug_redaction {
+    use super::storage::redact_postgres_url;
+    use super::*;
+
+    #[serial]
+    #[test]
+    fn debug_hides_the_postgres_password_and_bootstrap_tokens() {
+        let restore = clear_felix_env();
+        let mut config = ControlPlaneConfig::from_env().expect("config");
+        drop(restore);
+        config.postgres = Some(PostgresConfig {
+            url: "postgres://felix:pg-s3cret@db.internal:5432/felix?password=pg-other".into(),
+            ..PostgresConfig::default()
+        });
+        config.bootstrap.token = Some("boot-current-token".into());
+        config.bootstrap.previous_token = Some("boot-previous-token".into());
+
+        let printed = format!("{config:?}");
+        for (what, secret) in [
+            ("the URL password", "pg-s3cret"),
+            ("the password= parameter", "pg-other"),
+            ("the bootstrap token", "boot-current-token"),
+            ("the previous bootstrap token", "boot-previous-token"),
+        ] {
+            // Name the field, not the value: a failure message is a log too.
+            assert!(!printed.contains(secret), "{what} leaked into Debug");
+        }
+        // Still useful for debugging: where it connects, and as whom.
+        assert!(
+            printed.contains("felix:<redacted>@db.internal:5432/felix"),
+            "the redacted URL should keep the user, host and database"
+        );
+    }
+
+    #[test]
+    fn a_postgres_url_keeps_everything_but_the_password() {
+        for (url, want) in [
+            (
+                "postgres://felix:secret@db:5432/felix",
+                "postgres://felix:<redacted>@db:5432/felix",
+            ),
+            (
+                "postgresql://felix@db/felix?sslmode=require",
+                "postgresql://felix@db/felix?sslmode=require",
+            ),
+            (
+                "postgres://db/felix?sslmode=require&PASSWORD=secret&user=felix",
+                "postgres://db/felix?sslmode=require&PASSWORD=<redacted>&user=felix",
+            ),
+            ("postgres://db/felix", "postgres://db/felix"),
+            ("", ""),
+        ] {
+            assert_eq!(redact_postgres_url(url), want, "{url}");
+        }
+    }
+
+    /// Unencoded `@` and `/` in a password are invalid, but an operator can
+    /// still write them, and the redaction must not stop short of the host.
+    #[test]
+    fn a_password_with_reserved_characters_is_still_hidden() {
+        let redacted = redact_postgres_url("postgres://felix:se/cr@t@db:5432/felix");
+        assert_eq!(redacted, "postgres://felix:<redacted>@db:5432/felix");
+    }
+
+    /// A key/value connection string can put the password anywhere, so it is
+    /// withheld whole.
+    #[test]
+    fn a_non_url_connection_string_is_withheld() {
+        assert_eq!(
+            redact_postgres_url("host=db user=felix password=secret"),
+            "<redacted>"
+        );
+    }
+}
