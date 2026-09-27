@@ -333,6 +333,9 @@ mod driver {
         calls: StdMutex<Vec<&'static str>>,
         fail_open: AtomicBool,
         fail_release: AtomicBool,
+        /// Releases and closes, in order, kept apart from `calls` so the
+        /// tests about terms need not know about closing.
+        teardown: StdMutex<Vec<(&'static str, ShardKey)>>,
     }
 
     #[async_trait::async_trait]
@@ -352,11 +355,120 @@ mod driver {
 
         async fn release(&self, key: &ShardKey) -> anyhow::Result<()> {
             self.released.lock().expect("lock").push(key.clone());
+            self.teardown
+                .lock()
+                .expect("lock")
+                .push(("release", key.clone()));
             if self.fail_release.load(Ordering::Acquire) {
                 return Err(anyhow::anyhow!("injected flush failure"));
             }
             Ok(())
         }
+
+        async fn close(&self, key: &ShardKey) -> anyhow::Result<()> {
+            self.teardown
+                .lock()
+                .expect("lock")
+                .push(("close", key.clone()));
+            Ok(())
+        }
+    }
+
+    impl RecordingStore {
+        fn take_teardown(&self) -> Vec<(&'static str, u32)> {
+            std::mem::take(&mut *self.teardown.lock().expect("lock"))
+                .into_iter()
+                .map(|(what, key)| (what, key.shard))
+                .collect()
+        }
+    }
+
+    fn with_roles(
+        shard: u32,
+        leader: &str,
+        replicas: &[&str],
+        successor: Option<&str>,
+        generation: u64,
+    ) -> (ShardKey, ShardAssignment) {
+        let mut assignment = assigned_to(leader, generation);
+        assignment.key = key(shard);
+        assignment.replicas = replicas.iter().map(|node| node.to_string()).collect();
+        assignment.successor = successor.map(str::to_string);
+        (key(shard), assignment)
+    }
+
+    /// A shard's logs close only once this broker is neither its leader, a
+    /// replica, nor a move's destination -- and after the release, so they
+    /// are flushed and their readers ended first.
+    #[tokio::test]
+    async fn a_shard_is_closed_once_this_broker_has_no_role_in_it() {
+        let own = Mutex::new(lifecycle());
+        let store = RecordingStore::default();
+        let step = |set: Vec<(ShardKey, ShardAssignment)>| {
+            let own = &own;
+            let store = &store;
+            async move {
+                reconcile(own, store, &set.into_iter().collect()).await;
+                store.take_teardown()
+            }
+        };
+
+        assert!(
+            step(vec![with_roles(0, "broker-a", &[], None, 1)])
+                .await
+                .is_empty()
+        );
+        // Led elsewhere, but still a replica here.
+        assert_eq!(
+            step(vec![with_roles(0, "broker-b", &["broker-a"], None, 2)]).await,
+            [("release", 0)],
+        );
+        // Named as a move's destination: still needed.
+        assert!(
+            step(vec![with_roles(0, "broker-b", &[], Some("broker-a"), 3)])
+                .await
+                .is_empty()
+        );
+        assert_eq!(
+            step(vec![with_roles(0, "broker-b", &["broker-c"], None, 4)]).await,
+            [("close", 0)],
+        );
+        // Once, not on every poll.
+        assert!(
+            step(vec![with_roles(0, "broker-b", &["broker-c"], None, 4)])
+                .await
+                .is_empty()
+        );
+
+        // Coming back reopens it, and losing it again closes it again.
+        step(vec![with_roles(0, "broker-a", &[], None, 5)]).await;
+        assert!(own.lock().await.may_serve_at(&key(0), 5));
+        assert_eq!(
+            step(vec![with_roles(0, "broker-b", &[], None, 6)]).await,
+            [("release", 0), ("close", 0)],
+        );
+    }
+
+    /// A replica-only shard never enters the lifecycle's phases, and is still
+    /// closed -- including when its assignment disappears outright.
+    #[tokio::test]
+    async fn a_replica_only_shard_is_closed_when_its_assignment_goes() {
+        let own = Mutex::new(lifecycle());
+        let store = RecordingStore::default();
+
+        reconcile(
+            &own,
+            &store,
+            &HashMap::from([
+                with_roles(1, "broker-b", &["broker-a"], None, 1),
+                with_roles(2, "broker-b", &["broker-c"], None, 1),
+            ]),
+        )
+        .await;
+        assert!(store.take_teardown().is_empty());
+
+        reconcile(&own, &store, &HashMap::new()).await;
+        assert_eq!(store.take_teardown(), [("close", 1)]);
     }
 
     fn assignments(pairs: &[(u32, &str, u64)]) -> HashMap<ShardKey, ShardAssignment> {
@@ -630,6 +742,40 @@ mod recording_where_a_leadership_begins {
         cache_key.kind = crate::shards::ShardKind::Cache;
 
         store.open(&cache_key, 4).await.expect("open");
+    }
+
+    /// Against the real log: a shard moved off this broker is closed under
+    /// anything still holding it, and moving it back recovers it from disk.
+    #[tokio::test]
+    async fn a_shard_that_moves_away_is_closed_and_reopens_when_it_returns() {
+        let (storage, _dir) = storage(3).await;
+        let store = DurableShardStore::new(std::sync::Arc::clone(&storage));
+        let own = tokio::sync::Mutex::new(lifecycle());
+        let led_by =
+            |leader: &str, generation| HashMap::from([(key(0), assigned_to(leader, generation))]);
+        let open = || {
+            storage
+                .open_stream(&key(0).tenant_id, &key(0).namespace, &key(0).stream, 0)
+                .expect("open")
+        };
+
+        reconcile(&own, &store, &led_by("broker-a", 1)).await;
+        let held = open();
+        held.append(&[bytes::Bytes::from("led")])
+            .await
+            .expect("append");
+
+        reconcile(&own, &store, &led_by("broker-b", 2)).await;
+        assert!(held.read_from(0, 1024).await.is_err(), "still open");
+        assert!(held.sync().await.is_err());
+
+        reconcile(&own, &store, &led_by("broker-a", 3)).await;
+        assert!(own.lock().await.may_serve_at(&key(0), 3));
+        let back = open();
+        assert_eq!(back.tail_offset().await.expect("tail"), 4);
+        back.append(&[bytes::Bytes::from("again")])
+            .await
+            .expect("append after reopening");
     }
 }
 

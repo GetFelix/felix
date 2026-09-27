@@ -166,6 +166,21 @@ impl ConsumerGroups {
             .map_err(storage_error)
     }
 
+    /// Close a shard's cursor log, for a shard this broker no longer holds.
+    /// The next read or commit opens it afresh.
+    pub async fn close_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Result<()> {
+        self.cursors
+            .close_shard(tenant_id, namespace, stream, shard)
+            .await
+            .map_err(storage_error)
+    }
+
     /// Flush every open cursor log. Call once during graceful shutdown.
     pub async fn shutdown(&self) -> Result<()> {
         self.cursors.shutdown().await.map_err(storage_error)

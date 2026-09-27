@@ -110,6 +110,26 @@ impl DurableStorage {
         Ok(StreamLog { log })
     }
 
+    /// Close one stream shard's log, for a shard this broker no longer holds.
+    ///
+    /// Every [`StreamLog`] already handed out for it fails from here on; the
+    /// next open recovers it afresh. A no-op when it is not open.
+    pub async fn close_stream(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Result<()> {
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+        };
+        self.provider.close_shard(&key).await.map_err(storage_error)
+    }
+
     /// Flush and stop every open log. Call once during graceful shutdown.
     pub async fn shutdown(&self) -> Result<()> {
         self.provider.shutdown().await.map_err(storage_error)
@@ -315,6 +335,12 @@ impl StreamLog {
 
     pub fn base_offset(&self) -> Offset {
         self.log.base_offset()
+    }
+
+    /// Whether the shard was closed under this handle; see
+    /// [`DurableStorage::close_stream`].
+    pub(crate) fn is_closed(&self) -> bool {
+        self.log.is_closed()
     }
 
     /// Run one retention pass now rather than waiting for the timer.

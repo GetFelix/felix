@@ -1,24 +1,38 @@
 //! One [`DiskLog`] per shard under a common root directory.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use parking_lot::Mutex;
-
 use super::{DiskLog, layout};
-use crate::Result;
 use crate::log::{BoxFuture, LogConfig, LogProvider, Offset, ShardKey};
+use crate::shard_slots::ShardSlots;
+use crate::{Result, StorageError};
 
 /// Opens one [`DiskLog`] per shard under a common root directory.
 ///
 /// Repeated opens of the same shard return the same log. Two independent
 /// writers over one directory would interleave offsets and corrupt the segment,
-/// so the cache is a correctness requirement, not an optimisation.
+/// so the cache is a correctness requirement, not an optimisation. Opens of
+/// different shards run in parallel; see `crate::shard_slots`.
 #[derive(Debug)]
 pub struct DiskLogProvider {
     root: PathBuf,
     config: LogConfig,
-    open_logs: Mutex<HashMap<ShardKey, DiskLog>>,
+    open_logs: ShardSlots<ShardKey, DiskLog>,
+    /// Runs inside every open, under the shard's lock, so tests can make an
+    /// open slow and watch what waits on it.
+    #[cfg(test)]
+    open_hook: parking_lot::Mutex<Option<OpenHook>>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct OpenHook(std::sync::Arc<dyn Fn(&ShardKey) + Send + Sync>);
+
+#[cfg(test)]
+impl std::fmt::Debug for OpenHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OpenHook")
+    }
 }
 
 impl DiskLogProvider {
@@ -29,7 +43,9 @@ impl DiskLogProvider {
         Ok(Self {
             root,
             config,
-            open_logs: Mutex::new(HashMap::new()),
+            open_logs: ShardSlots::new(),
+            #[cfg(test)]
+            open_hook: parking_lot::Mutex::new(None),
         })
     }
 
@@ -42,20 +58,11 @@ impl DiskLogProvider {
     }
 
     /// Open or return the cached log for `shard`.
+    ///
+    /// Fails with [`StorageError::Closed`] while [`Self::close_shard`] is
+    /// closing it.
     pub fn open_shard(&self, shard: &ShardKey) -> Result<DiskLog> {
-        // Recovery runs under the lock: two callers racing to open the same new
-        // shard must not both scan and both create segment zero.
-        let mut open_logs = self.open_logs.lock();
-        if let Some(log) = open_logs.get(shard) {
-            return Ok(log.clone());
-        }
-        let log = DiskLog::open(
-            layout::shard_dir(&self.root, shard),
-            layout::shard_label(shard),
-            self.config.clone(),
-        )?;
-        open_logs.insert(shard.clone(), log.clone());
-        Ok(log)
+        self.open_with(shard, None)
     }
 
     /// Open or return the cached log for `shard`, creating it to begin at
@@ -65,28 +72,33 @@ impl DiskLogProvider {
     /// An existing shard keeps its own base, so this is safe to call on every
     /// contact rather than only the first.
     pub fn open_shard_at(&self, shard: &ShardKey, base_offset: Offset) -> Result<DiskLog> {
-        let mut open_logs = self.open_logs.lock();
-        if let Some(log) = open_logs.get(shard) {
-            return Ok(log.clone());
-        }
-        let log = DiskLog::open_at(
-            layout::shard_dir(&self.root, shard),
-            layout::shard_label(shard),
-            self.config.clone(),
-            base_offset,
-        )?;
-        open_logs.insert(shard.clone(), log.clone());
-        Ok(log)
+        self.open_with(shard, Some(base_offset))
+    }
+
+    /// Close `shard`'s log and forget it, for a shard this broker no longer
+    /// holds. Everything accepted is flushed first.
+    ///
+    /// Handles already given out fail with [`StorageError::Closed`] from here
+    /// on. The next open recovers the shard afresh from disk. A no-op for a
+    /// shard that is not open.
+    pub async fn close_shard(&self, shard: &ShardKey) -> Result<()> {
+        self.open_logs
+            .close(shard, |log: DiskLog| async move { log.close().await })
+            .await
     }
 
     /// Shard keys this provider currently has open.
     pub fn open_shards(&self) -> Vec<ShardKey> {
-        self.open_logs.lock().keys().cloned().collect()
+        self.open_logs
+            .open_entries()
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect()
     }
 
     /// Flush and stop every open log. Call once during graceful shutdown.
     pub async fn shutdown(&self) -> Result<()> {
-        let logs: Vec<DiskLog> = self.open_logs.lock().values().cloned().collect();
+        let logs = self.open_logs.open_values();
         let mut first_error = None;
         for log in logs {
             if let Err(err) = log.shutdown().await {
@@ -99,6 +111,33 @@ impl DiskLogProvider {
             None => Ok(()),
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn set_open_hook(&self, hook: impl Fn(&ShardKey) + Send + Sync + 'static) {
+        *self.open_hook.lock() = Some(OpenHook(std::sync::Arc::new(hook)));
+    }
+
+    fn open_with(&self, shard: &ShardKey, base_offset: Option<Offset>) -> Result<DiskLog> {
+        self.open_logs.get_or_open(
+            shard,
+            || {
+                #[cfg(test)]
+                {
+                    let hook = self.open_hook.lock().clone();
+                    if let Some(hook) = hook {
+                        (hook.0)(shard);
+                    }
+                }
+                let dir = layout::shard_dir(&self.root, shard);
+                let label = layout::shard_label(shard);
+                match base_offset {
+                    Some(base) => DiskLog::open_at(dir, label, self.config.clone(), base),
+                    None => DiskLog::open(dir, label, self.config.clone()),
+                }
+            },
+            || StorageError::Closed(layout::shard_label(shard)),
+        )
+    }
 }
 
 impl LogProvider for DiskLogProvider {
@@ -109,3 +148,6 @@ impl LogProvider for DiskLogProvider {
         Box::pin(async move { self.open_shard(&shard) })
     }
 }
+
+#[cfg(test)]
+mod tests;

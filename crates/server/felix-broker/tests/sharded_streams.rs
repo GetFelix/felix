@@ -186,3 +186,53 @@ async fn a_shard_beyond_the_stream_is_refused() {
         "shard {SHARDS} is out of range for a stream with {SHARDS} shards",
     );
 }
+
+/// **A shard this broker lets go of is closed, and comes back from disk.** The
+/// log is fenced under anything still holding it, the other shards are left
+/// alone, and the next publish reopens the shard where it left off.
+#[tokio::test]
+async fn a_closed_shard_lets_go_of_its_log_and_reopens_from_disk() {
+    let (broker, storage, _dir) = sharded_broker().await;
+    for shard in [1u32, 2] {
+        broker
+            .publish_batch(
+                TENANT,
+                NAMESPACE,
+                STREAM,
+                shard,
+                &[Bytes::from_static(b"a")],
+            )
+            .await
+            .expect("publish");
+    }
+    let held = storage
+        .open_stream(TENANT, NAMESPACE, STREAM, 1)
+        .expect("open shard 1");
+    let neighbour = storage
+        .open_stream(TENANT, NAMESPACE, STREAM, 2)
+        .expect("open shard 2");
+
+    broker
+        .close_stream_shard(TENANT, NAMESPACE, STREAM, 1)
+        .await
+        .expect("close");
+
+    assert!(
+        held.read_from(0, 1024).await.is_err(),
+        "a handle from before the close still works",
+    );
+    assert_eq!(neighbour.read_from(0, 1024).await.expect("read").len(), 1);
+
+    // The stream state went with the log: a publish opens both afresh rather
+    // than failing against the closed one.
+    broker
+        .publish_batch(TENANT, NAMESPACE, STREAM, 1, &[Bytes::from_static(b"b")])
+        .await
+        .expect("publish after the close");
+    assert_eq!(replay(&broker, 1).await, ["a", "b"]);
+    let tail = broker
+        .cursor_tail(TENANT, NAMESPACE, STREAM, 1)
+        .await
+        .expect("tail");
+    assert_eq!(tail.next_seq(), 2);
+}

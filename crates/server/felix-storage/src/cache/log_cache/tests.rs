@@ -4,6 +4,7 @@
 //! log" buys, and what the in-memory cache could never do.
 
 mod basics;
+mod closing;
 mod compaction;
 mod concurrency;
 mod expiry;

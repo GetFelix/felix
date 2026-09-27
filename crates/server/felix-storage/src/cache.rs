@@ -91,6 +91,19 @@ pub trait StorageApi: Debug + Send + Sync {
         None
     }
 
+    /// Close one shard's log, for a shard this broker no longer holds. The
+    /// next call that touches it opens it afresh. A no-op for a store with no
+    /// log.
+    async fn close_shard(
+        &self,
+        _tenant_id: &str,
+        _namespace: &str,
+        _cache: &str,
+        _shard: u32,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Install the observer every applied write is reported to.
     ///
     /// `false` means this store cannot observe writes, and the caller must not

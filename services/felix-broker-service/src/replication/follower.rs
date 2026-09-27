@@ -34,8 +34,10 @@ pub struct FollowerCursor {
     pub rebuild_refused: bool,
     /// Bytes this follower has stored from this leader, for pacing a copy.
     pub shipped_bytes: u64,
-    /// The last batch did not reach the follower, or it refused it: its
-    /// position is not moving, however close it is.
+    /// The last batch did not reach the follower, or it refused it, or it has
+    /// not answered one yet: its position is not moving, however close it is.
+    /// A new cursor starts stalled, since its offset is only where shipping
+    /// will start and says nothing about what the follower holds.
     pub stalled: bool,
     /// The follower refused the frame kind that carries a commit offset, so
     /// it is shipped without one.
@@ -52,7 +54,7 @@ impl FollowerCursor {
             rebuilding: false,
             rebuild_refused: false,
             shipped_bytes: 0,
-            stalled: false,
+            stalled: true,
             legacy_frames: false,
         }
     }

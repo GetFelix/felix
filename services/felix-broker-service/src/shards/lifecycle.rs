@@ -114,6 +114,9 @@ pub enum Action {
     /// A move is bringing the shard here. Get ready to serve it; nothing
     /// serves yet.
     Prepare { key: ShardKey },
+    /// This broker is no longer the shard's leader, a replica, or a move's
+    /// destination. Close what it holds open for it.
+    Close { key: ShardKey },
     /// Nothing to do.
     None,
 }
@@ -131,6 +134,10 @@ pub struct ShardLifecycle {
     /// while this broker leads it, the new leader once it does not. What a
     /// reader ended by the move is told.
     headed: HashMap<ShardKey, felix_broker::ShardHandoff>,
+    /// Shards the last assignment set gave this broker any role in. Leaving
+    /// this set is what closes a shard's logs: until then a replica or a
+    /// move's destination still needs them.
+    held: std::collections::HashSet<ShardKey>,
 }
 
 /// A move toward this broker, timed from when this broker first saw each step.
@@ -148,6 +155,7 @@ impl ShardLifecycle {
             fence: Arc::default(),
             incoming: HashMap::new(),
             headed: HashMap::new(),
+            held: std::collections::HashSet::new(),
         }
     }
 
@@ -361,6 +369,38 @@ impl ShardLifecycle {
         self.incoming.retain(|key, _| present.contains_key(key));
     }
 
+    /// A [`Action::Close`] for every shard this broker had a role in and, by
+    /// `assignments`, no longer does -- including one whose assignment is gone.
+    ///
+    /// Resource cleanup only: it changes no phase and no fence. Leading is
+    /// already given up by [`Self::observe`]; this is the later step of
+    /// letting go of the files once nothing here reads them either.
+    pub fn relinquished(
+        &mut self,
+        assignments: &HashMap<ShardKey, ShardAssignment>,
+    ) -> Vec<Action> {
+        let node = self.node_id.as_str();
+        let mut closes = Vec::new();
+        for (key, assignment) in assignments {
+            let has_role = assignment.leader == node
+                || assignment.replicas.iter().any(|replica| replica == node)
+                || assignment.successor.as_deref() == Some(node);
+            if has_role {
+                self.held.insert(key.clone());
+            } else if self.held.remove(key) {
+                closes.push(Action::Close { key: key.clone() });
+            }
+        }
+        self.held.retain(|key| {
+            let assigned = assignments.contains_key(key);
+            if !assigned {
+                closes.push(Action::Close { key: key.clone() });
+            }
+            assigned
+        });
+        closes
+    }
+
     /// Every shard this broker holds that the given assignment set no longer
     /// mentions.
     ///
@@ -539,6 +579,11 @@ pub trait ShardStore: Send + Sync {
     /// Best effort and must not block: whatever this does not finish, the
     /// open at the cut-over does.
     fn prepare(&self, _key: &ShardKey) {}
+    /// Close the logs and drop the in-memory state held for a shard this
+    /// broker has no role in any more. A later open recovers it from disk.
+    async fn close(&self, _key: &ShardKey) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// Ends the readers of a released shard, for the stores that serve them.
@@ -656,6 +701,23 @@ impl ShardReaders {
                 );
             }
         });
+    }
+
+    /// Close everything the broker holds open for the shard.
+    async fn close(&self, key: &ShardKey) -> anyhow::Result<()> {
+        let closed = match key.kind {
+            ShardKind::Stream => {
+                self.broker
+                    .close_stream_shard(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                    .await
+            }
+            ShardKind::Cache => {
+                self.broker
+                    .close_cache_shard(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                    .await
+            }
+        };
+        closed.map_err(|err| anyhow::anyhow!("close shard: {err}"))
     }
 
     /// End a shard's readers because this broker stopped serving it, and
@@ -869,6 +931,20 @@ impl ShardStore for DurableShardStore {
             readers.prepare(key);
         }
     }
+
+    async fn close(&self, key: &ShardKey) -> anyhow::Result<()> {
+        match &self.readers {
+            Some(readers) => readers.close(key).await,
+            // Without the broker there is only the stream log to close; a
+            // cache's lives in the cache store, which only the broker reaches.
+            None if key.kind == ShardKind::Stream => self
+                .storage
+                .close_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .await
+                .map_err(|err| anyhow::anyhow!("close shard log: {err}")),
+            None => Ok(()),
+        }
+    }
 }
 
 /// A [`ShardStore`] for a broker with no durable storage.
@@ -910,6 +986,14 @@ impl ShardStore for EphemeralShardStore {
             readers.stop(key, handoff, quiet).await;
         }
     }
+
+    /// No logs, but the stream's in-memory state still goes.
+    async fn close(&self, key: &ShardKey) -> anyhow::Result<()> {
+        match &self.readers {
+            Some(readers) => readers.close(key).await,
+            None => Ok(()),
+        }
+    }
 }
 
 /// Drive one decision to completion.
@@ -921,6 +1005,23 @@ pub async fn apply(
     match action {
         Action::None => {}
         Action::Prepare { key } => store.prepare(&key),
+        Action::Close { key } => match store.close(&key).await {
+            Ok(()) => tracing::info!(
+                kind = ?key.kind,
+                name = %key.stream,
+                shard = key.shard,
+                "closed a shard this broker no longer has a role in",
+            ),
+            // Handles are fenced even when the final flush fails, so there is
+            // nothing to retry; the next open recovers from disk.
+            Err(err) => tracing::error!(
+                kind = ?key.kind,
+                name = %key.stream,
+                shard = key.shard,
+                error = %err,
+                "could not cleanly close a shard this broker no longer has a role in",
+            ),
+        },
         Action::Open {
             key,
             generation,
@@ -1058,6 +1159,9 @@ pub async fn reconcile(
             actions.push(owned.observe(&key, None));
         }
         owned.forget_incoming_except(assignments);
+        // Last, so a shard being released is flushed and its readers ended
+        // before its logs close under them.
+        actions.extend(owned.relinquished(assignments));
     }
     for action in actions {
         apply(lifecycle, store, action).await;

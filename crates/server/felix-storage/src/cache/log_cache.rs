@@ -17,7 +17,6 @@ mod write;
 
 pub use record::CacheOp;
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -33,6 +32,7 @@ use crate::commit_order::CommitSequencer;
 use crate::disk_log::{DiskLog, layout};
 use crate::log::{AppendRecord, LogConfig, ShardKey};
 use crate::log_swap::recover_interrupted_swap;
+use crate::shard_slots::ShardSlots;
 use crate::{Result, StorageError};
 
 /// A cache backed by the same log streams are.
@@ -40,7 +40,7 @@ use crate::{Result, StorageError};
 pub struct LogCache {
     root: PathBuf,
     config: LogConfig,
-    shards: SyncMutex<HashMap<CacheId, Arc<CacheShard>>>,
+    shards: ShardSlots<CacheId, Arc<CacheShard>>,
     /// Told about every applied write, while the shard's write lock is held —
     /// which is what makes the order it sees the shard's order.
     observer: Observer,
@@ -59,7 +59,7 @@ impl LogCache {
         Ok(Self {
             root,
             config,
-            shards: SyncMutex::new(HashMap::new()),
+            shards: ShardSlots::new(),
             observer: Arc::new(SyncMutex::new(None)),
         })
     }
@@ -344,9 +344,40 @@ impl LogCache {
             .await)
     }
 
+    /// Close one cache shard's log and forget it, for a shard this broker no
+    /// longer holds. Everything accepted is flushed first.
+    ///
+    /// A write or read racing the close fails with [`StorageError::Closed`],
+    /// as does one through a log handle given out earlier. The next call that
+    /// touches the shard recovers it afresh from disk. A no-op for a shard
+    /// that is not open.
+    pub async fn close_shard(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+    ) -> Result<()> {
+        let id = (
+            tenant.to_string(),
+            namespace.to_string(),
+            cache.to_string(),
+            shard,
+        );
+        self.shards
+            .close(&id, |shard: Arc<CacheShard>| async move {
+                // Under the state lock, so no compaction is mid-swap, and
+                // marked first so nothing queued behind it reopens the log.
+                let mut state = shard.state.lock().await;
+                state.closed = true;
+                state.log.close().await
+            })
+            .await
+    }
+
     /// Flush every open cache. Call once during graceful shutdown.
     pub async fn shutdown(&self) -> Result<()> {
-        let shards: Vec<Arc<CacheShard>> = self.shards.lock().values().cloned().collect();
+        let shards = self.shards.open_values();
         for shard in shards {
             shard.state.lock().await.log.shutdown().await?;
         }
@@ -377,41 +408,45 @@ impl LogCache {
             cache.to_string(),
             shard,
         );
-        // Opening runs under the lock: two callers racing to open the same new
-        // cache must not both replay the log and both create segment zero.
-        let mut shards = self.shards.lock();
-        if let Some(open) = shards.get(&id) {
-            return Ok(Arc::clone(open));
-        }
-        let key = ShardKey {
+        let key = || ShardKey {
             tenant: tenant.to_string(),
             namespace: namespace.to_string(),
             stream: cache.to_string(),
             shard,
         };
-        let dir = layout::shard_dir(&self.root, &key);
-        let label = layout::shard_label(&key);
-        recover_interrupted_swap(&dir)?;
-        let log = match base_offset {
-            Some(base) => DiskLog::open_at(dir.clone(), label.clone(), self.config.clone(), base)?,
-            None => DiskLog::open(dir.clone(), label.clone(), self.config.clone())?,
-        };
-        let open = Arc::new(CacheShard {
-            dir,
-            label,
-            config: self.config.clone(),
-            state: Mutex::new(ShardState {
-                log,
-                index: Index::default(),
-                sequenced_through: None,
-            }),
-            // Aligned to the log's tail by the first `ensure_index`; until
-            // then nothing can reserve, because every writer passes through
-            // `ensure_index` first.
-            sequencer: Arc::new(CommitSequencer::new(0)),
-        });
-        shards.insert(id, Arc::clone(&open));
-        Ok(open)
+        // Two callers racing to open the same new cache must not both replay
+        // the log and both create segment zero; the slot coalesces them.
+        self.shards.get_or_open(
+            &id,
+            || {
+                let key = key();
+                let dir = layout::shard_dir(&self.root, &key);
+                let label = layout::shard_label(&key);
+                recover_interrupted_swap(&dir)?;
+                let log = match base_offset {
+                    Some(base) => {
+                        DiskLog::open_at(dir.clone(), label.clone(), self.config.clone(), base)?
+                    }
+                    None => DiskLog::open(dir.clone(), label.clone(), self.config.clone())?,
+                };
+                Ok(Arc::new(CacheShard {
+                    dir,
+                    label,
+                    config: self.config.clone(),
+                    state: Mutex::new(ShardState {
+                        log,
+                        index: Index::default(),
+                        sequenced_through: None,
+                        closed: false,
+                    }),
+                    // Aligned to the log's tail by the first `ensure_index`; until
+                    // then nothing can reserve, because every writer passes through
+                    // `ensure_index` first.
+                    sequencer: Arc::new(CommitSequencer::new(0)),
+                }))
+            },
+            || StorageError::Closed(layout::shard_label(&key())),
+        )
     }
 }
 
@@ -526,6 +561,16 @@ impl StorageApi for LogCache {
         }
     }
 
+    async fn close_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+    ) -> Result<()> {
+        LogCache::close_shard(self, tenant_id, namespace, cache, shard).await
+    }
+
     fn set_change_observer(&self, observer: Arc<dyn CacheObserver>) -> bool {
         *self.observer.lock() = Some(observer);
         true
@@ -543,7 +588,7 @@ impl StorageApi for LogCache {
     }
 
     async fn len(&self) -> usize {
-        let shards: Vec<Arc<CacheShard>> = self.shards.lock().values().cloned().collect();
+        let shards = self.shards.open_values();
         let now = now_millis();
         let mut total = 0;
         for shard in shards {
