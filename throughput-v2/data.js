@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790520058512,
+  "lastUpdate": 1790520770543,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -17524,6 +17524,58 @@ window.BENCHMARK_DATA = {
             "range": "7931.27",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 930592.08\nmean: 930543.14\nstdev: 7931.27\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "07ae934abfc594ea37009613319760af8fbee920",
+          "message": "Control plane: refresh can't widen its exchange; re-pointing an IdP issuer needs cluster rights (#755)\n\n* fix(controlplane): stop refresh widening scope; gate IdP issuer re-pointing\n\nRefresh re-ran RBAC with no narrowing, so a narrowed token plus its refresh\ntoken yielded the principal's full rights under any audience. Exchange now\nstores its requested actions, resource hints and audience on the refresh\nrecord (serde-defaulted, nullable Postgres column in migration 0019); refresh\nre-applies them and refuses a different audience with 400. Records without\nit refresh as before.\n\nupsert_idp_issuer let tenant.manage re-point an existing issuer's JWKS, and\nprincipal ids are sha256(iss|sub), so a tenant admin could mint tokens for\nany subject of that issuer, cluster operators included. Changing an existing\nissuer's jwks_url/discovery_url now also needs tenant.manage:cluster:*. IdP\nfetches no longer follow redirects, and literal or resolved private,\nlink-local and unique-local addresses are refused unless\nFELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP (or ..._ALLOW_INSECURE_HTTP) is set.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(controlplane): deleting an IdP issuer takes cluster rights\n\nDelete-then-create re-pointed an issuer without the cluster-rights check\nthat changing its URLs now needs, so deletion takes the same rights.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T07:49:30-07:00",
+          "tree_id": "927f2f6647a746134eb7568072006c29799257ab",
+          "url": "https://github.com/gabloe/felix/commit/07ae934abfc594ea37009613319760af8fbee920"
+        },
+        "date": 1790520769989,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 367143.83,
+            "range": "7778.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 367143.83\nmean: 364888.42\nstdev: 7778.08\ncv: 2.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 367143.83,
+            "range": "7778.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 367143.83\nmean: 364888.42\nstdev: 7778.08\ncv: 2.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 91522.38,
+            "range": "1494.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 91522.38\nmean: 91208.68\nstdev: 1494.78\ncv: 1.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 915223.79,
+            "range": "14947.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 915223.79\nmean: 912086.76\nstdev: 14947.77\ncv: 1.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
