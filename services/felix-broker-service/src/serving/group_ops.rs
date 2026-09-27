@@ -260,6 +260,13 @@ pub(crate) async fn settle(
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
     let _fenced = owned.enter(publish_ctx, &mut admitted)?;
+    // A claim handed out before the shard moved here is still the consumer's
+    // to settle.
+    let tail = log.tail_offset().await.map_err(storage)?;
+    reader
+        .inherit_below(&key, tail)
+        .await
+        .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
     let settled = if finish {
         reader.ack(&key, offset).await
     } else {
@@ -268,11 +275,9 @@ pub(crate) async fn settle(
     let Err(err) = settled else {
         return Ok(());
     };
-    // The tracker is in memory, so eviction or a failover forgets what it
-    // handed out. An offset the log holds may have been claimed from the
-    // tracker before; the record is owed again either way, so the consumer
-    // is told its claim is gone rather than that it made a mistake. Past the
-    // tail it cannot have been handed out by anyone.
+    // Past the tracker's inherited tail, but inside the log now: written
+    // after the tracker was built and not yet polled. Told apart from past
+    // the tail, which cannot have been handed out by anyone.
     if let felix_broker::BrokerError::GroupOffsetNotHandedOut { .. } = err
         && offset < log.tail_offset().await.map_err(storage)?
     {

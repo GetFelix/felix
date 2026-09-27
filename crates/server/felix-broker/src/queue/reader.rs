@@ -186,10 +186,12 @@ impl GroupReader {
         max: usize,
         now: Instant,
     ) -> Result<Vec<Claimed>> {
-        let tail = log.tail_offset().await?.min(committed);
+        let log_tail = log.tail_offset().await?;
+        let tail = log_tail.min(committed);
         let tracker = self.tracker_for(key).await?;
         let claim = {
             let mut tracker = tracker.lock().await;
+            tracker.inherit_below(log_tail);
             tracker.set_max_in_flight(self.max_in_flight());
             tracker.claim(tail, max, now, self.visibility)
         };
@@ -292,6 +294,17 @@ impl GroupReader {
         let tracker = self.tracker_for(key).await?;
         check_handed_out(&*tracker.lock().await, offset)?;
         self.settle(key, &tracker, offset).await
+    }
+
+    /// Tell `key`'s tracker the log tail, if it has not seen one yet: claims a
+    /// predecessor made before a move, failover or eviction are all below it,
+    /// and settles for them are taken. [`Self::poll`] does this itself; call
+    /// it before an [`Self::ack`] or [`Self::nack`] that may be the first
+    /// operation on this broker.
+    pub async fn inherit_below(&self, key: &GroupKey, tail: u64) -> Result<()> {
+        let tracker = self.tracker_for(key).await?;
+        tracker.lock().await.inherit_below(tail);
+        Ok(())
     }
 
     /// Give one record back, to be handed out again at once.

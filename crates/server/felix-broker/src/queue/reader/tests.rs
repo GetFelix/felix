@@ -777,3 +777,49 @@ async fn a_waited_on_group_is_not_evicted() {
     drop(changed);
     assert_eq!(fx.reader.evict_idle(later), 1);
 }
+
+/// Claims made before the tracker was rebuilt (a move back, a failover, an
+/// eviction) are still the consumer's to settle, in any order, and a record
+/// settled that way is not handed out again.
+#[tokio::test]
+async fn a_claim_from_before_a_new_term_is_still_settled() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    let key = key();
+    publish(&fx.log, &["a", "b", "c", "d"]).await;
+    let first = fx
+        .reader
+        .poll(&key, &fx.log, 3, Instant::now())
+        .await
+        .expect("poll");
+    assert_eq!(payloads(&first), ["a", "b", "c"]);
+    fx.reader.reset_shard(T, NS, S, 0).await;
+    // What the serving layer does before a settle.
+    fx.reader.inherit_below(&key, 4).await.expect("inherit");
+
+    // Out of order: 2 is held until 1 closes the run.
+    fx.reader
+        .ack(&key, 2)
+        .await
+        .expect("ack of a pre-reset claim");
+    fx.reader
+        .nack(&key, 0)
+        .await
+        .expect("nack of a pre-reset claim");
+    fx.reader
+        .ack(&key, 1)
+        .await
+        .expect("ack of a pre-reset claim");
+
+    let next = poll_at(&fx, &key, Instant::now(), 0).await;
+    assert_eq!(payloads(&next), ["a", "d"], "a settled record came back");
+    fx.reader.ack(&key, 0).await.expect("ack");
+    assert_eq!(fx.reader.committed(&key).await.expect("committed"), Some(3));
+
+    // Written after the tracker was rebuilt: nobody before it had a claim.
+    publish(&fx.log, &["e"]).await;
+    assert!(matches!(
+        fx.reader.ack(&key, 4).await,
+        Err(BrokerError::GroupOffsetNotHandedOut { .. })
+    ));
+}
