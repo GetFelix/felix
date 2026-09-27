@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790487101112,
+  "lastUpdate": 1790488978320,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -17212,6 +17212,58 @@ window.BENCHMARK_DATA = {
             "range": "11722.29",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1028399.91\nmean: 1027182.95\nstdev: 11722.29\ncv: 1.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a69ca193badd079a3e95478c766435066ebef8b9",
+          "message": "fix(controlplane): Raft heartbeats and placement lease as leader soft state (#745)\n\nHeartbeats and lease renewals no longer write a Raft log entry each. The\nleader keeps them in memory, confirms leadership before answering a\nheartbeat, grants a full window after taking over, and logs only expiries\n(ExpireNodes) and periodic heartbeat checkpoints. The placement lease now\nexpires on Raft too, so the expiring-lease and refresh-token contracts run\nagainst the Raft backend.\n\nSpec-Unaffected: the control-plane placement change is only a lease release on lost leadership; fencing and generations are unchanged\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-26T22:26:09-07:00",
+          "tree_id": "fa77a5e3267bf64835b9a3e175bfde6779007df2",
+          "url": "https://github.com/gabloe/felix/commit/a69ca193badd079a3e95478c766435066ebef8b9"
+        },
+        "date": 1790488977834,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 391893.01,
+            "range": "13126.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 391893.01\nmean: 394881.42\nstdev: 13126.91\ncv: 3.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 391893.01,
+            "range": "13126.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 391893.01\nmean: 394881.42\nstdev: 13126.91\ncv: 3.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93930.69,
+            "range": "865.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93930.69\nmean: 94361.76\nstdev: 865.03\ncv: 0.92%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 939306.92,
+            "range": "8650.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 939306.92\nmean: 943617.57\nstdev: 8650.27\ncv: 0.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
