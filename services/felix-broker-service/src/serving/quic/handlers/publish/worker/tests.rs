@@ -288,6 +288,7 @@ mod fence {
                 fenced,
                 producer_id: leader.broker.new_producer_id(),
                 sequence: 0,
+                reuse: felix_broker::SequenceReuse::Refuse,
             },
             (_, other) => panic!("admission should serve it here: {other:?}"),
         };

@@ -15,7 +15,9 @@ mod shards;
 mod subscribe;
 
 pub use metadata::{CacheMetadata, ConsistencyLevel, StreamMetadata};
-pub use publish::{ClaimedPublish, IdempotentOutcome, PublishOutcome, RECORD_SEQUENCE_WRAP};
+pub use publish::{
+    ClaimedPublish, IdempotentOutcome, PublishOutcome, RECORD_SEQUENCE_WRAP, SequenceReuse,
+};
 pub use shard_logs::LogKind;
 pub use shards::StreamHandle;
 pub use subscribe::{Cursor, HistoryRange, JoinOffsets, ResumedSubscription};

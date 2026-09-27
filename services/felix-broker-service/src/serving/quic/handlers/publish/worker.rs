@@ -259,6 +259,7 @@ pub(crate) fn build_tracked_publish_context(
                             generation,
                             producer_id,
                             sequence,
+                            reuse,
                             ..
                         } => {
                             // The same commit fence as a plain publish: see above.
@@ -276,6 +277,7 @@ pub(crate) fn build_tracked_publish_context(
                                             *producer_id,
                                             *sequence,
                                             &job.payloads,
+                                            *reuse,
                                         )
                                         .await;
                                     drop(fenced);

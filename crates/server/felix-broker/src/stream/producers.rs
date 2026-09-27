@@ -4,7 +4,8 @@
 //! keeps, per producer, the next sequence it expects and the outcome of the
 //! last few it appended. A batch carrying the expected sequence is appended
 //! and remembered; one carrying a sequence already remembered is answered
-//! from memory and not appended; anything else is refused with a reason. That
+//! from memory and not appended, unless its payloads differ from the batch
+//! remembered (see `SequenceReuse`); anything else is refused with a reason. That
 //! is the whole mechanism, and it is what turns "the acknowledgement never
 //! arrived" from a duplicate-or-loss coin toss into a safe re-send.
 //!
@@ -16,11 +17,13 @@
 //! only serialises each producer's batches.
 //!
 //! An in-memory stream has no log to keep them in, so this table keeps them,
-//! and they last as long as the leader does.
+//! with a digest of each batch's payloads, and they last as long as the
+//! leader does.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
+use felix_storage::log::PayloadDigest;
 use parking_lot::Mutex;
 
 use crate::broker::PublishOutcome;
@@ -118,20 +121,27 @@ impl ProducerTable {
             .recent
             .iter()
             .rev()
-            .find(|(remembered, _)| *remembered == sequence)
-            .map(|(_, outcome)| Sequenced::Duplicate(*outcome))
+            .find(|(remembered, ..)| *remembered == sequence)
+            .map(|(_, outcome, digest)| Sequenced::Duplicate(*outcome, *digest))
             .ok_or(BrokerError::SequenceExpired { sequence })
     }
 
-    /// Record that `sequence` was appended with `outcome`, and expect the next.
-    pub(crate) fn remember(&self, producer_id: u64, sequence: u64, outcome: PublishOutcome) {
+    /// Record that `sequence`, whose payloads have `digest`, was appended with
+    /// `outcome`, and expect the next.
+    pub(crate) fn remember(
+        &self,
+        producer_id: u64,
+        sequence: u64,
+        outcome: PublishOutcome,
+        digest: PayloadDigest,
+    ) {
         let mut table = self.inner.lock();
         if let Some(producer) = table.producers.get_mut(&producer_id) {
             producer.next_sequence = sequence + 1;
             if producer.recent.len() == WINDOW {
                 producer.recent.pop_front();
             }
-            producer.recent.push_back((sequence, outcome));
+            producer.recent.push_back((sequence, outcome, digest));
         }
     }
 
@@ -146,8 +156,9 @@ impl ProducerTable {
 pub(crate) enum Sequenced {
     /// The next batch this producer owes: append it.
     Append,
-    /// A batch already appended: answer with what happened the first time.
-    Duplicate(PublishOutcome),
+    /// A batch already appended: what happened the first time, and the
+    /// digest of the payloads it was appended with.
+    Duplicate(PublishOutcome, PayloadDigest),
 }
 
 #[derive(Debug, Default)]
@@ -160,7 +171,7 @@ struct Table {
 #[derive(Debug)]
 struct Producer {
     next_sequence: u64,
-    recent: VecDeque<(u64, PublishOutcome)>,
+    recent: VecDeque<(u64, PublishOutcome, PayloadDigest)>,
     last_used: u64,
     /// Serialises this producer's batches. Two re-sends of one sequence in
     /// flight at once must not both find it unappended.

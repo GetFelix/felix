@@ -328,7 +328,11 @@ async fn marks_are_stored_as_shipped_and_a_different_mark_is_a_conflict() {
         .expect("in order");
     assert_eq!(
         log.producer_sequence(9, 0),
-        ProducerSequence::Held { first: 0, last: 1 }
+        ProducerSequence::Held {
+            first: 0,
+            last: 1,
+            digest: Some(felix_storage::log::PayloadDigest::of(&payloads)),
+        }
     );
 
     // The same bytes, unmarked, at the same offsets.

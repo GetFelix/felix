@@ -36,6 +36,10 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         BrokerError::SequenceGap { .. } => ResponseError::OutOfOrderSequenceNumber,
         BrokerError::UnknownProducer { .. } => ResponseError::UnknownProducerId,
         BrokerError::SequenceExpired { .. } => ResponseError::DuplicateSequenceNumber,
+        // Never asked for on the Kafka path, which answers a duplicate by its
+        // numbers alone, as Kafka does. Were it, the producer reused a sequence,
+        // which is as fatal to it as a gap.
+        BrokerError::SequenceReused { .. } => ResponseError::OutOfOrderSequenceNumber,
         // None can come from reading or writing records; answered as a
         // server fault rather than guessed at.
         BrokerError::CapacityTooLarge

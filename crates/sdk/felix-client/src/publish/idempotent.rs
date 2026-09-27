@@ -16,8 +16,10 @@
 //! for any reason but a typed refusal leaves it where it was and holds on to
 //! the batch, because the batch may have landed under that number. The next
 //! call on the stream must be that same batch, re-sent; a different one is
-//! refused rather than sent, since the leader would answer it from memory
-//! and report success without appending it. A typed refusal ends the
+//! refused rather than sent. A leader that advertises
+//! `FEATURE_SEQUENCE_REUSED` would refuse it too (`sequence_reused`), but an
+//! older one answers it from memory and reports success without appending
+//! it, so the check stays here. A typed refusal ends the
 //! producer on that stream, because a gap or a forgotten producer is not
 //! something a re-send can mend. A forgotten producer is not started
 //! again under a new id here: whether its last batch landed is exactly what

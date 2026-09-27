@@ -407,22 +407,41 @@ offset is refused with `StorageError::BelowCommit`; see
 
 Each idempotent producer's place in the log is derived from the marks: for
 every producer, the newest sequence held and where its recent batches landed,
-plus a batch still waiting for records. Replaying the whole log on every open
+plus a batch still waiting for records. Each remembered batch also carries a
+digest of its payloads, which is how a leader tells a re-send from a different
+batch under the same sequence (see `docs/protocol.md`, "Idempotent producers"). Replaying the whole log on every open
 would make opening a large shard slow, so the state is saved at each rollover,
 as of the new segment's base offset, once the retired segment is sealed.
 
 ```text
  0   4  magic        u32  "FLPS"
- 4   2  version      u16
+ 4   2  version      u16  2 (1 is still read; see below)
  6   2  reserved     u16
  8   8  as_of        u64  the state covers every record below this offset
 16   4  producers    u32
 20   4  body_crc     u32  crc32 over what follows
 24   1  open              1 when a batch is waiting for records, then:
-                          producer_id u64, sequence u64, len u32, first u64, held u32
+                          producer_id u64, sequence u64, len u32, first u64, held u32,
+                          digest
      …  producers × { id u64, last_sequence u64, batches u16,
-                      batches × { first u64, len u32 } }
+                      batches × { first u64, len u32, digest } }
+
+digest = present u8 (0 or 1), value u64 (0 when absent)
 ```
+
+The digest is CRC-64/XZ, chained over the batch's records in order: starting
+from 0, each record takes it to `crc64(digest u64 ‖ r u64)`, where
+`r = crc64(payload_len u64 ‖ payload)`. For an open batch it covers the
+`held` records so far. It is not stored in the records: every replica computes
+it from the payloads it holds, on append and when replaying the log, so it is
+the same everywhere a batch is. Changing the function is a snapshot format
+change.
+
+Version 1 has no digest fields. It is still read, and its batches have no
+digest, which a leader treats as matching whatever is re-sent under them: the
+answer a re-send got before digests were kept. They age out as the producers
+write, and the next snapshot is written as version 2. Any other version is
+ignored, like a damaged snapshot.
 
 An open reads it and replays only the marks after `as_of`. Those are normally
 all in the active segment, which recovery scans in full anyway, so a current

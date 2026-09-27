@@ -81,6 +81,14 @@ pub enum BrokerError {
     /// remembers, so whether it was appended cannot be told.
     #[error("sequence {sequence} is older than the window this broker keeps")]
     SequenceExpired { sequence: u64 },
+    /// An idempotent batch under a sequence this broker already holds a
+    /// different batch for. It is not a re-send, so it was not written, and
+    /// answering it as a duplicate would report records as written that are
+    /// not. Only returned to a caller that asked for [`SequenceReuse::Refuse`].
+    ///
+    /// [`SequenceReuse::Refuse`]: crate::SequenceReuse::Refuse
+    #[error("sequence {sequence} already holds a batch with different payloads")]
+    SequenceReused { sequence: u64 },
     /// A consumer settled a group offset this broker never handed out. `next`
     /// is the lowest offset not yet handed out; nothing at or above it can be
     /// acknowledged or handed back.

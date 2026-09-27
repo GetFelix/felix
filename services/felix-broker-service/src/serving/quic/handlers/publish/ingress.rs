@@ -46,6 +46,8 @@ pub(crate) enum PublishTarget {
         fenced: Option<FenceGuard>,
         producer_id: u64,
         sequence: u64,
+        /// What a different batch under a sequence already held gets.
+        reuse: felix_broker::SequenceReuse,
     },
     /// Another broker owns the shard. The batch is sent there and its answer
     /// relayed, from the same worker a local write would have used, so the ack

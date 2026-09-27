@@ -149,7 +149,10 @@ pub(super) async fn authenticate(
                             | felix_wire::FEATURE_SHARD_MOVED
                             // An unknown request is answered, not fatal, for a
                             // client that offered the bit.
-                            | felix_wire::FEATURE_UNSUPPORTED,
+                            | felix_wire::FEATURE_UNSUPPORTED
+                            // A reused sequence is refused, not answered as a
+                            // duplicate, for a client that offered the bit.
+                            | felix_wire::FEATURE_SEQUENCE_REUSED,
                     ),
                     // Only when there is more than one. A single
                     // listener is the default, and saying so

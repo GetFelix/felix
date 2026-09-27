@@ -964,15 +964,21 @@ impl std::fmt::Debug for LogInner {
 impl LogInner {
     /// Account for a batch just written at `first_offset`. Called holding the
     /// `segments` write lock the batch was written under.
-    fn observe_marks(&self, first_offset: Offset, records: &[AppendRecord]) {
+    ///
+    /// `digests` are the records' [`producers::marked_digest`]s, computed
+    /// before the lock was taken, or empty when no record is marked.
+    fn observe_marks(&self, first_offset: Offset, records: &[AppendRecord], digests: &[u64]) {
         use std::sync::atomic::Ordering;
-        let marked = records.iter().any(|record| record.mark != RecordMark::None);
-        if !marked && !self.batch_open.load(Ordering::Acquire) {
+        if digests.is_empty() && !self.batch_open.load(Ordering::Acquire) {
             return;
         }
         let mut producers = self.producers.lock();
-        for (offset, record) in (first_offset..).zip(records) {
-            producers.observe(offset, record.mark);
+        for (index, (offset, record)) in (first_offset..).zip(records).enumerate() {
+            producers.observe(
+                offset,
+                record.mark,
+                digests.get(index).copied().unwrap_or(0),
+            );
         }
         self.batch_open
             .store(producers.is_open(), Ordering::Release);

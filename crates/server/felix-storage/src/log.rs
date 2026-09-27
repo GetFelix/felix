@@ -103,6 +103,58 @@ impl RecordMark {
     }
 }
 
+/// A digest of a producer batch's payloads, which is what tells a re-send of
+/// a batch apart from a different batch that reuses its sequence.
+///
+/// CRC-64/XZ over each record's length and bytes, chained record to record in
+/// order. It is derived from the payloads a log holds, so every replica
+/// computes the same value without it being stored in the records. It is
+/// saved in the producer snapshot, so it must never change between builds.
+/// See `docs/storage-format.md`, "Producer state".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PayloadDigest(u64);
+
+impl PayloadDigest {
+    /// The digest of a batch with no records yet.
+    pub(crate) const EMPTY: Self = Self(0);
+
+    /// The digest of a whole batch.
+    pub fn of<P: AsRef<[u8]>>(payloads: impl IntoIterator<Item = P>) -> Self {
+        payloads.into_iter().fold(Self::EMPTY, |digest, payload| {
+            digest.then(record_digest(payload.as_ref()))
+        })
+    }
+
+    /// This digest extended by one record, given that record's
+    /// [`record_digest`].
+    pub(crate) fn then(self, record: u64) -> Self {
+        let mut digest = CRC64.digest();
+        digest.update(&self.0.to_be_bytes());
+        digest.update(&record.to_be_bytes());
+        Self(digest.finalize())
+    }
+
+    pub(crate) fn from_bits(bits: u64) -> Self {
+        Self(bits)
+    }
+
+    pub(crate) fn to_bits(self) -> u64 {
+        self.0
+    }
+}
+
+/// One record's contribution to a [`PayloadDigest`]. Split out so a scan can
+/// keep it per record, next to the record's mark, without holding the payload.
+pub(crate) fn record_digest(payload: &[u8]) -> u64 {
+    let mut digest = CRC64.digest();
+    digest.update(&(payload.len() as u64).to_be_bytes());
+    digest.update(payload);
+    digest.finalize()
+}
+
+/// Sliced tables: this runs over every idempotent payload on the append path.
+const CRC64: crc::Crc<u64, crc::Table<16>> = crc::Crc::<u64, crc::Table<16>>::new(&crc::CRC_64_XZ);
+
 /// The offsets an append was given, first and last inclusive.
 #[derive(Debug, Clone)]
 pub struct AppendResult {

@@ -1354,6 +1354,7 @@ version = "0.6.0-preview"
 dependencies = [
  "async-trait",
  "bytes",
+ "crc",
  "crc32fast",
  "io-uring",
  "libc",

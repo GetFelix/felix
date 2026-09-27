@@ -389,6 +389,9 @@ if let Err(err) = producer.publish("acme", "prod", "orders", payload).await
         // Older than the window the broker keeps, so whether it was appended
         // cannot be told any more.
         PublishRefusalReason::SequenceExpired => bail!("outside the dedup window"),
+        // A different batch under a sequence the broker already holds: this
+        // producer reused a number it had spent, and the batch was not written.
+        PublishRefusalReason::SequenceReused => bail!("sequence reused"),
         // Routing, not failure: the client follows it itself.
         PublishRefusalReason::NotLeader { .. } => {}
         _ => return Err(err),
@@ -404,9 +407,10 @@ can vouch for.
 :::caution[Do not race this against a timeout]
 `publish_batch` is not cancel-safe, and the consequence is specific rather than
 vague. Dropping the future mid-send leaves the sequence in doubt: the batch may
-have been appended under it, and the cursor still points at it. Because the
-broker answers a remembered sequence *without appending*, reusing it would
-discard a different batch and report success.
+have been appended under it, and the cursor still points at it. A broker that
+predates `sequence_reused` answers a remembered sequence *without appending*,
+so reusing it there would discard a different batch and report success; a
+current broker refuses it, but the producer cannot tell which it has.
 
 So a cancelled publish **stops the producer** — the next call refuses and says
 why, and you take a fresh id. A producer is cheap to re-initialise; silently

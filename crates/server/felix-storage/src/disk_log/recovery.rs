@@ -59,7 +59,7 @@ pub(super) struct Recovered {
     /// Indexes that had to be rebuilt.
     pub index_rebuilds: usize,
     /// Producer marks in the active segment, from its full scan.
-    pub active_marks: Vec<(Offset, RecordMark)>,
+    pub active_marks: Vec<(Offset, RecordMark, u64)>,
 }
 
 struct OpenedSealed {

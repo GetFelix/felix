@@ -7,12 +7,16 @@ fn outcome(first: u64) -> PublishOutcome {
     }
 }
 
+fn digest(sequence: u64) -> PayloadDigest {
+    PayloadDigest::of([sequence.to_be_bytes()])
+}
+
 #[test]
 fn a_new_producer_starts_at_zero_and_counts_up() {
     let table = ProducerTable::default();
     table.turn(7, 0).expect("first batch");
     assert_eq!(table.classify(7, 0).expect("classify"), Sequenced::Append);
-    table.remember(7, 0, outcome(10));
+    table.remember(7, 0, outcome(10), digest(0));
     assert_eq!(table.classify(7, 1).expect("classify"), Sequenced::Append);
 }
 
@@ -20,15 +24,15 @@ fn a_new_producer_starts_at_zero_and_counts_up() {
 fn a_re_sent_batch_is_answered_from_memory() {
     let table = ProducerTable::default();
     table.turn(7, 0).expect("first batch");
-    table.remember(7, 0, outcome(10));
-    table.remember(7, 1, outcome(11));
+    table.remember(7, 0, outcome(10), digest(0));
+    table.remember(7, 1, outcome(11), digest(1));
     assert_eq!(
         table.classify(7, 0).expect("classify"),
-        Sequenced::Duplicate(outcome(10))
+        Sequenced::Duplicate(outcome(10), digest(0))
     );
     assert_eq!(
         table.classify(7, 1).expect("classify"),
-        Sequenced::Duplicate(outcome(11))
+        Sequenced::Duplicate(outcome(11), digest(1))
     );
 }
 
@@ -36,7 +40,7 @@ fn a_re_sent_batch_is_answered_from_memory() {
 fn a_gap_names_what_was_expected() {
     let table = ProducerTable::default();
     table.turn(7, 0).expect("first batch");
-    table.remember(7, 0, outcome(10));
+    table.remember(7, 0, outcome(10), digest(0));
     match table.classify(7, 5) {
         Err(BrokerError::SequenceGap { expected }) => assert_eq!(expected, 1),
         other => panic!("expected a gap, got {other:?}"),
@@ -58,7 +62,7 @@ fn a_sequence_older_than_the_window_is_expired() {
     let table = ProducerTable::default();
     table.turn(7, 0).expect("first batch");
     for sequence in 0..(WINDOW as u64 + 1) {
-        table.remember(7, sequence, outcome(sequence));
+        table.remember(7, sequence, outcome(sequence), digest(sequence));
     }
     assert!(matches!(
         table.classify(7, 0),
@@ -66,7 +70,7 @@ fn a_sequence_older_than_the_window_is_expired() {
     ));
     assert_eq!(
         table.classify(7, 1).expect("classify"),
-        Sequenced::Duplicate(outcome(1))
+        Sequenced::Duplicate(outcome(1), digest(1))
     );
 }
 

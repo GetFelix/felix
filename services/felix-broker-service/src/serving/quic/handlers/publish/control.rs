@@ -4,7 +4,7 @@ mod batch;
 mod binary;
 mod message;
 
-pub(crate) use batch::handle_publish_batch_message;
+pub(crate) use batch::{handle_publish_batch_message, sequence_reuse};
 pub(crate) use binary::{
     handle_acked_binary_publish_batch_control, handle_binary_publish_batch_control,
 };

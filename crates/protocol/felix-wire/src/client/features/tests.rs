@@ -227,3 +227,14 @@ fn shard_moved_is_a_new_feature_bit_and_disturbs_nothing() {
         crate::FEATURE_SHARD_MOVED
     ));
 }
+
+#[test]
+fn sequence_reused_is_a_new_feature_bit_and_disturbs_nothing() {
+    let others = crate::KNOWN_FEATURES & !crate::FEATURE_SEQUENCE_REUSED;
+    assert_eq!(crate::FEATURE_SEQUENCE_REUSED & others, 0);
+    assert!(crate::supports_feature(
+        crate::KNOWN_FEATURES,
+        crate::FEATURE_SEQUENCE_REUSED
+    ));
+    assert!(!crate::supports_feature(0, crate::FEATURE_SEQUENCE_REUSED));
+}
