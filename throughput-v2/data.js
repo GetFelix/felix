@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790524681419,
+  "lastUpdate": 1790525452190,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -17732,6 +17732,58 @@ window.BENCHMARK_DATA = {
             "range": "12294.56",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 932015.50\nmean: 930603.77\nstdev: 12294.56\ncv: 1.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e6afa62666b2f78ceb5a70d7e8a2784fef6adb96",
+          "message": "fix(kafka): cap the vendored record-batch reserve at the bytes left (#762)\n\nRecordBatchDecoder reserved Vec capacity for the record count a batch\nheader claims, so a 66-byte produce batch could ask for over 3 GB. Found\nby the kafka_records fuzz target. Cap the reservation at the buffer's\nremaining bytes, as the array decoders already do.\n\nSpec-Unaffected: Kafka record decoding only.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T09:08:09-07:00",
+          "tree_id": "14d82b1f65f0e162a04239186f74eae2b5877569",
+          "url": "https://github.com/gabloe/felix/commit/e6afa62666b2f78ceb5a70d7e8a2784fef6adb96"
+        },
+        "date": 1790525451218,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 504578.01,
+            "range": "11394.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 504578.01\nmean: 502824.54\nstdev: 11394.95\ncv: 2.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 504578.01,
+            "range": "11394.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 504578.01\nmean: 502824.54\nstdev: 11394.95\ncv: 2.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119138.73,
+            "range": "1057.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119138.73\nmean: 119020.01\nstdev: 1057.75\ncv: 0.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1191387.31,
+            "range": "10577.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1191387.31\nmean: 1190200.10\nstdev: 10577.54\ncv: 0.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
