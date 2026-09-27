@@ -34,6 +34,10 @@ NOT_OPERATIONAL = {
     "FELIX_CACHE_BENCH_WARMUP",
     "FELIX_CLUSTER_VERBOSE",
     "FELIX_DEMO_LOG_CAPACITY",
+    # The history-checker campaign's seed and length. Documented in
+    # `docs/history-checker.md`.
+    "FELIX_HISTORY_DURATION_SECS",
+    "FELIX_HISTORY_SEED",
     "FELIX_LATENCY_DEMO_FAST",
     # Test-only fault injection. Documented in `docs/cluster-harness.md`, and
     # deliberately not advertised as a production setting.

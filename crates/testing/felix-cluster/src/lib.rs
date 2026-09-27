@@ -29,11 +29,14 @@
 //! [`ClusterConfig`] is what a test asks for. [`scenarios`] holds the
 //! assertions that must hold on any deployment, and [`session`] is how the
 //! `felix-cluster` CLI finds a cluster started in another terminal.
+//! [`history`] runs randomized fault campaigns and checks what the clients
+//! saw against what a replicated log promises.
 
 pub mod client;
 mod cluster;
 mod config;
 pub mod controlplane;
+pub mod history;
 mod node;
 pub mod pki;
 pub mod ports;

@@ -1,0 +1,107 @@
+name: History checker (nightly)
+
+# The list-append history campaign (docs/history-checker.md), run for much
+# longer than the per-PR test and with a new seed each night. A bug that needs
+# an unlucky interleaving needs many interleavings to turn up, and the per-PR
+# run has a fixed seed and under a minute.
+#
+# The seed is printed before the run and in the job summary on failure, so a red
+# night can be replayed with FELIX_HISTORY_SEED.
+
+on:
+  schedule:
+    # Every night at 03:17 UTC.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Seed (a number, or empty for a random one)"
+        required: false
+        default: ""
+      duration_secs:
+        description: "How long the nemesis runs"
+        required: false
+        default: "1200"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: history-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Brokers would otherwise reserve full segments up front, and three of them
+  # restarting all night add up on a hosted runner's disk.
+  FELIX_DURABLE_PREALLOCATE: "false"
+  FELIX_TEST_TIMEOUT_SCALE: "3"
+
+jobs:
+  campaign:
+    runs-on: ubuntu-latest
+    # 20 minutes of faults, plus a build that may be cold and the start-up.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.97.1"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Build the broker the harness runs
+        run: cargo build -p felix-broker-service --bin felix-broker
+
+      - name: Choose a seed
+        id: seed
+        # Inputs reach the script through the environment, never pasted into it.
+        env:
+          SEED_INPUT: ${{ inputs.seed }}
+        run: |
+          seed="$SEED_INPUT"
+          if [ -z "$seed" ]; then
+            seed=$(od -An -N8 -tu8 /dev/urandom | tr -d ' ')
+          fi
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+          echo "history campaign seed: $seed"
+
+      - name: Run the campaign
+        env:
+          FELIX_HISTORY_SEED: ${{ steps.seed.outputs.seed }}
+          FELIX_HISTORY_DURATION_SECS: ${{ inputs.duration_secs || '1200' }}
+        run: |
+          set -o pipefail
+          cargo test -p felix-cluster --test history -- --nocapture 2>&1 | tee /tmp/history-output.txt
+
+      - name: Report the seed
+        if: failure()
+        env:
+          SEED: ${{ steps.seed.outputs.seed }}
+          DURATION: ${{ inputs.duration_secs || '1200' }}
+        run: |
+          {
+            echo "## History campaign failed"
+            echo
+            echo "Seed: \`$SEED\`. Replay with:"
+            echo
+            echo '```'
+            echo "FELIX_HISTORY_SEED=$SEED FELIX_HISTORY_DURATION_SECS=$DURATION cargo test -p felix-cluster --test history -- --nocapture"
+            echo '```'
+            echo
+            echo '```'
+            sed -n '/violation(s)/,/^test /p' /tmp/history-output.txt | head -80
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "history campaign seed: $SEED"
+
+      - name: Upload the output
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: history-output
+          path: /tmp/history-output.txt
+          retention-days: 30
