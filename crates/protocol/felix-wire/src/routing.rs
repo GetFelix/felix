@@ -12,8 +12,38 @@
 //! whose shard count is stale still routes to the right broker. Sharing the
 //! function is about bounding that cache by shard count rather than by the
 //! number of distinct keys.
+//!
+//! There are two mappings. [`ShardRouting::Modulo`] is `hash % shards`, which
+//! every stream used before there was a choice and still uses unless it was
+//! created asking otherwise. [`ShardRouting::JumpHash`] is jump consistent
+//! hashing: growing a stream from `n - 1` to `n` shards moves about `1/n` of
+//! the keys, where modulo moves nearly all of them. A stream's mapping is fixed
+//! when it is created and recorded with it, so no existing stream is remapped.
 
-/// Map a routing key to a shard number.
+use serde::{Deserialize, Serialize};
+
+/// How a stream maps routing keys to shards. Chosen when the stream is
+/// created and never changed afterwards.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShardRouting {
+    /// `hash(key) % shards`. The default, and the only mapping a stream
+    /// created before routing modes existed can have.
+    #[default]
+    Modulo,
+    /// Jump consistent hash (Lamping & Veach) of the same key hash.
+    JumpHash,
+}
+
+impl ShardRouting {
+    /// True for the original mapping, which is what an absent field means on
+    /// the wire and in stored metadata.
+    pub fn is_modulo(&self) -> bool {
+        *self == Self::Modulo
+    }
+}
+
+/// Map a routing key to a shard number with [`ShardRouting::Modulo`].
 ///
 /// Deterministic and pure, so the same key lands on the same shard on every
 /// broker, in every client, and across restarts.
@@ -34,6 +64,20 @@ pub fn shard_for(shards: u32, routing_key: Option<&[u8]>) -> u32 {
     }
 }
 
+/// Map a routing key to a shard number with the stream's own mapping.
+///
+/// No key is shard 0 under either mapping, and so is every key of a stream
+/// with one shard.
+pub fn shard_for_routing(routing: ShardRouting, shards: u32, routing_key: Option<&[u8]>) -> u32 {
+    match (routing, routing_key) {
+        (ShardRouting::Modulo, _) => shard_for(shards, routing_key),
+        (ShardRouting::JumpHash, Some(key)) if shards > 1 => {
+            jump_hash(finalize(fnv1a(key)), shards)
+        }
+        (ShardRouting::JumpHash, _) => 0,
+    }
+}
+
 fn fnv1a(bytes: &[u8]) -> u64 {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -51,6 +95,19 @@ fn finalize(mut hash: u64) -> u64 {
     hash ^= hash >> 27;
     hash = hash.wrapping_mul(0x94d0_49bb_1331_11eb);
     hash ^ (hash >> 31)
+}
+
+/// Jump consistent hash, as published: the constants and the float arithmetic
+/// are the paper's, so any implementation of it gives these answers.
+fn jump_hash(mut key: u64, buckets: u32) -> u32 {
+    let mut bucket: i64 = -1;
+    let mut next: i64 = 0;
+    while next < i64::from(buckets) {
+        bucket = next;
+        key = key.wrapping_mul(2_862_933_555_777_941_757).wrapping_add(1);
+        next = ((bucket + 1) as f64 * ((1u64 << 31) as f64 / ((key >> 33) + 1) as f64)) as i64;
+    }
+    bucket as u32
 }
 
 #[cfg(test)]

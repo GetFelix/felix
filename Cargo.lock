@@ -1370,6 +1370,7 @@ dependencies = [
  "anyhow",
  "libc",
  "quinn",
+ "quinn-proto",
  "rcgen",
  "rustls",
  "socket2",

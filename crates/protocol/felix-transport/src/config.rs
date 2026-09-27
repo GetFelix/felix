@@ -43,6 +43,8 @@ const DEFAULT_UDP_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 // pulled cable) takes to be noticed, and a publish waiting on that connection
 // waits that long before it can go elsewhere. So it is short. Three keep-alives
 // fit inside it, so a healthy but quiet connection survives two lost packets.
+// A WAN deployment that sees multi-second stalls can raise both through
+// FELIX_MAX_IDLE_TIMEOUT_MS and FELIX_KEEPALIVE_MS.
 const DEFAULT_MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(6);
 const DEFAULT_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -95,16 +97,50 @@ pub struct TransportConfig {
     /// still perfectly healthy. Without this, a stream with a 30-second gap
     /// between records loses every subscriber.
     ///
-    /// Must stay comfortably below `max_idle_timeout`; quinn only sends these
-    /// when the connection is otherwise silent, so a busy connection pays
-    /// nothing.
+    /// Must stay below half of `max_idle_timeout`, so one lost keep-alive
+    /// does not end the connection. A larger value is replaced by a third of
+    /// the idle timeout when the endpoint is built (see
+    /// [`TransportConfig::effective_keep_alive`]). `None` turns keep-alives off.
+    /// quinn only sends these when the connection is otherwise silent, so a
+    /// busy connection pays nothing. `FELIX_KEEPALIVE_MS`.
     pub keep_alive_interval: Option<std::time::Duration>,
     /// How long a silent connection survives.
     ///
     /// Set explicitly rather than inherited so the relationship with
     /// `keep_alive_interval` is visible in one place: changing this without
     /// changing that is how idle subscriptions start dying again.
+    /// `FELIX_MAX_IDLE_TIMEOUT_MS`.
     pub max_idle_timeout: Option<std::time::Duration>,
+}
+
+impl TransportConfig {
+    /// The keep-alive interval an endpoint is actually built with.
+    ///
+    /// With an idle timeout set, a keep-alive not below half of it would let
+    /// one lost packet close a healthy connection, so it is replaced by a
+    /// third of the timeout. A zero interval is treated the same way: quinn
+    /// would read it as "send constantly". `None` stays off.
+    pub fn effective_keep_alive(&self) -> Option<Duration> {
+        let Some(idle) = self.max_idle_timeout else {
+            return self
+                .keep_alive_interval
+                .filter(|interval| !interval.is_zero());
+        };
+        match self.keep_alive_interval {
+            None => None,
+            Some(interval) if !interval.is_zero() && interval * 2 < idle => Some(interval),
+            configured => {
+                let replacement = idle / 3;
+                tracing::warn!(
+                    configured = ?configured,
+                    idle_timeout = ?idle,
+                    using = ?replacement,
+                    "the QUIC keep-alive must be under half the idle timeout; using a third of it",
+                );
+                Some(replacement)
+            }
+        }
+    }
 }
 
 impl Default for TransportConfig {

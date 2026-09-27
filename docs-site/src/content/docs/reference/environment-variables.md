@@ -124,6 +124,32 @@ issued by it, or the handshake is refused.
 - The Rust client presents a certificate through its `quinn::ClientConfig`.
   The Python and TypeScript bindings do not offer client certificates yet.
 
+### `FELIX_TLS_REQUIRE_ALPN`
+
+**Description**: Refuse QUIC clients that do not negotiate the `felix/1` ALPN.
+
+**Type**: Boolean (`true`/`false`)
+
+**Default**: `false`
+
+**Notes**:
+- The client listeners always select `felix/1` for a client that offers it and
+  refuse a client that offers only other protocols. A client offering no ALPN
+  (every client built before it existed) is still accepted unless this is set.
+
+### `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`
+
+**Description**: When a client presents a certificate, require its token's
+subject (`sub`) to be a DNS or IP name that certificate is valid for.
+
+**Type**: Boolean (`true`/`false`)
+
+**Default**: `false`
+
+**Notes**:
+- Needs `FELIX_TLS_CLIENT_CA`; set without it, startup fails.
+- Applies to the QUIC client listeners. The Kafka listener does not bind yet.
+
 ### `FELIX_TLS_REQUIRE_CERT`
 
 **Description**: Refuse to start on the generated development certificate.

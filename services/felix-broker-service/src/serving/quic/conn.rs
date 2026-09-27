@@ -347,6 +347,7 @@ pub(crate) async fn handle_connection_with_shutdown(
                 let config = config.clone();
                 let auth = Arc::clone(&auth);
                 let publish_ctx = publish_ctx.clone();
+                let peer_certs = connection.peer_certificates();
                 streams.spawn(async move {
                     // Dispatch the unidirectional publish stream handler.
                     if let Err(err) = handle_uni_stream(
@@ -355,6 +356,7 @@ pub(crate) async fn handle_connection_with_shutdown(
                         auth,
                         publish_ctx,
                         recv,
+                        peer_certs,
                     )
                     .await
                     {

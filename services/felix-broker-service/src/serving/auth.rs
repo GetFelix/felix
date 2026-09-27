@@ -39,6 +39,9 @@ use tokio_util::sync::CancellationToken;
 pub struct BrokerAuth {
     verifier: Arc<FelixTokenVerifier>,
     key_store: Arc<ControlPlaneKeyStore>,
+    /// Require a token's subject to match the client certificate, when the
+    /// client presented one (`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`).
+    bind_subject: bool,
 }
 
 impl BrokerAuth {
@@ -57,6 +60,7 @@ impl BrokerAuth {
         Self {
             verifier,
             key_store,
+            bind_subject: false,
         }
     }
 
@@ -70,7 +74,32 @@ impl BrokerAuth {
         Self {
             verifier,
             key_store,
+            bind_subject: false,
         }
+    }
+
+    /// Require every token presented over a connection with a client
+    /// certificate to name that certificate's identity as its subject.
+    pub fn with_subject_binding(mut self, bind_subject: bool) -> Self {
+        self.bind_subject = bind_subject;
+        self
+    }
+
+    /// [`Self::authenticate`] for a client on a connection that may carry a
+    /// certificate, checking the token's subject against it when this broker
+    /// binds the two.
+    pub async fn authenticate_peer(
+        &self,
+        tenant_id: &str,
+        token: &str,
+        peer_certs: Option<&[rustls::pki_types::CertificateDer<'_>]>,
+    ) -> Result<AuthContext> {
+        let context = self.authenticate(tenant_id, token).await?;
+        if self.bind_subject {
+            crate::serving::tls::check_subject_binding(peer_certs, &context.subject)
+                .map_err(|reason| anyhow::anyhow!("token refused: {reason}"))?;
+        }
+        Ok(context)
     }
 
     /// Verify a token for a tenant and return an [`AuthContext`] with a
@@ -88,6 +117,7 @@ impl BrokerAuth {
             tenant_id: tenant_id.to_string(),
             matcher,
             token: token.to_string(),
+            subject: claims.sub,
         })
     }
 }
@@ -100,6 +130,8 @@ pub struct AuthContext {
     /// The token itself, kept so a request this broker forwards carries it
     /// and the owner can verify it again. Never logged.
     pub token: String,
+    /// The principal the token was issued to (`sub`).
+    pub subject: String,
 }
 
 /// How long one JWKS request may take, connect included.

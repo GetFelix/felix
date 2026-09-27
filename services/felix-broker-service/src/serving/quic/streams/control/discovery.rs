@@ -126,7 +126,11 @@ pub(super) async fn stream_shards(
             out_ack_depth,
             "felix_broker_out_ack_depth",
             ack_throttle_tx,
-            Outgoing::Message(Message::StreamShardsView { shards, request_id }),
+            Outgoing::Message(Message::StreamShardsView {
+                shards,
+                request_id,
+                routing: None,
+            }),
         )
         .await,
         ack_timeout_state,
