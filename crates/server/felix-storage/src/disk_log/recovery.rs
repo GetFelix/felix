@@ -24,16 +24,19 @@
 //!
 //! * The **active** segment is always scanned in full. It is the only one that
 //!   can have a torn tail, and it is bounded by `segment_size_bytes`.
-//! * **Sealed** segments get their header validated, their index loaded, and the
-//!   records after the last index entry checked — bounded by one index interval.
-//!   Everything else is verified lazily, because every read verifies the checksum
-//!   of every record it returns.
+//! * **Sealed** segments get their header validated and the records after
+//!   their index's last entry checked — bounded by one index interval. Only
+//!   that last entry is read here; the index itself is loaded by the first
+//!   read that needs it, so an open holds no index in memory. Everything else
+//!   is verified lazily, because every read verifies the checksum of every
+//!   record it returns.
 //!
 //! Set `LogConfig::verify_all_on_open` to trade startup time for eager detection
 //! of bit rot in cold data.
 
 use std::path::Path;
 
+use super::durable_mark::{self, DurableMark};
 use super::now_micros;
 use super::segments::SealedEntry;
 use crate::io::sync_dir;
@@ -41,8 +44,8 @@ use crate::log::{LogConfig, Offset, RecordMark, SegmentDescriptor, SegmentId};
 use crate::segment::format::SEGMENT_HEADER_LEN;
 use crate::segment::writer::ResumeState;
 use crate::segment::{
-    ScanStart, SegmentReader, SegmentWriter, SparseIndex, index_file_name, parse_segment_file_name,
-    read_segment_header, scan_segment, segment_file_name,
+    ScanStart, SegmentWriter, SparseIndex, TailRepair, index_file_name, parse_segment_file_name,
+    read_segment_header, scan_segment, scan_segment_with, segment_file_name,
 };
 use crate::{Corruption, CorruptionKind, Result, StorageError, metrics_names};
 
@@ -75,11 +78,14 @@ pub(super) fn recover_shard(dir: &Path, label: &str, config: &LogConfig) -> Resu
     }
 
     let mut ids = discover_segment_ids(dir)?;
+    // Read once, before anything is repaired: it describes the files as the
+    // last run left them.
+    let mark = durable_mark::load(dir);
     // Rollover prepares the replacement segment ahead of the swap that installs
     // it, so a crash — or a truncation — can leave one behind that was never
     // used. Drop them before recovery proper, or their base offset reads as a
     // break in the offset chain. See `discard_abandoned_preparations`.
-    let abandoned = discard_abandoned_preparations(dir, label, config, &mut ids)?;
+    let abandoned = discard_abandoned_preparations(dir, label, config, mark, &mut ids)?;
     let recovered = match ids.split_last() {
         None => Recovered {
             sealed: Vec::new(),
@@ -96,16 +102,17 @@ pub(super) fn recover_shard(dir: &Path, label: &str, config: &LogConfig) -> Resu
             active_marks: Vec::new(),
         },
         Some((active_id, sealed_ids)) => {
-            match recover_existing(dir, label, config, sealed_ids, *active_id) {
+            match recover_existing(dir, label, config, mark, sealed_ids, *active_id) {
                 Err(StorageError::Corruption(detail)) => {
-                    let Some(retired) = unsealed_retired(dir, label, config, sealed_ids, &detail)?
+                    let Some(retired) =
+                        unsealed_retired(dir, label, config, mark, sealed_ids, &detail)?
                     else {
                         return Err(StorageError::Corruption(detail));
                     };
                     repair_unsealed_retired(dir, label, &retired, *active_id)?;
                     let ids = discover_segment_ids(dir)?;
                     let (active_id, sealed_ids) = ids.split_last().expect("the retired segment");
-                    recover_existing(dir, label, config, sealed_ids, *active_id)?
+                    recover_existing(dir, label, config, mark, sealed_ids, *active_id)?
                 }
                 recovered => recovered?,
             }
@@ -220,6 +227,7 @@ fn discard_abandoned_preparations(
     dir: &Path,
     label: &str,
     config: &LogConfig,
+    mark: Option<DurableMark>,
     ids: &mut Vec<SegmentId>,
 ) -> Result<usize> {
     let mut discarded = 0;
@@ -235,13 +243,13 @@ fn discard_abandoned_preparations(
         let base_offset = if headerless {
             None
         } else {
-            let outcome = scan_segment(
+            let outcome = scan_segment_with(
                 &path,
                 id,
                 label,
                 config.index_spacing_bytes,
                 ScanStart::Full,
-                config.repair_checksum_tail,
+                tail_repair(config, mark, id),
             )?;
             if outcome.record_count > 0 {
                 break;
@@ -249,13 +257,13 @@ fn discard_abandoned_preparations(
 
             // Empty. Compare its base against where the previous segment ends.
             let previous = *ids.get(ids.len() - 2).expect("len > 1");
-            let previous_end = scan_segment(
+            let previous_end = scan_segment_with(
                 &dir.join(segment_file_name(previous)),
                 previous,
                 label,
                 config.index_spacing_bytes,
                 ScanStart::Full,
-                config.repair_checksum_tail,
+                tail_repair(config, mark, previous),
             )?
             .next_offset;
             if outcome.header.base_offset == previous_end {
@@ -311,6 +319,7 @@ fn unsealed_retired(
     dir: &Path,
     label: &str,
     config: &LogConfig,
+    mark: Option<DurableMark>,
     sealed_ids: &[SegmentId],
     detail: &Corruption,
 ) -> Result<Option<UnsealedRetired>> {
@@ -320,13 +329,16 @@ fn unsealed_retired(
     if detail.site.segment != Some(id) {
         return Ok(None);
     }
-    match scan_segment(
+    match scan_segment_with(
         &dir.join(segment_file_name(id)),
         id,
         label,
         config.index_spacing_bytes,
         ScanStart::Full,
-        false,
+        TailRepair {
+            checksum_tail: false,
+            unsynced_from: DurableMark::unsynced_from(mark, id),
+        },
     ) {
         Ok(outcome) if outcome.torn_tail.is_some() => Ok(Some(UnsealedRetired {
             id,
@@ -399,6 +411,7 @@ fn recover_existing(
     dir: &Path,
     label: &str,
     config: &LogConfig,
+    mark: Option<DurableMark>,
     sealed_ids: &[SegmentId],
     active_id: SegmentId,
 ) -> Result<Recovered> {
@@ -430,13 +443,13 @@ fn recover_existing(
     // The newest segment is the only one that can have been mid-write when the
     // process died, so it always gets a full scan.
     let active_path = dir.join(segment_file_name(active_id));
-    let mut outcome = scan_segment(
+    let mut outcome = scan_segment_with(
         &active_path,
         active_id,
         label,
         config.index_spacing_bytes,
         ScanStart::Full,
-        config.repair_checksum_tail,
+        tail_repair(config, mark, active_id),
     )?;
     if let Some(expected) = expected_base
         && expected != outcome.header.base_offset
@@ -504,14 +517,13 @@ fn open_sealed(dir: &Path, label: &str, config: &LogConfig, id: SegmentId) -> Re
     let header = read_segment_header(&path, id, label)?;
     let base_offset = header.base_offset;
 
-    let loaded = SparseIndex::load(&dir.join(index_file_name(id)), base_offset);
+    let last = SparseIndex::load_last(&dir.join(index_file_name(id)), base_offset);
     let mut rebuilt_index = false;
 
-    let resumed = match (loaded, config.verify_all_on_open) {
-        (Some(index), false) if !index.is_empty() => {
+    let resumed = match (last, config.verify_all_on_open) {
+        (Some(last), false) => {
             // Resume from the last index entry: only the records it does not
             // cover need checking, which is bounded by one index interval.
-            let last = index.entries().last().copied().expect("non-empty");
             let resumed = scan_segment(
                 &path,
                 id,
@@ -527,7 +539,7 @@ fn open_sealed(dir: &Path, label: &str, config: &LogConfig, id: SegmentId) -> Re
             );
             match resumed {
                 Ok(outcome) if outcome.torn_tail.is_none() && outcome.valid_bytes == file_len => {
-                    Some((index, outcome))
+                    Some(outcome)
                 }
                 // The index sent the scan somewhere that is not a record
                 // boundary, or not the one it claims. That may be the index
@@ -546,7 +558,7 @@ fn open_sealed(dir: &Path, label: &str, config: &LogConfig, id: SegmentId) -> Re
         }
         _ => None,
     };
-    let (index, outcome) = match resumed {
+    let outcome = match resumed {
         Some(resumed) => resumed,
         None => {
             // No usable index, or a full verification was requested: walk the
@@ -561,7 +573,7 @@ fn open_sealed(dir: &Path, label: &str, config: &LogConfig, id: SegmentId) -> Re
                 false,
             )?;
             outcome.index.persist(&dir.join(index_file_name(id)))?;
-            (outcome.index.clone(), outcome)
+            outcome
         }
     };
 
@@ -592,14 +604,18 @@ fn open_sealed(dir: &Path, label: &str, config: &LogConfig, id: SegmentId) -> Re
         size_bytes: file_len,
     };
     Ok(OpenedSealed {
-        entry: SealedEntry {
-            descriptor,
-            index,
-            reader: std::sync::Arc::new(SegmentReader::open(&path, id, base_offset)?),
-            holds_marks: header.holds_marks(),
-        },
+        entry: SealedEntry::new(descriptor, header.holds_marks()),
         rebuilt_index,
     })
+}
+
+/// What a scan of segment `id` may repair: the configured checksum rule, and
+/// anything past where the durable mark says its synced bytes end.
+fn tail_repair(config: &LogConfig, mark: Option<DurableMark>, id: SegmentId) -> TailRepair {
+    TailRepair {
+        checksum_tail: config.repair_checksum_tail,
+        unsynced_from: DurableMark::unsynced_from(mark, id),
+    }
 }
 
 fn gap_error(label: &str, id: SegmentId, expected: Offset, found: Offset) -> StorageError {

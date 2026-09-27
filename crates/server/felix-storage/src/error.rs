@@ -41,6 +41,17 @@ pub enum StorageError {
         offset: u64,
         commit: u64,
     },
+    /// The log was closed, because the shard it holds moved away. Names the
+    /// shard. Reopening it through its provider gives a working log.
+    Closed(String),
+    /// A shard directory holds a different shard than the one being opened:
+    /// two keys whose directory names collide. Refused rather than mixing
+    /// two shards' records in one log.
+    ShardMismatch {
+        dir: String,
+        expected: String,
+        found: String,
+    },
     Io(std::io::Error),
 }
 
@@ -61,6 +72,15 @@ impl fmt::Display for StorageError {
                 f,
                 "refusing to discard records from offset {offset}: everything below \
                  {commit} is committed"
+            ),
+            StorageError::Closed(shard) => write!(f, "the log for {shard} is closed"),
+            StorageError::ShardMismatch {
+                dir,
+                expected,
+                found,
+            } => write!(
+                f,
+                "shard directory {dir} belongs to {found}, not {expected}; refusing to open it"
             ),
             StorageError::Io(err) => write!(f, "io error: {err}"),
         }

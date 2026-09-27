@@ -23,7 +23,10 @@ pub use format::{
 };
 pub use index::{IndexWriter, SparseIndex};
 pub use reader::{ReadBudget, SegmentReader};
-pub use scan::{ScanOutcome, ScanStart, TornTail, read_segment_header, scan_segment};
+pub use scan::{
+    ScanOutcome, ScanStart, TailRepair, TornTail, read_segment_header, scan_segment,
+    scan_segment_with,
+};
 pub use writer::{ResumeState, SegmentWriter};
 
 use crate::log::SegmentId;

@@ -115,6 +115,15 @@ pub struct LogConfig {
     /// caught — just when it is read rather than at boot. Turn this on where a
     /// slow, loud startup is preferable to a late surprise.
     pub verify_all_on_open: bool,
+    /// Most sealed segments kept open at once, per storage root.
+    ///
+    /// A sealed segment's file and sparse index are opened by the first read
+    /// that reaches it and closed again when this many others have been used
+    /// since. The index is about 1/256 of its segment at the default spacing,
+    /// so this bounds both descriptors and index memory by what is being read
+    /// rather than by what is retained. The active segment of every open log
+    /// is always open and does not count.
+    pub max_open_sealed_segments: usize,
 }
 
 impl LogConfig {
@@ -158,6 +167,11 @@ impl LogConfig {
         {
             return Err(StorageError::InvalidConfig(
                 "retention_check_interval must be greater than zero",
+            ));
+        }
+        if self.max_open_sealed_segments == 0 {
+            return Err(StorageError::InvalidConfig(
+                "max_open_sealed_segments must be greater than zero",
             ));
         }
         if let FsyncMode::Periodic { interval } = self.fsync_mode
@@ -212,6 +226,7 @@ impl Default for LogConfig {
             retention_bytes: None,
             retention_age: None,
             retention_check_interval: Duration::from_secs(60),
+            max_open_sealed_segments: 256,
         }
     }
 }

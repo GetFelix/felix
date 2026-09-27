@@ -29,6 +29,19 @@ pub enum ScanStart {
     Resume { position: u64, next_offset: Offset },
 }
 
+/// How much damage at a segment's end a scan may treat as a torn tail.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TailRepair {
+    /// Mirrors [`crate::log::LogConfig::repair_checksum_tail`].
+    pub checksum_tail: bool,
+    /// The byte position from which this segment's bytes were never known to
+    /// be synced, from the shard's durable mark. Damage at or past it cannot
+    /// be an acknowledged durable record, so it is repaired whatever its kind.
+    /// `None` when there is no mark, or the mark says the whole segment was
+    /// synced.
+    pub unsynced_from: Option<u64>,
+}
+
 /// What a full validating scan of a segment found.
 #[derive(Debug, Clone)]
 pub struct ScanOutcome {
@@ -76,7 +89,7 @@ struct ScanState {
     bytes_since_entry: u64,
     spacing: u64,
     rebuild_index: bool,
-    repair_checksum_tail: bool,
+    repair: TailRepair,
     marks: Vec<(Offset, RecordMark)>,
 }
 
@@ -114,13 +127,21 @@ impl ScanState {
         shard_label: &str,
         segment_id: SegmentId,
     ) -> Result<ScanOutcome> {
-        if is_repairable_tail(
-            &err.kind,
-            self.position,
-            claimed_len,
-            file_len,
-            self.repair_checksum_tail,
-        ) {
+        // Past the durable mark nothing was ever reported synced, so any
+        // damage there is a write the device did not finish, not rot.
+        let unsynced = self
+            .repair
+            .unsynced_from
+            .is_some_and(|from| self.position >= from);
+        if unsynced
+            || is_repairable_tail(
+                &err.kind,
+                self.position,
+                claimed_len,
+                file_len,
+                self.repair.checksum_tail,
+            )
+        {
             return Ok(self.torn(file_len, err.kind));
         }
         let damaged_end = self.position + claimed_len.unwrap_or(RECORD_HEADER_LEN);
@@ -166,6 +187,28 @@ pub fn scan_segment(
     start: ScanStart,
     repair_checksum_tail: bool,
 ) -> Result<ScanOutcome> {
+    scan_segment_with(
+        path,
+        segment_id,
+        shard_label,
+        index_spacing_bytes,
+        start,
+        TailRepair {
+            checksum_tail: repair_checksum_tail,
+            unsynced_from: None,
+        },
+    )
+}
+
+/// [`scan_segment`], also told where the segment's synced bytes end.
+pub fn scan_segment_with(
+    path: &Path,
+    segment_id: SegmentId,
+    shard_label: &str,
+    index_spacing_bytes: u64,
+    start: ScanStart,
+    repair: TailRepair,
+) -> Result<ScanOutcome> {
     let file = File::open(path)?;
     let file_len = file.metadata()?.len();
     let mut cursor = SegmentCursor::new(&file);
@@ -205,7 +248,7 @@ pub fn scan_segment(
             u64::MAX
         },
         rebuild_index,
-        repair_checksum_tail,
+        repair,
         marks: Vec::new(),
     };
 

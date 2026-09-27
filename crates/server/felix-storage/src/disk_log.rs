@@ -4,8 +4,10 @@
 //!
 //! * `layout`    — `ShardKey` to directory name, safely.
 //! * `segments`  — the segment set: rollover, offset routing, truncation.
+//! * `sealed`    — sealed segments, and the bounded cache of their open files.
 //! * `recovery`  — startup discovery, validation and torn-tail repair.
 //! * `sync`      — fsync policy and group commit.
+//! * `durable_mark` — how far the active segment is known to be synced.
 //! * `retention` — deleting the oldest segments once a bound is exceeded.
 //! * `epochs`    — where each leadership generation began.
 //! * `replica_state` — the highest generation accepted, and the commit offset.
@@ -39,6 +41,7 @@
 pub mod layout;
 
 mod append;
+mod durable_mark;
 mod epochs;
 mod flush;
 mod producers;
@@ -46,6 +49,7 @@ mod provider;
 mod recovery;
 pub(crate) mod replica_state;
 mod retention;
+mod sealed;
 mod segments;
 mod sync;
 
@@ -61,6 +65,7 @@ use parking_lot::{Mutex, RwLock};
 
 use self::append::RollState;
 use self::producers::ProducerState;
+use self::sealed::SealedFiles;
 use self::segments::SegmentSet;
 use self::sync::{Durability, PeriodicSyncer};
 use crate::log::{
@@ -109,7 +114,8 @@ impl DiskLog {
         label: impl Into<String>,
         config: LogConfig,
     ) -> Result<Self> {
-        Self::open_inner(dir.into(), label.into(), config, None)
+        let files = SealedFiles::new(config.max_open_sealed_segments);
+        Self::open_shared(dir.into(), label.into(), config, None, files)
     }
 
     /// Open a shard log, creating it to begin at `base_offset` if it does not
@@ -130,7 +136,8 @@ impl DiskLog {
         config: LogConfig,
         base_offset: Offset,
     ) -> Result<Self> {
-        Self::open_inner(dir.into(), label.into(), config, Some(base_offset))
+        let files = SealedFiles::new(config.max_open_sealed_segments);
+        Self::open_shared(dir.into(), label.into(), config, Some(base_offset), files)
     }
 
     pub fn label(&self) -> &str {
@@ -175,6 +182,12 @@ impl DiskLog {
         self.inner
             .flushes
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Sealed segments whose file and index the shared cache holds open.
+    #[cfg(test)]
+    pub(crate) fn open_sealed_segments(&self) -> usize {
+        self.inner.segments.read().open_sealed_segments()
     }
 
     /// Every segment on disk, oldest first.
@@ -334,6 +347,7 @@ impl DiskLog {
                 operation.poison_after_writer_failure(&segments);
                 return Err(err);
             }
+            operation.note_rewound(&segments)?;
             operation.durability.reset_after_truncate(base_offset);
             let mut epochs = operation.epochs.lock();
             *epochs = epochs::EpochMap::default();
@@ -441,12 +455,55 @@ impl DiskLog {
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
 
+    /// Stop background work, flush everything one last time, and refuse any
+    /// further change to the files, from this handle or any clone of it.
+    ///
+    /// For a shard this broker no longer holds: once this returns, another
+    /// `DiskLog` may be opened over the same directory. Reads, appends and
+    /// flushes through an old handle fail with [`StorageError::Closed`]. The
+    /// sealed segments' files are released at once; the active segment's
+    /// when the last handle is dropped.
+    pub async fn close(&self) -> Result<()> {
+        if self.inner.closed.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(());
+        }
+        // First, so nothing written from here on can race the flush below or
+        // a log opened after this returns. Every file change checks it under
+        // the lock taken here.
+        self.inner.segments.write().close();
+        let stopped = self.stop_background().await;
+        let flushed = match stopped {
+            Ok(()) => match self.persist_replica_state().await {
+                Ok(()) => self.sync().await,
+                Err(err) => Err(err),
+            },
+            Err(err) => Err(err),
+        };
+        let marked = self.inner.mark.sync().map_err(StorageError::Io);
+        // Last, and under the flush lock, so no flush through a stale handle
+        // can move the mark after the one above.
+        let _flushes = self.inner.durability.lock_flushes().await;
+        self.inner
+            .closed
+            .store(true, std::sync::atomic::Ordering::Release);
+        flushed.and(marked)
+    }
+
     /// Stop background work and flush everything one last time.
     ///
     /// Call before dropping the process's last handle: without it, `Periodic`
     /// mode can lose up to one interval of writes that a clean stop could have
     /// kept.
     pub async fn shutdown(&self) -> Result<()> {
+        self.stop_background().await?;
+        self.persist_replica_state().await?;
+        self.sync().await?;
+        self.inner.mark.sync()?;
+        Ok(())
+    }
+
+    /// Stop the timers and wait out a rollover in flight.
+    async fn stop_background(&self) -> Result<()> {
         // Retention first: it must not start deleting while the rest of
         // shutdown is flushing, and it has nothing to finish on the way out.
         let retention = self.inner.retention.lock().take();
@@ -466,16 +523,17 @@ impl DiskLog {
             // `sync` below is what reports the problem.
             let _ = roll.await;
         }
-        self.inner.check_healthy()?;
-        self.persist_replica_state().await?;
-        self.sync().await
+        self.inner.check_healthy()
     }
 
-    fn open_inner(
+    /// Open a log whose sealed segments' files are cached in `files`, shared
+    /// with the other logs under one root.
+    pub(crate) fn open_shared(
         dir: PathBuf,
         label: String,
         config: LogConfig,
         base_offset: Option<Offset>,
+        files: Arc<SealedFiles>,
     ) -> Result<Self> {
         config.validate()?;
 
@@ -490,6 +548,15 @@ impl DiskLog {
                 "recovered log after an unclean shutdown"
             );
         }
+        // Recovery synced the active segment to exactly where it resumes, so
+        // the mark starts there. That also retires a mark naming a segment or
+        // a length recovery removed, which would make the next recovery refuse
+        // damage in bytes nobody synced.
+        let mark = durable_mark::MarkFile::open(&dir)?;
+        mark.record_durably(durable_mark::DurableMark {
+            segment: recovered.active.id(),
+            synced_bytes: recovered.active.size_bytes(),
+        })?;
         // Read before the directory is handed to the segment set.
         let epochs = epochs::load(&dir);
         let replica = replica_state::load(&dir)?;
@@ -500,6 +567,7 @@ impl DiskLog {
             config.clone(),
             recovered.sealed,
             recovered.active,
+            files,
         )?;
         // Before the log is usable, so no append can be accepted against a
         // producer state that does not yet include what is already on disk.
@@ -526,6 +594,7 @@ impl DiskLog {
             dir: epochs_dir,
             roll_state: AtomicU8::new(RollState::Idle as u8),
             failure: Mutex::new(None),
+            closed: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_seal: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
@@ -540,6 +609,7 @@ impl DiskLog {
             inline_roll_active: std::sync::atomic::AtomicBool::new(false),
             roll_task: Mutex::new(None),
             pending_seal: Mutex::new(None),
+            mark,
             flusher: crate::io::flusher::Flusher::new("felix-flush"),
         });
 
@@ -620,6 +690,9 @@ impl AppendOnlyLog for DiskLog {
     fn read_range(&self, range: ReadRange) -> BoxFuture<'_, Result<Vec<LogRecord>>> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
+            if inner.closed.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(StorageError::Closed(inner.label.clone()));
+            }
             let started = std::time::Instant::now();
             let records = tokio::task::spawn_blocking(move || {
                 loop {
@@ -671,6 +744,10 @@ impl AppendOnlyLog for DiskLog {
     }
 
     fn record_generation(&self, generation: u64, start_offset: Offset) -> Result<bool> {
+        // Held across the write so a close cannot land in between: the file
+        // may belong to another log the moment one does.
+        let segments = self.inner.segments.read();
+        segments.check_open()?;
         let mut epochs = self.inner.epochs.lock();
         if !epochs.record(generation, start_offset) {
             return Ok(false);
@@ -703,6 +780,7 @@ impl AppendOnlyLog for DiskLog {
                     operation.poison_after_writer_failure(&segments);
                     return Err(err);
                 }
+                operation.note_rewound(&segments)?;
                 let tail = segments.tail_offset();
                 operation.durability.reset_after_truncate(tail);
                 // The history cannot outlive the records it describes, or it
@@ -734,6 +812,7 @@ impl AppendOnlyLog for DiskLog {
                 // on, which is what makes its checksum meaningful.
                 if segments.active().record_count() > 0 {
                     segments.roll()?;
+                    inner.note_sealed_before(segments.active().id());
                 }
                 Ok(SealedSegment {
                     descriptor,
@@ -829,6 +908,9 @@ struct LogInner {
     pending_seal: Mutex<Option<Arc<std::fs::File>>>,
     /// Where this log's device flushes run.
     flusher: crate::io::flusher::Flusher,
+    /// How far the active segment is known to be synced, for recovery after
+    /// a power loss. Written after every flush.
+    mark: durable_mark::MarkFile,
     /// Why the log stopped accepting work, once a flush or rollover has failed.
     ///
     /// Separate from `roll_state` because the two are read for different
@@ -838,6 +920,10 @@ struct LogInner {
     /// not yet `Failed`. `roll_state` remains the scheduler's view; this is the
     /// durability view.
     failure: Mutex<Option<String>>,
+    /// Set once `DiskLog::close` has made its last flush. From then on even a
+    /// flush is refused, so a stale handle cannot touch the files another log
+    /// may now own.
+    closed: std::sync::atomic::AtomicBool,
     /// Forces the next seal to fail, so the failure path can be tested.
     #[cfg(test)]
     fail_seal: std::sync::atomic::AtomicBool,
@@ -911,6 +997,11 @@ impl LogInner {
     /// Save a snapshot taken by [`Self::producer_snapshot`]. Failing costs a
     /// longer open later, so it is logged rather than returned.
     fn store_producer_snapshot(&self, (as_of, state): (Offset, ProducerState)) {
+        // Held so a close cannot land between the check and the write.
+        let segments = self.segments.read();
+        if segments.check_open().is_err() {
+            return;
+        }
         if let Err(err) = producers::store(&self.dir, &state, as_of) {
             tracing::warn!(
                 shard = %self.label,

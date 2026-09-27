@@ -90,6 +90,26 @@ pub(crate) fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<us
     }
 }
 
+/// Write all of `buf` at `offset` without touching the file cursor.
+pub(crate) fn write_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
+    while !buf.is_empty() {
+        #[cfg(unix)]
+        let written = file.write_at(buf, offset);
+        #[cfg(windows)]
+        let written = file.seek_write(buf, offset);
+        match written {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(n) => {
+                buf = &buf[n..];
+                offset += n as u64;
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
 /// Reserve `len` bytes of blocks for `file` without changing its logical length.
 ///
 /// Best effort: an unsupported filesystem leaves the file untouched and appends

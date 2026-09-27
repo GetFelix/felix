@@ -22,6 +22,7 @@ impl SegmentSet {
     /// beyond the tail is a no-op; truncating below the base offset empties the
     /// log.
     pub(crate) fn truncate(&mut self, offset: Offset) -> Result<()> {
+        self.check_open()?;
         if offset >= self.tail_offset() {
             return Ok(());
         }
@@ -31,7 +32,9 @@ impl SegmentSet {
         while let Some(entry) = self.sealed.last() {
             if entry.descriptor.base_offset >= offset {
                 let id = entry.descriptor.id;
-                self.sealed.pop();
+                if let Some(entry) = self.sealed.pop() {
+                    self.forget(&entry);
+                }
                 self.remove_segment_files(id)?;
             } else {
                 break;
@@ -70,8 +73,10 @@ impl SegmentSet {
     /// record is where the new copy begins. Unlike `truncate`, the base may
     /// move in either direction.
     pub(crate) fn reset_to(&mut self, base_offset: Offset) -> Result<()> {
+        self.check_open()?;
         self.generation += 1;
         while let Some(entry) = self.sealed.pop() {
+            self.forget(&entry);
             self.remove_segment_files(entry.descriptor.id)?;
         }
         let active_id = self.active.id();
@@ -89,6 +94,7 @@ impl SegmentSet {
 
     /// Reopen a sealed segment as the active one so appends resume inside it.
     fn adopt_sealed_as_active(&mut self, entry: SealedEntry) -> Result<()> {
+        self.forget(&entry);
         let outcome = scan_segment(
             &self.dir.join(segment_file_name(entry.descriptor.id)),
             entry.descriptor.id,

@@ -63,6 +63,7 @@ impl DurableStorageConfig {
             retention_check_interval: parse_env::<u64>("FELIX_DURABLE_RETENTION_INTERVAL_SECONDS")?
                 .map(Duration::from_secs)
                 .unwrap_or(LogConfig::default().retention_check_interval),
+            max_open_sealed_segments: LogConfig::default().max_open_sealed_segments,
         };
         // Fail at startup rather than at the first durable publish.
         log.validate()
