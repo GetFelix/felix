@@ -54,6 +54,7 @@ pub struct UpstreamOidcValidator {
     clock_skew_seconds: u64,
     allowed_algorithms: Arc<Vec<Algorithm>>,
     allow_insecure_http: bool,
+    allow_private: bool,
 }
 
 impl Default for UpstreamOidcValidator {
@@ -89,9 +90,17 @@ impl UpstreamOidcValidator {
         }
         allowed_algorithms.sort_unstable_by_key(|alg| *alg as u8);
         allowed_algorithms.dedup();
+        let allow_private = crate::auth::idp_registry::allow_private_idp_from_env();
+        // No redirects: the URL checks run on the URL we were given, and a
+        // redirect would send the fetch past them to wherever the IdP says.
+        let mut client = reqwest::Client::builder()
+            .timeout(FETCH_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none());
+        if !allow_private {
+            client = client.dns_resolver(Arc::new(PublicOnlyResolver));
+        }
         Self {
-            client: reqwest::Client::builder()
-                .timeout(FETCH_TIMEOUT)
+            client: client
                 .build()
                 .expect("an HTTP client with default TLS settings"),
             jwks_cache: Arc::new(DashMap::new()),
@@ -103,7 +112,14 @@ impl UpstreamOidcValidator {
             clock_skew_seconds,
             allowed_algorithms: Arc::new(allowed_algorithms),
             allow_insecure_http: crate::auth::idp_registry::allow_insecure_http_from_env(),
+            allow_private,
         }
+    }
+
+    /// Whether IdP URLs may name private addresses. Read once, from
+    /// [`ALLOW_PRIVATE_IDP_ENV`](crate::auth::idp_registry::ALLOW_PRIVATE_IDP_ENV).
+    pub fn allow_private(&self) -> bool {
+        self.allow_private
     }
 
     /// Whether discovery and JWKS may be fetched over plain HTTP from a
@@ -232,6 +248,31 @@ pub enum OidcError {
     Jwt(#[from] jsonwebtoken::errors::Error),
     #[error("invalid claim: {0}")]
     InvalidClaim(String),
+}
+
+/// Resolves IdP hostnames, refusing any that lead to a private address.
+///
+/// Checked here rather than on the URL because a hostname can resolve anywhere,
+/// and checking the addresses actually connected to leaves no window for the
+/// answer to change between check and fetch.
+struct PublicOnlyResolver;
+
+impl reqwest::dns::Resolve for PublicOnlyResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let addrs: Vec<std::net::SocketAddr> =
+                tokio::net::lookup_host((name.as_str(), 0)).await?.collect();
+            if addrs
+                .iter()
+                .any(|addr| crate::auth::idp_registry::is_private_address(addr.ip()))
+            {
+                return Err(
+                    format!("IdP host {} resolves to a private address", name.as_str()).into(),
+                );
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
 }
 
 // Unverified decode, only ever used to locate the issuer before the real

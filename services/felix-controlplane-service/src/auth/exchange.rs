@@ -159,7 +159,12 @@ pub async fn exchange_token(
 
     let mut perms = effective_permissions(&enforcer, &principal.principal_id, &tenant_id);
 
-    perms = filter_permissions(perms, &request, &tenant_id);
+    perms = filter_permissions(
+        perms,
+        request.requested.as_deref(),
+        request.resources.as_deref(),
+        &tenant_id,
+    );
 
     // A token with no permissions is useless and usually masks a
     // misconfiguration; reject instead.
@@ -187,9 +192,10 @@ pub async fn exchange_token(
     // The refresh token is what makes the short access TTL above workable for
     // anything long-running. Its group claims are recorded rather than its
     // permissions: a refresh re-runs RBAC, so a grant removed later stops
-    // working without waiting for a re-exchange.
+    // working without waiting for a re-exchange. The narrowing is recorded so
+    // refresh re-applies it rather than handing back full rights.
     let refresh_ttl = crate::auth::refresh::refresh_ttl();
-    let (record, refresh_secret) = crate::auth::refresh::issue(
+    let (mut record, refresh_secret) = crate::auth::refresh::issue(
         &tenant_id,
         &principal.principal_id,
         principal.groups.clone(),
@@ -197,6 +203,11 @@ pub async fn exchange_token(
         crate::auth::refresh::now_secs(),
         refresh_ttl,
     );
+    record.narrowing = Some(crate::auth::refresh_token::Narrowing {
+        requested: request.requested.clone(),
+        resources: request.resources.clone(),
+        audience: audience.to_string(),
+    });
     state
         .store
         .insert_refresh_token(record)
@@ -244,16 +255,15 @@ pub fn access_token_ttl() -> Duration {
 /// asking for one stream out of a namespace grant yields that stream, not the
 /// namespace. Never widens: a hint outside every grant yields nothing, and a
 /// hint that does not parse matches nothing.
-fn filter_permissions(
+pub(crate) fn filter_permissions(
     perms: Vec<String>,
-    request: &TokenExchangeRequest,
+    requested: Option<&[String]>,
+    resources: Option<&[String]>,
     tenant_id: &str,
 ) -> Vec<String> {
-    let requested_actions = request
-        .requested
-        .as_ref()
-        .map(|actions| actions.iter().map(String::as_str).collect::<HashSet<_>>());
-    let hints = request.resources.as_ref().map(|resources| {
+    let requested_actions =
+        requested.map(|actions| actions.iter().map(String::as_str).collect::<HashSet<_>>());
+    let hints = resources.map(|resources| {
         resources
             .iter()
             .filter_map(|hint| parse_object(hint, tenant_id).ok())

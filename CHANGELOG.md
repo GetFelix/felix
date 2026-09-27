@@ -13,6 +13,17 @@ for what the current release actually guarantees.
 
 ### Security
 
+- **A refresh cannot widen its exchange.** The exchange's `requested`,
+  `resources` and `audience` are stored with the refresh chain and re-applied
+  on every refresh; a refresh naming another audience is a `400`. Postgres
+  gains a nullable `refresh_tokens.narrowing` column; older tokens refresh as
+  before. On Raft, roll every member before relying on it.
+- **Re-pointing an IdP issuer takes cluster rights.** Changing an existing
+  issuer's `jwks_url`/`discovery_url`, or deleting an issuer, needs
+  `tenant.manage:cluster:*`. IdP
+  fetches no longer follow redirects and refuse private, link-local and
+  unique-local addresses unless `FELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP`
+  is set.
 - **Control-plane authorization can shrink.** `DELETE .../rbac/policies` and
   `.../rbac/groupings` remove rules (same scope as adding them);
   `POST /v1/tenants/{t}/refresh-tokens/revoke` ends a principal's refresh

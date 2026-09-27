@@ -19,23 +19,18 @@ fn filters_by_requested_actions() {
         "stream.publish:stream:t1/payments/*".to_string(),
         "stream.subscribe:stream:t1/payments/*".to_string(),
     ];
-    let request = TokenExchangeRequest {
-        requested: Some(vec!["stream.publish".to_string()]),
-        ..Default::default()
-    };
-    let filtered = filter_permissions(perms, &request, "t1");
+    let requested = vec!["stream.publish".to_string()];
+    let filtered = filter_permissions(perms, Some(&requested), None, "t1");
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0], "stream.publish:stream:t1/payments/*");
 }
 
 fn narrow(perms: &[&str], resources: &[&str]) -> Vec<String> {
-    let request = TokenExchangeRequest {
-        resources: Some(resources.iter().map(|value| value.to_string()).collect()),
-        ..Default::default()
-    };
+    let resources: Vec<String> = resources.iter().map(|value| value.to_string()).collect();
     let mut narrowed = filter_permissions(
         perms.iter().map(|value| value.to_string()).collect(),
-        &request,
+        None,
+        Some(&resources),
         "t1",
     );
     narrowed.sort();

@@ -398,3 +398,72 @@ async fn a_malformed_token_is_refused_like_any_other() {
         );
     }
 }
+
+/// A refresh re-runs RBAC, but must re-apply what the exchange narrowed it to;
+/// otherwise a narrowed token plus its refresh token is the principal's full
+/// rights, under whichever audience the refresher picks.
+#[tokio::test]
+async fn a_refresh_keeps_the_exchanges_narrowing_and_audience() {
+    use base64::Engine;
+    use felix_controlplane_service::auth::refresh_token::Narrowing;
+
+    let (state, store) = fixture().await;
+    let (mut record, presented) = refresh::issue(
+        TENANT,
+        PRINCIPAL,
+        vec![],
+        None,
+        refresh::now_secs(),
+        Duration::from_secs(3600),
+    );
+    record.narrowing = Some(Narrowing {
+        requested: Some(vec!["stream.publish".to_string()]),
+        resources: Some(vec!["stream:t1/payments/orders".to_string()]),
+        audience: "felix-broker".to_string(),
+    });
+    store.insert_refresh_token(record).await.expect("insert");
+
+    let post = |body: serde_json::Value| {
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/v1/tenants/{TENANT}/token/refresh"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request");
+        build_router(state.clone())
+            .into_service::<Body>()
+            .oneshot(request)
+    };
+
+    let response = post(serde_json::json!({ "refresh_token": presented }))
+        .await
+        .expect("refresh");
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = read_json(response).await;
+    let claims = payload["felix_token"]
+        .as_str()
+        .and_then(|token| token.split('.').nth(1))
+        .and_then(|part| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(part)
+                .ok()
+        })
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .expect("claims");
+    assert_eq!(
+        claims["perms"],
+        serde_json::json!(["stream.publish:stream:t1/payments/orders"]),
+        "the refresh widened back to the full grant",
+    );
+    assert_eq!(claims["aud"], "felix-broker");
+
+    // The chain keeps its audience; asking for another is refused.
+    let next = payload["refresh_token"].as_str().expect("next").to_string();
+    let response = post(serde_json::json!({
+        "refresh_token": next,
+        "audience": "felix-controlplane",
+    }))
+    .await
+    .expect("refresh");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

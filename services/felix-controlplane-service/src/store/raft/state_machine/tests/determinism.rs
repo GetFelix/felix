@@ -111,6 +111,11 @@ async fn a_restored_machine_has_the_leaders_refresh_tokens() {
         expires_at_secs: 10_000,
         used: false,
         revoked: false,
+        narrowing: Some(crate::auth::refresh_token::Narrowing {
+            requested: Some(vec!["stream.publish".to_string()]),
+            resources: None,
+            audience: "felix-broker".to_string(),
+        }),
     };
     let leader = machine();
     for command in [

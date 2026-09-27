@@ -306,6 +306,7 @@ fn script() -> Vec<MetaCommand> {
                 expires_at_secs: 10_000,
                 used: false,
                 revoked: false,
+                narrowing: None,
             },
         });
     }

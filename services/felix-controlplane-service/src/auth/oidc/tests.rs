@@ -581,3 +581,44 @@ async fn a_configured_jwks_url_over_plain_http_is_not_fetched() {
         .expect_err("plain http");
     assert!(matches!(err, OidcError::UrlNotAllowed(_)), "{err:?}");
 }
+
+/// A redirect would take the fetch past the URL checks, so it is not followed.
+#[tokio::test]
+async fn discovery_redirects_are_not_followed() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let base = format!("http://{}", listener.local_addr().expect("addr"));
+    let document = json!({"issuer": base, "jwks_uri": format!("{base}/jwks")});
+    let app = Router::new()
+        .route(
+            "/.well-known/openid-configuration",
+            get(|| async { axum::response::Redirect::temporary("/elsewhere") }),
+        )
+        .route(
+            "/elsewhere",
+            get(move || {
+                let document = document.clone();
+                async move { Json(document) }
+            }),
+        );
+    let _handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app.into_make_service()).await;
+    });
+
+    UpstreamOidcValidator::default()
+        .resolve_jwks_url(&base, &discovery_cfg(&base))
+        .await
+        .expect_err("followed a redirect");
+}
+
+#[tokio::test]
+async fn the_resolver_refuses_private_addresses() {
+    use reqwest::dns::Resolve;
+    use std::str::FromStr;
+
+    let resolve =
+        |host: &str| PublicOnlyResolver.resolve(reqwest::dns::Name::from_str(host).unwrap());
+    assert!(resolve("10.1.2.3").await.is_err());
+    assert!(resolve("169.254.169.254").await.is_err());
+    assert!(resolve("fd00::1").await.is_err());
+    assert!(resolve("127.0.0.1").await.is_ok(), "loopback stays allowed");
+}

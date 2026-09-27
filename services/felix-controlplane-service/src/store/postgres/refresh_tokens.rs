@@ -18,6 +18,7 @@ impl PostgresStore {
         revoked: bool,
     ) -> StoreResult<RefreshToken> {
         let groups: serde_json::Value = row.try_get("groups")?;
+        let narrowing: Option<serde_json::Value> = row.try_get("narrowing")?;
         Ok(RefreshToken {
             token_id: token_id.to_string(),
             tenant_id: tenant_id.to_string(),
@@ -29,6 +30,7 @@ impl PostgresStore {
             expires_at_secs: row.try_get("expires_at_secs")?,
             used,
             revoked,
+            narrowing: narrowing.map(serde_json::from_value).transpose()?,
         })
     }
 }
@@ -40,8 +42,8 @@ pub(super) async fn insert_refresh_token(
     sqlx::query(
         r#"INSERT INTO refresh_tokens
                  (tenant_id, token_id, principal_id, groups, secret_hash, family_id,
-                  issued_at_secs, expires_at_secs, used, revoked)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"#,
+                  issued_at_secs, expires_at_secs, used, revoked, narrowing)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
     )
     .bind(&token.tenant_id)
     .bind(&token.token_id)
@@ -53,6 +55,13 @@ pub(super) async fn insert_refresh_token(
     .bind(token.expires_at_secs)
     .bind(token.used)
     .bind(token.revoked)
+    .bind(
+        token
+            .narrowing
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()?,
+    )
     .execute(&store.pool)
     .await?;
     Ok(())
@@ -73,7 +82,7 @@ pub(super) async fn take_refresh_token(
                WHERE tenant_id = $1 AND token_id = $2
                  AND used = FALSE AND revoked = FALSE AND expires_at_secs > $3
                RETURNING principal_id, groups, secret_hash, family_id,
-                         issued_at_secs, expires_at_secs"#,
+                         issued_at_secs, expires_at_secs, narrowing"#,
     )
     .bind(tenant_id)
     .bind(token_id)
@@ -92,7 +101,7 @@ pub(super) async fn take_refresh_token(
     // because only that one means someone is holding a copy.
     let existing = sqlx::query(
         r#"SELECT principal_id, groups, secret_hash, family_id,
-                      issued_at_secs, expires_at_secs, used, revoked
+                      issued_at_secs, expires_at_secs, used, revoked, narrowing
                FROM refresh_tokens WHERE tenant_id = $1 AND token_id = $2"#,
     )
     .bind(tenant_id)

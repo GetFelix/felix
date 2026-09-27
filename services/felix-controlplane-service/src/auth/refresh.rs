@@ -48,7 +48,8 @@ pub fn refresh_ttl() -> Duration {
 pub struct TokenRefreshRequest {
     /// The refresh token handed out by exchange or by a previous refresh.
     pub refresh_token: String,
-    /// As for exchange: `felix-broker` (the default) or `felix-controlplane`.
+    /// As for exchange: `felix-broker` or `felix-controlplane`. A token keeps
+    /// the audience its exchange chose; naming a different one is a `400`.
     #[serde(default)]
     pub audience: Option<String>,
 }
@@ -109,6 +110,7 @@ pub fn issue(
         expires_at_secs: now_secs.saturating_add(ttl.as_secs() as i64),
         used: false,
         revoked: false,
+        narrowing: None,
     };
     (record, refresh_token::join(&token_id, &secret))
 }
@@ -180,7 +182,7 @@ pub async fn refresh_token_handler(
     let unusable = || refused(Refusal::RefreshRefused, "refresh token is not usable");
     // Before the token is spent, so a bad request does not cost the caller
     // its chain.
-    let audience = crate::auth::exchange::token_audience(request.audience.as_deref())?;
+    let requested_audience = crate::auth::exchange::token_audience(request.audience.as_deref())?;
 
     let Some((token_id, secret)) = refresh_token::split(&request.refresh_token) else {
         return Err(unusable());
@@ -226,6 +228,22 @@ pub async fn refresh_token_handler(
         return Err(unusable());
     }
 
+    // The chain keeps its exchange's audience. Checked after the spend, since
+    // the stored audience is only known then; a mismatch is still refused
+    // before anything is minted.
+    let audience = match &record.narrowing {
+        Some(narrowing) => {
+            let stored = crate::auth::exchange::token_audience(Some(&narrowing.audience))?;
+            if request.audience.is_some() && requested_audience != stored {
+                return Err(crate::api::error::api_validation_error(
+                    "audience differs from the one this refresh token was issued for",
+                ));
+            }
+            stored
+        }
+        None => requested_audience,
+    };
+
     // Re-evaluated, never carried over: a grant removed since the last exchange
     // has to stop working at the next refresh.
     let policies = state
@@ -259,7 +277,17 @@ pub async fn refresh_token_handler(
             tracing::error!(error = ?err, "failed to build rbac enforcer");
             api_internal_message("failed to build enforcer")
         })?;
-    let perms = effective_permissions(&enforcer, &record.principal_id, &tenant_id);
+    let mut perms = effective_permissions(&enforcer, &record.principal_id, &tenant_id);
+    // Current RBAC, narrowed the way the exchange narrowed it, so a refresh
+    // never hands back more than the exchange did.
+    if let Some(narrowing) = &record.narrowing {
+        perms = crate::auth::exchange::filter_permissions(
+            perms,
+            narrowing.requested.as_deref(),
+            narrowing.resources.as_deref(),
+            &tenant_id,
+        );
+    }
     if perms.is_empty() {
         // Every grant is gone since the token was issued. Refusing here is the
         // point of re-evaluating: the chain also ends, so a principal whose
@@ -292,7 +320,7 @@ pub async fn refresh_token_handler(
     // The replacement stays in the same family, so a replay of any token in the
     // chain can end the whole chain.
     let ttl = refresh_ttl();
-    let (next, next_secret) = issue(
+    let (mut next, next_secret) = issue(
         &tenant_id,
         &record.principal_id,
         record.groups.clone(),
@@ -300,6 +328,7 @@ pub async fn refresh_token_handler(
         now,
         ttl,
     );
+    next.narrowing = record.narrowing.clone();
     state
         .store
         .insert_refresh_token(next)

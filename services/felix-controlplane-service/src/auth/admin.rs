@@ -5,7 +5,9 @@
 //! - Policy writes require `rbac.policy.manage`.
 //! - Assignment writes require `rbac.assignment.manage`.
 //! - Non-RBAC tenant settings (IdP issuer config, refresh-token revocation)
-//!   require `tenant.manage`.
+//!   require `tenant.manage`. Changing where an existing issuer's keys come
+//!   from, or deleting an issuer, also requires `tenant.manage:cluster:*`, as
+//!   creating a tenant does.
 //!
 //! # Delegation model
 //! Callers can only read/mutate rules within the scope encoded in their token
@@ -26,7 +28,7 @@ use crate::api::ensure_tenant_exists;
 use crate::api::error::{
     ApiError, api_forbidden, api_internal, api_not_found, api_validation_error,
 };
-use crate::auth::bearer::{Refusal, refused, tenant_permissions};
+use crate::auth::bearer::{Refusal, refused, require_cluster_action, tenant_permissions};
 use crate::auth::idp_registry::IdpIssuerConfig;
 use crate::auth::rbac::authorize::{
     ACTION_RBAC_ASSIGNMENT_MANAGE, ACTION_RBAC_POLICY_MANAGE, ACTION_RBAC_VIEW,
@@ -77,8 +79,24 @@ pub async fn upsert_idp_issuer(
     )
     .await?;
     ensure_tenant_exists(&state, &tenant_id).await?;
-    body.validate(state.oidc_validator.allow_insecure_http())
-        .map_err(|err| api_validation_error(&err))?;
+    body.validate(
+        state.oidc_validator.allow_insecure_http(),
+        state.oidc_validator.allow_private(),
+    )
+    .map_err(|err| api_validation_error(&err))?;
+    // Principal ids are derived from (issuer, subject), and grants, cluster
+    // ones included, hang off them. Whoever re-points an existing issuer's keys
+    // can mint tokens as any of its subjects, so that takes cluster rights.
+    let issuers = state
+        .store
+        .list_idp_issuers(&tenant_id)
+        .await
+        .map_err(|err| api_internal("failed to load issuers", &err))?;
+    if let Some(current) = issuers.iter().find(|item| item.issuer == body.issuer)
+        && (current.jwks_url != body.jwks_url || current.discovery_url() != body.discovery_url())
+    {
+        require_cluster_action(&state, &headers, ACTION_TENANT_MANAGE).await?;
+    }
     state
         .store
         .upsert_idp_issuer(&tenant_id, body)
@@ -107,6 +125,9 @@ pub async fn delete_idp_issuer(
         &format!("tenant:{tenant_id}"),
     )
     .await?;
+    // Deleting and re-creating would re-point the issuer without the check
+    // `upsert_idp_issuer` makes, so deletion takes the same cluster rights.
+    require_cluster_action(&state, &headers, ACTION_TENANT_MANAGE).await?;
     ensure_tenant_exists(&state, &tenant_id).await?;
     state
         .store
