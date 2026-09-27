@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790528475116,
+  "lastUpdate": 1790530979132,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -17888,6 +17888,58 @@ window.BENCHMARK_DATA = {
             "range": "9054.26",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 937905.29\nmean: 933924.40\nstdev: 9054.26\ncv: 0.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d67527ae17e7db0fc91f6a5ff6b9f404cf74d45d",
+          "message": "fix(broker): refuse a different batch under a reused producer sequence (#764)\n\n* fix(broker): refuse a different batch under a reused producer sequence\n\nA leader answered any batch under a sequence it remembered as a duplicate\nof the batch held, without looking at the payloads. A producer that reused\na sequence got Ok for a batch that was never written.\n\nEach remembered batch now keeps a CRC-64 digest of its payloads. On a\ndurable stream it is derived from the records as they are appended,\nreplicated or replayed, so a restarted leader, a promoted replica and a\nmove's destination all hold the same value. The producer snapshot is now\nversion 2 and carries the digests. A version 1 snapshot is still read,\nand its batches have no digest, so a re-send under them is answered as\nbefore.\n\nA batch whose digest differs is refused with the new publish_refused\nreason sequence_reused, but only to clients that offered the new feature\nbit FEATURE_SEQUENCE_REUSED (0x4000). Other clients keep the old\nduplicate answer, which is now documented as the legacy gap. The Rust\nclient offers the bit and surfaces the refusal as PublishRefused with\nPublishRefusalReason::SequenceReused. A partial batch whose held start\ndiffers is refused the same way. The Kafka path is unchanged: Kafka\nanswers a duplicate sequence by its numbers alone and has no error for\nthis case.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSpec-Unaffected: producer-sequence dedup only; no lease, quorum mark, report, promotion or handoff semantics change.\n\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* test(broker): don't print frames in the sequence-reuse test's assert messages\n\nCodeQL traces the connection's root certificates into the Debug output of\nthe reply, so those messages count as cleartext logging.\n\nSpec-Unaffected: test messages only.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T10:38:53-07:00",
+          "tree_id": "8d7ebc076eba986646bd7356d4cb70636f168535",
+          "url": "https://github.com/gabloe/felix/commit/d67527ae17e7db0fc91f6a5ff6b9f404cf74d45d"
+        },
+        "date": 1790530978627,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 374574.78,
+            "range": "22385.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 374574.78\nmean: 368268.60\nstdev: 22385.38\ncv: 6.08%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 374574.78,
+            "range": "22385.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 374574.78\nmean: 368268.60\nstdev: 22385.38\ncv: 6.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 91830.25,
+            "range": "1649.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 91830.25\nmean: 91414.05\nstdev: 1649.67\ncv: 1.80%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 918302.54,
+            "range": "16496.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 918302.54\nmean: 914140.52\nstdev: 16496.74\ncv: 1.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
