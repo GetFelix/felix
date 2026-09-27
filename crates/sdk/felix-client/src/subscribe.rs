@@ -81,10 +81,11 @@ impl Subscription {
         self.shard_moved.get()
     }
 
-    /// The next event, or `None` once the event stream has closed.
+    /// The next event, or `None` once the broker has closed the event stream.
     ///
-    /// An error is the last thing a subscription yields: the pipeline stops
-    /// after reporting it.
+    /// Losing the connection is an error, [`crate::SubscriptionLost`], not
+    /// `None`. An error is the last thing a subscription yields: the pipeline
+    /// stops after reporting it.
     pub async fn next_event(&mut self) -> Result<Option<Event>> {
         #[cfg(feature = "telemetry")]
         {

@@ -8,7 +8,7 @@
 use std::sync::atomic::AtomicUsize;
 #[cfg(feature = "telemetry")]
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use anyhow::Context;
@@ -19,6 +19,7 @@ use tokio::sync::mpsc;
 
 use super::queue::enqueue_with_policy;
 use super::{QueuedEvent, ShardMoved, Subscription};
+use crate::SubscriptionLost;
 use crate::config::ClientSubQueuePolicy;
 use crate::frame_io::read_frame_into_with_limit;
 #[cfg(feature = "telemetry")]
@@ -54,6 +55,7 @@ impl Subscription {
         let (frame_tx, frame_rx) = mpsc::channel(capacity);
         let (event_tx, event_rx) = mpsc::channel(capacity);
         let shard_moved = Arc::new(OnceLock::new());
+        let broken = Arc::new(Mutex::new(None));
 
         // The io task is woken per slice of arriving stream data, so it runs
         // colocated with the connection's drivers; dispatch has no
@@ -65,6 +67,7 @@ impl Subscription {
             capacity,
             config.max_frame_bytes,
             config.live_offset,
+            Arc::clone(&broken),
         ));
         tokio::spawn(run_subscription_dispatch_task(
             frame_rx,
@@ -74,6 +77,7 @@ impl Subscription {
             config.subscription_id,
             Arc::clone(&shard_moved),
             config.live_offset,
+            broken,
         ));
 
         Self {
@@ -106,6 +110,7 @@ async fn run_subscription_io_task(
     queue_capacity: usize,
     max_frame_bytes: usize,
     live_offset: Option<u64>,
+    broken: Arc<Mutex<Option<anyhow::Error>>>,
 ) {
     let mut frame_scratch = BytesMut::with_capacity(64 * 1024);
     #[cfg(feature = "telemetry")]
@@ -128,6 +133,20 @@ async fn run_subscription_io_task(
                 Ok(None) => break,
                 Err(err) => {
                     tracing::debug!(error = %err, "subscription io task stopped");
+                    // Set before `frame_tx` drops, so dispatch sees it once the
+                    // queued frames are drained. Reporting this as a clean end
+                    // would let a consumer loop exit quietly on a dead broker.
+                    let transport = err.chain().any(|cause| {
+                        cause.is::<quinn::ReadError>() || cause.is::<quinn::ReadExactError>()
+                    });
+                    let err = if transport {
+                        anyhow::Error::new(SubscriptionLost {
+                            reason: format!("{err:#}"),
+                        })
+                    } else {
+                        err.context("read subscription stream")
+                    };
+                    *broken.lock().unwrap_or_else(|e| e.into_inner()) = Some(err);
                     break;
                 }
             };
@@ -155,6 +174,7 @@ async fn run_subscription_io_task(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_subscription_dispatch_task(
     mut frame_rx: mpsc::Receiver<QueuedFrame>,
     event_tx: mpsc::Sender<QueuedEvent>,
@@ -163,6 +183,7 @@ async fn run_subscription_dispatch_task(
     subscription_id: u64,
     shard_moved: Arc<OnceLock<ShardMoved>>,
     live_offset: Option<u64>,
+    broken: Arc<Mutex<Option<anyhow::Error>>>,
 ) {
     while let Some(queued_frame) = frame_rx.recv().await {
         let queue_wait_ns = queued_frame.enqueued_at.elapsed().as_nanos() as u64;
@@ -391,6 +412,18 @@ async fn run_subscription_dispatch_task(
             timings::record_sub_dispatch_ns(dispatch_ns);
             t_histogram!("sub_dispatch_ns").record(dispatch_ns as f64);
         }
+    }
+    let err = broken.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(err) = err {
+        // Blocking: this is the last thing the reader will see, and dropping it
+        // would turn the failure back into a clean end.
+        let _ = enqueue_event(
+            &event_tx,
+            QueuedEvent::Error(err),
+            ClientSubQueuePolicy::Block,
+            queue_capacity,
+        )
+        .await;
     }
 }
 

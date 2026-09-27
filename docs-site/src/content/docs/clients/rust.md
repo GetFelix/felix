@@ -413,6 +413,12 @@ why, and you take a fresh id. A producer is cheap to re-initialise; silently
 dropped records are not cheap at all.
 :::
 
+A publish that returns an error other than a refusal is in doubt for the same
+reason, but the producer still has the batch. The next call on that stream must
+be the same batch: it goes out under the same sequence and lands once. A call
+with a different batch fails without sending anything, so either re-send until
+it succeeds or take a fresh id.
+
 ## Subscribing
 
 ### Creating Subscriptions
@@ -425,6 +431,12 @@ while let Some(event) = subscription.next_event().await? {
     process_event(event).await?;
 }
 ```
+
+`None` means the broker ended the stream. A lost connection is an error,
+`SubscriptionLost`, so the loop above stops with `?` rather than exiting as if
+the stream had finished. A `ClusterClient` subscription resubscribes by itself
+from the offset after the last one it delivered; on an in-memory stream there
+is no offset to resume from, so it returns the error.
 
 ### Event Structure
 

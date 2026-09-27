@@ -10,7 +10,7 @@
 //! A broker that negotiated error codes says which it is, and the class is
 //! chosen from that. Only an error without a code (an older broker, or a
 //! failure inside the client) falls back to reading the message.
-use felix_client::{BrokerError, NotLeaderError, SubscribeCursorError};
+use felix_client::{BrokerError, NotLeaderError, SubscribeCursorError, SubscriptionLost};
 use felix_wire::RetryClass;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
@@ -132,6 +132,15 @@ pub(crate) fn classify(err: &anyhow::Error) -> Classified {
         .any(|e| e.downcast_ref::<SubscribeCursorError>().is_some())
     {
         out.kind = Kind::Cursor;
+        return out;
+    }
+    // A subscription whose broker went away, which a caller retries against
+    // another broker rather than treating as the end of the stream.
+    if err
+        .chain()
+        .any(|e| e.downcast_ref::<SubscriptionLost>().is_some())
+    {
+        out.kind = Kind::Connection;
         return out;
     }
     out.kind = kind_from_text(&out.text.to_ascii_lowercase());

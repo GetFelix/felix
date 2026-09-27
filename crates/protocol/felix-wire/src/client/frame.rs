@@ -106,8 +106,25 @@ impl FrameHeader {
         buf[8..12].copy_from_slice(&self.length.to_be_bytes());
     }
 
-    /// Parse a header, refusing a foreign magic or an unsupported version.
-    pub fn decode(mut buf: Bytes) -> Result<Self> {
+    /// Parse a header, refusing a foreign magic, an unsupported version, or a
+    /// flag bit outside [`crate::KNOWN_FLAGS`].
+    ///
+    /// Flags select the payload layout, so a frame with an unknown bit cannot
+    /// be parsed correctly by this version, and refusing it here covers every
+    /// reader rather than only the ones that remember to check.
+    pub fn decode(buf: Bytes) -> Result<Self> {
+        let header = Self::decode_allowing_unknown_flags(buf)?;
+        if crate::has_unknown_flags(header.flags) {
+            return Err(Error::UnknownFlags(header.flags));
+        }
+        Ok(header)
+    }
+
+    /// [`Self::decode`] without the flag check, for a reader that consumes the
+    /// body anyway and refuses the frame itself, so the stream stays on a frame
+    /// boundary and the peer can be told why. The caller must check
+    /// [`crate::has_unknown_flags`] before looking at the body.
+    pub fn decode_allowing_unknown_flags(mut buf: Bytes) -> Result<Self> {
         // Validate header before we trust the length.
         if buf.remaining() < Self::LEN {
             return Err(Error::Incomplete);

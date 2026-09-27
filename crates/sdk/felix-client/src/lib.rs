@@ -73,7 +73,9 @@ pub use cluster::{
     ShardedSubscription,
 };
 pub use config::{ClientConfig, ClientSubQueuePolicy};
-pub use error::{BrokerError, NotLeaderError, PublishRefused, SubscribeCursorError};
+pub use error::{
+    BrokerError, NotLeaderError, PublishRefused, SubscribeCursorError, SubscriptionLost,
+};
 pub use publish::{IdempotentProducer, PublishSharding, Publisher};
 pub use subscribe::{Event, ShardMoved, Subscription};
 pub use telemetry::{

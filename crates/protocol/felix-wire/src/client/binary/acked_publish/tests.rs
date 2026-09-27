@@ -212,3 +212,22 @@ fn a_truncated_producer_prefix_is_incomplete() {
     };
     assert!(decode_acked_publish_batch(&cut).is_err());
 }
+
+/// An acked batch read by the plain decoder would take its request id for the
+/// tenant length. That is what a uni stream would do with `BATCH|ACKED`.
+#[test]
+fn the_plain_decoder_refuses_an_acked_batch() {
+    let bytes = binary::encode_acked_publish_batch_bytes(
+        u64::MAX,
+        AckMode::PerBatch,
+        "t1",
+        "ns",
+        "orders",
+        &[b"a".to_vec()],
+    )
+    .expect("encode");
+    let frame = Frame::decode(bytes).expect("frame");
+    assert!(frame.header.flags & FLAG_BINARY_PUBLISH_ACKED != 0);
+    assert!(decode_publish_batch(&frame).is_err());
+    assert!(decode_acked_publish_batch(&frame).is_ok());
+}

@@ -92,10 +92,9 @@ fn check_frame(data: &[u8], seed: u64) {
         &data[..FrameHeader::LEN + frame.payload.len()],
         "seed {seed}: a frame did not re-encode to the bytes it came from",
     );
-    assert_eq!(
-        has_unknown_flags(frame.header.flags),
-        frame.header.flags & !KNOWN_FLAGS != 0,
-        "seed {seed}: an unknown flag bit was not reported as one",
+    assert!(
+        !has_unknown_flags(frame.header.flags),
+        "seed {seed}: a frame with an unknown flag bit decoded",
     );
 }
 
@@ -144,20 +143,22 @@ fn a_length_larger_than_the_buffer_is_refused_rather_than_allocated() {
 }
 
 #[test]
-fn an_unknown_flag_bit_is_reported_on_every_frame_that_carries_one() {
-    // Every bit outside the known mask, one at a time. A frame is allowed to
-    // decode with one set — the transport is what refuses it — but it must
-    // never look known.
+fn an_unknown_flag_bit_is_refused_on_every_frame_that_carries_one() {
+    // Every bit outside the known mask, one at a time, alone and alongside a
+    // known one: a reader that skipped its own check must still not get a body
+    // it would misparse.
     for bit in 0..16u16 {
         let flags = 1u16 << bit;
         if flags & KNOWN_FLAGS != 0 {
             continue;
         }
-        let frame = Frame::decode(Bytes::from(framed(flags, b"body"))).expect("decodes");
-        assert!(
-            has_unknown_flags(frame.header.flags),
-            "flag {flags:#06x} is outside KNOWN_FLAGS but was not reported as unknown",
-        );
+        for with in [0, FLAG_BINARY_PUBLISH_BATCH] {
+            assert!(
+                Frame::decode(Bytes::from(framed(flags | with, b"body"))).is_err(),
+                "flag {:#06x} is outside KNOWN_FLAGS but decoded",
+                flags | with,
+            );
+        }
     }
 }
 

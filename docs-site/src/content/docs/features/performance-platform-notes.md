@@ -26,11 +26,13 @@ environment tuning is required to get sustained-throughput behavior:
 - The ACK-frequency extension is negotiated between quinn peers (2 ms max
   ACK delay, ACK every 20th packet; `FELIX_ACK_ELICITING_THRESHOLD` /
   `FELIX_ACK_FREQ_DISABLE`).
-- Path-MTU discovery probes up to 16 KiB and UDP socket buffers request
-  8 MiB. Loopback connections additionally *guarantee* their MTU, at 16,336
-  on macOS and 4,096 elsewhere — Linux UDP GSO caps a `sendmsg` batch at one
-  65,535-byte IP datagram, so a larger guarantee stalls delivery outright
-  (`FELIX_INITIAL_MTU`).
+- Path-MTU discovery probes up to 16 KiB on macOS and 4,096 elsewhere, and UDP
+  socket buffers request 8 MiB. Loopback connections additionally *guarantee*
+  their MTU, at 16,336 on macOS and 4,096 elsewhere — Linux UDP GSO caps a
+  `sendmsg` batch at one 65,535-byte IP datagram, so a larger guarantee stalls
+  delivery outright (`FELIX_INITIAL_MTU`). For the same reason, on Linux
+  `FELIX_INITIAL_MTU` and `FELIX_MTU_UPPER_BOUND` are clamped to 6,553, with
+  a warning.
 
 Together these raised sustained macOS loopback throughput ~7.5×: driver
 isolation was the dominant term, since per-datagram scheduler wakeup latency

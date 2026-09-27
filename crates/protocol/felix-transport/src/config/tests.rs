@@ -116,3 +116,29 @@ fn the_default_mtu_bound_survives_a_larger_batch() {
          nothing here will notice when it does.",
     );
 }
+
+/// An MTU override cannot reopen the GSO stall the default avoids: on Linux it
+/// is clamped to what one batch of quinn's segments can carry.
+#[test]
+fn an_mtu_override_is_clamped_below_the_gso_ceiling() {
+    let ceiling = mtu_override_ceiling_for(false);
+    assert!(u32::from(ceiling) * QUINN_MAX_TRANSMIT_SEGMENTS <= IP_DATAGRAM_MAX);
+    assert_eq!(
+        clamp_mtu_override("FELIX_MTU_UPPER_BOUND", 16384, ceiling),
+        ceiling
+    );
+    assert_eq!(
+        clamp_mtu_override("FELIX_MTU_UPPER_BOUND", 4096, ceiling),
+        4096
+    );
+    assert_eq!(clamp_mtu_override("FELIX_INITIAL_MTU", 100, ceiling), 1200);
+    // macOS keeps the QUIC maximum.
+    assert_eq!(
+        clamp_mtu_override(
+            "FELIX_MTU_UPPER_BOUND",
+            16384,
+            mtu_override_ceiling_for(true)
+        ),
+        16384
+    );
+}

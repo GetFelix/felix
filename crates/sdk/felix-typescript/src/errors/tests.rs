@@ -77,3 +77,12 @@ fn a_typed_refusal_carries_its_code_on_a_line_of_its_own() {
     );
     assert!(text.starts_with("publish failed: with a colon: and a\nnewline"));
 }
+
+#[test]
+fn a_lost_subscription_is_a_connection_error() {
+    let err = anyhow::Error::new(felix_client::SubscriptionLost {
+        reason: "reset by peer".to_string(),
+    })
+    .context("resubscribe to shard 0 of orders");
+    assert!(encode(&err).starts_with(&format!("{KIND_CONNECTION}{KIND_SEPARATOR}")));
+}

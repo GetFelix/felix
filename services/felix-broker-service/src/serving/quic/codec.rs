@@ -18,6 +18,12 @@ pub async fn read_message_limited(
         Some(frame) => frame,
         None => return Ok(None),
     };
+    if felix_wire::has_unknown_flags(frame.header.flags) {
+        return Err(anyhow!(
+            "unsupported frame flags {:#06x}",
+            frame.header.flags
+        ));
+    }
     Message::decode(frame).map(Some).context("decode message")
 }
 
@@ -27,7 +33,12 @@ pub async fn write_message(send: &mut SendStream, message: Message) -> Result<()
     write_frame(send, &frame).await
 }
 
-// Low-level frame reader with a max payload cap.
+/// Low-level frame reader with a max payload cap.
+///
+/// A frame with unknown flag bits is returned rather than refused, with its
+/// body consumed, so the control stream can answer it and stay on a frame
+/// boundary. Every caller must check `felix_wire::has_unknown_flags` before
+/// reading the body.
 pub async fn read_frame_limited_into(
     recv: &mut RecvStream,
     max_payload_bytes: usize,
@@ -40,7 +51,7 @@ pub async fn read_frame_limited_into(
         Err(ReadExactError::ReadError(err)) => return Err(err.into()),
     }
 
-    let header = FrameHeader::decode(Bytes::copy_from_slice(&header_bytes))
+    let header = FrameHeader::decode_allowing_unknown_flags(Bytes::copy_from_slice(&header_bytes))
         .context("decode frame header")?;
     let length = usize::try_from(header.length).context("frame length")?;
     if length > max_payload_bytes {

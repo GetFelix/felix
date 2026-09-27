@@ -24,7 +24,7 @@
 //! safe to split. Both halves ship as one package, so this is an internal
 //! detail rather than something a caller parses.
 
-use felix_client::{BrokerError, NotLeaderError, SubscribeCursorError};
+use felix_client::{BrokerError, NotLeaderError, SubscribeCursorError, SubscriptionLost};
 use felix_wire::RetryClass;
 use napi::{Error, Status};
 
@@ -103,6 +103,11 @@ pub(crate) fn encode(err: &anyhow::Error) -> String {
         .any(|e| e.downcast_ref::<SubscribeCursorError>().is_some())
     {
         KIND_CURSOR
+    } else if err
+        .chain()
+        .any(|e| e.downcast_ref::<SubscriptionLost>().is_some())
+    {
+        KIND_CONNECTION
     } else {
         kind_from_text(&text.to_ascii_lowercase())
     };

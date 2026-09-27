@@ -3,8 +3,8 @@
 //! Shared by all of a client's publishers. A publish takes its bytes before
 //! it is queued and gives them back once it is written, or once the broker
 //! answers if it asked for an ack. So a slow broker makes callers wait for
-//! room rather than letting the client buffer without limit, and a publish
-//! larger than the whole budget fails at once.
+//! room rather than letting the client buffer without limit. A publish larger
+//! than the whole budget waits for all of it and is sent alone.
 
 use std::sync::Arc;
 
@@ -26,13 +26,10 @@ impl PublishAdmission {
     }
 
     pub(super) async fn acquire(&self, wire_bytes: usize) -> Result<OwnedSemaphorePermit> {
-        let wire_bytes = wire_bytes.max(1);
-        if wire_bytes > self.limit {
-            return Err(anyhow::anyhow!(
-                "publish frame estimate {wire_bytes} exceeds in-flight byte limit {}",
-                self.limit
-            ));
-        }
+        // A publish bigger than the whole budget takes all of it: it waits
+        // until nothing else is in flight and then goes out alone. Refusing it
+        // would make frames between the budget and the frame cap unpublishable.
+        let wire_bytes = wire_bytes.clamp(1, self.limit);
         self.semaphore
             .clone()
             .acquire_many_owned(wire_bytes as u32)

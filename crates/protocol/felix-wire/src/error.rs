@@ -12,6 +12,8 @@ pub enum Error {
     UnsupportedVersion(u16),
     #[error("frame too large")]
     FrameTooLarge,
+    #[error("unsupported frame flags {0:#06x}")]
+    UnknownFlags(u16),
     #[error("incomplete frame")]
     Incomplete,
     #[error("failed to serialize message")]

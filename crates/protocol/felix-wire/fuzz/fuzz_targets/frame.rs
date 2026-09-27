@@ -33,12 +33,9 @@ fuzz_target!(|data: &[u8]| {
         &data[..FrameHeader::LEN + frame.payload.len()],
     );
 
-    // Property 4: unknown flag bits are detectable on everything that decodes.
-    // Flags select the payload *layout*, so a bit that is neither known nor
-    // reported is one the dispatch would silently ignore — which means
-    // confidently misparsing the body rather than refusing it.
-    assert_eq!(
-        has_unknown_flags(frame.header.flags),
-        frame.header.flags & !KNOWN_FLAGS != 0,
-    );
+    // Property 4: nothing with an unknown flag bit decodes. Flags select the
+    // payload *layout*, so a bit the dispatch does not know means confidently
+    // misparsing the body rather than refusing it.
+    assert!(!has_unknown_flags(frame.header.flags));
+    assert_eq!(frame.header.flags & !KNOWN_FLAGS, 0);
 });

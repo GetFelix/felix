@@ -58,13 +58,14 @@ fn decode_rejects_incomplete_payload() {
 
 #[test]
 fn frame_header_encode_decode() {
-    let header = FrameHeader::new(0x1234, 0xABCD);
+    let flags = crate::KNOWN_FLAGS;
+    let header = FrameHeader::new(flags, 0xABCD);
     let mut buf = BytesMut::new();
     header.encode(&mut buf);
     let decoded = FrameHeader::decode(buf.freeze()).expect("decode");
     assert_eq!(decoded.magic, MAGIC);
     assert_eq!(decoded.version, VERSION);
-    assert_eq!(decoded.flags, 0x1234);
+    assert_eq!(decoded.flags, flags);
     assert_eq!(decoded.length, 0xABCD);
 }
 
@@ -82,4 +83,22 @@ fn frame_decode_error_cases() {
     buf.extend_from_slice(b"only_10"); // But only has 7 bytes
     let result = Frame::decode(buf.freeze());
     assert!(result.is_err());
+}
+
+#[test]
+fn decode_rejects_unknown_flags() {
+    let undefined = !crate::KNOWN_FLAGS & (!crate::KNOWN_FLAGS).wrapping_neg();
+    assert_ne!(
+        undefined, 0,
+        "every flag bit is defined; pick another probe"
+    );
+    let mut buf = BytesMut::new();
+    FrameHeader::new(crate::FLAG_BINARY_PUBLISH_BATCH | undefined, 0).encode(&mut buf);
+    let bytes = buf.freeze();
+    let err = FrameHeader::decode(bytes.clone()).expect_err("unknown flag");
+    assert!(matches!(err, Error::UnknownFlags(flags) if flags & undefined != 0));
+    assert!(Frame::decode(bytes.clone()).is_err());
+    // The lenient form hands the bits back for the caller to refuse.
+    let header = FrameHeader::decode_allowing_unknown_flags(bytes).expect("lenient");
+    assert!(crate::has_unknown_flags(header.flags));
 }
