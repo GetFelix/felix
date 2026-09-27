@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790539554499,
+  "lastUpdate": 1790539767881,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -17992,6 +17992,58 @@ window.BENCHMARK_DATA = {
             "range": "35751.59",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1186077.12\nmean: 1174701.87\nstdev: 35751.59\ncv: 3.04%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a4941eac309bdee917d44c59ad8f50cd8da67628",
+          "message": "Control plane: a deregistered leader keeps its shards until its lease runs out (#766)\n\nDeregistering a node set it `left`, and the next placement pass promoted a\nfollower at once while the broker could still be serving on the lease it\nheld: two leaders, with no clock in the way.\n\nPlacement now sees a `left` node as draining until its last heartbeat is\nolder than the expiry timeout plus the regrant margin, the window the\nliveness sweep waits before marking a silent node down, on the store's\nclock. A node already silent that long fails over immediately, as before.\nHeartbeats to a `left` node no longer move its stamp (memory, Postgres,\nRaft soft state), so a deregistered broker that keeps running cannot hold\nits shards forever; Raft log apply is unchanged. After a Raft election the\nleader counts a departed node as heard from when it began judging, since\nthe log's stamp can trail a beat the old leader answered.\n\nSpec-Unaffected: the model has no deregister action; deregistration is every later heartbeat being lost (LoseHeartbeat), and Promote already requires `lapsed`. This makes the deregister path obey that guard instead of bypassing it.\n\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T13:01:53-07:00",
+          "tree_id": "c0ff22f15606c82fbab46ccd4dca2a4ea97804c5",
+          "url": "https://github.com/gabloe/felix/commit/a4941eac309bdee917d44c59ad8f50cd8da67628"
+        },
+        "date": 1790539766550,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 391028.38,
+            "range": "14979.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 391028.38\nmean: 394630.93\nstdev: 14979.08\ncv: 3.80%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 391028.38,
+            "range": "14979.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 391028.38\nmean: 394630.93\nstdev: 14979.08\ncv: 3.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 92704.71,
+            "range": "511.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 92704.71\nmean: 92799.97\nstdev: 511.48\ncv: 0.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 927047.1,
+            "range": "5114.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 927047.10\nmean: 927999.73\nstdev: 5114.80\ncv: 0.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
