@@ -23,6 +23,7 @@ bytes = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 async-trait = "0.1.89"
+crc = { workspace = true }
 crc32fast = { workspace = true }
 metrics = { workspace = true }
 parking_lot = { workspace = true }

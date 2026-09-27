@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::segments::{RollOutcome, SegmentSet};
-use super::{DiskLog, LogInner, PendingAppend};
-use crate::log::{AppendRecord, AppendResult};
+use super::{DiskLog, LogInner, PendingAppend, producers};
+use crate::log::{AppendRecord, AppendResult, RecordMark};
 use crate::segment::SegmentWriter;
 use crate::{Result, StorageError, metrics_names};
 
@@ -37,6 +37,16 @@ impl DiskLog {
         // Shared with the rollover re-check, which runs on a blocking thread;
         // cloning it there would copy the batch once per retry.
         let records = Arc::new(records);
+        // Digested here rather than where they are observed, which is under
+        // the `segments` write lock every other append waits on.
+        let digests: Vec<u64> = if records.iter().any(|r| r.mark != RecordMark::None) {
+            records
+                .iter()
+                .map(|r| producers::marked_digest(r.mark, &r.payload))
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         // The hard-limit fallback. A background roll normally replaces the
         // segment well before this, so reaching here means the log filled
@@ -115,7 +125,7 @@ impl DiskLog {
                 return Ok(None);
             }
             let (first_offset, last_offset) = segments.append(&records)?;
-            inner.observe_marks(first_offset, &records);
+            inner.observe_marks(first_offset, &records, &digests);
             let durable_target = segments.tail_offset();
             let prepare_roll = segments.should_prepare_roll();
             drop(segments);

@@ -189,9 +189,16 @@ async fn build_publish_context(broker: Arc<Broker>) -> PublishContext {
                     handle,
                     producer_id,
                     sequence,
+                    reuse,
                     ..
                 } => broker
-                    .publish_batch_idempotent(handle, *producer_id, *sequence, &job.payloads)
+                    .publish_batch_idempotent(
+                        handle,
+                        *producer_id,
+                        *sequence,
+                        &job.payloads,
+                        *reuse,
+                    )
                     .await
                     .map(|idempotent| idempotent.outcome.subscribers),
                 PublishTarget::Named {

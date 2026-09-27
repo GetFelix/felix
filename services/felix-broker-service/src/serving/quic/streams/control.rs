@@ -216,6 +216,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     &ack_waiters,
                     &ack_waiter_tx,
                     session.peer_flags,
+                    session.peer_features,
                 )
                 .await?;
             } else {

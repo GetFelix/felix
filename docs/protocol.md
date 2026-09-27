@@ -147,9 +147,10 @@ producer's batches on the shard from zero, one per batch whatever its size.
 { "type": "publish_refused", "request_id": <u64>, "reason": <reason>, "message": "<string>" }
 ```
 Where `reason` is one of `{"sequence_gap": {"expected": <u64>}}`,
-`"unknown_producer"`, `"sequence_expired"`, or
+`"unknown_producer"`, `"sequence_expired"`, `"sequence_reused"`, or
 `{"not_leader": {"node_id": "<string>", "addr": "<host:port, optional>"}}`.
-Only ever sent in answer to a `publish_idempotent`.
+Only ever sent in answer to a `publish_idempotent`, and `"sequence_reused"` only
+to a client that offered `FEATURE_SEQUENCE_REUSED`.
 
 ### Subscribe
 ```
@@ -573,16 +574,31 @@ sequence it expects and where the last 64 it appended landed:
 | The batch's sequence is | The leader |
 | --- | --- |
 | the next expected | appends it, remembers it, answers `publish_ok` |
-| one it remembers | answers `publish_ok` and appends nothing — the same answer the first send got, including the `Quorum` wait on the same offsets |
+| one it remembers, with the same payloads | answers `publish_ok` and appends nothing — the same answer the first send got, including the `Quorum` wait on the same offsets |
+| one it remembers, with different payloads | refuses with `sequence_reused` and appends nothing, for a client that offered `FEATURE_SEQUENCE_REUSED`; any other client gets `publish_ok` as for a re-send, and the batch is not written |
 | past the next expected | refuses with `sequence_gap` naming the expected one; what was skipped is not here, and continuing would leave a hole the producer believes is filled |
 | older than it remembers | refuses with `sequence_expired`; whether it was appended cannot be told |
 | from a producer it does not know, and not zero | refuses with `unknown_producer`; there is nothing to check against, and the producer must start again under a new id |
-| the rest of a batch it holds only the start of | appends the records it is missing, and answers with the whole batch's offsets |
+| the rest of a batch it holds only the start of | appends the records it is missing, and answers with the whole batch's offsets; a batch whose start differs from what it holds is refused with `sequence_reused`, as above |
 
 So a producer re-sends a batch it got no answer for under the *same* sequence,
-never sends a different batch under that sequence (it would be acknowledged
-without being appended), advances only on `publish_ok`, and stops on any
-refusal but `not_leader`.
+never sends a different batch under that sequence, advances only on
+`publish_ok`, and stops on any refusal but `not_leader`.
+
+**A reused sequence is caught by a payload digest.** The leader keeps, with
+each batch it remembers, a CRC-64 digest of the batch's payloads (on a durable
+stream it is derived from the log, so it survives a restart and a failover;
+see `docs/storage-format.md`). A batch under a remembered sequence whose
+digest differs is not a re-send. A client that offered `FEATURE_SEQUENCE_REUSED`
+is refused with `sequence_reused`; the Rust client offers it and surfaces the
+refusal as `PublishRefused` with `PublishRefusalReason::SequenceReused`. A
+client that did not offer it cannot decode the reason, so it gets what it always
+got: `publish_ok`, and the batch is silently not written. That gap is why a
+client must never reuse a sequence whose outcome it does not know. A batch held
+without a digest, known only from a producer snapshot written before digests
+were kept, is treated as matching. The Kafka listener does not check digests:
+Kafka answers a duplicate sequence by its numbers alone and has no error for
+"same sequence, different records".
 
 **Only the leader takes them.** A `publish_idempotent` that arrives at a broker
 that does not lead the shard is refused with `not_leader`, naming the leader
@@ -939,6 +955,8 @@ Features are advertised in the same handshake, in an optional field:
 | `0x0400` | `FEATURE_CACHE_SHARDS` | The broker answers `cache_shards` |
 | `0x0800` | `FEATURE_ERROR_CODES` | The client reads `code`, `retry` and `detail` on `error` and `publish_error` |
 | `0x1000` | `FEATURE_SHARD_MOVED` | The client reads `shard_moved` at the end of an event stream |
+| `0x2000` | `FEATURE_UNSUPPORTED` | The peer answers an unknown request with `unsupported` (see below) |
+| `0x4000` | `FEATURE_SEQUENCE_REUSED` | The client reads `publish_refused` with `sequence_reused`; see [idempotent producers](#idempotent-producers) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:

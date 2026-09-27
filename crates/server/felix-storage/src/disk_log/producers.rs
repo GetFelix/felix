@@ -14,12 +14,16 @@
 //! [`MAX_PRODUCERS`]. The snapshot written at each rollover only saves
 //! rescanning sealed segments on open; losing it costs a longer open, never
 //! an answer. See `docs/storage-format.md`, "Producer state".
+//!
+//! Each remembered batch also keeps a [`PayloadDigest`] of its payloads,
+//! computed from the records as they are observed, so a leader can tell a
+//! re-send from a different batch reusing the sequence.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use super::segments::SegmentSet;
-use crate::log::{Offset, ProducerBatch, RecordMark};
+use crate::log::{Offset, PayloadDigest, ProducerBatch, RecordMark};
 use crate::metrics_names;
 use crate::segment::ReadBudget;
 
@@ -38,11 +42,22 @@ pub enum ProducerSequence {
     Unknown,
     /// The next batch this producer owes.
     Next,
-    /// Already held, at these offsets (inclusive).
-    Held { first: Offset, last: Offset },
+    /// Already held, at these offsets (inclusive). `digest` is `None` for a
+    /// batch known only from a snapshot written before digests were kept.
+    Held {
+        first: Offset,
+        last: Offset,
+        digest: Option<PayloadDigest>,
+    },
     /// The batch at the tail, of which only the first `held` of `len` records
     /// arrived: a leader that stopped partway through writing or shipping it.
-    Partial { first: Offset, held: u32, len: u32 },
+    /// `digest` covers the `held` records, and is `None` as for [`Self::Held`].
+    Partial {
+        first: Offset,
+        held: u32,
+        len: u32,
+        digest: Option<PayloadDigest>,
+    },
     /// Past the next expected: batches in between never arrived.
     Gap { expected: u64 },
     /// Older than the batches still remembered.
@@ -61,18 +76,25 @@ pub(crate) struct ProducerState {
 struct Producer {
     /// Sequence of the newest batch held.
     last_sequence: u64,
-    /// `(first offset, length)` of the newest batches, newest last; the last
-    /// entry is `last_sequence`, and the ones before it count down by one.
-    recent: VecDeque<(Offset, u32)>,
+    /// The newest batches, newest last; the last entry is `last_sequence`,
+    /// and the ones before it count down by one.
+    recent: VecDeque<HeldBatch>,
 }
 
 impl Producer {
     fn last_offset(&self) -> Offset {
         self.recent
             .back()
-            .map(|(first, len)| first + u64::from(*len) - 1)
+            .map(|batch| batch.first + u64::from(batch.len) - 1)
             .unwrap_or(0)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HeldBatch {
+    first: Offset,
+    len: u32,
+    digest: Option<PayloadDigest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +102,8 @@ struct OpenBatch {
     batch: ProducerBatch,
     first: Offset,
     held: u32,
+    /// Of the `held` records so far.
+    digest: Option<PayloadDigest>,
 }
 
 impl ProducerState {
@@ -93,6 +117,7 @@ impl ProducerState {
                 first: open.first,
                 held: open.held,
                 len: open.batch.len,
+                digest: open.digest,
             };
         }
         let Some(producer) = self.producers.get(&producer_id) else {
@@ -108,10 +133,11 @@ impl ProducerState {
         let back = (producer.last_sequence - sequence) as usize;
         match producer.recent.len().checked_sub(back + 1) {
             Some(index) => {
-                let (first, len) = producer.recent[index];
+                let batch = producer.recent[index];
                 ProducerSequence::Held {
-                    first,
-                    last: first + u64::from(len) - 1,
+                    first: batch.first,
+                    last: batch.first + u64::from(batch.len) - 1,
+                    digest: batch.digest,
                 }
             }
             None => ProducerSequence::Expired,
@@ -132,16 +158,18 @@ impl ProducerState {
         self.open.is_some()
     }
 
-    /// Account for the record at `offset`. Records are observed in offset
-    /// order; an unmarked one only matters while a batch is open, and may be
-    /// skipped otherwise.
-    pub(crate) fn observe(&mut self, offset: Offset, mark: RecordMark) {
+    /// Account for the record at `offset`, whose payload's
+    /// [`marked_digest`] is `record`. Records are observed in offset order; an
+    /// unmarked one only matters while a batch is open, and may be skipped
+    /// otherwise.
+    pub(crate) fn observe(&mut self, offset: Offset, mark: RecordMark, record: u64) {
         match mark {
             RecordMark::Continues => {
                 if let Some(open) = &mut self.open
                     && open.first + u64::from(open.held) == offset
                 {
                     open.held += 1;
+                    open.digest = open.digest.map(|digest| digest.then(record));
                     if open.held >= open.batch.len {
                         let open = self.open.take().expect("open batch");
                         self.complete(open);
@@ -160,6 +188,7 @@ impl ProducerState {
                     batch,
                     first: offset,
                     held: 1,
+                    digest: Some(PayloadDigest::EMPTY.then(record)),
                 };
                 if batch.len <= 1 {
                     self.complete(open);
@@ -190,7 +219,7 @@ impl ProducerState {
             while producer
                 .recent
                 .front()
-                .is_some_and(|(first, _)| *first < base)
+                .is_some_and(|batch| batch.first < base)
             {
                 producer.recent.pop_front();
             }
@@ -199,7 +228,12 @@ impl ProducerState {
     }
 
     fn complete(&mut self, open: OpenBatch) {
-        let OpenBatch { batch, first, .. } = open;
+        let OpenBatch {
+            batch,
+            first,
+            digest,
+            ..
+        } = open;
         let producer = self
             .producers
             .entry(batch.producer_id)
@@ -217,7 +251,11 @@ impl ProducerState {
         if producer.recent.len() == WINDOW {
             producer.recent.pop_front();
         }
-        producer.recent.push_back((first, batch.len));
+        producer.recent.push_back(HeldBatch {
+            first,
+            len: batch.len,
+            digest,
+        });
         if self.producers.len() > MAX_PRODUCERS
             && let Some(coldest) = self
                 .producers
@@ -240,12 +278,16 @@ impl ProducerState {
 // magic "FLPS" u32, version u16, reserved u16, as_of u64, producers u32,
 // crc32 u32 over everything after the header, then:
 //   open batch: present u8, and when 1: producer_id u64, sequence u64, len u32,
-//               first u64, held u32
+//               first u64, held u32, digest
 //   per producer: id u64, last_sequence u64, batches u16,
-//                 then per batch: first u64, len u32
+//                 then per batch: first u64, len u32, digest
+// where digest is present u8 then value u64 (zero when absent).
+//
+// Version 1 has no digest fields. Its batches read as having none, and a
+// re-send of one is answered the way it was before digests were kept.
 
 const SNAPSHOT_MAGIC: u32 = 0x464C_5053;
-const SNAPSHOT_VERSION: u16 = 1;
+const SNAPSHOT_VERSION: u16 = 2;
 const SNAPSHOT_HEADER_LEN: usize = 24;
 
 pub(super) fn snapshot_file_name() -> &'static str {
@@ -267,15 +309,17 @@ fn encode(state: &ProducerState, as_of: Offset) -> Vec<u8> {
             body.extend_from_slice(&open.batch.len.to_be_bytes());
             body.extend_from_slice(&open.first.to_be_bytes());
             body.extend_from_slice(&open.held.to_be_bytes());
+            encode_digest(&mut body, open.digest);
         }
     }
     for (id, producer) in &state.producers {
         body.extend_from_slice(&id.to_be_bytes());
         body.extend_from_slice(&producer.last_sequence.to_be_bytes());
         body.extend_from_slice(&(producer.recent.len() as u16).to_be_bytes());
-        for (first, len) in &producer.recent {
-            body.extend_from_slice(&first.to_be_bytes());
-            body.extend_from_slice(&len.to_be_bytes());
+        for batch in &producer.recent {
+            body.extend_from_slice(&batch.first.to_be_bytes());
+            body.extend_from_slice(&batch.len.to_be_bytes());
+            encode_digest(&mut body, batch.digest);
         }
     }
     let mut out = Vec::with_capacity(SNAPSHOT_HEADER_LEN + body.len());
@@ -289,11 +333,21 @@ fn encode(state: &ProducerState, as_of: Offset) -> Vec<u8> {
     out
 }
 
+fn encode_digest(body: &mut Vec<u8>, digest: Option<PayloadDigest>) {
+    body.push(u8::from(digest.is_some()));
+    body.extend_from_slice(&digest.map_or(0, PayloadDigest::to_bits).to_be_bytes());
+}
+
 fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
     let mut reader = Reader(bytes);
-    if reader.u32()? != SNAPSHOT_MAGIC || reader.u16()? != SNAPSHOT_VERSION {
+    if reader.u32()? != SNAPSHOT_MAGIC {
         return None;
     }
+    let with_digests = match reader.u16()? {
+        1 => false,
+        SNAPSHOT_VERSION => true,
+        _ => return None,
+    };
     reader.u16()?;
     let as_of = reader.u64()?;
     let count = reader.u32()? as usize;
@@ -311,6 +365,7 @@ fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
             },
             first: reader.u64()?,
             held: reader.u32()?,
+            digest: reader.digest(with_digests)?,
         }),
         _ => return None,
     };
@@ -321,7 +376,11 @@ fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
         let batches = reader.u16()? as usize;
         let mut recent = VecDeque::with_capacity(batches.min(WINDOW));
         for _ in 0..batches {
-            recent.push_back((reader.u64()?, reader.u32()?));
+            recent.push_back(HeldBatch {
+                first: reader.u64()?,
+                len: reader.u32()?,
+                digest: reader.digest(with_digests)?,
+            });
         }
         producers.insert(
             id,
@@ -357,6 +416,19 @@ impl Reader<'_> {
     fn u64(&mut self) -> Option<u64> {
         self.take().map(u64::from_be_bytes)
     }
+    /// A batch's digest, `Some(None)` when the snapshot has none for it.
+    fn digest(&mut self, with_digests: bool) -> Option<Option<PayloadDigest>> {
+        if !with_digests {
+            return Some(None);
+        }
+        let present = self.u8()?;
+        let bits = self.u64()?;
+        match present {
+            0 => Some(None),
+            1 => Some(Some(PayloadDigest::from_bits(bits))),
+            _ => None,
+        }
+    }
 }
 
 /// Rebuild producer state for the log `segments` holds.
@@ -368,7 +440,7 @@ impl Reader<'_> {
 pub(super) fn rebuild(
     dir: &Path,
     segments: &SegmentSet,
-    active_marks: Option<&[(Offset, RecordMark)]>,
+    active_marks: Option<&[(Offset, RecordMark, u64)]>,
 ) -> crate::Result<ProducerState> {
     let base = segments.base_offset();
     let tail = segments.tail_offset();
@@ -397,13 +469,14 @@ pub(super) fn rebuild(
             .into_iter()
             .take_while(|record| record.offset < read_to)
         {
-            state.observe(record.offset, record.mark);
+            let digest = marked_digest(record.mark, &record.payload);
+            state.observe(record.offset, record.mark, digest);
         }
         next = after;
     }
     if let Some(marks) = active_marks {
-        for (offset, mark) in marks.iter().filter(|(offset, _)| *offset >= from) {
-            state.observe(*offset, *mark);
+        for (offset, mark, digest) in marks.iter().filter(|(offset, ..)| *offset >= from) {
+            state.observe(*offset, *mark, *digest);
         }
     }
     state.settle(tail);
@@ -411,6 +484,16 @@ pub(super) fn rebuild(
         metrics::counter!(metrics_names::PRODUCER_STATE_REBUILT_TOTAL).increment(1);
     }
     Ok(state)
+}
+
+/// A record's contribution to its batch's [`PayloadDigest`]: the payload's
+/// digest for a marked record, and zero for an unmarked one, which belongs to
+/// no batch.
+pub(crate) fn marked_digest(mark: RecordMark, payload: &[u8]) -> u64 {
+    match mark {
+        RecordMark::None => 0,
+        RecordMark::Opens(_) | RecordMark::Continues => crate::log::record_digest(payload),
+    }
 }
 
 /// How much one read of a rebuild may hold in memory.

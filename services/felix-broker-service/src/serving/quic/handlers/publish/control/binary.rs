@@ -209,6 +209,9 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
     // did not advertise it rejects the whole frame rather than masking the bit
     // off -- rejecting an acknowledgement for a publish that worked.
     peer_flags: u16,
+    // Feature bits this client offered, for what an idempotent batch under a
+    // reused sequence is answered with.
+    peer_features: u32,
 ) -> Result<()> {
     // Read the correlation prefix before the body, so even an undecodable batch
     // can be answered with an ack the client is able to match to its request.
@@ -319,7 +322,13 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
         }),
         sample,
         auth_ctx.token.clone(),
-        producer.map(|producer| (producer.producer_id, producer.sequence)),
+        producer.map(|producer| {
+            (
+                producer.producer_id,
+                producer.sequence,
+                super::batch::sequence_reuse(peer_features),
+            )
+        }),
     )
     .await
 }

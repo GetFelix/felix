@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::disk_log::ProducerSequence;
-use crate::log::RecordMark;
+use crate::log::{PayloadDigest, RecordMark};
 
 /// One idempotent batch, marked as the broker marks it.
 fn marked(producer: u64, sequence: u64, payloads: &[&str]) -> Vec<AppendRecord> {
@@ -23,12 +23,19 @@ async fn fill(log: &DiskLog, batches: u64) -> Vec<(u64, u64)> {
     let mut landed = Vec::new();
     for sequence in 0..batches {
         let result = log
-            .append(&marked(1, sequence, &["a", "b"]))
+            .append(&marked(1, sequence, FILLED))
             .await
             .expect("append");
         landed.push((result.first_offset, result.last_offset));
     }
     landed
+}
+
+/// The payloads of every batch [`fill`] writes.
+const FILLED: &[&str] = &["a", "b"];
+
+fn digest(payloads: &[&str]) -> Option<PayloadDigest> {
+    Some(PayloadDigest::of(payloads))
 }
 
 fn snapshot_path(dir: &TempDir) -> std::path::PathBuf {
@@ -74,7 +81,11 @@ async fn a_producer_is_known_again_after_a_restart() {
     let log = open(&dir, FsyncMode::OnCommit);
     assert_eq!(
         log.producer_sequence(5, 1),
-        ProducerSequence::Held { first: 1, last: 2 }
+        ProducerSequence::Held {
+            first: 1,
+            last: 2,
+            digest: digest(&["b", "c"]),
+        }
     );
     assert_eq!(log.producer_sequence(5, 2), ProducerSequence::Next);
 }
@@ -109,7 +120,11 @@ async fn with_a_current_snapshot_an_open_reads_only_the_active_segment() {
     let (first, last) = landed[11];
     assert_eq!(
         log.producer_sequence(1, 11),
-        ProducerSequence::Held { first, last }
+        ProducerSequence::Held {
+            first,
+            last,
+            digest: digest(FILLED),
+        }
     );
     assert_eq!(log.producer_sequence(1, 12), ProducerSequence::Next);
     drop(log);
@@ -140,7 +155,8 @@ async fn without_a_snapshot_the_state_is_rebuilt_from_every_segment() {
             log.producer_sequence(1, sequence as u64),
             ProducerSequence::Held {
                 first: *first,
-                last: *last
+                last: *last,
+                digest: digest(FILLED),
             }
         );
     }
@@ -166,7 +182,8 @@ async fn a_truncation_forgets_the_batches_it_removes() {
         ProducerSequence::Partial {
             first,
             held: 1,
-            len: 2
+            len: 2,
+            digest: digest(&FILLED[..1]),
         }
     );
 
@@ -182,7 +199,8 @@ async fn a_truncation_forgets_the_batches_it_removes() {
         log.producer_sequence(1, 2),
         ProducerSequence::Held {
             first: landed[2].0,
-            last: landed[2].1
+            last: landed[2].1,
+            digest: digest(FILLED),
         }
     );
     assert_eq!(log.producer_sequence(2, 1), ProducerSequence::Next);
@@ -207,13 +225,18 @@ async fn a_batch_split_across_appends_is_partial_until_complete() {
         ProducerSequence::Partial {
             first: 0,
             held: 1,
-            len: 3
+            len: 3,
+            digest: digest(&["a"]),
         }
     );
     log.append(&rest).await.expect("append");
     assert_eq!(
         log.producer_sequence(4, 0),
-        ProducerSequence::Held { first: 0, last: 2 }
+        ProducerSequence::Held {
+            first: 0,
+            last: 2,
+            digest: digest(&["a", "b", "c"]),
+        }
     );
 }
 
@@ -272,7 +295,11 @@ async fn a_marked_batch_is_never_written_into_a_v2_segment() {
     let log = open(&dir, FsyncMode::OnCommit);
     assert_eq!(
         log.producer_sequence(3, 0),
-        ProducerSequence::Held { first: 2, last: 2 }
+        ProducerSequence::Held {
+            first: 2,
+            last: 2,
+            digest: digest(&["new"]),
+        }
     );
     assert_eq!(read_all(&log, 0).await, vec!["old", "unmarked", "new"]);
 }
@@ -298,7 +325,8 @@ async fn the_rest_of_a_batch_is_written_only_while_it_is_open_at_the_tail() {
         ProducerSequence::Partial {
             first: 0,
             held: 2,
-            len: 3
+            len: 3,
+            digest: digest(&["a", "b"]),
         }
     );
 

@@ -995,3 +995,241 @@ async fn idempotent_producer_does_not_reuse_a_sequence_in_doubt() -> Result<()> 
     server_task.abort();
     Ok(())
 }
+
+/// A broker over a durable single-shard `t1/default/orders`, serving QUIC.
+async fn serve_durable_orders(
+    dir: &std::path::Path,
+) -> Result<(
+    Arc<Broker>,
+    std::net::SocketAddr,
+    CertificateDer<'static>,
+    AuthFixture,
+    felix_broker_service::config::BrokerConfig,
+    tokio::task::JoinHandle<Result<()>>,
+)> {
+    unsafe {
+        std::env::set_var("FELIX_ACK_ON_COMMIT", "false");
+    }
+    let storage = felix_broker::DurableStorage::open(
+        dir,
+        felix_storage::log::LogConfig {
+            fsync_mode: felix_storage::log::FsyncMode::None,
+            preallocate_segments: false,
+            ..Default::default()
+        },
+    )?;
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_stream(
+            "t1",
+            "default",
+            "orders",
+            StreamMetadata {
+                durable: true,
+                shards: 1,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    let (server_config, cert) = build_server_config()?;
+    let server = Arc::new(QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?);
+    let addr = server.local_addr()?;
+    let config = felix_broker_service::config::BrokerConfig::from_env()?;
+    let auth = auth_fixture("t1", vec!["stream.publish:stream:t1/*/*".to_string()]);
+    let server_task = tokio::spawn(felix_broker_service::serving::quic::serve(
+        Arc::clone(&server),
+        Arc::clone(&broker),
+        config.clone(),
+        Arc::clone(&auth.auth),
+    ));
+    Ok((broker, addr, cert, auth, config, server_task))
+}
+
+/// Every payload `t1/default/orders` holds, in order.
+async fn stored_orders(broker: &Broker) -> Result<Vec<Vec<u8>>> {
+    let resumed = broker
+        .subscribe_from(
+            "t1",
+            "default",
+            "orders",
+            0,
+            felix_wire::StartPosition::Earliest,
+        )
+        .await?;
+    anyhow::ensure!(
+        resumed.history.is_none(),
+        "the replay ring should cover the log"
+    );
+    Ok(resumed
+        .backlog
+        .into_iter()
+        .map(|(_, payload)| payload.to_vec())
+        .collect())
+}
+
+// A producer that sends a different batch under a sequence the leader already
+// holds is refused with a typed reason, not acknowledged: the batch was not
+// written, and saying otherwise loses it silently.
+#[tokio::test]
+#[serial]
+async fn a_reused_sequence_is_refused_to_the_rust_client() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (broker, addr, cert, auth, _config, server_task) = serve_durable_orders(dir.path()).await?;
+
+    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let producer_id = client.idempotent_producer().await?.producer_id();
+    let publisher = client.publisher().await?;
+    let send = |payload: &'static [u8]| {
+        publisher.publish_idempotent_batch(
+            "t1",
+            "default",
+            "orders",
+            vec![payload.to_vec()],
+            producer_id,
+            0,
+        )
+    };
+
+    send(b"a").await.context("first")?;
+    let err = send(b"b")
+        .await
+        .expect_err("a different batch under a held sequence was acknowledged");
+    let refused = err
+        .downcast_ref::<felix_client::PublishRefused>()
+        .with_context(|| format!("not a typed refusal: {err:#}"))?;
+    assert_eq!(
+        refused.reason,
+        felix_client::PublishRefusalReason::SequenceReused
+    );
+    send(b"a")
+        .await
+        .context("the batch itself is still a re-send")?;
+
+    assert_eq!(stored_orders(&broker).await?, vec![b"a".to_vec()]);
+    server_task.abort();
+    Ok(())
+}
+
+/// Over JSON frames on one connection offering `client_features`: take a
+/// producer id, publish `a` under sequence 0, then `b` under the same sequence,
+/// and return the answer to `b`.
+async fn reuse_a_sequence_over_json(
+    addr: std::net::SocketAddr,
+    cert: CertificateDer<'static>,
+    auth: &AuthFixture,
+    config: &felix_broker_service::config::BrokerConfig,
+    client_features: u32,
+) -> Result<Option<Message>> {
+    let client = QuicClient::bind(
+        "0.0.0.0:0".parse()?,
+        build_quinn_client_config(cert)?,
+        TransportConfig::default(),
+    )?;
+    let connection = client.connect(addr, "localhost").await?;
+    let (mut send, mut recv) = connection.open_bi().await?;
+    let mut frame_scratch = bytes::BytesMut::with_capacity(1024);
+    let mut exchange = async |message: Message| -> Result<Option<Message>> {
+        felix_broker_service::serving::quic::write_message(&mut send, message).await?;
+        felix_broker_service::serving::quic::read_message_limited(
+            &mut recv,
+            config.max_frame_bytes,
+            &mut frame_scratch,
+        )
+        .await
+    };
+
+    match exchange(Message::Auth {
+        tenant_id: auth.tenant_id.clone(),
+        token: auth.token.clone(),
+        client_flags: Some(felix_wire::ORIGINAL_V1_FLAGS),
+        client_features: Some(client_features),
+    })
+    .await?
+    {
+        Some(Message::AuthOk {
+            server_features, ..
+        }) => assert!(felix_wire::supports_feature(
+            server_features.unwrap_or(0),
+            felix_wire::FEATURE_SEQUENCE_REUSED
+        )),
+        other => anyhow::bail!("expected AuthOk, got {other:?}"),
+    }
+    let producer_id = match exchange(Message::ProducerInit { request_id: 1 }).await? {
+        Some(Message::ProducerInitOk { producer_id, .. }) => producer_id,
+        other => anyhow::bail!("expected ProducerInitOk, got {other:?}"),
+    };
+    let publish = |request_id: u64, payload: &[u8]| Message::PublishIdempotent {
+        tenant_id: "t1".to_string(),
+        namespace: "default".to_string(),
+        stream: "orders".to_string(),
+        payloads: vec![payload.to_vec()],
+        key: None,
+        request_id,
+        producer_id,
+        sequence: 0,
+    };
+    let first = exchange(publish(2, b"a")).await?;
+    anyhow::ensure!(
+        matches!(first, Some(Message::PublishOk { request_id: 2 })),
+        "first: {first:?}"
+    );
+    exchange(publish(3, b"b")).await
+}
+
+// A client that did not offer `FEATURE_SEQUENCE_REUSED` cannot decode the
+// refusal, so it gets the answer it always got: acknowledged, and not written.
+// One that offered it over JSON is refused as over binary.
+#[tokio::test]
+#[serial]
+async fn a_reused_sequence_is_refused_over_json_only_when_negotiated() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (broker, addr, cert, auth, config, server_task) = serve_durable_orders(dir.path()).await?;
+
+    let legacy = reuse_a_sequence_over_json(
+        addr,
+        cert.clone(),
+        &auth,
+        &config,
+        felix_wire::FEATURE_IDEMPOTENT_PRODUCER,
+    )
+    .await?;
+    assert!(
+        matches!(legacy, Some(Message::PublishOk { request_id: 3 })),
+        "a legacy client should get publish_ok for a reused sequence"
+    );
+
+    let negotiated = reuse_a_sequence_over_json(
+        addr,
+        cert,
+        &auth,
+        &config,
+        felix_wire::FEATURE_IDEMPOTENT_PRODUCER | felix_wire::FEATURE_SEQUENCE_REUSED,
+    )
+    .await?;
+    assert!(
+        matches!(
+            negotiated,
+            Some(Message::PublishRefused {
+                request_id: 3,
+                reason: felix_wire::PublishRefusalReason::SequenceReused,
+                ..
+            })
+        ),
+        "a negotiating client should get publish_refused sequence_reused"
+    );
+
+    // One `a` per producer, and no `b`.
+    assert_eq!(
+        stored_orders(&broker).await?,
+        vec![b"a".to_vec(), b"a".to_vec()]
+    );
+    server_task.abort();
+    Ok(())
+}

@@ -378,6 +378,7 @@ fn refusal_reason(err: &anyhow::Error) -> Option<felix_wire::PublishRefusalReaso
         }),
         felix_broker::BrokerError::UnknownProducer { .. } => Some(Reason::UnknownProducer),
         felix_broker::BrokerError::SequenceExpired { .. } => Some(Reason::SequenceExpired),
+        felix_broker::BrokerError::SequenceReused { .. } => Some(Reason::SequenceReused),
         _ => None,
     }
 }

@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use bytes::Bytes;
-use felix_broker::Broker;
+use felix_broker::{Broker, SequenceReuse};
 use felix_wire::Message;
 use tokio::sync::{Mutex, Semaphore, mpsc, oneshot, watch};
 use tracing::Instrument;
@@ -61,10 +61,11 @@ pub(crate) async fn handle_publish_batch_message(
     sample: bool,
     // The publisher's token, carried on a forward for the owner to verify.
     credential: String,
-    // `(producer_id, sequence)` for a `publish_idempotent`; the batch is then
-    // appended once however many times it arrives, acknowledged only once
-    // committed, and never forwarded.
-    producer: Option<(u64, u64)>,
+    // `(producer_id, sequence, reuse)` for a `publish_idempotent`; the batch is
+    // then appended once however many times it arrives, acknowledged only once
+    // committed, and never forwarded. `reuse` is [`sequence_reuse`] for the
+    // client.
+    producer: Option<(u64, u64, SequenceReuse)>,
 ) -> Result<()> {
     record_json_publish("publish_batch");
     #[cfg(feature = "telemetry")]
@@ -189,7 +190,7 @@ pub(crate) async fn handle_publish_batch_message(
                 internal_ack(ack),
                 &credential,
             ),
-            Some((producer_id, sequence)) => match route {
+            Some((producer_id, sequence, reuse)) => match route {
                 PublishRoute::Local {
                     handle,
                     generation,
@@ -201,6 +202,7 @@ pub(crate) async fn handle_publish_batch_message(
                     fenced,
                     producer_id,
                     sequence,
+                    reuse,
                 }),
                 // Only the leader holds the sequences a re-send is checked
                 // against, so an idempotent batch is not forwarded: forwarded, a
@@ -542,4 +544,15 @@ pub(super) fn refusal_for_client(
 /// with the outcome unknown rather than "not applied".
 pub(super) fn overloaded_after_enqueue() -> ClientError {
     ClientError::overloaded("server overloaded").with_retry(felix_wire::RetryClass::OutcomeUnknown)
+}
+
+/// What a client's idempotent batch gets when its sequence already holds a
+/// different batch: a refusal, if the client offered to read one, and
+/// otherwise the duplicate answer it has always had.
+pub(crate) fn sequence_reuse(peer_features: u32) -> SequenceReuse {
+    if felix_wire::supports_feature(peer_features, felix_wire::FEATURE_SEQUENCE_REUSED) {
+        SequenceReuse::Refuse
+    } else {
+        SequenceReuse::AnswerDuplicate
+    }
 }

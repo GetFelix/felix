@@ -56,9 +56,10 @@ pub struct ScanOutcome {
     pub index: SparseIndex,
     /// `Some` when the tail was damaged and must be truncated to `valid_bytes`.
     pub torn_tail: Option<TornTail>,
-    /// The producer marks of the records scanned, in order. Collected here so
-    /// rebuilding producer state costs no second pass over the segment.
-    pub marks: Vec<(Offset, RecordMark)>,
+    /// The producer marks of the records scanned, in order, each with its
+    /// payload's digest (its part of a `PayloadDigest`). Collected here
+    /// so rebuilding producer state costs no second pass over the segment.
+    pub marks: Vec<(Offset, RecordMark, u64)>,
 }
 
 impl ScanOutcome {
@@ -90,7 +91,7 @@ struct ScanState {
     spacing: u64,
     rebuild_index: bool,
     repair: TailRepair,
-    marks: Vec<(Offset, RecordMark)>,
+    marks: Vec<(Offset, RecordMark, u64)>,
 }
 
 impl ScanState {
@@ -314,7 +315,10 @@ pub fn scan_segment_with(
 
         state.observe(decoded.header.offset, position, total_len);
         if decoded.mark != RecordMark::None {
-            state.marks.push((decoded.header.offset, decoded.mark));
+            let digest = crate::log::record_digest(&decoded.payload);
+            state
+                .marks
+                .push((decoded.header.offset, decoded.mark, digest));
         }
         state.position += total_len;
         state.next_offset = decoded.header.offset + 1;

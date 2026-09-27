@@ -49,6 +49,12 @@ pub enum PublishRefusalReason {
     /// The sequence is older than the window the broker keeps, so whether it
     /// was appended cannot be told any more.
     SequenceExpired,
+    /// The broker already holds a batch under this sequence and its payloads
+    /// differ, so this one is not a re-send of it and was not appended. The
+    /// producer reused a number it had spent. Only sent to a client that
+    /// offered `FEATURE_SEQUENCE_REUSED`; any other client is answered as if
+    /// it had re-sent the batch held.
+    SequenceReused,
     /// This broker does not lead the shard, and only the leader holds the
     /// sequences; the batch has to go to the broker named here.
     NotLeader {

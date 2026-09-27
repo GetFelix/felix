@@ -12,6 +12,11 @@
 //! leader or a move's destination answers a re-sent batch as a duplicate
 //! instead of appending it again. The cost is a producer mark on every record
 //! rather than on the first of each batch.
+//!
+//! A re-send is not checked against the payload digest the log keeps. Kafka
+//! answers a duplicate sequence by its numbers alone, and has no error that
+//! means "same sequence, different records"; its producers start a new epoch
+//! rather than reuse a sequence whose outcome they do not know.
 
 use bytes::Bytes;
 use felix_storage::disk_log::ProducerSequence;
@@ -164,7 +169,7 @@ pub(crate) fn lift(sequence: u64, owed: Option<u64>) -> u64 {
 
 fn held(sequence: ProducerSequence) -> Option<(u64, u64)> {
     match sequence {
-        ProducerSequence::Held { first, last } => Some((first, last)),
+        ProducerSequence::Held { first, last, .. } => Some((first, last)),
         _ => None,
     }
 }

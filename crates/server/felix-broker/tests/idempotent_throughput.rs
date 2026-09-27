@@ -8,7 +8,7 @@
 use std::time::Instant;
 
 use bytes::Bytes;
-use felix_broker::{Broker, DurableStorage, StreamMetadata};
+use felix_broker::{Broker, DurableStorage, SequenceReuse, StreamMetadata};
 use felix_storage::EphemeralCache;
 use felix_storage::log::{FsyncMode, LogConfig};
 
@@ -81,7 +81,13 @@ async fn durable_publish_throughput() {
         let started = Instant::now();
         for _ in 0..BATCHES {
             broker
-                .publish_batch_idempotent(&idempotent, producer, sequence, &payloads)
+                .publish_batch_idempotent(
+                    &idempotent,
+                    producer,
+                    sequence,
+                    &payloads,
+                    SequenceReuse::Refuse,
+                )
                 .await
                 .expect("publish");
             sequence += 1;
@@ -93,7 +99,13 @@ async fn durable_publish_throughput() {
     let started = Instant::now();
     for resent in (sequence - 64)..sequence {
         let outcome = broker
-            .publish_batch_idempotent(&idempotent, producer, resent, &payloads)
+            .publish_batch_idempotent(
+                &idempotent,
+                producer,
+                resent,
+                &payloads,
+                SequenceReuse::Refuse,
+            )
             .await
             .expect("re-send");
         assert!(outcome.duplicate);

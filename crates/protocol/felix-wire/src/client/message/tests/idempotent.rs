@@ -69,6 +69,7 @@ fn every_refusal_reason_round_trips() {
         PublishRefusalReason::SequenceGap { expected: 12 },
         PublishRefusalReason::UnknownProducer,
         PublishRefusalReason::SequenceExpired,
+        PublishRefusalReason::SequenceReused,
         PublishRefusalReason::NotLeader {
             node_id: "broker-b".to_string(),
             addr: Some("10.0.0.2:5000".to_string()),
@@ -91,4 +92,6 @@ fn every_refusal_reason_round_trips() {
     assert_eq!(gap, "{\"sequence_gap\":{\"expected\":12}}");
     let plain = serde_json::to_string(&PublishRefusalReason::UnknownProducer).expect("json");
     assert_eq!(plain, "\"unknown_producer\"");
+    let reused = serde_json::to_string(&PublishRefusalReason::SequenceReused).expect("json");
+    assert_eq!(reused, "\"sequence_reused\"");
 }

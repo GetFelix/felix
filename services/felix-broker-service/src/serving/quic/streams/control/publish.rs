@@ -11,7 +11,7 @@ use super::{Ctx, Session, Step};
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::{
     AckEncoding, Outgoing, handle_ack_enqueue_result, handle_publish_batch_message,
-    handle_publish_message, send_outgoing_critical,
+    handle_publish_message, send_outgoing_critical, sequence_reuse,
 };
 
 // One parameter per field of the message it answers.
@@ -238,7 +238,7 @@ pub(super) async fn publish_idempotent(
             .auth_ctx
             .as_ref()
             .map_or_else(String::new, |ctx| ctx.token.clone()),
-        Some((producer_id, sequence)),
+        Some((producer_id, sequence, sequence_reuse(session.peer_features))),
     )
     .await?;
     Ok(Step::Next)

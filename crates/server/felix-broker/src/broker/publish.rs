@@ -18,7 +18,7 @@ use std::sync::atomic::Ordering;
 use bytes::Bytes;
 
 use felix_storage::disk_log::ProducerSequence;
-use felix_storage::log::RecordMark;
+use felix_storage::log::{PayloadDigest, RecordMark};
 
 use super::Broker;
 use super::shards::StreamHandle;
@@ -235,6 +235,11 @@ impl Broker {
     /// shard does not know, or a sequence older than it remembers is refused
     /// with the matching [`BrokerError`], and nothing is written then either.
     ///
+    /// A batch under a sequence already held is checked against a digest of
+    /// the held batch's payloads; `reuse` says what one that differs gets.
+    /// A batch held without a digest (known only from a snapshot written
+    /// before digests were kept) is taken to match.
+    ///
     /// On a durable stream the log is what knows, so the answer is the same
     /// on any replica that holds the batch. See `stream/producers.rs`.
     pub async fn publish_batch_idempotent(
@@ -243,10 +248,11 @@ impl Broker {
         producer_id: u64,
         sequence: u64,
         payloads: &[Bytes],
+        reuse: SequenceReuse,
     ) -> Result<IdempotentOutcome> {
         let Some(log) = &handle.state.durable else {
             return self
-                .publish_idempotent_in_memory(handle, producer_id, sequence, payloads)
+                .publish_idempotent_in_memory(handle, producer_id, sequence, payloads, reuse)
                 .await;
         };
         // The turn serialises this producer's batches, so two re-sends of one
@@ -256,7 +262,12 @@ impl Broker {
         let _turn = turn.lock().await;
         loop {
             match log.producer_sequence(producer_id, sequence) {
-                ProducerSequence::Held { first, last } => {
+                ProducerSequence::Held {
+                    first,
+                    last,
+                    digest,
+                } => {
+                    reuse.check(sequence, digest, payloads)?;
                     // Its writer may have been cancelled before waiting, or
                     // be a leader that is gone: vouch for it only once it is
                     // as durable here as a fresh append would be.
@@ -288,10 +299,18 @@ impl Broker {
                 // The log holds the start of this batch and nothing after it:
                 // its leader stopped partway. Writing the rest finishes it
                 // without writing the start twice.
-                ProducerSequence::Partial { first, held, len } => {
+                ProducerSequence::Partial {
+                    first,
+                    held,
+                    len,
+                    digest,
+                } => {
                     if payloads.len() != len as usize {
                         return Err(BrokerError::SequenceExpired { sequence });
                     }
+                    // Finishing a different batch's start with this one's rest
+                    // would write a batch nobody sent.
+                    reuse.check(sequence, digest, &payloads[..held as usize])?;
                     let append = Append::Continuing {
                         producer_id,
                         sequence,
@@ -331,18 +350,23 @@ impl Broker {
         producer_id: u64,
         sequence: u64,
         payloads: &[Bytes],
+        reuse: SequenceReuse,
     ) -> Result<IdempotentOutcome> {
         let producers = &handle.state.producers;
         let turn = producers.turn(producer_id, sequence)?;
         let _turn = turn.lock().await;
         match producers.classify(producer_id, sequence)? {
-            Sequenced::Duplicate(outcome) => Ok(IdempotentOutcome {
-                outcome,
-                duplicate: true,
-            }),
+            Sequenced::Duplicate(outcome, digest) => {
+                reuse.check(sequence, Some(digest), payloads)?;
+                Ok(IdempotentOutcome {
+                    outcome,
+                    duplicate: true,
+                })
+            }
             Sequenced::Append => {
+                let digest = PayloadDigest::of(payloads);
                 let outcome = self.publish_batch_with_outcome(handle, payloads).await?;
-                producers.remember(producer_id, sequence, outcome);
+                producers.remember(producer_id, sequence, outcome, digest);
                 Ok(IdempotentOutcome {
                     outcome,
                     duplicate: false,
@@ -414,6 +438,32 @@ pub struct IdempotentOutcome {
     pub outcome: PublishOutcome,
     /// The batch had already been appended; nothing was written this time.
     pub duplicate: bool,
+}
+
+/// What an idempotent batch gets when its sequence already holds a batch with
+/// different payloads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SequenceReuse {
+    /// Refused with [`BrokerError::SequenceReused`], and nothing written.
+    Refuse,
+    /// Answered as a duplicate of the batch held, and nothing written: its
+    /// records are reported written when they are not. Only for a client that
+    /// cannot read the refusal, which got this answer before digests existed.
+    AnswerDuplicate,
+}
+
+impl SequenceReuse {
+    /// Refuse `payloads` if asked to and `held`, the digest of the batch
+    /// already under `sequence`, says they differ from it.
+    fn check(self, sequence: u64, held: Option<PayloadDigest>, payloads: &[Bytes]) -> Result<()> {
+        if self == Self::Refuse
+            && let Some(held) = held
+            && held != PayloadDigest::of(payloads)
+        {
+            return Err(BrokerError::SequenceReused { sequence });
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

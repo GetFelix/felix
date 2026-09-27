@@ -157,6 +157,17 @@ pub const FEATURE_SHARD_MOVED: u32 = 0x0000_1000;
 /// needs a feature bit before a client can try it.
 pub const FEATURE_UNSUPPORTED: u32 = 0x0000_2000;
 
+/// The client can read `publish_refused` with reason `sequence_reused`.
+///
+/// Offered by a *client*, like `FEATURE_ERROR_CODES`. A leader keeps a digest
+/// of each remembered batch's payloads, and a batch under a remembered
+/// sequence whose payloads differ is refused with that reason, for a client
+/// that offered the bit. Any other client gets what it always got: the batch
+/// is answered as a duplicate of the one held, and not written. A broker
+/// advertises the bit too, so a client knows whether a duplicate answer was
+/// checked.
+pub const FEATURE_SEQUENCE_REUSED: u32 = 0x0000_4000;
+
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -171,7 +182,8 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_CACHE_SHARDS
     | FEATURE_ERROR_CODES
     | FEATURE_SHARD_MOVED
-    | FEATURE_UNSUPPORTED;
+    | FEATURE_UNSUPPORTED
+    | FEATURE_SEQUENCE_REUSED;
 
 /// True if `features` advertises `feature`.
 pub fn supports_feature(features: u32, feature: u32) -> bool {

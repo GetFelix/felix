@@ -6,7 +6,7 @@ use bytes::Bytes;
 use felix_storage::EphemeralCache;
 
 use crate::error::BrokerError;
-use crate::{Broker, StreamHandle, StreamMetadata};
+use crate::{Broker, SequenceReuse, StreamHandle, StreamMetadata};
 
 async fn broker_with_stream() -> (Broker, StreamHandle) {
     let broker = Broker::new(EphemeralCache::new().into());
@@ -38,11 +38,23 @@ async fn a_re_sent_batch_lands_once() {
         .expect("subscribe");
 
     let first = broker
-        .publish_batch_idempotent(&handle, 7, 0, &[Bytes::from_static(b"a")])
+        .publish_batch_idempotent(
+            &handle,
+            7,
+            0,
+            &[Bytes::from_static(b"a")],
+            SequenceReuse::Refuse,
+        )
         .await
         .expect("first");
     let again = broker
-        .publish_batch_idempotent(&handle, 7, 0, &[Bytes::from_static(b"a")])
+        .publish_batch_idempotent(
+            &handle,
+            7,
+            0,
+            &[Bytes::from_static(b"a")],
+            SequenceReuse::Refuse,
+        )
         .await
         .expect("re-send");
     assert!(!first.duplicate);
@@ -58,7 +70,13 @@ async fn a_re_sent_batch_lands_once() {
     );
 
     let next = broker
-        .publish_batch_idempotent(&handle, 7, 1, &[Bytes::from_static(b"b")])
+        .publish_batch_idempotent(
+            &handle,
+            7,
+            1,
+            &[Bytes::from_static(b"b")],
+            SequenceReuse::Refuse,
+        )
         .await
         .expect("next");
     assert!(!next.duplicate);
@@ -75,13 +93,25 @@ async fn refusals_append_nothing() {
         .await
         .expect("subscribe");
     broker
-        .publish_batch_idempotent(&handle, 7, 0, &[Bytes::from_static(b"a")])
+        .publish_batch_idempotent(
+            &handle,
+            7,
+            0,
+            &[Bytes::from_static(b"a")],
+            SequenceReuse::Refuse,
+        )
         .await
         .expect("first");
     sub.recv().await.expect("one");
 
     let gap = broker
-        .publish_batch_idempotent(&handle, 7, 3, &[Bytes::from_static(b"skip")])
+        .publish_batch_idempotent(
+            &handle,
+            7,
+            3,
+            &[Bytes::from_static(b"skip")],
+            SequenceReuse::Refuse,
+        )
         .await;
     assert!(
         matches!(gap, Err(BrokerError::SequenceGap { expected: 1 })),
@@ -89,7 +119,13 @@ async fn refusals_append_nothing() {
     );
 
     let unknown = broker
-        .publish_batch_idempotent(&handle, 8, 2, &[Bytes::from_static(b"who")])
+        .publish_batch_idempotent(
+            &handle,
+            8,
+            2,
+            &[Bytes::from_static(b"who")],
+            SequenceReuse::Refuse,
+        )
         .await;
     assert!(
         matches!(
@@ -113,15 +149,33 @@ async fn refusals_append_nothing() {
 async fn producers_do_not_share_a_sequence() {
     let (broker, handle) = broker_with_stream().await;
     broker
-        .publish_batch_idempotent(&handle, 1, 0, &[Bytes::from_static(b"a")])
+        .publish_batch_idempotent(
+            &handle,
+            1,
+            0,
+            &[Bytes::from_static(b"a")],
+            SequenceReuse::Refuse,
+        )
         .await
         .expect("producer 1");
     broker
-        .publish_batch_idempotent(&handle, 2, 0, &[Bytes::from_static(b"b")])
+        .publish_batch_idempotent(
+            &handle,
+            2,
+            0,
+            &[Bytes::from_static(b"b")],
+            SequenceReuse::Refuse,
+        )
         .await
         .expect("producer 2 begins at zero too");
     let outcome = broker
-        .publish_batch_idempotent(&handle, 1, 1, &[Bytes::from_static(b"c")])
+        .publish_batch_idempotent(
+            &handle,
+            1,
+            1,
+            &[Bytes::from_static(b"c")],
+            SequenceReuse::Refuse,
+        )
         .await
         .expect("producer 1 continues");
     assert!(!outcome.duplicate);
@@ -153,7 +207,13 @@ async fn racing_re_sends_append_once() {
         let handle = handle.clone();
         tasks.push(tokio::spawn(async move {
             broker
-                .publish_batch_idempotent(&handle, 9, 0, &[Bytes::from_static(b"once")])
+                .publish_batch_idempotent(
+                    &handle,
+                    9,
+                    0,
+                    &[Bytes::from_static(b"once")],
+                    SequenceReuse::Refuse,
+                )
                 .await
                 .expect("publish")
         }));
@@ -174,6 +234,73 @@ async fn racing_re_sends_append_once() {
     );
 }
 
+/// **A different batch under a sequence already held is not a re-send.** A
+/// producer that negotiated the refusal gets `SequenceReused`; one that did not
+/// gets the duplicate answer it always got. Neither is written.
+#[tokio::test]
+async fn a_different_batch_under_a_held_sequence_is_refused_when_negotiated() {
+    let (broker, handle) = broker_with_stream().await;
+    let mut sub = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await
+        .expect("subscribe");
+    let first = broker
+        .publish_batch_idempotent(
+            &handle,
+            7,
+            0,
+            &[Bytes::from_static(b"a")],
+            SequenceReuse::Refuse,
+        )
+        .await
+        .expect("first");
+    sub.recv().await.expect("one");
+
+    let refused = broker
+        .publish_batch_idempotent(
+            &handle,
+            7,
+            0,
+            &[Bytes::from_static(b"other")],
+            SequenceReuse::Refuse,
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(BrokerError::SequenceReused { sequence: 0 })),
+        "{refused:?}"
+    );
+    let legacy = broker
+        .publish_batch_idempotent(
+            &handle,
+            7,
+            0,
+            &[Bytes::from_static(b"other")],
+            SequenceReuse::AnswerDuplicate,
+        )
+        .await
+        .expect("a client without the refusal is answered as before");
+    assert!(legacy.duplicate);
+    assert_eq!(legacy.outcome, first.outcome);
+    let resent = broker
+        .publish_batch_idempotent(
+            &handle,
+            7,
+            0,
+            &[Bytes::from_static(b"a")],
+            SequenceReuse::Refuse,
+        )
+        .await
+        .expect("the batch itself is still a re-send");
+    assert!(resent.duplicate);
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), sub.recv())
+            .await
+            .is_err(),
+        "a batch under a reused sequence was delivered"
+    );
+}
+
 mod durable {
     //! On a durable stream the sequences come from the log, so a broker that
     //! did not take the original -- restarted, or a replica shipped the
@@ -185,9 +312,9 @@ mod durable {
 
     use crate::durable::StreamLog;
     use crate::error::BrokerError;
-    use crate::{Broker, DurableStorage, StreamHandle, StreamMetadata};
+    use crate::{Broker, DurableStorage, SequenceReuse, StreamHandle, StreamMetadata};
 
-    async fn open(dir: &std::path::Path) -> (Broker, StreamHandle, DurableStorage) {
+    pub(super) async fn open(dir: &std::path::Path) -> (Broker, StreamHandle, DurableStorage) {
         let config = LogConfig {
             fsync_mode: FsyncMode::OnCommit,
             preallocate_segments: false,
@@ -224,14 +351,14 @@ mod durable {
         handle.state.durable.as_ref().expect("durable")
     }
 
-    fn bytes(values: &[&'static str]) -> Vec<Bytes> {
+    pub(super) fn bytes(values: &[&'static str]) -> Vec<Bytes> {
         values
             .iter()
             .map(|v| Bytes::from_static(v.as_bytes()))
             .collect()
     }
 
-    async fn stored(handle: &StreamHandle) -> Vec<Bytes> {
+    pub(super) async fn stored(handle: &StreamHandle) -> Vec<Bytes> {
         log(handle)
             .read_from(0, usize::MAX)
             .await
@@ -243,7 +370,7 @@ mod durable {
 
     /// Ship `leader`'s log from `from` to `follower` the way replication does,
     /// stopping after `count` records.
-    async fn ship(
+    pub(super) async fn ship(
         leader: &StreamHandle,
         broker: &Broker,
         follower: &StreamHandle,
@@ -279,11 +406,11 @@ mod durable {
         let first = {
             let (broker, handle, storage) = open(dir.path()).await;
             broker
-                .publish_batch_idempotent(&handle, 7, 0, &bytes(&["a"]))
+                .publish_batch_idempotent(&handle, 7, 0, &bytes(&["a"]), SequenceReuse::Refuse)
                 .await
                 .expect("0");
             let first = broker
-                .publish_batch_idempotent(&handle, 7, 1, &bytes(&["b", "c"]))
+                .publish_batch_idempotent(&handle, 7, 1, &bytes(&["b", "c"]), SequenceReuse::Refuse)
                 .await
                 .expect("1");
             storage.shutdown().await.expect("shutdown");
@@ -292,14 +419,14 @@ mod durable {
 
         let (broker, handle, _storage) = open(dir.path()).await;
         let again = broker
-            .publish_batch_idempotent(&handle, 7, 1, &bytes(&["b", "c"]))
+            .publish_batch_idempotent(&handle, 7, 1, &bytes(&["b", "c"]), SequenceReuse::Refuse)
             .await
             .expect("re-send");
         assert!(again.duplicate, "the re-send was appended again");
         assert_eq!(again.outcome.offsets, first.outcome.offsets);
 
         let next = broker
-            .publish_batch_idempotent(&handle, 7, 2, &bytes(&["d"]))
+            .publish_batch_idempotent(&handle, 7, 2, &bytes(&["d"]), SequenceReuse::Refuse)
             .await
             .expect("next");
         assert!(!next.duplicate);
@@ -317,20 +444,32 @@ mod durable {
 
         for (sequence, batch) in [["a", "b"], ["c", "d"]].iter().enumerate() {
             leader
-                .publish_batch_idempotent(&on_leader, 7, sequence as u64, &bytes(batch))
+                .publish_batch_idempotent(
+                    &on_leader,
+                    7,
+                    sequence as u64,
+                    &bytes(batch),
+                    SequenceReuse::Refuse,
+                )
                 .await
                 .expect("publish");
         }
         ship(&on_leader, &follower, &on_follower, 0, usize::MAX).await;
 
         let again = follower
-            .publish_batch_idempotent(&on_follower, 7, 1, &bytes(&["c", "d"]))
+            .publish_batch_idempotent(
+                &on_follower,
+                7,
+                1,
+                &bytes(&["c", "d"]),
+                SequenceReuse::Refuse,
+            )
             .await
             .expect("re-send");
         assert!(again.duplicate, "the replica appended the re-send");
         assert_eq!(again.outcome.offsets, Some((2, 3)));
         let next = follower
-            .publish_batch_idempotent(&on_follower, 7, 2, &bytes(&["e"]))
+            .publish_batch_idempotent(&on_follower, 7, 2, &bytes(&["e"]), SequenceReuse::Refuse)
             .await
             .expect("the producer carries on");
         assert!(!next.duplicate);
@@ -340,7 +479,7 @@ mod durable {
         );
 
         let err = follower
-            .publish_batch_idempotent(&on_follower, 8, 3, &bytes(&["x"]))
+            .publish_batch_idempotent(&on_follower, 8, 3, &bytes(&["x"]), SequenceReuse::Refuse)
             .await
             .expect_err("a producer the log never saw may not start mid-way");
         assert!(matches!(
@@ -360,13 +499,25 @@ mod durable {
         let (follower, on_follower, _f) = open(follower_dir.path()).await;
 
         leader
-            .publish_batch_idempotent(&on_leader, 7, 0, &bytes(&["x", "y", "z"]))
+            .publish_batch_idempotent(
+                &on_leader,
+                7,
+                0,
+                &bytes(&["x", "y", "z"]),
+                SequenceReuse::Refuse,
+            )
             .await
             .expect("publish");
         ship(&on_leader, &follower, &on_follower, 0, 1).await;
 
         let resent = follower
-            .publish_batch_idempotent(&on_follower, 7, 0, &bytes(&["x", "y", "z"]))
+            .publish_batch_idempotent(
+                &on_follower,
+                7,
+                0,
+                &bytes(&["x", "y", "z"]),
+                SequenceReuse::Refuse,
+            )
             .await
             .expect("re-send");
         assert!(!resent.duplicate, "part of it was new");
@@ -374,9 +525,144 @@ mod durable {
         assert_eq!(stored(&on_follower).await, bytes(&["x", "y", "z"]));
 
         let again = follower
-            .publish_batch_idempotent(&on_follower, 7, 0, &bytes(&["x", "y", "z"]))
+            .publish_batch_idempotent(
+                &on_follower,
+                7,
+                0,
+                &bytes(&["x", "y", "z"]),
+                SequenceReuse::Refuse,
+            )
             .await
             .expect("re-send");
         assert!(again.duplicate);
+    }
+}
+
+mod reused {
+    //! The digest a durable log keeps of each batch is derived from the
+    //! records, so a restarted leader and a replica refuse a reused sequence
+    //! just as the leader that took the batch would.
+
+    use super::durable::{bytes, open, ship, stored};
+    use crate::SequenceReuse;
+    use crate::error::BrokerError;
+
+    #[tokio::test]
+    async fn a_restarted_leader_refuses_a_different_batch_under_a_held_sequence() {
+        let dir = tempfile::tempdir().expect("dir");
+        {
+            let (broker, handle, storage) = open(dir.path()).await;
+            broker
+                .publish_batch_idempotent(&handle, 7, 0, &bytes(&["a", "b"]), SequenceReuse::Refuse)
+                .await
+                .expect("0");
+            storage.shutdown().await.expect("shutdown");
+        }
+
+        let (broker, handle, _storage) = open(dir.path()).await;
+        for different in [&["a", "c"][..], &["a"], &["a", "b", "c"], &["b", "a"]] {
+            let err = broker
+                .publish_batch_idempotent(&handle, 7, 0, &bytes(different), SequenceReuse::Refuse)
+                .await
+                .expect_err("a different batch is not a re-send");
+            assert!(
+                matches!(err, BrokerError::SequenceReused { sequence: 0 }),
+                "{different:?}: {err:?}"
+            );
+            let legacy = broker
+                .publish_batch_idempotent(
+                    &handle,
+                    7,
+                    0,
+                    &bytes(different),
+                    SequenceReuse::AnswerDuplicate,
+                )
+                .await
+                .expect("a legacy client is answered as before");
+            assert!(legacy.duplicate);
+            assert_eq!(legacy.outcome.offsets, Some((0, 1)));
+        }
+        let resent = broker
+            .publish_batch_idempotent(&handle, 7, 0, &bytes(&["a", "b"]), SequenceReuse::Refuse)
+            .await
+            .expect("re-send");
+        assert!(resent.duplicate);
+        assert_eq!(stored(&handle).await, bytes(&["a", "b"]));
+    }
+
+    #[tokio::test]
+    async fn a_replica_refuses_a_different_batch_under_a_sequence_it_was_shipped() {
+        let leader_dir = tempfile::tempdir().expect("dir");
+        let follower_dir = tempfile::tempdir().expect("dir");
+        let (leader, on_leader, _l) = open(leader_dir.path()).await;
+        let (follower, on_follower, _f) = open(follower_dir.path()).await;
+
+        leader
+            .publish_batch_idempotent(&on_leader, 7, 0, &bytes(&["a", "b"]), SequenceReuse::Refuse)
+            .await
+            .expect("publish");
+        ship(&on_leader, &follower, &on_follower, 0, usize::MAX).await;
+
+        let err = follower
+            .publish_batch_idempotent(
+                &on_follower,
+                7,
+                0,
+                &bytes(&["x", "y"]),
+                SequenceReuse::Refuse,
+            )
+            .await
+            .expect_err("refused");
+        assert!(matches!(err, BrokerError::SequenceReused { sequence: 0 }));
+        assert_eq!(stored(&on_follower).await, bytes(&["a", "b"]));
+    }
+
+    /// A replica holding only the start of a batch does not finish it with the
+    /// rest of a different one.
+    #[tokio::test]
+    async fn a_batch_cut_short_is_not_finished_by_a_different_batch() {
+        let leader_dir = tempfile::tempdir().expect("dir");
+        let follower_dir = tempfile::tempdir().expect("dir");
+        let (leader, on_leader, _l) = open(leader_dir.path()).await;
+        let (follower, on_follower, _f) = open(follower_dir.path()).await;
+
+        leader
+            .publish_batch_idempotent(
+                &on_leader,
+                7,
+                0,
+                &bytes(&["x", "y", "z"]),
+                SequenceReuse::Refuse,
+            )
+            .await
+            .expect("publish");
+        ship(&on_leader, &follower, &on_follower, 0, 1).await;
+
+        let err = follower
+            .publish_batch_idempotent(
+                &on_follower,
+                7,
+                0,
+                &bytes(&["q", "y", "z"]),
+                SequenceReuse::Refuse,
+            )
+            .await
+            .expect_err("refused");
+        assert!(matches!(err, BrokerError::SequenceReused { sequence: 0 }));
+        assert_eq!(stored(&on_follower).await, bytes(&["x"]));
+
+        // Only the start is compared: the rest is what the re-send supplies.
+        let finished = follower
+            .publish_batch_idempotent(
+                &on_follower,
+                7,
+                0,
+                &bytes(&["x", "y", "z"]),
+                SequenceReuse::Refuse,
+            )
+            .await
+            .expect("the batch itself finishes it");
+        assert!(!finished.duplicate);
+        assert_eq!(stored(&on_follower).await, bytes(&["x", "y", "z"]));
     }
 }

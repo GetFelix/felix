@@ -221,6 +221,7 @@ impl ClientError {
             | E::SequenceGap { .. }
             | E::UnknownProducer { .. }
             | E::SequenceExpired { .. }
+            | E::SequenceReused { .. }
             | E::GroupOffsetNotHandedOut { .. } => Self::invalid(message),
             // A broker configured without the storage the stream needs will
             // answer the same way until someone changes its configuration.
