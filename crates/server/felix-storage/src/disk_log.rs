@@ -75,9 +75,9 @@ use crate::log::{
 use crate::segment::ReadBudget;
 use crate::{Result, StorageError, metrics_names};
 
-/// How often an advancing commit offset is written through. Bounds the fsyncs
-/// a busy replicated shard adds, at the cost of reading back an older offset
-/// after a crash.
+/// How often an advancing commit offset is written behind when the log is not
+/// fsynced on commit. Its records are written behind too, so an offset that
+/// outlived them would guard nothing.
 pub const COMMIT_PERSIST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// What [`DiskLog::accept_generation`] found.
@@ -414,17 +414,21 @@ impl DiskLog {
     /// Record that every record below `offset` is committed.
     ///
     /// Takes effect at once for [`AppendOnlyLog::truncate`] and
-    /// [`DiskLog::reset_to`], which refuse to cut below it. It reaches disk at
-    /// most once per [`COMMIT_PERSIST_INTERVAL`], and always with a raised
-    /// generation and at shutdown. After a crash the offset read back may be
-    /// behind, which weakens the guard: truncation may then cut into records
+    /// [`DiskLog::reset_to`], which refuse to cut below it. Under
+    /// [`FsyncMode::OnCommit`] it is on disk when this returns, so a restart
+    /// reads back every offset acknowledged under it. Otherwise it reaches disk
+    /// at most once per [`COMMIT_PERSIST_INTERVAL`], and always with a raised
+    /// generation and at shutdown; the offset read back after a crash may then
+    /// be behind, which weakens the guard: truncation may cut into records
     /// committed since, until the leader's next batch carries the offset again.
     pub async fn advance_commit_offset(&self, offset: Offset) -> Result<()> {
         let previous = self.inner.commit_offset.fetch_max(offset, Ordering::AcqRel);
         if offset <= previous {
             return Ok(());
         }
-        let due = {
+        // Concurrent advances coalesce: whoever takes the writer's lock next
+        // writes the highest offset raised so far, and the rest find it done.
+        let due = matches!(self.inner.config.fsync_mode, FsyncMode::OnCommit) || {
             let persisted = self.inner.replica_persisted.lock();
             persisted
                 .1
@@ -882,7 +886,8 @@ struct LogInner {
     /// on every replicated batch. Raised only after it is on disk.
     accepted_generation: AtomicU64,
     /// One past the last record known committed. Raised in memory at once and
-    /// written behind; see [`DiskLog::advance_commit_offset`].
+    /// written through or behind with the log's fsync mode; see
+    /// [`DiskLog::advance_commit_offset`].
     commit_offset: AtomicU64,
     /// What `replica_state` last wrote, and when. Held only by the writer.
     replica_persisted: Mutex<(replica_state::ReplicaState, Option<std::time::Instant>)>,

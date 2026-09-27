@@ -10,6 +10,9 @@ names the upstream version each vendored copy was taken from. This script:
 - fails if that name or version disagrees with the vendored manifest, the
   root [patch.crates-io] entry, or Cargo.lock, so the tracking file cannot go
   stale on an upgrade;
+- fails if a standalone workspace (a fuzz crate, a demo) can reach a vendored
+  crate without its own [patch.crates-io] entry: the root's [patch] does not
+  apply across workspaces, so it would build the unpatched upstream release;
 - with `--advisory-crate DIR`, writes a throwaway crate at DIR that depends on
   each upstream version from crates.io, for `cargo-deny check advisories` to
   run against. That is how an advisory on the upstream release still reaches us.
@@ -19,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import subprocess
 import sys
 import tomllib
 
@@ -81,6 +85,75 @@ def check(entries: list[dict]) -> list[str]:
     return failures
 
 
+def standalone_workspaces() -> list[pathlib.Path]:
+    """Manifests with their own [workspace], other than the root and vendor/."""
+    # Tracked files only: worktrees and build output hold copies of the tree.
+    listed = subprocess.run(
+        ["git", "ls-files", "*Cargo.toml"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    found = []
+    for rel in sorted(listed):
+        if rel == "Cargo.toml" or rel.startswith("vendor/"):
+            continue
+        manifest = REPO_ROOT / rel
+        if "workspace" in load_toml(manifest):
+            found.append(manifest)
+    return found
+
+
+def reaches(lock: list[dict], start: str, target: str) -> bool:
+    """Whether `start` depends on `target`, directly or not, per the root lockfile."""
+    deps = {p["name"]: [d.split()[0] for d in p.get("dependencies", [])] for p in lock}
+    seen, stack = set(), [start]
+    while stack:
+        name = stack.pop()
+        if name == target:
+            return True
+        if name not in seen:
+            seen.add(name)
+            stack.extend(deps.get(name, []))
+    return False
+
+
+def check_standalone(entries: list[dict]) -> list[str]:
+    failures: list[str] = []
+    root_lock = load_toml(REPO_ROOT / "Cargo.lock").get("package", [])
+    for manifest in standalone_workspaces():
+        rel = manifest.relative_to(REPO_ROOT)
+        data = load_toml(manifest)
+        patches = data.get("patch", {}).get("crates-io", {})
+        lockfile = manifest.with_name("Cargo.lock")
+        locked = load_toml(lockfile).get("package", []) if lockfile.is_file() else []
+        path_deps = [
+            spec.get("package", name)
+            for name, spec in data.get("dependencies", {}).items()
+            if isinstance(spec, dict) and "path" in spec
+        ]
+        for entry in entries:
+            name = entry["name"]
+            in_lock = any(p["name"] == name for p in locked)
+            via_path = any(reaches(root_lock, dep, name) for dep in path_deps)
+            if not (in_lock or via_path):
+                continue
+            spec = patches.get(name)
+            path = spec.get("path") if isinstance(spec, dict) else None
+            if not path or (manifest.parent / path).resolve() != REPO_ROOT / "vendor" / name:
+                failures.append(
+                    f"{rel}: reaches {name} but has no [patch.crates-io] entry pointing "
+                    f"at vendor/{name}, so it builds the unpatched upstream release."
+                )
+            if any(p["name"] == name and "source" in p for p in locked):
+                failures.append(
+                    f"{rel.with_name('Cargo.lock')}: resolves {name} from the registry; "
+                    f"run `cargo update -p {name}` there after adding the patch."
+                )
+    return failures
+
+
 def write_advisory_crate(entries: list[dict], out: pathlib.Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     (out / "src").mkdir(exist_ok=True)
@@ -112,7 +185,7 @@ def main() -> int:
     args = parser.parse_args()
 
     entries = load_toml(TRACKING).get("crate", [])
-    failures = check(entries)
+    failures = check(entries) + check_standalone(entries)
     if failures:
         print("Vendored-crate check FAILED:\n", file=sys.stderr)
         for failure in failures:
