@@ -659,6 +659,7 @@ async fn handle_uni_stream_smoke() -> Result<()> {
             auth_for_server,
             publish_ctx,
             recv,
+            None,
         )
         .await?;
         Result::<()>::Ok(())

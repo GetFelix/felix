@@ -221,6 +221,7 @@ pub(crate) async fn handle_uni_stream(
     auth: Arc<BrokerAuth>,
     publish_ctx: PublishContext,
     mut recv: RecvStream,
+    peer_certs: Option<Vec<rustls::pki_types::CertificateDer<'static>>>,
 ) -> Result<()> {
     let mut frame_scratch = BytesMut::with_capacity(config.max_frame_bytes.min(64 * 1024));
 
@@ -233,6 +234,7 @@ pub(crate) async fn handle_uni_stream(
             publish_ctx,
             stream_cache: HashMap::new(),
             stream_cache_key: String::new(),
+            peer_certs,
         },
         &mut frame_scratch,
     )

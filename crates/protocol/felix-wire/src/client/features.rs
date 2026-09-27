@@ -7,8 +7,11 @@
 //! shape it has no encoder for.
 //!
 //! A client must not send a featured request to a broker that did not advertise
-//! the bit: an unrecognised message type is a fatal protocol error to the
-//! broker's control loop, so probing costs the connection.
+//! the bit: to a broker without `FEATURE_UNSUPPORTED`, an unrecognised message
+//! type is a fatal protocol error, so probing costs the connection. A broker
+//! that advertises `FEATURE_UNSUPPORTED` answers one with `unsupported`
+//! instead, which is what lets a request added from here on go without a bit
+//! of its own.
 
 /// The broker answers `topology`: which brokers a client may connect to.
 pub const FEATURE_TOPOLOGY: u32 = 0x0000_0001;
@@ -142,6 +145,18 @@ pub const FEATURE_ERROR_CODES: u32 = 0x0000_0800;
 /// a stream that ends without one did not end because its shard moved.
 pub const FEATURE_SHARD_MOVED: u32 = 0x0000_1000;
 
+/// The peer answers a request type it does not know with `unsupported`, and
+/// carries on serving the stream, instead of ending the control loop.
+///
+/// Advertised by a *broker* to say it answers that way; offered by a *client*
+/// to say it can decode `unsupported`. A broker only sends `unsupported` to a
+/// client that offered the bit: any other client gets what it always got, a
+/// closed stream. With both bits set a client may send a request the broker
+/// may not know -- including anything in the `extension` area -- and read a
+/// typed refusal rather than lose the connection, so a new request no longer
+/// needs a feature bit before a client can try it.
+pub const FEATURE_UNSUPPORTED: u32 = 0x0000_2000;
+
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -155,7 +170,8 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_IDEMPOTENT_PRODUCER
     | FEATURE_CACHE_SHARDS
     | FEATURE_ERROR_CODES
-    | FEATURE_SHARD_MOVED;
+    | FEATURE_SHARD_MOVED
+    | FEATURE_UNSUPPORTED;
 
 /// True if `features` advertises `feature`.
 pub fn supports_feature(features: u32, feature: u32) -> bool {

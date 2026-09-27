@@ -1225,6 +1225,34 @@ Two uses:
   delivered batches can have a gap. Without offsets that loss is invisible; with
   them it is a discontinuity the client can see and act on.
 
+## ALPN
+
+Client listeners use the ALPN id `felix/1` (`felix_wire::CLIENT_ALPN`). A
+client offering it gets it; a client offering only other ids (for example a
+broker's `felix-internal/1`) fails the handshake. A client offering no ALPN is
+still accepted, because QUIC's strict ALPN rule would otherwise lock out every
+client built before the id existed: the broker reads the ALPN extension from
+the ClientHello and starts the handshake on a config with or without ALPN to
+match. `FELIX_TLS_REQUIRE_ALPN=true` removes that compatibility path. A client
+should offer `felix/1` only to brokers that have it; an older broker lists no
+ALPN and refuses any client that offers one.
+
+## Unknown requests and the extension area
+
+A broker that advertises `FEATURE_UNSUPPORTED` (0x2000) answers a request whose
+`type` it does not know with
+`{"type":"unsupported","request_type":...,"request_id":...}` and keeps serving
+the stream, provided the client offered the same bit. A client that did not
+gets the old behaviour: the stream is closed. `{"type":"extension","name":...,
+"request_id":...,"body":...}` is a reserved area for requests named by string
+rather than by a new variant; today's broker implements none and answers every
+one with `unsupported` (with `extension` set to the name). Decoders map an
+unknown `type` to `Message::Unknown` rather than failing, so a new request no
+longer needs its own feature bit before a client can try it.
+
+`stream_shards_view` may carry `routing` (`modulo` or `jump_hash`); absent means
+`modulo`. The broker currently always omits it.
+
 ## Future Compatibility
 - Undefined `flags` bits are reserved. Receivers MUST reject frames carrying an
   unrecognised bit instead of ignoring it: flag bits select the payload layout, so

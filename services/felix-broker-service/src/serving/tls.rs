@@ -29,13 +29,17 @@ pub(crate) struct ClientTls {
     reloading: Option<Arc<ReloadingIdentity>>,
     /// Present when clients must authenticate with a certificate.
     client_roots: Option<Arc<rustls::RootCertStore>>,
+    /// Refuse a QUIC client that negotiates no ALPN.
+    require_alpn: bool,
 }
 
 impl ClientTls {
     /// Load the configured certificate, or generate the development one.
     pub(crate) fn from_config(config: &ClientTlsConfig) -> Result<Self> {
         let Some(files) = &config.files else {
-            return Self::generated(config.cert_export.as_deref());
+            let mut generated = Self::generated(config.cert_export.as_deref())?;
+            generated.require_alpn = config.require_alpn;
+            return Ok(generated);
         };
         let identity = Arc::new(
             ReloadingIdentity::load(
@@ -64,10 +68,16 @@ impl ClientTls {
             resolver: Arc::clone(&identity) as Arc<dyn ResolvesServerCert>,
             reloading: Some(identity),
             client_roots,
+            require_alpn: config.require_alpn,
         })
     }
 
     /// The QUIC listeners' server config.
+    ///
+    /// Selects the `felix/1` ALPN for a client that offers it and refuses one
+    /// that offers only other protocols, such as a broker's internal one. A
+    /// client that offers none is accepted unless `FELIX_TLS_REQUIRE_ALPN` is
+    /// set: clients built before ALPN existed send none.
     pub(crate) fn quic_server_config(&self) -> Result<quinn::ServerConfig> {
         let mut config = self
             .rustls_config(&[&rustls::version::TLS13])
@@ -77,6 +87,14 @@ impl ClientTls {
             // only 0 or u32::MAX, and this keeps 0-RTT available.
             config.max_early_data_size = u32::MAX;
         }
+        if !self.require_alpn {
+            return felix_transport::alpn_optional_server_config(
+                config,
+                &[felix_wire::CLIENT_ALPN],
+            )
+            .context("client QUIC crypto");
+        }
+        config.alpn_protocols = vec![felix_wire::CLIENT_ALPN.to_vec()];
         let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(config)
             .context("client QUIC crypto")?;
         Ok(quinn::ServerConfig::with_crypto(Arc::new(crypto)))
@@ -132,6 +150,7 @@ impl ClientTls {
             resolver: Arc::new(rustls::sign::SingleCertAndKey::from(key)),
             reloading: None,
             client_roots: None,
+            require_alpn: false,
         })
     }
 
@@ -164,6 +183,32 @@ impl ClientTls {
                 .with_cert_resolver(Arc::clone(&self.resolver)),
         })
     }
+}
+
+/// Whether a token's `subject` is a name the client's certificate is valid
+/// for, when the client presented one.
+///
+/// The chain was verified in the handshake; this binds the certificate to
+/// the principal the token claims, so a stolen token is no use without the
+/// key of a certificate issued to the same name. Names are compared the way
+/// a server name is checked against a certificate: a DNS or IP subject
+/// alternative name, wildcards included. A client with no certificate passes,
+/// since only a listener with `FELIX_TLS_CLIENT_CA` asks for one and that
+/// listener refuses the handshake without it.
+pub(crate) fn check_subject_binding(
+    peer_certs: Option<&[rustls::pki_types::CertificateDer<'_>]>,
+    subject: &str,
+) -> std::result::Result<(), String> {
+    let Some(leaf) = peer_certs.and_then(|certs| certs.first()) else {
+        return Ok(());
+    };
+    let name = rustls::pki_types::ServerName::try_from(subject).map_err(|_| {
+        format!("the token's subject {subject:?} is not a name a certificate can carry")
+    })?;
+    let cert = webpki::EndEntityCert::try_from(leaf)
+        .map_err(|err| format!("the client certificate does not parse: {err}"))?;
+    cert.verify_is_valid_for_subject_name(&name)
+        .map_err(|_| format!("the client certificate is not issued to {subject:?}"))
 }
 
 /// Same provider as the peer transport; see `peer::tls::provider`.

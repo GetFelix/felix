@@ -36,7 +36,7 @@ impl TransportConfig {
         config.stream_receive_window(stream_window);
         config.receive_window(receive_window);
         config.send_window(self.send_window);
-        if let Some(interval) = self.keep_alive_interval {
+        if let Some(interval) = self.effective_keep_alive() {
             config.keep_alive_interval(Some(interval));
         }
         if let Some(timeout) = self.max_idle_timeout {

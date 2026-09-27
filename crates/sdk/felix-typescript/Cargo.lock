@@ -252,6 +252,7 @@ dependencies = [
  "anyhow",
  "libc",
  "quinn",
+ "quinn-proto",
  "rustls",
  "socket2",
  "tokio",

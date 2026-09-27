@@ -104,6 +104,7 @@ fn make_auth_ctx(tenant_id: &str, perms: &[&str]) -> AuthContext {
     let patterns = perms.iter().map(|p| (*p).to_string()).collect::<Vec<_>>();
     let matcher = PermissionMatcher::from_strings(&patterns).expect("parse perms");
     AuthContext {
+        subject: "test-principal".to_string(),
         tenant_id: tenant_id.to_string(),
         matcher,
         token: "test-token".to_string(),

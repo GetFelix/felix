@@ -196,7 +196,10 @@ where
                 Arc::clone(&broker),
                 catalog_seeded.clone(),
             ));
-    let auth = Arc::new(BrokerAuth::with_key_store(Arc::new(key_store)));
+    let auth = Arc::new(
+        BrokerAuth::with_key_store(Arc::new(key_store))
+            .with_subject_binding(config.client_tls.bind_subject),
+    );
     // One set for every client listener, so the per-address cap and each
     // tenant's quota are per broker rather than per socket.
     let limits = crate::serving::limits::ListenerLimits::from_config(&config);

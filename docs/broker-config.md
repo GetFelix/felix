@@ -196,6 +196,8 @@ one certificate:
 | `FELIX_TLS_CERT`, `FELIX_TLS_KEY` | PEM chain (leaf first) and key to serve. Both or neither. Re-read every 30s; a renewal over the same paths reaches the next handshake, and open connections keep theirs. |
 | `FELIX_TLS_CLIENT_CA` | Clients must present a certificate chaining to this bundle. Needs the two above. Read once. |
 | `FELIX_TLS_REQUIRE_CERT=true` | Refuse to start without `FELIX_TLS_CERT`. Set it in production. |
+| `FELIX_TLS_REQUIRE_ALPN=true` | Refuse QUIC clients that offer no ALPN. By default they are served; clients offering `felix/1` get it, and a client offering only other protocols is refused. |
+| `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true` | A client presenting a certificate must use a token whose `sub` is a name that certificate is valid for. Needs `FELIX_TLS_CLIENT_CA`. QUIC listeners only. |
 | `FELIX_TLS_CERT_EXPORT` | Write the generated development certificate out for clients to trust. Refused together with `FELIX_TLS_CERT`. |
 
 Without `FELIX_TLS_CERT` the broker generates a self-signed certificate for

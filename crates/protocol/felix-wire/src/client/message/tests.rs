@@ -7,3 +7,4 @@ mod codec;
 mod idempotent;
 mod stream;
 mod topology;
+mod unsupported;

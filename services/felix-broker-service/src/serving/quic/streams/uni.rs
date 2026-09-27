@@ -28,6 +28,8 @@ pub(super) struct UniLoopArgs {
     pub publish_ctx: PublishContext,
     pub stream_cache: StreamHandleCache,
     pub stream_cache_key: String,
+    /// The certificate chain the client presented, for subject binding.
+    pub peer_certs: Option<Vec<rustls::pki_types::CertificateDer<'static>>>,
 }
 
 /// Run one uni publish stream until EOF, a decode error, or a protocol
@@ -46,6 +48,7 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
         publish_ctx,
         mut stream_cache,
         mut stream_cache_key,
+        peer_certs,
     } = args;
     let mut auth_ctx: Option<AuthContext> = None;
     // Held until this stream authenticates; see `preauth`.
@@ -109,7 +112,10 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
                     tracing::debug!("closing uni stream after duplicate auth");
                     break;
                 }
-                match auth.authenticate(&tenant_id, &token).await {
+                match auth
+                    .authenticate_peer(&tenant_id, &token, peer_certs.as_deref())
+                    .await
+                {
                     Ok(ctx) => {
                         auth_ctx = Some(ctx);
                         preauth_permit.take();

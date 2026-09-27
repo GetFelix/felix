@@ -48,6 +48,7 @@ async fn uni_loop_publish_and_errors() -> Result<()> {
             publish_ctx,
             stream_cache: HashMap::new(),
             stream_cache_key: String::new(),
+            peer_certs: None,
         },
         &mut scratch,
     )
@@ -66,6 +67,7 @@ async fn uni_loop_publish_and_errors() -> Result<()> {
             publish_ctx: build_publish_context(Arc::clone(&broker)).await,
             stream_cache: HashMap::new(),
             stream_cache_key: String::new(),
+            peer_certs: None,
         },
         &mut scratch,
     )
@@ -85,6 +87,7 @@ async fn uni_loop_publish_and_errors() -> Result<()> {
                 publish_ctx: build_publish_context(Arc::clone(&broker)).await,
                 stream_cache: HashMap::new(),
                 stream_cache_key: String::new(),
+                peer_certs: None,
             },
             &mut scratch,
         )
@@ -143,6 +146,7 @@ async fn uni_loop_breaks_on_enqueue_error() -> Result<()> {
             publish_ctx: publish_ctx.clone(),
             stream_cache: HashMap::new(),
             stream_cache_key: String::new(),
+            peer_certs: None,
         },
         &mut scratch,
     )
@@ -169,6 +173,7 @@ async fn uni_loop_breaks_on_enqueue_error() -> Result<()> {
             publish_ctx: publish_ctx.clone(),
             stream_cache: HashMap::new(),
             stream_cache_key: String::new(),
+            peer_certs: None,
         },
         &mut scratch,
     )
@@ -195,6 +200,7 @@ async fn uni_loop_breaks_on_enqueue_error() -> Result<()> {
             publish_ctx,
             stream_cache: HashMap::new(),
             stream_cache_key: String::new(),
+            peer_certs: None,
         },
         &mut scratch,
     )
@@ -249,6 +255,7 @@ async fn uni_loop_refuses_layouts_it_cannot_read() -> Result<()> {
                 publish_ctx: build_publish_context(Arc::clone(&broker)).await,
                 stream_cache: HashMap::new(),
                 stream_cache_key: String::new(),
+                peer_certs: None,
             },
             &mut scratch,
         )

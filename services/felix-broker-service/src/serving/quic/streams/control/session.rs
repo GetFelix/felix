@@ -50,7 +50,11 @@ pub(super) async fn authenticate(
         .await?;
         return Ok(Step::Close(false));
     }
-    match auth.authenticate(&tenant_id, &token).await {
+    let peer_certs = cx.connection.peer_certificates();
+    match auth
+        .authenticate_peer(&tenant_id, &token, peer_certs.as_deref())
+        .await
+    {
         Ok(ctx) => {
             session.auth_ctx = Some(ctx);
             // Remembered, not just answered: delivery paths need to
@@ -142,7 +146,10 @@ pub(super) async fn authenticate(
                             | felix_wire::FEATURE_ERROR_CODES
                             // Sent only to a client that offered it, when a
                             // shard it reads moves away.
-                            | felix_wire::FEATURE_SHARD_MOVED,
+                            | felix_wire::FEATURE_SHARD_MOVED
+                            // An unknown request is answered, not fatal, for a
+                            // client that offered the bit.
+                            | felix_wire::FEATURE_UNSUPPORTED,
                     ),
                     // Only when there is more than one. A single
                     // listener is the default, and saying so
