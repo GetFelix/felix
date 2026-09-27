@@ -13,4 +13,4 @@
 [[crate]]
 name = "kafka-protocol"
 version = "0.18.0"
-patch = "Caps each Vec reservation at the bytes left in the buffer, so a client-supplied array count cannot ask for gigabytes."
+patch = "Caps reservations sized by client-supplied counts at the bytes left in the buffer, so a tiny frame cannot ask for gigabytes."

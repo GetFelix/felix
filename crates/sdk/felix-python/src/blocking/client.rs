@@ -38,6 +38,10 @@ impl Client {
     /// TLS is not optional — QUIC has no unencrypted mode. Supply `ca_file`
     /// to trust a specific CA (what the demos and a self-signed development
     /// broker need); omit it to use the operating system's trust store.
+    ///
+    /// `offer_alpn=True` offers the `felix/1` ALPN. A broker with
+    /// `FELIX_TLS_REQUIRE_ALPN=true` serves only clients that do; a broker
+    /// older than ALPN support refuses them, which is why it is off by default.
     #[new]
     #[pyo3(signature = (
         addrs,
@@ -46,6 +50,7 @@ impl Client {
         token,
         server_name="localhost",
         ca_file=None,
+        offer_alpn=false,
     ))]
     fn new(
         py: Python<'_>,
@@ -54,6 +59,7 @@ impl Client {
         token: &str,
         server_name: &str,
         ca_file: Option<&str>,
+        offer_alpn: bool,
     ) -> PyResult<Self> {
         let seeds = parse_addrs(py, &addrs)?;
         if seeds.is_empty() {
@@ -61,7 +67,7 @@ impl Client {
                 "at least one broker address is required",
             ));
         }
-        let quinn = tls::client_config(ca_file)?;
+        let quinn = tls::client_config(ca_file, offer_alpn)?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id.to_string());
         config.auth_token = Some(token.to_string());

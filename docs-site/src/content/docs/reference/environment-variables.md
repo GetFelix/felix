@@ -136,6 +136,10 @@ issued by it, or the handshake is refused.
 - The client listeners always select `felix/1` for a client that offers it and
   refuse a client that offers only other protocols. A client offering no ALPN
   (every client built before it existed) is still accepted unless this is set.
+- The shipped clients offer `felix/1` only when asked, because a broker older
+  than ALPN support refuses a client that offers it: `offer_alpn=True` in
+  Python, `offerAlpn` in TypeScript, `felix_client::quic_client_config(roots,
+  true)` in Rust. Turn it on in every client before setting this.
 
 ### `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`
 

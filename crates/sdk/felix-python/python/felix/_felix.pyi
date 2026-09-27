@@ -189,6 +189,7 @@ class Client:
         token: str,
         server_name: str = "localhost",
         ca_file: str | None = None,
+        offer_alpn: bool = False,
     ) -> None: ...
     def publish(
         self,
@@ -314,6 +315,7 @@ class AsyncClient:
         token: str,
         server_name: str = "localhost",
         ca_file: str | None = None,
+        offer_alpn: bool = False,
     ) -> "AsyncClient": ...
     async def publish(
         self,

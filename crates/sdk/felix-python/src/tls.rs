@@ -7,6 +7,10 @@
 //! "skip verification" switch — it is the one setting that silently turns a
 //! secure deployment insecure, and a CA file covers the development case
 //! without it.
+//!
+//! `offer_alpn` offers the `felix/1` ALPN, which a broker with
+//! `FELIX_TLS_REQUIRE_ALPN=true` needs. It is off by default because a broker
+//! that predates ALPN refuses a client that offers it.
 use std::sync::Arc;
 
 use pyo3::exceptions::PyValueError;
@@ -15,7 +19,7 @@ use quinn::ClientConfig;
 use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
 
-pub(crate) fn client_config(ca_file: Option<&str>) -> PyResult<ClientConfig> {
+pub(crate) fn client_config(ca_file: Option<&str>, offer_alpn: bool) -> PyResult<ClientConfig> {
     match ca_file {
         Some(path) => {
             let mut roots = RootCertStore::empty();
@@ -39,13 +43,13 @@ pub(crate) fn client_config(ca_file: Option<&str>) -> PyResult<ClientConfig> {
                     ))
                 })?;
             }
-            ClientConfig::with_root_certificates(Arc::new(roots)).map_err(|err| {
-                PyValueError::new_err(format!("could not build a TLS config: {err}"))
+            felix_client::quic_client_config(Some(Arc::new(roots)), offer_alpn).map_err(|err| {
+                PyValueError::new_err(format!("could not build a TLS config: {err:#}"))
             })
         }
-        None => ClientConfig::try_with_platform_verifier().map_err(|err| {
+        None => felix_client::quic_client_config(None, offer_alpn).map_err(|err| {
             PyValueError::new_err(format!(
-                "could not use the platform trust store: {err}. \
+                "could not use the platform trust store: {err:#}. \
                  Pass ca_file= to trust a specific CA instead."
             ))
         }),
