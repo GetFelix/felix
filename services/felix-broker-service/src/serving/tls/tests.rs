@@ -79,6 +79,15 @@ fn serve(tls: &ClientTls) -> Arc<QuicServer> {
 
 /// A client trusting `roots` only, optionally presenting a certificate.
 fn client(roots: Arc<rustls::RootCertStore>, identity: Option<(&Path, &Path)>) -> QuicClient {
+    client_offering(roots, identity, &[])
+}
+
+/// [`client`], offering `alpn`.
+fn client_offering(
+    roots: Arc<rustls::RootCertStore>,
+    identity: Option<(&Path, &Path)>,
+    alpn: &[&[u8]],
+) -> QuicClient {
     let builder = rustls::ClientConfig::builder_with_provider(provider())
         .with_protocol_versions(&[&rustls::version::TLS13])
         .expect("versions")
@@ -95,6 +104,8 @@ fn client(roots: Arc<rustls::RootCertStore>, identity: Option<(&Path, &Path)>) -
             .expect("client cert"),
         None => builder.with_no_client_auth(),
     };
+    let mut config = config;
+    config.alpn_protocols = alpn.iter().map(|protocol| protocol.to_vec()).collect();
     let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(config).expect("crypto");
     QuicClient::bind(
         "127.0.0.1:0".parse().expect("addr"),
@@ -244,4 +255,84 @@ fn the_generated_certificate_is_exported_when_asked() {
     );
     let pem = std::fs::read_to_string(&export).expect("exported");
     assert!(pem.contains("BEGIN CERTIFICATE"));
+}
+
+#[tokio::test]
+async fn the_client_alpn_is_selected_and_a_client_without_one_is_still_served() {
+    let pki = Pki::new();
+    let (cert, key) = pki.issue("broker", "broker.felix.test");
+    let tls = ClientTls::from_config(&files(&cert, &key, None)).expect("load");
+    let server = serve(&tls);
+
+    let current = client_offering(pki.roots(), None, &[felix_wire::CLIENT_ALPN]);
+    let (dialled, accepted) = handshake(&server, &current, "broker.felix.test").await;
+    let accepted = accepted.expect("a client offering felix/1 was refused");
+    assert_eq!(
+        dialled.expect("dial").negotiated_protocol().as_deref(),
+        Some(felix_wire::CLIENT_ALPN)
+    );
+    assert_eq!(
+        accepted.negotiated_protocol().as_deref(),
+        Some(felix_wire::CLIENT_ALPN)
+    );
+
+    // The compatibility path: clients from before ALPN offer none.
+    let (dialled, accepted) =
+        handshake(&server, &client(pki.roots(), None), "broker.felix.test").await;
+    accepted.expect("a client offering no ALPN was refused");
+    assert_eq!(dialled.expect("dial").negotiated_protocol(), None);
+
+    // A broker's internal protocol has nothing in common with this port.
+    let peer = client_offering(pki.roots(), None, &[b"felix-internal/1"]);
+    let (dialled, _) = handshake(&server, &peer, "broker.felix.test").await;
+    assert!(
+        dialled.is_err(),
+        "a peer's ALPN was accepted on the client port"
+    );
+}
+
+#[tokio::test]
+async fn requiring_alpn_refuses_a_client_that_offers_none() {
+    let pki = Pki::new();
+    let (cert, key) = pki.issue("broker", "broker.felix.test");
+    let config = ClientTlsConfig {
+        require_alpn: true,
+        ..files(&cert, &key, None)
+    };
+    let server = serve(&ClientTls::from_config(&config).expect("load"));
+
+    let (dialled, _) = handshake(&server, &client(pki.roots(), None), "broker.felix.test").await;
+    assert!(dialled.is_err(), "a client without ALPN was served");
+    let current = client_offering(pki.roots(), None, &[felix_wire::CLIENT_ALPN]);
+    let (dialled, _) = handshake(&server, &current, "broker.felix.test").await;
+    dialled.expect("a client offering felix/1 was refused");
+}
+
+#[tokio::test]
+async fn a_token_subject_binds_to_the_client_certificate() {
+    let pki = Pki::new();
+    let (cert, key) = pki.issue("broker", "broker.felix.test");
+    let tls = ClientTls::from_config(&files(&cert, &key, Some(&pki.ca_path))).expect("load");
+    let server = serve(&tls);
+    let (app_cert, app_key) = pki.issue("app", "orders.apps.felix.test");
+    let (_, accepted) = handshake(
+        &server,
+        &client(pki.roots(), Some((&app_cert, &app_key))),
+        "broker.felix.test",
+    )
+    .await;
+    let certs = accepted
+        .expect("accepted")
+        .peer_certificates()
+        .expect("the client's chain");
+
+    check_subject_binding(Some(&certs), "orders.apps.felix.test").expect("its own name");
+    let other = check_subject_binding(Some(&certs), "billing.apps.felix.test")
+        .expect_err("another service's token");
+    assert!(other.contains("not issued to"), "{other}");
+    let unnameable =
+        check_subject_binding(Some(&certs), "user@example.com").expect_err("not a name");
+    assert!(unnameable.contains("not a name"), "{unnameable}");
+    // No certificate, nothing to bind to: a listener without a client CA.
+    check_subject_binding(None, "anyone").expect("no certificate");
 }

@@ -162,3 +162,34 @@ fn the_peer_opt_out_is_read_from_the_environment() {
     BrokerConfig::from_env().expect_err("not a bool");
     clear_felix_env();
 }
+
+#[test]
+fn alpn_and_subject_binding_are_off_unless_asked_for() {
+    let config = client_tls(&[]).expect("empty");
+    assert!(!config.require_alpn);
+    assert!(!config.bind_subject);
+    let config = client_tls(&[
+        ("FELIX_TLS_CERT", "/c"),
+        ("FELIX_TLS_KEY", "/k"),
+        ("FELIX_TLS_CLIENT_CA", "/ca"),
+        ("FELIX_TLS_REQUIRE_ALPN", "true"),
+        ("FELIX_TLS_CLIENT_CERT_BIND_SUBJECT", "yes"),
+    ])
+    .expect("parse");
+    assert!(config.require_alpn);
+    assert!(config.bind_subject);
+    config.validate().expect("binding with a client CA");
+}
+
+#[test]
+fn subject_binding_without_client_certificates_is_refused() {
+    let config = client_tls(&[
+        ("FELIX_TLS_CERT", "/c"),
+        ("FELIX_TLS_KEY", "/k"),
+        ("FELIX_TLS_CLIENT_CERT_BIND_SUBJECT", "true"),
+    ])
+    .expect("parse");
+    let err = config.validate().expect_err("nothing to bind to");
+    assert!(err.to_string().contains("FELIX_TLS_CLIENT_CA"), "{err}");
+    assert!(client_tls(&[("FELIX_TLS_REQUIRE_ALPN", "maybe")]).is_err());
+}

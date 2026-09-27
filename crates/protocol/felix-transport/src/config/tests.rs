@@ -31,6 +31,50 @@ fn the_keep_alive_fits_inside_the_idle_window() {
         keep_alive * 3 <= idle,
         "keep-alive {keep_alive:?} leaves no margin inside idle timeout {idle:?}",
     );
+    assert_eq!(config.effective_keep_alive(), Some(keep_alive));
+}
+
+/// A WAN stall of several seconds must not tear down every connection.
+#[test]
+fn the_default_idle_timeout_outlasts_a_short_stall() {
+    let config = TransportConfig {
+        max_idle_timeout: Some(DEFAULT_MAX_IDLE_TIMEOUT),
+        keep_alive_interval: Some(DEFAULT_KEEP_ALIVE_INTERVAL),
+        ..TransportConfig::default()
+    };
+    assert!(config.max_idle_timeout.unwrap() >= Duration::from_secs(20));
+}
+
+#[test]
+fn a_keep_alive_too_close_to_the_idle_timeout_is_replaced() {
+    let idle = Duration::from_secs(9);
+    let with = |keep_alive| TransportConfig {
+        max_idle_timeout: Some(idle),
+        keep_alive_interval: keep_alive,
+        ..TransportConfig::default()
+    };
+    assert_eq!(
+        with(Some(Duration::from_secs(4))).effective_keep_alive(),
+        Some(Duration::from_secs(4))
+    );
+    for bad in [
+        Some(Duration::from_millis(4_500)),
+        Some(Duration::from_secs(20)),
+        Some(Duration::ZERO),
+    ] {
+        assert_eq!(
+            with(bad).effective_keep_alive(),
+            Some(Duration::from_secs(3)),
+            "{bad:?}"
+        );
+    }
+    assert_eq!(with(None).effective_keep_alive(), None, "off stays off");
+    let no_idle = TransportConfig {
+        max_idle_timeout: None,
+        keep_alive_interval: Some(Duration::from_secs(4)),
+        ..TransportConfig::default()
+    };
+    assert_eq!(no_idle.effective_keep_alive(), Some(Duration::from_secs(4)));
 }
 
 #[test]

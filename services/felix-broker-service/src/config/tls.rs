@@ -18,6 +18,14 @@ pub struct ClientTlsConfig {
     /// Where to write the generated certificate for clients to trust
     /// (`FELIX_TLS_CERT_EXPORT`). Only meaningful for the generated one.
     pub cert_export: Option<String>,
+    /// Refuse QUIC clients that do not negotiate the `felix/1` ALPN
+    /// (`FELIX_TLS_REQUIRE_ALPN`). Off by default, because clients built
+    /// before ALPN offer none and are otherwise still served.
+    pub require_alpn: bool,
+    /// When a client presents a certificate, its token's subject must be a
+    /// name that certificate is valid for (`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`).
+    /// Needs `FELIX_TLS_CLIENT_CA`: without it no client presents one.
+    pub bind_subject: bool,
 }
 
 /// PEM files for the client-facing listeners. The certificate and key are
@@ -35,7 +43,8 @@ pub struct ClientTlsFiles {
 
 impl ClientTlsConfig {
     /// Read `FELIX_TLS_CERT`, `FELIX_TLS_KEY`, `FELIX_TLS_CLIENT_CA`,
-    /// `FELIX_TLS_REQUIRE_CERT` and `FELIX_TLS_CERT_EXPORT`.
+    /// `FELIX_TLS_REQUIRE_CERT`, `FELIX_TLS_CERT_EXPORT`,
+    /// `FELIX_TLS_REQUIRE_ALPN` and `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`.
     pub fn from_env() -> Result<Self> {
         Self::from_lookup(|name| std::env::var(name).ok())
     }
@@ -75,15 +84,19 @@ impl ClientTlsConfig {
                 }
             ),
         };
-        let require_cert = match get("FELIX_TLS_REQUIRE_CERT").as_deref() {
-            None | Some("0" | "false" | "no") => false,
-            Some("1" | "true" | "yes") => true,
-            Some(other) => bail!("FELIX_TLS_REQUIRE_CERT must be true or false, not {other:?}"),
+        let flag = |name: &str| -> Result<bool> {
+            match get(name).as_deref() {
+                None | Some("0" | "false" | "no") => Ok(false),
+                Some("1" | "true" | "yes") => Ok(true),
+                Some(other) => bail!("{name} must be true or false, not {other:?}"),
+            }
         };
         Ok(Self {
             files,
-            require_cert,
+            require_cert: flag("FELIX_TLS_REQUIRE_CERT")?,
             cert_export: get("FELIX_TLS_CERT_EXPORT"),
+            require_alpn: flag("FELIX_TLS_REQUIRE_ALPN")?,
+            bind_subject: flag("FELIX_TLS_CLIENT_CERT_BIND_SUBJECT")?,
         })
     }
 
@@ -102,6 +115,19 @@ impl ClientTlsConfig {
                  applies to the generated development certificate; clients should \
                  trust the CA that issued FELIX_TLS_CERT"
             ),
+            // Binding to a certificate nobody is asked for would check
+            // nothing while reading as a control.
+            files
+                if self.bind_subject
+                    && files
+                        .as_ref()
+                        .is_none_or(|files| files.client_ca_path.is_none()) =>
+            {
+                bail!(
+                    "FELIX_TLS_CLIENT_CERT_BIND_SUBJECT is set without FELIX_TLS_CLIENT_CA: \
+                     clients present no certificate to bind their token to"
+                )
+            }
             _ => Ok(()),
         }
     }

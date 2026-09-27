@@ -18,6 +18,7 @@
 //! halves of a request/response ping-pong then serialize on one thread. See
 //! [`plan_server_endpoints`].
 
+mod alpn;
 mod client;
 mod config;
 mod connection;
@@ -25,6 +26,7 @@ mod io_runtime;
 mod server;
 mod socket;
 
+pub use alpn::alpn_optional_server_config;
 pub use client::QuicClient;
 pub use config::TransportConfig;
 pub use connection::{ConnectionId, ConnectionInfo, QuicConnection};

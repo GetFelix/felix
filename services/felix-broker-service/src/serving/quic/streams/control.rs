@@ -41,6 +41,7 @@ mod publish;
 mod responder;
 mod session;
 mod subscribe;
+mod unsupported;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -277,6 +278,10 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
         // Dispatch by message type. Most handlers are responsible for enqueuing responses into
         // `out_ack_tx` rather than writing directly to the network.
         let step = match message {
+            // Newer than this broker, or an extension it does not have.
+            message @ (Message::Unknown | Message::Extension { .. }) => {
+                unsupported::unsupported(&cx, &session, &frame, &message).await?
+            }
             Message::Auth {
                 tenant_id,
                 token,
@@ -669,6 +674,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 .await?
             }
             Message::GroupRecords { .. }
+            | Message::Unsupported { .. }
             | Message::GroupDeadLetterList { .. }
             | Message::CacheValue { .. }
             | Message::CacheOk { .. }

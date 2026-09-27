@@ -10,6 +10,15 @@ pub const MAGIC: u32 = 0x464C5831;
 /// rather than by bumping this.
 pub const VERSION: u16 = 1;
 
+/// The TLS ALPN protocol id of the client protocol.
+///
+/// A client offers it and a broker's client listeners select it, so a client
+/// pointed at a broker's internal port (`felix-internal/1`), or at some other
+/// QUIC service, fails in the handshake instead of after its first frame. A
+/// peer that offers no ALPN at all is still accepted by the broker: clients
+/// that predate this id send none. See `docs/protocol.md`, "ALPN".
+pub const CLIENT_ALPN: &[u8] = b"felix/1";
+
 /// Frame containing a header and payload.
 ///
 /// ```
