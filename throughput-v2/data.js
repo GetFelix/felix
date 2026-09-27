@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790549458188,
+  "lastUpdate": 1790549616534,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18252,6 +18252,58 @@ window.BENCHMARK_DATA = {
             "range": "21519.43",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1482570.99\nmean: 1489356.15\nstdev: 21519.43\ncv: 1.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0fb075a3770b83b737a5dd3bca03eb19ff834fb3",
+          "message": "fix(storage): poison the log when a truncation or reset fails partway (#777)\n\ndocs/durable-storage.md says a failed fsync poisons the log whichever path\nissued it, a truncation included. Only a failed sync of the active segment\ndid. The directory fsync inside the truncation, the durable mark's sync and\nthe epoch file's all returned the error and left the log taking appends.\n\nThat is the case the rule exists for. Linux may drop the dirty pages behind a\nfailed fsync, so a later one can succeed over data that never reached the\ndevice; and a truncation that stopped halfway leaves its segments, mark and\nepoch history disagreeing with memory. Any failure after a truncation or reset\nstarts now poisons the log, so it refuses writes until a restart re-reads the\ndisk. A closed log and a cut below the commit offset are refused before\nanything is touched, and poison nothing.\n\nTests (a hook fails the durable mark's sync): an append after a failed\ntruncation, and after a failed reset, is refused. Both fail with the poison\nreverted.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T15:48:42-07:00",
+          "tree_id": "4a5dbbc71c485e07b885cfe25e3d208e5b4768e2",
+          "url": "https://github.com/gabloe/felix/commit/0fb075a3770b83b737a5dd3bca03eb19ff834fb3"
+        },
+        "date": 1790549615213,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 583864.43,
+            "range": "50734.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 583864.43\nmean: 605311.33\nstdev: 50734.98\ncv: 8.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 583864.43,
+            "range": "50734.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 583864.43\nmean: 605311.33\nstdev: 50734.98\ncv: 8.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 153038.81,
+            "range": "1384.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 153038.81\nmean: 152846.78\nstdev: 1384.37\ncv: 0.91%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1530388.09,
+            "range": "13843.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1530388.09\nmean: 1528467.75\nstdev: 13843.73\ncv: 0.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
