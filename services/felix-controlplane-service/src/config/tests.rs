@@ -68,6 +68,7 @@ fn a_liveness_timeout_must_outlast_the_heartbeat_interval() {
     let too_short = NodeLivenessConfig {
         heartbeat_interval_ms: 5_000,
         expiry_timeout_ms: 5_000,
+        regrant_margin_ms: None,
         sweep_interval_ms: 1_000,
         shard_reconcile_interval_ms: 5_000,
     };
@@ -76,15 +77,44 @@ fn a_liveness_timeout_must_outlast_the_heartbeat_interval() {
 
     let inverted = NodeLivenessConfig {
         expiry_timeout_ms: 1_000,
+        regrant_margin_ms: None,
         ..too_short.clone()
     };
     assert!(inverted.validate().is_err());
 
     let ok = NodeLivenessConfig {
         expiry_timeout_ms: 5_001,
+        regrant_margin_ms: None,
         ..too_short
     };
     assert!(ok.validate().is_ok());
+}
+
+/// The control plane's regrant margin is half of the safety interval the
+/// model checks; below a quarter of the timeout it finds two leaders.
+#[test]
+fn the_regrant_margin_defaults_to_a_quarter_and_cannot_go_below_it() {
+    let defaults = NodeLivenessConfig::default();
+    assert_eq!(defaults.regrant_margin_ms(), defaults.expiry_timeout_ms / 4);
+    assert_eq!(
+        defaults.silence_before_down_ms(),
+        defaults.expiry_timeout_ms + defaults.expiry_timeout_ms / 4
+    );
+
+    let thin = NodeLivenessConfig {
+        regrant_margin_ms: Some(defaults.expiry_timeout_ms / 4 - 1),
+        ..NodeLivenessConfig::default()
+    };
+    let err = thin
+        .validate()
+        .expect_err("a thin margin should be rejected");
+    assert!(err.to_string().contains("regrant_margin_ms"), "{err}");
+
+    let wide = NodeLivenessConfig {
+        regrant_margin_ms: Some(defaults.expiry_timeout_ms),
+        ..NodeLivenessConfig::default()
+    };
+    assert!(wide.validate().is_ok());
 }
 
 #[test]

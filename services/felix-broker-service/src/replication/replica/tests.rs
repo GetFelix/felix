@@ -103,6 +103,7 @@ fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecord
         checksum: batch_checksum(&payloads, &[]),
         payloads,
         marks: Vec::new(),
+        commit_offset: None,
     }
 }
 
@@ -805,5 +806,168 @@ mod rebuild {
         let answer = handler.rebuild(request(4, 500)).await;
 
         assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    }
+}
+
+/// What a follower holds on to across a restart and a change of leader: the
+/// newest generation it accepted, and the commit offset the leader told it.
+mod replica_state {
+    use super::*;
+
+    fn broker_on(dir: &std::path::Path) -> Arc<Broker> {
+        let storage = felix_broker::DurableStorage::open(
+            dir,
+            LogConfig {
+                segment_size_bytes: 4 * 1024,
+                index_spacing_bytes: 256,
+                fsync_mode: FsyncMode::None,
+                preallocate_segments: false,
+                ..LogConfig::default()
+            },
+        )
+        .expect("storage");
+        Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage))
+    }
+
+    fn committed(
+        generation: u64,
+        first_offset: u64,
+        values: &[&str],
+        commit: u64,
+    ) -> ReplicateRecords {
+        ReplicateRecords {
+            commit_offset: Some(commit),
+            ..batch(generation, first_offset, values)
+        }
+    }
+
+    async fn stored(broker: &Broker) -> Vec<String> {
+        broker
+            .durable_storage()
+            .expect("storage")
+            .open_stream(TENANT, NAMESPACE, STREAM, 0)
+            .expect("open")
+            .read_from(0, 1024 * 1024)
+            .await
+            .expect("read")
+            .into_iter()
+            .map(|record| String::from_utf8(record.payload.to_vec()).expect("utf8"))
+            .collect()
+    }
+
+    /// **A restart does not forget which leaders were replaced.** After one,
+    /// the routing view is rebuilt and can lag behind what this follower had
+    /// already accepted; a deposed leader matching that stale view must still
+    /// be refused, or it counts this broker toward a quorum it no longer has.
+    #[tokio::test]
+    async fn a_leader_older_than_one_accepted_is_refused_after_a_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let broker = broker_on(dir.path());
+            let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
+            let answer = handler
+                .apply(batch(5, 0, &["a"]), felix_broker::LogKind::Stream)
+                .await;
+            assert!(matches!(answer, InternalMessage::ReplicateOk(_)));
+        }
+
+        // Restarted, with a routing view that still says generation 4.
+        let broker = broker_on(dir.path());
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+        let answer = handler
+            .apply(batch(4, 1, &["stale"]), felix_broker::LogKind::Stream)
+            .await;
+
+        assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
+        assert_eq!(stored(&broker).await, vec!["a"]);
+    }
+
+    /// A follower learns no more of the commit offset than the batch left it
+    /// level with the leader on.
+    #[tokio::test]
+    async fn the_commit_offset_is_capped_at_what_the_batch_stored() {
+        let (broker, _dir) = broker_with_storage().await;
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+
+        handler
+            .apply(
+                committed(4, 0, &["a", "b"], 10),
+                felix_broker::LogKind::Stream,
+            )
+            .await;
+
+        let log = broker
+            .durable_storage()
+            .expect("storage")
+            .open_stream(TENANT, NAMESPACE, STREAM, 0)
+            .expect("open");
+        assert_eq!(log.commit_offset(), 2);
+    }
+
+    /// **A committed record is never dropped as a dead leader's suffix.** The
+    /// same shape as the repairable case, except the old leader said the
+    /// record was committed: a newer leader disagreeing with it is a fault to
+    /// surface, and dropping it would lose an acknowledged write.
+    #[tokio::test]
+    async fn a_suffix_below_the_commit_offset_is_not_dropped() {
+        let (broker, _dir) = broker_with_storage().await;
+        let router = router_with(&[LOCAL], 4);
+        let handler = ReplicaHandler::new(Arc::clone(&broker), Arc::clone(&router));
+        handler
+            .apply(batch(4, 0, &["a", "b"]), felix_broker::LogKind::Stream)
+            .await;
+        handler
+            .apply(
+                committed(4, 2, &["acked"], 3),
+                felix_broker::LogKind::Stream,
+            )
+            .await;
+
+        // Generation 5 reuses offset 2, as it would for an unacknowledged one.
+        let nodes: HashMap<String, NodeRef> = [
+            ("broker-a".to_string(), node("broker-a", 7001)),
+            (LOCAL.to_string(), node(LOCAL, 7002)),
+        ]
+        .into_iter()
+        .collect();
+        router.publish(
+            RoutingTable::build(
+                [(key(), "broker-a".to_string(), vec![LOCAL.to_string()], 5)],
+                &nodes,
+            ),
+            &nodes,
+        );
+        let answer = handler
+            .apply(batch(5, 2, &["other"]), felix_broker::LogKind::Stream)
+            .await;
+
+        assert_eq!(refusal(&answer).code, ErrorCode::LogConflict);
+        assert_eq!(stored(&broker).await, vec!["a", "b", "acked"]);
+    }
+
+    /// **A rebuild does not discard committed records either.** The leader
+    /// asking may not hold them, and this copy may be the last one.
+    #[tokio::test]
+    async fn a_rebuild_that_would_discard_committed_records_is_refused() {
+        let (broker, _dir) = broker_with_storage().await;
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+        handler
+            .apply(
+                committed(4, 0, &["a", "b", "c"], 2),
+                felix_broker::LogKind::Stream,
+            )
+            .await;
+
+        let answer = handler
+            .rebuild(felix_wire::internal::ReplicateRebuild {
+                correlation_id: 1,
+                shard: batch(4, 0, &[]).shard,
+                log: felix_wire::internal::ReplicaLog::Stream,
+                base_offset: 0,
+            })
+            .await;
+
+        assert_eq!(refusal(&answer).code, ErrorCode::LogConflict);
+        assert_eq!(stored(&broker).await, vec!["a", "b", "c"]);
     }
 }

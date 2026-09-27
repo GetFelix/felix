@@ -1059,12 +1059,24 @@ be a member; it is legitimately 0 during a drain.
 | --- | --- | --- |
 | `node_liveness.heartbeat_interval_ms` | `FELIX_NODE_HEARTBEAT_INTERVAL_MS` | 5000 |
 | `node_liveness.expiry_timeout_ms` | `FELIX_NODE_EXPIRY_TIMEOUT_MS` | 15000 |
+| `node_liveness.regrant_margin_ms` | `FELIX_NODE_REGRANT_MARGIN_MS` | a quarter of `expiry_timeout_ms` |
 | `node_liveness.sweep_interval_ms` | `FELIX_NODE_EXPIRY_SWEEP_INTERVAL_MS` | 2000 |
 
 The timeout is three intervals: one lost heartbeat is a hiccup, three is a
 pattern. Startup fails if `expiry_timeout_ms` is not greater than
 `heartbeat_interval_ms` — a timeout at or below the interval expires brokers
 that are heartbeating exactly as told to.
+
+A node is marked down only after the timeout **plus the regrant margin**, and
+only once the sweeping instance has itself watched the node's heartbeat stamp
+stand still that long on its monotonic clock. Brokers stop serving a quarter of
+the timeout before their own lease runs out; the margin is the control plane's
+half of the safety interval, so a broker's shards are never handed on while it
+may still believe it leads them. Checking the monotonic clock as well as the
+store's is what keeps a wall-clock step, or an election onto a machine whose
+clock runs ahead, from expiring a broker early. Startup fails if the margin is
+set below a quarter of the timeout; see `docs/replication-design.md`,
+"Failover".
 
 Running several control-plane instances is safe. Each node is claimed by exactly
 one sweep and only that instance publishes the change, so duplicate sweeps cost

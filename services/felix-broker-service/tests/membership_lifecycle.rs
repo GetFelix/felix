@@ -23,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 const LIVENESS: NodeLivenessConfig = NodeLivenessConfig {
     heartbeat_interval_ms: 20,
     expiry_timeout_ms: 60,
+    regrant_margin_ms: None,
     sweep_interval_ms: 10,
     shard_reconcile_interval_ms: 5_000,
 };
@@ -251,7 +252,7 @@ async fn an_abrupt_stop_is_detected_by_expiry() {
     let expired = felix_controlplane_service::cluster::membership::expire_once(
         cluster.store.as_ref(),
         &LIVENESS,
-        registered_at + LIVENESS.expiry_timeout_ms + 1,
+        registered_at + LIVENESS.silence_before_down_ms() + 1,
     )
     .await;
 

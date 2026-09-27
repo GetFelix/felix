@@ -755,6 +755,19 @@ impl ShardStore for DurableShardStore {
                 "could not record where this leadership begins",
             );
         }
+        // Leading at a generation accepts it, as following does: once this
+        // broker has led at it, a leader older than it is not taken as a
+        // follower, even after a restart.
+        match log.accept_generation(generation).await {
+            Ok(felix_storage::disk_log::GenerationCheck::Superseded { accepted }) => {
+                anyhow::bail!(
+                    "this broker already accepted generation {accepted} for the shard, \
+                     newer than the {generation} it was assigned to lead"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => anyhow::bail!("persist the accepted generation: {err}"),
+        }
         Ok(())
     }
 

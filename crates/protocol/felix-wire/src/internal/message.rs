@@ -58,6 +58,16 @@ pub enum InternalMessage {
     ReplicateMarkedRecords(ReplicateRecords),
 }
 
+/// The record kinds, whichever log they are for, send as
+/// `ReplicateCommittedRecords` once they carry a commit offset.
+fn records_kind(records: &ReplicateRecords, own: Kind) -> Kind {
+    if records.commit_offset.is_some() {
+        Kind::ReplicateCommittedRecords
+    } else {
+        own
+    }
+}
+
 impl InternalMessage {
     /// The kind this message is sent as.
     pub fn kind(&self) -> Kind {
@@ -71,7 +81,7 @@ impl InternalMessage {
             Self::NotLeader(_) => Kind::NotLeader,
             Self::Hello(_) => Kind::Hello,
             Self::HelloOk(_) => Kind::HelloOk,
-            Self::ReplicateRecords(_) => Kind::ReplicateRecords,
+            Self::ReplicateRecords(m) => records_kind(m, Kind::ReplicateRecords),
             Self::ReplicateOk(_) => Kind::ReplicateOk,
             Self::ReplicateError(_) => Kind::ReplicateError,
             Self::ReplicateBootstrap(_) => Kind::ReplicateBootstrap,
@@ -79,16 +89,18 @@ impl InternalMessage {
             Self::ForwardCacheOp(_) => Kind::AuthorizedForwardCacheOp,
             Self::ForwardCacheOk(_) => Kind::ForwardCacheOk,
             Self::ForwardCacheError(_) => Kind::ForwardCacheError,
-            Self::ReplicateCacheRecords(_) => Kind::ReplicateCacheRecords,
+            Self::ReplicateCacheRecords(m) => records_kind(m, Kind::ReplicateCacheRecords),
             Self::ReplicateCacheBootstrap(_) => Kind::ReplicateCacheBootstrap,
-            Self::ReplicateGroupRecords(_) => Kind::ReplicateGroupRecords,
+            Self::ReplicateGroupRecords(m) => records_kind(m, Kind::ReplicateGroupRecords),
             Self::ReplicateGroupBootstrap(_) => Kind::ReplicateGroupBootstrap,
-            Self::ReplicateDeadLetterRecords(_) => Kind::ReplicateDeadLetterRecords,
+            Self::ReplicateDeadLetterRecords(m) => {
+                records_kind(m, Kind::ReplicateDeadLetterRecords)
+            }
             Self::ReplicateDeadLetterBootstrap(_) => Kind::ReplicateDeadLetterBootstrap,
-            Self::ReplicateCounterRecords(_) => Kind::ReplicateCounterRecords,
+            Self::ReplicateCounterRecords(m) => records_kind(m, Kind::ReplicateCounterRecords),
             Self::ReplicateCounterBootstrap(_) => Kind::ReplicateCounterBootstrap,
             Self::ReplicateRebuild(_) => Kind::ReplicateRebuild,
-            Self::ReplicateMarkedRecords(_) => Kind::ReplicateMarkedRecords,
+            Self::ReplicateMarkedRecords(m) => records_kind(m, Kind::ReplicateMarkedRecords),
         }
     }
 

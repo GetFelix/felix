@@ -17,6 +17,7 @@ fn liveness() -> NodeLivenessConfig {
     NodeLivenessConfig {
         heartbeat_interval_ms: HEARTBEAT_MS,
         expiry_timeout_ms: EXPIRY_MS,
+        regrant_margin_ms: None,
         ..Default::default()
     }
 }

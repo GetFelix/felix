@@ -248,7 +248,10 @@ The leader stops **ε early** by its own clock; the control plane waits out a
 **margin** on top of the full lease before handing the shard to anyone else. The
 gap between those two instants is a safety interval in which no broker believes
 it is leader, and it is why this works without the two clocks ever agreeing —
-each only has to measure its own elapsed time.
+each only has to measure its own elapsed time. Each side keeps a quarter of the
+lease (`FELIX_NODE_REGRANT_MARGIN_MS` is the control plane's, and cannot be set
+lower), and the control plane measures the silence on its own monotonic clock,
+so a wall-clock step cannot shorten it.
 
 The lease is checked twice, on admission and again immediately before the record
 is committed. The second check is not redundant: a full ingress queue, a slow

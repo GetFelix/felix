@@ -32,6 +32,7 @@ use crate::ports;
 const LIVENESS: NodeLivenessConfig = NodeLivenessConfig {
     heartbeat_interval_ms: 200,
     expiry_timeout_ms: 1_000,
+    regrant_margin_ms: None,
     sweep_interval_ms: 100,
     // Placement is driven explicitly by the harness, so this only matters as a
     // backstop for anything the harness does not step itself.

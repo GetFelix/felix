@@ -144,6 +144,7 @@ fn every_message() -> Vec<InternalMessage> {
             checksum: 0x0102_0304,
             payloads: vec![Bytes::from_static(b"a"), Bytes::from_static(b"bb")],
             marks: Vec::new(),
+            commit_offset: None,
         }),
         InternalMessage::ReplicateCacheBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -157,6 +158,7 @@ fn every_message() -> Vec<InternalMessage> {
             checksum: 0x0102_0304,
             payloads: vec![Bytes::from_static(b"cursor")],
             marks: Vec::new(),
+            commit_offset: None,
         }),
         InternalMessage::ReplicateGroupBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -170,6 +172,7 @@ fn every_message() -> Vec<InternalMessage> {
             checksum: 0x0102_0304,
             payloads: vec![Bytes::from_static(b"dead letter")],
             marks: Vec::new(),
+            commit_offset: None,
         }),
         InternalMessage::ReplicateDeadLetterBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -183,6 +186,7 @@ fn every_message() -> Vec<InternalMessage> {
             checksum: 0x0102_0304,
             payloads: vec![Bytes::from_static(b"delta")],
             marks: Vec::new(),
+            commit_offset: None,
         }),
         InternalMessage::ReplicateCounterBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -208,6 +212,38 @@ fn every_message() -> Vec<InternalMessage> {
                 },
                 ProducerMark::Continues,
             ],
+            commit_offset: None,
+        }),
+        InternalMessage::ReplicateRecords(ReplicateRecords {
+            correlation_id: 42,
+            shard: shard(),
+            first_offset: 100,
+            checksum: 0x0102_0304,
+            payloads: vec![Bytes::from_static(b"a")],
+            marks: Vec::new(),
+            commit_offset: Some(90),
+        }),
+        InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
+            correlation_id: 42,
+            shard: shard(),
+            first_offset: 100,
+            checksum: 0x0102_0304,
+            payloads: vec![Bytes::from_static(b"first")],
+            marks: vec![ProducerMark::Opens {
+                producer_id: 3,
+                sequence: 1,
+                len: 1,
+            }],
+            commit_offset: Some(100),
+        }),
+        InternalMessage::ReplicateCacheRecords(ReplicateRecords {
+            correlation_id: 42,
+            shard: shard(),
+            first_offset: 7,
+            checksum: 0x0102_0304,
+            payloads: vec![Bytes::from_static(b"put")],
+            marks: Vec::new(),
+            commit_offset: Some(0),
         }),
     ]
 }
@@ -221,5 +257,6 @@ fn replicate() -> InternalMessage {
         checksum: 0x0102_0304,
         payloads,
         marks: Vec::new(),
+        commit_offset: None,
     })
 }

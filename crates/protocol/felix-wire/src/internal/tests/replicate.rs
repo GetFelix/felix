@@ -34,6 +34,7 @@ fn a_cache_replication_batch_is_not_a_stream_one() {
         checksum: 0x0102_0304,
         payloads: vec![Bytes::from_static(b"a")],
         marks: Vec::new(),
+        commit_offset: None,
     };
     let stream = InternalMessage::ReplicateRecords(body.clone());
     let cache = InternalMessage::ReplicateCacheRecords(body);
@@ -62,6 +63,7 @@ fn the_four_replication_kinds_are_distinguishable() {
         checksum: 7,
         payloads: vec![Bytes::from_static(b"x")],
         marks: Vec::new(),
+        commit_offset: None,
     };
     let encoded: Vec<_> = [
         InternalMessage::ReplicateRecords(body.clone()),
@@ -98,4 +100,44 @@ fn marks_are_covered_by_the_checksum_and_absent_marks_change_nothing() {
         batch_checksum(&batch, &marked),
         batch_checksum(&batch, &[opens, ProducerMark::None])
     );
+}
+
+/// Without a commit offset a batch is byte for byte what it always was, so a
+/// follower that predates the field reads it unchanged.
+#[test]
+fn a_batch_without_a_commit_offset_keeps_its_old_kind() {
+    let message = replicate();
+    assert_eq!(message.kind(), Kind::ReplicateRecords);
+    let bytes = message.encode().expect("encode");
+    let header = InternalHeader::decode(&bytes).expect("header");
+    assert_eq!(header.kind, Kind::ReplicateRecords);
+}
+
+/// With one it travels as its own kind, which names the log: an older
+/// follower refuses it instead of storing records and dropping the offset,
+/// and a newer one files the records in the right log.
+#[test]
+fn a_commit_offset_travels_as_the_committed_kind_for_every_log() {
+    let body = ReplicateRecords {
+        correlation_id: 42,
+        shard: shard(),
+        first_offset: 10,
+        checksum: 1,
+        payloads: vec![Bytes::from_static(b"x")],
+        marks: Vec::new(),
+        commit_offset: Some(8),
+    };
+    for message in [
+        InternalMessage::ReplicateRecords(body.clone()),
+        InternalMessage::ReplicateCacheRecords(body.clone()),
+        InternalMessage::ReplicateGroupRecords(body.clone()),
+        InternalMessage::ReplicateDeadLetterRecords(body.clone()),
+        InternalMessage::ReplicateCounterRecords(body.clone()),
+    ] {
+        assert_eq!(message.kind(), Kind::ReplicateCommittedRecords);
+        let bytes = message.encode().expect("encode");
+        let header = InternalHeader::decode(&bytes).expect("header");
+        assert_eq!(header.kind, Kind::ReplicateCommittedRecords);
+        assert_eq!(InternalMessage::decode(bytes).expect("decode"), message);
+    }
 }

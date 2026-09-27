@@ -113,6 +113,12 @@ pub enum Kind {
     /// follower reads, and a marked one is refused by it rather than stored
     /// without the marks.
     ReplicateMarkedRecords = 25,
+    /// Any of a shard's logs' records, with their marks, the log they belong
+    /// to, and the leader's commit offset. Sent only when there is a commit
+    /// offset to carry; without one a batch travels as its log's own kind, so
+    /// an older follower reads exactly what it always did, and it refuses
+    /// this kind rather than storing records without learning the offset.
+    ReplicateCommittedRecords = 26,
 }
 
 impl Kind {
@@ -145,6 +151,7 @@ impl Kind {
             23 => Ok(Kind::AuthorizedForwardCacheOp),
             24 => Ok(Kind::ReplicateRebuild),
             25 => Ok(Kind::ReplicateMarkedRecords),
+            26 => Ok(Kind::ReplicateCommittedRecords),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

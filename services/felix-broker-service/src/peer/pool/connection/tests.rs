@@ -89,6 +89,7 @@ mod correlation {
                 checksum: 0xabcd,
                 payloads: vec![Bytes::from_static(b"hello")],
                 marks: Vec::new(),
+                commit_offset: None,
             }),
             InternalMessage::ReplicateOk(ReplicateOk {
                 correlation_id: 7,
@@ -118,6 +119,7 @@ mod correlation {
                 checksum: 0xabcd,
                 payloads: vec![Bytes::from_static(b"hello")],
                 marks: vec![felix_wire::internal::ProducerMark::Continues],
+                commit_offset: None,
             }),
         ]
     }

@@ -37,6 +37,11 @@ One shard, three brokers, one control plane, discrete time.
   follower whose log disagrees with the leader's keeps what a newer generation
   than its own last accepted one says, above its high-water mark; anything else
   halts it. A follower refuses a leader older than one it has heard from.
+  The model reads "heard from" off the follower's log (`LastGen`); the code
+  keeps the highest generation it accepted in a file beside the log, which is
+  never below that and survives a restart, so it only refuses more. The
+  follower's high-water mark is learned from the leader, as the code's
+  follower learns the commit offset each batch carries.
 - **Acknowledgement.** Under `Quorum`, once a majority including the leader
   holds the record; under `Leader`, on the leader's own commit.
 - **Reports.** The leader tells the control plane which followers hold every
@@ -119,7 +124,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardLease.cfg` | drifting clocks, no writes: heartbeats, lapses, promotions | pass `AtMostOneServing` and `NoStaleCommit` (0.8M states) |
 | `FelixShardLogOrder.cfg` | both lease checks, `Quorum`, two writes, promotion by log order | pass every invariant (2.0M states) |
 | `FelixShardThinMargin.cfg` | drifting clocks with `Margin = 0` and `Eps = 0` | violate `AtMostOneServing` |
-| `FelixShardRealMargins.cfg` | the margins the code runs: the broker gives up a quarter of the lease (`Eps = 1` of `L = 4`), the control plane regrants with no wait (`Margin = 0`) | violate `AtMostOneServing`: the broker's quarter alone is not a safety interval under drift; pinned until the control plane waits out a margin of its own |
+| `FelixShardRealMargins.cfg` | the margins the code runs: the broker gives up a quarter of the lease (`Eps = 1` of `L = 4`), and the control plane marks it down a quarter past its expiry (`Margin = 1`), against clocks that drift by a quarter | pass `AtMostOneServing` and `NoStaleCommit` (2.1M states); with `Margin = 0` it finds two brokers serving |
 | `FelixShardNoCommitCheck.cfg` | commit-time lease check removed | violate `NoStaleCommit` |
 | `FelixShardNoReportOrder.cfg` | the design *before* #268: a `Quorum` ack released before the report describing it lands | violate `AckedSurvive` |
 | `FelixShard.cfg` | the design as implemented: report-before-mark, followers reported against the offset a majority holds, promotion from the leader's report | pass every invariant (1.5M states) |
@@ -294,7 +299,11 @@ With no margin on either side, TLC finds a leader whose clock runs slow still
 serving when the control plane, whose lease copy has lapsed, names the next
 one. `Margin` and `Eps` together have to outlast what `Drift` can do to the
 two clocks, which is the design's safety interval, and removing it is two
-leaders in one step.
+leaders in one step. `FelixShardRealMargins.cfg` is the code's own split: a
+quarter of the lease on each side, which holds against a drift of a quarter.
+The control plane's quarter is measured on its own monotonic clock as well as
+the store's, which is what makes its expiry real time here rather than a wall
+clock that can step.
 
 ### The check that is load-bearing
 

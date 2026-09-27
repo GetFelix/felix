@@ -26,6 +26,32 @@ pub async fn ship_once<R: PeerRequester>(
     max_batch_bytes: usize,
     rebuilds: &Rebuilds,
 ) -> Progress {
+    ship_once_with(
+        requester,
+        log,
+        shard,
+        log_kind,
+        cursor,
+        max_batch_bytes,
+        rebuilds,
+        None,
+    )
+    .await
+}
+
+/// [`ship_once`], telling the follower that everything below `commit_offset`
+/// is committed, so it refuses to discard any of it later.
+#[allow(clippy::too_many_arguments)]
+pub async fn ship_once_with<R: PeerRequester>(
+    requester: &R,
+    log: &StreamLog,
+    shard: &ShardRef,
+    log_kind: felix_broker::LogKind,
+    cursor: &mut FollowerCursor,
+    max_batch_bytes: usize,
+    rebuilds: &Rebuilds,
+    commit_offset: Option<u64>,
+) -> Progress {
     if let Some(halt) = cursor.halted {
         if !halt.rebuildable() || cursor.rebuild_refused || !rebuilds.try_begin() {
             return Progress::Halted(halt);
@@ -136,6 +162,8 @@ pub async fn ship_once<R: PeerRequester>(
         checksum: batch_checksum(&payloads, &marks),
         payloads,
         marks,
+        // A follower that refused the committed kind is sent what it reads.
+        commit_offset: commit_offset.filter(|_| !cursor.legacy_frames),
     };
     // Which log this is belongs in the message kind, not in the shard
     // reference: the bodies are identical, and a follower that guessed wrong
@@ -153,10 +181,27 @@ pub async fn ship_once<R: PeerRequester>(
         felix_broker::LogKind::Stream => InternalMessage::ReplicateRecords(batch),
     };
 
-    let answer = match requester
-        .request(&cursor.node_id, cursor.addr, request)
-        .await
+    let mut answer = requester
+        .request(&cursor.node_id, cursor.addr, request.clone())
+        .await;
+    if let Ok(InternalMessage::ForwardPublishError(refusal)) = &answer
+        && refusal.code == ErrorCode::UnsupportedKind
+        && request.kind() == felix_wire::internal::Kind::ReplicateCommittedRecords
     {
+        // A follower from before commit offsets. Nothing was stored; it gets
+        // the frames it reads, and learns no commit offset from this leader.
+        tracing::info!(
+            node_id = %cursor.node_id,
+            stream = %shard.stream,
+            shard = shard.shard,
+            "the follower predates commit offsets; shipping without them",
+        );
+        cursor.legacy_frames = true;
+        answer = requester
+            .request(&cursor.node_id, cursor.addr, without_commit(request))
+            .await;
+    }
+    let answer = match answer {
         Ok(answer) => answer,
         Err(err) => {
             metrics::record_shipped(unreachable_outcome(&err));
@@ -252,6 +297,34 @@ pub fn read_answer(answer: &InternalMessage) -> Progress {
         // is harmless and the alternative -- treating it as divergence -- would
         // stop replication over a protocol confusion.
         _ => Progress::Retry,
+    }
+}
+
+/// The same batch as its log's own kind, for a follower that refused the
+/// committed one.
+fn without_commit(request: InternalMessage) -> InternalMessage {
+    let strip = |mut batch: ReplicateRecords| {
+        batch.commit_offset = None;
+        batch
+    };
+    match request {
+        InternalMessage::ReplicateRecords(b) => InternalMessage::ReplicateRecords(strip(b)),
+        InternalMessage::ReplicateMarkedRecords(b) => {
+            InternalMessage::ReplicateMarkedRecords(strip(b))
+        }
+        InternalMessage::ReplicateCacheRecords(b) => {
+            InternalMessage::ReplicateCacheRecords(strip(b))
+        }
+        InternalMessage::ReplicateGroupRecords(b) => {
+            InternalMessage::ReplicateGroupRecords(strip(b))
+        }
+        InternalMessage::ReplicateDeadLetterRecords(b) => {
+            InternalMessage::ReplicateDeadLetterRecords(strip(b))
+        }
+        InternalMessage::ReplicateCounterRecords(b) => {
+            InternalMessage::ReplicateCounterRecords(strip(b))
+        }
+        other => other,
     }
 }
 

@@ -31,6 +31,14 @@ pub struct ReplicateRecords {
     /// stream shard's records carry marks, and a batch with any travels as
     /// `ReplicateMarkedRecords`.
     pub marks: Vec<ProducerMark>,
+    /// One past the last record the leader knows is committed, when it knows.
+    ///
+    /// A follower holding the leader's records below it must never discard
+    /// them: they were acknowledged on a majority. `None` is the behaviour
+    /// from before the field existed, and the batch travels as its log's own
+    /// kind, byte for byte what an older follower reads. `Some` travels as
+    /// `ReplicateCommittedRecords`, which an older follower refuses.
+    pub commit_offset: Option<u64>,
 }
 
 /// Which idempotent producer's batch a replicated record belongs to.

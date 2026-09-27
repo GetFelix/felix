@@ -37,6 +37,9 @@ pub struct FollowerCursor {
     /// The last batch did not reach the follower, or it refused it: its
     /// position is not moving, however close it is.
     pub stalled: bool,
+    /// The follower refused the frame kind that carries a commit offset, so
+    /// it is shipped without one.
+    pub legacy_frames: bool,
 }
 
 impl FollowerCursor {
@@ -50,6 +53,7 @@ impl FollowerCursor {
             rebuild_refused: false,
             shipped_bytes: 0,
             stalled: false,
+            legacy_frames: false,
         }
     }
 }

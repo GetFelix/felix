@@ -334,6 +334,7 @@ exactly at the follower's tail.
 | disagrees on stored bytes | `LogConflict` | **stop** |
 | fails its checksum | `Malformed` | resend the same records |
 | names an older epoch | `FencedEpoch` | stop; this broker is no longer the leader |
+| names an epoch older than one this follower has accepted, even across a restart | `FencedEpoch` | stop |
 | names a newer epoch than the follower knows | `StaleRoute` | retry shortly |
 
 The middle two rows are what make a resend safe. Replication has to be able to
@@ -367,12 +368,25 @@ A follower that predates the kind refuses it, and the leader stops shipping to
 it and says so, rather than the follower storing records without their marks.
 Two records with the same bytes and different marks are a `LogConflict`.
 
+**The commit offset** rides with the records too. Under `Quorum` the leader
+sends its quorum mark, one past the last record a majority holds and the
+control plane has been told about, as `ReplicateRecords.commit_offset`. A batch
+that carries one travels as `ReplicateCommittedRecords` (kind 26): the
+`ReplicateRecords` body, one mark per payload as in kind 25, then the log it
+belongs to (`ReplicaLog`, `u8`) and `commit_offset u64`. A batch without one
+travels as its log's own kind, byte for byte as before. A follower that predates
+kind 26 answers `UnsupportedKind`; the leader resends that batch without the
+offset and ships that follower the old kinds from then on. The follower keeps
+the lower of the offset and the end of what the batch left level with the
+leader, and will not truncate or rebuild below it.
+
 `LogConflict` does not converge by *retrying* — the same batch meets the same
 bytes. It can be repaired, and the follower does it without an exchange: a
 conflict from a **newer** generation than the one this follower last accepted,
 at or after where that older generation began, is a suffix a dead leader left
 behind and no majority adopted. The follower truncates it and replication
-resumes.
+resumes, unless the cut would reach below its commit offset: then a majority
+acknowledged part of the suffix, and the conflict stands.
 
 Both conditions matter. A leader disagreeing with *itself* is an inconsistency
 rather than a predecessor's leftovers, and a divergence reaching further back
@@ -416,6 +430,7 @@ follower had been bootstrapped.
 | The follower | Answer |
 | --- | --- |
 | follows the shard at that generation | discards the log, `ReplicateOk` at `base_offset` |
+| holds records below its commit offset at or above `base_offset` | `LogConflict`; it stays halted |
 | knows a newer generation | `FencedEpoch` |
 | is outside the replica set | `Unauthorized` |
 | predates the kind | `UnsupportedKind`; it stays halted |
@@ -451,8 +466,9 @@ Typed, because they need different responses:
 | `FencedEpoch` | the sender named an epoch older than the responder's | do not retry; it is no longer the leader |
 | `UnsupportedKind` | the responder predates the kind that was sent | do not retry with that kind; a forwarder falls back to the legacy forward kind once |
 
-`ReplicateBootstrap` is kind 10, `ReplicateRebuild` kind 24 and
-`ReplicateMarkedRecords` kind 25. A peer that predates any of them rejects the
+`ReplicateBootstrap` is kind 10, `ReplicateRebuild` kind 24,
+`ReplicateMarkedRecords` kind 25 and `ReplicateCommittedRecords` kind 26. A peer
+that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol
 freezes existing body layouts.

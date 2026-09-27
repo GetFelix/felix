@@ -9,6 +9,7 @@ mod placed_at_a_base_offset;
 mod power_loss;
 mod producers;
 mod provider;
+mod replica_state;
 mod retention;
 mod rollover;
 mod truncation;

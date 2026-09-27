@@ -8,6 +8,7 @@
 //! * `sync`      — fsync policy and group commit.
 //! * `retention` — deleting the oldest segments once a bound is exceeded.
 //! * `epochs`    — where each leadership generation began.
+//! * `replica_state` — the highest generation accepted, and the commit offset.
 //! * `producers` — each idempotent producer's place, derived from the records.
 //! * `append`    — the append path, and the rollover it may have to start.
 //! * `flush`     — making the active segment durable.
@@ -43,6 +44,7 @@ mod flush;
 mod producers;
 mod provider;
 mod recovery;
+pub(crate) mod replica_state;
 mod retention;
 mod segments;
 mod sync;
@@ -53,7 +55,7 @@ pub use segments::RetentionOutcome;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use parking_lot::{Mutex, RwLock};
 
@@ -67,6 +69,22 @@ use crate::log::{
 };
 use crate::segment::ReadBudget;
 use crate::{Result, StorageError, metrics_names};
+
+/// How often an advancing commit offset is written through. Bounds the fsyncs
+/// a busy replicated shard adds, at the cost of reading back an older offset
+/// after a crash.
+pub const COMMIT_PERSIST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What [`DiskLog::accept_generation`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenerationCheck {
+    /// The generation already accepted.
+    Current,
+    /// Newer than any accepted before; it is now on disk.
+    Raised,
+    /// Older than one already accepted. The sender has been replaced.
+    Superseded { accepted: u64 },
+}
 
 /// A durable, segmented, append-only log for one shard.
 ///
@@ -290,12 +308,27 @@ impl DiskLog {
     /// every handle to it stays valid; a read in flight fails rather than
     /// returning records that no longer exist. The generation history goes
     /// with the records it described.
+    ///
+    /// Refused with [`StorageError::BelowCommit`] when it would discard a
+    /// record this log holds below its commit offset and at or above
+    /// `base_offset`: those were acknowledged on a majority, and nothing here
+    /// can tell whether the leader asking still has them. Records below
+    /// `base_offset` are gone from the leader too, so dropping them is not a
+    /// loss this log can prevent.
     pub async fn reset_to(&self, base_offset: Offset) -> Result<()> {
         let inner = Arc::clone(&self.inner);
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
         tokio::task::spawn_blocking(move || {
             let mut segments = operation.segments.write();
+            let commit = operation.commit_offset.load(Ordering::Acquire);
+            let discarded_from = segments.base_offset().max(base_offset);
+            if discarded_from < commit.min(segments.tail_offset()) {
+                return Err(StorageError::BelowCommit {
+                    offset: discarded_from,
+                    commit,
+                });
+            }
             segments.reset_to(base_offset)?;
             if let Err(err) = segments.active_mut().sync() {
                 operation.poison_after_writer_failure(&segments);
@@ -306,6 +339,102 @@ impl DiskLog {
             *epochs = epochs::EpochMap::default();
             epochs::store(&operation.dir, &epochs)?;
             operation.reset_producers(&segments)?;
+            Ok(())
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+
+    /// The highest leadership generation a leader of this shard was accepted
+    /// at here, as a follower or as the leader itself. Zero if none.
+    pub fn accepted_generation(&self) -> u64 {
+        self.inner.accepted_generation.load(Ordering::Acquire)
+    }
+
+    /// Accept a leader at `generation`, persisting it first if it is new.
+    ///
+    /// Returns once a raised generation is on disk, so a caller that
+    /// acknowledges afterwards has made a promise that survives a restart: a
+    /// leader older than this one is refused from here on, whatever the
+    /// routing view says after the restart.
+    pub async fn accept_generation(&self, generation: u64) -> Result<GenerationCheck> {
+        let accepted = self.accepted_generation();
+        if generation < accepted {
+            return Ok(GenerationCheck::Superseded { accepted });
+        }
+        if generation == accepted {
+            return Ok(GenerationCheck::Current);
+        }
+        let inner = Arc::clone(&self.inner);
+        tokio::task::spawn_blocking(move || {
+            let mut persisted = inner.replica_persisted.lock();
+            // Re-read under the writer's lock: a concurrent batch may have
+            // raised it past this one while this waited.
+            let accepted = inner.accepted_generation.load(Ordering::Acquire);
+            if generation < accepted {
+                return Ok(GenerationCheck::Superseded { accepted });
+            }
+            if generation == accepted {
+                return Ok(GenerationCheck::Current);
+            }
+            let state = replica_state::ReplicaState {
+                accepted_generation: generation,
+                commit_offset: inner.commit_offset.load(Ordering::Acquire),
+            };
+            replica_state::store(&inner.dir, &state)?;
+            *persisted = (state, Some(std::time::Instant::now()));
+            inner
+                .accepted_generation
+                .store(generation, Ordering::Release);
+            Ok(GenerationCheck::Raised)
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+
+    /// One past the last record known committed. Zero if none is known.
+    pub fn commit_offset(&self) -> Offset {
+        self.inner.commit_offset.load(Ordering::Acquire)
+    }
+
+    /// Record that every record below `offset` is committed.
+    ///
+    /// Takes effect at once for [`AppendOnlyLog::truncate`] and
+    /// [`DiskLog::reset_to`], which refuse to cut below it. It reaches disk at
+    /// most once per [`COMMIT_PERSIST_INTERVAL`], and always with a raised
+    /// generation and at shutdown: after a crash the offset read back may be
+    /// behind, which only ever permits less than it should, never more.
+    pub async fn advance_commit_offset(&self, offset: Offset) -> Result<()> {
+        let previous = self.inner.commit_offset.fetch_max(offset, Ordering::AcqRel);
+        if offset <= previous {
+            return Ok(());
+        }
+        let due = {
+            let persisted = self.inner.replica_persisted.lock();
+            persisted
+                .1
+                .is_none_or(|at| at.elapsed() >= COMMIT_PERSIST_INTERVAL)
+        };
+        if due {
+            self.persist_replica_state().await?;
+        }
+        Ok(())
+    }
+
+    /// Write the replica state if memory is ahead of disk.
+    async fn persist_replica_state(&self) -> Result<()> {
+        let inner = Arc::clone(&self.inner);
+        tokio::task::spawn_blocking(move || {
+            let mut persisted = inner.replica_persisted.lock();
+            let state = replica_state::ReplicaState {
+                accepted_generation: inner.accepted_generation.load(Ordering::Acquire),
+                commit_offset: inner.commit_offset.load(Ordering::Acquire),
+            };
+            if state == persisted.0 {
+                return Ok(());
+            }
+            replica_state::store(&inner.dir, &state)?;
+            *persisted = (state, Some(std::time::Instant::now()));
             Ok(())
         })
         .await
@@ -338,6 +467,7 @@ impl DiskLog {
             let _ = roll.await;
         }
         self.inner.check_healthy()?;
+        self.persist_replica_state().await?;
         self.sync().await
     }
 
@@ -362,6 +492,7 @@ impl DiskLog {
         }
         // Read before the directory is handed to the segment set.
         let epochs = epochs::load(&dir);
+        let replica = replica_state::load(&dir)?;
         let epochs_dir = dir.clone();
         let segments = SegmentSet::new(
             dir,
@@ -387,6 +518,9 @@ impl DiskLog {
             syncer: Mutex::new(None),
             retention: Mutex::new(None),
             epochs: Mutex::new(epochs),
+            accepted_generation: AtomicU64::new(replica.accepted_generation),
+            commit_offset: AtomicU64::new(replica.commit_offset),
+            replica_persisted: Mutex::new((replica, None)),
             batch_open: std::sync::atomic::AtomicBool::new(producer_state.is_open()),
             producers: Mutex::new(producer_state),
             dir: epochs_dir,
@@ -560,6 +694,10 @@ impl AppendOnlyLog for DiskLog {
             let operation = Arc::clone(&inner);
             tokio::task::spawn_blocking(move || {
                 let mut segments = operation.segments.write();
+                let commit = operation.commit_offset.load(Ordering::Acquire);
+                if offset < commit.min(segments.tail_offset()) {
+                    return Err(StorageError::BelowCommit { offset, commit });
+                }
                 segments.truncate(offset)?;
                 if let Err(err) = segments.active_mut().sync() {
                     operation.poison_after_writer_failure(&segments);
@@ -652,6 +790,14 @@ struct LogInner {
     /// on the replication path, not the append path, and the append path is
     /// where lock contention costs something.
     epochs: Mutex<epochs::EpochMap>,
+    /// The highest generation a leader was accepted at, read without a lock
+    /// on every replicated batch. Raised only after it is on disk.
+    accepted_generation: AtomicU64,
+    /// One past the last record known committed. Raised in memory at once and
+    /// written behind; see [`DiskLog::advance_commit_offset`].
+    commit_offset: AtomicU64,
+    /// What `replica_state` last wrote, and when. Held only by the writer.
+    replica_persisted: Mutex<(replica_state::ReplicaState, Option<std::time::Instant>)>,
     /// Each idempotent producer's place in the log. Written only under the
     /// `segments` write lock, in offset order, so it always matches the tail.
     producers: Mutex<producers::ProducerState>,

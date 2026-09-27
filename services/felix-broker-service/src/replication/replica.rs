@@ -20,6 +20,7 @@ use std::sync::Arc;
 use felix_broker::Broker;
 use felix_broker::replication::{self, Divergence};
 use felix_router::{ReplicaRole, ShardRouter};
+use felix_storage::disk_log::GenerationCheck;
 use felix_wire::internal::{
     ErrorCode, InternalMessage, ReplicaLog, ReplicateBootstrap, ReplicateError, ReplicateOk,
     ReplicateRebuild, ReplicateRecords,
@@ -90,6 +91,37 @@ impl ReplicaHandler {
                 "this broker has no log for that shard".to_string(),
             );
         };
+        if let Some(refusal) =
+            accept_sender(&log, correlation_id, &key, request.shard.generation).await
+        {
+            return refusal;
+        }
+        // Records below the leader's base are gone from the leader too, so only
+        // what this broker holds from there up is at stake.
+        let from = log.base_offset().max(request.base_offset);
+        if let Some(commit) = cuts_committed(&log, from).await {
+            tracing::error!(
+                stream = %key.stream,
+                shard = key.shard,
+                log = ?request.log,
+                generation = request.shard.generation,
+                base_offset = request.base_offset,
+                commit_offset = commit,
+                "refusing to rebuild: it would discard records this broker \
+                 knows are committed, so the leader asking may not hold them",
+            );
+            metrics::record_replicated(metrics::OUTCOME_BELOW_COMMIT);
+            return refused(
+                correlation_id,
+                ErrorCode::LogConflict,
+                0,
+                format!(
+                    "this broker holds committed records below {commit} that a rebuild \
+                     from {} would discard",
+                    request.base_offset
+                ),
+            );
+        }
         if let Err(err) = log.rebuild_at(request.base_offset).await {
             metrics::record_replicated(metrics::OUTCOME_ERROR);
             return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
@@ -163,6 +195,12 @@ impl ReplicaHandler {
                 "this broker has no log for that shard".to_string(),
             );
         };
+
+        if let Some(refusal) =
+            accept_sender(&log, correlation_id, &key, request.shard.generation).await
+        {
+            return refusal;
+        }
 
         let base = log.base_offset();
         let tail = match log.tail_offset().await {
@@ -274,6 +312,12 @@ impl ReplicaHandler {
             );
         };
 
+        if let Some(refusal) =
+            accept_sender(&log, correlation_id, &key, batch.shard.generation).await
+        {
+            return refusal;
+        }
+
         // A generation this follower has not seen before starts here. Recorded
         // before the apply, because the apply is what may need it: the divergent
         // suffix it finds belongs to whatever generation was newest until now.
@@ -311,7 +355,25 @@ impl ReplicaHandler {
             let repairable = previous_generation.filter(|previous| {
                 batch.shard.generation > previous.generation && diverged_at >= previous.start_offset
             });
-            match repairable {
+            // A suffix that reaches below the commit offset is not a dead
+            // leader's leftovers: a majority acknowledged part of it.
+            let below_commit = match repairable {
+                Some(_) => cuts_committed(&log, diverged_at).await,
+                None => None,
+            };
+            if let Some(commit) = below_commit {
+                tracing::error!(
+                    stream = %key.stream,
+                    shard = key.shard,
+                    diverged_at,
+                    commit_offset = commit,
+                    sender_generation = batch.shard.generation,
+                    "the leader disagrees with a committed record here; refusing \
+                     to drop it, and replication stops here",
+                );
+                metrics::record_replicated(metrics::OUTCOME_BELOW_COMMIT);
+            }
+            match repairable.filter(|_| below_commit.is_none()) {
                 Some(previous) => match log.truncate(diverged_at).await {
                     Ok(()) => {
                         tracing::warn!(
@@ -339,6 +401,7 @@ impl ReplicaHandler {
                         "could not drop a divergent suffix; replication stops here",
                     ),
                 },
+                None if below_commit.is_some() => {}
                 None => tracing::error!(
                     stream = %key.stream,
                     shard = key.shard,
@@ -352,7 +415,36 @@ impl ReplicaHandler {
         }
 
         match outcome {
+            // A newer leader was accepted while this batch was being stored.
+            // Its records stay, as any divergent suffix does, but this sender
+            // must not count them toward its quorum.
+            Ok(Ok(_)) if log.accepted_generation() > batch.shard.generation => {
+                metrics::record_replicated(metrics::OUTCOME_FENCED);
+                refused(
+                    correlation_id,
+                    ErrorCode::FencedEpoch,
+                    0,
+                    format!(
+                        "this broker accepted generation {} while storing a batch at {}",
+                        log.accepted_generation(),
+                        batch.shard.generation
+                    ),
+                )
+            }
             Ok(Ok(applied)) => {
+                // Only what this batch left level with the leader: past the
+                // durable offset nothing here has been compared.
+                if let Some(commit) = batch.commit_offset
+                    && let Err(err) = log
+                        .advance_commit_offset(commit.min(applied.durable_offset))
+                        .await
+                {
+                    tracing::warn!(
+                        stream = %key.stream,
+                        error = %err,
+                        "could not write the commit offset through; it holds in memory",
+                    );
+                }
                 // Now that the batch is stored, note where this generation
                 // began here — so a later divergence can be bounded the same
                 // way this one was.
@@ -459,6 +551,59 @@ impl ReplicaHandler {
             }
         }
     }
+}
+
+/// Refuse a sender older than a leader this log already accepted, and persist
+/// a newer one before anything it sends is stored or acknowledged.
+///
+/// The routing view in `check_role` is rebuilt after a restart and may lag;
+/// this is what still refuses a leader this broker has seen superseded.
+async fn accept_sender(
+    log: &felix_broker::StreamLog,
+    correlation_id: u64,
+    key: &felix_router::ShardKey,
+    generation: u64,
+) -> Option<InternalMessage> {
+    match log.accept_generation(generation).await {
+        Ok(GenerationCheck::Current | GenerationCheck::Raised) => None,
+        Ok(GenerationCheck::Superseded { accepted }) => {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                accepted,
+                sender_generation = generation,
+                "refusing a leader older than one this replica already accepted",
+            );
+            metrics::record_replicated(metrics::OUTCOME_FENCED);
+            Some(refused(
+                correlation_id,
+                ErrorCode::FencedEpoch,
+                0,
+                format!(
+                    "this broker accepted generation {accepted}, the sender is at {generation}"
+                ),
+            ))
+        }
+        Err(err) => {
+            metrics::record_replicated(metrics::OUTCOME_ERROR);
+            Some(refused(
+                correlation_id,
+                ErrorCode::StorageFailed,
+                0,
+                err.to_string(),
+            ))
+        }
+    }
+}
+
+/// The commit offset, when cutting this log from `from` would discard a
+/// committed record it holds. Storage refuses the cut regardless; asking first
+/// is what lets the refusal say why.
+async fn cuts_committed(log: &felix_broker::StreamLog, from: u64) -> Option<u64> {
+    let commit = log.commit_offset();
+    // An unreadable tail counts as holding everything below the commit offset.
+    let tail = log.tail_offset().await.unwrap_or(u64::MAX);
+    (from < commit.min(tail)).then_some(commit)
 }
 
 fn divergence_code(divergence: &Divergence) -> ErrorCode {

@@ -34,6 +34,13 @@ pub enum StorageError {
     /// can tell "the write never happened" from "the write may have happened but
     /// we could not confirm it".
     SyncFailed(String),
+    /// A truncation or rebuild would discard records below the offset this
+    /// log knows is committed. Refused rather than performed: those records
+    /// were acknowledged on a majority, and this copy may be the last one.
+    BelowCommit {
+        offset: u64,
+        commit: u64,
+    },
     Io(std::io::Error),
 }
 
@@ -50,6 +57,11 @@ impl fmt::Display for StorageError {
             StorageError::NotFound => write!(f, "not found"),
             StorageError::Corruption(detail) => write!(f, "corruption detected: {detail}"),
             StorageError::SyncFailed(detail) => write!(f, "durability sync failed: {detail}"),
+            StorageError::BelowCommit { offset, commit } => write!(
+                f,
+                "refusing to discard records from offset {offset}: everything below \
+                 {commit} is committed"
+            ),
             StorageError::Io(err) => write!(f, "io error: {err}"),
         }
     }

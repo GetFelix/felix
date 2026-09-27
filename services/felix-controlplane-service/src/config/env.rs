@@ -45,6 +45,10 @@ impl ControlPlaneConfig {
                 .unwrap_or(DEFAULT_NODE_HEARTBEAT_INTERVAL_MS),
             expiry_timeout_ms: parse_positive_env("FELIX_NODE_EXPIRY_TIMEOUT_MS")
                 .unwrap_or(DEFAULT_NODE_EXPIRY_TIMEOUT_MS),
+            // Zero is refused by validation, not treated as unset.
+            regrant_margin_ms: std::env::var("FELIX_NODE_REGRANT_MARGIN_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok()),
             sweep_interval_ms: parse_positive_env("FELIX_NODE_EXPIRY_SWEEP_INTERVAL_MS")
                 .unwrap_or(DEFAULT_NODE_EXPIRY_SWEEP_INTERVAL_MS),
             shard_reconcile_interval_ms: parse_positive_env("FELIX_SHARD_RECONCILE_INTERVAL_MS")
