@@ -202,12 +202,30 @@ fn a_follower_that_is_not_reached_is_not_reported_as_close() {
     let addr: std::net::SocketAddr = "10.0.0.1:7000".parse().expect("addr");
     let mut unreachable = FollowerCursor::new("broker-b", addr, 9);
     unreachable.stalled = true;
-    let behind = FollowerCursor::new("broker-c", addr, 7);
+    let mut behind = FollowerCursor::new("broker-c", addr, 7);
+    behind.stalled = false;
     let key = report("orders").key;
 
     let report = shard_report(&key, 4, 10, 10, &[unreachable, behind], false);
     assert_eq!(report.offsets, vec![("broker-c".to_string(), 7)]);
     assert_eq!(report.tail, 10);
+}
+
+/// A move's destination that has not answered a batch yet is left out too.
+/// Its cursor's offset is only where shipping will start; reported, it reads
+/// as a copy within the fence's lag bound, and placement would fence the
+/// leader toward a destination that may not be reachable at all.
+#[test]
+fn a_follower_that_has_not_answered_yet_is_not_reported_as_close() {
+    let addr: std::net::SocketAddr = "10.0.0.1:7000".parse().expect("addr");
+    let unheard = FollowerCursor::new("broker-b", addr, 0);
+    let key = report("orders").key;
+
+    let report = shard_report(&key, 4, 5, 5, &[unheard], false);
+    assert!(
+        report.offsets.is_empty(),
+        "an unheard follower was reported"
+    );
 }
 
 /// A control plane that stores reports for streams named `led-*` and refuses
