@@ -14,6 +14,7 @@ use super::{
 use crate::config::BrokerConfig;
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::subscribe::WriterLaneManager;
+use crate::serving::quic::preauth::PreAuthGate;
 use crate::serving::quic::{ClusterContext, GLOBAL_INGRESS_DEPTH};
 use crate::shards::ShardKey;
 use crate::shards::lifecycle::fence;
@@ -357,6 +358,7 @@ pub(crate) fn build_publish_context(
         subscriptions: Arc::new(SubscriptionLimiter::new()),
         lane_manager: WriterLaneManager::new(config),
         ingress_wait: config.pub_ingress_wait,
+        preauth: Arc::new(PreAuthGate::new(config)),
     }
 }
 

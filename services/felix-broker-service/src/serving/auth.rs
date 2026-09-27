@@ -25,7 +25,10 @@ use felix_authz::{
     AuthzError, AuthzResult, FelixTokenVerifier, Jwks, PermissionMatcher, TenantId, TenantKeyCache,
     TenantKeyStore, TenantVerificationKey,
 };
+use felix_broker::Broker;
 use jsonwebtoken::Algorithm;
+use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 
 /// Verifies Felix tokens against control-plane JWKS. Cloning shares the
 /// verifier and key store.
@@ -96,15 +99,60 @@ pub struct AuthContext {
     pub token: String,
 }
 
+/// How long one JWKS request may take, connect included.
+const JWKS_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+const JWKS_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a failed fetch is remembered. Short, so a tenant created a moment
+/// after a failed auth is not locked out for long.
+const JWKS_MISS_TTL: Duration = Duration::from_secs(5);
+/// Remembered failures, bounded because the tenant ids are the client's.
+const JWKS_MISS_CACHE_MAX: usize = 4096;
+/// JWKS requests in flight at once, across every tenant.
+const JWKS_FETCH_CONCURRENCY: usize = 8;
+/// Longer tenant ids are refused without a lookup.
+const TENANT_ID_MAX_BYTES: usize = 256;
+
+/// The tenants this broker has learned from the control plane.
+///
+/// Consulted before a JWKS fetch, so an `Auth` naming a tenant the control
+/// plane never told us about costs no request. Until the first catalog sync
+/// lands, `seeded` is not cancelled and every tenant is let through to the
+/// fetch, as before.
+#[derive(Clone)]
+pub struct TenantCatalog {
+    broker: Arc<Broker>,
+    seeded: CancellationToken,
+}
+
+impl TenantCatalog {
+    /// `seeded` must be cancelled once the catalog has been applied.
+    pub fn new(broker: Arc<Broker>, seeded: CancellationToken) -> Self {
+        Self { broker, seeded }
+    }
+
+    async fn rules_out(&self, tenant_id: &str) -> bool {
+        self.seeded.is_cancelled() && !self.broker.tenant_exists(tenant_id).await
+    }
+}
+
 /// Fetches and caches per-tenant JWKS from the control plane, and exposes the
 /// verification keys to `felix_authz`. Holds public keys only.
+///
+/// The tenant id comes from an unauthenticated `Auth`, so a fetch is guarded:
+/// the local catalog is asked first, concurrent misses for one tenant share a
+/// single request, failures are remembered for [`JWKS_MISS_TTL`], and at most
+/// [`JWKS_FETCH_CONCURRENCY`] requests run at once, each with a timeout.
 #[derive(Clone)]
 pub struct ControlPlaneKeyStore {
     base_url: String,
     client: reqwest::Client,
     cache: Arc<DashMap<String, CachedJwks>>,
+    misses: Arc<DashMap<String, Instant>>,
+    inflight: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    fetches: Arc<Semaphore>,
     ttl: Duration,
     key_cache: Arc<TenantKeyCache>,
+    catalog: Option<TenantCatalog>,
 }
 
 #[derive(Clone)]
@@ -115,13 +163,28 @@ struct CachedJwks {
 
 impl ControlPlaneKeyStore {
     pub fn new(base_url: String, key_cache: Arc<TenantKeyCache>) -> Self {
+        let client = crate::cluster::controlplane_http::builder()
+            .timeout(JWKS_FETCH_TIMEOUT)
+            .connect_timeout(JWKS_CONNECT_TIMEOUT)
+            .build()
+            .expect("build jwks http client");
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            client: crate::cluster::controlplane_http::client(),
+            client,
             cache: Arc::new(DashMap::new()),
+            misses: Arc::new(DashMap::new()),
+            inflight: Arc::new(DashMap::new()),
+            fetches: Arc::new(Semaphore::new(JWKS_FETCH_CONCURRENCY)),
             ttl: Duration::from_secs(3600),
             key_cache,
+            catalog: None,
         }
+    }
+
+    /// Refuse to fetch for tenants `catalog` does not know, once it is seeded.
+    pub fn with_tenant_catalog(mut self, catalog: TenantCatalog) -> Self {
+        self.catalog = Some(catalog);
+        self
     }
 
     /// Cache JWKS for a tenant, replacing any existing entry and invalidating
@@ -134,19 +197,22 @@ impl ControlPlaneKeyStore {
                 expires_at: Instant::now() + self.ttl,
             },
         );
+        self.misses.remove(tenant_id.as_str());
         self.key_cache.invalidate_tenant(tenant_id);
     }
 
     /// Fetch JWKS from the control plane and cache it.
     ///
     /// # Errors
-    /// Network or JSON-decode failures.
+    /// An implausible tenant id, a timeout, or a network, status or JSON
+    /// failure.
     pub async fn refresh(&self, tenant_id: &TenantId) -> Result<Jwks> {
-        let url = format!(
-            "{}/v1/tenants/{}/.well-known/jwks.json",
-            self.base_url,
-            tenant_id.as_str()
-        );
+        check_tenant_id(tenant_id.as_str())?;
+        let url = self.jwks_url(tenant_id.as_str())?;
+        let _permit = tokio::time::timeout(JWKS_FETCH_TIMEOUT, self.fetches.acquire())
+            .await
+            .context("wait for a jwks fetch slot")?
+            .expect("jwks fetch semaphore is never closed");
         // The URL is deliberately not logged: a deployment may embed
         // credentials in the base URL.
         let jwks: Jwks = self
@@ -155,18 +221,83 @@ impl ControlPlaneKeyStore {
             .send()
             .await
             .context("fetch jwks")?
+            .error_for_status()
+            .context("fetch jwks")?
             .json()
             .await
             .context("decode jwks")?;
-        self.cache.insert(
-            tenant_id.to_string(),
-            CachedJwks {
-                jwks: jwks.clone(),
-                expires_at: Instant::now() + self.ttl,
-            },
-        );
-        self.key_cache.invalidate_tenant(tenant_id);
+        self.insert_jwks(tenant_id, jwks.clone());
         Ok(jwks)
+    }
+
+    /// Make sure JWKS for `tenant_id` is cached, fetching it if not.
+    async fn ensure_cached(&self, tenant_id: &str) -> Result<()> {
+        let tenant = TenantId::new(tenant_id);
+        if self.cached_jwks(&tenant).is_some() {
+            return Ok(());
+        }
+        check_tenant_id(tenant_id)?;
+        if self.recent_miss(tenant_id) {
+            anyhow::bail!("jwks unavailable for tenant (recent fetch failed)");
+        }
+        if let Some(catalog) = &self.catalog
+            && catalog.rules_out(tenant_id).await
+        {
+            anyhow::bail!("unknown tenant");
+        }
+        // One request per tenant however many streams ask at once: the
+        // others wait here and find the answer in a cache.
+        let flight = Arc::clone(&self.inflight.entry(tenant_id.to_string()).or_default());
+        let result = {
+            let _guard = flight.lock().await;
+            if self.cached_jwks(&tenant).is_some() {
+                Ok(())
+            } else if self.recent_miss(tenant_id) {
+                Err(anyhow::anyhow!(
+                    "jwks unavailable for tenant (recent fetch failed)"
+                ))
+            } else {
+                let fetched = self.refresh(&tenant).await.map(|_| ());
+                if fetched.is_err() {
+                    self.remember_miss(tenant_id);
+                }
+                fetched
+            }
+        };
+        self.inflight
+            .remove_if(tenant_id, |_, current| Arc::ptr_eq(current, &flight));
+        result
+    }
+
+    fn jwks_url(&self, tenant_id: &str) -> Result<reqwest::Url> {
+        let mut url = reqwest::Url::parse(&self.base_url).context("parse control-plane url")?;
+        // Pushed as a path segment, so the tenant id is percent-encoded and a
+        // `/`, `?` or `#` in it cannot reach another route.
+        url.path_segments_mut()
+            .map_err(|()| anyhow::anyhow!("control-plane url cannot take a path"))?
+            .pop_if_empty()
+            .extend(["v1", "tenants", tenant_id, ".well-known", "jwks.json"]);
+        Ok(url)
+    }
+
+    fn recent_miss(&self, tenant_id: &str) -> bool {
+        self.misses
+            .get(tenant_id)
+            .is_some_and(|expires_at| *expires_at > Instant::now())
+    }
+
+    fn remember_miss(&self, tenant_id: &str) {
+        if self.misses.len() >= JWKS_MISS_CACHE_MAX {
+            let now = Instant::now();
+            self.misses.retain(|_, expires_at| *expires_at > now);
+            // Still full of live entries: skip it. The other guards still
+            // hold, and the map stays bounded.
+            if self.misses.len() >= JWKS_MISS_CACHE_MAX {
+                return;
+            }
+        }
+        self.misses
+            .insert(tenant_id.to_string(), Instant::now() + JWKS_MISS_TTL);
     }
 
     fn cached_jwks(&self, tenant_id: &TenantId) -> Option<Jwks> {
@@ -178,6 +309,20 @@ impl ControlPlaneKeyStore {
             }
         })
     }
+}
+
+/// Refuse a tenant id no control plane could have issued, before it goes
+/// anywhere near a URL.
+fn check_tenant_id(tenant_id: &str) -> Result<()> {
+    if tenant_id.is_empty()
+        || tenant_id.len() > TENANT_ID_MAX_BYTES
+        || tenant_id == "."
+        || tenant_id == ".."
+        || tenant_id.chars().any(char::is_control)
+    {
+        anyhow::bail!("invalid tenant id");
+    }
+    Ok(())
 }
 
 impl TenantKeyStore for ControlPlaneKeyStore {
@@ -207,13 +352,10 @@ impl TenantKeyStore for ControlPlaneKeyStore {
 /// Fetch JWKS for a tenant only if the cache is missing or expired.
 ///
 /// # Errors
-/// Network or decode failures from the fetch.
+/// Network or decode failures from the fetch, a fetch for this tenant that
+/// failed in the last few seconds, or a tenant the local catalog rules out.
 pub async fn ensure_jwks_cached(key_store: &ControlPlaneKeyStore, tenant_id: &str) -> Result<()> {
-    let tenant = TenantId::new(tenant_id);
-    if key_store.cached_jwks(&tenant).is_none() {
-        key_store.refresh(&tenant).await?;
-    }
-    Ok(())
+    key_store.ensure_cached(tenant_id).await
 }
 
 fn jwks_to_keys(jwks: &Jwks) -> AuthzResult<Vec<TenantVerificationKey>> {

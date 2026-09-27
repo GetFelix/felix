@@ -23,6 +23,22 @@ source of truth for all client implementations.
   must begin with `auth`, may carry only publishes, and the broker never replies
   on it; anything else closes the stream.
 
+Before authentication. Every client stream starts with an `auth`, and until that
+succeeds the broker limits what the stream may cost it:
+
+- A frame on an unauthenticated stream may carry at most `preauth_max_frame_bytes`
+  (64 KiB by default) of payload. A larger `length` ends the stream on the header
+  alone.
+- A connection that has authenticated no stream within `auth_timeout_ms`
+  (10 s by default) is closed with QUIC application error code `1` and reason
+  `authentication timeout`. A client that dials a connection it may not use for a
+  while should authenticate a stream on it straight away.
+- Connections past `max_client_connections` are refused during the QUIC
+  handshake (`CONNECTION_REFUSED`).
+
+Client connection close codes: `0` broker shutting down, `1` authentication
+timeout.
+
 ## Frame Envelope
 All messages are sent in a fixed header + payload frame.
 

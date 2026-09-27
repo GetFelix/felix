@@ -59,11 +59,7 @@ pub async fn read_frame_limited_into(
             "frame length {length} exceeds max_payload_bytes {max_payload_bytes}"
         ));
     }
-    scratch.clear();
-    scratch.resize(length, 0u8);
-    recv.read_exact(&mut scratch[..])
-        .await
-        .context("read frame payload")?;
+    read_payload_into(recv, length, scratch).await?;
     let frame = Frame {
         header,
         payload: scratch.split().freeze(),
@@ -80,6 +76,38 @@ pub async fn read_frame_limited_into(
             .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
     }
     Ok(Some(frame))
+}
+
+/// Most of a payload reserved before any of it has arrived.
+const PAYLOAD_RESERVE_BYTES: usize = 64 * 1024;
+
+// Grow `scratch` with the bytes that actually arrive, not with the length the
+// header declares. The header costs the peer twelve bytes; reserving from it let
+// one packet per stream commit the broker to a full-size frame.
+async fn read_payload_into(
+    recv: &mut RecvStream,
+    length: usize,
+    scratch: &mut BytesMut,
+) -> Result<()> {
+    scratch.clear();
+    scratch.reserve(length.min(PAYLOAD_RESERVE_BYTES));
+    while scratch.len() < length {
+        let remaining = length - scratch.len();
+        match recv
+            .read_chunk(remaining, true)
+            .await
+            .context("read frame payload")?
+        {
+            Some(chunk) => scratch.extend_from_slice(&chunk.bytes),
+            None => {
+                return Err(anyhow!(
+                    "read frame payload: stream finished after {} of {length} bytes",
+                    scratch.len()
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 // Low-level frame writer for QUIC streams.
@@ -105,3 +133,6 @@ pub(super) async fn write_frame(send: &mut SendStream, frame: &Frame) -> Result<
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

@@ -64,6 +64,8 @@ async fn start_broker() -> Result<Harness> {
     let addr = server.local_addr()?;
 
     let config = felix_broker_service::config::BrokerConfig::from_env()?;
+    let limit =
+        felix_broker_service::serving::quic::ConnectionLimit::new(config.max_client_connections);
     let auth = Arc::new(BrokerAuth::new("http://127.0.0.1:1/".to_string()));
     let accept_shutdown = CancellationToken::new();
     let connections = TaskTracker::new();
@@ -76,6 +78,7 @@ async fn start_broker() -> Result<Harness> {
         accept_shutdown.clone(),
         connections.clone(),
         Default::default(),
+        limit,
     ));
 
     Ok(Harness {

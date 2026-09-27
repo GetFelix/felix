@@ -48,11 +48,13 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
         mut stream_cache_key,
     } = args;
     let mut auth_ctx: Option<AuthContext> = None;
+    // Held until this stream authenticates; see `preauth`.
+    let mut preauth_permit = Some(publish_ctx.preauth.admit_stream().await);
     loop {
-        let frame = match source
-            .next_frame(config.max_frame_bytes, frame_scratch)
-            .await?
-        {
+        let frame_cap = publish_ctx
+            .preauth
+            .frame_cap(auth_ctx.is_some(), config.max_frame_bytes);
+        let frame = match source.next_frame(frame_cap, frame_scratch).await? {
             Some(frame) => frame,
             None => break,
         };
@@ -110,6 +112,8 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
                 match auth.authenticate(&tenant_id, &token).await {
                     Ok(ctx) => {
                         auth_ctx = Some(ctx);
+                        preauth_permit.take();
+                        publish_ctx.preauth.mark_authenticated();
                     }
                     Err(err) => {
                         tracing::debug!(error = %err, "closing uni stream after auth failure");

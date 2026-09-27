@@ -78,6 +78,26 @@ impl BrokerConfig {
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_MAX_FRAME_BYTES);
+        let preauth_max_frame_bytes = std::env::var("FELIX_PREAUTH_MAX_FRAME_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_PREAUTH_MAX_FRAME_BYTES);
+        let preauth_max_streams_per_conn = std::env::var("FELIX_PREAUTH_MAX_STREAMS_PER_CONN")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_PREAUTH_MAX_STREAMS_PER_CONN);
+        // Zero is meaningful: no deadline.
+        let auth_timeout_ms = std::env::var("FELIX_AUTH_TIMEOUT_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_AUTH_TIMEOUT_MS);
+        let max_client_connections = std::env::var("FELIX_MAX_CLIENT_CONNECTIONS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_MAX_CLIENT_CONNECTIONS);
         let publish_queue_wait_timeout_ms = std::env::var("FELIX_PUBLISH_QUEUE_WAIT_MS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
@@ -302,6 +322,10 @@ impl BrokerConfig {
             peer_transport,
             ack_on_commit,
             max_frame_bytes,
+            preauth_max_frame_bytes,
+            preauth_max_streams_per_conn,
+            auth_timeout_ms,
+            max_client_connections,
             publish_queue_wait_timeout_ms,
             ack_wait_timeout_ms,
             group_visibility_timeout_ms,

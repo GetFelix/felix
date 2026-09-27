@@ -191,8 +191,50 @@ max_frame_bytes: 16777216
 
 **Notes**:
 - Limits individual message size
-- Affects memory usage per stream
+- Buffers grow as payload bytes arrive, so a header alone does not reserve this much
 - Must match client expectations
+
+### `preauth_max_frame_bytes`
+
+**Description**: Maximum frame size on a stream that has not yet authenticated.
+
+**Type**: `usize` (bytes)
+
+**Default**: `65536` (64 KiB)
+
+**Environment**: `FELIX_PREAUTH_MAX_FRAME_BYTES`
+
+### `preauth_max_streams_per_conn`
+
+**Description**: Unauthenticated streams one connection may have reading at once; more wait.
+
+**Type**: `usize`
+
+**Default**: `16`
+
+**Environment**: `FELIX_PREAUTH_MAX_STREAMS_PER_CONN`
+
+### `auth_timeout_ms`
+
+**Description**: How long a client connection has to authenticate a stream before it is
+closed. `0` disables the deadline.
+
+**Type**: `u64` (milliseconds)
+
+**Default**: `10000`
+
+**Environment**: `FELIX_AUTH_TIMEOUT_MS`
+
+### `max_client_connections`
+
+**Description**: Client QUIC connections held at once across all client listeners. Attempts
+past it are refused before the handshake.
+
+**Type**: `usize`
+
+**Default**: `8192`
+
+**Environment**: `FELIX_MAX_CLIENT_CONNECTIONS`
 
 ### `publish_queue_wait_timeout_ms`
 

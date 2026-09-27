@@ -47,6 +47,9 @@ async fn enqueue_publish_drop_sheds_load_when_byte_budget_exhausted() {
         subscriptions: Arc::new(SubscriptionLimiter::new()),
         lane_manager: test_lane_manager(),
         ingress_wait: false,
+        preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
+            &crate::config::BrokerConfig::default(),
+        )),
     };
     // Queue depth (8) has room, but the shared byte budget (4 bytes) does not fit this
     // 7-byte payload, so the job must be shed even though the item-count queue is empty.
@@ -79,6 +82,9 @@ async fn enqueue_publish_drop_sheds_load_when_conn_byte_budget_exhausted() {
         subscriptions: Arc::new(SubscriptionLimiter::new()),
         lane_manager: test_lane_manager(),
         ingress_wait: false,
+        preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
+            &crate::config::BrokerConfig::default(),
+        )),
     };
     let mut job = make_job();
     job.payloads = vec![Bytes::from_static(b"payload")];
@@ -110,6 +116,9 @@ async fn enqueue_publish_conn_budget_does_not_starve_other_connections() {
         subscriptions: Arc::new(SubscriptionLimiter::new()),
         lane_manager: test_lane_manager(),
         ingress_wait: false,
+        preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
+            &crate::config::BrokerConfig::default(),
+        )),
     };
     let ctx_b = PublishContext {
         ingress: None,

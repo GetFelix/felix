@@ -228,6 +228,9 @@ async fn build_publish_context(broker: Arc<Broker>) -> PublishContext {
         subscriptions: Arc::new(SubscriptionLimiter::new()),
         lane_manager: WriterLaneManager::new(&BrokerConfig::default()),
         ingress_wait: false,
+        preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
+            &crate::config::BrokerConfig::default(),
+        )),
     }
 }
 

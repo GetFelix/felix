@@ -29,7 +29,7 @@ pub use client::QuicClient;
 pub use config::TransportConfig;
 pub use connection::{ConnectionId, ConnectionInfo, QuicConnection};
 pub use io_runtime::{plan_server_endpoints, required_io_runtime_threads};
-pub use server::QuicServer;
+pub use server::{IncomingConnection, QuicServer};
 
 #[cfg(test)]
 mod tests;

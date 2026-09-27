@@ -13,6 +13,7 @@ use tokio_util::task::TaskTracker;
 
 use super::client_error::ClientError;
 use super::handlers::publish::{PublishContext, build_publish_context};
+use super::preauth::{AUTH_TIMEOUT_CLOSE_CODE, ConnectionLimit, auth_timeout};
 use super::streams::{handle_stream, handle_uni_stream};
 use crate::config::BrokerConfig;
 use crate::observability::timings;
@@ -31,6 +32,7 @@ pub async fn serve(
 ) -> Result<()> {
     // Runs until the listener errors. Callers that need to stop accepting without
     // killing in-flight connections should use `serve_with_shutdown`.
+    let limit = ConnectionLimit::new(config.max_client_connections);
     serve_with_shutdown(
         server,
         broker,
@@ -41,6 +43,7 @@ pub async fn serve(
         // The simple entry point is single-node; a cluster member goes through
         // `serve_with_shutdown` so it can pass its ownership view and its peers.
         ClusterContext::default(),
+        limit,
     )
     .await
 }
@@ -58,6 +61,8 @@ pub async fn serve(
 /// - Cancelling `shutdown` stops admission only; accepted connections keep running.
 /// - The caller owns `connections`, and must `close()` it before `wait()`ing or the
 ///   wait never resolves.
+/// - `limit` is shared by every client listener, so the cap is broker-wide.
+#[allow(clippy::too_many_arguments)]
 pub async fn serve_with_shutdown(
     server: Arc<QuicServer>,
     broker: Arc<Broker>,
@@ -66,6 +71,7 @@ pub async fn serve_with_shutdown(
     shutdown: CancellationToken,
     connections: TaskTracker,
     cluster: ClusterContext,
+    limit: ConnectionLimit,
 ) -> Result<()> {
     let publish_ctx = build_publish_context(Arc::clone(&broker), &config, cluster);
     // Main accept loop: spawn a task per incoming QUIC connection.
@@ -77,13 +83,27 @@ pub async fn serve_with_shutdown(
         // Accept the next QUIC connection, unless we have been asked to stop
         // admitting. Selecting here rather than checking between accepts means a
         // loop parked on an idle listener still exits promptly.
-        let connection = tokio::select! {
+        let incoming = tokio::select! {
             biased;
             _ = shutdown.cancelled() => {
                 tracing::info!("quic accept loop stopping; no longer admitting connections");
                 return Ok(());
             }
-            accepted = server.accept() => accepted?,
+            incoming = server.accept_incoming() => match incoming {
+                Some(incoming) => incoming,
+                None => return Err(anyhow::anyhow!("quic endpoint closed")),
+            },
+        };
+        // Decided before the handshake, so a refusal costs one packet.
+        let Some(permit) = limit.try_admit() else {
+            metrics::counter!("felix_quic_connections_refused_total", "reason" => "limit")
+                .increment(1);
+            tracing::debug!(
+                peer = %incoming.remote_address(),
+                "refusing client connection: connection limit reached"
+            );
+            incoming.refuse();
+            continue;
         };
         let broker = Arc::clone(&broker);
         let config = config.clone();
@@ -94,6 +114,24 @@ pub async fn serve_with_shutdown(
         // that may never disconnect.
         let conn_shutdown = shutdown.clone();
         connections.spawn(async move {
+            // The permit is the connection's slot; it goes when this task does.
+            let _permit = permit;
+            // Handshaken here, not in the accept loop, so a peer that stalls
+            // its handshake holds up nobody else. A failed one is that peer's
+            // problem and must not stop the listener.
+            let handshake = tokio::select! {
+                // A drain does not wait on a handshake that has not finished.
+                _ = conn_shutdown.cancelled() => return,
+                handshake = incoming.accept() => handshake,
+            };
+            let connection = match handshake {
+                Ok(connection) => connection,
+                Err(err) => {
+                    metrics::counter!("felix_quic_handshake_failures_total").increment(1);
+                    tracing::debug!(error = %err, "client handshake failed");
+                    return;
+                }
+            };
             if let Err(err) = handle_connection_with_shutdown(
                 broker,
                 connection,
@@ -175,6 +213,11 @@ pub(crate) async fn handle_connection_with_shutdown(
         .filter(|ms| *ms > 0);
     let mut stats_ticker =
         stats_interval_ms.map(|ms| tokio::time::interval(Duration::from_millis(ms)));
+    // A connection that never authenticates is closed, so an idle or
+    // slow-dripping peer cannot hold one of the broker's connection slots.
+    let preauth = Arc::clone(&publish_ctx.preauth);
+    let auth_deadline = auth_timeout(&config).map(|timeout| tokio::time::Instant::now() + timeout);
+    let mut awaiting_auth = auth_deadline.is_some();
     loop {
         // Accept both bidirectional control streams and uni-directional publish streams.
         tokio::select! {
@@ -216,6 +259,27 @@ pub(crate) async fn handle_connection_with_shutdown(
                     rx_max_data = stats.frame_rx.max_data,
                     "quic connection path stats"
                 );
+            }
+            authenticated = async {
+                tokio::time::timeout_at(
+                    auth_deadline.expect("armed only with a deadline"),
+                    preauth.authenticated(),
+                )
+                .await
+            }, if awaiting_auth => {
+                if authenticated.is_ok() {
+                    awaiting_auth = false;
+                    continue;
+                }
+                metrics::counter!("felix_quic_auth_timeout_total").increment(1);
+                tracing::debug!(
+                    conn = connection.info().id.0,
+                    peer = %connection.info().peer_addr,
+                    "closing client connection: not authenticated in time"
+                );
+                connection.close(AUTH_TIMEOUT_CLOSE_CODE.into(), b"authentication timeout");
+                streams.close();
+                return Ok(());
             }
             _ = shutdown.cancelled() => {
                 tracing::info!(
@@ -300,7 +364,7 @@ pub(crate) async fn handle_connection_with_shutdown(
     streams.close();
     let drained = tokio::select! {
         drained = tokio::time::timeout(grace, streams.wait()) => drained,
-        never = refuse_new_streams(&connection, config.max_frame_bytes) => match never {},
+        never = refuse_new_streams(&connection, preauth.frame_cap(false, config.max_frame_bytes)) => match never {},
     };
     if drained.is_err() {
         tracing::info!(

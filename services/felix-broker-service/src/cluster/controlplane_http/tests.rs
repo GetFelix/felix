@@ -72,12 +72,24 @@ async fn a_private_control_plane_ca_is_trusted_only_once_configured() {
 
     trust_ca(None).expect("public roots only");
     assert!(
-        client().get(&url).send().await.is_err(),
+        builder()
+            .build()
+            .expect("client")
+            .get(&url)
+            .send()
+            .await
+            .is_err(),
         "a certificate from an untrusted CA was accepted"
     );
 
     trust_ca(Some(&ca)).expect("trust the CA");
-    let response = client().get(&url).send().await.expect("request");
+    let response = builder()
+        .build()
+        .expect("client")
+        .get(&url)
+        .send()
+        .await
+        .expect("request");
     assert_eq!(response.text().await.expect("body"), "ok");
 
     trust_ca(None).expect("reset");

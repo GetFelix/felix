@@ -11,6 +11,16 @@ pub(super) const DEFAULT_CACHE_CONN_RECV_WINDOW: u64 = 256 * 1024 * 1024;
 pub(super) const DEFAULT_CACHE_STREAM_RECV_WINDOW: u64 = 64 * 1024 * 1024;
 pub(super) const DEFAULT_CACHE_SEND_WINDOW: u64 = 256 * 1024 * 1024;
 pub(super) const DEFAULT_MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+/// Room for an `Auth` carrying a token with a long permission list, and no
+/// more: until a stream authenticates, anything bigger is an attack.
+pub(super) const DEFAULT_PREAUTH_MAX_FRAME_BYTES: usize = 64 * 1024;
+/// Clients authenticate their streams one at a time, so this is headroom,
+/// not a limit a well-behaved client meets.
+pub(super) const DEFAULT_PREAUTH_MAX_STREAMS_PER_CONN: usize = 16;
+/// Ten seconds: an `Auth` is one round trip plus, on a cold cache, one JWKS
+/// fetch, which has its own shorter timeout.
+pub(super) const DEFAULT_AUTH_TIMEOUT_MS: u64 = 10_000;
+pub(super) const DEFAULT_MAX_CLIENT_CONNECTIONS: usize = 8_192;
 pub(super) const DEFAULT_PUBLISH_QUEUE_WAIT_TIMEOUT_MS: u64 = 2000;
 /// How long a publish to a `Quorum` stream waits for a majority.
 ///

@@ -87,21 +87,33 @@ impl QuicServer {
     }
 
     /// Wait for the next client to connect and finish its handshake.
+    ///
+    /// The handshake runs inline, so a peer that stalls it stalls this call.
+    /// A server that must keep accepting while handshakes are in flight
+    /// should use [`QuicServer::accept_incoming`] and finish each one in its
+    /// own task.
     pub async fn accept(&self) -> Result<QuicConnection> {
-        let incoming = self
-            .endpoint
+        self.accept_incoming()
+            .await
+            .ok_or_else(|| anyhow!("no incoming QUIC connections"))?
             .accept()
             .await
-            .ok_or_else(|| anyhow!("no incoming QUIC connections"))?;
-        let connection = match &self.loopback_config {
-            Some(config) if incoming.remote_address().ip().is_loopback() => incoming
-                .accept_with(Arc::clone(config))
-                .context("accept loopback QUIC connection")?
-                .await
-                .context("accept QUIC connection")?,
-            _ => incoming.await.context("accept QUIC connection")?,
-        };
-        Ok(QuicConnection::new(connection, self.io_handle.clone()))
+    }
+
+    /// Wait for the next connection attempt, before its handshake.
+    ///
+    /// `None` once the endpoint is closed. The caller decides whether to
+    /// [`accept`](IncomingConnection::accept) or
+    /// [`refuse`](IncomingConnection::refuse) it; refusing costs one packet
+    /// and no connection state, which is what makes a connection cap cheap to
+    /// enforce.
+    pub async fn accept_incoming(&self) -> Option<IncomingConnection> {
+        let incoming = self.endpoint.accept().await?;
+        Some(IncomingConnection {
+            incoming,
+            loopback_config: self.loopback_config.clone(),
+            io_handle: self.io_handle.clone(),
+        })
     }
 
     /// The address the endpoint is bound to, including the port the OS chose
@@ -110,5 +122,40 @@ impl QuicServer {
         self.endpoint
             .local_addr()
             .context("read QUIC local address")
+    }
+}
+
+/// A connection attempt that has not been handshaken yet.
+#[derive(Debug)]
+pub struct IncomingConnection {
+    incoming: quinn::Incoming,
+    loopback_config: Option<Arc<ServerConfig>>,
+    io_handle: Option<tokio::runtime::Handle>,
+}
+
+impl IncomingConnection {
+    /// The address the attempt came from. Not validated: before the
+    /// handshake it may be spoofed.
+    pub fn remote_address(&self) -> SocketAddr {
+        self.incoming.remote_address()
+    }
+
+    /// Turn the attempt away with `CONNECTION_REFUSED`.
+    pub fn refuse(self) {
+        self.incoming.refuse();
+    }
+
+    /// Complete the handshake.
+    pub async fn accept(self) -> Result<QuicConnection> {
+        let connection = match &self.loopback_config {
+            Some(config) if self.incoming.remote_address().ip().is_loopback() => self
+                .incoming
+                .accept_with(Arc::clone(config))
+                .context("accept loopback QUIC connection")?
+                .await
+                .context("accept QUIC connection")?,
+            _ => self.incoming.await.context("accept QUIC connection")?,
+        };
+        Ok(QuicConnection::new(connection, self.io_handle))
     }
 }

@@ -47,14 +47,5 @@ pub(crate) fn builder() -> reqwest::ClientBuilder {
         })
 }
 
-/// [`builder`], built.
-pub(crate) fn client() -> reqwest::Client {
-    builder()
-        .build()
-        // Only fails if the TLS backend cannot initialise, which no
-        // configuration here can cause.
-        .expect("an HTTP client with the configured control-plane roots")
-}
-
 #[cfg(test)]
 mod tests;

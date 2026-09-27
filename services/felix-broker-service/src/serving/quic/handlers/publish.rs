@@ -72,6 +72,7 @@ use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot};
 
 use super::subscribe::WriterLaneManager;
+use crate::serving::quic::preauth::PreAuthGate;
 use crate::shards::routing::IngressRouter;
 use ack::EnqueuePolicy;
 use admission::AdmissionPermit;
@@ -145,6 +146,10 @@ pub(crate) struct PublishContext {
     /// which to report one — a bounded wait here could only end in a silent drop,
     /// which is the opposite of what enabling this is asking for.
     pub(crate) ingress_wait: bool,
+    /// What this connection may cost before it authenticates. Rides here for
+    /// the same reason as `subscriptions`: this is the per-connection bundle
+    /// every stream loop already has.
+    pub(crate) preauth: Arc<PreAuthGate>,
 }
 
 impl PublishContext {
@@ -165,6 +170,7 @@ impl PublishContext {
             conn_admission: Arc::new(PublishAdmission::new(config.pub_conn_inflight_bytes)),
             subscriptions: Arc::new(SubscriptionLimiter::new()),
             lane_manager: WriterLaneManager::new(config),
+            preauth: Arc::new(PreAuthGate::new(config)),
             ..self.clone()
         }
     }
