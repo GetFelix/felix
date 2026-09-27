@@ -19,7 +19,8 @@ for what the current release actually guarantees.
   gains a nullable `refresh_tokens.narrowing` column; older tokens refresh as
   before. On Raft, roll every member before relying on it.
 - **Re-pointing an IdP issuer takes cluster rights.** Changing an existing
-  issuer's `jwks_url`/`discovery_url` needs `tenant.manage:cluster:*`. IdP
+  issuer's `jwks_url`/`discovery_url`, or deleting an issuer, needs
+  `tenant.manage:cluster:*`. IdP
   fetches no longer follow redirects and refuse private, link-local and
   unique-local addresses unless `FELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP`
   is set.

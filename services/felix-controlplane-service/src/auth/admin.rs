@@ -6,7 +6,8 @@
 //! - Assignment writes require `rbac.assignment.manage`.
 //! - Non-RBAC tenant settings (IdP issuer config, refresh-token revocation)
 //!   require `tenant.manage`. Changing where an existing issuer's keys come
-//!   from also requires `tenant.manage:cluster:*`, as creating a tenant does.
+//!   from, or deleting an issuer, also requires `tenant.manage:cluster:*`, as
+//!   creating a tenant does.
 //!
 //! # Delegation model
 //! Callers can only read/mutate rules within the scope encoded in their token
@@ -124,6 +125,9 @@ pub async fn delete_idp_issuer(
         &format!("tenant:{tenant_id}"),
     )
     .await?;
+    // Deleting and re-creating would re-point the issuer without the check
+    // `upsert_idp_issuer` makes, so deletion takes the same cluster rights.
+    require_cluster_action(&state, &headers, ACTION_TENANT_MANAGE).await?;
     ensure_tenant_exists(&state, &tenant_id).await?;
     state
         .store

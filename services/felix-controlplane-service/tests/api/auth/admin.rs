@@ -265,9 +265,13 @@ async fn tenant_rbac_admin_can_grant_tenant_rules_but_tenant_star_is_rejected() 
 }
 
 #[tokio::test]
-async fn tenant_manage_can_upsert_and_delete_idp_issuer() {
+async fn tenant_manage_can_upsert_and_an_operator_can_delete_idp_issuer() {
     let (app, store, keys) = setup().await;
     let t = token(&keys, vec!["tenant.manage:tenant:t1"]);
+    let operator = token(
+        &keys,
+        vec!["tenant.manage:tenant:t1", "tenant.manage:cluster:*"],
+    );
 
     let upsert = json_request(
         "POST",
@@ -297,7 +301,7 @@ async fn tenant_manage_can_upsert_and_delete_idp_issuer() {
     let delete = Request::builder()
         .method("DELETE")
         .uri("/v1/tenants/t1/idp-issuers/https:%2F%2Fissuer.example.com")
-        .header("authorization", format!("Bearer {t}"))
+        .header("authorization", format!("Bearer {operator}"))
         .body(Body::empty())
         .expect("delete issuer");
     let response = app.oneshot(delete).await.expect("delete issuer");
@@ -397,10 +401,29 @@ async fn re_pointing_an_existing_issuer_needs_cluster_rights() {
     let stored = store.list_idp_issuers("t1").await.expect("issuers");
     assert_eq!(stored[0].jwks_url.as_deref(), Some(original));
 
+    // Deleting and re-creating is the same re-point, so it needs the same rights.
+    let delete = |token: &str| {
+        let request = axum::http::Request::builder()
+            .method("DELETE")
+            .uri("/v1/tenants/t1/idp-issuers/https%3A%2F%2Fissuer.example.com")
+            .body(axum::body::Body::empty())
+            .expect("request");
+        app.clone().oneshot(add_auth(request, token))
+    };
+    let response = delete(&tenant_admin).await.expect("delete");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        store.list_idp_issuers("t1").await.expect("issuers").len(),
+        1
+    );
+
     let response = post(issuer(hostile), &operator).await.expect("operator");
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     let stored = store.list_idp_issuers("t1").await.expect("issuers");
     assert_eq!(stored[0].jwks_url.as_deref(), Some(hostile));
+
+    let response = delete(&operator).await.expect("operator delete");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]
