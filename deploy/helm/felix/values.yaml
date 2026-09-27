@@ -73,13 +73,40 @@ controlplane:
       insecurePeers: false
       # `new` lets empty members form a brand-new group; `existing` never
       # does, so members that lost their volumes wait instead of starting an
-      # empty control plane. Empty renders `new` on `helm install` and
-      # `existing` on every upgrade.
+      # empty control plane. Empty means `new` until the group has formed
+      # once and `existing` from then on: a post-install hook waits for the
+      # API to be ready and then creates the <fullname>-controlplane-raft-formed
+      # ConfigMap, which members read at every start. Deleting that
+      # ConfigMap lets empty members form a group again.
       initialClusterState: ""
+      # How long the bootstrap hook waits for the group to form. Keep helm's
+      # --timeout above it.
+      bootstrapTimeoutSeconds: 270
+      # Mutual TLS on the peer port (FELIX_RAFT_TLS_*). Off, the peer token
+      # and every Raft entry cross the pod network in cleartext, and the
+      # NetworkPolicy is the only fence around the port. One Secret for every
+      # member, holding tls.crt and tls.key (cert-manager's Certificate writes
+      # them) and the CA under `caKey`. Each member presents the certificate
+      # as both server and client, so it needs both usages, and it must name
+      # every member as the peers map does,
+      # <fullname>-controlplane-<n>.<fullname>-controlplane-headless, which
+      # a `*.<fullname>-controlplane-headless` DNS name covers. The migration
+      # tool needs a certificate from the same CA.
+      tls:
+        enabled: false
+        existingSecret: ""
+        caKey: ca.crt
       # Tuning; empty means the control plane's own defaults.
       heartbeatMs: ""
       electionTimeoutMinMs: ""
       electionTimeoutMaxMs: ""
+  # Under the raft backend, keeps the Raft peer port to the members
+  # themselves and to `raftPeerFrom` (NetworkPolicyPeer entries, e.g. the
+  # migration tool's pods). The API, metrics and bootstrap ports stay open to
+  # the cluster as they are without a policy.
+  networkPolicy:
+    enabled: true
+    raftPeerFrom: []
   # The day-0 listener that creates the first tenant and the first cluster
   # credential. Off by default; turn it on for the initial setup, use it, and
   # turn it off again. It is reachable only inside the cluster, through its own

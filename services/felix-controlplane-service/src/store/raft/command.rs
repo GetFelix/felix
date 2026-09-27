@@ -22,9 +22,10 @@
 //! `felix_meta_raft_unsupported_commands_total`. That keeps members on the
 //! same build identical, but a newer leader applied the command, so in a
 //! mixed-version group the older member's state falls behind the leader's.
-//! A release that adds a variant must therefore finish rolling every member
-//! before anything proposes it; `docs/metadata-raft-design.md` ("Upgrading")
-//! has the order and the recovery if the counter moves.
+//! That is why each variant has a level ([`MetaCommand::version`]) and is
+//! proposed only once every member reports at least that level
+//! (`crate::raft::RaftHandle::cluster_version`); `docs/metadata-raft-design.md`
+//! ("Upgrading") has the rest.
 use serde::{Deserialize, Serialize};
 
 use crate::auth::felix_token::{SigningKey, TenantSigningKeys};
@@ -45,6 +46,13 @@ use crate::store::{StoreError, TenantAuthSeed};
 /// unknown `op` on deserialization (see the module docs for what that
 /// costs in a mixed-version group).
 pub const COMMAND_VERSION: u16 = 1;
+
+/// The highest [`MetaCommand::version`] this build can apply.
+///
+/// A release that adds a variant gives it the next level and raises this,
+/// so nothing proposes it until every member runs that release. Never lower
+/// it: members report it, and the group's level is the minimum.
+pub const METADATA_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -183,9 +191,7 @@ pub enum MetaCommand {
         keys: TenantSigningKeys,
     },
     /// Rule removal and the signing-key lifecycle below are newer than the
-    /// rest of this set. A member that predates them refuses them, so every
-    /// control-plane member must run a build that has them before anyone uses
-    /// the routes that propose them.
+    /// rest of this set: level 1, like the liveness commands at the end.
     RemoveRbacPolicy {
         tenant_id: String,
         policy: PolicyRule,
@@ -289,6 +295,61 @@ pub enum MetaCommand {
     CheckpointHeartbeats {
         beats: Vec<HeartbeatSeen>,
     },
+}
+
+impl MetaCommand {
+    /// The level a member must be at to apply this command. 0 is every
+    /// variant a member that reports no level already knows.
+    pub fn version(&self) -> u16 {
+        match self {
+            Self::RemoveRbacPolicy { .. }
+            | Self::RemoveRbacGrouping { .. }
+            | Self::StageSigningKey { .. }
+            | Self::ActivateSigningKey { .. }
+            | Self::RetireSigningKey { .. }
+            | Self::ExpireNodes { .. }
+            | Self::CheckpointHeartbeats { .. } => 1,
+            // Listed, not a wildcard: a new variant must pick its level.
+            Self::CreateTenant { .. }
+            | Self::DeleteTenant { .. }
+            | Self::CreateNamespace { .. }
+            | Self::DeleteNamespace { .. }
+            | Self::CreateStream { .. }
+            | Self::PatchStream { .. }
+            | Self::DeleteStream { .. }
+            | Self::CreateCache { .. }
+            | Self::PatchCache { .. }
+            | Self::DeleteCache { .. }
+            | Self::RegisterNode { .. }
+            | Self::PatchNode { .. }
+            | Self::DeleteNode { .. }
+            | Self::RecordNodeHeartbeat { .. }
+            | Self::ExpireStaleNodes { .. }
+            | Self::SetNodeLifecycle { .. }
+            | Self::PutShardAssignment { .. }
+            | Self::PutShardAssignmentIf { .. }
+            | Self::PutShardAssignmentFenced { .. }
+            | Self::TakePlacementLease { .. }
+            | Self::DeleteShardAssignment { .. }
+            | Self::RecordReplicaReport { .. }
+            | Self::SetMovesPaused { .. }
+            | Self::UpsertIdpIssuer { .. }
+            | Self::DeleteIdpIssuer { .. }
+            | Self::AddRbacPolicy { .. }
+            | Self::AddRbacGrouping { .. }
+            | Self::SetTenantSigningKeys { .. }
+            | Self::EnsureSigningKeys { .. }
+            | Self::SetTenantAuthBootstrapped { .. }
+            | Self::SeedRbac { .. }
+            | Self::BootstrapTenantAuth { .. }
+            | Self::ImportState { .. }
+            | Self::InsertRefreshToken { .. }
+            | Self::TakeRefreshToken { .. }
+            | Self::RevokeRefreshFamily { .. }
+            | Self::RevokeRefreshTokensForPrincipal { .. }
+            | Self::PurgeExpiredRefreshTokens { .. } => 0,
+        }
+    }
 }
 
 /// A node, at the incarnation a decision about it was made against.

@@ -35,6 +35,10 @@ use super::{InitialClusterState, NodeId, RaftHandle, store};
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct Standing {
     pub(super) last_log_index: Option<u64>,
+    /// [`super::AppStateMachine::version`]; absent from a build that
+    /// predates it, which reads as 0.
+    #[serde(default)]
+    pub(super) version: u16,
 }
 
 /// The leader's answer to a rejoining member: apply up to here, then vote.
@@ -119,6 +123,7 @@ impl RaftHandle {
                     match standing {
                         Some(Standing {
                             last_log_index: Some(index),
+                            ..
                         }) if index >= 1 => exists = true,
                         Some(_) => empty += 1,
                         None => {}
@@ -237,6 +242,7 @@ impl RaftHandle {
     pub(super) fn standing(&self) -> Standing {
         Standing {
             last_log_index: self.raft.metrics().borrow().last_log_index,
+            version: self.app.version(),
         }
     }
 }

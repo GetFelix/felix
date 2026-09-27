@@ -219,8 +219,9 @@ The PVC is what makes a pod restart a rejoin; a member whose volume is lost
 rejoins empty and is rebuilt by snapshot install. The
 [Helm chart](/felix/deployment/kubernetes/) renders exactly this with
 `controlplane.storage.backend=raft`, deriving each member's id from its pod
-ordinal and the peers map from the replica count, and setting
-`FELIX_RAFT_INITIAL_CLUSTER_STATE=new` only on `helm install`.
+ordinal and the peers map from the replica count. It lets empty members
+start with `new` only until a post-install hook has seen the group form and
+recorded that in a ConfigMap; every start after that is `existing`.
 
 ## Migrating from Postgres
 

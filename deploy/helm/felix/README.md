@@ -63,7 +63,11 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 | `controlplane.storage.raft.peerToken.existingSecret` | — | Secret holding the Raft peer token (32+ characters) under `tokenKey` (`token`). Required for `raft`: whoever holds the token can replace the metadata store. |
 | `controlplane.storage.raft.peerPort` | `8444` | The members' Raft peer listener, on the headless Service only. Must differ from the API port. |
 | `controlplane.storage.raft.clusterId` | full name | Names the group; each member's volume records it and refuses another. |
-| `controlplane.storage.raft.initialClusterState` | — | `new` lets empty members form a group, `existing` never does. Empty renders `new` on `helm install` and `existing` on upgrades, so lost volumes never start an empty control plane after day 0. |
+| `controlplane.storage.raft.initialClusterState` | — | `new` lets empty members form a group, `existing` never does. Empty means `new` until the group has formed once, then `existing`: a post-install hook Job waits for the API to be ready and creates the `<fullname>-controlplane-raft-formed` ConfigMap, which members read at every start. Lost volumes then never start an empty control plane, even before the first upgrade. |
+| `controlplane.storage.raft.bootstrapTimeoutSeconds` | `270` | How long that hook waits for the group to form. Keep `helm --timeout` above it. |
+| `controlplane.storage.raft.tls.enabled` | `false` | Mutual TLS on the Raft peer port (`FELIX_RAFT_TLS_*`). Off, the peer token and Raft traffic cross the pod network in cleartext. |
+| `controlplane.storage.raft.tls.existingSecret` | — | Secret with `tls.crt`, `tls.key` and the CA under `caKey` (`ca.crt`). One certificate for every member, with server and client usages, naming `*.<fullname>-controlplane-headless`. |
+| `controlplane.networkPolicy.enabled` | `true` | Under `raft`, admits the peer port only from control-plane pods and `raftPeerFrom` (e.g. the migration tool). Other ports stay open. |
 | `controlplane.storage.raft.insecurePeers` | `false` | Run Raft with no peer token. Throwaway clusters only. |
 | `controlplane.bootstrap.enabled` | `false` | The day-0 listener, on its own ClusterIP Service. Turn it off after use. |
 | `controlplane.bootstrap.existingSecret` | — | Secret holding the bootstrap token under `tokenKey`, and the previous one under `previousTokenKey` while rotating. |
@@ -97,7 +101,7 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 `helm template` fails, with the reason, when:
 
 - `postgres` has no `existingSecret`, or `bootstrap` is on without one.
-- `raft` has fewer than three members, or an even number, or no peer token Secret, or a peer port equal to the API port.
+- `raft` has fewer than three members, or an even number, or no peer token Secret, or a peer port equal to the API port, or peer `tls` on without a Secret.
 - `memory` has more than one replica.
 - brokers are enabled with no credential Secret, or with no control plane and no `controlplaneUrl`.
 - brokers are enabled with neither `peerTls.enabled` nor `peerTls.allowUnauthenticated`.

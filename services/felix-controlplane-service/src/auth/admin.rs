@@ -26,7 +26,7 @@ use utoipa::ToSchema;
 use crate::api::AppState;
 use crate::api::ensure_tenant_exists;
 use crate::api::error::{
-    ApiError, api_forbidden, api_internal, api_not_found, api_validation_error,
+    ApiError, api_conflict, api_forbidden, api_internal, api_not_found, api_validation_error,
 };
 use crate::auth::bearer::{Refusal, refused, require_cluster_action, tenant_permissions};
 use crate::auth::idp_registry::IdpIssuerConfig;
@@ -315,6 +315,7 @@ pub async fn remove_policy(
     match state.store.remove_rbac_policy(&tenant_id, rule).await {
         Ok(()) => Ok(StatusCode::NO_CONTENT),
         Err(StoreError::NotFound(_)) => Err(api_not_found("policy not found")),
+        Err(StoreError::Conflict(what)) => Err(api_conflict("conflict", &what)),
         Err(err) => Err(api_internal("failed to remove policy", &err)),
     }
 }
@@ -372,6 +373,7 @@ pub async fn remove_grouping(
     match state.store.remove_rbac_grouping(&tenant_id, grouping).await {
         Ok(()) => Ok(StatusCode::NO_CONTENT),
         Err(StoreError::NotFound(_)) => Err(api_not_found("grouping not found")),
+        Err(StoreError::Conflict(what)) => Err(api_conflict("conflict", &what)),
         Err(err) => Err(api_internal("failed to remove grouping", &err)),
     }
 }

@@ -55,6 +55,9 @@ impl AppStateMachine for StampsWithNodeId {
     fn restamp(&self, command: &[u8], _now_millis: u64) -> Option<Vec<u8>> {
         self.inner.restamp(command, self.id)
     }
+    fn version(&self) -> u16 {
+        self.inner.version()
+    }
 }
 
 async fn start_node(id: NodeId, dir: &std::path::Path) -> TestNode {

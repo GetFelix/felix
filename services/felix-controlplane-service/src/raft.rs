@@ -23,6 +23,8 @@
 //!   on a peer listener of their own, never the public API one.
 //! - `peer` — how that traffic is authenticated: cluster id, peer token,
 //!   optional mTLS.
+//! - `version` — the command level every member can apply, so nothing
+//!   newer is proposed part-way through a rolling upgrade.
 //! - `types` — the openraft type configuration. Commands and responses are
 //!   opaque bytes at this layer; their meaning belongs to the application
 //!   state machine (#338 gives them theirs).
@@ -36,6 +38,7 @@ mod peer;
 mod proposal;
 mod store;
 mod types;
+mod version;
 
 pub use handle::RaftHandle;
 pub use leader::{AskLeaderError, LeaderService, NotLeader};
@@ -155,6 +158,14 @@ pub trait AppStateMachine: Send + Sync + 'static {
     fn restamp(&self, command: &[u8], now_millis: u64) -> Option<Vec<u8>> {
         let _ = (command, now_millis);
         None
+    }
+
+    /// The newest command level this build can apply, reported to peers so
+    /// the group knows what every member understands
+    /// ([`RaftHandle::cluster_version`]). A member that reports nothing is
+    /// at 0.
+    fn version(&self) -> u16 {
+        0
     }
 }
 

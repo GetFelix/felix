@@ -135,10 +135,24 @@ kubectl -n felix create secret generic felix-raft-peer \
 
 The peer token authenticates every Raft request between members, and it is
 also what the `migrate import` tool needs, so treat it as the cluster-admin
-credential it is. The first `helm install` lets the empty members form the
-group; every later upgrade renders `FELIX_RAFT_INITIAL_CLUSTER_STATE=existing`,
-so members that lose their volumes wait for the group rather than start an
-empty one.
+credential it is. Empty members may form the group only until it has formed
+once: a post-install hook Job waits for the API to be ready, then creates the
+`<release>-felix-controlplane-raft-formed` ConfigMap, and every member start
+after that runs with `FELIX_RAFT_INITIAL_CLUSTER_STATE=existing`. Members that
+lose their volumes, even before the first upgrade, wait for the group rather
+than start an empty one. The hook gives up after
+`controlplane.storage.raft.bootstrapTimeoutSeconds` (270); keep `helm
+--timeout` above it.
+
+The Raft peer port (`8444`) is admitted only from control-plane pods by the
+chart's NetworkPolicy (add the migration tool's pods under
+`controlplane.networkPolicy.raftPeerFrom`). Without peer TLS the peer token
+crosses the pod network in cleartext. To encrypt and authenticate it, create a
+Secret with a certificate for `*.<release>-felix-controlplane-headless`
+(server and client usages), its key and the CA, and pass
+`--set controlplane.storage.raft.tls.enabled=true
+--set controlplane.storage.raft.tls.existingSecret=<secret>`; the chart mounts
+it and sets `FELIX_RAFT_TLS_CERT`, `FELIX_RAFT_TLS_KEY` and `FELIX_RAFT_TLS_CA`.
 
 The bootstrap listener is on its own ClusterIP Service, never behind the API's,
 so it is reachable only through a port-forward.
@@ -413,7 +427,7 @@ single consistent point across the cluster.
 | Broker registers, then heartbeats are refused with 403 | The token lacks `node.manage` over `node:<pod name>` or `cluster:*`. |
 | Broker never becomes ready | It cannot reach the control plane (`FELIX_CONTROLPLANE_URL`), or the token lacks `node.view:cluster:*`, so it never seeds a catalog. Check its log. |
 | Control plane not ready, liveness fine | The store: Postgres unreachable, or the database is behind the build's migrations. That is readiness doing its job. |
-| Raft group never forms | Fewer members than the peers map names, or the headless Service was changed. Every member must carry the same map. A log line saying a majority is empty and none holds the group means the members were started with `existing` and no data: the first install forms the group, or set `controlplane.storage.raft.initialClusterState=new` for one upgrade. |
+| Raft group never forms | Fewer members than the peers map names, or the headless Service was changed. Every member must carry the same map. A log line saying a majority is empty and none holds the group means the members were started with `existing` and no data: the `-raft-formed` ConfigMap is left from an earlier release whose volumes are gone. Delete it and restart the members, or set `controlplane.storage.raft.initialClusterState=new` for one upgrade. |
 | Raft members log `raft peer request ... refused` | The members disagree on the peer token or the cluster id; both must be the same on every member. |
 | `helm upgrade` refused with a message about budgets, drains, or members | Deliberate. The message names the values that are wrong together. |
 | PVC `Pending` | No default StorageClass, or the named one does not exist in this zone. |

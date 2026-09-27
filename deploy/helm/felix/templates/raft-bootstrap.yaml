@@ -1,0 +1,88 @@
+{{- $cp := .Values.controlplane }}
+{{- if and $cp.enabled (eq $cp.storage.backend "raft") (not $cp.storage.raft.initialClusterState) }}
+{{- $name := include "felix.controlplane.fullname" . }}
+{{- $image := include "felix.image" (dict "root" . "image" $cp.image) }}
+{{- $url := printf "%s://%s.%s.svc:%d/v1/system/ready" (ternary "https" "http" $cp.tls.enabled) $name .Release.Namespace (int $cp.service.port) }}
+{{- /*
+The one-shot bootstrap. Members may form a new group only until the
+ConfigMap below exists, and it is created only after this Job has seen the
+API ready, which under Raft means a leader is known: the group has formed.
+Hook weights order them. From then on an empty member is a lost volume,
+whatever restarts before or after the next upgrade.
+
+A hook, not a release resource, so an upgrade or uninstall leaves the
+ConfigMap alone; each upgrade recreates it after the Job passes again.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}-raft-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "felix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controlplane-bootstrap
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ int $cp.storage.raft.bootstrapTimeoutSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "felix.labels" . | nindent 8 }}
+        app.kubernetes.io/component: controlplane-bootstrap
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "felix.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      securityContext:
+        {{- include "felix.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: wait-for-group
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              until wget -q -O /dev/null {{ if and $cp.tls.enabled $cp.tls.caKey }}--ca-certificate=/etc/felix/tls/{{ $cp.tls.caKey }} {{ end }}{{ $url | quote }}; do
+                sleep 2
+              done
+          securityContext:
+            {{- include "felix.containerSecurityContext" . | nindent 12 }}
+          {{- if $cp.tls.enabled }}
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/felix/tls
+              readOnly: true
+          {{- end }}
+      {{- if $cp.tls.enabled }}
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ $cp.tls.existingSecret }}
+      {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "felix.controlplane.raftFormed" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "felix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controlplane
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "1"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  formed: "true"
+{{- end }}

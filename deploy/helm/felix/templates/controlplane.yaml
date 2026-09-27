@@ -81,11 +81,24 @@ spec:
           {{- if $raft }}
           # The member id is the pod ordinal plus one, derived here because
           # the id has to be the one the peers map names for this pod.
+          #
+          # Empty members may form a new group only until the group has
+          # formed once: the bootstrap hook (raft-bootstrap.yaml) records that
+          # in a ConfigMap, read here at every container start. After it, an
+          # empty member is a lost volume and must wait, not start an empty
+          # control plane.
           command:
             - /bin/sh
             - -ec
             - |
               export FELIX_RAFT_NODE_ID="$(( ${POD_NAME##*-} + 1 ))"
+              if [ -z "${FELIX_RAFT_INITIAL_CLUSTER_STATE:-}" ]; then
+                if [ -n "${FELIX_RAFT_GROUP_FORMED:-}" ]; then
+                  export FELIX_RAFT_INITIAL_CLUSTER_STATE=existing
+                else
+                  export FELIX_RAFT_INITIAL_CLUSTER_STATE=new
+                fi
+              fi
               exec /usr/bin/tini -- /usr/local/bin/felix-controlplane
           {{- end }}
           ports:
@@ -151,11 +164,25 @@ spec:
             - name: FELIX_RAFT_INSECURE_PEERS
               value: "true"
             {{- end }}
-            # Only a first install may form a new group. After that, an empty
-            # member is a lost volume, and forming would start an empty
-            # control plane.
+            {{- if $cp.storage.raft.initialClusterState }}
             - name: FELIX_RAFT_INITIAL_CLUSTER_STATE
-              value: {{ $cp.storage.raft.initialClusterState | default (ternary "new" "existing" .Release.IsInstall) | quote }}
+              value: {{ $cp.storage.raft.initialClusterState | quote }}
+            {{- else }}
+            - name: FELIX_RAFT_GROUP_FORMED
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "felix.controlplane.raftFormed" . }}
+                  key: formed
+                  optional: true
+            {{- end }}
+            {{- if $cp.storage.raft.tls.enabled }}
+            - name: FELIX_RAFT_TLS_CERT
+              value: /etc/felix/raft-tls/tls.crt
+            - name: FELIX_RAFT_TLS_KEY
+              value: /etc/felix/raft-tls/tls.key
+            - name: FELIX_RAFT_TLS_CA
+              value: /etc/felix/raft-tls/{{ $cp.storage.raft.tls.caKey }}
+            {{- end }}
             {{- with $cp.storage.raft.heartbeatMs }}
             - name: FELIX_RAFT_HEARTBEAT_MS
               value: {{ . | quote }}
@@ -237,6 +264,11 @@ spec:
             {{- if $raft }}
             - name: raft
               mountPath: /var/lib/felix/raft
+            {{- if $cp.storage.raft.tls.enabled }}
+            - name: raft-tls
+              mountPath: /etc/felix/raft-tls
+              readOnly: true
+            {{- end }}
             {{- end }}
             {{- if $cp.tls.enabled }}
             # A directory mount, not subPath, so a renewed Secret reaches the
@@ -254,6 +286,11 @@ spec:
         - name: tls
           secret:
             secretName: {{ $cp.tls.existingSecret }}
+        {{- end }}
+        {{- if and $raft $cp.storage.raft.tls.enabled }}
+        - name: raft-tls
+          secret:
+            secretName: {{ $cp.storage.raft.tls.existingSecret }}
         {{- end }}
   {{- if $raft }}
   # The volume is what makes a restart a rejoin; a member whose volume is

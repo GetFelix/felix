@@ -66,9 +66,27 @@
                   }
                 },
                 "insecurePeers": { "type": "boolean" },
-                "initialClusterState": { "type": "string", "enum": ["", "new", "existing"] }
+                "initialClusterState": { "type": "string", "enum": ["", "new", "existing"] },
+                "bootstrapTimeoutSeconds": { "type": "integer", "minimum": 1 },
+                "tls": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "existingSecret": { "type": "string" },
+                    "caKey": { "type": "string", "minLength": 1 }
+                  }
+                }
               }
             }
+          }
+        },
+        "networkPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "raftPeerFrom": { "type": "array", "items": { "type": "object" } }
           }
         },
         "bootstrap": {
