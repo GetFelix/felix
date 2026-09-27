@@ -66,10 +66,9 @@ fn router_with(replicas: &[&str], generation: u64) -> Arc<ShardRouter> {
     router
 }
 
-async fn broker_with_storage() -> (Arc<Broker>, TempDir) {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn broker_on(dir: &std::path::Path) -> Arc<Broker> {
     let storage = felix_broker::DurableStorage::open(
-        dir.path(),
+        dir,
         LogConfig {
             segment_size_bytes: 4 * 1024,
             index_spacing_bytes: 256,
@@ -79,10 +78,12 @@ async fn broker_with_storage() -> (Arc<Broker>, TempDir) {
         },
     )
     .expect("storage");
-    (
-        Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage)),
-        dir,
-    )
+    Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage))
+}
+
+async fn broker_with_storage() -> (Arc<Broker>, TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    (broker_on(dir.path()), dir)
 }
 
 fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecords {
@@ -649,6 +650,101 @@ mod divergence {
         );
     }
 
+    /// A dropped suffix leaves the stream's replay ring too.
+    ///
+    /// A restart refills the ring from disk, uncommitted tail included. When
+    /// the new leader's records end below where the dropped ones did, storing
+    /// them never moved the ring on, so this broker, once promoted, served the
+    /// dropped records to readers alongside the ones that replaced them.
+    #[tokio::test]
+    async fn a_dropped_suffix_is_not_served_from_the_replay_ring() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let broker = broker_on(dir.path());
+            let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+            handler
+                .apply(
+                    batch(4, 0, &["a", "b", "orphan-1", "orphan-2"]),
+                    felix_broker::LogKind::Stream,
+                )
+                .await;
+            broker
+                .durable_storage()
+                .expect("storage")
+                .shutdown()
+                .await
+                .expect("shutdown");
+        }
+
+        let broker = broker_on(dir.path());
+        broker.register_tenant(TENANT).await.expect("tenant");
+        broker
+            .register_namespace(TENANT, NAMESPACE)
+            .await
+            .expect("namespace");
+        broker
+            .register_stream(
+                TENANT,
+                NAMESPACE,
+                STREAM,
+                felix_broker::StreamMetadata {
+                    durable: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("stream");
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
+        // From 0, so the whole older-generation tail is compared.
+        let answer = handler
+            .apply(batch(5, 0, &["a", "b", "x"]), felix_broker::LogKind::Stream)
+            .await;
+        match &answer {
+            InternalMessage::ReplicateOk(ok) => assert_eq!(ok.durable_offset, 3),
+            InternalMessage::ReplicateError(err) => {
+                panic!("expected the suffix dropped and the batch stored: {err:?}")
+            }
+            other => panic!("expected ReplicateOk, got {:?}", other.kind()),
+        }
+
+        let resumed = broker
+            .subscribe_from(
+                TENANT,
+                NAMESPACE,
+                STREAM,
+                0,
+                felix_broker::StartPosition::Offset(0),
+            )
+            .await
+            .expect("subscribe");
+        let mut served = Vec::new();
+        if let Some(range) = &resumed.history {
+            for record in broker
+                .read_durable(TENANT, NAMESPACE, STREAM, 0, range.from_offset, 1024 * 1024)
+                .await
+                .expect("history")
+            {
+                if record.offset < range.until_offset {
+                    served.push((record.offset, record.payload));
+                }
+            }
+        }
+        served.extend(resumed.backlog.iter().cloned());
+        let served: Vec<(u64, String)> = served
+            .into_iter()
+            .map(|(offset, payload)| (offset, String::from_utf8(payload.to_vec()).expect("utf8")))
+            .collect();
+        assert_eq!(
+            served,
+            vec![
+                (0, "a".to_string()),
+                (1, "b".to_string()),
+                (2, "x".to_string())
+            ],
+            "a reader was served records the follower dropped",
+        );
+    }
+
     /// With no generation history there is no bound, so nothing is truncated.
     ///
     /// Every shard written before the history existed is in this state, and a
@@ -825,21 +921,6 @@ mod rebuild {
 /// newest generation it accepted, and the commit offset the leader told it.
 mod replica_state {
     use super::*;
-
-    fn broker_on(dir: &std::path::Path) -> Arc<Broker> {
-        let storage = felix_broker::DurableStorage::open(
-            dir,
-            LogConfig {
-                segment_size_bytes: 4 * 1024,
-                index_spacing_bytes: 256,
-                fsync_mode: FsyncMode::None,
-                preallocate_segments: false,
-                ..LogConfig::default()
-            },
-        )
-        .expect("storage");
-        Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage))
-    }
 
     fn committed(
         generation: u64,

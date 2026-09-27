@@ -310,6 +310,14 @@ impl Broker {
         };
         let tail = log.tail_offset().await?;
         let capacity = self.log_capacity;
+        // A `Quorum` ring holds only committed records, and a tail past the
+        // commit offset may be a dead generation's that a new leader replaces.
+        // A ring stopping at the commit offset would leave a hole before the
+        // tail, so it starts empty and readers are served from disk.
+        if state.consistency() == ConsistencyLevel::Quorum && log.commit_offset() < tail {
+            state.hydrate(Vec::new(), tail, capacity);
+            return Ok(());
+        }
         let mut cursor = tail.saturating_sub(capacity as u64);
         let mut window: VecDeque<felix_storage::log::LogRecord> = VecDeque::new();
         let mut bytes = 0usize;

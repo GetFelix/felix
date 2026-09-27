@@ -186,11 +186,11 @@ that: the same fault put to both, on a real three-node cluster.
 consumer read only up to the shard's quorum mark, the committed high-water
 mark: a record past it can be lost at failover and its offset reused by the
 next leader. A `Leader` stream's readers see everything durable on the leader,
-as before. Plain subscriptions are not gated by the mark yet — live delivery,
-the replay ring and history read for a subscription can include records past
-it, so a subscriber on a `Quorum` stream can see a record that a failover then
-replaces. A subscriber that checkpoints offsets and needs to be sure should
-read through a consumer group instead.
+as before. Plain subscriptions are gated the same way: live delivery waits for
+the mark, the replay ring holds only committed records (after a restart too,
+and a follower that drops a dead leader's uncommitted records drops them from
+the ring as well), and history for a resumed subscription is read up to the
+mark.
 
 ### Message Ordering
 
