@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790520767577,
+  "lastUpdate": 1790524159644,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -22308,6 +22308,72 @@ window.BENCHMARK_DATA = {
             "range": "610.79",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1546.00\nmean: 1575.80\nstdev: 610.79\ncv: 38.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "59fef11bd2daedf37ae3dd555d049d42701b3cee",
+          "message": "Control plane: check report leadership atomically with the write (#757)\n\nThe replica-status handler checked leader and generation against an\nassignment it had read, then stored the report in a separate step, and no\nbackend checked again. A promotion landing in between let a deposed\nleader's report be stored and answered `accepted`.\n\nrecord_replica_report now takes the reporting node, and every backend\nstores the report only if that node still leads the shard at the report's\ngeneration, in the same step as the write: under the shard lock in memory,\nagainst the assignment row held FOR SHARE in one Postgres transaction, and\nin the Raft state-machine apply against the replicated assignment. The\nRaft command gains an optional `leader`; entries without it apply\nunchecked, as before. Refusals surface as `not_leader` / `stale`.\n\nSpec-Unaffected: the model's DeliverReport already applies a report only if its generation is current, atomically at delivery; this makes the code match that step without changing report, quorum-mark or promotion semantics.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T08:46:10-07:00",
+          "tree_id": "c1daaf3584c6160e52aca64e7989d4b11e5bce96",
+          "url": "https://github.com/gabloe/felix/commit/59fef11bd2daedf37ae3dd555d049d42701b3cee"
+        },
+        "date": 1790524157677,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 170,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 170.00\nmean: 170.40\nstdev: 1.14\ncv: 0.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 213,
+            "range": "3.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 213.00\nmean: 212.20\nstdev: 3.77\ncv: 1.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 286,
+            "range": "432.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 286.00\nmean: 512.00\nstdev: 432.03\ncv: 84.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 203,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 203.00\nmean: 202.80\nstdev: 0.45\ncv: 0.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 396,
+            "range": "7.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 396.00\nmean: 395.60\nstdev: 7.40\ncv: 1.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 564,
+            "range": "184.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 564.00\nmean: 631.80\nstdev: 184.66\ncv: 29.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
