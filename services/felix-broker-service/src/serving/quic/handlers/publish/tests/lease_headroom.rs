@@ -33,7 +33,7 @@ struct Harness {
 impl Harness {
     async fn start() -> Self {
         let leader = Leader::start().await;
-        let lease = Arc::new(LeaseState::new(LEASE));
+        let lease = Arc::new(LeaseState::on_tokio_clock(LEASE));
         lease.renew();
         leader.ingress.fence().bind_lease(Arc::clone(&lease));
         let (mut queued, rx, _tx) = make_publish_context(8);

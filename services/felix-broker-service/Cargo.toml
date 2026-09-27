@@ -101,6 +101,8 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-opentelemetry = { workspace = true }
+# The `felix:principal:` URI SAN a token subject binds to (`serving::tls`).
+x509-parser = { workspace = true }
 
 # Linux-only core pinning (`serving::core_shards`) and Unix-wide SIGTERM delivery in the
 # soak harness both need libc; the pinning call site stays `target_os = "linux"`

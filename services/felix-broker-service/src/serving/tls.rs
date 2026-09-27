@@ -185,16 +185,23 @@ impl ClientTls {
     }
 }
 
-/// Whether a token's `subject` is a name the client's certificate is valid
-/// for, when the client presented one.
+/// The URI subject alternative name that binds a certificate to a principal:
+/// `felix:principal:<sub>`, with the token's `sub` verbatim.
+pub(crate) const PRINCIPAL_URI_PREFIX: &str = "felix:principal:";
+
+/// Whether a token's `subject` is a principal the client's certificate was
+/// issued to, when the client presented one.
 ///
 /// The chain was verified in the handshake; this binds the certificate to
 /// the principal the token claims, so a stolen token is no use without the
-/// key of a certificate issued to the same name. Names are compared the way
-/// a server name is checked against a certificate: a DNS or IP subject
-/// alternative name, wildcards included. A client with no certificate passes,
-/// since only a listener with `FELIX_TLS_CLIENT_CA` asks for one and that
-/// listener refuses the handshake without it.
+/// key of a certificate issued to the same principal. The certificate binds a
+/// subject if its SANs include the URI `felix:principal:<subject>` (exact
+/// match), or, for a human-readable subject, a DNS or IP name the subject
+/// matches the way a server name would, wildcards included. Control-plane
+/// principal ids are 64 hex characters, one label longer than DNS allows,
+/// so they can only bind through the URI. A client with no certificate
+/// passes, since only a listener with `FELIX_TLS_CLIENT_CA` asks for one and
+/// that listener refuses the handshake without it.
 pub(crate) fn check_subject_binding(
     peer_certs: Option<&[rustls::pki_types::CertificateDer<'_>]>,
     subject: &str,
@@ -204,12 +211,42 @@ pub(crate) fn check_subject_binding(
     };
     // The messages name no values: they end up in logs, and the subject comes
     // from the token.
-    let name = rustls::pki_types::ServerName::try_from(subject)
-        .map_err(|_| "the token's subject is not a name a certificate can carry".to_string())?;
+    if carries_principal_uri(leaf, subject)? {
+        return Ok(());
+    }
+    let refused = || {
+        "the client certificate is not issued to the token's subject: no matching \
+         felix:principal URI, DNS or IP name"
+            .to_string()
+    };
+    let Ok(name) = rustls::pki_types::ServerName::try_from(subject) else {
+        return Err(refused());
+    };
     let cert = webpki::EndEntityCert::try_from(leaf)
         .map_err(|err| format!("the client certificate does not parse: {err}"))?;
     cert.verify_is_valid_for_subject_name(&name)
-        .map_err(|_| "the client certificate is not issued to the token's subject".to_string())
+        .map_err(|_| refused())
+}
+
+/// Whether `leaf` has the URI SAN `felix:principal:<subject>`.
+fn carries_principal_uri(
+    leaf: &rustls::pki_types::CertificateDer<'_>,
+    subject: &str,
+) -> std::result::Result<bool, String> {
+    let (_, cert) = x509_parser::parse_x509_certificate(leaf.as_ref())
+        .map_err(|err| format!("the client certificate does not parse: {err}"))?;
+    let sans = cert
+        .subject_alternative_name()
+        .map_err(|err| format!("the client certificate's SANs do not parse: {err}"))?;
+    Ok(sans.is_some_and(|sans| {
+        sans.value.general_names.iter().any(|name| {
+            matches!(
+                name,
+                x509_parser::extensions::GeneralName::URI(uri)
+                    if uri.strip_prefix(PRINCIPAL_URI_PREFIX) == Some(subject)
+            )
+        })
+    }))
 }
 
 /// Same provider as the peer transport; see `peer::tls::provider`.

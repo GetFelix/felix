@@ -37,8 +37,12 @@ impl Pki {
 
     /// Issue a certificate for `name` to `label.pem` / `label.key.pem`.
     fn issue(&self, label: &str, name: &str) -> (PathBuf, PathBuf) {
-        let key = rcgen::KeyPair::generate().expect("key");
         let params = rcgen::CertificateParams::new(vec![name.to_string()]).expect("params");
+        self.issue_with(label, params)
+    }
+
+    fn issue_with(&self, label: &str, params: rcgen::CertificateParams) -> (PathBuf, PathBuf) {
+        let key = rcgen::KeyPair::generate().expect("key");
         let cert = params.signed_by(&key, &self.ca).expect("sign");
         let cert_path = self.dir.path().join(format!("{label}.pem"));
         let key_path = self.dir.path().join(format!("{label}.key.pem"));
@@ -332,7 +336,53 @@ async fn a_token_subject_binds_to_the_client_certificate() {
     assert!(other.contains("not issued to"), "{other}");
     let unnameable =
         check_subject_binding(Some(&certs), "user@example.com").expect_err("not a name");
-    assert!(unnameable.contains("not a name"), "{unnameable}");
+    assert!(unnameable.contains("not issued to"), "{unnameable}");
     // No certificate, nothing to bind to: a listener without a client CA.
     check_subject_binding(None, "anyone").expect("no certificate");
+}
+
+/// Control-plane principal ids are 64 hex characters: one label longer than
+/// DNS allows, so no DNS SAN can carry them. They bind through the
+/// `felix:principal:` URI SAN instead.
+#[tokio::test]
+async fn a_principal_id_binds_through_the_uri_san() {
+    let principal = "3f".repeat(32);
+    let pki = Pki::new();
+    let (cert, key) = pki.issue("broker", "broker.felix.test");
+    let tls = ClientTls::from_config(&files(&cert, &key, Some(&pki.ca_path))).expect("load");
+    let server = serve(&tls);
+
+    let mut params =
+        rcgen::CertificateParams::new(vec!["orders.apps.felix.test".to_string()]).expect("params");
+    params.subject_alt_names.push(rcgen::SanType::URI(
+        format!("{PRINCIPAL_URI_PREFIX}{principal}")
+            .try_into()
+            .expect("uri"),
+    ));
+    let (app_cert, app_key) = pki.issue_with("principal", params);
+    let certs = |cert: &Path, key: &Path| {
+        let client = client(pki.roots(), Some((cert, key)));
+        let server = Arc::clone(&server);
+        async move {
+            let (_, accepted) = handshake(&server, &client, "broker.felix.test").await;
+            accepted
+                .expect("accepted")
+                .peer_certificates()
+                .expect("the client's chain")
+        }
+    };
+
+    let with_uri = certs(&app_cert, &app_key).await;
+    check_subject_binding(Some(&with_uri), &principal).expect("the principal in its URI SAN");
+    check_subject_binding(Some(&with_uri), "orders.apps.felix.test")
+        .expect("its DNS name still binds");
+    check_subject_binding(Some(&with_uri), &"4e".repeat(32))
+        .expect_err("another principal's token");
+    check_subject_binding(Some(&with_uri), "").expect_err("the bare prefix is no principal");
+
+    let (plain_cert, plain_key) = pki.issue("plain", "orders.apps.felix.test");
+    let without_uri = certs(&plain_cert, &plain_key).await;
+    let refused = check_subject_binding(Some(&without_uri), &principal)
+        .expect_err("no URI SAN, so no principal to bind to");
+    assert!(refused.contains("not issued to"), "{refused}");
 }

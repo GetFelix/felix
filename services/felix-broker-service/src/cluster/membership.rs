@@ -276,7 +276,7 @@ pub async fn run_heartbeat(
         }
 
         // Before the request, not after the answer: see `LeaseState::renew_at`.
-        let sent = tokio::time::Instant::now();
+        let sent = lease.now();
         // Read per heartbeat, so a refresh between beats is picked up without
         // this loop knowing refresh exists.
         match send_heartbeat(

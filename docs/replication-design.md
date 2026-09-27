@@ -242,6 +242,14 @@ NTP error — it is **process suspension**: a VM migration, a stop-the-world pau
 a throttled container. A broker suspended past its expiry wakes believing it
 still holds a lease.
 
+Host or VM suspend is the worst case, because it can stop the clock itself:
+`CLOCK_MONOTONIC` does not advance while the system is suspended, so a lease
+timed on it would wake with its whole remainder intact. On Linux the lease
+therefore reads `CLOCK_BOOTTIME`, which counts suspended time
+(`cluster/lease/clock.rs`); other platforms fall back to `std::time::Instant`.
+Timers that only schedule work stay on tokio's clock; every validity check reads
+the lease clock.
+
 That is exactly why condition 2 is re-checked at the durable-append boundary
 rather than only at admission. A suspended broker's next check is after it wakes,
 and it sees an expired lease before its bytes reach disk. A suspension *between*
