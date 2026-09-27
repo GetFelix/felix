@@ -106,7 +106,7 @@ async fn uni_loop_breaks_on_enqueue_error() -> Result<()> {
         .register_stream("t1", "default", "updates", Default::default())
         .await?;
     let auth = auth_fixture("t1", default_perms());
-    let (tx, rx) = mpsc::channel::<PublishJob>(1);
+    let (scheduler, _tx, rx) = test_channel(1);
     drop(rx);
     let publish_ctx = PublishContext {
         ingress: None,
@@ -116,9 +116,7 @@ async fn uni_loop_breaks_on_enqueue_error() -> Result<()> {
         lease_headroom: std::time::Duration::ZERO,
         marks: None,
         quorum_timeout: Duration::from_secs(1),
-        workers: Arc::new(vec![tx]),
-        worker_count: 1,
-        depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        scheduler,
         wait_timeout: Duration::from_millis(50),
         admission: Arc::new(PublishAdmission::unlimited()),
         conn_admission: Arc::new(PublishAdmission::unlimited()),

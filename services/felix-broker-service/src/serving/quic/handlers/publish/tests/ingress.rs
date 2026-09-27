@@ -1,19 +1,6 @@
-//! Worker selection, depth accounting and the ingress queue's enqueue policies.
+//! Depth accounting and the enqueue policies in front of the publish scheduler.
 
 use super::*;
-
-#[test]
-fn publish_worker_index_is_deterministic() {
-    let first = publish_worker_index("tenant", "ns", "stream", 3);
-    let second = publish_worker_index("tenant", "ns", "stream", 3);
-    assert_eq!(first, second);
-    assert!(first < 3);
-}
-
-#[test]
-fn publish_worker_index_returns_zero_with_no_workers() {
-    assert_eq!(publish_worker_index("tenant", "ns", "stream", 0), 0);
-}
 
 #[test]
 fn decrement_depth_returns_none_when_empty() {
@@ -62,7 +49,7 @@ async fn enqueue_publish_drop_returns_false_when_full() {
     let (ctx, _rx, tx) = make_publish_context(1);
     tx.try_send(make_job()).unwrap();
     let job = make_job();
-    let result = enqueue_publish(&ctx, job, EnqueuePolicy::Drop, None)
+    let result = enqueue_publish(&ctx, "tenant", job, EnqueuePolicy::Drop, None)
         .await
         .unwrap();
     assert!(!result);
@@ -73,7 +60,7 @@ async fn enqueue_publish_fail_returns_error_when_full() {
     let (ctx, _rx, tx) = make_publish_context(1);
     tx.try_send(make_job()).unwrap();
     let job = make_job();
-    let err = enqueue_publish(&ctx, job, EnqueuePolicy::Fail, None)
+    let err = enqueue_publish(&ctx, "tenant", job, EnqueuePolicy::Fail, None)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("publish queue full"));
@@ -88,7 +75,7 @@ async fn enqueue_publish_wait_enqueues_when_receiver_ready() {
         let _ = rx.recv().await;
     });
     let job = make_job();
-    let result = enqueue_publish(&ctx, job, EnqueuePolicy::Wait, None)
+    let result = enqueue_publish(&ctx, "tenant", job, EnqueuePolicy::Wait, None)
         .await
         .unwrap();
     assert!(result);
@@ -96,64 +83,23 @@ async fn enqueue_publish_wait_enqueues_when_receiver_ready() {
 }
 
 #[tokio::test]
-async fn enqueue_publish_wait_times_out_when_queue_full() {
-    let (tx, _rx) = mpsc::channel(1);
+async fn enqueue_publish_wait_answers_busy_when_the_queue_stays_full() {
+    let (mut ctx, _rx, tx) = make_publish_context(1);
+    ctx.wait_timeout = Duration::from_millis(5);
     tx.try_send(make_job()).unwrap();
-    let ctx = PublishContext {
-        ingress: None,
-        client_endpoints: None,
-        peers: None,
-        lease: None,
-        lease_headroom: std::time::Duration::ZERO,
-        marks: None,
-        quorum_timeout: Duration::from_secs(1),
-        workers: Arc::new(vec![tx]),
-        worker_count: 1,
-        depth: Arc::new(AtomicUsize::new(0)),
-        wait_timeout: Duration::from_millis(5),
-        admission: Arc::new(PublishAdmission::unlimited()),
-        conn_admission: Arc::new(PublishAdmission::unlimited()),
-        subscriptions: Arc::new(SubscriptionLimiter::new()),
-        lane_manager: test_lane_manager(),
-        ingress_wait: false,
-        preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
-            &crate::config::BrokerConfig::default(),
-        )),
-        tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
-    };
-    let err = enqueue_publish(&ctx, make_job(), EnqueuePolicy::Wait, None)
+    let err = enqueue_publish(&ctx, "tenant", make_job(), EnqueuePolicy::Wait, None)
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("publish enqueue timed out"));
+    let busy = crate::serving::quic::client_error::ClientError::from_anyhow(&err);
+    assert_eq!(busy.code(), &felix_wire::ErrorCode::Overloaded);
+    assert_eq!(busy.retry(), felix_wire::RetryClass::RetryAfter);
 }
 
 #[tokio::test]
 async fn enqueue_publish_returns_error_when_queue_closed() {
-    let (tx, rx) = mpsc::channel(1);
+    let (ctx, rx, _tx) = make_publish_context(1);
     drop(rx);
-    let ctx = PublishContext {
-        ingress: None,
-        client_endpoints: None,
-        peers: None,
-        lease: None,
-        lease_headroom: std::time::Duration::ZERO,
-        marks: None,
-        quorum_timeout: Duration::from_secs(1),
-        workers: Arc::new(vec![tx]),
-        worker_count: 1,
-        depth: Arc::new(AtomicUsize::new(0)),
-        wait_timeout: Duration::from_millis(10),
-        admission: Arc::new(PublishAdmission::unlimited()),
-        conn_admission: Arc::new(PublishAdmission::unlimited()),
-        subscriptions: Arc::new(SubscriptionLimiter::new()),
-        lane_manager: test_lane_manager(),
-        ingress_wait: false,
-        preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
-            &crate::config::BrokerConfig::default(),
-        )),
-        tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
-    };
-    let err = enqueue_publish(&ctx, make_job(), EnqueuePolicy::Fail, None)
+    let err = enqueue_publish(&ctx, "tenant", make_job(), EnqueuePolicy::Fail, None)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("publish queue closed"));

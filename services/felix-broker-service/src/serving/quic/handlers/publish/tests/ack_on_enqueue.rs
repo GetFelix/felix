@@ -9,11 +9,9 @@ use crate::test_support::leader::{DURABLE, Leader, NAMESPACE, TENANT, stream_key
 
 use super::*;
 
-/// A context whose queue the test holds, so it decides when the worker sees
-/// the job; and a real worker to hand the job to afterwards.
-fn queue_and_worker(
-    leader: &Leader,
-) -> (PublishContext, mpsc::Receiver<PublishJob>, PublishContext) {
+/// A context whose queue the test holds, so it decides when the job is
+/// claimed; and a real scheduler to hand the job to afterwards.
+fn queue_and_worker(leader: &Leader) -> (PublishContext, TestReceiver, PublishContext) {
     let (mut queued, rx, _tx) = make_publish_context(8);
     queued.ingress = Some(Arc::clone(&leader.ingress));
     let worker = build_publish_context(
@@ -29,15 +27,11 @@ fn queue_and_worker(
 
 /// Move the shard while the job is queued, let the worker have it, and
 /// return how many records the log holds once the fence has quiesced.
-async fn fence_then_claim(
-    mut leader: Leader,
-    mut rx: mpsc::Receiver<PublishJob>,
-    worker: PublishContext,
-) -> u64 {
+async fn fence_then_claim(mut leader: Leader, mut rx: TestReceiver, worker: PublishContext) -> u64 {
     let job = rx.recv().await.expect("queued job");
     let key = stream_key(DURABLE);
     leader.fence_move(&key);
-    worker.workers[0].send(job).await.expect("hand to worker");
+    worker.scheduler.send(job).await;
     tokio::time::timeout(Duration::from_secs(5), leader.ingress.fence().quiesce(&key))
         .await
         .expect("the fence quiesces");

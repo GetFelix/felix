@@ -12,8 +12,8 @@
 //! and none of the service's ingress workers in the path.
 //!
 //! - Shared flushes here mean `felix-broker` is *not* the serialiser, and the cause
-//!   is above it in `services/felix-broker-service` (the per-connection publish workers, which
-//!   map a stream handle to exactly one worker via `handle.id() % worker_count`).
+//!   is above it in `services/felix-broker-service` (the publish scheduler, which claims a
+//!   stream shard's publishes one at a time on that shard's lane).
 //! - One flush per publish here means the serialisation is in `felix-broker` itself, and
 //!   this test is where to debug it.
 

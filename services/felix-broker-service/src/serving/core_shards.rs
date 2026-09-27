@@ -81,8 +81,8 @@ impl CoreShards {
     }
 
     /// Deterministic owner shard for a stream handle id. Must stay consistent
-    /// with publish-worker sharding so a stream's publish worker and its
-    /// subscriptions' lane feeders land on the same core.
+    /// with the publish scheduler's partitioning so a stream's publish lane and
+    /// its subscriptions' lane feeders land on the same core.
     pub(crate) fn shard_for(&self, handle_id: u64) -> usize {
         (handle_id as usize) % self.handles.len()
     }

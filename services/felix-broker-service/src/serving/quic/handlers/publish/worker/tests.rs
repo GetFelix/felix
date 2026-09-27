@@ -6,7 +6,7 @@ use tokio::sync::oneshot;
 use super::*;
 
 #[tokio::test]
-async fn build_publish_context_clamps_worker_and_queue_minimums() -> Result<()> {
+async fn build_publish_context_clamps_executor_and_queue_minimums() -> Result<()> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;
@@ -22,12 +22,12 @@ async fn build_publish_context_clamps_worker_and_queue_minimums() -> Result<()> 
     };
     let publish_ctx =
         build_publish_context(Arc::clone(&broker), &config, ClusterContext::default());
-    assert_eq!(publish_ctx.worker_count, 1);
-    assert_eq!(publish_ctx.workers.len(), 1);
+    assert_eq!(publish_ctx.scheduler.partitions().len(), 1);
     assert_eq!(publish_ctx.wait_timeout, Duration::from_millis(17));
 
     let (response_tx, response_rx) = oneshot::channel();
-    publish_ctx.workers[0]
+    publish_ctx
+        .scheduler
         .send(PublishJob {
             target: PublishTarget::Named {
                 tenant_id: "t1".to_string(),
@@ -40,8 +40,7 @@ async fn build_publish_context_clamps_worker_and_queue_minimums() -> Result<()> 
             admission_permit: None,
             fenced: None,
         })
-        .await
-        .expect("enqueue publish");
+        .await;
     response_rx.await.expect("worker response")?;
     Ok(())
 }
@@ -55,7 +54,8 @@ async fn build_publish_context_worker_returns_publish_error() -> Result<()> {
     let publish_ctx = build_publish_context(broker, &config, ClusterContext::default());
 
     let (response_tx, response_rx) = oneshot::channel();
-    publish_ctx.workers[0]
+    publish_ctx
+        .scheduler
         .send(PublishJob {
             target: PublishTarget::Named {
                 tenant_id: "t1".to_string(),
@@ -68,8 +68,7 @@ async fn build_publish_context_worker_returns_publish_error() -> Result<()> {
             admission_permit: None,
             fenced: None,
         })
-        .await
-        .expect("enqueue publish");
+        .await;
     let err = response_rx
         .await
         .expect("worker response")
@@ -96,11 +95,11 @@ fn named_job(stream: &str, response: Option<oneshot::Sender<Result<()>>>) -> Pub
     }
 }
 
-/// A worker that panics is replaced on the same queue. Unsupervised, the
-/// panic closed the queue and every stream hashed to that worker was refused
-/// until the broker restarted.
+/// An executor that panics is replaced on the same queue, and the lane it
+/// held is freed. With one executor, the publish after the panic is only
+/// answered if both happened.
 #[tokio::test]
-async fn a_worker_that_panics_is_replaced() -> Result<()> {
+async fn an_executor_that_panics_is_replaced() -> Result<()> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;
@@ -114,23 +113,23 @@ async fn a_worker_that_panics_is_replaced() -> Result<()> {
     let publish_ctx = build_publish_context(broker, &config, ClusterContext::default());
 
     let (response_tx, response_rx) = oneshot::channel();
-    publish_ctx.workers[0]
+    publish_ctx
+        .scheduler
         .send(named_job(PANICKING_STREAM, Some(response_tx)))
-        .await
-        .expect("enqueue the panicking job");
+        .await;
     assert!(
         response_rx.await.is_err(),
         "the panicking job has no answer"
     );
 
     let (response_tx, response_rx) = oneshot::channel();
-    publish_ctx.workers[0]
+    publish_ctx
+        .scheduler
         .send(named_job("demo", Some(response_tx)))
-        .await
-        .expect("the queue outlives the worker that panicked");
+        .await;
     tokio::time::timeout(Duration::from_secs(5), response_rx)
         .await
-        .expect("a replacement worker answers")
+        .expect("a replacement executor answers")
         .expect("worker response")?;
     Ok(())
 }
@@ -179,9 +178,9 @@ async fn the_tracker_waits_for_queued_publishes_and_their_completions() -> Resul
         ClusterContext::default(),
         &work,
     );
-    let worker = publish_ctx.workers[handle.id() as usize % publish_ctx.worker_count].clone();
+    let scheduler = Arc::clone(&publish_ctx.scheduler);
     for _ in 0..JOBS {
-        worker
+        scheduler
             .send(PublishJob {
                 target: PublishTarget::Resolved {
                     handle: handle.clone(),
@@ -195,17 +194,16 @@ async fn the_tracker_waits_for_queued_publishes_and_their_completions() -> Resul
                 admission_permit: None,
                 fenced: None,
             })
-            .await
-            .expect("enqueue");
+            .await;
     }
     // What the end of the connections and the accept loop amounts to.
-    drop(worker);
+    drop(scheduler);
     drop(publish_ctx);
 
     work.close();
     tokio::time::timeout(Duration::from_secs(10), work.wait())
         .await
-        .expect("the workers drain once their senders are gone");
+        .expect("the executors drain once the contexts are gone");
 
     let mut delivered = 0;
     while subscription.try_recv().is_ok() {
@@ -218,10 +216,10 @@ async fn the_tracker_waits_for_queued_publishes_and_their_completions() -> Resul
     Ok(())
 }
 
-/// The write fence, on the worker. Each of these admits a publish while the
+/// The write fence, at the claim. Each of these admits a publish while the
 /// shard is served here, lets a move close the fence while the job waits in
-/// the queue, and then lets the worker claim it -- which must refuse it and
-/// write nothing, since the drained report may already have gone out.
+/// the queue, and then lets it be claimed -- which must refuse it and write
+/// nothing, since the drained report may already have gone out.
 mod fence {
     use std::collections::HashMap;
 
@@ -297,7 +295,8 @@ mod fence {
         leader.fence_move(&stream_key(stream));
 
         let (response_tx, response_rx) = oneshot::channel();
-        publish_ctx.workers[0]
+        publish_ctx
+            .scheduler
             .send(PublishJob {
                 target,
                 payloads: vec![Bytes::from_static(b"late")],
@@ -306,8 +305,7 @@ mod fence {
                 admission_permit: None,
                 fenced: None,
             })
-            .await
-            .expect("enqueue publish");
+            .await;
         let answer = response_rx.await.expect("worker response");
         let refused =
             answer.expect_err("a publish claimed after the fence closed was acknowledged");
@@ -373,7 +371,8 @@ mod fence {
         )
         .expect("admitted");
         let (response_tx, response_rx) = oneshot::channel();
-        publish_ctx.workers[0]
+        publish_ctx
+            .scheduler
             .send(PublishJob {
                 target,
                 payloads: vec![Bytes::from_static(b"on time")],
@@ -382,8 +381,7 @@ mod fence {
                 admission_permit: None,
                 fenced: None,
             })
-            .await
-            .expect("enqueue publish");
+            .await;
         response_rx
             .await
             .expect("worker response")

@@ -1,24 +1,21 @@
-//! Ingress: worker sharding, the bounded enqueue path, and in-flight depth accounting.
+//! Ingress: admission, the bounded enqueue into the publish scheduler, and depth accounting.
 
-use std::collections::hash_map::DefaultHasher;
 use std::future::Future;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(feature = "perf_debug")]
-use std::time::Instant;
 
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use felix_broker::StreamHandle;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 
 use crate::observability::tenants;
-use crate::serving::quic::GLOBAL_INGRESS_DEPTH;
 use crate::serving::quic::client_error::ClientError;
+use crate::serving::quic::handlers::publish::PublishContext;
+use crate::serving::quic::handlers::publish::PublishJob;
 use crate::serving::quic::handlers::publish::ack::EnqueuePolicy;
 use crate::serving::quic::handlers::publish::admission::AdmissionPermit;
-use crate::serving::quic::handlers::publish::{PublishContext, PublishJob};
+use crate::serving::quic::handlers::publish::scheduler::Rejected;
 use crate::serving::quic::telemetry::{t_counter, t_gauge};
 use crate::shards::lifecycle::fence::FenceGuard;
 
@@ -50,8 +47,8 @@ pub(crate) enum PublishTarget {
         reuse: felix_broker::SequenceReuse,
     },
     /// Another broker owns the shard. The batch is sent there and its answer
-    /// relayed, from the same worker a local write would have used, so the ack
-    /// path is identical either way.
+    /// relayed through the same scheduler a local write would have used, so
+    /// the ack path is identical either way.
     Forward {
         target: crate::serving::forward::ForwardTarget,
         key: crate::serving::forward::ForwardKey,
@@ -77,76 +74,25 @@ impl PublishTarget {
     }
 }
 
-/// Deterministically map (tenant, namespace, stream) to a publish worker index.
-///
-/// Goal: keep ordering locality and cache locality for a given stream by always hashing to
-/// the same worker, while distributing streams across workers reasonably well.
-///
-/// This *must* be stable across processes for predictable performance; it does not need to be
-/// cryptographically secure.
-pub(crate) fn publish_worker_index(
-    tenant_id: &str,
-    namespace: &str,
-    stream: &str,
-    worker_count: usize,
-) -> usize {
-    if worker_count == 0 {
-        return 0;
-    }
-    let mut hasher = DefaultHasher::new();
-    tenant_id.hash(&mut hasher);
-    namespace.hash(&mut hasher);
-    stream.hash(&mut hasher);
-    (hasher.finish() as usize) % worker_count
-}
-
-/// Enqueue a publish job into the appropriate worker queue with explicit overload semantics.
+/// Queue a publish job for `tenant` with explicit overload semantics.
 ///
 /// Return value:
-/// - `Ok(true)`  → job enqueued
+/// - `Ok(true)`  → job queued
 /// - `Ok(false)` → job intentionally dropped (policy = Drop)
-/// - `Err(...)`  → failure to enqueue (policy = Fail, closed queue, timeout, cancellation)
+/// - `Err(...)`  → not queued (policy = Fail, a wait that ran out, closed queue, cancellation).
+///   A queue with no room is a [`ClientError::queue_full`]: retryable, nothing applied.
 ///
 /// `cancel` is the connection's teardown signal. It is what bounds
 /// [`EnqueuePolicy::Backpressure`], which has no timer; `None` means the caller has
 /// no teardown signal to offer (the uni-stream paths), and such a wait ends only
-/// when capacity frees or the worker queue closes.
-///
-/// Implementation detail:
-/// - We try `try_send` first to keep the common path allocation-free and to make overload observable
-///   (`Full` vs `Closed`).
-/// - Any path that successfully enqueues must increment both local and global depth **exactly once**.
+/// when room frees or the queue closes.
 pub(crate) async fn enqueue_publish(
     publish_ctx: &PublishContext,
+    tenant: &str,
     mut job: PublishJob,
     policy: EnqueuePolicy,
     mut cancel: Option<watch::Receiver<bool>>,
 ) -> Result<bool> {
-    let worker_index = match &job.target {
-        PublishTarget::Resolved { handle, .. } | PublishTarget::Idempotent { handle, .. } => {
-            handle.id() as usize % publish_ctx.worker_count.max(1)
-        }
-        // Hashed by name, because there is no local handle to hash. Same
-        // function the named path uses, so one stream's forwards stay on one
-        // worker and keep their order.
-        PublishTarget::Forward { key, .. } => publish_worker_index(
-            &key.tenant_id,
-            &key.namespace,
-            &key.stream,
-            publish_ctx.worker_count,
-        ),
-        #[cfg(test)]
-        PublishTarget::Named {
-            tenant_id,
-            namespace,
-            stream,
-        } => publish_worker_index(tenant_id, namespace, stream, publish_ctx.worker_count),
-    };
-    let worker = publish_ctx
-        .workers
-        .get(worker_index)
-        .ok_or_else(|| anyhow!("publish worker index out of range"))?;
-
     // Byte-based admission gate, independent of the item-count queue depth: bounds total bytes
     // queued-or-processing so a handful of large payloads/batches can't blow past the intended
     // ingress memory budget. Two gates are applied: the connection's own share
@@ -156,11 +102,9 @@ pub(crate) async fn enqueue_publish(
     // job and are released together once the job is done (or dropped without ever being
     // enqueued).
     let job_bytes: usize = job.payloads.iter().map(Bytes::len).sum();
-    // One deadline for the whole enqueue, not one per stage. Admission and the
-    // queue send used to get a full `wait_timeout` each, so a publish could block
-    // for twice the configured budget while the knob read as a single bound — and
-    // because this runs inline in the control-stream read loop, that doubled the
-    // head-of-line stall on the connection too.
+    // One deadline for the whole enqueue, not one per stage, so admission and
+    // the queue together cannot hold the control-stream read loop longer than
+    // the configured budget.
     let deadline = tokio::time::Instant::now() + publish_ctx.wait_timeout;
     let acquire_both = async {
         let conn_permit = publish_ctx.conn_admission.acquire(job_bytes).await?;
@@ -242,89 +186,53 @@ pub(crate) async fn enqueue_publish(
         job.fenced = fence_now(publish_ctx, &job.target)?;
     }
 
-    #[cfg(feature = "perf_debug")]
-    let enqueue_wait_start = Instant::now();
-    // We use try_send first to keep the fast path allocation-free and to make overload observable
-    // (Full vs Closed). Only the Wait policy performs an async send with a timeout.
-    // IMPORTANT: Any code path that successfully enqueues MUST increment depth counters exactly once.
-    // Best-effort enqueue with metrics and optional backpressure/err.
-    match worker.try_send(job) {
-        Ok(()) => {
-            let _local = publish_ctx.depth.fetch_add(1, Ordering::Relaxed) + 1;
-            let global = GLOBAL_INGRESS_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
-            t_gauge!("felix_broker_ingress_queue_depth").set(global as f64);
-            #[cfg(feature = "perf_debug")]
-            {
-                let wait_ns = enqueue_wait_start.elapsed().as_nanos() as u64;
-                metrics::histogram!(
-                    "felix_perf_publish_enqueue_wait_ns",
-                    "worker" => worker_index.to_string()
-                )
-                .record(wait_ns as f64);
-                metrics::counter!(
-                    "felix_perf_publish_enqueue_ok_total",
-                    "worker" => worker_index.to_string()
-                )
-                .increment(1);
-            }
-            Ok(true)
+    let scheduler = &publish_ctx.scheduler;
+    let job = match scheduler.submit(tenant, job, std::future::ready(())).await {
+        Ok(()) => return Ok(true),
+        Err(Rejected::Closed) => return Err(anyhow!("publish queue closed")),
+        Err(Rejected::Full(job)) => *job,
+    };
+    t_counter!("felix_broker_ingress_queue_full_total").increment(1);
+    let waited = match policy {
+        EnqueuePolicy::Drop => {
+            t_counter!("felix_broker_ingress_dropped_total").increment(1);
+            tenants::record_queue_full(tenant, tenants::THROTTLE_DROPPED);
+            return Ok(false);
         }
-        Err(mpsc::error::TrySendError::Full(job)) => {
-            t_counter!("felix_broker_ingress_queue_full_total").increment(1);
-            match policy {
-                EnqueuePolicy::Drop => {
-                    t_counter!("felix_broker_ingress_dropped_total").increment(1);
-                    Ok(false)
-                }
-                EnqueuePolicy::Fail => {
-                    t_counter!("felix_broker_ingress_rejected_total").increment(1);
-                    Err(anyhow!("publish queue full"))
-                }
-                EnqueuePolicy::Wait | EnqueuePolicy::Backpressure => {
-                    // Acked publishes with ack_on_commit use Wait; unacked publishes
-                    // with `pub_ingress_wait` use Backpressure.
-                    t_counter!("felix_broker_ingress_waited_total").increment(1);
-                    let send_result = match policy {
-                        // Shares the deadline computed above with the admission
-                        // stage, so the two together cannot exceed `wait_timeout`.
-                        EnqueuePolicy::Wait => tokio::time::timeout_at(deadline, worker.send(job))
-                            .await
-                            .map_err(|_| anyhow!("publish enqueue timed out"))?,
-                        _ => match until_cancelled(worker.send(job), &mut cancel).await {
-                            Some(result) => result,
-                            None => {
-                                t_counter!("felix_broker_ingress_backpressure_cancelled_total")
-                                    .increment(1);
-                                return Err(anyhow!(
-                                    "publish cancelled while waiting for ingress queue"
-                                ));
-                            }
-                        },
-                    };
-                    send_result.map_err(|_| anyhow!("publish queue closed"))?;
-                    // Local depth is per publish context; global depth is used for cross-connection observability.
-                    let _local = publish_ctx.depth.fetch_add(1, Ordering::Relaxed) + 1;
-                    let global = GLOBAL_INGRESS_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
-                    t_gauge!("felix_broker_ingress_queue_depth").set(global as f64);
-                    #[cfg(feature = "perf_debug")]
-                    {
-                        let wait_ns = enqueue_wait_start.elapsed().as_nanos() as u64;
-                        metrics::histogram!(
-                            "felix_perf_publish_enqueue_wait_ns",
-                            "worker" => worker_index.to_string()
-                        )
-                        .record(wait_ns as f64);
-                        metrics::counter!(
-                            "felix_perf_publish_enqueue_wait_total",
-                            "worker" => worker_index.to_string()
-                        )
-                        .increment(1);
-                    }
-                    Ok(true)
-                }
-            }
+        EnqueuePolicy::Fail => {
+            t_counter!("felix_broker_ingress_rejected_total").increment(1);
+            tenants::record_queue_full(tenant, tenants::THROTTLE_REFUSED);
+            return Err(ClientError::queue_full().into());
         }
-        Err(mpsc::error::TrySendError::Closed(_)) => Err(anyhow!("publish queue closed")),
+        // Acked publishes with ack_on_commit use Wait; unacked publishes
+        // with `pub_ingress_wait` use Backpressure.
+        EnqueuePolicy::Wait => {
+            t_counter!("felix_broker_ingress_waited_total").increment(1);
+            // Shares the deadline computed above with the admission stage, so
+            // the two together cannot exceed `wait_timeout`.
+            scheduler
+                .submit(tenant, job, tokio::time::sleep_until(deadline))
+                .await
+        }
+        EnqueuePolicy::Backpressure => {
+            t_counter!("felix_broker_ingress_waited_total").increment(1);
+            scheduler.submit(tenant, job, cancelled(&mut cancel)).await
+        }
+    };
+    match waited {
+        Ok(()) => Ok(true),
+        Err(Rejected::Closed) => Err(anyhow!("publish queue closed")),
+        Err(Rejected::Full(_)) => match policy {
+            EnqueuePolicy::Backpressure => {
+                t_counter!("felix_broker_ingress_backpressure_cancelled_total").increment(1);
+                Err(anyhow!("publish cancelled while waiting for ingress queue"))
+            }
+            _ => {
+                t_counter!("felix_broker_ingress_rejected_total").increment(1);
+                tenants::record_queue_full(tenant, tenants::THROTTLE_REFUSED);
+                Err(ClientError::queue_full().into())
+            }
+        },
     }
 }
 
@@ -379,7 +287,7 @@ pub(crate) async fn enqueue_tenant_publish(
             }
         }
     }
-    let enqueued = enqueue_publish(publish_ctx, job, policy, cancel).await?;
+    let enqueued = enqueue_publish(publish_ctx, tenant, job, policy, cancel).await?;
     if enqueued {
         tenants::record_published(tenant, messages, bytes);
     }
@@ -491,4 +399,10 @@ async fn until_cancelled<F: Future>(
             }
         }
     }
+}
+
+/// Resolves once the connection is cancelled; never, when there is no
+/// cancellation signal to wait on.
+async fn cancelled(cancel: &mut Option<watch::Receiver<bool>>) {
+    let _ = until_cancelled(std::future::pending::<()>(), cancel).await;
 }

@@ -13,8 +13,8 @@ pub(crate) struct AdmissionPermit {
     pub(super) _global: tokio::sync::OwnedSemaphorePermit,
 }
 
-/// Bounds total bytes queued-or-processing across all publish workers, independent of the
-/// per-worker item-count queue depth (`pub_queue_depth`).
+/// Bounds total bytes queued-or-processing across all publishes, independent of the
+/// publish queue's item count (`pub_queue_depth`).
 ///
 /// `pub_queue_depth` alone caps how many *jobs* can be queued, but a job's payload can be as
 /// large as `max_frame_bytes`; a handful of large batches can still blow past the intended
@@ -22,7 +22,7 @@ pub(crate) struct AdmissionPermit {
 /// `PublishAdmission` (see `felix-client`), applying the same in-flight-byte budget on ingest.
 ///
 /// The permit is attached to the `PublishJob` and released only once the job has actually been
-/// processed by a worker (or dropped before ever being enqueued), not merely once it is hand
+/// claimed (or dropped before ever being enqueued), not merely once it is hand
 /// off to the channel — this is what makes the bound reflect real resident bytes rather than
 /// just admission-time bytes.
 pub(crate) struct PublishAdmission {

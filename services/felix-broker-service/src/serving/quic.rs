@@ -22,14 +22,14 @@
 //! - Keep QUIC SendStream writes single-threaded: Quinn's SendStream is not safe/efficient under many
 //!   concurrent writers (it can serialize internally and/or create heavy contention). We therefore funnel
 //!   all outbound control-plane responses/acks through a single writer task per control stream.
-//! - Keep broker mutation serialized per connection: a single publish worker per QUIC connection drains
-//!   a bounded ingress queue. This avoids many tasks mutating broker state concurrently and reduces
-//!   lock contention inside the broker.
+//! - Bound broker mutation: a small process-wide set of publish executors drains one bounded,
+//!   tenant-fair queue, one ordered lane per shard. This avoids many tasks mutating broker state
+//!   concurrently and reduces lock contention inside the broker.
 //! - Make overload behavior explicit and observable: bounded queues + metrics + throttling.
 //!
 //! ## Key queues
 //!
-//! - Ingress publish queue (PUBLISH_QUEUE_DEPTH): work items sent to a per-connection publish worker.
+//! - Ingress publish queue (`pub_queue_depth`): the publish scheduler; see `handlers::publish`.
 //! - Outbound ack/response queue (ACK_QUEUE_DEPTH): Outgoing messages drained by the single writer.
 //! - Ack waiter queue (ACK_WAITERS_MAX): only used when ack_on_commit is enabled; tracks acks that must
 //!   wait until broker commit completes.
@@ -37,7 +37,7 @@
 //! ## Ack modes & policies
 //!
 //! - Wire-level ack mode is per-message/per-batch/none; server policy `ack_on_commit` optionally delays
-//!   acks until the publish worker finishes.
+//!   acks until the publish is written.
 //! - When ack_on_commit=true, the enqueue policy is Wait for acked publishes so we preserve the
 //!   semantic that an ack implies the broker accepted work and (eventually) committed.
 //! - When ack_on_commit=false, we can respond immediately after enqueue.

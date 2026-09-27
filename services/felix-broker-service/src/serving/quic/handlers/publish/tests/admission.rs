@@ -29,7 +29,7 @@ async fn publish_admission_try_acquire_fails_when_exhausted() {
 
 #[tokio::test]
 async fn enqueue_publish_drop_sheds_load_when_byte_budget_exhausted() {
-    let (tx, _rx) = mpsc::channel(8);
+    let (scheduler, _tx, _rx) = test_channel(8);
     let ctx = PublishContext {
         ingress: None,
         client_endpoints: None,
@@ -38,9 +38,7 @@ async fn enqueue_publish_drop_sheds_load_when_byte_budget_exhausted() {
         lease_headroom: std::time::Duration::ZERO,
         marks: None,
         quorum_timeout: Duration::from_secs(1),
-        workers: Arc::new(vec![tx]),
-        worker_count: 1,
-        depth: Arc::new(AtomicUsize::new(0)),
+        scheduler,
         wait_timeout: Duration::from_millis(50),
         admission: Arc::new(PublishAdmission::new(4)),
         conn_admission: Arc::new(PublishAdmission::unlimited()),
@@ -56,7 +54,7 @@ async fn enqueue_publish_drop_sheds_load_when_byte_budget_exhausted() {
     // 7-byte payload, so the job must be shed even though the item-count queue is empty.
     let mut job = make_job();
     job.payloads = vec![Bytes::from_static(b"payload")];
-    let result = enqueue_publish(&ctx, job, EnqueuePolicy::Drop, None)
+    let result = enqueue_publish(&ctx, "tenant", job, EnqueuePolicy::Drop, None)
         .await
         .unwrap();
     assert!(!result);
@@ -64,7 +62,7 @@ async fn enqueue_publish_drop_sheds_load_when_byte_budget_exhausted() {
 
 #[tokio::test]
 async fn enqueue_publish_drop_sheds_load_when_conn_byte_budget_exhausted() {
-    let (tx, _rx) = mpsc::channel(8);
+    let (scheduler, _tx, _rx) = test_channel(8);
     let ctx = PublishContext {
         ingress: None,
         client_endpoints: None,
@@ -73,9 +71,7 @@ async fn enqueue_publish_drop_sheds_load_when_conn_byte_budget_exhausted() {
         lease_headroom: std::time::Duration::ZERO,
         marks: None,
         quorum_timeout: Duration::from_secs(1),
-        workers: Arc::new(vec![tx]),
-        worker_count: 1,
-        depth: Arc::new(AtomicUsize::new(0)),
+        scheduler,
         wait_timeout: Duration::from_millis(50),
         // Shared budget is generous; this connection's own share is not.
         admission: Arc::new(PublishAdmission::unlimited()),
@@ -90,7 +86,7 @@ async fn enqueue_publish_drop_sheds_load_when_conn_byte_budget_exhausted() {
     };
     let mut job = make_job();
     job.payloads = vec![Bytes::from_static(b"payload")];
-    let result = enqueue_publish(&ctx, job, EnqueuePolicy::Drop, None)
+    let result = enqueue_publish(&ctx, "tenant", job, EnqueuePolicy::Drop, None)
         .await
         .unwrap();
     assert!(!result);
@@ -98,7 +94,7 @@ async fn enqueue_publish_drop_sheds_load_when_conn_byte_budget_exhausted() {
 
 #[tokio::test]
 async fn enqueue_publish_conn_budget_does_not_starve_other_connections() {
-    let (tx, mut rx) = mpsc::channel(8);
+    let (scheduler, _tx, mut rx) = test_channel(8);
     // Two connections sharing one global budget, each with its own conn_admission.
     let admission = Arc::new(PublishAdmission::new(8));
     let ctx_a = PublishContext {
@@ -109,9 +105,7 @@ async fn enqueue_publish_conn_budget_does_not_starve_other_connections() {
         lease_headroom: std::time::Duration::ZERO,
         marks: None,
         quorum_timeout: Duration::from_secs(1),
-        workers: Arc::new(vec![tx.clone()]),
-        worker_count: 1,
-        depth: Arc::new(AtomicUsize::new(0)),
+        scheduler,
         wait_timeout: Duration::from_millis(50),
         admission: Arc::clone(&admission),
         conn_admission: Arc::new(PublishAdmission::new(4)),
@@ -140,7 +134,7 @@ async fn enqueue_publish_conn_budget_does_not_starve_other_connections() {
     let mut big_job = make_job();
     big_job.payloads = vec![Bytes::from_static(b"01234567")]; // 8 bytes > A's 4-byte share
     assert!(
-        !enqueue_publish(&ctx_a, big_job, EnqueuePolicy::Drop, None)
+        !enqueue_publish(&ctx_a, "tenant", big_job, EnqueuePolicy::Drop, None)
             .await
             .unwrap()
     );
@@ -149,7 +143,7 @@ async fn enqueue_publish_conn_budget_does_not_starve_other_connections() {
     let mut small_job = make_job();
     small_job.payloads = vec![Bytes::from_static(b"ok")]; // 2 bytes, fits B's 4-byte share
     assert!(
-        enqueue_publish(&ctx_b, small_job, EnqueuePolicy::Drop, None)
+        enqueue_publish(&ctx_b, "tenant", small_job, EnqueuePolicy::Drop, None)
             .await
             .unwrap()
     );
@@ -171,7 +165,7 @@ async fn wait_policy_spends_one_budget_across_both_stages() {
     ctx.conn_admission = Arc::new(PublishAdmission::new(payload * 2));
 
     // Fill the only queue slot. This job keeps its admission permit while queued.
-    enqueue_publish(&ctx, make_job(), EnqueuePolicy::Drop, None)
+    enqueue_publish(&ctx, "tenant", make_job(), EnqueuePolicy::Drop, None)
         .await
         .expect("prime the queue");
 
@@ -188,7 +182,7 @@ async fn wait_policy_spends_one_budget_across_both_stages() {
     });
 
     let start = tokio::time::Instant::now();
-    let result = enqueue_publish(&ctx, make_job(), EnqueuePolicy::Wait, None).await;
+    let result = enqueue_publish(&ctx, "tenant", make_job(), EnqueuePolicy::Wait, None).await;
     let elapsed = start.elapsed();
 
     assert!(
@@ -213,7 +207,7 @@ async fn wait_policy_spends_one_budget_across_both_stages() {
 async fn backpressure_waits_for_capacity_instead_of_shedding() {
     let (ctx, mut rx, _tx) = make_publish_context(1);
     // Fill the single queue slot so the next enqueue has to wait.
-    enqueue_publish(&ctx, make_job(), EnqueuePolicy::Drop, None)
+    enqueue_publish(&ctx, "tenant", make_job(), EnqueuePolicy::Drop, None)
         .await
         .expect("prime the queue");
 
@@ -226,9 +220,15 @@ async fn backpressure_waits_for_capacity_instead_of_shedding() {
         drop(rx);
     });
 
-    let accepted = enqueue_publish(&ctx, make_job(), EnqueuePolicy::Backpressure, None)
-        .await
-        .expect("backpressure must not fail on a full queue");
+    let accepted = enqueue_publish(
+        &ctx,
+        "tenant",
+        make_job(),
+        EnqueuePolicy::Backpressure,
+        None,
+    )
+    .await
+    .expect("backpressure must not fail on a full queue");
     assert!(
         accepted,
         "backpressure must enqueue once capacity frees, never report a drop"
@@ -240,7 +240,7 @@ async fn backpressure_waits_for_capacity_instead_of_shedding() {
 #[tokio::test(start_paused = true)]
 async fn backpressure_gives_up_when_the_connection_is_cancelled() {
     let (ctx, _rx, _tx) = make_publish_context(1);
-    enqueue_publish(&ctx, make_job(), EnqueuePolicy::Drop, None)
+    enqueue_publish(&ctx, "tenant", make_job(), EnqueuePolicy::Drop, None)
         .await
         .expect("prime the queue");
 
@@ -252,6 +252,7 @@ async fn backpressure_gives_up_when_the_connection_is_cancelled() {
 
     let err = enqueue_publish(
         &ctx,
+        "tenant",
         make_job(),
         EnqueuePolicy::Backpressure,
         Some(cancel_rx),

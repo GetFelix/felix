@@ -399,8 +399,12 @@ ulimit -n
 **Symptom**: Publish operations timing out.
 
 ```
-Error: Publish queue full, timeout after 2000ms
+Error: publish queue full; retry in 10 ms
 ```
+
+The error is `overloaded` with `detail.reason = "publish_queue_full"`: nothing
+was queued, and it is safe to retry. `felix_tenant_publish_queue_full_total`
+shows which tenants are being refused.
 
 **Solutions**:
 

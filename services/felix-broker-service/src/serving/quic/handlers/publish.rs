@@ -2,8 +2,8 @@
 //!
 //! This module is the “publish ingestion glue” between QUIC stream handlers and the broker core.
 //! It owns:
-//! - **Ingress enqueue policy** (Drop/Fail/Wait/Backpressure) into the publish worker queues.
-//! - **Worker sharding** (deterministic hashing of tenant/namespace/stream to pick a worker).
+//! - **Ingress enqueue policy** (Drop/Fail/Wait/Backpressure) into the publish scheduler.
+//! - **Scheduling**: one ordered lane per shard, fed fairly across tenants (see `scheduler`).
 //! - **Ack semantics + backpressure** for control-stream publishes (including commit-ack waiting).
 //! - **Depth tracking** for ingress and outbound-ack queues (local + global gauges).
 //!
@@ -19,21 +19,23 @@
 //!   Higher latency; bounded by `ack_waiters` and `ack_waiter_tx` to avoid unbounded in-flight acks.
 //!
 //! Backpressure strategy:
-//! - Ingress queue uses `EnqueuePolicy` (Drop/Fail/Wait/Backpressure) to shed load, wait within
-//!   a single bounded budget, or apply true unbounded-but-cancellable backpressure.
+//! - The scheduler queue uses `EnqueuePolicy` (Drop/Fail/Wait/Backpressure) to shed load, wait
+//!   within a single bounded budget, or apply true unbounded-but-cancellable backpressure. An
+//!   acked publish that finds no room is answered with a retryable `overloaded`.
 //! - Outbound ack queue maintains a high-water throttle signal (`ack_throttle_tx`) and records
 //!   enqueue failures/timeouts to decide when to cooperatively cancel the control stream.
 //! - Depth counters are tracked both per-stream and globally to support observability and tuning.
 //!
 //! Submodules:
 //! - `admission`: byte-budget admission control and the subscription cap.
-//! - `ingress`: worker sharding, bounded enqueue, in-flight depth accounting.
+//! - `ingress`: bounded enqueue into the scheduler, and depth accounting.
 //! - `ack`: ack envelopes, waiter protocol, and the ack timeout window.
 //! - `route`: whether a publish is served here, forwarded, or refused.
 //! - `stream_cache`: the per-connection cache of resolved stream handles.
 //! - `control`: acked publish handlers on the bi-directional control stream.
 //! - `uni`: fire-and-forget publish handlers on uni-directional streams.
-//! - `worker`: the process-wide publish worker pool.
+//! - `scheduler`: per-shard ordered lanes and the per-tenant fair queue that feeds them.
+//! - `worker`: what each kind of publish does on its lane, and the process-wide context.
 //!
 //! The connection and stream layers address these through the re-exports below,
 //! so `handlers::publish::<name>` stays the stable path for the whole transport.
@@ -43,6 +45,7 @@ mod admission;
 mod control;
 mod ingress;
 mod route;
+mod scheduler;
 mod stream_cache;
 mod uni;
 mod worker;
@@ -57,6 +60,8 @@ pub(crate) use control::{
     handle_publish_batch_message, handle_publish_message, sequence_reuse,
 };
 pub(crate) use ingress::{PublishTarget, decrement_depth, reset_local_depth_only};
+#[cfg(test)]
+pub(crate) use scheduler::test_channel;
 pub(crate) use stream_cache::StreamHandleCache;
 pub(crate) use uni::{
     handle_binary_publish_batch_uni, handle_publish_batch_message_uni, handle_publish_message_uni,
@@ -66,12 +71,11 @@ pub(crate) use worker::build_publish_context;
 pub(crate) use worker::build_tracked_publish_context;
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 use super::subscribe::WriterLaneManager;
 use crate::serving::quic::preauth::PreAuthGate;
@@ -79,20 +83,18 @@ use crate::shards::routing::IngressRouter;
 use ack::EnqueuePolicy;
 use admission::AdmissionPermit;
 use route::Authority;
+use scheduler::PublishScheduler;
 
-/// Shared publish-ingress configuration and worker queue handles.
+/// Shared publish-ingress configuration and the scheduler it feeds.
 ///
-/// - `workers`: per-worker `mpsc::Sender<PublishJob>` queues.
-/// - `worker_count`: cached length for fast hashing.
-/// - `depth`: best-effort local depth tracking for this publish queue set.
+/// - `scheduler`: the process-wide publish queue and its executors.
 /// - `wait_timeout`: the *total* budget for one `EnqueuePolicy::Wait` enqueue, spanning
-///   admission and the queue send together. Not used by `Backpressure`, which has no timer.
-/// - `admission`: shared in-flight-byte budget across all workers (see [`PublishAdmission`]).
-/// - `conn_admission`: this connection's slice of `admission`. `workers`/`admission`/`depth` are
-///   intentionally process-wide (see `build_publish_context`'s note on avoiding per-connection
-///   worker pools), but that means nothing bounds how much of the shared budget one connection
-///   can occupy. `conn_admission` is constructed fresh per connection
-///   (`handle_connection`) and closes that gap without touching the shared worker pool.
+///   admission and the queue together. Not used by `Backpressure`, which has no timer.
+/// - `admission`: shared in-flight-byte budget across all publishes (see [`PublishAdmission`]).
+/// - `conn_admission`: this connection's slice of `admission`. `scheduler`/`admission` are
+///   intentionally process-wide (see `build_tracked_publish_context`), but that means nothing
+///   bounds how much of the shared budget one connection can occupy. `conn_admission` is
+///   constructed fresh per connection (`handle_connection`) and closes that gap.
 #[derive(Clone)]
 pub(crate) struct PublishContext {
     /// Cluster ownership, when this broker is a member.
@@ -123,9 +125,7 @@ pub(crate) struct PublishContext {
     /// How long such a write waits for its majority before saying it cannot
     /// confirm one.
     pub(crate) quorum_timeout: Duration,
-    pub(crate) workers: Arc<Vec<mpsc::Sender<PublishJob>>>,
-    pub(crate) worker_count: usize,
-    pub(crate) depth: Arc<AtomicUsize>,
+    pub(crate) scheduler: Arc<PublishScheduler>,
     pub(crate) wait_timeout: Duration,
     pub(crate) admission: Arc<PublishAdmission>,
     pub(crate) conn_admission: Arc<PublishAdmission>,
@@ -162,7 +162,7 @@ impl PublishContext {
     ///
     /// Only the per-connection limits are fresh: its slice of the publish byte
     /// budget, its subscription limiter, and its writer lanes. Everything else —
-    /// the worker queues, the shared budget, and **the cluster view** — is
+    /// the scheduler, the shared budget, and **the cluster view** — is
     /// carried through.
     ///
     /// The cluster view is the part worth stating. `ingress`, `peers`, and
@@ -195,7 +195,7 @@ impl PublishContext {
     /// True when a publish that would be acknowledged on enqueue should wait
     /// for its write instead, because the lease may run out first.
     ///
-    /// A job whose lease lapses in the queue is refused at the worker and must
+    /// A job whose lease lapses in the queue is refused at its claim and must
     /// be: another broker may lead the shard by then. An ack already sent for
     /// it would be a lie, so near the end of the lease the client waits and
     /// hears the refusal. The headroom is capped at half the usable lease so
@@ -219,7 +219,7 @@ impl PublishContext {
     }
 }
 
-/// Work item consumed by publish workers.
+/// Work item run by the publish scheduler.
 ///
 /// A publish job is the unit the broker’s ingress pipeline processes:
 /// - It identifies the target stream with a resolved handle.
@@ -232,8 +232,8 @@ pub(crate) struct PublishJob {
     pub(crate) target: PublishTarget,
     pub(crate) payloads: Vec<Bytes>,
     pub(crate) response: Option<oneshot::Sender<Result<()>>>,
-    /// The client was told this job succeeded when it was queued. If the
-    /// worker then cannot write it, nobody hears, so the worker counts it.
+    /// The client was told this job succeeded when it was queued. If it then
+    /// cannot be written, nobody hears, so it is counted instead.
     pub(crate) acked_on_enqueue: bool,
     /// Held from `enqueue_publish` admission until this job finishes processing (or is dropped
     /// without ever being enqueued). See [`PublishAdmission`].

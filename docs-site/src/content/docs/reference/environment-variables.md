@@ -372,7 +372,8 @@ counted in `felix_quic_connections_refused_total{reason="limit"}`.
 
 ### `FELIX_PUBLISH_QUEUE_WAIT_MS`
 
-**Description**: Maximum wait time when publish queue is full.
+**Description**: How long a commit-acked publish waits for room in the broker's
+publish queue (and its byte budget, together) before it is answered busy.
 
 **Type**: Positive integer (milliseconds)
 
@@ -386,8 +387,10 @@ export FELIX_PUBLISH_QUEUE_WAIT_MS="500"   # Fail fast
 ```
 
 **Behavior**:
-- Publisher blocks if queue full
-- Returns error after timeout
+- A commit-acked publish that finds the queue full waits up to this long
+- It is then answered `overloaded` (`detail.reason = "publish_queue_full"`),
+  which is retryable: nothing was queued
+- An enqueue-acked publish is answered busy at once, without waiting
 - Backpressure mechanism
 
 ### `FELIX_ACK_WAIT_TIMEOUT_MS`
@@ -955,13 +958,16 @@ export FELIX_PUBLISH_INFLIGHT_BYTES="4194304"
 
 ### `FELIX_BROKER_PUB_WORKERS_PER_CONN`
 
-**Description**: Publish workers in the broker's pool. Despite the name the
-pool is **process-wide**, not per connection — it is built once, before the
-accept loop, because per-connection pools multiplied concurrent callers into
-shared broker state. A stream-shard handle maps to one worker
-(`handle.id() % count`), so raising this spreads *different* shards across more
-workers; it cannot give one shard more than one. The name is misleading and is
-tracked for a rename in #535.
+**Description**: Executors of the broker's publish scheduler: how many shards'
+ordered publish steps (claiming offsets, an in-memory append) may run at once.
+Despite the name the scheduler is **process-wide**, not per connection —
+per-connection pools multiplied concurrent callers into shared broker state.
+Each shard is an ordered lane that runs one publish at a time, so raising this
+lets more *different* shards run at once; it cannot give one shard more than
+one. Waits on anything outside the broker (a device flush, a forward to
+another broker, a quorum) do not hold an executor. With `FELIX_CORE_SHARDS`
+set, each core shard gets this many executors of its own. Also scales the
+queue: see `FELIX_BROKER_PUB_QUEUE_DEPTH`.
 
 **Type**: Positive integer (count)
 
@@ -976,11 +982,13 @@ export FELIX_BROKER_PUB_WORKERS_PER_CONN="2"   # Lower overhead
 
 ### `FELIX_BROKER_PUB_FLUSH_CONCURRENCY`
 
-**Description**: Durable publishes one publish worker may have awaiting their
-device flush at once (broker). Offsets are still claimed serially, in arrival
-order, so this does not affect the order records land in — it decides how many
-flushes group commit gets to coalesce. `1` restores the pre-0.4.1 behaviour of
-one flush at a time, which capped a shard at roughly one batch per flush (#535).
+**Description**: Durable publishes one shard may have awaiting their device
+flush at once (broker). Offsets are still claimed serially, in arrival order,
+so this does not affect the order records land in — it decides how many
+flushes group commit gets to coalesce. A shard at the limit waits for a flush
+to finish before its next claim, without holding up any other shard. `1`
+restores the pre-0.4.1 behaviour of one flush at a time, which capped a shard
+at roughly one batch per flush (#535).
 
 **Type**: Positive integer (count)
 
@@ -995,7 +1003,15 @@ export FELIX_BROKER_PUB_FLUSH_CONCURRENCY="1"   # Serialise, as before 0.4.1
 
 ### `FELIX_BROKER_PUB_QUEUE_DEPTH`
 
-**Description**: Per-worker publish queue depth (broker).
+**Description**: Publish jobs every tenant is guaranteed room for in the
+broker's publish queue. The queue holds this many times
+`FELIX_BROKER_PUB_WORKERS_PER_CONN` jobs in all (per core shard, with
+`FELIX_CORE_SHARDS`). A tenant past its guaranteed share may borrow idle room,
+but never the last share's worth, so one tenant flooding the queue is refused
+while another still gets in. A publish that finds no room is answered
+`overloaded` with `detail.reason = "publish_queue_full"` when it asked for an
+ack, and shed otherwise (or waits, with `FELIX_PUB_INGRESS_WAIT`); either way
+it is counted in `felix_tenant_publish_queue_full_total{tenant,action}`.
 
 **Type**: Positive integer (count)
 
