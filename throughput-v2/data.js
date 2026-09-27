@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790524373837,
+  "lastUpdate": 1790524681419,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -17680,6 +17680,58 @@ window.BENCHMARK_DATA = {
             "range": "12032.75",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 923232.69\nmean: 924860.12\nstdev: 12032.75\ncv: 1.30%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3655e9e647514d3dc01739bde6f500afbdfe7c13",
+          "message": "Fail publishes superseded by a log reset; make stale group claims retryable (#760)\n\nA publish parked on its commit turn when reset_to/advance_to moved the log\ngeneration was woken by the reset and let through: it then appended offsets\nfrom the old log to the cleared replay ring and fanned them out.\nCommitTurn::wait now returns Err(Superseded) when a reset lands before or\nduring the wait, and the publish fails with BrokerError::PublishSuperseded\n(wire: unacknowledged / outcome_unknown). Resets now bump the sequencer under\nthe ring lock, and the ring append and the Quorum hold re-check the turn under\nthat lock, so a reset landing just after wait returns is caught too.\n\nAcks and nacks for claims a group tracker forgot (evicted while idle, or\nafter failover) were refused as invalid_request, which is fatal. An offset\nthe log holds is now answered with a new stale_claim code, retry class\nretry; an offset past the tail stays invalid_request. Old clients see an\nunknown code with the retry class they already act on. The Rust client does\nnot drop its route on stale_claim, since the leader answered.\n\nSpec-Unaffected: broker-local commit ordering and group ack error codes; no lease, quorum, report, promotion or handoff semantics change.\n\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T08:54:33-07:00",
+          "tree_id": "4a09f7a6cefef85e529220dfc1445defc04992ec",
+          "url": "https://github.com/gabloe/felix/commit/3655e9e647514d3dc01739bde6f500afbdfe7c13"
+        },
+        "date": 1790524680840,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 376462.77,
+            "range": "14181.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 376462.77\nmean: 377186.00\nstdev: 14181.95\ncv: 3.76%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 376462.77,
+            "range": "14181.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 376462.77\nmean: 377186.00\nstdev: 14181.95\ncv: 3.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93201.55,
+            "range": "1229.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93201.55\nmean: 93060.38\nstdev: 1229.46\ncv: 1.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 932015.5,
+            "range": "12294.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 932015.50\nmean: 930603.77\nstdev: 12294.56\ncv: 1.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
