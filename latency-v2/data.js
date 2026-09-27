@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790520056165,
+  "lastUpdate": 1790520767577,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -22242,6 +22242,72 @@ window.BENCHMARK_DATA = {
             "range": "1004.48",
             "unit": "us",
             "extra": "trials: 5\nmedian: 593.00\nmean: 1265.20\nstdev: 1004.48\ncv: 79.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "07ae934abfc594ea37009613319760af8fbee920",
+          "message": "Control plane: refresh can't widen its exchange; re-pointing an IdP issuer needs cluster rights (#755)\n\n* fix(controlplane): stop refresh widening scope; gate IdP issuer re-pointing\n\nRefresh re-ran RBAC with no narrowing, so a narrowed token plus its refresh\ntoken yielded the principal's full rights under any audience. Exchange now\nstores its requested actions, resource hints and audience on the refresh\nrecord (serde-defaulted, nullable Postgres column in migration 0019); refresh\nre-applies them and refuses a different audience with 400. Records without\nit refresh as before.\n\nupsert_idp_issuer let tenant.manage re-point an existing issuer's JWKS, and\nprincipal ids are sha256(iss|sub), so a tenant admin could mint tokens for\nany subject of that issuer, cluster operators included. Changing an existing\nissuer's jwks_url/discovery_url now also needs tenant.manage:cluster:*. IdP\nfetches no longer follow redirects, and literal or resolved private,\nlink-local and unique-local addresses are refused unless\nFELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP (or ..._ALLOW_INSECURE_HTTP) is set.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* fix(controlplane): deleting an IdP issuer takes cluster rights\n\nDelete-then-create re-pointed an issuer without the cluster-rights check\nthat changing its URLs now needs, so deletion takes the same rights.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T07:49:30-07:00",
+          "tree_id": "927f2f6647a746134eb7568072006c29799257ab",
+          "url": "https://github.com/gabloe/felix/commit/07ae934abfc594ea37009613319760af8fbee920"
+        },
+        "date": 1790520764584,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 171,
+            "range": "3.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 171.00\nmean: 169.60\nstdev: 3.71\ncv: 2.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 216,
+            "range": "17.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 216.00\nmean: 224.60\nstdev: 17.83\ncv: 7.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 261,
+            "range": "540.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 261.00\nmean: 642.00\nstdev: 540.37\ncv: 84.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 206,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 206.00\nmean: 206.80\nstdev: 1.92\ncv: 0.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 443,
+            "range": "39.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 443.00\nmean: 451.00\nstdev: 39.47\ncv: 8.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1546,
+            "range": "610.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1546.00\nmean: 1575.80\nstdev: 610.79\ncv: 38.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
