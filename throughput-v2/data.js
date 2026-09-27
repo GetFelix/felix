@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790549905114,
+  "lastUpdate": 1790551904937,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18356,6 +18356,58 @@ window.BENCHMARK_DATA = {
             "range": "16480.85",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1109450.36\nmean: 1102117.45\nstdev: 16480.85\ncv: 1.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "06641d1c0b7a39edbedffbaf524203f6386df790",
+          "message": "fix(replication): re-verify a follower's older-generation tail before a new leader ships past it (#779)\n\nA follower could keep records it wrote under an older generation that no newer\nleader ever compared: replication resumed at the follower's tail with no\noverlap, so a dead leader's unacknowledged write survived at an offset the new\nleader had filled differently. The nightly history checker caught two brokers\ndisagreeing at a committed offset.\n\nA batch from a newer generation that begins past such records is now answered\nwith a LogGap naming the first of them (the later of where the older generation\nbegan, the commit offset, and how far a multi-batch comparison has already got),\nso the overlap is compared and a divergent suffix is repaired as usual. The new\ngeneration's start is recorded only once the follower is level with the leader,\nso a conflict found partway through is still the older generation's suffix.\n\nSpec-Unaffected: the model's Ship already compares whole logs via Diverge; this brings the code up to it",
+          "timestamp": "2026-09-27T16:28:37-07:00",
+          "tree_id": "dd0d4c46aac44f7347a6e361b507f5a41ae8061a",
+          "url": "https://github.com/gabloe/felix/commit/06641d1c0b7a39edbedffbaf524203f6386df790"
+        },
+        "date": 1790551904313,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 459719.13,
+            "range": "25108.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 459719.13\nmean: 469346.34\nstdev: 25108.44\ncv: 5.35%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 459719.13,
+            "range": "25108.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 459719.13\nmean: 469346.34\nstdev: 25108.44\ncv: 5.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 101404.23,
+            "range": "513.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 101404.23\nmean: 101154.38\nstdev: 513.41\ncv: 0.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1014042.27,
+            "range": "5134.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1014042.27\nmean: 1011543.75\nstdev: 5134.13\ncv: 0.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
