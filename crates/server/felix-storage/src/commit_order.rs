@@ -109,7 +109,7 @@ impl CommitSequencer {
             state.generation += 1;
             // Wake everyone: a waiter parked on an offset the reset just
             // discarded would otherwise never be released. Its `wait` sees the
-            // generation has moved and returns.
+            // generation has moved and reports `Superseded`.
             state.waiters.split_off(&0).into_values().collect()
         };
         for waiter in orphaned {
@@ -207,31 +207,49 @@ pub struct CommitTurn<'a> {
 impl CommitTurn<'_> {
     /// Wait until every lower offset has been released.
     ///
+    /// Fails with [`Superseded`] when a reset lands before or during the wait:
+    /// the caller must then apply nothing, since whatever it would publish
+    /// sits at offsets the reset declared gone.
+    ///
     /// Cancellation-safe: dropping the guard mid-wait releases this range too,
     /// so a cancelled publisher cannot block the ones behind it.
-    pub async fn wait(&self) {
+    pub async fn wait(&self) -> Result<(), Superseded> {
         // Registered and tested under one lock, so a release landing between
         // the two cannot be missed: whoever resolves next either sees this
         // waiter in the registry and wakes it, or has already moved `next` past
         // it and the test below returns.
         let receiver = {
             let mut state = self.sequencer.state.lock();
-            // A reset means the log was rewritten underneath this range, so
-            // there is nothing left to wait for.
-            if state.next >= self.first_offset || state.generation != self.generation {
-                return;
+            if state.generation != self.generation {
+                return Err(Superseded);
+            }
+            if state.next >= self.first_offset {
+                return Ok(());
             }
             let (sender, receiver) = oneshot::channel();
             state.waiters.insert(self.first_offset, sender);
             receiver
         };
 
-        // A closed channel means the sender was dropped rather than fired —
+        // A closed channel means the sender was dropped rather than fired --
         // only possible if this waiter's entry was replaced, which needs two
-        // live turns on one offset. Returning is right either way: the caller
-        // re-tests nothing, but its own `Drop` still resolves its range, so the
-        // sequence cannot strand.
+        // live turns on one offset. Either way the generation decides: a reset
+        // wakes every waiter, and those must not go on to apply.
         let _ = receiver.await;
+        if self.is_current() {
+            Ok(())
+        } else {
+            Err(Superseded)
+        }
+    }
+
+    /// False once a reset has superseded this turn.
+    ///
+    /// A caller that applies under a lock the resetter also holds while
+    /// resetting can check this under that lock, which closes the gap between
+    /// `wait` returning and the apply.
+    pub fn is_current(&self) -> bool {
+        self.sequencer.state.lock().generation == self.generation
     }
 }
 
@@ -257,6 +275,19 @@ impl Drop for CommitTurn<'_> {
         }
     }
 }
+
+/// A reset moved the sequence while a turn was held, so the turn's offsets
+/// belong to a log that no longer exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Superseded;
+
+impl fmt::Display for Superseded {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the log was reset while this write waited for its turn")
+    }
+}
+
+impl std::error::Error for Superseded {}
 
 /// How a turn holds the sequencer it will release into.
 ///

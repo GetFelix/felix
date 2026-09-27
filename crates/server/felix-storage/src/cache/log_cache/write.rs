@@ -36,7 +36,10 @@ impl StagedWrite {
     /// Wait until the record is durable and every earlier write has applied.
     async fn commit(&self) -> Result<()> {
         self.log.commit(&self.pending).await?;
-        self.turn.wait().await;
+        // Compaction is the one reset that can land with a turn held, and it
+        // runs only once every staged write has applied, so nothing waiting
+        // here can be superseded.
+        let _ = self.turn.wait().await;
         Ok(())
     }
 

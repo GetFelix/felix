@@ -353,7 +353,7 @@ it (see "Error codes" in `docs/protocol.md`):
 | Class | Codes (usually) | `publish_at_least_once`, idempotent producer | `publish` |
 | --- | --- | --- | --- |
 | `fatal` | `unauthenticated`, `forbidden`, `invalid_request`, `limit_exceeded` | Returned at once, marked "not retried" | Returned |
-| `retry`, `redirect` | `shard_unavailable`, `draining`, `not_leader` | From a cached owner or leader: forget it and go again at once through the entry broker. From the entry broker: back off and retry | From a cached owner: forget it and send once through the entry broker. Otherwise returned |
+| `retry`, `redirect` | `shard_unavailable`, `draining`, `not_leader`, `stale_claim` (group acks only; never reroutes) | From a cached owner or leader: forget it and go again at once through the entry broker. From the entry broker: back off and retry | From a cached owner: forget it and send once through the entry broker. Otherwise returned |
 | `retry_after` | `overloaded`, `not_found` | Back off, at least `retry_after_ms` when the broker gave one. `not_found` only for 5 s from the first one | Returned |
 | `outcome_unknown` | `quorum_timeout`, `leadership_lost`, `unacknowledged`, `internal`, `storage` | Sent again: that is what at-least-once means, and the idempotent producer's sequence makes it safe | **Returned, never sent again** |
 

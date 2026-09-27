@@ -256,18 +256,32 @@ pub(crate) async fn settle(
     offset: u64,
     finish: bool,
 ) -> Result<(), ClientError> {
-    let (reader, _log, owned) =
+    let (reader, log, owned) =
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
     let _fenced = owned.enter(publish_ctx, &mut admitted)?;
-    // Classified rather than all reported as storage: an offset this group
-    // never handed out is the consumer's mistake, and retrying will not fix it.
-    if finish {
+    let settled = if finish {
         reader.ack(&key, offset).await
     } else {
         reader.nack(&key, offset).await
+    };
+    let Err(err) = settled else {
+        return Ok(());
+    };
+    // The tracker is in memory, so eviction or a failover forgets what it
+    // handed out. An offset the log holds may have been claimed from the
+    // tracker before; the record is owed again either way, so the consumer
+    // is told its claim is gone rather than that it made a mistake. Past the
+    // tail it cannot have been handed out by anyone.
+    if let felix_broker::BrokerError::GroupOffsetNotHandedOut { .. } = err
+        && offset < log.tail_offset().await.map_err(storage)?
+    {
+        return Err(ClientError::new(
+            felix_wire::ErrorCode::StaleClaim,
+            format!("{err}; the claim is stale and the record will be delivered again"),
+        ));
     }
-    .map_err(|err| ClientError::from_broker(&err, err.to_string()))
+    Err(ClientError::from_broker(&err, err.to_string()))
 }
 
 /// A shard this broker led when a group operation was admitted.

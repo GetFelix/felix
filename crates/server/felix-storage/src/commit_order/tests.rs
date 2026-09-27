@@ -7,7 +7,7 @@ use super::*;
 async fn the_first_offset_proceeds_immediately() {
     let sequencer = CommitSequencer::new(0);
     let turn = sequencer.reserve(0, 1);
-    turn.wait().await;
+    turn.wait().await.expect("turn");
     drop(turn);
     assert_eq!(sequencer.next_offset(), 1);
 }
@@ -21,7 +21,7 @@ async fn a_later_offset_waits_for_its_predecessor() {
         let sequencer = Arc::clone(&sequencer);
         tokio::spawn(async move {
             let turn = sequencer.reserve(5, 6);
-            turn.wait().await;
+            turn.wait().await.expect("turn");
             drop(turn);
         })
     };
@@ -31,7 +31,7 @@ async fn a_later_offset_waits_for_its_predecessor() {
     // Releasing the intervening range lets it through.
     {
         let turn = sequencer.reserve(0, 5);
-        turn.wait().await;
+        turn.wait().await.expect("turn");
     }
     tokio::time::timeout(Duration::from_secs(5), waiter)
         .await
@@ -53,7 +53,7 @@ async fn turns_are_granted_in_offset_order_regardless_of_arrival_order() {
         let observed = Arc::clone(&observed);
         tasks.push(tokio::spawn(async move {
             let turn = sequencer.reserve(offset, offset + 1);
-            turn.wait().await;
+            turn.wait().await.expect("turn");
             observed.lock().push(offset);
             drop(turn);
         }));
@@ -84,7 +84,7 @@ async fn a_parked_crowd_drains_in_offset_order() {
     let observed = Arc::new(parking_lot::Mutex::new(Vec::new()));
 
     let head = sequencer.reserve(0, 1);
-    head.wait().await;
+    head.wait().await.expect("turn");
 
     let mut tasks = Vec::new();
     for offset in 1..=WAITERS {
@@ -92,7 +92,7 @@ async fn a_parked_crowd_drains_in_offset_order() {
         let observed = Arc::clone(&observed);
         tasks.push(tokio::spawn(async move {
             let turn = sequencer.reserve(offset, offset + 1);
-            turn.wait().await;
+            turn.wait().await.expect("turn");
             observed.lock().push(offset);
             drop(turn);
         }));
@@ -128,7 +128,7 @@ async fn a_reset_releases_a_whole_crowd() {
         let sequencer = Arc::clone(&sequencer);
         tasks.push(tokio::spawn(async move {
             let turn = sequencer.reserve(offset, offset + 1);
-            turn.wait().await;
+            assert_eq!(turn.wait().await, Err(Superseded));
         }));
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -150,7 +150,7 @@ async fn a_dropped_turn_never_strands_the_stream() {
     // A publisher that takes its turn and then fails still releases it.
     let result: std::result::Result<(), ()> = async {
         let turn = sequencer.reserve(0, 1);
-        turn.wait().await;
+        turn.wait().await.expect("turn");
         Err(())
     }
     .await;
@@ -160,7 +160,8 @@ async fn a_dropped_turn_never_strands_the_stream() {
     let next = sequencer.reserve(1, 2);
     tokio::time::timeout(Duration::from_secs(5), next.wait())
         .await
-        .expect("must not stall");
+        .expect("must not stall")
+        .expect("turn");
 }
 
 #[tokio::test]
@@ -180,7 +181,8 @@ async fn an_abandoned_range_releases_the_ranges_behind_it() {
     let next = sequencer.reserve(3, 4);
     tokio::time::timeout(Duration::from_secs(5), next.wait())
         .await
-        .expect("an abandoned range stranded the stream");
+        .expect("an abandoned range stranded the stream")
+        .expect("turn");
     assert_eq!(sequencer.next_offset(), 3);
 }
 
@@ -194,7 +196,7 @@ async fn a_range_cancelled_mid_wait_releases_too() {
         let sequencer = Arc::clone(&sequencer);
         tokio::spawn(async move {
             let turn = sequencer.reserve(5, 9);
-            turn.wait().await;
+            turn.wait().await.expect("turn");
         })
     };
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -206,7 +208,8 @@ async fn a_range_cancelled_mid_wait_releases_too() {
     let after = sequencer.reserve(9, 10);
     tokio::time::timeout(Duration::from_secs(5), after.wait())
         .await
-        .expect("a cancelled waiter stranded the stream");
+        .expect("a cancelled waiter stranded the stream")
+        .expect("turn");
 }
 
 #[tokio::test]
@@ -236,7 +239,8 @@ async fn a_cancelled_range_does_not_let_later_ranges_overtake_an_unfinished_one(
     drop(a);
     tokio::time::timeout(Duration::from_secs(5), c.wait())
         .await
-        .expect("C should be released once A completes");
+        .expect("C should be released once A completes")
+        .expect("turn");
 }
 
 #[tokio::test]
@@ -249,24 +253,38 @@ async fn a_reset_releases_waiters_stuck_behind_a_vanished_offset() {
         let sequencer = Arc::clone(&sequencer);
         tokio::spawn(async move {
             let turn = sequencer.reserve(20, 21);
-            turn.wait().await;
+            turn.wait().await
         })
     };
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(!waiter.is_finished());
 
     sequencer.reset(20);
-    tokio::time::timeout(Duration::from_secs(5), waiter)
+    let waited = tokio::time::timeout(Duration::from_secs(5), waiter)
         .await
         .expect("reset should release the waiter")
         .expect("join");
+    assert_eq!(waited, Err(Superseded), "a reset must not grant the turn");
+}
+
+/// A turn taken before a reset must not be granted after it: its offsets
+/// describe a log the reset replaced, and applying them would put stale
+/// records in front of readers.
+#[tokio::test]
+async fn a_turn_from_before_a_reset_is_superseded() {
+    let sequencer = CommitSequencer::new(0);
+    let turn = sequencer.reserve(0, 1);
+    assert!(turn.is_current());
+    sequencer.reset(0);
+    assert!(!turn.is_current());
+    assert_eq!(turn.wait().await, Err(Superseded));
 }
 
 #[tokio::test]
 async fn a_stale_release_cannot_undo_a_reset() {
     let sequencer = CommitSequencer::new(100);
     let turn = sequencer.reserve(100, 101);
-    turn.wait().await;
+    turn.wait().await.expect("turn");
     // A truncation rewinds the log while the turn is held.
     sequencer.reset(5);
     drop(turn);

@@ -6,7 +6,7 @@ use bytes::Bytes;
 use felix_storage::EphemeralCache;
 use felix_storage::log::{FsyncMode, LogConfig};
 
-use crate::{Broker, DurableStorage, StreamMetadata};
+use crate::{Broker, BrokerError, DurableStorage, StreamMetadata};
 
 async fn durable_broker(dir: &std::path::Path) -> Broker {
     let config = LogConfig {
@@ -87,5 +87,72 @@ async fn a_cancelled_completion_still_reaches_the_ring_and_subscribers() {
         backlog,
         vec![Bytes::from_static(b"first"), Bytes::from_static(b"second")],
         "the cancelled batch is missing from the replay ring",
+    );
+}
+
+/// **A publish whose turn a reset superseded reaches neither the ring nor a
+/// subscriber, and fails.** The reset (the shard went to a follower, or its
+/// log was rebuilt) cleared the ring; the batch's offsets belong to the log
+/// before it, so applying them would show readers records that may be gone.
+///
+/// The second batch is parked on the first one's turn when the reset lands,
+/// and the reset is what wakes it.
+#[tokio::test]
+async fn a_publish_superseded_by_a_reset_is_not_applied() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = std::sync::Arc::new(durable_broker(dir.path()).await);
+    let mut live = broker
+        .subscribe("t1", "ns", "orders", 0)
+        .await
+        .expect("subscribe");
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "orders", 0)
+        .await
+        .expect("handle");
+
+    let first = broker
+        .claim_publish(&handle, &[Bytes::from_static(b"first")])
+        .await
+        .expect("claim first");
+    let second = broker
+        .claim_publish(&handle, &[Bytes::from_static(b"second")])
+        .await
+        .expect("claim second");
+    let parked = {
+        let broker = std::sync::Arc::clone(&broker);
+        tokio::spawn(async move { broker.complete_publish(second).await })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!parked.is_finished(), "the second batch waits on the first");
+
+    handle.state.reset_to(2);
+    let outcome = tokio::time::timeout(Duration::from_secs(5), parked)
+        .await
+        .expect("the reset wakes the parked publish")
+        .expect("join");
+    assert!(
+        matches!(
+            outcome,
+            Err(BrokerError::PublishSuperseded { first_offset: 1 })
+        ),
+        "a superseded publish must fail, got {outcome:?}"
+    );
+    assert!(
+        matches!(
+            broker.complete_publish(first).await,
+            Err(BrokerError::PublishSuperseded { first_offset: 0 })
+        ),
+        "the reset superseded the first turn too"
+    );
+
+    assert!(
+        handle.state.log_state.lock().log.is_empty(),
+        "a superseded batch reached the replay ring"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), live.recv())
+            .await
+            .is_err(),
+        "a superseded batch reached a subscriber"
     );
 }

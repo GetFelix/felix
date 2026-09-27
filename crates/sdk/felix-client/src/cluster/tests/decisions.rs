@@ -64,6 +64,7 @@ fn every_code_from_the_entry_broker() {
         (ErrorCode::Unacknowledged, Next::Fail),
         (ErrorCode::Internal, Next::Fail),
         (ErrorCode::Storage, Next::Fail),
+        (ErrorCode::StaleClaim, BACKOFF),
     ];
     assert_eq!(table.len(), ErrorCode::ALL.len(), "a code is missing");
     for (code, expected) in table {
@@ -105,6 +106,9 @@ fn a_routed_retry_or_redirect_reroutes() {
     assert_eq!(next_step(&coded(ErrorCode::Overloaded), routed()), BACKOFF);
     assert!(!route_went_stale(&coded(ErrorCode::Overloaded)));
     assert!(!route_went_stale(&coded(ErrorCode::Forbidden)));
+    // Nor is a stale group claim: the leader answered, and knows the shard.
+    assert_eq!(next_step(&coded(ErrorCode::StaleClaim), routed()), BACKOFF);
+    assert!(!route_went_stale(&coded(ErrorCode::StaleClaim)));
 }
 
 /// **An ambiguous outcome is re-sent only when the caller said a duplicate is

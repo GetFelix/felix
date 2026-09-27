@@ -743,6 +743,11 @@ only over a **contiguous run** of acks: acknowledging offset 42 while 41 is
 still in flight leaves the cursor at 41, which is what makes it safe to restart
 from.
 
+What a group has handed out is kept in memory. After a failover, or once an
+idle group's state is dropped, an ack or nack for an earlier claim is answered
+`stale_claim` (retryable): nothing was applied and the record comes round
+again.
+
 ### Dead Letters
 
 Past `FELIX_GROUP_MAX_ATTEMPTS` (5) a record is dead-lettered, so one poison
