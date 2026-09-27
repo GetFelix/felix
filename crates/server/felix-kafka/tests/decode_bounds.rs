@@ -25,3 +25,17 @@ fn a_compact_array_count_past_the_frame_is_refused_without_reserving_it() {
 
     assert!(MetadataRequest::decode(&mut body, 9).is_err());
 }
+
+#[test]
+fn a_record_count_past_the_batch_is_refused_without_reserving_it() {
+    // Found by the `kafka_records` fuzz target: a v2 batch whose header claims
+    // far more records than the 66 bytes could hold.
+    let batch: &[u8] = &[
+        0, 0, 0, 0, 0, 0, 0, 59, 0, 0, 0, 54, 255, 255, 255, 255, 2, 89, 183, 11, 47, 0, 0, 1, 139,
+        207, 229, 104, 0, 0, 0, 1, 59, 0, 0, 0, 0, 0, 0, 1, 139, 207, 229, 104, 0, 0, 0, 1, 139,
+        207, 104, 1, 4, 0, 3, 0, 0, 1, 14, 0, 2, 0, 1, 2, 56, 0,
+    ];
+    let mut bytes = Bytes::copy_from_slice(batch);
+    // Decoding may fail; it must not try to reserve memory for the claimed count.
+    let _ = kafka_protocol::records::RecordBatchDecoder::decode(&mut bytes);
+}
