@@ -438,6 +438,17 @@ pub fn format_object(object: &ParsedObject) -> String {
             segment(namespace),
             segment(cache)
         ),
+        ParsedObject::Group {
+            tenant_id,
+            namespace,
+            stream,
+            group,
+        } => format!(
+            "group:{tenant_id}/{}/{}/{}",
+            segment(namespace),
+            segment(stream),
+            segment(group)
+        ),
     }
 }
 
