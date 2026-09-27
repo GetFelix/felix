@@ -76,10 +76,28 @@ async fn a_reset_that_would_discard_committed_records_is_refused() {
 }
 
 #[tokio::test]
-async fn the_commit_offset_is_written_through_and_read_back() {
+async fn the_commit_offset_is_written_through_on_every_advance_under_on_commit() {
     let dir = tempdir().expect("tempdir");
     {
         let log = open(&dir, FsyncMode::OnCommit);
+        log.append(&records(&["a", "b", "c"]))
+            .await
+            .expect("append");
+        log.advance_commit_offset(1).await.expect("commit");
+        log.advance_commit_offset(3).await.expect("commit");
+    }
+    // Reopened without a shutdown: each advance was on disk before it returned.
+    assert_eq!(open(&dir, FsyncMode::OnCommit).commit_offset(), 3);
+}
+
+#[tokio::test]
+async fn without_on_commit_the_commit_offset_is_written_behind() {
+    let dir = tempdir().expect("tempdir");
+    let periodic = FsyncMode::Periodic {
+        interval: std::time::Duration::from_secs(3600),
+    };
+    {
+        let log = open(&dir, periodic);
         log.append(&records(&["a", "b", "c"]))
             .await
             .expect("append");
@@ -87,12 +105,12 @@ async fn the_commit_offset_is_written_through_and_read_back() {
         log.advance_commit_offset(1).await.expect("commit");
         log.advance_commit_offset(3).await.expect("commit");
     }
-    let log = open(&dir, FsyncMode::OnCommit);
+    let log = open(&dir, periodic);
     // Behind is allowed after a crash; ahead never is.
     assert_eq!(log.commit_offset(), 1);
 
     log.advance_commit_offset(3).await.expect("commit");
     log.shutdown().await.expect("shutdown");
     drop(log);
-    assert_eq!(open(&dir, FsyncMode::OnCommit).commit_offset(), 3);
+    assert_eq!(open(&dir, periodic).commit_offset(), 3);
 }

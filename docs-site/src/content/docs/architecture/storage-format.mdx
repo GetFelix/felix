@@ -368,9 +368,13 @@ acknowledged.
 Written through a temporary, an fsync, a rename and a directory sync. A raised
 generation is on disk before the batch that raised it is stored or
 acknowledged, so a leader this broker has seen replaced is refused after a
-restart too, whatever the routing view says by then. The commit offset is
-written through at most once a second and at shutdown; read back behind after
-a crash, it only permits less.
+restart too, whatever the routing view says by then. Under `FsyncMode::OnCommit`
+the commit offset is written through on every advance, before the
+batch that carried it is acknowledged. Under `Periodic` and `None` it is written
+at most once a second and at shutdown, as its records are written behind too;
+read back behind after a crash, it permits *more* truncation than it should:
+records committed since are unguarded until the leader's next batch carries the
+offset again.
 
 **Unlike `epochs`, this file is authoritative.** Nothing in the log can rebuild
 it, and reading a damaged one as zero would accept any leader, so a file that

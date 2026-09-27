@@ -278,8 +278,11 @@ and may lag; so each shard log keeps the highest generation it accepted a leader
 at, written and fsynced before the first batch at a new generation is stored or
 acknowledged, and a leader claiming a shard records its own generation the same
 way. The commit offset is kept in the same small file (`replica`, beside the
-segments), written through at most once a second: after a crash it may read
-back behind, which only permits less, never more. Above it, a record is a proposal that the cluster may not
+segments). Under `FsyncMode::OnCommit` it is on disk before the batch that
+carried it is acknowledged. Under `Periodic` and `None` it is written at most once
+a second, and after a crash it may read back behind, which weakens the guard:
+truncation may cut into records committed since, until the next batch carries
+the offset again. Above it, a record is a proposal that the cluster may not
 have adopted, and a new leader reusing the offset is ordinary rather than
 alarming.
 
