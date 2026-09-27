@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790515269248,
+  "lastUpdate": 1790515476813,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -22044,6 +22044,72 @@ window.BENCHMARK_DATA = {
             "range": "20.13",
             "unit": "us",
             "extra": "trials: 5\nmedian: 522.00\nmean: 526.80\nstdev: 20.13\ncv: 3.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "01a3e6d954d7a5164d569cbaff5407f4840ea633",
+          "message": "fix(kafka): cap decoder preallocation at the bytes left in the frame (#752)\n\nkafka-protocol 0.18 reserves Vec capacity for a client-supplied array\ncount before reading any element. A request of a few dozen bytes can\ntherefore ask for well over 100 GB and abort the broker, before\nauthentication. Vendor the crate with each reservation (arrays, compact\narrays, record headers) capped at the buffer's remaining bytes; every\nelement takes at least one byte, so decoding is unchanged.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T06:17:16-07:00",
+          "tree_id": "615ee4a3a47824a84b12bed2368bc0c062877503",
+          "url": "https://github.com/gabloe/felix/commit/01a3e6d954d7a5164d569cbaff5407f4840ea633"
+        },
+        "date": 1790515473933,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 170,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 170.00\nmean: 169.80\nstdev: 1.30\ncv: 0.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 212,
+            "range": "2.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 212.00\nmean: 211.80\nstdev: 2.49\ncv: 1.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 243,
+            "range": "136.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 243.00\nmean: 303.00\nstdev: 136.53\ncv: 45.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 204,
+            "range": "4.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 206.60\nstdev: 4.77\ncv: 2.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 413,
+            "range": "138.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 413.00\nmean: 472.20\nstdev: 138.04\ncv: 29.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1036,
+            "range": "888.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1036.00\nmean: 1332.40\nstdev: 888.80\ncv: 66.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
