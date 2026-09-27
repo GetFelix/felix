@@ -13,7 +13,9 @@ use crate::observability::timings;
 use crate::serving::quic::handlers::subscribe::conn_counts::{
     connection_subscriber_unregister, hash64,
 };
-use crate::serving::quic::handlers::subscribe::writer::{run_connection_writer, run_writer_lane};
+use crate::serving::quic::handlers::subscribe::writer::{
+    ConnectionWriterConfig, run_connection_writer, run_writer_lane,
+};
 use crate::serving::quic::telemetry::{t_counter, t_histogram};
 
 #[derive(Debug)]
@@ -234,7 +236,18 @@ impl WriterLaneManager {
             Entry::Vacant(entry) => {
                 let (tx, rx) = mpsc::channel(self.connection_queue_capacity.max(1));
                 entry.insert(tx.clone());
-                let writer = run_connection_writer(connection_id, rx, self.max_bytes_per_write);
+                let writer = run_connection_writer(
+                    connection_id,
+                    rx,
+                    ConnectionWriterConfig {
+                        max_bytes_per_write: self.max_bytes_per_write,
+                        max_queued_per_subscriber: self.connection_queue_capacity,
+                        block: matches!(
+                            self.lane_queue_policy,
+                            felix_broker::SubQueuePolicy::Block
+                        ),
+                    },
+                );
                 // Colocate with the connection's transport drivers (`spawn_pump`)
                 // so per-write wakeups stay on-thread. Register always creates
                 // the writer; the `None` arm only covers a delivery racing
@@ -262,7 +275,6 @@ impl WriterLaneManager {
             _ => None,
         };
         let sender = self.ensure_connection_writer(connection_id, connection.as_ref());
-        let conn_label = connection_id.to_string();
         let wait_start = Instant::now();
         let is_control = matches!(
             &cmd,
@@ -280,13 +292,8 @@ impl WriterLaneManager {
         let wait_ns = wait_start.elapsed().as_nanos() as u64;
         timings::record_sub_queue_wait_ns(wait_ns);
         t_histogram!("felix_broker_sub_queue_wait_ns").record(wait_ns as f64);
-        t_histogram!("broker_sub_conn_enqueue_wait_ns", "connection_id" => conn_label.clone())
+        t_histogram!("broker_sub_conn_enqueue_wait_ns", "connection_id" => connection_id.to_string())
             .record(wait_ns as f64);
-        let depth = self
-            .connection_queue_capacity
-            .saturating_sub(sender.capacity());
-        metrics::gauge!("felix_sub_conn_queue_len", "connection_id" => conn_label)
-            .set(depth as f64);
         result
     }
 

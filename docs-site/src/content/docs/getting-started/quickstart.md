@@ -104,7 +104,7 @@ If you would rather see the data path than the cluster, the demos embed a
 broker in-process and need nothing running:
 
 ```bash
-cargo run --release -p felix-broker-service --bin pubsub-demo-simple
+cargo run --release -p felix-broker-service --features demo --bin pubsub-demo-simple
 ```
 
 ```
@@ -159,7 +159,7 @@ at it, and giving each one a node credential:
 Run the cache demonstration:
 
 ```bash
-cargo run --release -p felix-broker-service --bin cache-demo
+cargo run --release -p felix-broker-service --features demo --bin cache-demo
 ```
 
 This benchmarks cache operations (put, get_hit, get_miss) across various payload sizes and measures latency/throughput.
@@ -265,10 +265,10 @@ Run the latency demo with various configurations:
 
 ```bash
 # Basic run with defaults
-cargo run --release -p felix-broker-service --bin latency-demo
+cargo run --release -p felix-broker-service --features demo --bin latency-demo
 
 # Custom configuration
-cargo run --release -p felix-broker-service --bin latency-demo -- \
+cargo run --release -p felix-broker-service --features demo --bin latency-demo -- \
     --binary \
     --fanout 10 \
     --batch 64 \
@@ -289,7 +289,7 @@ cargo run --release -p felix-broker-service --bin latency-demo -- \
 ### Cache Benchmark
 
 ```bash
-cargo run --release -p felix-broker-service --bin cache-demo
+cargo run --release -p felix-broker-service --features demo --bin cache-demo
 ```
 
 Measures cache operations at various payload sizes with configurable concurrency.

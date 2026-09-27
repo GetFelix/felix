@@ -12,6 +12,9 @@
 //! Construct [`BrokerAuth`] with the control-plane URL and call
 //! [`BrokerAuth::authenticate`] to get an [`AuthContext`].
 
+// A constant signing key: anything it signs is forgeable, so it is only
+// compiled in when asked for.
+#[cfg(feature = "demo")]
 pub mod demo;
 
 use std::sync::Arc;

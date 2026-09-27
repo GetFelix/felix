@@ -22,14 +22,17 @@ path = "src/main.rs"
 [[bin]]
 name = "pubsub-demo-simple"
 path = "../../demos/broker/simple_pubsub_demo.rs"
+required-features = ["demo"]
 
 [[bin]]
 name = "cache-demo"
 path = "../../demos/broker/cache_demo.rs"
+required-features = ["demo"]
 
 [[bin]]
 name = "latency-demo"
 path = "../../demos/broker/latency_demo.rs"
+required-features = ["demo"]
 
 [[bin]]
 name = "pubsub-demo-notifications"
@@ -111,10 +114,12 @@ tempfile = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 # The Kafka tests run kcat in a container.
-tokio = { workspace = true, features = ["process"] }
+tokio = { workspace = true, features = ["process", "test-util"] }
 serial_test = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }
+# The tests use the demo signing key; see the `demo` feature.
+felix-broker-service = { path = ".", version = "0.6.0-preview", features = ["demo"] }
 # The membership integration test drives the real control-plane router rather
 # than a stub, so a mismatch in the HTTP contract between the two services fails
 # here instead of in a cluster.
@@ -122,6 +127,9 @@ felix-controlplane-service = { path = "../felix-controlplane-service", version =
 
 [features]
 default = []
+# `serving::auth::demo`: a fixed signing key and a token minted with it, so a
+# demo broker needs no control plane. Never for a deployed broker.
+demo = []
 telemetry = ["felix-client/telemetry", "felix-broker/telemetry"]
 perf_debug = ["felix-broker/perf_debug"]
 

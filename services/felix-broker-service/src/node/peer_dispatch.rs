@@ -14,13 +14,13 @@ use crate::replication::replica::ReplicaHandler;
 use crate::serving::forward::owner::ForwardingHandler;
 
 /// Answers every request a peer may send this broker.
-pub struct BrokerPeerHandler {
+pub(crate) struct BrokerPeerHandler {
     forwarding: ForwardingHandler,
     replica: ReplicaHandler,
 }
 
 impl BrokerPeerHandler {
-    pub fn new(forwarding: ForwardingHandler, replica: ReplicaHandler) -> Self {
+    pub(crate) fn new(forwarding: ForwardingHandler, replica: ReplicaHandler) -> Self {
         Self {
             forwarding,
             replica,

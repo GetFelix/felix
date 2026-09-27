@@ -24,7 +24,7 @@ mod cluster;
 mod handoff;
 mod listeners;
 mod membership;
-pub mod peer_dispatch;
+pub(crate) mod peer_dispatch;
 mod shutdown;
 mod storage;
 mod sync;

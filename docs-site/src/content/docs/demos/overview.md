@@ -124,7 +124,7 @@ STEP 19 t2 token publish denied: PASS
 ```bash
 task demo:pubsub
 # or
-cargo run --release -p felix-broker-service --bin pubsub-demo-simple
+cargo run --release -p felix-broker-service --features demo --bin pubsub-demo-simple
 ```
 
 **What to expect**:
@@ -142,7 +142,7 @@ cargo run --release -p felix-broker-service --bin pubsub-demo-simple
 ```bash
 task demo:cache
 # or
-cargo run --release -p felix-broker-service --bin cache-demo
+cargo run --release -p felix-broker-service --features demo --bin cache-demo
 ```
 
 **Useful env vars**:
@@ -171,10 +171,10 @@ FELIX_CACHE_BENCH_OPS=put,get_hit,get_miss
 # Basic run
 task demo:latency
 # or
-cargo run --release -p felix-broker-service --bin latency-demo
+cargo run --release -p felix-broker-service --features demo --bin latency-demo
 
 # Custom configuration
-cargo run --release -p felix-broker-service --bin latency-demo -- \
+cargo run --release -p felix-broker-service --features demo --bin latency-demo -- \
     --binary \
     --fanout 10 \
     --batch 64 \

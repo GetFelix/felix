@@ -6,6 +6,7 @@ use rustls::RootCertStore;
 use rustls::pki_types::PrivatePkcs8KeyDer;
 
 use super::*;
+use crate::serving::quic::handlers::publish::build_publish_context;
 
 #[tokio::test]
 async fn handle_connection_returns_ok_on_closed_connection() -> Result<()> {

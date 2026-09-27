@@ -50,7 +50,6 @@ async fn tasks_execute_and_shutdown_on_drop() {
 fn shard_mapping_is_stable_modulo() {
     let shards = CoreShards::new(3);
     assert_eq!(shards.len(), 3);
-    assert!(!shards.is_empty());
     assert_eq!(shards.shard_for(0), 0);
     assert_eq!(shards.shard_for(4), 1);
     assert_eq!(shards.shard_for(5), 2);

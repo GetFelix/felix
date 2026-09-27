@@ -5,12 +5,19 @@ mod record;
 
 pub use record::*;
 
+use std::sync::Mutex;
+#[cfg(not(test))]
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
 
 use super::{ClientCacheTimingSamples, ClientTimingSamples};
 
+#[cfg(not(test))]
 static COLLECTOR: OnceLock<TimingCollector> = OnceLock::new();
+// Tests need to put the collector back to "never enabled", which a `OnceLock`
+// cannot do through a shared reference.
+#[cfg(test)]
+static COLLECTOR: test_slot::Slot = test_slot::Slot::new();
 
 struct TimingCollector {
     publish_enqueue_wait_ns: Mutex<Vec<u64>>,
@@ -217,9 +224,50 @@ pub fn take_cache_samples() -> Option<ClientCacheTimingSamples> {
 
 #[cfg(test)]
 pub(crate) fn reset_collector_for_tests() {
-    // Safety: test-only helper to reset global state between tests.
-    unsafe {
-        let ptr = &COLLECTOR as *const OnceLock<TimingCollector> as *mut OnceLock<TimingCollector>;
-        let _ = (*ptr).take();
+    COLLECTOR.clear();
+}
+
+/// A `OnceLock` stand-in that tests can clear.
+#[cfg(test)]
+mod test_slot {
+    use std::sync::RwLock;
+
+    use super::TimingCollector;
+
+    // Collectors are leaked rather than dropped on `clear`, so a reference
+    // another test took before the clear stays valid.
+    pub(super) struct Slot(RwLock<Option<&'static TimingCollector>>);
+
+    impl Slot {
+        pub(super) const fn new() -> Self {
+            Self(RwLock::new(None))
+        }
+
+        pub(super) fn get(&self) -> Option<&'static TimingCollector> {
+            *self
+                .0
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
+
+        /// Whether it was set: like `OnceLock::set`, the first one wins.
+        pub(super) fn set(&self, collector: TimingCollector) -> bool {
+            let mut slot = self
+                .0
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if slot.is_some() {
+                return false;
+            }
+            *slot = Some(Box::leak(Box::new(collector)));
+            true
+        }
+
+        pub(super) fn clear(&self) {
+            *self
+                .0
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        }
     }
 }

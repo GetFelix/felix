@@ -184,10 +184,10 @@ Run multiple clients connecting to the same broker:
 cargo run --release -p felix-broker-service
 
 # Terminal 2: Run subscriber demo
-cargo run --release -p felix-broker-service --bin pubsub-demo-simple
+cargo run --release -p felix-broker-service --features demo --bin pubsub-demo-simple
 
 # Terminal 3: Run another client
-cargo run --release -p felix-broker-service --bin cache-demo
+cargo run --release -p felix-broker-service --features demo --bin cache-demo
 ```
 
 ### Scenario 4: Testing Control Plane Integration
@@ -256,7 +256,7 @@ You do not need to run the broker separately for these demos.
 ### Pub/Sub Demo
 
 ```bash
-cargo run --release -p felix-broker-service --bin pubsub-demo-simple
+cargo run --release -p felix-broker-service --features demo --bin pubsub-demo-simple
 ```
 
 Demonstrates:
@@ -267,7 +267,7 @@ Demonstrates:
 ### Cache Demo
 
 ```bash
-cargo run --release -p felix-broker-service --bin cache-demo
+cargo run --release -p felix-broker-service --features demo --bin cache-demo
 ```
 
 Benchmarks cache operations:
@@ -279,10 +279,10 @@ Benchmarks cache operations:
 
 ```bash
 # Basic run
-cargo run --release -p felix-broker-service --bin latency-demo
+cargo run --release -p felix-broker-service --features demo --bin latency-demo
 
 # Custom configuration
-cargo run --release -p felix-broker-service --bin latency-demo -- \
+cargo run --release -p felix-broker-service --features demo --bin latency-demo -- \
     --binary \
     --fanout 10 \
     --batch 64 \

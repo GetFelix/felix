@@ -88,8 +88,14 @@ impl Subscription {
 
     /// Split into the batch receiver and the guard that keeps the
     /// subscriber registered.
+    ///
+    /// The receiver keeps dropping records below the resume point, so a
+    /// caller that delivers from it directly sees nothing below the
+    /// `start_offset` it was told.
     pub fn into_parts(self) -> (SubscriptionReceiver, SubscriptionGuard) {
-        (self.receiver, self.guard)
+        let mut receiver = self.receiver;
+        receiver.skip_below = self.skip_below;
+        (receiver, self.guard)
     }
 
     /// Queue an envelope's payloads, dropping any below the resume point.
@@ -123,6 +129,10 @@ impl Subscription {
 pub struct SubscriptionReceiver {
     pub(crate) receiver: mpsc::Receiver<QueuedDelivery>,
     moved: Arc<OnceLock<ShardMoved>>,
+    /// [`Subscription::skip_below`], carried over by
+    /// [`Subscription::into_parts`]. `None` while the receiver is still inside
+    /// a `Subscription`, which filters per record instead.
+    skip_below: Option<u64>,
 }
 
 impl SubscriptionReceiver {
@@ -130,7 +140,11 @@ impl SubscriptionReceiver {
         receiver: mpsc::Receiver<QueuedDelivery>,
         moved: Arc<OnceLock<ShardMoved>>,
     ) -> Self {
-        Self { receiver, moved }
+        Self {
+            receiver,
+            moved,
+            skip_below: None,
+        }
     }
 
     /// Why the subscription ended, when it ended because its shard moved.
@@ -142,13 +156,49 @@ impl SubscriptionReceiver {
     }
 
     /// The next batch, or `None` once the subscription has ended.
+    ///
+    /// Like [`Subscription::recv`], a batch wholly below the resume point is
+    /// skipped rather than reported as the end.
     pub async fn recv(&mut self) -> Option<DeliveryEnvelope> {
-        Some(self.receiver.recv().await?.into_envelope())
+        loop {
+            let envelope = self.receiver.recv().await?.into_envelope();
+            if let Some(envelope) = self.admit(envelope) {
+                return Some(envelope);
+            }
+        }
     }
 
     /// The next batch if one is already queued.
     pub fn try_recv(&mut self) -> std::result::Result<DeliveryEnvelope, mpsc::error::TryRecvError> {
-        self.receiver.try_recv().map(QueuedDelivery::into_envelope)
+        loop {
+            let envelope = self.receiver.try_recv()?.into_envelope();
+            if let Some(envelope) = self.admit(envelope) {
+                return Ok(envelope);
+            }
+        }
+    }
+
+    /// Drop what lies below the resume point: the whole batch, or the prefix
+    /// of one that straddles it. Same rule as `Subscription::extend_pending`.
+    fn admit(&mut self, envelope: DeliveryEnvelope) -> Option<DeliveryEnvelope> {
+        let (Some(skip), Some(base)) = (self.skip_below, envelope.base_offset()) else {
+            self.skip_below = None;
+            return Some(envelope);
+        };
+        if base >= skip {
+            self.skip_below = None;
+            return Some(envelope);
+        }
+        let end = base + envelope.len() as u64;
+        if end <= skip {
+            return None;
+        }
+        self.skip_below = None;
+        let drop = (skip - base) as usize;
+        Some(DeliveryEnvelope::with_base_offset(
+            &envelope.payloads()[drop..],
+            Some(skip),
+        ))
     }
 }
 

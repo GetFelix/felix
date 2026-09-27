@@ -259,7 +259,7 @@ tasks:
           fi
         done
   demo:cache:
-    cmds: ["cargo run --release -p felix-broker-service --bin cache-demo -- {{.CLI_ARGS}}"]
+    cmds: ["cargo run --release -p felix-broker-service --features demo --bin cache-demo -- {{.CLI_ARGS}}"]
   demo:latency:
     cmds: ["cargo run --release -p felix-broker-service --bin latency-demo --all-features -- {{.CLI_ARGS}}"]
   demo:notifications:
@@ -267,7 +267,7 @@ tasks:
   demo:orders:
     cmds: ["cargo run --release -p felix-broker-service --bin pubsub-demo-orders -- {{.CLI_ARGS}}"]
   demo:pubsub:
-    cmds: ["cargo run --release -p felix-broker-service --bin pubsub-demo-simple -- {{.CLI_ARGS}}"]
+    cmds: ["cargo run --release -p felix-broker-service --features demo --bin pubsub-demo-simple -- {{.CLI_ARGS}}"]
   demo:queues:
     desc: "Queue semantics: distribution, redelivery, dead letters, and their cost"
     cmds: ["cargo run --release -p felix-broker-service --bin queue-semantics-demo -- {{.CLI_ARGS}}"]

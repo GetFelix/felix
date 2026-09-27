@@ -80,6 +80,14 @@ async fn start_broker() -> Result<Harness> {
         Default::default(),
         limit,
     ));
+    // The accept loop registers its publish workers with `connections` before
+    // it accepts anything; wait for that so tests can count connections on top.
+    for _ in 0..500 {
+        if !connections.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 
     Ok(Harness {
         addr,
@@ -130,6 +138,8 @@ async fn cancelling_accept_token_exits_idle_accept_loop() -> Result<()> {
 // dropping exactly the in-flight work the drain exists to protect.
 async fn cancellation_winds_down_accepted_connections() -> Result<()> {
     let harness = start_broker().await?;
+    // The publish workers, tracked alongside the connections.
+    let idle = harness.connections.len();
 
     // Establish a connection before shutdown and keep it open.
     let early_client = client_for(harness.cert.clone())?;
@@ -138,14 +148,14 @@ async fn cancellation_winds_down_accepted_connections() -> Result<()> {
     // Wait for the accept loop to register it, so we are asserting about a
     // connection the broker actually took ownership of.
     for _ in 0..100 {
-        if !harness.connections.is_empty() {
+        if harness.connections.len() > idle {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(
         harness.connections.len(),
-        1,
+        idle + 1,
         "broker should have accepted the pre-shutdown connection"
     );
 

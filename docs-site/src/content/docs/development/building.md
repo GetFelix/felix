@@ -130,13 +130,13 @@ FELIX_QUIC_BIND=0.0.0.0:5001 cargo run --release -p felix-broker-service
 # Demos are self-contained (in-process broker)
 
 # Pub/sub demo
-cargo run --release -p felix-broker-service --bin pubsub-demo-simple
+cargo run --release -p felix-broker-service --features demo --bin pubsub-demo-simple
 
 # Cache demo
-cargo run --release -p felix-broker-service --bin cache-demo
+cargo run --release -p felix-broker-service --features demo --bin cache-demo
 
 # Latency benchmark
-cargo run --release -p felix-broker-service --bin latency-demo
+cargo run --release -p felix-broker-service --features demo --bin latency-demo
 
 # Notifications demo
 cargo run --release -p felix-broker-service --bin pubsub-demo-notifications
@@ -164,7 +164,7 @@ task demo:cross-tenant-isolation
 
 ```bash
 # Latency demo with custom settings
-cargo run --release -p felix-broker-service --bin latency-demo -- \
+cargo run --release -p felix-broker-service --features demo --bin latency-demo -- \
     --binary \
     --fanout 10 \
     --batch 64 \
@@ -466,13 +466,13 @@ audit. A PR that passes those locally passes CI.
 **Basic run**:
 
 ```bash
-cargo run --release -p felix-broker-service --bin latency-demo
+cargo run --release -p felix-broker-service --features demo --bin latency-demo
 ```
 
 **Custom configuration**:
 
 ```bash
-cargo run --release -p felix-broker-service --bin latency-demo -- \
+cargo run --release -p felix-broker-service --features demo --bin latency-demo -- \
     --binary \
     --fanout 10 \
     --batch 64 \
@@ -498,7 +498,7 @@ python3 scripts/perf/render_markdown_snippets.py
 
 ```bash
 # Run cache benchmarks
-cargo run --release -p felix-broker-service --bin cache-demo
+cargo run --release -p felix-broker-service --features demo --bin cache-demo
 
 # Or with Task
 task demo:cache
@@ -512,7 +512,7 @@ export FELIX_CACHE_STREAMS_PER_CONN=4
 export FELIX_CACHE_BENCH_CONCURRENCY=32
 export FELIX_CACHE_BENCH_KEYS=1024
 
-cargo run --release -p felix-broker-service --bin cache-demo
+cargo run --release -p felix-broker-service --features demo --bin cache-demo
 ```
 
 ## Profiling

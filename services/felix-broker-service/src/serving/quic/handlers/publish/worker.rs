@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use felix_broker::Broker;
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::task::TaskTracker;
 
 use super::{
     PublishAdmission, PublishContext, PublishJob, PublishTarget, SubscriptionLimiter,
@@ -19,10 +20,29 @@ use crate::serving::quic::{ClusterContext, GLOBAL_INGRESS_DEPTH};
 use crate::shards::ShardKey;
 use crate::shards::lifecycle::fence;
 
+/// The publish context with untracked workers, for tests that do not drain.
+#[cfg(test)]
 pub(crate) fn build_publish_context(
     broker: Arc<Broker>,
     config: &BrokerConfig,
     cluster: ClusterContext,
+) -> PublishContext {
+    build_tracked_publish_context(broker, config, cluster, &TaskTracker::new())
+}
+
+/// Start the publish workers and build the context that feeds them, with the
+/// workers and every completion they spawn tracked by `work`.
+///
+/// A worker exits once every sender to it is gone and its queue is empty, so
+/// once the connections using the context have ended, closing `work` and
+/// waiting on it waits for every queued publish to be settled. A publish
+/// acknowledged on enqueue is only safe on a clean stop if the drain waits
+/// for it.
+pub(crate) fn build_tracked_publish_context(
+    broker: Arc<Broker>,
+    config: &BrokerConfig,
+    cluster: ClusterContext,
+    work: &TaskTracker,
 ) -> PublishContext {
     let ClusterContext {
         ingress,
@@ -52,11 +72,12 @@ pub(crate) fn build_publish_context(
     let queue_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut worker_txs = Vec::with_capacity(worker_count);
     for worker_id in 0..worker_count {
-        #[cfg(not(feature = "perf_debug"))]
-        let _ = worker_id;
         #[cfg(feature = "perf_debug")]
         let worker_label = worker_id.to_string();
-        let (publish_tx, mut publish_rx) = mpsc::channel::<PublishJob>(publish_queue_depth);
+        let (publish_tx, publish_rx) = mpsc::channel::<PublishJob>(publish_queue_depth);
+        // Shared rather than moved into the worker, so a worker that panics
+        // leaves its queue behind for the replacement `supervise` starts.
+        let publish_rx = Arc::new(tokio::sync::Mutex::new(publish_rx));
         let queue_depth_worker = Arc::clone(&queue_depth);
         let broker_for_worker = Arc::clone(&broker);
         let peers_for_worker = peers.clone();
@@ -76,265 +97,283 @@ pub(crate) fn build_publish_context(
         let flush_slots = Arc::new(tokio::sync::Semaphore::new(
             config.pub_flush_concurrency.max(1),
         ));
-        let worker_task = async move {
-            while let Some(mut job) = publish_rx.recv().await {
-                let mut held = job.fenced.take();
-                #[cfg(feature = "perf_debug")]
-                metrics::counter!(
-                    "felix_perf_publish_worker_wakeups_total",
-                    "worker" => worker_label.clone()
-                )
-                .increment(1);
-                let _ = decrement_depth(
-                    &queue_depth_worker,
-                    &GLOBAL_INGRESS_DEPTH,
-                    "felix_broker_ingress_queue_depth",
-                );
-                #[cfg(feature = "perf_debug")]
-                let worker_start = std::time::Instant::now();
+        let work_for_worker = work.clone();
+        let make_worker = move || {
+            let publish_rx = Arc::clone(&publish_rx);
+            let queue_depth_worker = Arc::clone(&queue_depth_worker);
+            let broker_for_worker = Arc::clone(&broker_for_worker);
+            let peers_for_worker = peers_for_worker.clone();
+            let marks_for_worker = marks_for_worker.clone();
+            let ingress_for_worker = ingress_for_worker.clone();
+            let flush_slots = Arc::clone(&flush_slots);
+            let work = work_for_worker.clone();
+            #[cfg(feature = "perf_debug")]
+            let worker_label = worker_label.clone();
+            async move {
+                let mut publish_rx = publish_rx.lock_owned().await;
+                while let Some(mut job) = publish_rx.recv().await {
+                    let mut held = job.fenced.take();
+                    #[cfg(feature = "perf_debug")]
+                    metrics::counter!(
+                        "felix_perf_publish_worker_wakeups_total",
+                        "worker" => worker_label.clone()
+                    )
+                    .increment(1);
+                    let _ = decrement_depth(
+                        &queue_depth_worker,
+                        &GLOBAL_INGRESS_DEPTH,
+                        "felix_broker_ingress_queue_depth",
+                    );
+                    #[cfg(feature = "perf_debug")]
+                    let worker_start = std::time::Instant::now();
 
-                // Durable local publishes take the split path: claim here, in
-                // queue order, then complete off-worker so the device flushes
-                // overlap. Everything else -- forwards, idempotent sequences,
-                // the single-node local target -- stays inline, because none of
-                // them is waiting on a flush this worker could be sharing.
-                if let PublishTarget::Resolved {
-                    handle,
-                    shard,
-                    generation,
-                    ..
-                } = &job.target
-                    && handle.is_durable()
-                {
-                    // Held until the publish is durable and fanned out, so
-                    // a drained report cannot go out while it is landing.
-                    // Entering is also the lease check, against the clock:
-                    // see `fence`.
-                    let fenced = match fence::enter_or_keep(
-                        &mut held,
-                        ingress_for_worker.as_deref(),
-                        shard.as_ref(),
-                        *generation,
-                    ) {
-                        Ok(fenced) => fenced,
-                        Err(refused) => {
-                            settle(
-                                job.response,
-                                job.acked_on_enqueue,
-                                shard.as_ref(),
-                                Err(refused.into()),
-                            );
-                            continue;
-                        }
-                    };
-                    // Serial, and the only ordered part: offsets are
-                    // consumed here, so the order these return in is the
-                    // order records land on disk.
-                    match broker_for_worker.claim_publish(handle, &job.payloads).await {
-                        Ok(claimed) => {
-                            let permit = Arc::clone(&flush_slots)
-                                .acquire_owned()
-                                .await
-                                .expect("flush slots are never closed");
-                            let broker = Arc::clone(&broker_for_worker);
-                            let handle = handle.clone();
-                            let shard = shard.clone();
-                            let marks = marks_for_worker.clone();
-                            let ingress = ingress_for_worker.clone();
-                            let response = job.response;
-                            let acked_on_enqueue = job.acked_on_enqueue;
-                            tokio::spawn(async move {
-                                let completed = broker.complete_publish(claimed).await;
-                                drop(fenced);
-                                let result = match completed {
-                                    Ok(outcome) => {
-                                        crate::replication::quorum::await_quorum(
-                                            &handle,
-                                            shard.as_ref(),
-                                            &outcome,
-                                            marks.as_deref(),
-                                            ingress.as_deref(),
-                                            quorum_timeout,
-                                        )
-                                        .await
-                                    }
-                                    Err(err) => Err(err.into()),
-                                };
-                                settle(response, acked_on_enqueue, shard.as_ref(), result);
-                                drop(permit);
-                            });
-                            continue;
-                        }
-                        Err(err) => {
-                            settle(
-                                job.response,
-                                job.acked_on_enqueue,
-                                shard.as_ref(),
-                                Err(err.into()),
-                            );
-                            continue;
-                        }
-                    }
-                }
-
-                let result: Result<(), anyhow::Error> = match &job.target {
-                    PublishTarget::Resolved {
+                    // Durable local publishes take the split path: claim here, in
+                    // queue order, then complete off-worker so the device flushes
+                    // overlap. Everything else -- forwards, idempotent sequences,
+                    // the single-node local target -- stays inline, because none of
+                    // them is waiting on a flush this worker could be sharing.
+                    if let PublishTarget::Resolved {
                         handle,
                         shard,
                         generation,
                         ..
-                    } => {
-                        // The commit fence, and the authoritative lease check.
-                        // Everything between admission and here can take
-                        // arbitrarily long -- a full queue, a slow fsync, a
-                        // suspended process -- so a lease that was valid on the
-                        // way in may have lapsed, and a broker that writes after
-                        // losing it is writing a shard someone else may lead.
-                        match fence::enter_or_keep(
+                    } = &job.target
+                        && handle.is_durable()
+                    {
+                        // Held until the publish is durable and fanned out, so
+                        // a drained report cannot go out while it is landing.
+                        // Entering is also the lease check, against the clock:
+                        // see `fence`.
+                        let fenced = match fence::enter_or_keep(
                             &mut held,
                             ingress_for_worker.as_deref(),
                             shard.as_ref(),
                             *generation,
                         ) {
-                            Err(refused) => Err(refused.into()),
-                            Ok(fenced) => {
-                                let published = broker_for_worker
-                                    .publish_batch_with_outcome(handle, &job.payloads)
-                                    .await;
-                                drop(fenced);
-                                match published {
-                                    Ok(outcome) => {
-                                        crate::replication::quorum::await_quorum(
-                                            handle,
-                                            shard.as_ref(),
-                                            &outcome,
-                                            marks_for_worker.as_deref(),
-                                            ingress_for_worker.as_deref(),
-                                            quorum_timeout,
-                                        )
-                                        .await
-                                    }
-                                    Err(err) => Err(err.into()),
-                                }
+                            Ok(fenced) => fenced,
+                            Err(refused) => {
+                                settle(
+                                    job.response,
+                                    job.acked_on_enqueue,
+                                    shard.as_ref(),
+                                    Err(refused.into()),
+                                );
+                                continue;
+                            }
+                        };
+                        // Serial, and the only ordered part: offsets are
+                        // consumed here, so the order these return in is the
+                        // order records land on disk.
+                        match broker_for_worker.claim_publish(handle, &job.payloads).await {
+                            Ok(claimed) => {
+                                let permit = Arc::clone(&flush_slots)
+                                    .acquire_owned()
+                                    .await
+                                    .expect("flush slots are never closed");
+                                let broker = Arc::clone(&broker_for_worker);
+                                let handle = handle.clone();
+                                let shard = shard.clone();
+                                let marks = marks_for_worker.clone();
+                                let ingress = ingress_for_worker.clone();
+                                let response = job.response;
+                                let acked_on_enqueue = job.acked_on_enqueue;
+                                work.spawn(async move {
+                                    let completed = broker.complete_publish(claimed).await;
+                                    drop(fenced);
+                                    let result = match completed {
+                                        Ok(outcome) => {
+                                            crate::replication::quorum::await_quorum(
+                                                &handle,
+                                                shard.as_ref(),
+                                                &outcome,
+                                                marks.as_deref(),
+                                                ingress.as_deref(),
+                                                quorum_timeout,
+                                            )
+                                            .await
+                                        }
+                                        Err(err) => Err(err.into()),
+                                    };
+                                    settle(response, acked_on_enqueue, shard.as_ref(), result);
+                                    drop(permit);
+                                });
+                                continue;
+                            }
+                            Err(err) => {
+                                settle(
+                                    job.response,
+                                    job.acked_on_enqueue,
+                                    shard.as_ref(),
+                                    Err(err.into()),
+                                );
+                                continue;
                             }
                         }
                     }
-                    PublishTarget::Idempotent {
-                        handle,
-                        shard,
-                        generation,
-                        producer_id,
-                        sequence,
-                        ..
-                    } => match fence::enter_or_keep(
-                        // The same commit fence as a plain publish: see above.
-                        &mut held,
-                        ingress_for_worker.as_deref(),
-                        shard.as_ref(),
-                        *generation,
-                    ) {
-                        Err(refused) => Err(refused.into()),
-                        Ok(fenced) => {
-                            let published = broker_for_worker
-                                .publish_batch_idempotent(
-                                    handle,
-                                    *producer_id,
-                                    *sequence,
-                                    &job.payloads,
-                                )
-                                .await;
-                            drop(fenced);
-                            match published {
-                                // A duplicate waits on the same quorum the
-                                // original did: its offsets are the original's,
-                                // and the answer must mean the same thing.
-                                Ok(idempotent) => {
-                                    crate::replication::quorum::await_quorum(
-                                        handle,
-                                        shard.as_ref(),
-                                        &idempotent.outcome,
-                                        marks_for_worker.as_deref(),
-                                        ingress_for_worker.as_deref(),
-                                        quorum_timeout,
-                                    )
-                                    .await
+
+                    let result: Result<(), anyhow::Error> = match &job.target {
+                        PublishTarget::Resolved {
+                            handle,
+                            shard,
+                            generation,
+                            ..
+                        } => {
+                            // The commit fence, and the authoritative lease check.
+                            // Everything between admission and here can take
+                            // arbitrarily long -- a full queue, a slow fsync, a
+                            // suspended process -- so a lease that was valid on the
+                            // way in may have lapsed, and a broker that writes after
+                            // losing it is writing a shard someone else may lead.
+                            match fence::enter_or_keep(
+                                &mut held,
+                                ingress_for_worker.as_deref(),
+                                shard.as_ref(),
+                                *generation,
+                            ) {
+                                Err(refused) => Err(refused.into()),
+                                Ok(fenced) => {
+                                    let published = broker_for_worker
+                                        .publish_batch_with_outcome(handle, &job.payloads)
+                                        .await;
+                                    drop(fenced);
+                                    match published {
+                                        Ok(outcome) => {
+                                            crate::replication::quorum::await_quorum(
+                                                handle,
+                                                shard.as_ref(),
+                                                &outcome,
+                                                marks_for_worker.as_deref(),
+                                                ingress_for_worker.as_deref(),
+                                                quorum_timeout,
+                                            )
+                                            .await
+                                        }
+                                        Err(err) => Err(err.into()),
+                                    }
                                 }
-                                Err(err) => Err(err.into()),
                             }
                         }
-                    },
-                    #[cfg(test)]
-                    PublishTarget::Named {
-                        tenant_id,
-                        namespace,
-                        stream,
-                    } => broker_for_worker
-                        .publish_batch(tenant_id, namespace, stream, 0, &job.payloads)
-                        .await
-                        .map(|_| ())
-                        .map_err(Into::into),
-                    PublishTarget::Forward {
-                        target,
-                        key,
-                        ack,
-                        credential,
-                    } => {
-                        // Forwarding runs on the publish worker, not inline on
-                        // the read loop, so a slow peer backs up the same queue
-                        // a slow disk would and the existing backpressure and
-                        // ack plumbing apply unchanged.
-                        match &peers_for_worker {
-                            Some(pool) => crate::serving::forward::forward_publish(
-                                pool,
-                                target,
-                                key,
-                                *ack,
-                                credential,
-                                job.payloads.clone(),
-                                forward_budget,
-                            )
+                        PublishTarget::Idempotent {
+                            handle,
+                            shard,
+                            generation,
+                            producer_id,
+                            sequence,
+                            ..
+                        } => {
+                            // The same commit fence as a plain publish: see above.
+                            match fence::enter_or_keep(
+                                &mut held,
+                                ingress_for_worker.as_deref(),
+                                shard.as_ref(),
+                                *generation,
+                            ) {
+                                Err(refused) => Err(refused.into()),
+                                Ok(fenced) => {
+                                    let published = broker_for_worker
+                                        .publish_batch_idempotent(
+                                            handle,
+                                            *producer_id,
+                                            *sequence,
+                                            &job.payloads,
+                                        )
+                                        .await;
+                                    drop(fenced);
+                                    match published {
+                                        // A duplicate waits on the same quorum the
+                                        // original did: its offsets are the original's,
+                                        // and the answer must mean the same thing.
+                                        Ok(idempotent) => {
+                                            crate::replication::quorum::await_quorum(
+                                                handle,
+                                                shard.as_ref(),
+                                                &idempotent.outcome,
+                                                marks_for_worker.as_deref(),
+                                                ingress_for_worker.as_deref(),
+                                                quorum_timeout,
+                                            )
+                                            .await
+                                        }
+                                        Err(err) => Err(err.into()),
+                                    }
+                                }
+                            }
+                        }
+                        #[cfg(test)]
+                        PublishTarget::Named { stream, .. }
+                            if stream == tests::PANICKING_STREAM =>
+                        {
+                            panic!("injected publish worker panic")
+                        }
+                        #[cfg(test)]
+                        PublishTarget::Named {
+                            tenant_id,
+                            namespace,
+                            stream,
+                        } => broker_for_worker
+                            .publish_batch(tenant_id, namespace, stream, 0, &job.payloads)
                             .await
                             .map(|_| ())
-                            .map_err(anyhow::Error::from),
-                            // The route said forward and there is nothing to
-                            // forward with. Refusing beats writing another
-                            // broker's shard locally.
-                            None => Err(ClientError::internal(format!(
-                                "no peer transport: this broker cannot forward to {}",
-                                target.node_id
-                            ))
-                            .with_retry(felix_wire::RetryClass::Retry)
-                            .into()),
+                            .map_err(Into::into),
+                        PublishTarget::Forward {
+                            target,
+                            key,
+                            ack,
+                            credential,
+                        } => {
+                            // Forwarding runs on the publish worker, not inline on
+                            // the read loop, so a slow peer backs up the same queue
+                            // a slow disk would and the existing backpressure and
+                            // ack plumbing apply unchanged.
+                            match &peers_for_worker {
+                                Some(pool) => crate::serving::forward::forward_publish(
+                                    pool,
+                                    target,
+                                    key,
+                                    *ack,
+                                    credential,
+                                    job.payloads.clone(),
+                                    forward_budget,
+                                )
+                                .await
+                                .map(|_| ())
+                                .map_err(anyhow::Error::from),
+                                // The route said forward and there is nothing to
+                                // forward with. Refusing beats writing another
+                                // broker's shard locally.
+                                None => Err(ClientError::internal(format!(
+                                    "no peer transport: this broker cannot forward to {}",
+                                    target.node_id
+                                ))
+                                .with_retry(felix_wire::RetryClass::Retry)
+                                .into()),
+                            }
                         }
-                    }
-                };
-                #[cfg(feature = "perf_debug")]
-                {
-                    let ns = worker_start.elapsed().as_nanos() as u64;
-                    metrics::histogram!("felix_perf_pub_worker_ns", "worker" => worker_label.clone())
+                    };
+                    #[cfg(feature = "perf_debug")]
+                    {
+                        let ns = worker_start.elapsed().as_nanos() as u64;
+                        metrics::histogram!("felix_perf_pub_worker_ns", "worker" => worker_label.clone())
                         .record(ns as f64);
-                    metrics::counter!(
-                        "felix_perf_publish_worker_jobs_total",
-                        "worker" => worker_label.clone()
-                    )
-                    .increment(1);
+                        metrics::counter!(
+                            "felix_perf_publish_worker_jobs_total",
+                            "worker" => worker_label.clone()
+                        )
+                        .increment(1);
+                    }
+                    let shard = match &job.target {
+                        PublishTarget::Resolved { shard, .. }
+                        | PublishTarget::Idempotent { shard, .. } => shard.as_ref(),
+                        _ => None,
+                    };
+                    settle(job.response, job.acked_on_enqueue, shard, result);
                 }
-                let shard = match &job.target {
-                    PublishTarget::Resolved { shard, .. }
-                    | PublishTarget::Idempotent { shard, .. } => shard.as_ref(),
-                    _ => None,
-                };
-                settle(job.response, job.acked_on_enqueue, shard, result);
             }
         };
-        match &shards {
-            Some(shards) => {
-                shards.handle_for(worker_id as u64).spawn(worker_task);
-            }
-            None => {
-                tokio::spawn(worker_task);
-            }
-        }
+        let runtime = shards
+            .as_ref()
+            .map(|shards| shards.handle_for(worker_id as u64).clone());
+        work.spawn(supervise(worker_id, runtime, make_worker));
         worker_txs.push(publish_tx);
     }
     PublishContext {
@@ -361,6 +400,43 @@ pub(crate) fn build_publish_context(
         preauth: Arc::new(PreAuthGate::new(config)),
     }
 }
+
+/// Run a publish worker, starting a fresh one on the same queue whenever it
+/// panics.
+///
+/// A worker that died unsupervised closed its queue: every stream hashed to it
+/// was refused with "queue closed" until the broker restarted, while `/ready`
+/// stayed green. The job being handled when it panicked is lost -- its waiter
+/// sees the response dropped -- but the rest of the queue is served.
+async fn supervise<F, Fut>(
+    worker_id: usize,
+    runtime: Option<tokio::runtime::Handle>,
+    make_worker: F,
+) where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    loop {
+        let worker = make_worker();
+        let joined = match &runtime {
+            Some(runtime) => runtime.spawn(worker).await,
+            None => tokio::spawn(worker).await,
+        };
+        match joined {
+            // Every sender is gone and the queue is drained.
+            Ok(()) => return,
+            Err(err) if err.is_panic() => {
+                metrics::counter!(PUBLISH_WORKER_RESTARTS_TOTAL).increment(1);
+                tracing::error!(worker_id, "publish worker panicked; starting a replacement");
+            }
+            // Cancelled: the runtime is shutting down.
+            Err(_) => return,
+        }
+    }
+}
+
+/// Publish workers restarted after a panic.
+const PUBLISH_WORKER_RESTARTS_TOTAL: &str = "felix_broker_publish_worker_restarts_total";
 
 /// Hand a job's outcome to whoever is waiting for it.
 ///

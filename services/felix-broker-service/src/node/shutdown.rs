@@ -2,9 +2,10 @@
 //!
 //! The drain runs in a fixed order: readiness goes false, a clustered broker
 //! hands its shards off, the listener keeps admitting for the optional
-//! hold-off, then stops; in-flight connections
-//! finish, peers and background tasks stop, durable logs are flushed, and the
-//! metrics server goes last so an operator can watch the whole thing.
+//! hold-off, then stops; in-flight connections finish and the publish workers
+//! empty their queues, peers and background tasks stop, durable logs are
+//! flushed, and the metrics server goes last so an operator can watch the
+//! whole thing.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -160,7 +161,10 @@ impl Running {
         );
 
         // Closing the tracker is what lets `wait()` resolve; without it the wait would
-        // hang until the deadline even with no connections left.
+        // hang until the deadline even with no connections left. The publish
+        // workers and their completions are tracked here too, so this also waits
+        // for publishes acknowledged on enqueue to be written before replication
+        // is told to catch up and storage is flushed.
         connections.close();
         budget.drain("quic_connections", connections.wait()).await;
 

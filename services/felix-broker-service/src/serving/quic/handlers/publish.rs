@@ -61,7 +61,9 @@ pub(crate) use stream_cache::StreamHandleCache;
 pub(crate) use uni::{
     handle_binary_publish_batch_uni, handle_publish_batch_message_uni, handle_publish_message_uni,
 };
+#[cfg(test)]
 pub(crate) use worker::build_publish_context;
+pub(crate) use worker::build_tracked_publish_context;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
