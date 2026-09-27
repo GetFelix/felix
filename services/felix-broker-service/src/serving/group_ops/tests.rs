@@ -148,60 +148,18 @@ async fn an_ack_after_the_lease_lapses_is_refused() {
     assert_eq!(committed(&leader).await, Some(1), "renewed, the ack lands");
 }
 
-/// **A claim made before the shard moved here is still settled.** The
-/// tracker is in memory and does not move with the shard, so the new leader
-/// never saw the claim; every claim its predecessor made is below the tail it
-/// first saw, and the ack lands instead of being refused mid-move.
+/// **An ack for a claim the tracker forgot is a retryable `stale_claim`.**
+/// Offset 1 is in the log but past what this tracker handed out: exactly what
+/// an ack looks like after the tracker was evicted or the shard failed over.
+/// The consumer did nothing wrong, and the record will come round again.
+/// Past the tail nothing was ever handed out, so that stays a bad request.
 #[tokio::test]
-async fn a_claim_from_before_the_move_is_still_settled() {
+async fn an_ack_for_a_forgotten_claim_is_stale_not_invalid() {
     let (leader, publish_ctx) = claimed_one().await;
-    // What a move back, a failover or an eviction does to the tracker.
-    leader
-        .broker
-        .group_reader()
-        .expect("groups")
-        .reset_shard(TENANT, NAMESPACE, DURABLE, 0)
-        .await;
-    settle(
-        &leader.broker,
-        &publish_ctx,
-        None,
-        TENANT,
-        NAMESPACE,
-        DURABLE,
-        0,
-        GROUP,
-        0,
-        true,
-    )
-    .await
-    .expect("the pre-move claim is settled");
-    assert_eq!(committed(&leader).await, Some(1));
-}
-
-/// **An ack for a record newer than the tracker is a retryable
-/// `stale_claim`.** Offset 2 was written after the tracker was built and has
-/// not been polled, so nobody holds a claim on it; the consumer is told so
-/// and the record will come round. Past the tail nothing was ever handed
-/// out, so that stays a bad request.
-#[tokio::test]
-async fn an_ack_for_a_record_newer_than_the_tracker_is_stale_not_invalid() {
-    let (leader, publish_ctx) = claimed_one().await;
-    leader
-        .broker
-        .publish_batch(
-            TENANT,
-            NAMESPACE,
-            DURABLE,
-            0,
-            &[Bytes::from_static(b"third")],
-        )
-        .await
-        .expect("publish");
     for finish in [true, false] {
         for (offset, code, retry) in [
             (
-                2,
+                1,
                 felix_wire::ErrorCode::StaleClaim,
                 felix_wire::RetryClass::Retry,
             ),

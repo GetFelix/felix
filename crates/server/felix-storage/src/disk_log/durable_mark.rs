@@ -174,15 +174,6 @@ impl LogInner {
     /// truncation or reset, durably. Called holding the flush lock, with the
     /// active segment just synced.
     pub(super) fn note_rewound(&self, segments: &SegmentSet) -> crate::Result<()> {
-        #[cfg(test)]
-        if self
-            .fail_next_rewind_sync
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
-        {
-            return Err(crate::StorageError::SyncFailed(
-                "injected fsync failure".to_string(),
-            ));
-        }
         self.mark.record_durably(DurableMark {
             segment: segments.active().id(),
             synced_bytes: segments.active().size_bytes(),
