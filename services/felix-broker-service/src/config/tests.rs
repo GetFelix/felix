@@ -5,6 +5,7 @@ mod credential;
 mod cross_field;
 mod from_env;
 mod kafka;
+mod limits;
 mod listeners;
 mod membership;
 mod peer_transport;

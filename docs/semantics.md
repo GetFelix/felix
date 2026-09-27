@@ -520,7 +520,11 @@ broker and the owner — routing does not launder a credential.
 > `crates/testing/felix-cluster/src/scenarios.rs`, including
 > `unauthorized_publish_is_refused` across both ingress paths.
 
-Per-tenant quotas are **not** enforced.
+Per-tenant publish quotas are enforced per broker, when configured
+(`FELIX_TENANT_PUBLISH_*`): a token bucket per tenant for bytes and messages,
+checked before a publish is queued. There are no quotas on subscriptions,
+cache use or storage, and the rate is set per broker by environment rather
+than stored in the control plane.
 
 ## Where the guarantees stop
 

@@ -17,6 +17,7 @@ use crate::config::{BrokerConfig, KafkaListenerConfig};
 use crate::peer::PeerPool;
 use crate::replication::quorum::QuorumMarks;
 use crate::serving::kafka::{BrokerCluster, KafkaListener, STANDALONE_NODE_ID};
+use crate::serving::limits::{ListenerLimits, TenantRates};
 use crate::serving::tls::ClientTls;
 use crate::serving::{auth::BrokerAuth, quic};
 use crate::shards::routing::IngressRouter;
@@ -63,6 +64,7 @@ pub(super) struct AcceptLoops<'a> {
     pub(super) lease: &'a Option<Arc<LeaseState>>,
     pub(super) quorum_marks: &'a Arc<QuorumMarks>,
     pub(super) client_endpoints: &'a Arc<ClientEndpoints>,
+    pub(super) limits: &'a Arc<ListenerLimits>,
 }
 
 /// Start accepting QUIC connections, one background task per listener. If an
@@ -89,6 +91,7 @@ pub(super) fn spawn_accept_loops(
         lease,
         quorum_marks,
         client_endpoints,
+        limits,
     } = shared;
     let limit = quic::ConnectionLimit::new(config.max_client_connections);
     quic_servers
@@ -107,6 +110,7 @@ pub(super) fn spawn_accept_loops(
             let lease_for_accept = lease.clone();
             let marks_for_accept = Arc::clone(quorum_marks);
             let endpoints_for_accept = Arc::clone(client_endpoints);
+            let limits = Arc::clone(limits);
             tokio::spawn(async move {
                 // A durable broker does not accept until its streams exist.
                 // Readiness alone only steers orchestrated traffic; a client with
@@ -141,6 +145,7 @@ pub(super) fn spawn_accept_loops(
                         client_endpoints: Some(Arc::clone(&endpoints_for_accept)),
                     },
                     limit,
+                    limits,
                 )
                 .await
                 {
@@ -158,6 +163,7 @@ pub(super) struct KafkaClusterView<'a> {
     pub(super) client_endpoints: &'a Arc<ClientEndpoints>,
     pub(super) lease: &'a Option<Arc<LeaseState>>,
     pub(super) quorum_marks: &'a Arc<QuorumMarks>,
+    pub(super) quotas: &'a Arc<TenantRates>,
 }
 
 /// Bind the Kafka listener, when one is configured.
@@ -176,6 +182,7 @@ pub(super) async fn bind_kafka(
         client_endpoints,
         lease,
         quorum_marks,
+        quotas,
     } = view;
     let Some(kafka) = KafkaListenerConfig::from_env()? else {
         return Ok(None);
@@ -198,7 +205,8 @@ pub(super) async fn bind_kafka(
         lease.clone(),
         Some(Arc::clone(quorum_marks)),
         std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
-    );
+    )
+    .with_quotas(Arc::clone(quotas));
     let kafka_tls = kafka.tls.then(|| tls.kafka_server_config()).transpose()?;
     if kafka.tls {
         tracing::info!("kafka listener serves TLS: clients connect with SASL_SSL");

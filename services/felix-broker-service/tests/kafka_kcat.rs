@@ -249,6 +249,8 @@ async fn start() -> Felix {
                 anonymous_tenant: anonymous.map(str::to_string),
                 default_namespace: None,
                 max_connections: 64,
+                max_connections_per_ip: 64,
+                auth_timeout_ms: 10_000,
             };
             let cluster = BrokerCluster::new(Arc::clone(&auth), None, None, "felix", &advertise)
                 .expect("cluster");

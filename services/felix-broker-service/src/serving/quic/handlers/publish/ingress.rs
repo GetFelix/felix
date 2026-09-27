@@ -13,7 +13,9 @@ use bytes::Bytes;
 use felix_broker::StreamHandle;
 use tokio::sync::{mpsc, watch};
 
+use crate::observability::tenants;
 use crate::serving::quic::GLOBAL_INGRESS_DEPTH;
+use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::ack::EnqueuePolicy;
 use crate::serving::quic::handlers::publish::admission::AdmissionPermit;
 use crate::serving::quic::handlers::publish::{PublishContext, PublishJob};
@@ -322,6 +324,64 @@ pub(crate) async fn enqueue_publish(
         }
         Err(mpsc::error::TrySendError::Closed(_)) => Err(anyhow!("publish queue closed")),
     }
+}
+
+/// [`enqueue_publish`] for a client's publish on behalf of `tenant`, after the
+/// tenant's publish quota admits it, counting what was queued against the
+/// tenant.
+///
+/// The quota is checked before any byte budget is taken, so a tenant over its
+/// quota holds none of the shared budget other tenants need. Over quota:
+///
+/// - an acked publish (`Fail`/`Wait`) is refused as `overloaded` with the wait
+///   in `retry_after_ms`, and nothing is queued;
+/// - a fire-and-forget publish under `Drop` is shed, like any other overload;
+/// - under `Backpressure` it waits for the quota, which slows the publisher
+///   through QUIC flow control instead of losing its messages.
+pub(crate) async fn enqueue_tenant_publish(
+    publish_ctx: &PublishContext,
+    tenant: &str,
+    job: PublishJob,
+    policy: EnqueuePolicy,
+    mut cancel: Option<watch::Receiver<bool>>,
+) -> Result<bool> {
+    let messages = job.payloads.len() as u64;
+    let bytes = job.payloads.iter().map(Bytes::len).sum::<usize>() as u64;
+    let rates = &publish_ctx.tenant_rates;
+    if let Err(wait) = rates.try_admit(tenant, messages, bytes) {
+        match policy {
+            EnqueuePolicy::Drop => {
+                tenants::record_throttled(tenant, tenants::THROTTLE_DROPPED);
+                t_counter!("felix_broker_ingress_dropped_total").increment(1);
+                return Ok(false);
+            }
+            EnqueuePolicy::Fail | EnqueuePolicy::Wait => {
+                tenants::record_throttled(tenant, tenants::THROTTLE_REFUSED);
+                return Err(anyhow::Error::new(ClientError::tenant_quota(wait)));
+            }
+            EnqueuePolicy::Backpressure => {
+                tenants::record_throttled(tenant, tenants::THROTTLE_DELAYED);
+                let mut wait = wait;
+                loop {
+                    if until_cancelled(tokio::time::sleep(wait), &mut cancel)
+                        .await
+                        .is_none()
+                    {
+                        return Err(anyhow!("publish cancelled while waiting for tenant quota"));
+                    }
+                    match rates.try_admit(tenant, messages, bytes) {
+                        Ok(()) => break,
+                        Err(next) => wait = next,
+                    }
+                }
+            }
+        }
+    }
+    let enqueued = enqueue_publish(publish_ctx, job, policy, cancel).await?;
+    if enqueued {
+        tenants::record_published(tenant, messages, bytes);
+    }
+    Ok(enqueued)
 }
 
 // Adjust queue depth gauges safely when send fails or work completes.

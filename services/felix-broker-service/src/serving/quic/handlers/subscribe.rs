@@ -47,13 +47,14 @@ use tokio::sync::mpsc;
 use tracing::Instrument;
 
 use super::publish::{Outgoing, SubscriptionLimiter, send_outgoing_critical};
+use crate::observability::tenants::TenantDelivery;
 use crate::serving::quic::SUBSCRIPTION_ID;
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::codec::write_message;
 use crate::serving::quic::telemetry::t_counter;
 use config::EventWriterConfig;
 use feeder::run_lane_feeder;
-use replay::write_replay;
+use replay::{CountingSink, write_replay};
 
 /// Handle a subscribe request received on the bi-directional control stream.
 ///
@@ -297,9 +298,13 @@ pub(crate) async fn handle_subscribe_message(
         // queueing in `subscription` while these bytes are written, and they cannot
         // overtake replay because nothing drains that queue until registration
         // below. History, then backlog, then live -- contiguous.
+        let delivery = TenantDelivery::for_tenant(&tenant_id);
         if let Some((history, backlog, backlog_start)) = replay
             && let Err(err) = write_replay(
-                &mut event_send,
+                &mut CountingSink {
+                    inner: &mut event_send,
+                    delivery: &delivery,
+                },
                 &broker,
                 &tenant_id,
                 &namespace,
@@ -402,6 +407,7 @@ pub(crate) async fn handle_subscribe_message(
                 Some(connection_id),
                 writer_config,
                 feeder_subscriptions,
+                delivery,
             )
             .await;
         };

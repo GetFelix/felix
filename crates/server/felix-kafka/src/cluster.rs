@@ -7,6 +7,7 @@
 //! it.
 
 use std::any::Any;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use felix_authz::{Action, Namespace, PermissionMatcher, StreamName, TenantId, stream_resource};
@@ -53,6 +54,14 @@ pub trait Cluster: Send + Sync + 'static {
     fn committed_until(&self, shard: &ShardRef<'_>, handle: &StreamHandle) -> Option<u64> {
         let _ = (shard, handle);
         None
+    }
+
+    /// Account for `records` records of `bytes` payload that `tenant_id` is
+    /// about to produce, and say how long to hold the request to keep the
+    /// tenant within its publish quota. Kafka clients are throttled by delay,
+    /// not refused, and the delay is reported back as `throttle_time_ms`.
+    fn admit_produce(&self, _tenant_id: &str, _records: u64, _bytes: u64) -> Duration {
+        Duration::ZERO
     }
 }
 

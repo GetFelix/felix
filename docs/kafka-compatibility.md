@@ -324,6 +324,16 @@ a new record format, and nothing reading Felix streams uses them today.
 acknowledges on the leader by design, and asking Kafka-style for "all" does not
 change the stream.
 
+### Quotas
+
+A produce counts against its tenant's publish quota
+(`FELIX_TENANT_PUBLISH_*`), the same budget the tenant's QUIC publishes draw
+on. Over quota, the produce is still written and answered, with
+`throttle_time_ms` set; the connection then reads nothing more until that time
+has passed. That is how a Kafka broker enforces its own quotas, and a client
+that honours `throttle_time_ms` waits the same window rather than on top of it.
+The hold is at most five seconds, well inside a producer's request timeout.
+
 ### Idempotent producers
 
 `InitProducerId` without a transactional id returns a Felix producer id (the
@@ -405,6 +415,8 @@ All of these are read by the broker. The listener is off unless
 | `FELIX_KAFKA_ANONYMOUS_TENANT` | unset | Development switch. An unauthenticated connection reads and writes every stream of this tenant. |
 | `FELIX_KAFKA_DEFAULT_NAMESPACE` | unset | Namespace for topic names without a dot. |
 | `FELIX_KAFKA_MAX_CONNECTIONS` | `1024` | Connections served at once. Extra ones are closed on arrival. |
+| `FELIX_KAFKA_MAX_CONNECTIONS_PER_IP` | `128` | Connections one source IP may hold, checked before the total. `0` is unlimited. |
+| `FELIX_KAFKA_AUTH_TIMEOUT_MS` | `10000` | How long a connection has to finish SASL before it is closed. Until then each request is capped at 64 KiB, which is far more than `ApiVersions` and the SASL exchange need. |
 
 With TLS on, the listener serves the same certificate the QUIC listeners do:
 `FELIX_TLS_CERT` and `FELIX_TLS_KEY` when set, with `FELIX_TLS_CLIENT_CA`

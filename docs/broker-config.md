@@ -223,6 +223,33 @@ With an `https://` `FELIX_CONTROLPLANE_URL`, the broker verifies the control
 plane against the public roots plus `FELIX_CONTROLPLANE_CA` when set. Setting
 the CA with an `http://` URL fails startup.
 
+## Connection Limits and Tenant Quotas
+
+These are environment-only (no YAML keys), and every one is per broker. The
+full table, and what a client sees when a limit refuses it, is in the
+[environment variable reference](../docs-site/src/content/docs/reference/environment-variables.md#connection-limits-and-tenant-quotas).
+
+```bash
+# One host may hold at most 512 client connections (the default).
+FELIX_MAX_CONNECTIONS_PER_IP=512
+# Every tenant: 50 MiB/s and 20k messages/s, with a one-second burst.
+FELIX_TENANT_PUBLISH_BYTES_PER_SEC=52428800
+FELIX_TENANT_PUBLISH_MSGS_PER_SEC=20000
+FELIX_TENANT_PUBLISH_BURST_MS=1000
+# Except these two: `acme` gets more bytes, `batch` is unlimited.
+FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
+```
+
+- The per-address cap exists so one host cannot hold every connection a broker
+  can serve. Set it high enough for the NAT gateways and connection pools in
+  front of you; a client that pools connections uses several per broker.
+- A tenant's quota covers its QUIC and Kafka publishes together. It is checked
+  before any shared byte budget is taken, so a tenant over its quota holds none
+  of the ingress memory other tenants need.
+- Per-tenant traffic is in `felix_tenant_published_*`, `felix_tenant_delivered_*`
+  and `felix_tenant_publish_throttled_total`, labelled by tenant up to
+  `FELIX_TENANT_METRICS_MAX` distinct tenants.
+
 ## Notes
 
 - All byte values are raw bytes; use powers of two for MiB values (e.g., 1048576 = 1 MiB).

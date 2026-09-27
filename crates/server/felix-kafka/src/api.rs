@@ -16,6 +16,8 @@ mod sasl;
 mod transactions;
 mod versions;
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use bytes::{Buf, Bytes, BytesMut};
 use kafka_protocol::messages::{
@@ -86,6 +88,11 @@ pub(crate) struct Session {
     principal: Option<Principal>,
     sasl: SaslState,
     closing: bool,
+    /// How long to stop reading after the current answer, because the
+    /// tenant is over its publish quota. Kafka's own quota enforcement: the
+    /// response carries the same time as `throttle_time_ms`, so a client that
+    /// honours it waits the same window instead of on top of it.
+    throttle: Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,12 +113,24 @@ impl Session {
                 .map(|tenant| Principal::anonymous(tenant.clone())),
             sasl: SaslState::Idle,
             closing: false,
+            throttle: Duration::ZERO,
         }
     }
 
     /// Whether the connection should close once the last answer is written.
     pub(crate) fn closing(&self) -> bool {
         self.closing
+    }
+
+    /// The mute the last request earned, taken so it is served once.
+    pub(crate) fn take_throttle(&mut self) -> Duration {
+        std::mem::take(&mut self.throttle)
+    }
+
+    /// Whether the connection has a principal, by SASL or as the anonymous
+    /// tenant.
+    pub(crate) fn authenticated(&self) -> bool {
+        self.principal.is_some()
     }
 }
 
@@ -147,9 +166,12 @@ pub(crate) async fn handle(
             list_offsets::answer(shared, session.principal.as_ref(), request, version).await?
         }
         Body::Produce(request) => {
-            match produce::answer(shared, session.principal.as_ref(), request, version).await? {
-                (Some(body), error) => (body, error),
-                (None, error) => {
+            let (body, error, throttle) =
+                produce::answer(shared, session.principal.as_ref(), request, version).await?;
+            session.throttle = throttle;
+            match body {
+                Some(body) => (body, error),
+                None => {
                     crate::metrics::request(api, error);
                     return Ok(Answer::Silent);
                 }

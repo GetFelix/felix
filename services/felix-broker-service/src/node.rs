@@ -189,6 +189,10 @@ where
                 catalog_seeded.clone(),
             ));
     let auth = Arc::new(BrokerAuth::with_key_store(Arc::new(key_store)));
+    // One set for every client listener, so the per-address cap and each
+    // tenant's quota are per broker rather than per socket.
+    let limits = crate::serving::limits::ListenerLimits::from_config(&config);
+    crate::observability::tenants::set_max_tenants(config.limits.tenant_metrics_max);
     let kafka = listeners::bind_kafka(
         &config,
         &client_tls,
@@ -199,6 +203,7 @@ where
             client_endpoints: &client_endpoints,
             lease: &lease,
             quorum_marks: &quorum_marks,
+            quotas: &limits.tenant_rates,
         },
     )
     .await?;
@@ -217,6 +222,7 @@ where
             lease: &lease,
             quorum_marks: &quorum_marks,
             client_endpoints: &client_endpoints,
+            limits: &limits,
         },
     );
     if let Some(kafka) = kafka {

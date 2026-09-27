@@ -6,6 +6,7 @@ use std::time::Instant;
 use bytes::Bytes;
 use felix_broker::{DeliveryEnvelope, SubscriptionReceiver};
 
+use crate::observability::tenants::TenantDelivery;
 use crate::observability::timings;
 use crate::serving::quic::handlers::publish::SubscriptionLimiter;
 use crate::serving::quic::handlers::subscribe::config::EventWriterConfig;
@@ -19,6 +20,7 @@ pub(super) async fn run_lane_feeder(
     connection_id: Option<u64>,
     config: EventWriterConfig,
     subscriptions: Arc<SubscriptionLimiter>,
+    delivery: TenantDelivery,
 ) {
     let max_events = config.max_events.max(1);
     let max_bytes = config.max_bytes.max(1);
@@ -76,6 +78,7 @@ pub(super) async fn run_lane_feeder(
                     first_enqueued_at,
                 )
                 .await;
+                delivery.record(payloads.len(), payload_bytes);
                 continue;
             }
 
@@ -114,6 +117,7 @@ pub(super) async fn run_lane_feeder(
                             first_enqueued_at,
                         )
                         .await;
+                        delivery.record(batch.len(), bytes);
                     }
                     Err(err) => tracing::warn!(
                         error = %err,
@@ -204,6 +208,7 @@ pub(super) async fn run_lane_feeder(
             first_enqueued_at,
         )
         .await;
+        delivery.record(batch.len(), batch_bytes);
         if let Some(start) = enqueue_start {
             let enqueue_ns = start.elapsed().as_nanos() as u64;
             t_histogram!("broker_sub_lane_enqueue_ns", "lane" => lane_idx.to_string())

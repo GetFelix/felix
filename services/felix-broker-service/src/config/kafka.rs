@@ -9,6 +9,13 @@ use anyhow::{Context, Result, bail};
 
 /// Connections accepted at once before new ones are closed on arrival.
 const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+/// Connections one source address may hold. A Kafka client keeps one or two
+/// per broker, so this leaves room for many clients behind one NAT while
+/// keeping a single host from taking every slot.
+const DEFAULT_MAX_CONNECTIONS_PER_IP: usize = 128;
+/// How long a connection has to finish SASL. Clients authenticate right after
+/// connecting, so this only ever closes one that is not going to.
+const DEFAULT_AUTH_TIMEOUT_MS: u64 = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KafkaListenerConfig {
@@ -24,6 +31,10 @@ pub struct KafkaListenerConfig {
     /// Where a topic without a dot is looked up.
     pub default_namespace: Option<String>,
     pub max_connections: usize,
+    /// Connections one source IP may hold; `0` is unlimited.
+    pub max_connections_per_ip: usize,
+    /// How long an unauthenticated connection is kept.
+    pub auth_timeout_ms: u64,
 }
 
 impl KafkaListenerConfig {
@@ -64,6 +75,24 @@ impl KafkaListenerConfig {
                     format!("FELIX_KAFKA_MAX_CONNECTIONS must be a positive integer, not {value:?}")
                 })?,
         };
+        let max_connections_per_ip = match get("FELIX_KAFKA_MAX_CONNECTIONS_PER_IP") {
+            None => DEFAULT_MAX_CONNECTIONS_PER_IP,
+            Some(value) => value.parse::<usize>().ok().with_context(|| {
+                format!(
+                    "FELIX_KAFKA_MAX_CONNECTIONS_PER_IP must be a non-negative integer, not {value:?}"
+                )
+            })?,
+        };
+        let auth_timeout_ms = match get("FELIX_KAFKA_AUTH_TIMEOUT_MS") {
+            None => DEFAULT_AUTH_TIMEOUT_MS,
+            Some(value) => value
+                .parse::<u64>()
+                .ok()
+                .filter(|ms| *ms > 0)
+                .with_context(|| {
+                    format!("FELIX_KAFKA_AUTH_TIMEOUT_MS must be a positive integer, not {value:?}")
+                })?,
+        };
         Ok(Some(Self {
             listen,
             advertise,
@@ -71,6 +100,8 @@ impl KafkaListenerConfig {
             anonymous_tenant: get("FELIX_KAFKA_ANONYMOUS_TENANT"),
             default_namespace: get("FELIX_KAFKA_DEFAULT_NAMESPACE"),
             max_connections,
+            max_connections_per_ip,
+            auth_timeout_ms,
         }))
     }
 }

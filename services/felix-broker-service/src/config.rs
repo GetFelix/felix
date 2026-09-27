@@ -10,6 +10,7 @@ pub mod durable;
 mod env;
 mod file;
 pub mod kafka;
+pub mod limits;
 mod membership;
 mod print;
 mod subscriber;
@@ -18,6 +19,7 @@ mod validate;
 
 pub use durable::DurableStorageConfig;
 pub use kafka::KafkaListenerConfig;
+pub use limits::{LimitsConfig, TenantQuota};
 pub use membership::MembershipConfig;
 pub use subscriber::{SubStreamMode, SubscriberLaneShard};
 pub use tls::{ClientTlsConfig, ClientTlsFiles};
@@ -232,6 +234,9 @@ pub struct BrokerConfig {
     /// shard it leads; zero is unlimited. Never applied to a follower the
     /// quorum needs.
     pub shard_move_bytes_per_sec: u64,
+    /// Per-address connection caps, per-tenant publish quotas and the
+    /// per-tenant metrics guard.
+    pub limits: LimitsConfig,
 }
 
 /// Rendered through the same `Serialize` as `--print-config`, so the
@@ -380,6 +385,7 @@ impl Default for BrokerConfig {
             shard_move_hold_ms: DEFAULT_SHARD_MOVE_HOLD_MS,
             shard_move_hold_max: DEFAULT_SHARD_MOVE_HOLD_MAX,
             shard_move_bytes_per_sec: DEFAULT_SHARD_MOVE_BYTES_PER_SEC,
+            limits: LimitsConfig::default(),
         }
     }
 }

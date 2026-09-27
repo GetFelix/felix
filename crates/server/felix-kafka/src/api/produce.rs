@@ -18,7 +18,7 @@
 //! payload and the broker's append time. The key has already done its job by
 //! then, choosing the partition.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -34,18 +34,20 @@ use crate::records::decode::{self, Batch, Refused};
 use crate::service::Shared;
 
 /// Answer a produce: the body, or `None` for `acks=0`, which a Kafka broker
-/// never answers, and the error it is counted under.
+/// never answers; the error it is counted under; and how long the connection
+/// must stay muted to keep the tenant within its publish quota.
 pub(super) async fn answer(
     shared: &Shared,
     principal: Option<&Principal>,
     request: ProduceRequest,
     version: i16,
-) -> Result<(Option<Bytes>, i16)> {
+) -> Result<(Option<Bytes>, i16, Duration)> {
     let transactional = request
         .transactional_id
         .as_ref()
         .is_some_and(|id| !id.is_empty());
     let wait_for_consistency = request.acks == -1;
+    let mut throttled = Duration::ZERO;
     let mut topics = Vec::with_capacity(request.topic_data.len());
     for topic in request.topic_data {
         let mut partitions = Vec::with_capacity(topic.partition_data.len());
@@ -60,6 +62,7 @@ pub(super) async fn answer(
                     partition.index,
                     partition.records.unwrap_or_default(),
                     wait_for_consistency,
+                    &mut throttled,
                 )
                 .await
             };
@@ -79,14 +82,17 @@ pub(super) async fn answer(
             .map(|partition| partition.error_code),
     );
     if request.acks == 0 {
-        return Ok((None, error));
+        return Ok((None, error, throttled));
     }
+    let throttle_time_ms = i32::try_from(throttled.as_millis()).unwrap_or(i32::MAX);
     let (body, error) = super::encode(
-        &ProduceResponse::default().with_responses(topics),
+        &ProduceResponse::default()
+            .with_responses(topics)
+            .with_throttle_time_ms(throttle_time_ms),
         version,
         error,
     )?;
-    Ok((Some(body), error))
+    Ok((Some(body), error, throttled))
 }
 
 /// Where a partition's records landed.
@@ -164,9 +170,22 @@ async fn write(
     partition: i32,
     records: Bytes,
     wait_for_consistency: bool,
+    throttled: &mut Duration,
 ) -> Result<Written, Failure> {
     let located = resolve_write(shared, principal, topic, partition).await?;
     let batches = decode::decode(records)?;
+    let (count, bytes) = batches.iter().fold((0u64, 0u64), |(count, bytes), batch| {
+        (
+            count + batch.values.len() as u64,
+            bytes + batch.values.iter().map(Bytes::len).sum::<usize>() as u64,
+        )
+    });
+    // Each charge reports the tenant's whole debt, so the last one is the
+    // longest.
+    let hold = shared
+        .cluster
+        .admit_produce(&located.tenant_id, count, bytes);
+    *throttled = (*throttled).max(hold);
     let permit = shared.cluster.admit_write(&located.shard_ref()).await?;
     let handle = located.handle(shared).await?;
 

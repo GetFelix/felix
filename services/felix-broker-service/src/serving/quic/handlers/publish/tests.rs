@@ -14,6 +14,7 @@ mod lease_headroom;
 mod ownership_gate;
 mod routing;
 mod stream_cache;
+mod tenant_quota;
 mod uni;
 
 use std::collections::HashMap;
@@ -79,6 +80,7 @@ fn make_publish_context(
         preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
             &crate::config::BrokerConfig::default(),
         )),
+        tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
     };
     (context, rx, tx)
 }

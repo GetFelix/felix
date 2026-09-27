@@ -17,6 +17,9 @@ use crate::shards::routing::Reason;
 /// milliseconds; a move still going after the hold window is not one that the
 /// next millisecond will finish.
 const MOVING_RETRY_AFTER_MS: u64 = 100;
+/// `detail.reason` on an `overloaded` refusal caused by the tenant's quota
+/// rather than the broker's own load.
+pub(crate) const TENANT_QUOTA_REASON: &str = "tenant_quota";
 
 /// A failed request, as the client will see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +67,18 @@ impl ClientError {
 
     pub(crate) fn draining(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Draining, message)
+    }
+
+    /// The tenant is over its publish quota; nothing was queued. `overloaded`
+    /// because that is what an older client already backs off on, with a
+    /// reason and a wait for one that reads them.
+    pub(crate) fn tenant_quota(wait: std::time::Duration) -> Self {
+        let millis = (wait.as_millis() as u64).max(1);
+        Self::overloaded(format!(
+            "tenant publish quota exceeded; retry in {millis} ms"
+        ))
+        .with_reason(TENANT_QUOTA_REASON)
+        .with_retry_after(millis)
     }
 
     /// A failure inside the broker whose effect on the request is unknown.
@@ -175,6 +190,9 @@ impl ClientError {
     /// A publish that never reached the queue: the fence refused it at
     /// admission, or the queue had no room.
     pub(crate) fn not_enqueued(err: &anyhow::Error) -> Self {
+        if let Some(known) = err.downcast_ref::<ClientError>() {
+            return known.clone();
+        }
         match err.downcast_ref::<Fenced>() {
             Some(refused) => Self::from(*refused),
             None => Self::overloaded(err.to_string()),

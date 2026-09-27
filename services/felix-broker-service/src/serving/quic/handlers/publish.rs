@@ -152,6 +152,9 @@ pub(crate) struct PublishContext {
     /// the same reason as `subscriptions`: this is the per-connection bundle
     /// every stream loop already has.
     pub(crate) preauth: Arc<PreAuthGate>,
+    /// Per-tenant publish quotas. Shared by every connection and listener of
+    /// the broker; see `serve_with_shutdown`.
+    pub(crate) tenant_rates: Arc<crate::serving::limits::TenantRates>,
 }
 
 impl PublishContext {

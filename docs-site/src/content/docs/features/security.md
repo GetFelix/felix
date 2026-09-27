@@ -77,7 +77,13 @@ Within a tenant, namespaces are the isolation unit for environments or teams:
 `acme/production/orders` and `acme/staging/orders` share nothing but a
 naming convention.
 
-Per-tenant quotas and rate limits are not built.
+A tenant's publish rate can be capped per broker, in bytes and in messages per
+second (`FELIX_TENANT_PUBLISH_*` in the
+[environment reference](/felix/reference/environment-variables/#connection-limits-and-tenant-quotas)),
+and one source address can hold at most `FELIX_MAX_CONNECTIONS_PER_IP` client
+connections. Quotas on subscriptions, cache use and storage are not built, and
+publish quotas live in each broker's environment rather than the control
+plane.
 
 ## Authentication and authorization
 
@@ -414,7 +420,8 @@ Stated plainly, so nobody designs around a protection that is not there:
   peers encrypt but do not authenticate each other and the internal network
   is trusted.
 - **Client certificates from the Python and TypeScript bindings.**
-- **Audit logging, quotas, and rate limits.**
+- **Audit logging, and quotas beyond the publish rate.** Subscriptions, cache
+  use and storage are not limited per tenant.
 
 ## Reporting a vulnerability
 

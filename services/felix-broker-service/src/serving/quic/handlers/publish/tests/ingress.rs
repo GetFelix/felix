@@ -119,6 +119,7 @@ async fn enqueue_publish_wait_times_out_when_queue_full() {
         preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
             &crate::config::BrokerConfig::default(),
         )),
+        tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
     };
     let err = enqueue_publish(&ctx, make_job(), EnqueuePolicy::Wait, None)
         .await
@@ -150,6 +151,7 @@ async fn enqueue_publish_returns_error_when_queue_closed() {
         preauth: std::sync::Arc::new(crate::serving::quic::preauth::PreAuthGate::new(
             &crate::config::BrokerConfig::default(),
         )),
+        tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
     };
     let err = enqueue_publish(&ctx, make_job(), EnqueuePolicy::Fail, None)
         .await

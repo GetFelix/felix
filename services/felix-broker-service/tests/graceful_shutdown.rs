@@ -70,6 +70,7 @@ async fn start_broker() -> Result<Harness> {
     let accept_shutdown = CancellationToken::new();
     let connections = TaskTracker::new();
 
+    let limits = felix_broker_service::serving::limits::ListenerLimits::from_config(&config);
     let server_task = tokio::spawn(felix_broker_service::serving::quic::serve_with_shutdown(
         Arc::clone(&server),
         broker,
@@ -79,6 +80,7 @@ async fn start_broker() -> Result<Harness> {
         connections.clone(),
         Default::default(),
         limit,
+        limits,
     ));
     // The accept loop registers its publish workers with `connections` before
     // it accepts anything; wait for that so tests can count connections on top.

@@ -6,6 +6,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use felix_broker::Broker;
 
+use crate::observability::tenants::TenantDelivery;
+
 /// Bound on catch-up passes, so a stream being published to faster than it can
 /// be written cannot keep a subscribe from completing. Reaching it hands over to
 /// live delivery, which is correct: offsets are on the wire, so a client can see
@@ -20,12 +22,33 @@ const MAX_CATCH_UP_PASSES: usize = 8;
 /// other end of a connection.
 pub(crate) trait EventSink {
     fn write_all(&mut self, bytes: &[u8]) -> impl std::future::Future<Output = Result<()>> + Send;
+
+    /// Told after each batch is written: `messages` events, `bytes` of payload.
+    fn delivered(&mut self, _messages: usize, _bytes: usize) {}
 }
 
 impl EventSink for quinn::SendStream {
     async fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
         quinn::SendStream::write_all(self, bytes).await?;
         Ok(())
+    }
+}
+
+/// An [`EventSink`] that counts what it delivers against the subscription's
+/// tenant, so replayed history shows in the per-tenant delivery metrics as
+/// live events do.
+pub(crate) struct CountingSink<'a, S> {
+    pub(crate) inner: &'a mut S,
+    pub(crate) delivery: &'a TenantDelivery,
+}
+
+impl<S: EventSink + Send> EventSink for CountingSink<'_, S> {
+    async fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
+        self.inner.write_all(bytes).await
+    }
+
+    fn delivered(&mut self, messages: usize, bytes: usize) {
+        self.delivery.record(messages, bytes);
     }
 }
 
@@ -298,6 +321,7 @@ pub(super) async fn write_replay_batch<S: EventSink>(
         felix_wire::binary::encode_event_batch_bytes(subscription_id, payloads)?
     };
     EventSink::write_all(event_send, &frame).await?;
+    event_send.delivered(payloads.len(), payloads.iter().map(bytes::Bytes::len).sum());
     Ok(())
 }
 

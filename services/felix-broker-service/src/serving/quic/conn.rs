@@ -18,6 +18,7 @@ use super::streams::{handle_stream, handle_uni_stream};
 use crate::config::BrokerConfig;
 use crate::observability::timings;
 use crate::serving::auth::BrokerAuth;
+use crate::serving::limits::{ListenerLimits, admit_quic_connection};
 use crate::shards::routing::IngressRouter;
 
 /// Serve incoming QUIC connections: accept loop, one task per connection.
@@ -33,6 +34,7 @@ pub async fn serve(
     // Runs until the listener errors. Callers that need to stop accepting without
     // killing in-flight connections should use `serve_with_shutdown`.
     let limit = ConnectionLimit::new(config.max_client_connections);
+    let limits = ListenerLimits::from_config(&config);
     serve_with_shutdown(
         server,
         broker,
@@ -44,6 +46,7 @@ pub async fn serve(
         // `serve_with_shutdown` so it can pass its ownership view and its peers.
         ClusterContext::default(),
         limit,
+        limits,
     )
     .await
 }
@@ -62,6 +65,8 @@ pub async fn serve(
 /// - The caller owns `connections`, and must `close()` it before `wait()`ing or the
 ///   wait never resolves.
 /// - `limit` is shared by every client listener, so the cap is broker-wide.
+/// - `limits` is shared the same way, so the per-address cap and tenant
+///   quotas are per broker, not per socket.
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_with_shutdown(
     server: Arc<QuicServer>,
@@ -72,12 +77,14 @@ pub async fn serve_with_shutdown(
     connections: TaskTracker,
     cluster: ClusterContext,
     limit: ConnectionLimit,
+    limits: Arc<ListenerLimits>,
 ) -> Result<()> {
     // The publish workers are tracked with the connections, so a drain waiting
     // on `connections` also waits for every queued publish to be written. They
     // exit once the connections and this loop have dropped their senders.
-    let publish_ctx =
+    let mut publish_ctx =
         build_tracked_publish_context(Arc::clone(&broker), &config, cluster, &connections);
+    publish_ctx.tenant_rates = Arc::clone(&limits.tenant_rates);
     // Main accept loop: spawn a task per incoming QUIC connection.
     if config.disable_timings {
         timings::set_enabled(false);
@@ -109,6 +116,11 @@ pub async fn serve_with_shutdown(
             incoming.refuse();
             continue;
         };
+        let Some(admitted) = admit_quic_connection(&limits.quic_per_ip, incoming.remote_address())
+        else {
+            incoming.refuse();
+            continue;
+        };
         let broker = Arc::clone(&broker);
         let config = config.clone();
         let auth = Arc::clone(&auth);
@@ -118,8 +130,9 @@ pub async fn serve_with_shutdown(
         // that may never disconnect.
         let conn_shutdown = shutdown.clone();
         connections.spawn(async move {
-            // The permit is the connection's slot; it goes when this task does.
+            // The permits are the connection's slots; they go when this task does.
             let _permit = permit;
+            let _admitted = admitted;
             // Handshaken here, not in the accept loop, so a peer that stalls
             // its handshake holds up nobody else. A failed one is that peer's
             // problem and must not stop the listener.

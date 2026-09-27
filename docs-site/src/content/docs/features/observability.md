@@ -126,6 +126,27 @@ handed out and unanswered as it is allowed. Either its consumers are slow to
 acknowledge, or one is polling and never answering, and the rest of the group
 waits for those claims to lapse.
 
+**Which tenant is making the noise?** Always on, labelled by `tenant`:
+
+```prometheus
+felix_tenant_published_messages_total       # messages a tenant published through this broker (QUIC and Kafka)
+felix_tenant_published_bytes_total          # their payload bytes
+felix_tenant_delivered_messages_total       # messages handed to a tenant's subscribers, replay included
+felix_tenant_delivered_bytes_total          # their payload bytes
+felix_tenant_publish_throttled_total        # publishes held back by the tenant's quota, by action: refused, dropped, delayed
+felix_tenant_metrics_overflow_total         # recordings past FELIX_TENANT_METRICS_MAX, counted under tenant="_overflow"
+felix_quic_connections_refused_total        # client connections refused before the handshake, by reason: limit, per_ip_limit
+```
+
+Published counts what was admitted to the ingress queue, so a publish the
+broker then fails to write is still in it; the ingress and storage metrics
+above say whether that happens. Delivered counts what was handed to the
+subscriber's writer, before the network. The first `FELIX_TENANT_METRICS_MAX`
+tenants (100 by default) keep their own label for the life of the process;
+the rest share `_overflow`, so a non-zero overflow counter means the busiest
+tenant may be hiding there. Quotas are set with the `FELIX_TENANT_PUBLISH_*`
+variables in the [environment reference](/felix/reference/environment-variables/#connection-limits-and-tenant-quotas).
+
 **Is durability the bottleneck?** The storage layer's metrics are designed
 around exactly this question — compare append time against sync time, and
 watch the group-commit fan-in:
@@ -169,7 +190,8 @@ felix_broker_credential_rotations_total     # by outcome: ok, rejected — a tok
 felix_kafka_connections                     # gauge: Kafka connections open now
 felix_kafka_connections_total
 felix_kafka_requests_total                  # by api and error (none, not_leader_or_follower, ...)
-felix_kafka_refused_total                   # by reason: unknown_api, unsupported_api, frame_size, connection_limit
+felix_kafka_refused_total                   # by reason: unknown_api, unsupported_api, frame_size, connection_limit,
+                                            #   per_ip_limit, auth_timeout, unauthenticated_frame_size
 felix_kafka_fetch_records_total
 felix_kafka_fetch_bytes_total
 felix_kafka_fetch_waits_total               # long polls, by outcome: data, timeout
