@@ -450,13 +450,18 @@ tenant. Responses name keys by `kid`; key material never leaves the store.
    (`FELIX_EXCHANGE_TOKEN_TTL_SECONDS`, 900 s by default) plus a minute of
    clock skew.
 5. **Retire** the old key: `DELETE /v1/tenants/{tenant_id}/signing-keys/{kid}`.
-   It leaves the JWKS; tokens it signed stop verifying. The current key cannot
-   be retired (`409`).
+   It leaves the JWKS the control plane serves, but a broker does not refetch
+   on its own schedule: one that cached the JWKS before the retirement keeps
+   the old key and keeps accepting tokens signed by it for up to the cache TTL
+   (an hour). The current key cannot be retired (`409`).
 
 `GET /v1/tenants/{tenant_id}/signing-keys` lists `current` and the keys that
 only verify. Refresh tokens are not signed and are unaffected. To respond to a
-leaked key, do the same with no waits, and accept that clients holding tokens
-from the old key re-authenticate.
+leaked key, do the same with no waits: stage, activate and retire back to
+back. New tokens stop being issued with the leaked key immediately, but
+brokers that already cached its JWKS may still accept tokens it signed for up
+to that same hour — there is no way to force an early refetch today, so
+budget that hour into how fast the response actually cuts the key off.
 
 ## Allowing Particular Upstream IdPs
 

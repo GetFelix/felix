@@ -167,15 +167,24 @@ Until the gaps above close, the deployment-side controls that matter most:
   immediately afterwards. It is admin-equivalent power by design. See
   [`docs/security/bootstrap.md`](docs/security/bootstrap.md).
 - **Encrypt at the filesystem or block layer** where log segments live.
-- **Treat the broker-to-broker network as trusted** — because Felix currently
-  does. Keep it on a private network segment or overlay that provides the peer
-  authentication Felix does not yet.
+- **Enable peer mTLS for any cluster with a replication factor above 1.** Set
+  `FELIX_INTERNAL_TLS_CERT`, `FELIX_INTERNAL_TLS_KEY` and `FELIX_INTERNAL_TLS_CA`
+  so brokers verify each other's certificate against the node id it claims;
+  a broker joining a cluster (`FELIX_NODE_ID` set) refuses to start without
+  it unless you explicitly opt out with `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`.
+  Without peer mTLS the internal link is encrypted but not authenticated, so
+  anything that reaches it can act as a broker and rewrite replicas — in that
+  case, keep the internal port on a private network segment or overlay only
+  brokers can reach.
 - **Scope tokens narrowly** at exchange time. The exchange request can only
   narrow what RBAC grants; ask for the minimum.
 - **Keep token TTLs short** (`FELIX_EXCHANGE_TOKEN_TTL_SECONDS`) and rotate
-  tenant signing keys through JWKS: stage a new key, activate it once brokers
-  have fetched it, and retire the old one once its tokens have expired
-  ([`docs/auth.md`](docs/auth.md#rotating-signing-keys)).
+  tenant signing keys through JWKS: stage a new key, wait at least the
+  brokers' JWKS cache TTL (an hour) for it to be picked up, then activate it
+  and retire the old one once its tokens have expired. For a leaked key,
+  retiring it stops new tokens being *issued* with it, but a broker that
+  already cached the old JWKS may keep accepting tokens it signed for up to
+  that same hour ([`docs/auth.md`](docs/auth.md#rotating-signing-keys)).
 - **Use HTTPS for every IdP discovery and JWKS URL.** The control plane refuses
   plain HTTP except on loopback unless
   `FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP` is set; leave it unset outside

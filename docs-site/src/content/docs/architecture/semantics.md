@@ -626,7 +626,11 @@ quotas:
 
 Within a single broker:
 
-- **Publish-fanout ordering**: Messages fan out in publish order
+- **Publish-fanout ordering**: On a durable stream, fanout happens after the
+  commit settles the order, so messages fan out in that order. On an
+  in-memory stream fanout is not ordered against concurrent publishes:
+  two publishers racing can append in one order and fan out in the other, so
+  two subscribers of the same in-memory stream can see that pair differently
 - **Cache consistency**: Single-writer per key (no torn writes)
 - **Subscription isolation**: Independent queues prevent crosstalk
 

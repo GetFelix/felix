@@ -287,9 +287,16 @@ throughput rather than correctness.
   on one leader. Two records with different keys may be applied by different
   brokers in either order.
 
-  A stream with one shard keeps total order whatever keys are used, which is
-  what makes routing keys safe to add to an existing stream: the guarantee only
-  weakens when the shard count does the widening.
+  A durable stream with one shard keeps total order whatever keys are used,
+  which is what makes routing keys safe to add to an existing stream: the
+  guarantee only weakens when the shard count does the widening.
+
+  An in-memory stream is the exception: fanout runs after the append with
+  nothing ordering it across concurrent publishes, so two publishers racing
+  can append in one order and fan out in the other, and two subscribers of the
+  same in-memory stream can see that pair in different orders. A durable
+  stream does not have this gap — fanout happens after the commit, on the
+  order the commit settled.
 
   There is no ordering across streams.
 
