@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790524369978,
+  "lastUpdate": 1790524678229,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -22440,6 +22440,72 @@ window.BENCHMARK_DATA = {
             "range": "327.04",
             "unit": "us",
             "extra": "trials: 5\nmedian: 684.00\nmean: 761.60\nstdev: 327.04\ncv: 42.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3655e9e647514d3dc01739bde6f500afbdfe7c13",
+          "message": "Fail publishes superseded by a log reset; make stale group claims retryable (#760)\n\nA publish parked on its commit turn when reset_to/advance_to moved the log\ngeneration was woken by the reset and let through: it then appended offsets\nfrom the old log to the cleared replay ring and fanned them out.\nCommitTurn::wait now returns Err(Superseded) when a reset lands before or\nduring the wait, and the publish fails with BrokerError::PublishSuperseded\n(wire: unacknowledged / outcome_unknown). Resets now bump the sequencer under\nthe ring lock, and the ring append and the Quorum hold re-check the turn under\nthat lock, so a reset landing just after wait returns is caught too.\n\nAcks and nacks for claims a group tracker forgot (evicted while idle, or\nafter failover) were refused as invalid_request, which is fatal. An offset\nthe log holds is now answered with a new stale_claim code, retry class\nretry; an offset past the tail stays invalid_request. Old clients see an\nunknown code with the retry class they already act on. The Rust client does\nnot drop its route on stale_claim, since the leader answered.\n\nSpec-Unaffected: broker-local commit ordering and group ack error codes; no lease, quorum, report, promotion or handoff semantics change.\n\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T08:54:33-07:00",
+          "tree_id": "4a09f7a6cefef85e529220dfc1445defc04992ec",
+          "url": "https://github.com/gabloe/felix/commit/3655e9e647514d3dc01739bde6f500afbdfe7c13"
+        },
+        "date": 1790524675075,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 171,
+            "range": "5.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 171.00\nmean: 168.20\nstdev: 5.22\ncv: 3.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 212,
+            "range": "8.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 212.00\nmean: 216.20\nstdev: 8.32\ncv: 3.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 270,
+            "range": "67.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 270.00\nmean: 289.80\nstdev: 67.46\ncv: 23.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 205,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 205.00\nmean: 205.20\nstdev: 0.45\ncv: 0.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 413,
+            "range": "23.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 413.00\nmean: 416.60\nstdev: 23.52\ncv: 5.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1184,
+            "range": "545.62",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1184.00\nmean: 1119.00\nstdev: 545.62\ncv: 48.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
