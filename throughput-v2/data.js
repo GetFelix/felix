@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790472864057,
+  "lastUpdate": 1790487101112,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -17160,6 +17160,58 @@ window.BENCHMARK_DATA = {
             "range": "3956.66",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 920909.16\nmean: 923321.80\nstdev: 3956.66\ncv: 0.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3f56a33053a26750546a67e86631efd5e9778286",
+          "message": "test(storage): page-granular power-loss layer at the io seam; fsync-delay fault hook (#742)\n\nAdds io::power_loss (Linux, cfg(test)): captures what each flush made\ndurable through the io seam (sync_data incl. the F_FULLFSYNC branch,\nsync_all, sync_dir, io_uring submission) and builds seeded post-crash\ntrees that drop, tear or zero unsynced pages and undo unflushed\ndirectory changes. Recovery tests run it across FsyncMode variants,\nbackground/inline rollover and the io_uring path.\n\nAdds felix_storage::fault::set_fsync_delay, compiled into debug builds\nand the new fault-injection feature only.\n\nThree any-subset writeback tests (Periodic, Periodic+background roll,\nNone) are #[ignore]d: recovery refuses a lost-writeback hole followed by\nwritten pages, which the model shows is reachable from an honest crash.\n\n\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-26T22:25:18-07:00",
+          "tree_id": "0f2a9757b9446baf969379ab226bb0b538420167",
+          "url": "https://github.com/gabloe/felix/commit/3f56a33053a26750546a67e86631efd5e9778286"
+        },
+        "date": 1790487100479,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 440657.48,
+            "range": "21747.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 440657.48\nmean: 440308.72\nstdev: 21747.63\ncv: 4.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 440657.48,
+            "range": "21747.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 440657.48\nmean: 440308.72\nstdev: 21747.63\ncv: 4.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 102839.99,
+            "range": "1172.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 102839.99\nmean: 102718.29\nstdev: 1172.23\ncv: 1.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1028399.91,
+            "range": "11722.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1028399.91\nmean: 1027182.95\nstdev: 11722.29\ncv: 1.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
