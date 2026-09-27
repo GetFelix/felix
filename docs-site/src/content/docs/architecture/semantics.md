@@ -351,14 +351,19 @@ sequenceDiagram
 Publishers write to a bounded queue with configurable depth:
 
 ```yaml
-pub_queue_depth: 64  # Bounded publish queue
-publish_queue_wait_timeout_ms: 2000  # Timeout if queue full
+pub_queue_depth: 64  # Queue slots guaranteed per tenant
+publish_queue_wait_timeout_ms: 2000  # How long a commit-acked publish waits for room
 ```
 
-When the publish queue is full:
-- New publishes block up to `publish_queue_wait_timeout_ms`
-- After timeout, publish fails with error
-- This indicates broker overload (too many publishes, insufficient workers)
+The queue is shared between tenants by deficit round robin, and every tenant
+is guaranteed `pub_queue_depth` slots, so one tenant's burst fills its own
+share first. When there is no room for a tenant:
+- An enqueue-acked publish is answered at once with `overloaded`
+  (`detail.reason = "publish_queue_full"`), which is retryable: nothing was queued
+- A commit-acked publish waits up to `publish_queue_wait_timeout_ms`, then is
+  answered the same way
+- A fire-and-forget publish is shed (or waits, with `pub_ingress_wait`)
+- Each is counted in `felix_tenant_publish_queue_full_total{tenant,action}`
 
 **Tuning publish pipeline**:
 

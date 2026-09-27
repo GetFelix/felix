@@ -906,11 +906,18 @@ must be tolerated. The full table is in `docs/protocol.md` under "Error codes".
 ```json
 {
   "type": "error",
-  "message": "Publish queue timeout after 2000ms"
+  "message": "publish queue full; retry in 10 ms",
+  "code": "overloaded",
+  "retry": "retry_after",
+  "detail": { "reason": "publish_queue_full", "retry_after_ms": 10 }
 }
 ```
 
-**Resolution**: Broker is overloaded. Reduce publish rate or increase `pub_workers_per_conn`.
+**Resolution**: The broker's publish queue had no room for this tenant, and
+nothing was queued; retry after the suggested wait. Persistent refusals mean the
+broker is overloaded, or this tenant is sending more than its share: check
+`felix_tenant_publish_queue_full_total` by tenant, reduce the publish rate, or
+raise `pub_queue_depth`.
 
 **Authorization failure**:
 

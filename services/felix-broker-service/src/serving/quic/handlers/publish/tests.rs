@@ -1,4 +1,4 @@
-//! Unit tests for the publish path: admission, sharding, enqueue policy, depth
+//! Unit tests for the publish path: admission, scheduling, enqueue policy, depth
 //! accounting, ack handling, and the control/uni handler entry points.
 
 mod ack;
@@ -10,6 +10,7 @@ mod control_message;
 mod group_commit;
 mod idempotent_acks;
 mod ingress;
+mod lanes;
 mod lease_headroom;
 mod ownership_gate;
 mod routing;
@@ -30,8 +31,9 @@ use felix_wire::{Frame, Message};
 use tokio::sync::{Mutex, Semaphore};
 use tokio::sync::{mpsc, watch};
 
-use super::ingress::{enqueue_publish, publish_worker_index};
+use super::ingress::enqueue_publish;
 use super::route::{PublishRoute, publish_target, resolve_route};
+use super::scheduler::{PublishScheduler, TestReceiver, TestSender};
 use super::stream_cache::{push_decimal, push_stream_cache_key};
 use super::*;
 use crate::serving::auth::AuthContext;
@@ -52,15 +54,16 @@ fn reset_global_ack_depth() {
     GLOBAL_ACK_DEPTH.store(0, Ordering::Relaxed);
 }
 
-fn make_publish_context(
-    buffer: usize,
-) -> (
-    PublishContext,
-    mpsc::Receiver<PublishJob>,
-    mpsc::Sender<PublishJob>,
-) {
-    let (tx, rx) = mpsc::channel(buffer);
-    let context = PublishContext {
+/// A context whose queue holds `buffer` jobs and has no executors: the
+/// receiver takes what was queued, and the sender fills it.
+fn make_publish_context(buffer: usize) -> (PublishContext, TestReceiver, TestSender) {
+    let (scheduler, tx, rx) = test_channel(buffer);
+    (context_with(scheduler), rx, tx)
+}
+
+/// A context with no cluster and no budgets, feeding `scheduler`.
+pub(super) fn context_with(scheduler: Arc<PublishScheduler>) -> PublishContext {
+    PublishContext {
         ingress: None,
         client_endpoints: None,
         peers: None,
@@ -68,9 +71,7 @@ fn make_publish_context(
         lease_headroom: Duration::ZERO,
         marks: None,
         quorum_timeout: Duration::from_secs(1),
-        workers: Arc::new(vec![tx.clone()]),
-        worker_count: 1,
-        depth: Arc::new(AtomicUsize::new(0)),
+        scheduler,
         wait_timeout: Duration::from_millis(100),
         admission: Arc::new(PublishAdmission::unlimited()),
         conn_admission: Arc::new(PublishAdmission::unlimited()),
@@ -81,8 +82,7 @@ fn make_publish_context(
             &crate::config::BrokerConfig::default(),
         )),
         tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
-    };
-    (context, rx, tx)
+    }
 }
 
 fn make_job() -> PublishJob {

@@ -540,7 +540,7 @@ pub(super) fn refusal_for_client(
     }
 }
 
-/// The batch is already with the worker, so it may still land: overloaded, but
+/// The batch is already queued, so it may still land: overloaded, but
 /// with the outcome unknown rather than "not applied".
 pub(super) fn overloaded_after_enqueue() -> ClientError {
     ClientError::overloaded("server overloaded").with_retry(felix_wire::RetryClass::OutcomeUnknown)

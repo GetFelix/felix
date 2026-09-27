@@ -20,6 +20,13 @@ const MOVING_RETRY_AFTER_MS: u64 = 100;
 /// `detail.reason` on an `overloaded` refusal caused by the tenant's quota
 /// rather than the broker's own load.
 pub(crate) const TENANT_QUOTA_REASON: &str = "tenant_quota";
+/// `detail.reason` on an `overloaded` refusal because the publish queue had
+/// no room for the tenant.
+pub(crate) const QUEUE_FULL_REASON: &str = "publish_queue_full";
+/// What a publish refused for a full queue is told to wait. Room comes back as
+/// fast as claims run, so the hint is short; it is there so a client backs off
+/// at all rather than resending into the same full queue.
+const QUEUE_FULL_RETRY_AFTER_MS: u64 = 10;
 
 /// A failed request, as the client will see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +86,17 @@ impl ClientError {
         ))
         .with_reason(TENANT_QUOTA_REASON)
         .with_retry_after(millis)
+    }
+
+    /// The publish queue had no room for the tenant; nothing was queued.
+    /// `overloaded`, which every client already backs off on and retries.
+    /// Keeps the words "publish queue full" for clients that match on text.
+    pub(crate) fn queue_full() -> Self {
+        Self::overloaded(format!(
+            "publish queue full; retry in {QUEUE_FULL_RETRY_AFTER_MS} ms"
+        ))
+        .with_reason(QUEUE_FULL_REASON)
+        .with_retry_after(QUEUE_FULL_RETRY_AFTER_MS)
     }
 
     /// A failure inside the broker whose effect on the request is unknown.

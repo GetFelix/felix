@@ -25,6 +25,10 @@ pub(crate) const DELIVERED_BYTES_TOTAL: &str = "felix_tenant_delivered_bytes_tot
 /// `refused` (the client was told to retry), `dropped` (a fire-and-forget
 /// publish was shed) or `delayed` (the publish waited for its quota).
 pub(crate) const THROTTLED_TOTAL: &str = "felix_tenant_publish_throttled_total";
+/// Publishes the publish queue had no room for, by `tenant` and `action`:
+/// `refused` (the client was told to retry) or `dropped` (a fire-and-forget
+/// publish was shed).
+pub(crate) const QUEUE_FULL_TOTAL: &str = "felix_tenant_publish_queue_full_total";
 /// Recordings that went to the overflow label because the cap was reached.
 pub(crate) const OVERFLOW_TOTAL: &str = "felix_tenant_metrics_overflow_total";
 
@@ -59,6 +63,12 @@ pub(crate) fn record_published(tenant: &str, messages: u64, bytes: u64) {
 pub(crate) fn record_throttled(tenant: &str, action: &'static str) {
     let label = labels().label(tenant, MAX_TENANTS.load(Ordering::Relaxed));
     metrics::counter!(THROTTLED_TOTAL, "tenant" => label, "action" => action).increment(1);
+}
+
+/// Count a publish `tenant` made that found no room in the publish queue.
+pub(crate) fn record_queue_full(tenant: &str, action: &'static str) {
+    let label = labels().label(tenant, MAX_TENANTS.load(Ordering::Relaxed));
+    metrics::counter!(QUEUE_FULL_TOTAL, "tenant" => label, "action" => action).increment(1);
 }
 
 /// Delivery counters for one subscription, resolved once so the per-event

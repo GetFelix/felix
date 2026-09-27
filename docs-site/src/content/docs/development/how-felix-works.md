@@ -558,35 +558,48 @@ Two byte budgets are acquired:
 
 1. a per-connection budget, preventing one publisher connection from occupying
    the entire broker;
-2. a process-wide budget shared by all publish workers.
+2. a process-wide budget shared by all publishes.
 
-The job also enters a bounded worker channel. `EnqueuePolicy` determines what
-happens when capacity is unavailable:
+The job then enters the bounded publish scheduler queue. `EnqueuePolicy`
+determines what happens when there is no room:
 
 - `Drop`: shed fire-and-forget traffic and increment drop counters;
-- `Fail`: reject acknowledged traffic immediately;
-- `Wait`: wait up to a configured timeout, propagating backpressure.
+- `Fail`: refuse acknowledged traffic at once with a retryable `overloaded`
+  (`detail.reason = "publish_queue_full"`);
+- `Wait`: wait up to a configured timeout, then refuse the same way;
+- `Backpressure`: wait until there is room or the connection goes.
 
-The permits remain attached to the `PublishJob` until the broker worker
-finishes it.
+Refusals and drops are counted per tenant in
+`felix_tenant_publish_queue_full_total`. The permits remain attached to the
+`PublishJob` until it has been claimed.
 
-### 9.9 Global stream-sharded workers
+### 9.9 The publish scheduler: per-shard lanes, fair across tenants
 
-`services/felix-broker-service/src/serving/quic/handlers/publish/worker.rs::build_publish_context` creates a
-process-wide worker pool. It is deliberately not one pool per connection:
+`services/felix-broker-service/src/serving/quic/handlers/publish/scheduler.rs` is a
+process-wide queue drained by a small fixed set of executors
+(`pub_workers_per_conn`). It is deliberately not one pool per connection:
 per-connection pools previously multiplied concurrent access to shared stream
 state and increased contention.
 
-Every resolved stream handle maps to one worker. Therefore publishes to the
-same stream are serialized inside the broker even when they arrive through
-different connections.
+Every job belongs to a lane: the stream shard it writes, or the remote shard
+it is forwarded to. A lane runs one job at a time in arrival order, so
+publishes to the same shard are serialized inside the broker even when they
+arrive through different connections, while different shards run side by
+side. Tenants take turns for executors by deficit round robin, weighted by
+bytes, and each tenant is guaranteed `pub_queue_depth` queue slots, so one
+tenant flooding the broker is refused while others still get in.
 
-With `core_shards` enabled, there is exactly one publish worker per shard and
-worker `i` runs on shard runtime `i`.
+An executor holds a lane only for the ordered step (claiming offsets, an
+in-memory append). Flushes, forwards to other brokers and quorum waits run on
+tasks of their own, so a slow disk, peer or replica set holds up only its own
+shard.
+
+With `core_shards` enabled, each shard has its own queue and executors, on
+shard runtime `i`, and a stream's lane lives on the shard that owns it.
 
 ### 9.10 Broker core append and fanout
 
-The worker calls
+The executor calls
 `crates/server/felix-broker/src/broker/publish.rs::Broker::publish_batch_to_handle`.
 
 That function:
@@ -639,12 +652,12 @@ The important distinction is broker configuration:
 - With `ack_on_commit = false`, an acknowledgement means the broker accepted
   the job into its ingress queue. It is sent before the write, so the record is
   lost if the broker crashes first, or if its lease lapses while the job is
-  queued: the worker refuses a write once the lease is gone. A publish admitted
+  queued: the claim refuses a write once the lease is gone. A publish admitted
   with little lease left (less than the queue wait plus the ack wait, capped at
   half the lease) waits for its write instead. A job that was acknowledged and
   then not written is counted in `felix_broker_acked_publishes_dropped_total`.
-- With `ack_on_commit = true`, the broker waits until the publish worker
-  completes `publish_batch_to_handle`.
+- With `ack_on_commit = true`, the broker waits until the publish has been
+  written and fanned out.
 
 What "commit" means depends on how the stream was registered. For an ephemeral
 stream it is the in-memory append and fanout, and nothing more. For a durable
@@ -742,7 +755,7 @@ either:
 It then sends `LaneCommand::Delivery` to the selected writer lane.
 
 When core sharding is enabled, the feeder is spawned on the same shard that
-owns the stream's publish worker. The enqueue and dequeue sides of the
+owns the stream's publish lane. The enqueue and dequeue sides of the
 broker-core subscriber channel therefore stay core-local.
 
 ### 11.6 Writer lanes
@@ -802,9 +815,9 @@ Ordering must be described at a specific boundary:
 
 - One client publish worker writes requests in queue order.
 - `HashStream` keeps one logical stream on one client worker.
-- The broker maps one `StreamHandle` to one global publish worker.
-- `StreamState::append_batch` assigns sequence numbers in worker processing
-  order.
+- The broker maps one `StreamHandle` to one publish lane, which claims
+  offsets one publish at a time in arrival order.
+- `StreamState::append_batch` assigns sequence numbers in claim order.
 - Each subscriber receives envelopes through one ordered broker-core channel.
 - Lane and connection writers preserve ordering for each subscriber.
 - QUIC preserves byte order within the subscriber's event stream.
@@ -812,8 +825,8 @@ Ordering must be described at a specific boundary:
 There is no universal order across different streams.
 
 When several independent publishers publish concurrently to the same stream,
-the resulting order is the order in which their jobs reach and are dequeued by
-the stream's broker worker. Felix cannot infer a stronger application-level
+the resulting order is the order in which their jobs reach the stream's
+publish lane. Felix cannot infer a stronger application-level
 causal order between independent producers.
 
 ## 13. Backpressure and overload
@@ -826,7 +839,7 @@ There are six main checkpoints in publish-to-delivery order:
 | 1 | Client `PublishAdmission` | In-flight publish bytes across client workers |
 | 2 | Client publish worker channel | Queued publish items per worker |
 | 3 | Broker publish admission | Per-connection and process-wide publish bytes |
-| 4 | Broker publish worker channel | Queued publish jobs |
+| 4 | Broker publish scheduler queue | Queued publish jobs, shared fairly between tenants |
 | 5 | Broker-core subscriber channel | Envelopes waiting for one subscriber |
 | 6 | Writer lane/connection queues | Encoded deliveries waiting for QUIC writers |
 
@@ -948,7 +961,7 @@ shard = handle_id % shard_count
 
 The same mapping is used for:
 
-- its broker publish worker; and
+- its broker publish lane and the executors that run it; and
 - its subscription lane feeders.
 
 Append, fanout enqueue, and feeder dequeue therefore occur on one core. QUIC I/O
@@ -1037,7 +1050,7 @@ The current running system includes:
 - framed JSON and binary protocol paths;
 - authenticated and authorized client streams;
 - pooled publisher, subscriber, and cache connections;
-- stream-sharded publish workers;
+- per-shard ordered publish lanes, fed fairly across tenants;
 - an in-memory per-stream replay log in broker core;
 - bounded per-subscriber queues;
 - shared encode-once fanout;
@@ -1066,7 +1079,7 @@ Do not assume the following are complete production paths:
 - **Multi-region routing and residency enforcement:** these remain broader
   architectural work.
 - **Per-subsystem shutdown cancellation:** the drain cancels admission and winds
-  connections down under a bounded grace, but publish workers, acknowledgement
+  connections down under a bounded grace, but publish executors, acknowledgement
   waiters, and subscription writers are not individually signalled to stop.
   In-flight work inside the grace window completes; work still running when the
   grace expires is ended by closing the connection.
@@ -1086,8 +1099,8 @@ Assume one application publishes a binary batch of 64 payloads to
 8. The broker verifies the authenticated tenant and publish permission.
 9. `resolve_stream_cached` obtains the stream's `StreamHandle`.
 10. Broker per-connection and global byte admission reserve the payload bytes.
-11. `enqueue_publish` sends the job to `handle.id() % worker_count`.
-12. The worker calls `Broker::publish_batch_to_handle`.
+11. `enqueue_publish` queues the job on the stream's lane, charged to `tenant-a`.
+12. An executor takes it on `tenant-a`'s turn and calls `Broker::publish_batch_with_outcome`.
 13. `StreamState::append_batch` assigns 64 sequence numbers under one lock.
 14. The broker loads the lock-free subscriber snapshot containing ten senders.
 15. One `DeliveryEnvelope` is created and cloned into ten subscriber queues.

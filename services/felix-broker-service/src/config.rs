@@ -31,7 +31,7 @@ use serde::Serialize;
 
 use defaults::*;
 
-/// A margin over the quorum wait, covering the hop from the publish worker back
+/// A margin over the quorum wait, covering the hop from the publish executor back
 /// to the waiter. Small: its only job is to let the inner wait finish first.
 const ACK_WAIT_OVER_QUORUM_MS: u64 = 500;
 
@@ -105,7 +105,8 @@ pub struct BrokerConfig {
     /// Client QUIC connections this broker holds at once, across all its
     /// client listeners. Attempts beyond it are refused before the handshake.
     pub max_client_connections: usize,
-    /// Max time to wait when backpressuring publish enqueue.
+    /// How long a commit-acked publish waits for room in the publish queue
+    /// (and the byte budget) before it is answered busy.
     pub publish_queue_wait_timeout_ms: u64,
     /// Max time to wait for ack-on-commit publish completion.
     pub ack_wait_timeout_ms: u64,
@@ -161,16 +162,18 @@ pub struct BrokerConfig {
     pub event_batch_max_delay_us: u64,
     /// Fanout batch size for subscription sending.
     pub fanout_batch_size: usize,
-    /// Publish worker count per QUIC connection.
+    /// Executors of the process-wide publish scheduler (per core shard, with
+    /// `core_shards`). The name predates the scheduler.
     pub pub_workers_per_conn: usize,
-    /// Durable publishes one worker may have awaiting their device flush at
+    /// Durable publishes one shard may have awaiting their device flush at
     /// once. Offsets are still claimed serially, so this does not affect the
     /// order records land in -- it decides how many flushes group commit gets
     /// to coalesce. `1` restores the old behaviour of one flush at a time.
     pub pub_flush_concurrency: usize,
-    /// Per-worker publish queue depth.
+    /// Publish queue slots each tenant is guaranteed. The queue holds this
+    /// times `pub_workers_per_conn`.
     pub pub_queue_depth: usize,
-    /// Shared in-flight publish byte budget across all publish workers (process-wide).
+    /// Shared in-flight publish byte budget across all publishes (process-wide).
     pub pub_inflight_bytes: usize,
     /// Per-connection share of the in-flight publish byte budget. Bounds how much of the
     /// process-wide `pub_inflight_bytes` budget a single connection can occupy at once, so one

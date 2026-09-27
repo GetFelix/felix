@@ -2,8 +2,8 @@
 //!
 //! The drain runs in a fixed order: readiness goes false, a clustered broker
 //! hands its shards off, the listener keeps admitting for the optional
-//! hold-off, then stops; in-flight connections finish and the publish workers
-//! empty their queues, peers and background tasks stop, durable logs are
+//! hold-off, then stops; in-flight connections finish and the publish scheduler
+//! empties its queue, peers and background tasks stop, durable logs are
 //! flushed, and the metrics server goes last so an operator can watch the
 //! whole thing.
 
@@ -162,7 +162,7 @@ impl Running {
 
         // Closing the tracker is what lets `wait()` resolve; without it the wait would
         // hang until the deadline even with no connections left. The publish
-        // workers and their completions are tracked here too, so this also waits
+        // executors and their completions are tracked here too, so this also waits
         // for publishes acknowledged on enqueue to be written before replication
         // is told to catch up and storage is flushed.
         connections.close();

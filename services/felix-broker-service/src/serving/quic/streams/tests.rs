@@ -65,7 +65,7 @@ use crate::observability::timings;
 use crate::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
 use crate::serving::quic::handlers::publish::{
     AckEncoding, AckTimeoutState, AckWaiterMessage, Outgoing, PublishAdmission, PublishContext,
-    PublishJob, PublishTarget, SubscriptionLimiter,
+    PublishTarget, SubscriptionLimiter, test_channel,
 };
 use crate::serving::quic::handlers::subscribe::WriterLaneManager;
 use crate::serving::quic::telemetry;
@@ -175,7 +175,7 @@ async fn open_authenticated_bi(
 }
 
 async fn build_publish_context(broker: Arc<Broker>) -> PublishContext {
-    let (tx, mut rx) = mpsc::channel::<PublishJob>(8);
+    let (scheduler, _tx, mut rx) = test_channel(8);
     tokio::spawn(async move {
         while let Some(job) = rx.recv().await {
             let result = match &job.target {
@@ -226,9 +226,7 @@ async fn build_publish_context(broker: Arc<Broker>) -> PublishContext {
         lease_headroom: std::time::Duration::ZERO,
         marks: None,
         quorum_timeout: Duration::from_secs(1),
-        workers: Arc::new(vec![tx]),
-        worker_count: 1,
-        depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        scheduler,
         wait_timeout: Duration::from_millis(50),
         admission: Arc::new(PublishAdmission::unlimited()),
         conn_admission: Arc::new(PublishAdmission::unlimited()),

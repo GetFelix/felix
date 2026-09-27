@@ -238,7 +238,8 @@ past it are refused before the handshake.
 
 ### `publish_queue_wait_timeout_ms`
 
-**Description**: Maximum time to wait when backpressuring publish enqueue.
+**Description**: How long a commit-acked publish waits for room in the publish
+queue (and the byte budget) before it is answered busy.
 
 **Type**: `u64` (milliseconds)
 
@@ -252,7 +253,8 @@ publish_queue_wait_timeout_ms: 2000
 ```
 
 **Behavior**:
-- Publish blocks if queue is full
+- A commit-acked publish waits for room if the queue is full, then is answered
+  `overloaded` (`publish_queue_full`, retryable)
 - Returns error after timeout
 - Prevents unbounded memory growth
 
@@ -648,7 +650,8 @@ cache_send_window: 268435456
 
 ### `pub_workers_per_conn`
 
-**Description**: Publish worker count per QUIC connection.
+**Description**: Executors of the broker's process-wide publish scheduler (the
+name predates it): how many shards' ordered publish steps may run at once.
 
 **Type**: `usize` (count)
 
@@ -661,14 +664,17 @@ cache_send_window: 268435456
 pub_workers_per_conn: 4
 ```
 
-**Recommendations**:
-- **Low concurrency**: `2-4`
-- **High concurrency**: `8-16`
-- Match to expected concurrent publishers per connection
+**Notes**:
+- Each shard is an ordered lane that runs one publish at a time, so more
+  executors help only when publishes spread over several shards.
+- A device flush, a forward to another broker and a quorum wait do not hold an
+  executor, so a slow shard or peer does not use one up.
+- With `core_shards` set, each core shard gets this many executors.
 
 ### `pub_queue_depth`
 
-**Description**: Per-worker publish queue depth.
+**Description**: Publish jobs each tenant is guaranteed room for in the
+publish queue. The queue holds `pub_queue_depth × pub_workers_per_conn` jobs.
 
 **Type**: `usize` (count)
 
@@ -682,8 +688,12 @@ pub_queue_depth: 64
 ```
 
 **Tuning**:
+- Tenants are served by deficit round robin, weighted by bytes; a tenant past
+  its share may borrow idle room but never the last `pub_queue_depth` slots.
+- A publish that finds no room is answered `overloaded`
+  (`detail.reason = "publish_queue_full"`, retryable) if it asked for an ack,
+  and shed otherwise; both are counted in `felix_tenant_publish_queue_full_total`.
 - Larger values allow more buffering under burst but increase saturation latency
-- Affects memory usage per worker
 - Consider with `publish_queue_wait_timeout_ms`
 
 ### `pub_inflight_bytes`
@@ -761,7 +771,7 @@ core_shards: 4
 ```
 
 **Tuning**:
-- When enabled, the publish worker count becomes the shard count (one worker per shard), superseding `pub_workers_per_conn`.
+- When enabled, the publish queue is split per shard: each shard has its own queue and `pub_workers_per_conn` executors on its core, and a stream's publishes run on the shard that owns it.
 - Benefits scale with stream count: workloads spread across many streams gain parallel, contention-free per-core pipelines (measured +34% delivered throughput at 4 streams × 4 shards, unpinned). Single-stream workloads serialize on one shard by design — neutral to mildly positive.
 - Core pinning requires Linux (`sched_setaffinity`); elsewhere shards still get dedicated threads, preserving the single-writer ownership model without hard affinity.
 - Reasonable starting point: number of physical cores minus 2 (leaving headroom for QUIC I/O on the main runtime).

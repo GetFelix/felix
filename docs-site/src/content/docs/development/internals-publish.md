@@ -108,13 +108,14 @@ sequenceDiagram
 
 ## Broker side: from QUIC frame to `PublishJob`
 
-**File**: `services/felix-broker-service/src/serving/quic/handlers/publish/` (`control.rs`, `uni.rs`, `ingress.rs`, `admission.rs`, `ack.rs`)
+**File**: `services/felix-broker-service/src/serving/quic/handlers/publish/` (`control.rs`, `uni.rs`, `ingress.rs`, `admission.rs`, `ack.rs`, `scheduler.rs`, `worker.rs`)
 
-The broker's publish workers are a **global, process-wide pool** — not
-per-connection. The comment at `handlers/publish/worker.rs:build_publish_context` explains why:
-per-connection pools meant more publisher connections multiplied concurrent
-`Broker::publish_batch` callers and caused lock contention on shared broker
-state. One fixed pool, sharded by stream, avoids that.
+The broker runs publishes through one **process-wide publish scheduler** —
+not one per connection. Per-connection pools meant more publisher connections
+multiplied concurrent `Broker::publish_batch` callers and caused lock
+contention on shared broker state, so a small fixed set of executors
+(`pub_workers_per_conn`, default 4) does the work for every connection. What
+changed from the old fixed worker pool is how work reaches them: see step 3.
 
 1. **Stream resolution.** `resolve_stream_cached()` turns
    `(tenant_id, namespace, stream)` into a `StreamHandle`, backed by a
@@ -127,52 +128,81 @@ state. One fixed pool, sharded by stream, avoids that.
    Before this existed, every publish re-hashed `(tenant, namespace, stream)`
    and read through an `RwLock<HashMap<..>>` to find the stream's state. A
    `StreamHandle` is just `Arc<StreamState>` with an `id()` — clone it, pass
-   it around, and worker/shard selection becomes `handle.id() % worker_count`
-   instead of a string hash. See `crates/server/felix-broker/src/broker/shards.rs:StreamHandle`.
+   it around, and its lane (step 3) is keyed by `handle.id()` instead of a
+   string hash. See `crates/server/felix-broker/src/broker/shards.rs:StreamHandle`.
 
 2. **Admission.** Mirrors the client exactly: `enqueue_publish()` computes
    `job_bytes = payloads.iter().map(Bytes::len).sum()` and acquires from a
    broker-side `PublishAdmission` (byte semaphore, `pub_inflight_bytes`,
-   default 64 MiB, process-wide) *before* the job is hard-committed to a
-   worker channel. The policy for what happens when admission or the queue
-   is full is an explicit enum:
+   default 64 MiB, process-wide) *before* the job is queued. The policy for
+   what happens when admission or the queue is full is an explicit enum:
 
    ```rust
    pub(crate) enum EnqueuePolicy {
-       Drop, // shed silently — fire-and-forget traffic
-       Fail, // reject immediately — acked traffic, fail fast
-       Wait, // bounded wait (publish_queue_wait_timeout_ms) — commit-ack traffic
+       Drop,         // shed — fire-and-forget traffic
+       Fail,         // refuse at once — enqueue-acked traffic
+       Wait,         // bounded wait (publish_queue_wait_timeout_ms) — commit-ack traffic
+       Backpressure, // wait until room or the connection goes — pub_ingress_wait
    }
    ```
 
-   Unacked publishes use `Drop` (or `Wait` if `pub_ingress_wait` is set —
-   see [Internals: Backpressure](/felix/development/internals-concurrency/)). This is where
-   "overload becomes visible instead of silently buffering" is enforced on
-   ingest.
+   Unacked publishes use `Drop` (or `Backpressure` if `pub_ingress_wait` is
+   set — see [Internals: Backpressure](/felix/development/internals-concurrency/)).
+   An acked publish that finds no room is answered with a retryable
+   `overloaded` (`detail.reason = "publish_queue_full"`, a short
+   `retry_after_ms`, and nothing queued), and every refusal or shed is counted
+   against its tenant in `felix_tenant_publish_queue_full_total`. This is
+   where "overload becomes visible instead of silently buffering" is enforced
+   on ingest.
 
-3. **Worker dispatch.** `job.target`'s handle id picks a worker index
-   (`handle.id() as usize % worker_count`). With `core_shards` enabled, this
-   is *also* the shard index — the worker for a given stream always runs on
-   the same OS thread, pinned to the same core. See
+3. **Lanes and the fair queue** (`handlers/publish/scheduler.rs`). Every job
+   belongs to a *lane*: the shard it writes (keyed by `handle.id()`), or the
+   remote shard it is forwarded to (keyed by a hash of its name). A lane runs
+   one job at a time in arrival order, which is what keeps a shard's offsets
+   claimed in the order its publishes arrived; different lanes run side by
+   side. Which ready lane an executor takes next is decided per tenant by
+   deficit round robin, weighted by bytes (a 64 KiB quantum per turn), so a
+   tenant sending many or large batches cannot crowd out one sending a few.
+   The queue holds `pub_queue_depth × pub_workers_per_conn` jobs; every
+   tenant is guaranteed `pub_queue_depth` of them, and a tenant past that may
+   borrow idle room but never the last `pub_queue_depth` slots, so a flooding
+   tenant is refused while a quiet one still gets in. With `core_shards`
+   enabled there is one such queue per shard, with its executors on that
+   shard's core, and a stream's lane lives on the shard that owns it. See
    [Internals: Backpressure & Core Sharding](/felix/development/internals-concurrency/#core-sharding).
 
-4. **The worker loop** (`handlers/publish/worker.rs:build_publish_context`, spawned once per
-   worker) does the actual work:
+4. **What a job does on its lane** (`handlers/publish/worker.rs:LaneWork`).
+   An executor holds a lane only for the part that has to be ordered, and
+   only while that part is not waiting on something outside the broker:
 
-   ```rust
-   while let Some(job) = publish_rx.recv().await {
-       match &job.target {
-           PublishTarget::Resolved(handle) => {
-               broker.publish_batch_to_handle(handle, &job.payloads).await
-           }
-           // ..
-       }
-   }
-   ```
+   | Job | Ordered, on the lane | Handed to its own task |
+   |---|---|---|
+   | Durable publish | fence check, `claim_publish` (offsets taken) | device flush, fanout, quorum wait, the answer |
+   | Ephemeral publish | fence check, `publish_batch_with_outcome` | quorum wait, the answer |
+   | Idempotent publish | the whole write (sequence check and append), off the executor | quorum wait, the answer |
+   | Forward | the whole round trip, off the executor | — |
 
-   The `job`'s admission permit is a field on `PublishJob` and is dropped
-   here, at the end of the loop iteration — after `publish_batch_to_handle`
-   returns. That's the "released only when actually processed" guarantee.
+   A durable shard may have `pub_flush_concurrency` flushes outstanding;
+   past that its next claim waits for one off the executor, holding only its
+   own lane. A forward keeps its lane for the round trip because a forward
+   can be retried or redirected, and a later batch sent before an earlier one
+   is answered could land ahead of it; only that remote shard's later
+   publishes wait. Either way a slow disk, a slow peer, or a quorum that has
+   not formed holds up its own shard and nothing else — with the old fixed
+   pool it held a worker, and every stream hashed to that worker waited
+   behind it.
+
+   > `a_stalled_forward_does_not_hold_up_another_shard` -- with one executor,
+   > a publish to a local shard is written and acknowledged while a forward
+   > to a peer that never answers is still waiting.
+
+   > `one_shards_publishes_are_answered_in_order_across_a_full_queue` -- one
+   > shard's acks come back in the order the publishes were sent, and the log
+   > holds exactly the accepted publishes in that order, while the queue
+   > keeps refusing others in between.
+
+   The lane is released by a guard, so a job that panics still frees it; the
+   executor is replaced (`felix_broker_publish_worker_restarts_total`).
 
 ## Broker core: `Broker::publish_batch_to_handle`
 
@@ -240,8 +270,8 @@ Publishing one message to a stream with 3 active subscribers, unacked,
    authenticated once at connect time) writes the frame; the broker's stream
    handler on the other end decodes it into
    `PublishJob { target: PublishTarget::Resolved(handle), .. }`.
-3. Global publish worker `handle.id() % worker_count` picks up the job,
-   calls `publish_batch_to_handle`.
+3. The job joins the stream's lane; an executor takes it on tenant `t1`'s
+   turn and calls `publish_batch_with_outcome`.
 4. One payload is appended to the log; the subscriber snapshot (3 entries)
    is read without a lock; one `DeliveryEnvelope` is created.
 5. The envelope is `.clone()`d 3 times (3 `Arc` bumps) and sent to 3
@@ -261,7 +291,8 @@ Publishing one message to a stream with 3 active subscribers, unacked,
 | Change stream resolution/caching | `resolve_stream_cached`, `StreamHandleCache` in `publish.rs`; `StreamHandle` and `resolve_stream_handle` in `crates/server/felix-broker/src/broker/shards.rs` |
 | Change fanout/queue policy for subscribers | `SubQueuePolicy` match in `Broker::complete_publish`, `crates/server/felix-broker/src/broker/publish.rs` |
 | Change the in-memory replay log | `StreamState::append_batch_at`, `crates/server/felix-broker/src/stream/state.rs` |
-| Add a new publish worker sharding strategy | `PublishSharding` in `crates/sdk/felix-client/src/publish/routing.rs`; `publish_worker_index` in `publish/ingress.rs` |
+| Add a new client publish worker sharding strategy | `PublishSharding` in `crates/sdk/felix-client/src/publish/routing.rs` |
+| Change broker publish scheduling (lanes, tenant fairness, queue bounds) | `PublishScheduler` in `handlers/publish/scheduler.rs`, `FairQueue` in `scheduler/fair_queue.rs`; what each job does on its lane in `handlers/publish/worker.rs` |
 
 Next: [Internals: Subscribe & Fanout](/felix/development/internals-subscribe/) picks up where
 this page leaves off — what happens to the `DeliveryEnvelope` after it lands

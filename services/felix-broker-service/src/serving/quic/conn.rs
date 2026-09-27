@@ -54,7 +54,7 @@ pub async fn serve(
 /// Accept loop with cooperative shutdown.
 ///
 /// Same as [`serve`], but stops accepting when `shutdown` is cancelled and registers
-/// every per-connection task, and the publish workers behind them, with
+/// every per-connection task, and the publish executors behind them, with
 /// `connections` so a drain can wait for in-flight work to finish.
 ///
 /// Aborting the accept task kills the loop but says nothing about the connections it
@@ -79,9 +79,9 @@ pub async fn serve_with_shutdown(
     limit: ConnectionLimit,
     limits: Arc<ListenerLimits>,
 ) -> Result<()> {
-    // The publish workers are tracked with the connections, so a drain waiting
+    // The publish executors are tracked with the connections, so a drain waiting
     // on `connections` also waits for every queued publish to be written. They
-    // exit once the connections and this loop have dropped their senders.
+    // exit once the connections and this loop have dropped the scheduler.
     let mut publish_ctx =
         build_tracked_publish_context(Arc::clone(&broker), &config, cluster, &connections);
     publish_ctx.tenant_rates = Arc::clone(&limits.tenant_rates);
@@ -207,8 +207,8 @@ pub(crate) async fn handle_connection_with_shutdown(
     // subscription-count limiter, and its own writer-lane manager, so one connection can't
     // exhaust the process-wide publish budget (`publish_ctx.admission`), open unbounded
     // subscriptions, or (via a stale/colliding cache) share subscription delivery state with
-    // an unrelated connection. `workers`/`admission`/`depth` stay the shared, process-wide
-    // instances from `build_publish_context`. What is and is not carried through
+    // an unrelated connection. `scheduler`/`admission` stay the shared, process-wide
+    // instances from `build_tracked_publish_context`. What is and is not carried through
     // is `PublishContext::for_connection`'s to decide, in one place, because
     // dropping the cluster view here silently disabled shard ownership for every
     // client connection once already.

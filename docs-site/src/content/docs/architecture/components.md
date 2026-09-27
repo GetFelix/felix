@@ -233,21 +233,21 @@ The publish pipeline is optimized for both latency and throughput:
 
 1. **Ingestion**: Receive publish frame from client stream
 2. **Stream resolution**: Resolve `(tenant, namespace, stream)` to a dense `StreamHandle` (cached)
-3. **Admission**: Byte-budget and queue-depth backpressure before the job is committed to a worker
-4. **Worker processing**: A global, stream-sharded worker pool dequeues and appends to the stream's log
+3. **Admission**: Byte-budget and queue-depth backpressure before the job is queued; an acked publish that finds no room is answered with a retryable `overloaded`
+4. **Scheduling**: One ordered lane per stream shard, fed by a per-tenant fair queue (deficit round robin); a small process-wide set of executors claims offsets lane by lane, while flushes, forwards and quorum waits run off the lane
 5. **Fanout**: One shared, `Arc`-wrapped envelope handed to every active subscriber
 
 **Configuration**:
 
 ```yaml
-pub_workers_per_conn: 4      # Worker parallelism (ignored when core_shards > 0)
-pub_queue_depth: 64           # Bounded queue size (items)
+pub_workers_per_conn: 4      # Publish executors (per core shard when core_shards > 0)
+pub_queue_depth: 64           # Queue slots guaranteed per tenant (queue holds this x executors)
 pub_inflight_bytes: 67108864  # Bounded queue size (bytes, independent budget)
 publish_chunk_bytes: 16384    # Chunking for large payloads
 ```
 
-:::tip[Worker Sizing]
-Set `pub_workers_per_conn` to match your active publish stream count. Excess workers increase contention without improving throughput. For single-stream publishers, use 1-2 workers.
+:::tip[Executor Sizing]
+Each stream shard runs one publish at a time, so executors beyond the number of active publish shards only add contention. For single-stream publishers, 1-2 is enough.
 :::
 :::note[Want the real code path?]
 This section is a conceptual overview. For an accurate, function-by-function

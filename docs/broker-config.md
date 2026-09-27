@@ -147,7 +147,7 @@ subscriber_max_bytes_per_write: 65536
 
 ## Multi-Core Scaling
 
-`core_shards` runs each stream's publish worker and subscription lane feeders
+`core_shards` runs each stream's publish lane and subscription lane feeders
 on a dedicated, core-pinned (Linux) single-threaded runtime, selected
 deterministically by stream handle id. This keeps a stream's fanout enqueue
 and dequeue on one core instead of bouncing across tokio's work-stealing
@@ -172,14 +172,26 @@ high throughput or fanout workloads:
 
 A single connection with a single publish stream will bottleneck regardless of broker tuning.
 
-## Worker Sizing (Important)
+## Publish Executors and Queue (Important)
 
-> IMPORTANT: `pub_workers_per_conn` should not exceed the number of active publish streams.
-> Excess workers increase contention and can worsen tail latency.
+`pub_workers_per_conn` is the number of executors in the broker's process-wide
+publish scheduler (the name predates it). Each stream shard is an ordered lane
+that runs one publish at a time, so executors beyond the number of active
+publish shards do nothing but contend. Waits outside the broker -- a device
+flush, a forward to another broker, a quorum -- do not hold an executor, so one
+slow shard or peer holds up only its own lane.
 
-> When `core_shards > 0`, the shard count replaces `pub_workers_per_conn` as
-> the publish worker count (one worker per shard, so each stream has a single
-> owning core). `pub_workers_per_conn` is ignored in that mode.
+The queue holds `pub_queue_depth × pub_workers_per_conn` jobs and is shared
+fairly between tenants by deficit round robin. Every tenant is guaranteed
+`pub_queue_depth` slots; past that it may borrow idle room but never the last
+`pub_queue_depth` slots. An acked publish that finds no room is answered
+`overloaded` with `detail.reason = "publish_queue_full"` (retryable, nothing
+queued); an unacked one is shed. Both are counted per tenant in
+`felix_tenant_publish_queue_full_total`.
+
+> When `core_shards > 0`, each core shard has a queue of that size and its
+> own `pub_workers_per_conn` executors, and a stream's publishes run on the
+> shard that owns it.
 
 ## TLS
 
@@ -256,8 +268,8 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
 
 - All byte values are raw bytes; use powers of two for MiB values (e.g., 1048576 = 1 MiB).
 - Tune `pub_workers_per_conn` and `pub_queue_depth` together; deep queues trade latency for throughput.
-- Increasing `pub_workers_per_conn` only helps if publish load is spread across multiple streams or
-  connections. Oversubscribing workers relative to streams can degrade performance.
+- Increasing `pub_workers_per_conn` only helps if publish load is spread across multiple stream
+  shards. Oversubscribing executors relative to shards can degrade performance.
 - `pub_inflight_bytes` bounds actual queued-or-processing publish *bytes*, independent of
   `pub_queue_depth`'s item count — a handful of large batches can't blow past the ingress
   memory budget even with a small queue depth.

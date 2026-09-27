@@ -58,14 +58,14 @@ async fn publish_through_workers(publishers: usize) -> (u64, u64) {
     let before = log.flushes();
     let mut tasks = Vec::new();
     for _ in 0..publishers {
-        let worker = ctx.workers[handle.id() as usize % ctx.worker_count].clone();
+        let scheduler = Arc::clone(&ctx.scheduler);
         let handle = handle.clone();
         // Closed loop, one batch in flight per publisher: what a client that
         // waits for each commit ack looks like.
         tasks.push(tokio::spawn(async move {
             for _ in 0..PER_PUBLISHER {
                 let (response, answer) = oneshot::channel();
-                worker
+                scheduler
                     .send(PublishJob {
                         target: PublishTarget::Resolved {
                             handle: handle.clone(),
@@ -79,8 +79,7 @@ async fn publish_through_workers(publishers: usize) -> (u64, u64) {
                         admission_permit: None,
                         fenced: None,
                     })
-                    .await
-                    .expect("send");
+                    .await;
                 answer.await.expect("answer").expect("publish");
             }
         }));

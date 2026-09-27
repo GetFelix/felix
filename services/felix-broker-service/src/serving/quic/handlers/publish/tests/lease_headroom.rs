@@ -26,7 +26,7 @@ struct Harness {
     leader: Leader,
     lease: Arc<LeaseState>,
     queued: PublishContext,
-    rx: mpsc::Receiver<PublishJob>,
+    rx: TestReceiver,
     worker: PublishContext,
 }
 
@@ -64,10 +64,7 @@ impl Harness {
         assert!(self.lease.looks_valid(), "the cached flag is meant to lag");
         assert!(!self.lease.is_valid_now());
         let job = self.rx.recv().await.expect("queued job");
-        self.worker.workers[0]
-            .send(job)
-            .await
-            .expect("hand to worker");
+        self.worker.scheduler.send(job).await;
     }
 }
 

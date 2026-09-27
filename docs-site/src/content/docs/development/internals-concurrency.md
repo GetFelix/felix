@@ -24,7 +24,7 @@ In publish → delivery order:
 | 1 | Client `PublishAdmission` | in-flight publish **bytes**, shared across all client workers | — (always waits) | `publish_inflight_bytes` = 4 MiB |
 | 2 | Client worker mpsc channel | queued publish **items** per stream-worker | — (backpressure via channel) | `publish_queue_depth` = 64 |
 | 3 | Broker `PublishAdmission` | in-flight publish **bytes**, process-wide | — (always waits, within `EnqueuePolicy::Wait`'s timeout) | `pub_inflight_bytes` = 64 MiB |
-| 4 | Broker worker mpsc channel | queued publish **items**, process-wide (or per-shard) | `EnqueuePolicy`: `Drop` / `Fail` / `Wait` / `Backpressure` | `pub_queue_depth` = 64, `Drop` unless `pub_ingress_wait` (then `Backpressure`) |
+| 4 | Broker publish scheduler queue | queued publish **items**, process-wide (or per core shard), shared between tenants by deficit round robin | `EnqueuePolicy`: `Drop` / `Fail` / `Wait` / `Backpressure`; an acked publish that finds no room is answered `overloaded` (`publish_queue_full`) | `pub_queue_depth` × `pub_workers_per_conn` in all, `pub_queue_depth` guaranteed per tenant; `Drop` unless `pub_ingress_wait` (then `Backpressure`) |
 | 5 | Broker-core subscriber channel | queued `DeliveryEnvelope`s per subscriber | `subscriber_queue_policy`: `Block` / `DropNew` / `DropOld` | `subscriber_queue_capacity` = 512, `drop_new` |
 | 6 | Writer lane channel | queued `LaneCommand`s per lane | `subscriber_lane_queue_policy`: same three | `subscriber_lane_queue_depth` = 64, `drop_new` |
 
@@ -141,12 +141,12 @@ A stream's `StreamHandle::id()` deterministically picks its shard. Two
 places use `shard_for`/`handle_for` with that *same* id, so they always
 agree on which shard owns a given stream:
 
-- **Publish workers** (`handlers/publish/worker.rs:build_publish_context`): when `core_shards`
-  is set, the worker count becomes the shard count (one worker per shard,
-  replacing `pub_workers_per_conn`), and worker `i` is spawned on shard
-  `i`'s runtime via `shards.handle_for(worker_id as u64).spawn(..)`.
-  `publish_worker_index` (`handle.id() % worker_count`) then routes a
-  stream's publishes to the worker — and therefore the core — that owns it.
+- **The publish scheduler** (`handlers/publish/worker.rs:build_tracked_publish_context`,
+  `handlers/publish/scheduler.rs`): when `core_shards` is set, the scheduler
+  has one queue per shard, and queue `i`'s `pub_workers_per_conn` executors
+  are spawned on shard `i`'s runtime via `shards.handle_for(i as u64)`. A
+  stream's lane is keyed by `handle.id()` and lives in queue
+  `handle.id() % shard_count`, so its publishes run on the core that owns it.
 - **Subscription lane feeders** (`subscribe.rs:handle_subscribe_message`, feeding `subscribe/feeder.rs`):
   after registering with the lane manager, the broker resolves the
   subscription's `StreamHandle` and spawns `run_lane_feeder` on
@@ -258,8 +258,8 @@ With lossless mode (`Block` + `pub_ingress_wait`): the same overload instead
 propagates backward through every checkpoint — a slow subscriber blocks its
 lane, which blocks its feeder, which blocks broker-core fanout for *every*
 subscriber of that stream (checkpoint 5 sends to all subscribers before
-returning), which blocks the publish worker, which fills the broker
-`PublishAdmission` byte budget, which blocks publishers. This is why
+returning), which blocks that stream's publishes on their lane, which fills
+the broker `PublishAdmission` byte budget, which blocks publishers. This is why
 lossless mode is explicitly opt-in: it turns one slow consumer into
 backpressure on every producer of that stream.
 
