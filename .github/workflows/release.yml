@@ -27,6 +27,7 @@ jobs:
   linux-x86_64:
     name: Linux x86_64 binaries
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -131,6 +132,7 @@ jobs:
   images:
     name: Container images
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
       REGISTRY: ghcr.io
@@ -226,6 +228,7 @@ jobs:
   python-conformance:
     name: Python client conformance
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -288,6 +291,7 @@ jobs:
     name: Python wheels (${{ matrix.target }})
     needs: python-conformance
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -335,6 +339,7 @@ jobs:
     name: Python source distribution
     needs: python-conformance
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v7
@@ -369,6 +374,7 @@ jobs:
     name: Attach wheels to the release
     needs: [python-wheels, python-sdist]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
@@ -396,6 +402,7 @@ jobs:
   typescript-conformance:
     name: Node client conformance
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -462,6 +469,7 @@ jobs:
     name: Node addon (${{ matrix.target }})
     needs: typescript-conformance
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -511,6 +519,7 @@ jobs:
     name: Attach the Node addons to the release
     needs: typescript-addon
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
@@ -570,6 +579,7 @@ jobs:
     needs: typescript-release-assets
     if: vars.PUBLISH_NPM == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: npm
     permissions:
       # Trusted publishing, like the PyPI job: npm trades this workflow's OIDC
@@ -687,6 +697,7 @@ jobs:
     # Off until Felix is meant to be publicly installable. See the note above.
     if: vars.PUBLISH_PYPI == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment: pypi
     permissions:
       id-token: write
@@ -735,6 +746,7 @@ jobs:
     needs: linux-x86_64
     if: vars.PUBLISH_CRATES == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: crates-io
     permissions:
       contents: read

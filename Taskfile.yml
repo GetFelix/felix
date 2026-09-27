@@ -182,6 +182,10 @@ tasks:
     desc: "Assert every workflow's Rust setup matches rust-toolchain.toml"
     cmds:
       - "python3 scripts/check_workflow_toolchains.py"
+  ci:timeouts:
+    desc: "Assert every workflow job sets timeout-minutes"
+    cmds:
+      - "python3 scripts/check_workflow_timeouts.py"
   ts:packages:
     desc: "Assert the Node client's platform packages match what the release builds"
     cmds:

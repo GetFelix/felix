@@ -18,6 +18,9 @@ concurrency:
 permissions:
   contents: read
 
+# Every job has a timeout-minutes ceiling, set well above its normal run: a
+# hung test or a wedged broker would otherwise hold the runner for GitHub's
+# six-hour default before anyone hears about it.
 jobs:
   # The Dockerfiles, built on every change that could break them.
   #
@@ -28,6 +31,7 @@ jobs:
   images:
     name: Container images build
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     # Changing a comment in the broker should not rebuild two container images,
     # but changing anything either binary compiles from should.
     if: >-
@@ -101,6 +105,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     env:
       CARGO_TERM_COLOR: always
       FELIX_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:55432/postgres
@@ -163,6 +168,9 @@ jobs:
       - name: Workflow toolchains match the pin
         run: task ci:toolchains
 
+      - name: Every workflow job has a timeout
+        run: task ci:timeouts
+
       # A doc citing a test is broken by renaming the *test*, which is a Rust
       # change on a Rust pull request -- so it is checked here rather than only
       # in the docs-site build, which runs on pushes to main that touch
@@ -211,6 +219,7 @@ jobs:
   chart:
     name: Helm chart
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -240,6 +249,7 @@ jobs:
   python:
     name: Python client conformance
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -287,6 +297,7 @@ jobs:
   typescript:
     name: Node client conformance
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -344,6 +355,7 @@ jobs:
   formal:
     name: TLA+ model
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -383,6 +395,7 @@ jobs:
   fuzz:
     name: Fuzz the decoders
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
       # Seven targets; keep the whole job inside a few minutes.
