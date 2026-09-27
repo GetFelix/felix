@@ -140,6 +140,7 @@ pub(super) async fn record_node_heartbeat(
     node_id: &str,
     incarnation: u64,
     at_millis: u64,
+    stamp_left: bool,
 ) -> StoreResult<Node> {
     let mut state = store.nodes.write().await;
     let node = state
@@ -151,6 +152,12 @@ pub(super) async fn record_node_heartbeat(
             "heartbeat for incarnation {incarnation} of {node_id}, which is now at {}",
             node.status.incarnation
         )));
+    }
+    // The answer to a node that has left grants no lease, and its stamp is
+    // what placement waits out before handing its shards on; a broker still
+    // heartbeating after it was deregistered must not keep pushing that back.
+    if node.status.lifecycle == NodeLifecycle::Left && !stamp_left {
+        return Ok(node.clone());
     }
     // Never moves backwards: heartbeats from two connections can arrive out
     // of order, and the newest observation is the one that matters.
@@ -182,6 +189,19 @@ pub(super) async fn expire_stale_nodes(
 }
 
 impl InMemoryStore {
+    /// A heartbeat as the Raft log carries it, stamped whatever the node's
+    /// lifecycle now. Every replica, older builds included, has to apply an
+    /// entry the same way, and a checkpointed beat was granted before the
+    /// node left even when the checkpoint lands after.
+    pub(crate) async fn apply_node_heartbeat(
+        &self,
+        node_id: &str,
+        incarnation: u64,
+        at_millis: u64,
+    ) -> StoreResult<Node> {
+        record_node_heartbeat(self, node_id, incarnation, at_millis, true).await
+    }
+
     /// Mark exactly `nodes` down, each only while it still serves at the
     /// incarnation given; the Raft leader's expiry decision, applied.
     ///

@@ -137,6 +137,14 @@ Then stop the process. Its shutdown marks it `left` with
 `POST /v1/nodes/{id}/deregister`, which is what tells the control plane this
 was intentional rather than a crash. The record is kept, so the identity and
 its incarnation survive if a broker with that `FELIX_NODE_ID` is started again.
+
+Deregistering a broker that still leads shards, by hand or from a shutdown
+that did not finish its handoff, does not move them at once. The broker may
+still serve on the lease it holds, so the control plane treats it as draining
+until its last heartbeat is older than the expiry timeout plus the regrant
+margin (about 19 s by default), and fails its shards over to caught-up
+replicas only then. There is no flag to skip the wait; it is what keeps two
+brokers from leading one shard.
 To remove it for good once the broker has stopped:
 
 ```bash

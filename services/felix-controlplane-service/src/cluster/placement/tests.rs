@@ -2,6 +2,7 @@
 //! clusters every theme plans over.
 mod abandon;
 mod caches;
+mod departed;
 mod failover;
 mod lease;
 mod moves;

@@ -194,6 +194,24 @@ This is what separates a graceful shutdown from a crash: a broker that
 deregisters is `left`, and one that simply stops is found `down` by expiry. Both
 remove it from placement, but only the first is intentional.
 
+Deregistering does not hand a node's shards on at once. It stops the lease
+from being renewed (a heartbeat from a `left` node is answered `left`, which
+renews nothing and moves no stamp), but the broker may still serve on the lease
+it already holds, and nothing tells the control plane when it stopped. So
+placement treats a `left` node as `draining` until the same window a silent
+node gets has passed since its last heartbeat: the expiry timeout plus the
+regrant margin, on the store's clock. Until then nothing it leads is promoted
+away, abandoned, or re-placed; a move it takes part in can still hand a shard
+over. A node already silent for that long, such as one `down` before it was
+deregistered, is failed over straight away. An operator deregistering a live
+broker should expect its shards to move about 19 s later with the default
+settings. In-memory streams are the exception, as for a drain: they have no log
+to move and are re-placed at once.
+
+Under Raft the stamp placement waits from is the leader's: a new leader counts
+a departed node as heard from when it began judging, as expiry does, because
+the log's copy of a heartbeat can trail one the previous leader answered.
+
 ### Operator endpoints
 
 `GET /v1/nodes` and `GET /v1/nodes/{node_id}` list registered brokers and
@@ -1091,6 +1109,11 @@ store's is what keeps a wall-clock step, or an election onto a machine whose
 clock runs ahead, from expiring a broker early. Startup fails if the margin is
 set below a quarter of the timeout; see `docs/replication-design.md`,
 "Failover".
+
+A deregistered node's shards wait out the same timeout plus margin from its
+last heartbeat (see "Broker-side lifecycle" above), but judged on the store's
+clock only: placement has no watch of its own, so a forward wall-clock step
+can still shorten that wait.
 
 Running several control-plane instances is safe. Each node is claimed by exactly
 one sweep and only that instance publishes the change, so duplicate sweeps cost

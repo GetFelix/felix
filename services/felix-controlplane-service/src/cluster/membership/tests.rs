@@ -414,3 +414,28 @@ async fn a_heartbeat_restarts_the_watch() {
         1
     );
 }
+
+/// A node that left is held exactly as long as a silent one is left live:
+/// the same stamp, the same window, the same clock. Anything shorter hands
+/// its shards on while it may still serve them.
+#[tokio::test]
+async fn a_departed_node_is_fenced_for_as_long_as_a_silent_one_stays_live() {
+    for now in [
+        T0 + TIMEOUT_MS,
+        T0 + DOWN_AFTER_MS - 1,
+        T0 + DOWN_AFTER_MS,
+        T0 + DOWN_AFTER_MS + 1,
+    ] {
+        let store = store_with_node().await;
+        let expired = expire_once(&store, &liveness(), now).await == 1;
+
+        let mut left = store.get_node("broker-a").await.expect("get");
+        left.status.lifecycle = NodeLifecycle::Left;
+        assert_eq!(
+            left_within_lease(&left, &liveness(), now),
+            !expired,
+            "at {} past the last heartbeat",
+            now - T0,
+        );
+    }
+}
