@@ -45,7 +45,7 @@ use crc32c::crc32c;
 use indexmap::IndexMap;
 
 use crate::protocol::{
-    buf::{gap, ByteBuf, ByteBufMut},
+    buf::{bounded_capacity, gap, ByteBuf, ByteBufMut},
     types, Decoder, Encoder, StrBytes,
 };
 
@@ -514,9 +514,12 @@ impl RecordBatchDecoder {
         version: i8,
         records: &mut Vec<Record>,
     ) -> Result<()> {
-        // The count comes from the batch header; every record takes at least a
-        // byte, so a count past what is left is a lie and must not size memory.
-        records.reserve((batch_decode_info.record_count as usize).min(bytes::Buf::remaining(buf)));
+        // The count comes from the batch header, so it must not size memory
+        // beyond what the bytes left could back.
+        records.reserve(bounded_capacity::<Record, _>(
+            batch_decode_info.record_count as usize,
+            buf,
+        ));
         for _ in 0..batch_decode_info.record_count {
             records.push(Record::decode_new(buf, batch_decode_info, version)?);
         }
@@ -895,7 +898,10 @@ impl Record {
         }
         let num_headers = num_headers as usize;
 
-        let mut headers = IndexMap::with_capacity(num_headers.min(bytes::Buf::remaining(buf)));
+        let mut headers = IndexMap::with_capacity(bounded_capacity::<(StrBytes, Option<Bytes>), _>(
+            num_headers,
+            buf,
+        ));
         for _ in 0..num_headers {
             // Key len
             let key_len: i32 = types::VarInt.decode(buf)?;

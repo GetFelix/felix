@@ -5,7 +5,7 @@
 //!
 //! It is unnecessary to interact directly with these types for most use cases.
 use super::{Decodable, Decoder, Encodable, Encoder, NewType, StrBytes};
-use crate::protocol::buf::{ByteBuf, ByteBufMut};
+use crate::protocol::buf::{bounded_capacity, ByteBuf, ByteBufMut};
 use anyhow::{bail, Result};
 use std::convert::TryFrom;
 use std::string::String as StdString;
@@ -985,9 +985,9 @@ impl<T, E: Decoder<T>> Decoder<Option<Vec<T>>> for Array<E> {
         match Int32.decode(buf)? {
             -1 => Ok(None),
             n if n >= 0 => {
-                // Every element takes at least one byte, so a count past what is left
-                // is a lie; cap the reservation instead of trusting it.
-                let mut result = Vec::with_capacity((n as usize).min(bytes::Buf::remaining(buf)));
+                // The count is the peer's claim; size the reservation by the bytes
+                // that could back it instead.
+                let mut result = Vec::with_capacity(bounded_capacity::<T, _>(n as usize, buf));
                 for _ in 0..n {
                     result.push(self.0.decode(buf)?);
                 }
@@ -1095,7 +1095,7 @@ impl<T, E: Decoder<T>> Decoder<Option<Vec<T>>> for CompactArray<E> {
         match UnsignedVarInt.decode(buf)? {
             0 => Ok(None),
             n => {
-                let mut result = Vec::with_capacity(((n - 1) as usize).min(bytes::Buf::remaining(buf)));
+                let mut result = Vec::with_capacity(bounded_capacity::<T, _>((n - 1) as usize, buf));
                 for _ in 1..n {
                     result.push(self.0.decode(buf)?);
                 }

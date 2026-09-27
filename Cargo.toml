@@ -144,7 +144,8 @@ x509-parser = { version = "0.18", default-features = false }
 
 # kafka-protocol 0.18 reserves Vec capacity from a client-supplied array count
 # before reading any element, so a tiny frame can ask for tens of gigabytes.
-# The vendored copy caps each reservation at the bytes left in the buffer.
+# The vendored copy caps each reservation so its size in bytes, not just its
+# element count, stays within the bytes left in the buffer.
 # Drop this once upstream ships the same bound.
 #
 # The vendored copy is kafka-protocol 0.18.0. As a path crate it is invisible to
