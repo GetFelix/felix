@@ -131,7 +131,9 @@ CONSTANTS
     SequencesInLog, \* whether a re-send is checked against the log, or the leader's own writes
     Cancel,         \* whether an operator may cancel a fenced move
     CancelCas,      \* whether that cancel, too, lands only at the generation it read
-    ReportBound     \* what a follower must hold to be reported: "acknowledged", "tail", "unpaired"
+    ReportBound,    \* what a follower must hold to be reported: "acknowledged", "tail", "unpaired"
+    AckChecksLease, \* whether a Quorum acknowledgement needs a valid lease, or only the report
+    AckOnResponse   \* whether the leader judges its report by the answer it got, or by the store
 
 ASSUME Promotion \in {"leader-report", "log-order"}
 ASSUME ReportBeforeAck \in BOOLEAN
@@ -142,6 +144,7 @@ ASSUME StageMove \in BOOLEAN /\ LearnerVotes \in BOOLEAN
 ASSUME Resends \in BOOLEAN /\ SequencesInLog \in BOOLEAN
 ASSUME Cancel \in BOOLEAN /\ CancelCas \in BOOLEAN
 ASSUME ReportBound \in {"acknowledged", "tail", "unpaired"}
+ASSUME AckChecksLease \in BOOLEAN /\ AckOnResponse \in BOOLEAN
 ASSUME Eps < L /\ Margin >= 0
 
 VARIABLES
@@ -170,11 +173,12 @@ VARIABLES
     moves,      \* how many planned moves have been started
     ver,        \* the store's generation for the assignment: bumped by every write
     cpView,     \* the read each planner holds: {} or {view}
-    staged      \* a move's destination added to the replica set and still copying: {} or {f}
+    staged,     \* a move's destination added to the replica set and still copying: {} or {f}
+    heard       \* the last report each broker was told the control plane stored
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
-           draining, successor, stopped, moves, ver, cpView, staged >>
+           draining, successor, stopped, moves, ver, cpView, staged, heard >>
 
 \* Placement's state, which only the control plane's decisions change.
 handoffVars == << draining, successor, stopped, moves, ver, cpView, staged >>
@@ -233,6 +237,7 @@ Init ==
     /\ ver = 0
     /\ cpView = [p \in Planners |-> {}]
     /\ staged \in IF StageMove THEN {{f} : f \in Brokers \ {leader}} ELSE {{}}
+    /\ heard = [b \in Brokers |-> NoReport]
 
 -----------------------------------------------------------------------------
 (* Time. Real time ticks, and with it each broker's clock moves by zero,   *)
@@ -437,15 +442,27 @@ Ship(b, f) ==
 \* this broker's, at the generation it leads. A report stored by a later
 \* leader says nothing to a deposed one, whose own reports are answered
 \* `not_leader` and whose mark stays where it was.
+\*
+\* With `AckOnResponse` the broker goes by the answer instead, as the code
+\* does: `heard` is what it was told was stored, and it stays true for the
+\* broker after the control plane has moved on -- promoted someone else,
+\* stored a newer report -- until the broker learns otherwise.
 AckReadyOver(b, i, of) ==
+    LET r == IF AckOnResponse THEN heard[b] ELSE report IN
     /\ MajorityOf({ m \in Brokers : Len(log[m]) >= i /\ log[m][i] = log[b][i] } \cup {b}, of)
-    /\ ReportBeforeAck => /\ report.gen = bgen[b]
-                          /\ i <= report.len
-                          /\ MajorityOf(report.holders \cup {b}, of)
+    /\ ReportBeforeAck => /\ r.gen = bgen[b]
+                          /\ i <= r.len
+                          /\ MajorityOf(r.holders \cup {b}, of)
 
+\* With `AckChecksLease = FALSE` the lease plays no part: a broker that still
+\* believes it leads acknowledges on the report alone, however lapsed its own
+\* clock says the lease is. That admits more than the code does, which moves
+\* the mark without looking at the lease (`publish_mark`) and checks it only
+\* when the acknowledgement is released (`quorum::release`).
 AckQuorum(b) ==
     /\ Quorum
-    /\ LeaseValid(b)
+    /\ bgen[b] > 0
+    /\ AckChecksLease => LeaseValid(b)
     /\ \E i \in (hwm[b] + 1)..Len(log[b]) :
         /\ AckReadyOver(b, i, QuorumSet)
         /\ acked' = acked \cup { log[b][j].id : j \in 1..i }
@@ -514,10 +531,15 @@ Report(b) ==
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED handoffVars
 
+\* A stored report is answered to the leader that sent it, the one leading at
+\* its generation. The answer can be lost, leaving the broker with an older one.
 DeliverReport ==
     /\ inflight /= <<>>
     /\ report' = IF inflight[1].gen = gen THEN inflight[1] ELSE report
     /\ inflight' = <<>>
+    /\ heard' \in IF AckOnResponse /\ inflight[1].gen = gen
+                  THEN {[heard EXCEPT ![leader] = inflight[1]], heard}
+                  ELSE {heard}
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED handoffVars
@@ -703,7 +725,8 @@ Decide(v, f, views) ==
 
 -----------------------------------------------------------------------------
 
-Next ==
+\* Only a report's delivery changes what a broker has heard.
+Step ==
     \/ Tick
     \/ \E b \in Brokers :
         \/ SendHeartbeat(b)
@@ -720,9 +743,10 @@ Next ==
         \/ Decide(Now, b, cpView)
         \/ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
         \/ \E f \in Brokers : Ship(b, f) \/ LearnHwm(b, f)
-    \/ DeliverReport
     \/ LoseReport
     \/ \E p \in Planners : Snapshot(p)
+
+Next == (Step /\ UNCHANGED heard) \/ DeliverReport
 
 Spec == Init /\ [][Next]_vars
 
