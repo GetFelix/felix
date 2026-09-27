@@ -434,8 +434,10 @@ Four properties:
    damaged record to end of file is zero (or the zeros start at a sector
    boundary inside it), no later record exists that an fsync could have
    acknowledged, so it is repaired by default. Zeros with anything after them
-   are still interior corruption. See `docs/storage-format.md`, "What recovery
-   may repair".
+   are still interior corruption. Bytes past the durable mark, an unfinished
+   background roll, and an empty segment a lost roll race left mid-chain are
+   repaired too, never below what the mark says was synced. See
+   `docs/storage-format.md`, "What recovery may repair".
    A **failed fsync poisons the log**, whichever path issued it (the group
    commit flush, the io_uring flusher, a seal, a truncation): the durable bound
    never moves again, and every later append, commit, flush and shutdown on that

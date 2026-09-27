@@ -261,7 +261,18 @@ because only there can a record have been mid-write when the process died:
   roll. A torn or zero-filled tail (the two cases above) on the segment just
   before the newest is cut back; the newest segment is kept if it starts
   exactly at the cut and discarded otherwise, since records past a gap cannot
-  be kept in order. Any other damage there is still fatal.
+  be kept in order. Any other damage there is still fatal, and so is a tear in
+  bytes the durable mark says were synced: the mark only reaches the newest
+  segment once the one before it was synced whole, so this repair never cuts
+  below the mark or deletes a segment the mark vouches for.
+- **An empty segment inside the chain.** A background roll that loses the race
+  to an inline one deletes the blank segment it built. The blank's directory
+  entry was synced at creation, and the unlink is synced too, but a power loss
+  before that sync brings it back as a file shorter than a header between two
+  installed segments. Such a file cannot hold a record, so recovery deletes
+  it, but only when the segments either side of it still meet exactly. A
+  segment that held records and lost its bytes leaves an offset gap, which
+  stays fatal.
 
 The dividing line is whether the length is trustworthy. When it is, recovery can
 prove the write was unfinished; when it is not, recovery refuses to choose
@@ -449,6 +460,7 @@ it, anything after the header is; older, the strict rules apply (a sealed
 segment was synced whole). The mark is written only after the sync it
 describes returns, so it never runs ahead of the device. It is not itself
 fsynced per flush (that would double the flush cost), so after a power loss it
-can lag by the filesystem's writeback delay; it is synced at open, at clean
+can lag by the filesystem's writeback delay; it is synced at open (with its
+directory entry, so a fresh shard's first segment has a mark), at clean
 shutdown and close, and after a truncation or reset. A missing or corrupt mark
 reads as absent.

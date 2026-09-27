@@ -85,7 +85,8 @@ pub(super) fn recover_shard(dir: &Path, label: &str, config: &LogConfig) -> Resu
     // it, so a crash — or a truncation — can leave one behind that was never
     // used. Drop them before recovery proper, or their base offset reads as a
     // break in the offset chain. See `discard_abandoned_preparations`.
-    let abandoned = discard_abandoned_preparations(dir, label, config, mark, &mut ids)?;
+    let abandoned = discard_blank_interior(dir, label, config, mark, &mut ids)?
+        + discard_abandoned_preparations(dir, label, config, mark, &mut ids)?;
     let recovered = match ids.split_last() {
         None => Recovered {
             sealed: Vec::new(),
@@ -109,7 +110,9 @@ pub(super) fn recover_shard(dir: &Path, label: &str, config: &LogConfig) -> Resu
                     else {
                         return Err(StorageError::Corruption(detail));
                     };
-                    repair_unsealed_retired(dir, label, &retired, *active_id)?;
+                    if !repair_unsealed_retired(dir, label, mark, &retired, *active_id)? {
+                        return Err(StorageError::Corruption(detail));
+                    }
                     let ids = discover_segment_ids(dir)?;
                     let (active_id, sealed_ids) = ids.split_last().expect("the retired segment");
                     recover_existing(dir, label, config, mark, sealed_ids, *active_id)?
@@ -196,6 +199,83 @@ pub(super) fn discover_segment_ids(dir: &Path) -> Result<Vec<SegmentId>> {
     // duplicate that later code treats as two segments.
     ids.dedup();
     Ok(ids)
+}
+
+/// Remove segments inside the chain that never got as far as a header.
+///
+/// A background rollover that loses the race to an inline one deletes the
+/// blank segment it built. The blank's directory entry was synced when it was
+/// created, so if the unlink did not reach the disk a power loss brings it
+/// back, empty, between two installed segments.
+///
+/// Shorter than a header, it cannot hold a record. It is dropped only when
+/// the segments either side of it still meet exactly, so a real segment that
+/// lost its bytes stays the offset gap that `recover_existing` refuses. A
+/// blank run with nothing installed after it is left to
+/// `discard_abandoned_preparations`.
+fn discard_blank_interior(
+    dir: &Path,
+    label: &str,
+    config: &LogConfig,
+    mark: Option<DurableMark>,
+    ids: &mut Vec<SegmentId>,
+) -> Result<usize> {
+    let is_blank = |id: SegmentId| -> Result<bool> {
+        Ok(std::fs::metadata(dir.join(segment_file_name(id)))?.len() < SEGMENT_HEADER_LEN)
+    };
+    let mut discarded = 0;
+    let mut at = 1;
+    while at + 1 < ids.len() {
+        if !is_blank(ids[at])? {
+            at += 1;
+            continue;
+        }
+        let mut next = at + 1;
+        while next < ids.len() && is_blank(ids[next])? {
+            next += 1;
+        }
+        let Some(&following) = ids.get(next) else {
+            break;
+        };
+        let previous = ids[at - 1];
+        let previous_end = scan_segment_with(
+            &dir.join(segment_file_name(previous)),
+            previous,
+            label,
+            config.index_spacing_bytes,
+            ScanStart::Full,
+            tail_repair(config, mark, previous),
+        )
+        .map(|outcome| outcome.next_offset);
+        let following_base =
+            read_segment_header(&dir.join(segment_file_name(following)), following, label)
+                .map(|header| header.base_offset);
+        match (previous_end, following_base) {
+            (Ok(end), Ok(base)) if end == base => {}
+            // Not provably harmless: leave it for the chain checks to report.
+            (
+                Ok(_) | Err(StorageError::Corruption(_)),
+                Ok(_) | Err(StorageError::Corruption(_)),
+            ) => {
+                at = next;
+                continue;
+            }
+            (Err(err), _) | (_, Err(err)) => return Err(err),
+        }
+        for id in ids.drain(at..next) {
+            tracing::warn!(
+                shard = label,
+                segment = id,
+                "discarding an empty segment left behind by a rollover that lost its race"
+            );
+            remove_segment_files(dir, id)?;
+            discarded += 1;
+        }
+    }
+    if discarded > 0 {
+        sync_dir(dir)?;
+    }
+    Ok(discarded)
 }
 
 /// Remove trailing segments that a rollover created but never installed.
@@ -286,16 +366,7 @@ fn discard_abandoned_preparations(
                 "discarding an empty segment left behind by an uninstalled rollover"
             ),
         }
-        for path in [
-            dir.join(segment_file_name(id)),
-            dir.join(index_file_name(id)),
-        ] {
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(StorageError::Io(err)),
-            }
-        }
+        remove_segment_files(dir, id)?;
         ids.pop();
         discarded += 1;
     }
@@ -359,12 +430,22 @@ struct UnsealedRetired {
 /// Cut an unsealed retired segment back to its last intact record. The newer
 /// segment is kept only if it starts exactly there; otherwise records were
 /// lost in between and nothing after the tear can be kept in order.
+///
+/// Returns `false`, touching nothing, when the mark says the tear is in bytes
+/// that were synced: those records may have been acknowledged, so the damage
+/// is corruption, not an unfinished seal. That also protects the active
+/// segment, because a mark can only reach it once the retired segment was
+/// synced whole.
 fn repair_unsealed_retired(
     dir: &Path,
     label: &str,
+    mark: Option<DurableMark>,
     retired: &UnsealedRetired,
     active_id: SegmentId,
-) -> Result<()> {
+) -> Result<bool> {
+    if retired.valid_bytes < DurableMark::synced_through(mark, retired.id) {
+        return Ok(false);
+    }
     let active_path = dir.join(segment_file_name(active_id));
     let continues = read_segment_header(&active_path, active_id, label)
         .is_ok_and(|header| header.base_offset == retired.next_offset);
@@ -376,13 +457,7 @@ fn repair_unsealed_retired(
         "repairing the torn tail of a segment whose seal never finished",
     );
     if !continues {
-        for path in [active_path, dir.join(index_file_name(active_id))] {
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(StorageError::Io(err)),
-            }
-        }
+        remove_segment_files(dir, active_id)?;
         sync_dir(dir)?;
     }
     let file = std::fs::OpenOptions::new()
@@ -390,6 +465,21 @@ fn repair_unsealed_retired(
         .open(dir.join(segment_file_name(retired.id)))?;
     file.set_len(retired.valid_bytes)?;
     crate::io::sync_data(&file)?;
+    Ok(true)
+}
+
+/// Unlink a segment and its index. The caller syncs the directory.
+fn remove_segment_files(dir: &Path, id: SegmentId) -> Result<()> {
+    for path in [
+        dir.join(segment_file_name(id)),
+        dir.join(index_file_name(id)),
+    ] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(StorageError::Io(err)),
+        }
+    }
     Ok(())
 }
 

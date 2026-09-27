@@ -514,7 +514,7 @@ impl BlankSegment {
         })
     }
 
-    /// Delete a blank segment that will never be activated.
+    /// Delete a blank segment that will never be activated, durably.
     pub(crate) fn discard(self) -> Result<()> {
         let Self {
             path,
@@ -523,12 +523,18 @@ impl BlankSegment {
             ..
         } = self;
         drop(file);
+        let dir = path.parent().map(Path::to_path_buf);
         for path in [path, index_path] {
             match std::fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                 Err(err) => return Err(StorageError::Io(err)),
             }
+        }
+        // `create` synced the directory entry, so an unsynced unlink can come
+        // back after a power loss as an empty file in the middle of the chain.
+        if let Some(dir) = dir {
+            sync_dir(&dir)?;
         }
         Ok(())
     }

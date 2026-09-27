@@ -558,6 +558,9 @@ impl DiskLog {
             segment: recovered.active.id(),
             synced_bytes: recovered.active.size_bytes(),
         })?;
+        // A freshly created mark is lost with its directory entry, and with
+        // it the repair rule for the whole first segment.
+        crate::io::sync_dir(&dir).map_err(StorageError::Io)?;
         // Read before the directory is handed to the segment set.
         let epochs = epochs::load(&dir);
         let replica = replica_state::load(&dir)?;
