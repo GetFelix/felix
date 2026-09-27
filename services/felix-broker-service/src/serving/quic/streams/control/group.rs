@@ -6,7 +6,7 @@ use anyhow::Result;
 use felix_authz::Action;
 use felix_wire::Message;
 
-use super::authz::authorize_stream_simple;
+use super::authz::authorize_group;
 use super::{Ctx, Session, Step};
 use crate::serving::quic::handlers::publish::{
     Outgoing, PublishContext, handle_ack_enqueue_result, send_outgoing_critical,
@@ -41,13 +41,15 @@ pub(super) async fn group_poll(
         cancel_tx,
         ..
     } = *cx;
-    // `stream.subscribe` grants this too, so existing readers keep working.
-    if !authorize_stream_simple(
+    // A stream grant covers this too unless the principal is scoped to
+    // particular groups on the stream; see `PermissionMatcher::allows_group`.
+    if !authorize_group(
         session.auth_ctx.as_ref(),
         &tenant_id,
         Action::GroupConsume,
         &namespace,
         &stream,
+        &group,
         authz_ctx,
     )
     .await?
@@ -160,12 +162,13 @@ pub(super) async fn group_ack(
         cancel_tx,
         ..
     } = *cx;
-    if !authorize_stream_simple(
+    if !authorize_group(
         session.auth_ctx.as_ref(),
         &tenant_id,
         Action::GroupConsume,
         &namespace,
         &stream,
+        &group,
         authz_ctx,
     )
     .await?
@@ -267,12 +270,13 @@ pub(super) async fn group_nack(
         cancel_tx,
         ..
     } = *cx;
-    if !authorize_stream_simple(
+    if !authorize_group(
         session.auth_ctx.as_ref(),
         &tenant_id,
         Action::GroupConsume,
         &namespace,
         &stream,
+        &group,
         authz_ctx,
     )
     .await?
@@ -373,12 +377,13 @@ pub(super) async fn group_dead_letters(
         cancel_tx,
         ..
     } = *cx;
-    if !authorize_stream_simple(
+    if !authorize_group(
         session.auth_ctx.as_ref(),
         &tenant_id,
         Action::GroupConsume,
         &namespace,
         &stream,
+        &group,
         authz_ctx,
     )
     .await?
@@ -488,12 +493,13 @@ pub(super) async fn group_discard(
         cancel_tx,
         ..
     } = *cx;
-    if !authorize_stream_simple(
+    if !authorize_group(
         session.auth_ctx.as_ref(),
         &tenant_id,
         Action::GroupManage,
         &namespace,
         &stream,
+        &group,
         authz_ctx,
     )
     .await?
@@ -595,12 +601,13 @@ pub(super) async fn group_redrive(
         cancel_tx,
         ..
     } = *cx;
-    if !authorize_stream_simple(
+    if !authorize_group(
         session.auth_ctx.as_ref(),
         &tenant_id,
         Action::GroupManage,
         &namespace,
         &stream,
+        &group,
         authz_ctx,
     )
     .await?

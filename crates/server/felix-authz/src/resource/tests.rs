@@ -20,4 +20,8 @@ fn resource_builders() {
         cache_resource(&tenant, &namespace, &cache),
         "cache:tenant-a/payments/session"
     );
+    assert_eq!(
+        group_resource(&tenant, &namespace, &stream, &GroupName::new("workers")),
+        "group:tenant-a/payments/orders.v1/workers"
+    );
 }

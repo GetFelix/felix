@@ -94,6 +94,14 @@ pub enum ParsedObject {
         namespace: Segment,
         cache: Segment,
     },
+    /// One consumer group of a stream. Only group actions mean anything here;
+    /// the broker decides how it combines with stream grants.
+    Group {
+        tenant_id: String,
+        namespace: Segment,
+        stream: Segment,
+        group: Segment,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +130,7 @@ pub fn parse_permission(raw: &str, tenant_id: &str) -> Result<ParsedPermission, 
 /// - `namespace:{tenant_id}/{namespace}`
 /// - `stream:{tenant_id}/{namespace}/{stream}`
 /// - `cache:{tenant_id}/{namespace}/{cache}`
+/// - `group:{tenant_id}/{namespace}/{stream}/{group}`
 pub fn parse_object(raw: &str, tenant_id: &str) -> Result<ParsedObject, String> {
     if raw == "tenant:*" {
         return Err("tenant:* is not allowed".to_string());
@@ -188,6 +197,23 @@ pub fn parse_object(raw: &str, tenant_id: &str) -> Result<ParsedObject, String> 
             tenant_id: tid.to_string(),
             namespace,
             cache,
+        });
+    }
+
+    if let Some(rest) = raw.strip_prefix("group:") {
+        let (tid, ns, stream, group) = split4(rest)?;
+        if tid != tenant_id {
+            return Err("group object tenant mismatch".to_string());
+        }
+        // Same rule as a stream's: a wildcard only under wildcards.
+        let group = parse_segment(group, true)?;
+        let stream = parse_segment(stream, group == Segment::Any)?;
+        let namespace = parse_segment(ns, stream == Segment::Any)?;
+        return Ok(ParsedObject::Group {
+            tenant_id: tid.to_string(),
+            namespace,
+            stream,
+            group,
         });
     }
 
@@ -275,6 +301,52 @@ pub fn object_within_scope(scope: &ParsedObject, target: &ParsedObject) -> bool 
                 cache: tcache,
             },
         ) => st == tt && segment_contains(sns, tns) && segment_contains(scache, tcache),
+        (ParsedObject::Tenant { tenant_id: s }, ParsedObject::Group { tenant_id: t, .. }) => s == t,
+        (
+            ParsedObject::Namespace {
+                tenant_id: st,
+                namespace: sns,
+            },
+            ParsedObject::Group {
+                tenant_id: tt,
+                namespace: tns,
+                ..
+            },
+        ) => st == tt && segment_contains(sns, tns),
+        // A stream scope reaches its groups, as a stream grant does on the
+        // broker.
+        (
+            ParsedObject::Stream {
+                tenant_id: st,
+                namespace: sns,
+                stream: sstream,
+            },
+            ParsedObject::Group {
+                tenant_id: tt,
+                namespace: tns,
+                stream: tstream,
+                ..
+            },
+        ) => st == tt && segment_contains(sns, tns) && segment_contains(sstream, tstream),
+        (
+            ParsedObject::Group {
+                tenant_id: st,
+                namespace: sns,
+                stream: sstream,
+                group: sgroup,
+            },
+            ParsedObject::Group {
+                tenant_id: tt,
+                namespace: tns,
+                stream: tstream,
+                group: tgroup,
+            },
+        ) => {
+            st == tt
+                && segment_contains(sns, tns)
+                && segment_contains(sstream, tstream)
+                && segment_contains(sgroup, tgroup)
+        }
         _ => false,
     }
 }
@@ -457,6 +529,14 @@ fn split2(input: &str) -> Result<(&str, &str), String> {
         return Err("invalid object shape".to_string());
     }
     Ok((a, b))
+}
+
+fn split4(input: &str) -> Result<(&str, &str, &str, &str), String> {
+    let (a, rest) = input
+        .split_once('/')
+        .ok_or_else(|| "invalid object shape".to_string())?;
+    let (b, c, d) = split3(rest)?;
+    Ok((a, b, c, d))
 }
 
 fn split3(input: &str) -> Result<(&str, &str, &str), String> {
