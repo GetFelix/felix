@@ -17,6 +17,9 @@
 mod api;
 mod cluster;
 mod errors;
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing;
 mod metrics;
 mod records;
 mod service;

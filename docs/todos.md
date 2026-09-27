@@ -37,7 +37,8 @@ cache, and consumer groups all landed afterwards.
 - [X] Add test vectors in `crates/protocol/felix-wire/tests/vectors/`
 - [X] Add conformance runner tool (felix-conformance)
 - [X] Add fuzz tests for frame + message decoding (`crates/protocol/felix-wire/fuzz/`;
-      storage decoding: `crates/server/felix-storage/fuzz/`; both run in CI via `task fuzz`)
+      storage decoding: `crates/server/felix-storage/fuzz/`; Kafka decoding:
+      `crates/server/felix-kafka/fuzz/`; all run in CI via `task fuzz`)
 - [ ] Add compatibility notes (reserved fields for future encryption/compression)
 
 ## QUIC transport (`felix-transport`)

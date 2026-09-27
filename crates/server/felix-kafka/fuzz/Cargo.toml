@@ -1,0 +1,34 @@
+# libFuzzer targets for the Kafka listener's decoders.
+#
+# These bytes come from any Kafka client that can reach the listener, before
+# and after SASL, so the properties are about refusing input cleanly: decode
+# or error, never panic, and never inflate a batch past its bound.
+#
+# Excluded from the workspace on purpose: `cargo-fuzz` needs nightly and links
+# libFuzzer, neither of which belongs in the default `cargo build --workspace`.
+# The deterministic subset runs in the normal test suite as the `parse` tests
+# in `crates/server/felix-kafka/src/api/tests/parse.rs`.
+#
+#     cargo install cargo-fuzz
+#     cargo +nightly fuzz run kafka_records -- -max_total_time=300
+[package]
+name = "felix-kafka-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+felix-kafka = { path = "..", features = ["fuzzing"] }
+
+[[bin]]
+name = "kafka_records"
+path = "fuzz_targets/kafka_records.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

@@ -13,6 +13,10 @@ categories = ["network-programming", "asynchronous"]
 # Built into the broker service, not consumed from a registry.
 publish = false
 
+[features]
+# Entry points for the libFuzzer targets in `fuzz/`. Not an API.
+fuzzing = []
+
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }

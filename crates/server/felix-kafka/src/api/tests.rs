@@ -8,6 +8,7 @@ mod fetch;
 mod groups;
 mod list_offsets;
 mod metadata;
+mod parse;
 mod produce;
 mod producer_id;
 mod sasl;
