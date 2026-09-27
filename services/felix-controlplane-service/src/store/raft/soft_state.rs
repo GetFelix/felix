@@ -130,6 +130,21 @@ impl SoftState {
     }
 
     async fn dispatch(&self, request: LeaderRequest) -> Result<MetaResult, NotLeader> {
+        self.leading_term()?;
+        // Judging here ends in `ExpireNodes` and `CheckpointHeartbeats`,
+        // which a member at an older level cannot apply. Until every member
+        // can, decline all of it, so the caller keeps heartbeats, expiry and
+        // the lease on the log as the older build does; mixing the two would
+        // expire brokers whose heartbeats only this leader has seen.
+        let needs = MetaCommand::ExpireNodes { nodes: Vec::new() }.version();
+        if self.handle.cluster_version().await < needs {
+            // Whatever was seen before is not carried into the next time
+            // this is enabled: that starts a fresh window.
+            *self.view.lock().expect("soft state lock") = None;
+            return Ok(Err(MetaError::Unsupported(format!(
+                "leader soft state needs every member at metadata version {needs}"
+            ))));
+        }
         match request {
             LeaderRequest::Heartbeat {
                 node_id,

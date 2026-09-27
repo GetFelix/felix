@@ -36,6 +36,8 @@ pub struct RaftHandle {
     pub(super) may_vote: Arc<AtomicBool>,
     /// Answers `ask_leader` on this member; set once by the application.
     pub(super) leader_service: Arc<std::sync::OnceLock<Arc<dyn super::LeaderService>>>,
+    /// What each member last reported it can apply ([`super::version`]).
+    pub(super) versions: Arc<std::sync::Mutex<super::version::Versions>>,
 }
 
 impl RaftHandle {
@@ -131,6 +133,7 @@ impl RaftHandle {
             db: Arc::downgrade(&db),
             may_vote: Arc::new(AtomicBool::new(may_vote)),
             leader_service: Arc::new(std::sync::OnceLock::new()),
+            versions: Arc::default(),
         })
     }
 
@@ -207,6 +210,17 @@ impl RaftHandle {
     pub async fn add_learner(&self, id: NodeId, addr: String) -> Result<()> {
         self.raft
             .add_learner(id, openraft::BasicNode { addr }, true)
+            .await
+            .context("add learner")?;
+        Ok(())
+    }
+
+    /// A learner that is never waited for, for tests whose "member" is a
+    /// stub answering only some routes.
+    #[cfg(test)]
+    pub(crate) async fn add_learner_without_waiting(&self, id: NodeId, addr: String) -> Result<()> {
+        self.raft
+            .add_learner(id, openraft::BasicNode { addr }, false)
             .await
             .context("add learner")?;
         Ok(())

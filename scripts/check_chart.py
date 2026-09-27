@@ -238,9 +238,36 @@ def check_controlplane(docs: list[dict], label: str, backend: str) -> None:
             fail(f"{label}: the Raft peer token is not a Secret reference")
         if not env.get("FELIX_RAFT_CLUSTER_ID", {}).get("value"):
             fail(f"{label}: no Raft cluster id")
-        # `helm template` renders as an install.
-        if env.get("FELIX_RAFT_INITIAL_CLUSTER_STATE", {}).get("value") != "new":
-            fail(f"{label}: a first install does not let the group form")
+        # Empty members may form a group only until the bootstrap hook has
+        # seen it formed and left its marker; every start reads the marker.
+        formed = env.get("FELIX_RAFT_GROUP_FORMED", {}).get("valueFrom", {}).get("configMapKeyRef", {})
+        marker = one(docs, "ConfigMap", "-controlplane-raft-formed")
+        job = one(docs, "Job", "-controlplane-raft-bootstrap")
+        if "FELIX_RAFT_INITIAL_CLUSTER_STATE" in env:
+            fail(f"{label}: the initial cluster state is fixed in the pod template")
+        if not formed.get("optional") or marker is None or formed.get("name") != marker["metadata"]["name"]:
+            fail(f"{label}: members do not read the group-formed marker, optionally")
+        script = "".join(container["command"])
+        if "FELIX_RAFT_INITIAL_CLUSTER_STATE=existing" not in script:
+            fail(f"{label}: a member that sees the marker does not start as existing")
+        if job is None or marker is None:
+            fail(f"{label}: no one-shot Raft bootstrap hook")
+        else:
+            weight = lambda doc: int(doc["metadata"]["annotations"]["helm.sh/hook-weight"])
+            if "post-install" not in job["metadata"]["annotations"].get("helm.sh/hook", ""):
+                fail(f"{label}: the bootstrap Job is not a post-install hook")
+            if weight(marker) <= weight(job):
+                fail(f"{label}: the group-formed marker is not created after the bootstrap Job")
+            if "/v1/system/ready" not in "".join(containers(job)[0]["command"]):
+                fail(f"{label}: the bootstrap Job does not wait for the group to be ready")
+        policy = one(docs, "NetworkPolicy", "-controlplane")
+        if policy is None:
+            fail(f"{label}: nothing keeps the Raft peer port to the members")
+        elif peer_ports:
+            rules = [rule for rule in policy["spec"]["ingress"]
+                     if any(p["port"] == peer_ports[0] for p in rule.get("ports", []))]
+            if len(rules) != 1 or not rules[0].get("from"):
+                fail(f"{label}: the Raft peer port is open to every pod")
         if headless is not None and [p["name"] for p in headless["spec"]["ports"]] != ["raft"]:
             fail(f"{label}: the headless Service does not expose the peer port")
 
@@ -324,6 +351,28 @@ def main() -> int:
     if "FELIX_NODE_REFRESH_TOKEN_FILE" not in env:
         fail("raft: the refresh token was not wired")
 
+    print("render: raft peer TLS")
+    docs = render(raft, "controlplane.storage.raft.tls.enabled=true",
+                  "controlplane.storage.raft.tls.existingSecret=raft-peer-tls")
+    check_controlplane(docs, "raft-tls", "raft")
+    sts = one(docs, "StatefulSet", "-controlplane")
+    env = env_of(containers(sts)[0]) if sts else {}
+    if not all(env.get(f"FELIX_RAFT_TLS_{k}", {}).get("value", "").startswith("/etc/felix/raft-tls/")
+               for k in ("CERT", "KEY", "CA")):
+        fail("raft-tls: FELIX_RAFT_TLS_* not wired to the mounted Secret")
+    volumes = {v["name"]: v for v in sts["spec"]["template"]["spec"]["volumes"]} if sts else {}
+    if volumes.get("raft-tls", {}).get("secret", {}).get("secretName") != "raft-peer-tls":
+        fail("raft-tls: the peer certificate is not a mounted Secret")
+
+    print("render: raft with an explicit initial cluster state")
+    docs = render(raft, "controlplane.storage.raft.initialClusterState=existing")
+    sts = one(docs, "StatefulSet", "-controlplane")
+    env = env_of(containers(sts)[0]) if sts else {}
+    if env.get("FELIX_RAFT_INITIAL_CLUSTER_STATE", {}).get("value") != "existing":
+        fail("raft-existing: an explicit initial cluster state was not kept")
+    if one(docs, "Job", "-controlplane-raft-bootstrap") is not None:
+        fail("raft-existing: the bootstrap hook ran although the state was explicit")
+
     print("render: mtls")
     docs = render(mtls)
     check_controlplane(docs, "mtls", "postgres")
@@ -378,6 +427,8 @@ def main() -> int:
                 "controlplane.storage.raft.peerToken.existingSecret=")
     must_refuse("the Raft RPCs need a listener of their own", raft,
                 "controlplane.storage.raft.peerPort=8443")
+    must_refuse("needs controlplane.storage.raft.tls.existingSecret", raft,
+                "controlplane.storage.raft.tls.enabled=true")
     must_refuse("memory keeps metadata in one process", memory, "controlplane.replicas=2")
     must_refuse("share a port", postgres, "broker.ports.internal=5000")
     must_refuse("permit evicting every broker", postgres,

@@ -39,7 +39,9 @@ use crate::model::{
 };
 use crate::raft::{AskLeaderError, RaftHandle};
 use crate::store::memory::InMemoryStore;
-use crate::store::raft::command::{MetaCommand, MetaResponse, decode_result, encode_command};
+use crate::store::raft::command::{
+    MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
+};
 use crate::store::raft::soft_state::{LeaderRequest, SoftState};
 use crate::store::raft::state_machine::MetadataStateMachine;
 use crate::store::{
@@ -70,8 +72,19 @@ impl RaftStore {
         self.machine.store()
     }
 
-    /// Propose one command and decode its outcome.
+    /// Propose one command and decode its outcome. A command newer than
+    /// some member can apply is refused here, before it reaches the log.
     async fn propose(&self, command: MetaCommand) -> StoreResult<MetaResponse> {
+        let needs = command.version();
+        if needs > 0 {
+            let level = self.handle.cluster_version().await;
+            if level < needs {
+                return Err(StoreError::Conflict(format!(
+                    "this change needs every control-plane member at metadata version {needs}, \
+                     but the group is at {level}; finish upgrading every member first"
+                )));
+            }
+        }
         let bytes = self
             .handle
             .write(encode_command(&command))
@@ -89,15 +102,17 @@ impl RaftStore {
     }
 
     /// Ask the leader, wherever it is. `None` when the leader predates
-    /// leader-only requests, which only happens part-way through a rolling
-    /// upgrade; the caller then falls back to the log.
+    /// leader-only requests, or declines them because some member predates
+    /// the commands they propose; both only happen part-way through a rolling
+    /// upgrade, and the caller then falls back to the log.
     async fn ask_leader(&self, request: LeaderRequest) -> StoreResult<Option<MetaResponse>> {
         let bytes = serde_json::to_vec(&request)?;
         match self.handle.ask_leader(bytes).await {
-            Ok(bytes) => {
-                let result = decode_result(&bytes).map_err(StoreError::from)?;
-                result.map(Some).map_err(StoreError::from)
-            }
+            Ok(bytes) => match decode_result(&bytes).map_err(StoreError::from)? {
+                Ok(response) => Ok(Some(response)),
+                Err(MetaError::Unsupported(_)) => Ok(None),
+                Err(err) => Err(err.into()),
+            },
             Err(AskLeaderError::Unsupported) => Ok(None),
             Err(AskLeaderError::Failed(err)) => Err(StoreError::Unexpected(err)),
         }

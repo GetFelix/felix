@@ -430,22 +430,38 @@ pause for the restart; brokers keep serving on their catalogs and leases as
 during any control-plane blip. The recorded membership still names the old
 API addresses, which is fine: the configured peers map wins.
 
-**A release that adds a command variant** must finish rolling every member
-before anything proposes the new variant. An older member cannot decode it:
-it records an `Unsupported` response rather than misparse or skip it, logs
-an error, and counts `felix_meta_raft_unsupported_commands_total`, but the
-newer leader applied the command, so that member's state is now behind the
-leader's and a snapshot it takes keeps the difference. Roll followers first
-and the current leader last, so the leader stays on the older build for
-most of the roll. If the counter moves on any member anyway, upgrade it,
-then wipe its volume and let it rejoin: it rebuilds from the leader's
-snapshot as in [rejoining after a lost volume](#rejoining-after-a-lost-volume).
+**Commands newer than some member are not proposed.** Every command
+variant has a level (`MetaCommand::version`), and each build reports the
+highest level it can apply (`METADATA_VERSION`) on the peer `standing`
+route. A member proposes a command only when every member of the current
+membership, learners included, reports at least that command's level, in
+the manner of KRaft's `metadata.version`. A member that reports nothing
+predates this and counts as level 0; one that cannot be reached counts at
+what it last reported, or 0 if it never has. The group's level is
+recomputed at most every two seconds, so it rises shortly after the last
+member restarts on the new build. The rollout order therefore does not
+matter: a StatefulSet can upgrade the leader first.
 
-The commands for removing RBAC rules and rotating signing keys
-(`remove_rbac_policy`, `remove_rbac_grouping`, `stage_signing_key`,
-`activate_signing_key`, `retire_signing_key`) are such an addition: nothing
-proposes them until someone calls the matching routes, so hold off on those
-until the roll is done.
+Level 1 is rule removal and signing-key rotation (`remove_rbac_policy`,
+`remove_rbac_grouping`, `stage_signing_key`, `activate_signing_key`,
+`retire_signing_key`) and leader soft-state liveness (`expire_nodes`,
+`checkpoint_heartbeats`). Until every member is at level 1:
+
+- the routes that remove RBAC rules or stage, activate or retire signing
+  keys answer 409 saying the group is not yet at the version they need;
+- the leader declines leader-only requests, so heartbeats, expiry and the
+  placement lease go through the log (`record_node_heartbeat`,
+  `expire_stale_nodes`, `take_placement_lease`) as on the older build.
+  When the group reaches level 1 the leader starts a fresh soft-state
+  window, so nothing is expired at the switch.
+
+A release that adds a variant gives it the next level and raises
+`METADATA_VERSION`. If `felix_meta_raft_unsupported_commands_total` still
+moves on a member (something proposed through the raw peer `propose`
+route, or a member added on an older build after the level was computed),
+upgrade it, then wipe its volume and let it rejoin: it rebuilds from the
+leader's snapshot as in
+[rejoining after a lost volume](#rejoining-after-a-lost-volume).
 
 ## Failure modes
 

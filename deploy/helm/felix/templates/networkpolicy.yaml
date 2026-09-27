@@ -52,3 +52,45 @@ spec:
         - protocol: TCP
           port: {{ int $b.ports.metrics }}
 {{- end }}
+{{- $cp := .Values.controlplane }}
+{{- if and $cp.enabled (eq $cp.storage.backend "raft") $cp.networkPolicy.enabled }}
+---
+# The Raft peer port can replace the whole metadata store, so only members
+# (and whatever raftPeerFrom names) reach it; the peer token, and peer mTLS
+# when it is on, are the fences behind this one. The other ports stay open
+# to the cluster, as they are with no policy at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "felix.controlplane.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "felix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controlplane
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "felix.controlplane.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "felix.controlplane.selectorLabels" . | nindent 14 }}
+        {{- with $cp.networkPolicy.raftPeerFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ int $cp.storage.raft.peerPort }}
+    - ports:
+        - protocol: TCP
+          port: {{ int $cp.service.port }}
+        - protocol: TCP
+          port: {{ int $cp.metrics.port }}
+        {{- if $cp.bootstrap.enabled }}
+        - protocol: TCP
+          port: {{ int $cp.bootstrap.port }}
+        {{- end }}
+{{- end }}

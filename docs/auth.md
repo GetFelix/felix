@@ -732,9 +732,9 @@ first token has to be minted with it. To upgrade without an outage, set
 `FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE=true` on the control plane, upgrade,
 re-provision credentials, then remove it.
 
-Rule removal and key rotation add Raft commands. On the Raft backend, finish
-rolling every control-plane member before using those routes; see
-[metadata-raft-design.md](metadata-raft-design.md#upgrading).
+Rule removal and key rotation add Raft commands. On the Raft backend, those
+routes answer 409 until every control-plane member runs a build that has
+them; see [metadata-raft-design.md](metadata-raft-design.md#upgrading).
 
 ## Example Policies
 

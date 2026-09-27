@@ -498,6 +498,10 @@ impl AppStateMachine for MetadataStateMachine {
     fn restamp(&self, command: &[u8], now_millis: u64) -> Option<Vec<u8>> {
         crate::store::raft::command::restamp(command, now_millis)
     }
+
+    fn version(&self) -> u16 {
+        crate::store::raft::command::METADATA_VERSION
+    }
 }
 
 #[cfg(test)]

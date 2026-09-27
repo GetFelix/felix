@@ -183,3 +183,95 @@ async fn ensure_signing_keys_never_overwrites() {
         "a second ensure returns the keys the first installed"
     );
 }
+
+/// A peer that answers only `standing`, reporting `version` — or, at 0,
+/// nothing, as a build from before metadata versions does.
+async fn stub_member(version: Arc<std::sync::atomic::AtomicU16>) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+    let app = axum::Router::new().route(
+        "/internal/raft/standing",
+        axum::routing::get(move || {
+            let version = version.load(std::sync::atomic::Ordering::SeqCst);
+            async move {
+                axum::Json(if version == 0 {
+                    serde_json::json!({ "last_log_index": null })
+                } else {
+                    serde_json::json!({ "last_log_index": null, "version": version })
+                })
+            }
+        }),
+    );
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    addr
+}
+
+/// With a member that predates the newer commands, the leader proposes
+/// none of them: rule removal is refused before it reaches the log, and
+/// liveness stays on the log commands that member can apply. Once it
+/// reports the level, rule removal goes through.
+#[tokio::test]
+async fn nothing_newer_than_the_oldest_member_is_proposed() {
+    use crate::auth::rbac::policy_store::PolicyRule;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    let applied = || store.handle.status().last_applied_index;
+    let mut quiet = crate::store::contract::nodes::node("broker-quiet", 7001);
+    // Stale by any cutoff under the log's rules; soft state would instead
+    // give it a full window from when the leader began judging.
+    quiet.status.last_heartbeat_at_millis = 1;
+    store.register_node(quiet).await.expect("register");
+
+    let version = Arc::new(std::sync::atomic::AtomicU16::new(0));
+    let addr = stub_member(Arc::clone(&version)).await;
+    store
+        .handle
+        .add_learner_without_waiting(2, addr)
+        .await
+        .expect("add old member");
+
+    let policy = PolicyRule {
+        subject: "role:reader".to_string(),
+        object: "tenant:t1".to_string(),
+        action: "stream.read".to_string(),
+    };
+    let before = applied();
+    let refused = store.remove_rbac_policy("t1", policy.clone()).await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("metadata version")),
+        "a command the old member cannot apply was proposed: {refused:?}"
+    );
+    assert_eq!(applied(), before, "the refused command reached the log");
+
+    let now = store.now_millis().await.expect("now");
+    let expired = store
+        .expire_stale_nodes(now.saturating_sub(60_000))
+        .await
+        .expect("sweep");
+    assert_eq!(
+        expired
+            .iter()
+            .map(|node| node.node_id.as_str())
+            .collect::<Vec<_>>(),
+        ["broker-quiet"],
+        "expiry went through the leader's soft state (`ExpireNodes`)"
+    );
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match store.remove_rbac_policy("t1", policy.clone()).await {
+            Err(StoreError::NotFound(_)) => break,
+            other => assert!(
+                std::time::Instant::now() < deadline,
+                "still refused after every member reported the level: {other:?}"
+            ),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
