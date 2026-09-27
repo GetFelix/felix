@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790549901594,
+  "lastUpdate": 1790551901594,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -23298,6 +23298,72 @@ window.BENCHMARK_DATA = {
             "range": "2500.01",
             "unit": "us",
             "extra": "trials: 5\nmedian: 327.00\nmean: 1565.40\nstdev: 2500.01\ncv: 159.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "06641d1c0b7a39edbedffbaf524203f6386df790",
+          "message": "fix(replication): re-verify a follower's older-generation tail before a new leader ships past it (#779)\n\nA follower could keep records it wrote under an older generation that no newer\nleader ever compared: replication resumed at the follower's tail with no\noverlap, so a dead leader's unacknowledged write survived at an offset the new\nleader had filled differently. The nightly history checker caught two brokers\ndisagreeing at a committed offset.\n\nA batch from a newer generation that begins past such records is now answered\nwith a LogGap naming the first of them (the later of where the older generation\nbegan, the commit offset, and how far a multi-batch comparison has already got),\nso the overlap is compared and a divergent suffix is repaired as usual. The new\ngeneration's start is recorded only once the follower is level with the leader,\nso a conflict found partway through is still the older generation's suffix.\n\nSpec-Unaffected: the model's Ship already compares whole logs via Diverge; this brings the code up to it",
+          "timestamp": "2026-09-27T16:28:37-07:00",
+          "tree_id": "dd0d4c46aac44f7347a6e361b507f5a41ae8061a",
+          "url": "https://github.com/gabloe/felix/commit/06641d1c0b7a39edbedffbaf524203f6386df790"
+        },
+        "date": 1790551898983,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 98,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 98.00\nmean: 97.40\nstdev: 0.89\ncv: 0.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 146,
+            "range": "3.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 146.00\nmean: 145.40\nstdev: 3.51\ncv: 2.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 187,
+            "range": "160.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 187.00\nmean: 250.00\nstdev: 160.38\ncv: 64.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 114,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 114.00\nmean: 113.60\nstdev: 0.55\ncv: 0.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 243,
+            "range": "5.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 243.00\nmean: 243.60\nstdev: 5.32\ncv: 2.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 361,
+            "range": "26.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 361.00\nmean: 366.00\nstdev: 26.32\ncv: 7.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
