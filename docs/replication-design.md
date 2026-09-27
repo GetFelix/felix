@@ -414,7 +414,10 @@ QUIC subscriptions are gated too. A durable batch past the mark joins a
 per-stream hold under its commit turn, so the hold is in offset order; when the
 mark moves, the driver releases what it covers, appending to the replay ring
 and fanning out together, with one shared envelope as an unheld publish does.
-The ring therefore holds only committed records. `Latest` and `cursor_tail`
+The ring therefore holds only committed records. A restart keeps that: a
+`Quorum` ring is refilled from disk only when the commit offset reaches the
+tail, and otherwise starts empty, since a ring stopping at the commit offset
+would leave a hole before the tail. `Latest` and `cursor_tail`
 are the mark, and resumed history is read with `Broker::read_committed`, which
 stops at the mark and waits for it. Registration still happens before any
 history is read. A broker that just took a shard has no mark for its
@@ -452,6 +455,13 @@ generation than the one this follower last accepted, and the divergence sits at
 or after where that older generation began. Both conditions matter — a leader
 disagreeing with *itself* is an inconsistency rather than a predecessor's
 leftovers, and repairing that would let a leader rewrite its own history.
+
+Dropping a suffix also resets the stream's in-memory tail: the replay ring,
+its next offset and the commit order. Storing the new leader's records only
+moves that tail forward, so when they end below where the dropped ones did, the
+ring kept the dropped records, and a reader of this broker once promoted was
+handed them next to the records that replaced them. A rebuild resets it the
+same way.
 
 Anything else halts, as before. That is the same shape Kafka arrived at without
 Raft (KIP-101, KIP-279), reached without adding a message: the generation is

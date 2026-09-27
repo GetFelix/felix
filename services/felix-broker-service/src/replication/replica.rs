@@ -428,6 +428,29 @@ impl ReplicaHandler {
                              generation and resumed replication",
                         );
                         metrics::record_replicated(metrics::OUTCOME_TRUNCATED);
+                        // The replay ring and next offset still describe the
+                        // dropped records, and the apply below only moves them
+                        // forward, so a tail that ends lower than before would
+                        // leave them for readers if this broker is promoted.
+                        if log_kind == felix_broker::LogKind::Stream
+                            && let Err(err) = self
+                                .broker
+                                .reset_replicated(
+                                    &key.tenant_id,
+                                    &key.namespace,
+                                    &key.stream,
+                                    key.shard,
+                                    diverged_at,
+                                )
+                                .await
+                        {
+                            tracing::warn!(
+                                stream = %key.stream,
+                                shard = key.shard,
+                                error = %err,
+                                "dropped a divergent suffix but could not reset the stream's tail",
+                            );
+                        }
                         outcome = replication::apply(
                             &log,
                             batch.first_offset,

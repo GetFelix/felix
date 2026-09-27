@@ -1858,3 +1858,64 @@ async fn tenant_streams_lists_only_that_tenant_in_order() {
             .is_none()
     );
 }
+
+/// A `Quorum` stream's ring holds only committed records, restart included.
+///
+/// Records past the commit offset may be a dead generation's, which the next
+/// leader replaces. Hydrated into the ring they were served to readers of this
+/// broker once promoted, before anything had committed them.
+#[tokio::test]
+async fn hydration_leaves_uncommitted_records_out_of_a_quorum_ring() {
+    let dir = tempdir().expect("dir");
+    async fn register_quorum(broker: &Broker) {
+        broker
+            .register_stream(
+                "t1",
+                "default",
+                "orders",
+                StreamMetadata {
+                    durable: true,
+                    shards: 1,
+                    consistency: felix_broker::ConsistencyLevel::Quorum,
+                },
+            )
+            .await
+            .expect("register");
+    }
+    {
+        let (broker, storage) = broker_with_storage(&dir, FsyncMode::OnCommit).await;
+        register_quorum(&broker).await;
+        for i in 0..4 {
+            broker
+                .publish("t1", "default", "orders", payload(&format!("v{i}")))
+                .await
+                .expect("publish");
+        }
+        storage
+            .open_stream("t1", "default", "orders", 0)
+            .expect("log")
+            .advance_commit_offset(2)
+            .await
+            .expect("commit");
+        storage.shutdown().await.expect("shutdown");
+    }
+
+    let (broker, _storage) = broker_with_storage(&dir, FsyncMode::OnCommit).await;
+    register_quorum(&broker).await;
+    let resumed = broker
+        .subscribe_from("t1", "default", "orders", 0, StartPosition::Offset(0))
+        .await
+        .expect("subscribe");
+    let past_commit: Vec<u64> = resumed
+        .backlog
+        .iter()
+        .map(|(offset, _)| *offset)
+        .filter(|offset| *offset >= 2)
+        .collect();
+    assert!(
+        past_commit.is_empty(),
+        "the ring served uncommitted offsets {past_commit:?}"
+    );
+    let history = resumed.history.expect("served from disk");
+    assert_eq!((history.from_offset, history.until_offset), (0, 4));
+}
