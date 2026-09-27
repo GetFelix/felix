@@ -2,8 +2,9 @@
 //!
 //! Serde does the parsing, so the interesting property is not "does it parse"
 //! but what happens to a message the broker will then dispatch on: an unknown
-//! variant must be an error rather than a default, and a variant that decodes
-//! must survive a round trip so the broker acts on what the client sent.
+//! type lands only in `Message::Unknown` (answered, never re-encoded), and any
+//! other variant that decodes must survive a round trip so the broker acts on
+//! what the client sent.
 
 #![no_main]
 
@@ -18,9 +19,16 @@ fuzz_target!(|data: &[u8]| {
     };
 
     // Property 1: arbitrary bodies decode or error, never panic.
-    let Ok(message) = Message::decode(frame) else {
+    let Ok(message) = Message::decode(frame.clone()) else {
         return;
     };
+
+    // An unknown type is receive-only: the broker reads its type and request
+    // id for the `unsupported` answer and never re-encodes it.
+    if message == Message::Unknown {
+        let _ = Message::unknown_request(&frame);
+        return;
+    }
 
     // Property 2: a decoded message re-encodes and decodes back to itself.
     // Optional fields default to the pre-existing behaviour, so a field that
