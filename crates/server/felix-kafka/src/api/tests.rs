@@ -54,6 +54,8 @@ pub(super) struct FakeCluster {
     pub(super) produce_hold: Mutex<std::time::Duration>,
     /// Every `admit_produce` call, as `(tenant, records, bytes)`.
     pub(super) produce_charges: Mutex<Vec<(String, u64, u64)>>,
+    /// The certificate chain each `authenticate_peer` call was handed.
+    pub(super) peer_certs_seen: Mutex<Vec<Vec<Vec<u8>>>>,
 }
 
 #[async_trait]
@@ -65,6 +67,19 @@ impl Cluster for FakeCluster {
         } else {
             Err("token rejected".to_string())
         }
+    }
+
+    async fn authenticate_peer(
+        &self,
+        tenant_id: &str,
+        token: &str,
+        peer_certs: &[Vec<u8>],
+    ) -> Result<Principal, String> {
+        self.peer_certs_seen
+            .lock()
+            .expect("lock")
+            .push(peer_certs.to_vec());
+        self.authenticate(tenant_id, token).await
     }
 
     fn brokers(&self) -> Vec<Endpoint> {
@@ -209,6 +224,7 @@ impl Fixture {
             committed: Mutex::new(HashMap::new()),
             produce_hold: Mutex::new(std::time::Duration::ZERO),
             produce_charges: Mutex::new(Vec::new()),
+            peer_certs_seen: Mutex::new(Vec::new()),
         });
         cluster.add_broker(LOCAL, "kafka-a.test", 9092);
         let service = KafkaService::new(Arc::clone(&broker), cluster.clone(), settings);
@@ -258,10 +274,21 @@ impl Fixture {
 
     /// A connection served until `shutdown` is cancelled.
     pub(super) fn connect_until(&self, shutdown: CancellationToken) -> Client {
+        self.connect_as(Vec::new(), shutdown)
+    }
+
+    /// A connection whose TLS client presented `peer_certs`.
+    pub(super) fn connect_as(
+        &self,
+        peer_certs: Vec<Vec<u8>>,
+        shutdown: CancellationToken,
+    ) -> Client {
         let (client, server) = tokio::io::duplex(1 << 20);
         let service = self.service.clone();
         tokio::spawn(async move {
-            service.serve_connection(server, shutdown).await;
+            service
+                .serve_connection_with_peer(server, peer_certs, shutdown)
+                .await;
         });
         Client {
             stream: client,

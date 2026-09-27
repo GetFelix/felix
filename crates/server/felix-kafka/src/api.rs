@@ -93,6 +93,8 @@ pub(crate) struct Session {
     /// response carries the same time as `throttle_time_ms`, so a client that
     /// honours it waits the same window instead of on top of it.
     throttle: Duration,
+    /// The TLS client's certificate chain, DER, leaf first. Empty without one.
+    peer_certs: Vec<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,7 +106,7 @@ enum SaslState {
 }
 
 impl Session {
-    pub(crate) fn new(shared: &Shared) -> Self {
+    pub(crate) fn new(shared: &Shared, peer_certs: Vec<Vec<u8>>) -> Self {
         Self {
             principal: shared
                 .settings
@@ -114,6 +116,7 @@ impl Session {
             sasl: SaslState::Idle,
             closing: false,
             throttle: Duration::ZERO,
+            peer_certs,
         }
     }
 

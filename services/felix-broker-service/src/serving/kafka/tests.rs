@@ -103,3 +103,39 @@ async fn a_produce_is_charged_to_the_tenants_quota() {
     // The QUIC side sees the same debt.
     assert!(quotas.try_admit("t1", 1, 1).is_err());
 }
+
+/// With subject binding on, SASL over TLS refuses a token whose subject the
+/// client certificate was not issued to, as the QUIC listeners do.
+#[tokio::test]
+async fn sasl_binds_the_token_to_the_client_certificate() {
+    let demo = crate::serving::auth::demo::demo_auth_for_tenant("t1").expect("demo auth");
+    let auth = Arc::new((*demo.auth).clone().with_subject_binding(true));
+    let cluster = BrokerCluster::new(auth, None, None, STANDALONE_NODE_ID, "127.0.0.1:9092")
+        .expect("cluster");
+    let leaf = |params: rcgen::CertificateParams| {
+        let key = rcgen::KeyPair::generate().expect("key");
+        params.self_signed(&key).expect("cert").der().to_vec()
+    };
+    let mut issued_to_demo = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
+    issued_to_demo.subject_alt_names.push(rcgen::SanType::URI(
+        "felix:principal:p:demo".try_into().expect("uri"),
+    ));
+    let someone_else =
+        rcgen::CertificateParams::new(vec!["someone-else.felix.test".to_string()]).expect("params");
+
+    let refused = cluster
+        .authenticate_peer("t1", &demo.token, &[leaf(someone_else)])
+        .await;
+    assert!(
+        refused.is_err(),
+        "a certificate for someone else was accepted"
+    );
+    cluster
+        .authenticate_peer("t1", &demo.token, &[leaf(issued_to_demo)])
+        .await
+        .expect("the certificate issued to the token's subject");
+    cluster
+        .authenticate_peer("t1", &demo.token, &[])
+        .await
+        .expect("no certificate, nothing to bind to");
+}
