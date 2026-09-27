@@ -11,11 +11,11 @@
 //! structure on disk to say which of the acknowledged offsets were contiguous.
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex as SyncMutex;
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::{Mutex, Notify, OnceCell};
 
 use super::cursors::ConsumerGroups;
 use super::dead_letters::DeadLetters;
@@ -46,6 +46,10 @@ pub struct GroupReader {
     /// silently skipping them would hide the one case where a queue drops work
     /// nobody asked it to drop. The service layer reports it.
     trimmed: AtomicU64,
+    /// Most records one group may have handed out and unsettled at once.
+    max_in_flight: AtomicUsize,
+    /// Polls the in-flight cap held short of available work.
+    capped: AtomicU64,
 }
 
 impl GroupReader {
@@ -62,7 +66,54 @@ impl GroupReader {
             trackers: SyncMutex::new(Trackers::default()),
             visibility,
             trimmed: AtomicU64::new(0),
+            max_in_flight: AtomicUsize::new(DEFAULT_MAX_IN_FLIGHT),
+            capped: AtomicU64::new(0),
         }
+    }
+
+    /// Bound how many records one group may have handed out and unsettled at
+    /// once. A poll past it answers empty until acknowledgements or lapsed
+    /// claims free room. Applies from each group's next poll.
+    pub fn set_max_in_flight(&self, max_in_flight: usize) {
+        self.max_in_flight
+            .store(max_in_flight.max(1), Ordering::Relaxed);
+    }
+
+    /// Most records one group may have handed out and unsettled at once.
+    pub fn max_in_flight(&self) -> usize {
+        self.max_in_flight.load(Ordering::Relaxed)
+    }
+
+    /// Polls the in-flight cap held short of work that was available. Also
+    /// counted as `felix_group_polls_capped_total`.
+    pub fn capped_polls(&self) -> u64 {
+        self.capped.load(Ordering::Relaxed)
+    }
+
+    /// Woken when a group's own state frees work or room: an
+    /// acknowledgement, a hand-back, or a redrive. New records are signalled
+    /// by the shard's append notifier instead.
+    ///
+    /// Enable the `notified()` future before polling, as with
+    /// [`crate::StreamHandle::appended`], or a change landing in between is
+    /// missed. Holding the returned notifier keeps the group from being
+    /// evicted as idle, which is right: a poll is waiting on it.
+    pub fn changed(&self, key: &GroupKey) -> Arc<Notify> {
+        let mut trackers = self.trackers.lock();
+        let slot = trackers.slot(key, Instant::now());
+        Arc::clone(&slot.changed)
+    }
+
+    /// When the group's earliest standing claim lapses, making that record
+    /// owed again. `None` when nothing is in flight or the group is not
+    /// loaded.
+    pub async fn next_lapse(&self, key: &GroupKey) -> Option<Instant> {
+        let cell = {
+            let trackers = self.trackers.lock();
+            Arc::clone(&trackers.slots.get(key)?.cell)
+        };
+        let tracker = Arc::clone(cell.get()?);
+        tracker.lock().await.next_lapse()
     }
 
     /// The dead-letter store, for replication: its logs ship beside the
@@ -139,8 +190,13 @@ impl GroupReader {
         let tracker = self.tracker_for(key).await?;
         let claim = {
             let mut tracker = tracker.lock().await;
+            tracker.set_max_in_flight(self.max_in_flight());
             tracker.claim(tail, max, now, self.visibility)
         };
+        if claim.capped {
+            self.capped.fetch_add(1, Ordering::Relaxed);
+            metrics::counter!("felix_group_polls_capped_total").increment(1);
+        }
 
         // Recorded before being settled. A crash in between would otherwise
         // move the cursor past a record with nothing anywhere saying the group
@@ -248,6 +304,8 @@ impl GroupReader {
         let mut tracker = tracker.lock().await;
         check_handed_out(&tracker, offset)?;
         tracker.nack(offset);
+        drop(tracker);
+        self.wake(key);
         Ok(())
     }
 
@@ -287,6 +345,8 @@ impl GroupReader {
         }
         tracker.redrive(offset);
         tracker.mark_redriven(offset);
+        drop(tracker);
+        self.wake(key);
         Ok(true)
     }
 
@@ -329,6 +389,7 @@ impl GroupReader {
             // operation and would go on using a tracker that is no longer the
             // group's, handing out what a rebuilt one hands out too.
             let unused = Arc::strong_count(&slot.cell) == 1
+                && Arc::strong_count(&slot.changed) == 1
                 && slot
                     .cell
                     .get()
@@ -355,6 +416,8 @@ impl GroupReader {
             let mut tracker = tracker.lock().await;
             (tracker.ack(offset), tracker.take_redriven(offset))
         };
+        // A settled claim is room under the in-flight cap.
+        self.wake(key);
         if redriven && let Err(err) = self.dead_letters.finish_redrive(key, offset).await {
             // Still recorded as redriven on disk, so a rebuilt tracker would owe
             // it again; keep saying so here until the clear lands.
@@ -383,11 +446,7 @@ impl GroupReader {
         let (cell, sweep) = {
             let mut trackers = self.trackers.lock();
             let sweep = now.saturating_duration_since(trackers.last_sweep) >= SWEEP_EVERY;
-            let slot = trackers.slots.entry(key.clone()).or_insert_with(|| Slot {
-                cell: Arc::new(OnceCell::new()),
-                last_used: now,
-            });
-            slot.last_used = now;
+            let slot = trackers.slot(key, now);
             (Arc::clone(&slot.cell), sweep)
         };
         if sweep {
@@ -399,6 +458,14 @@ impl GroupReader {
         // the cell empty for the next caller to retry.
         let tracker = cell.get_or_try_init(|| self.hydrate(key)).await?;
         Ok(Arc::clone(tracker))
+    }
+
+    /// Wake polls waiting on `key`. Skips creating a slot for a group nobody
+    /// has touched: with no slot there is no waiter.
+    fn wake(&self, key: &GroupKey) {
+        if let Some(slot) = self.trackers.lock().slots.get(key) {
+            slot.changed.notify_waiters();
+        }
     }
 
     async fn hydrate(&self, key: &GroupKey) -> Result<Arc<Mutex<GroupTracker>>> {
@@ -429,6 +496,12 @@ impl GroupReader {
 /// still delivered, alone.
 const MAX_POLL_BYTES: usize = 4 * 1024 * 1024;
 
+/// Records one group may have in flight unless configured otherwise. Ten
+/// times the most one poll takes, so a handful of consumers each holding a
+/// full poll never meet it; a consumer that keeps polling without answering
+/// does.
+pub(crate) const DEFAULT_MAX_IN_FLIGHT: usize = 10_000;
+
 /// How long a group goes untouched before its tracker may be dropped.
 const TRACKER_IDLE: Duration = Duration::from_secs(10 * 60);
 
@@ -440,6 +513,19 @@ const SWEEP_EVERY: Duration = Duration::from_secs(60);
 struct Trackers {
     slots: HashMap<GroupKey, Slot>,
     last_sweep: Instant,
+}
+
+impl Trackers {
+    /// The slot for `key`, made if missing, marked used at `now`.
+    fn slot(&mut self, key: &GroupKey, now: Instant) -> &mut Slot {
+        let slot = self.slots.entry(key.clone()).or_insert_with(|| Slot {
+            cell: Arc::new(OnceCell::new()),
+            changed: Arc::new(Notify::new()),
+            last_used: now,
+        });
+        slot.last_used = now;
+        slot
+    }
 }
 
 impl Default for Trackers {
@@ -455,6 +541,8 @@ impl Default for Trackers {
 #[derive(Debug)]
 struct Slot {
     cell: Arc<OnceCell<Arc<Mutex<GroupTracker>>>>,
+    /// See [`GroupReader::changed`].
+    changed: Arc<Notify>,
     last_used: Instant,
 }
 

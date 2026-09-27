@@ -52,6 +52,10 @@ pub(super) const DEFAULT_GROUP_MAX_ATTEMPTS: u32 = 5;
 /// Thirty seconds. Long enough that an idle consumer wakes rarely, short enough
 /// that a client notices a broker that has stopped answering.
 pub(super) const DEFAULT_GROUP_MAX_WAIT_MS: u64 = 30_000;
+
+/// Ten thousand. Ten full polls, so several consumers each holding a poll's
+/// worth never meet it; one that keeps polling without answering does.
+pub(super) const DEFAULT_GROUP_MAX_IN_FLIGHT: usize = 10_000;
 pub(super) const DEFAULT_CONTROL_STREAM_DRAIN_TIMEOUT_MS: u64 = 50;
 // Total budget for draining in-flight work after a termination signal. Kubernetes
 // defaults `terminationGracePeriodSeconds` to 30, and it sends SIGKILL once that

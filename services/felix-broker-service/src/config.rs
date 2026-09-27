@@ -127,6 +127,11 @@ pub struct BrokerConfig {
     /// shorter wait gets one. It exists so a client cannot hold a broker stream
     /// open indefinitely.
     pub group_max_wait_ms: u64,
+    /// Most records one consumer group may have handed out and unsettled at
+    /// once, per shard. A poll past it answers empty until acknowledgements or
+    /// lapsed claims free room, so one consumer that polls and never answers
+    /// cannot pull the whole backlog into memory.
+    pub group_max_in_flight: usize,
     /// Disable timing collection for lower overhead.
     pub disable_timings: bool,
     /// Max time to wait for control-stream writer to drain.
@@ -335,6 +340,7 @@ impl Default for BrokerConfig {
             group_visibility_timeout_ms: DEFAULT_GROUP_VISIBILITY_TIMEOUT_MS,
             group_max_attempts: DEFAULT_GROUP_MAX_ATTEMPTS,
             group_max_wait_ms: DEFAULT_GROUP_MAX_WAIT_MS,
+            group_max_in_flight: DEFAULT_GROUP_MAX_IN_FLIGHT,
             disable_timings: DEFAULT_DISABLE_TIMINGS,
             control_stream_drain_timeout_ms: DEFAULT_CONTROL_STREAM_DRAIN_TIMEOUT_MS,
             shutdown_drain_timeout_ms: DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,

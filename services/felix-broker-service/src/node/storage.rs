@@ -97,6 +97,9 @@ pub(super) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStora
         ),
         None => broker,
     };
+    if let Some(reader) = broker.group_reader() {
+        reader.set_max_in_flight(config.group_max_in_flight);
+    }
     let broker = match durable_storage.clone() {
         Some(storage) => broker.with_durable_storage(storage),
         None => broker,

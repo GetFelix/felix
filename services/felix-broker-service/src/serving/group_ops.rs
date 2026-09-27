@@ -9,10 +9,14 @@
 //! no forwarding: unlike a cache operation, a poll returns records the consumer
 //! then has to acknowledge, and relaying that through a second broker would put
 //! the claim and the acknowledgement on different machines.
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use felix_broker::{Broker, GroupKey};
 use felix_wire::GroupRecord;
+use tokio::sync::Notify;
+use tokio::sync::futures::OwnedNotified;
 
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::PublishContext;
@@ -20,13 +24,11 @@ use crate::shards::lifecycle::fence::{self, FenceGuard};
 use crate::shards::routing::{Dispatch, dispatch};
 use crate::shards::{ShardKey, ShardKind};
 
-/// How often a waiting poll re-checks for work.
+/// Longest a waiting poll goes without looking again unprompted.
 ///
-/// The check is a read lock and a field read — no I/O, no allocation — so the
-/// cost lands on the consumer that chose to wait and never on a publisher. An
-/// append notification would wake it sooner, but only by adding work to the
-/// publish path on behalf of a consumer that is by definition idle.
-const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(20);
+/// New records, settled claims and lapsing claims each wake a poll directly.
+/// This covers what does not signal, such as the shard moving away mid-wait.
+const WAIT_RECHECK: Duration = Duration::from_millis(100);
 
 /// Take up to `max_records` for a group, waiting up to `wait` for work.
 ///
@@ -38,7 +40,7 @@ pub(crate) async fn poll(
     publish_ctx: &PublishContext,
     // The operation's place in the shard's write fence, taken when it was
     // admitted.
-    mut admitted: Option<FenceGuard>,
+    admitted: Option<FenceGuard>,
     tenant_id: &str,
     namespace: &str,
     stream: &str,
@@ -47,13 +49,60 @@ pub(crate) async fn poll(
     max_records: usize,
     wait: Duration,
 ) -> Result<Vec<GroupRecord>, ClientError> {
+    poll_rechecking(
+        broker,
+        publish_ctx,
+        admitted,
+        tenant_id,
+        namespace,
+        stream,
+        shard,
+        group,
+        max_records,
+        wait,
+        WAIT_RECHECK,
+    )
+    .await
+}
+
+/// [`poll`], looking again unprompted every `recheck` while it waits.
+#[allow(clippy::too_many_arguments)]
+async fn poll_rechecking(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    mut admitted: Option<FenceGuard>,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    shard: u32,
+    group: &str,
+    max_records: usize,
+    wait: Duration,
+    recheck: Duration,
+) -> Result<Vec<GroupRecord>, ClientError> {
     let (reader, log, owned) =
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
     let deadline = Instant::now() + wait;
     let mut first = true;
+    // Resolved only for a poll that may wait. A shard whose handle cannot be
+    // had still waits, just on the recheck alone.
+    let (appended, changed) = if wait.is_zero() {
+        (None, None)
+    } else {
+        let appended = broker
+            .resolve_stream_handle(tenant_id, namespace, stream, shard)
+            .await
+            .ok()
+            .map(|handle| handle.appended());
+        (appended, Some(reader.changed(&key)))
+    };
 
     loop {
+        // Registered before the poll reads, so a record or an ack landing
+        // between the read and the wait still wakes it.
+        let mut on_append = armed(appended.as_ref());
+        let mut on_change = armed(changed.as_ref());
         // A poll writes: it records what it hands out, and dead-letters what
         // has run out of attempts.
         let fenced = match owned.enter(publish_ctx, &mut admitted) {
@@ -108,7 +157,33 @@ pub(crate) async fn poll(
         if owned_here(publish_ctx, tenant_id, namespace, stream, shard).is_err() {
             return Ok(Vec::new());
         }
-        tokio::time::sleep(WAIT_POLL_INTERVAL.min(deadline - now)).await;
+        let mut until = deadline.min(now + recheck);
+        if let Some(lapse) = reader.next_lapse(&key).await {
+            // That record is owed from then on, and nothing else says so.
+            until = until.min(lapse.max(now));
+        }
+        tokio::select! {
+            _ = tokio::time::sleep_until(until.into()) => {}
+            _ = fired(&mut on_append) => {}
+            _ = fired(&mut on_change) => {}
+        }
+    }
+}
+
+/// A notification future, enabled so it catches a signal sent before it is
+/// awaited.
+fn armed(notify: Option<&Arc<Notify>>) -> Option<Pin<Box<OwnedNotified>>> {
+    notify.map(|notify| {
+        let mut notified = Box::pin(Arc::clone(notify).notified_owned());
+        notified.as_mut().enable();
+        notified
+    })
+}
+
+async fn fired(notified: &mut Option<Pin<Box<OwnedNotified>>>) {
+    match notified {
+        Some(notified) => notified.as_mut().await,
+        None => std::future::pending().await,
     }
 }
 

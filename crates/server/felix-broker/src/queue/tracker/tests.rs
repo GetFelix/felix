@@ -539,3 +539,90 @@ fn one_claim_is_capped() {
         MAX_CLAIM
     );
 }
+
+/// Claims lapse by deadline, not by offset: a later offset claimed earlier is
+/// owed first, and one claimed later is left standing.
+#[test]
+fn claims_lapse_in_deadline_order() {
+    let base = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+
+    group.claim(2, 2, base, VIS);
+    group.nack(0);
+    // 0 again, claimed ten seconds after 1.
+    assert_eq!(group.claim(2, 10, at(base, 10), VIS).offsets, vec![0]);
+    assert_eq!(group.next_lapse(), Some(at(base, 30)));
+
+    assert_eq!(group.claim(2, 10, at(base, 31), VIS).offsets, vec![1]);
+    assert_eq!(group.next_lapse(), Some(at(base, 40)));
+    assert_eq!(group.claim(2, 10, at(base, 41), VIS).offsets, vec![0]);
+}
+
+/// Every way a claim ends takes its deadline with it. One left behind would
+/// later lapse a claim that no longer exists, or one handed out since.
+#[test]
+fn a_settled_claim_leaves_no_deadline_behind() {
+    let base = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+
+    group.claim(4, 4, base, VIS);
+    group.ack(0);
+    group.nack(1);
+    group.unclaim(2);
+    assert_eq!(group.in_flight(), 1);
+    assert_eq!(group.next_lapse(), Some(at(base, 30)));
+
+    // 1 and 2 again, with a new deadline each.
+    assert_eq!(group.claim(4, 10, at(base, 20), VIS).offsets, vec![1, 2]);
+    assert_eq!(group.in_flight(), 3);
+    // Only 3's claim lapses at 30; 1 and 2 stand until 50.
+    assert_eq!(group.claim(4, 10, at(base, 31), VIS).offsets, vec![3]);
+    assert_eq!(
+        group.claim(4, 10, at(base, 49), VIS).offsets,
+        Vec::<u64>::new()
+    );
+    // 3 was claimed again at 31, so it stands until 61.
+    assert_eq!(group.claim(4, 10, at(base, 51), VIS).offsets, vec![1, 2]);
+    assert_eq!(group.in_flight(), 3);
+}
+
+/// Past the cap a claim hands out nothing, and says the cap is why, until an
+/// acknowledgement or a lapse frees room.
+#[test]
+fn claims_stop_at_the_in_flight_cap() {
+    let base = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    group.set_max_in_flight(3);
+
+    let first = group.claim(10, 10, base, VIS);
+    assert_eq!(first.offsets, vec![0, 1, 2]);
+    assert!(first.capped);
+
+    let full = group.claim(10, 10, base, VIS);
+    assert!(full.offsets.is_empty());
+    assert!(full.capped);
+
+    group.ack(1);
+    assert_eq!(group.claim(10, 10, base, VIS).offsets, vec![3]);
+
+    // Room freed by a lapse goes to what lapsed, which is owed first.
+    assert_eq!(
+        group.claim(10, 10, at(base, 31), VIS).offsets,
+        vec![0, 2, 3]
+    );
+    assert_eq!(group.in_flight(), 3);
+}
+
+/// A claim that took everything there was is not reported as capped, even
+/// when it filled the cap exactly.
+#[test]
+fn filling_the_cap_with_everything_available_is_not_capped() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    group.set_max_in_flight(3);
+
+    let claim = group.claim(3, 10, now, VIS);
+    assert_eq!(claim.offsets, vec![0, 1, 2]);
+    assert!(!claim.capped);
+    assert!(!group.claim(3, 10, now, VIS).capped);
+}
