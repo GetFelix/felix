@@ -197,12 +197,13 @@ const fn mtu_discovery_upper_bound_for(macos: bool) -> u16 {
 
 /// The largest MTU an override may set.
 ///
-/// On Linux a GSO batch of quinn's 10 segments is one IP datagram, so an MTU
-/// over 6553 gets every batch refused with `EMSGSIZE` and stalls delivery for
-/// good (see `DEFAULT_MTU_DISCOVERY_UPPER_BOUND`). An override is clamped to
+/// On Linux a GSO batch of quinn's 10 segments is one UDP datagram, whose
+/// payload tops out at 65507 bytes over IPv4 (65535 less the IP and UDP
+/// headers). An MTU over 6550 gets every batch refused with `EMSGSIZE` and
+/// stalls delivery for good (see `DEFAULT_MTU_DISCOVERY_UPPER_BOUND`). An override is clamped to
 /// that ceiling rather than trusted to know it. macOS has no GSO limit.
 const fn mtu_override_ceiling_for(macos: bool) -> u16 {
-    if macos { 65527 } else { 6553 }
+    if macos { 65527 } else { 6550 }
 }
 
 fn clamp_mtu_override(name: &str, value: u64, ceiling: u16) -> u16 {

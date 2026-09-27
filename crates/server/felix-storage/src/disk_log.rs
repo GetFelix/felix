@@ -416,8 +416,9 @@ impl DiskLog {
     /// Takes effect at once for [`AppendOnlyLog::truncate`] and
     /// [`DiskLog::reset_to`], which refuse to cut below it. It reaches disk at
     /// most once per [`COMMIT_PERSIST_INTERVAL`], and always with a raised
-    /// generation and at shutdown: after a crash the offset read back may be
-    /// behind, which only ever permits less than it should, never more.
+    /// generation and at shutdown. After a crash the offset read back may be
+    /// behind, which weakens the guard: truncation may then cut into records
+    /// committed since, until the leader's next batch carries the offset again.
     pub async fn advance_commit_offset(&self, offset: Offset) -> Result<()> {
         let previous = self.inner.commit_offset.fetch_max(offset, Ordering::AcqRel);
         if offset <= previous {

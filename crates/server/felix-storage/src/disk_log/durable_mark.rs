@@ -111,6 +111,9 @@ impl MarkFile {
             .create(true)
             .truncate(false)
             .open(dir.join(mark_file_name()))?;
+        // The repair rule rests on the mark existing after a power loss, and a
+        // created file's name is durable only once its directory is synced.
+        crate::io::sync_dir(dir)?;
         Ok(Self { file })
     }
 
