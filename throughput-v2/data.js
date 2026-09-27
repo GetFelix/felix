@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790539767881,
+  "lastUpdate": 1790542017111,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18044,6 +18044,58 @@ window.BENCHMARK_DATA = {
             "range": "5114.80",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 927047.10\nmean: 927999.73\nstdev: 5114.80\ncv: 0.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "13bea78bba5fb162ce3fef1f22b191b8010872bb",
+          "message": "Peer handlers off the QUIC I/O runtime; paged control-plane listings (#767)\n\n* Broker: run peer request handlers on the main runtime, not the QUIC I/O one\n\nWith the I/O runtime enabled (the macOS default), each peer stream's\npump runs on that single thread, and it awaited the handler inline, so\nauth checks and quorum waits ran on the thread that also drives the\ninternal endpoint. A handler that held its thread stalled every peer.\n\nPeerServer now captures the runtime it is bound from and spawns each\nrequest's handler there; the pump only reads, awaits and writes. A\nstream still carries one request at a time.\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\n* Control plane: page the list endpoints with limit and cursor\n\nTenants, namespaces, streams, caches, nodes, shard assignments and the\nRBAC rule listings returned everything in one response. They now take\n`limit` (1..=10000, default 1000) and `cursor`, and a response with more\nto come carries `next_cursor`.\n\nPaging is keyset in the store on every backend: Postgres reads an index\nrange (`WHERE key > $cursor ORDER BY key LIMIT n + 1`), memory and Raft\nsort what is past the cursor. Filtering by the caller's rights fills the\npage from further on instead of leaving it short, so a cursor only ever\nnames an entry the caller was shown.\n\nCompatibility: the object-shaped listings keep their fields and gain an\noptional `next_cursor`. The RBAC listings answered with a bare array, so\nthey still do, in full, when neither parameter is given. The broker's\nnode catalog and the felix-cluster harness follow cursors.\n\nDocumented in docs/control-plane.md and the OpenAPI document, which now\nalso describes the two RBAC listings.\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01FrVK9onEv8evkViwGrDFpo\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-27T13:43:22-07:00",
+          "tree_id": "3ba8ebbd45432311232074503bf63856357c5dbe",
+          "url": "https://github.com/gabloe/felix/commit/13bea78bba5fb162ce3fef1f22b191b8010872bb"
+        },
+        "date": 1790542016092,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 364060.27,
+            "range": "14339.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364060.27\nmean: 367444.30\nstdev: 14339.30\ncv: 3.90%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 364060.27,
+            "range": "14339.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364060.27\nmean: 367444.30\nstdev: 14339.30\ncv: 3.90%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 86856.37,
+            "range": "777.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 86856.37\nmean: 86964.18\nstdev: 777.29\ncv: 0.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 868563.71,
+            "range": "7772.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 868563.71\nmean: 869641.77\nstdev: 7772.85\ncv: 0.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
