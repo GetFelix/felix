@@ -152,8 +152,23 @@ everything, retryably, and serves again once a heartbeat renews it.
 
 For a `Quorum` write, condition 4 is followed by the lease once more, when the
 mark releases the acknowledgement: a broker whose lease lapsed while it waited
-answers "unknown" rather than acknowledging, which is `AckQuorum` requiring
-`LeaseValid` in `FelixShard.tla`.
+answers "unknown" rather than acknowledging, which is `AckChecksLease` in
+`FelixShard.tla`. The model says that check is not what keeps an acknowledged
+record: `FelixShardAckWithoutLease.cfg` drops it, lets the leader act on its
+report's answer as the code does, and with clocks drifting under the real
+margins TLC finds leaders acknowledging on a lapsed lease, and after being
+replaced, and no acknowledged record lost. What does keep it is the report:
+a leader acknowledges only on a report stored for its own generation, and
+promotion reads that generation's report.
+
+The lease still decides whether a deposed leader can write at all. The model
+has the design that takes the clock out of `Quorum` safety, which the broker
+does not implement yet: a promoted leader persists its generation on a
+majority and takes any tail ahead of its own before it serves, and a write is
+acknowledged once a majority holds it at the current generation.
+`FelixShardFencedAck.cfg` keeps every acknowledged record with no margin on
+either side of the lease; `FelixShardUnfencedAck.cfg`, the same without the
+fence, loses one. See [`docs/formal/README.md`](formal/README.md).
 
 The commit check refuses a publish even when it was acknowledged on enqueue
 (`ack_on_commit` off), since writing it would be the split brain. So admission
@@ -226,10 +241,12 @@ instance's own monotonic clock, which starts over whenever it sees the stamp
 change and whenever the instance starts watching (a restart, a Raft election, or
 the store coming back). The store's clock is a wall clock, and after an election
 or a database failover a different machine's, so a step forward alone could
-otherwise expire a broker still inside its lease. `FelixShardRealMargins.cfg`
+otherwise expire a broker still inside its lease. `FelixShardRealMarginsLease.cfg`
 checks these margins, a quarter each side against clocks that drift by a
 quarter, and passes; with the control plane's margin at zero it finds two
-brokers serving.
+brokers serving. `FelixShardRealMargins.cfg` adds a `Quorum` write carried
+across a promotion under the same margins and drift, and every acknowledged
+record survives.
 
 ### The clock assumption, stated precisely
 
@@ -586,7 +603,7 @@ releases the acknowledgement — so the control plane cannot be behind a client.
 A report that does not land leaves the mark where it was, and the publish waits
 rather than being acknowledged on a report nobody received.
 
-Both halves are checked. `docs/formal/FelixShard.tla` explores 2.0M distinct
+Both halves are checked. `docs/formal/FelixShard.tla` explores 5.38M distinct
 states of the implemented design without violating `AckedSurvive`, and
 `FelixShardNoReportOrder.cfg` — the same design with the ordering removed —
 loses an acknowledged record in a second (`task tla:check`). Promotion then

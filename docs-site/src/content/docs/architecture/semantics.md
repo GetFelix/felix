@@ -147,7 +147,7 @@ testing: it waits for the report naming who holds the record to land *before*
 the mark that releases the acknowledgement moves, and the control plane
 answers each shard's report on its own merits, so a report it discarded (stale
 generation, not the leader) never counts as landed. `FelixShard.tla` explores
-2.0M distinct states of that design without violating it; the same model with
+5.38M distinct states of that design without violating it; the same model with
 the ordering removed loses an acknowledged record in a second.
 :::
 
