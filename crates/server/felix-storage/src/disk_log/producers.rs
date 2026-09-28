@@ -288,7 +288,7 @@ impl ProducerState {
 
 const SNAPSHOT_MAGIC: u32 = 0x464C_5053;
 const SNAPSHOT_VERSION: u16 = 2;
-const SNAPSHOT_HEADER_LEN: usize = 24;
+pub(super) const SNAPSHOT_HEADER_LEN: usize = 24;
 
 pub(super) fn snapshot_file_name() -> &'static str {
     "producers"
@@ -298,7 +298,7 @@ fn path_in(dir: &Path) -> PathBuf {
     dir.join(snapshot_file_name())
 }
 
-fn encode(state: &ProducerState, as_of: Offset) -> Vec<u8> {
+pub(super) fn encode(state: &ProducerState, as_of: Offset) -> Vec<u8> {
     let mut body = Vec::new();
     match &state.open {
         None => body.push(0),
@@ -338,7 +338,7 @@ fn encode_digest(body: &mut Vec<u8>, digest: Option<PayloadDigest>) {
     body.extend_from_slice(&digest.map_or(0, PayloadDigest::to_bits).to_be_bytes());
 }
 
-fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
+pub(super) fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
     let mut reader = Reader(bytes);
     if reader.u32()? != SNAPSHOT_MAGIC {
         return None;

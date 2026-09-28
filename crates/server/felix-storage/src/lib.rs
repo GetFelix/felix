@@ -33,6 +33,8 @@
 //!   [`metrics_names`], and the errors every call returns ([`StorageError`],
 //!   [`Corruption`]).
 //! - [`tiered`] is an interface with no implementation yet.
+//! - `fuzzing`, behind the feature of that name, is how the targets in `fuzz/`
+//!   reach decoders this crate does not export.
 
 pub mod cache;
 mod commit_order;
@@ -41,6 +43,9 @@ pub mod disk_log;
 mod error;
 #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
 pub mod fault;
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing;
 pub(crate) mod io;
 pub mod log;
 mod log_swap;

@@ -22,7 +22,7 @@ pub(super) const HEADER_LEN: usize = 14;
 
 /// What one record says happened to one counter.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum CounterOp {
+pub(crate) enum CounterOp {
     /// Add this much — negative to subtract. The record is the *change*, and
     /// the sum is a fold over the log, which is what makes a counter a log
     /// semantic rather than a read-modify-write on shared state.
@@ -34,7 +34,7 @@ pub(super) enum CounterOp {
 }
 
 impl CounterOp {
-    pub(super) fn encode(&self) -> Bytes {
+    pub(crate) fn encode(&self) -> Bytes {
         let (op, key, value) = match self {
             CounterOp::Delta { key, delta } => (OP_DELTA, key, *delta),
             CounterOp::Checkpoint { key, sum } => (OP_CHECKPOINT, key, *sum),
@@ -53,7 +53,7 @@ impl CounterOp {
     /// Every failure means the bytes are not what this build can read, and
     /// none are recoverable by guessing — a counter folded over a misread
     /// record is wrong forever after.
-    pub(super) fn decode(payload: &Bytes) -> Result<Self, Corruption> {
+    pub(crate) fn decode(payload: &Bytes) -> Result<Self, Corruption> {
         if payload.len() < HEADER_LEN {
             return Err(Corruption::new(CorruptionKind::CounterRecord {
                 detail: "is shorter than its fixed header",
