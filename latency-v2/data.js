@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790568714563,
+  "lastUpdate": 1790569608880,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -24288,6 +24288,72 @@ window.BENCHMARK_DATA = {
             "range": "631.04",
             "unit": "us",
             "extra": "trials: 5\nmedian: 430.00\nmean: 709.80\nstdev: 631.04\ncv: 88.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d8015f5e5e274ebd1aa1a90dfb1eb911b48c0f86",
+          "message": "feat(replication): a promoted leader fences a majority before it serves (#798)\n\nA broker promoted to lead a stream shard now waits in a `fencing` phase\nafter it opens the log: routed to it, not servable, and not shipping.\nReplication sends Fence to every replica, opens the shard on the first\nmajority with the leader counted, and before that takes the log of the\nanswer furthest ahead by (last generation, length) when it is ahead of its\nown: read with the new ReplicateFetch (kind 31, capability TAIL_FETCH) from\nwhere the two may disagree, its own superseded suffix dropped. Where the\nnew generation begins is recorded only then.\n\nA deposed leader that still believes its lease, cut off or frozen with its\nclock slowed, is refused by that majority even where the control plane\nnever reached the follower. The fence runs only on a promotion (not a\nmove's cut-over or a cancel), only for stream shards, and only when every\nreplica and this broker offer both capabilities; otherwise the shard opens\non the lease as before. felix_broker_promotions_opened_total{path} says\nwhich. Acknowledgements are unchanged: the report and the lease.\n\nThis is OpenForWrites and the catch-up in docs/formal/FelixShard.tla.\nFenceOnPromote no longer requires AckByFollowers, followers keep\n`promised` whenever the fence is on, and FelixShardFencedPromotion.cfg\nchecks the broker as built: the fence with report-based acks under the\nreal margins, 8.15M distinct states, every invariant including\nAckedHeldByLeader.",
+          "timestamp": "2026-09-27T21:21:11-07:00",
+          "tree_id": "809002903fefe581d65a6176281ec4e897ab2008",
+          "url": "https://github.com/gabloe/felix/commit/d8015f5e5e274ebd1aa1a90dfb1eb911b48c0f86"
+        },
+        "date": 1790569605592,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 102,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 102.00\nmean: 102.00\nstdev: 0.71\ncv: 0.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 141,
+            "range": "35.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 141.00\nmean: 158.80\nstdev: 35.34\ncv: 22.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 187,
+            "range": "113.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 187.00\nmean: 242.00\nstdev: 113.65\ncv: 46.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "7.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 137.20\nstdev: 7.76\ncv: 5.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 266,
+            "range": "402.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 266.00\nmean: 454.40\nstdev: 402.45\ncv: 88.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 360,
+            "range": "1017.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 360.00\nmean: 1092.60\nstdev: 1017.04\ncv: 93.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
