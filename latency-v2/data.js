@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790608176349,
+  "lastUpdate": 1790608464884,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -24882,6 +24882,72 @@ window.BENCHMARK_DATA = {
             "range": "183.26",
             "unit": "us",
             "extra": "trials: 5\nmedian: 439.00\nmean: 503.20\nstdev: 183.26\ncv: 36.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d6a7aef79cdfbd79504b3a71be894aa34848ce1b",
+          "message": "feat(publish): pipeline acked publishes under a negotiated window (#819)\n\n* feat(publish): pipeline acked publishes under a negotiated window\n\nA client that offers FEATURE_PUBLISH_PIPELINE is granted a per-connection\npublish_window in auth_ok (FELIX_BROKER_PUBLISH_WINDOW, default 256, 0 off).\nThe broker answers its acked publishes on each stream in request order and\nstops reading the connection's publishes while the window is full. Older\nclients get byte-identical frames.\n\nThe Rust client offers the bit and caps each shared connection at the\nwindow. IdempotentProducer::publish_batches keeps up to 64 batches in flight\nand, on a failure, re-sends from the first unanswered one under the same\nsequences. An idempotent batch now releases its shard lane once claimed, so\nits flush no longer serialises the producer's pipeline.\n\nSpec-Unaffected: the per-write idempotent check and append stay ordered on the shard lane under the producer's turn and are acknowledged only once durable; only how many writes a client has outstanding, the answer order on one stream, and where the flush waits changed.\n\n* test(publish): judge group commit fan-in against the serial control, not a fixed 2x\n\nThe instrumented CI runner reaches fan-in 1.9-1.97 on this test on\nseveral unrelated branches. A worker that waits on each flush gives\nfan-in 1, so a 1.5 bar still catches the regression it guards.\n\nSpec-Unaffected: test threshold only",
+          "timestamp": "2026-09-28T08:10:19-07:00",
+          "tree_id": "e28517e7b6b562c6f18dc54eb868fa1c46411c6e",
+          "url": "https://github.com/gabloe/felix/commit/d6a7aef79cdfbd79504b3a71be894aa34848ce1b"
+        },
+        "date": 1790608462221,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 131,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 131.60\nstdev: 0.89\ncv: 0.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 181,
+            "range": "3.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 181.20\nstdev: 3.77\ncv: 2.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 232,
+            "range": "710.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 232.00\nmean: 573.40\nstdev: 710.70\ncv: 123.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 175,
+            "range": "8.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 175.00\nmean: 178.20\nstdev: 8.29\ncv: 4.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 358,
+            "range": "138.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 358.00\nmean: 416.60\nstdev: 138.98\ncv: 33.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 494,
+            "range": "1214.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 494.00\nmean: 1162.80\nstdev: 1214.40\ncv: 104.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
