@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790558053020,
+  "lastUpdate": 1790559040107,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18668,6 +18668,58 @@ window.BENCHMARK_DATA = {
             "range": "17952.82",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1183493.89\nmean: 1177475.96\nstdev: 17952.82\ncv: 1.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a32b91cfe3bf80918fea81c9d8c0b6987f0e73aa",
+          "message": "fix(kafka): give the felix-wire dev-dependency a version (#792)\n\ncargo-deny's bans check treats a path-only dependency as a wildcard, so\nmain has failed it since the dev-dependency landed. Pin it like\nfelix-broker does.\n\nSpec-Unaffected: build metadata only.",
+          "timestamp": "2026-09-27T18:27:07-07:00",
+          "tree_id": "2ae680f327cc9cf987e70181d3cb1efc353f3d79",
+          "url": "https://github.com/gabloe/felix/commit/a32b91cfe3bf80918fea81c9d8c0b6987f0e73aa"
+        },
+        "date": 1790559039582,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 383526.96,
+            "range": "22167.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 383526.96\nmean: 380211.77\nstdev: 22167.88\ncv: 5.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 383526.96,
+            "range": "22167.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 383526.96\nmean: 380211.77\nstdev: 22167.88\ncv: 5.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 92773.63,
+            "range": "5215.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 92773.63\nmean: 90792.43\nstdev: 5215.36\ncv: 5.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 927736.28,
+            "range": "52153.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 927736.28\nmean: 907924.25\nstdev: 52153.60\ncv: 5.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
