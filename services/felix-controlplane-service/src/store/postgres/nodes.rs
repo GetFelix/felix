@@ -9,17 +9,17 @@ use crate::model::{
 };
 use crate::store::{ChangeSet, Page, PageRequest, Snapshot, StoreError, StoreResult};
 
-const NODE_SELECT_ALL: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes ORDER BY node_id"#;
+const NODE_SELECT_ALL: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes ORDER BY node_id"#;
 
-const NODE_SELECT_FIRST_PAGE: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes ORDER BY node_id LIMIT $1"#;
+const NODE_SELECT_FIRST_PAGE: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes ORDER BY node_id LIMIT $1"#;
 
-const NODE_SELECT_PAGE_AFTER: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes WHERE node_id > $1 ORDER BY node_id LIMIT $2"#;
+const NODE_SELECT_PAGE_AFTER: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes WHERE node_id > $1 ORDER BY node_id LIMIT $2"#;
 
-const NODE_SELECT_BY_ID: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes WHERE node_id = $1"#;
+const NODE_SELECT_BY_ID: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes WHERE node_id = $1"#;
 
 /// `FOR UPDATE` so a concurrent register or patch of the same node waits rather
 /// than reading the row this transaction is about to replace.
-const NODE_SELECT_BY_ID_FOR_UPDATE: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes WHERE node_id = $1 FOR UPDATE"#;
+const NODE_SELECT_BY_ID_FOR_UPDATE: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes WHERE node_id = $1 FOR UPDATE"#;
 
 /// Row shape for the `nodes` table.
 #[derive(Debug, Clone, FromRow)]
@@ -29,6 +29,7 @@ struct DbNode {
     client_addr: Option<String>,
     kafka_addr: Option<String>,
     region: String,
+    zone: Option<String>,
     labels: serde_json::Value,
     capacity_max_shards: Option<i32>,
     capacity_weight: i32,
@@ -90,13 +91,14 @@ pub(super) async fn register_node(store: &PostgresStore, node: Node) -> StoreRes
     };
 
     let upsert = sqlx::query(
-        r#"INSERT INTO nodes (node_id, advertise_addr, region, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, client_addr, kafka_addr)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        r#"INSERT INTO nodes (node_id, advertise_addr, region, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, client_addr, kafka_addr, zone)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                ON CONFLICT (node_id) DO UPDATE SET
                  advertise_addr = EXCLUDED.advertise_addr,
                  client_addr = EXCLUDED.client_addr,
                  kafka_addr = EXCLUDED.kafka_addr,
                  region = EXCLUDED.region,
+                 zone = EXCLUDED.zone,
                  labels = EXCLUDED.labels,
                  capacity_max_shards = EXCLUDED.capacity_max_shards,
                  capacity_weight = EXCLUDED.capacity_weight,
@@ -191,7 +193,7 @@ pub(super) async fn patch_node(
         r#"UPDATE nodes SET advertise_addr = $2, region = $3, labels = $4,
                  capacity_max_shards = $5, capacity_weight = $6, lifecycle = $7,
                  last_heartbeat_at_millis = $8, registered_at_millis = $9, incarnation = $10,
-                 client_addr = $11, kafka_addr = $12,
+                 client_addr = $11, kafka_addr = $12, zone = $13,
                  updated_at = now()
                WHERE node_id = $1"#,
     );
@@ -344,7 +346,7 @@ pub(super) async fn expire_stale_nodes(
     let rows = sqlx::query_as::<_, DbNode>(
         r#"UPDATE nodes SET lifecycle = 'down', updated_at = now()
                WHERE lifecycle IN ('live', 'draining') AND last_heartbeat_at_millis < $1
-               RETURNING node_id, advertise_addr, client_addr, kafka_addr, region, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation"#,
+               RETURNING node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation"#,
     )
     .bind(expiry_before_millis as i64)
     .fetch_all(&mut *tx)
@@ -473,6 +475,7 @@ fn node_from_db(row: DbNode) -> StoreResult<Node> {
             client_addr: row.client_addr,
             kafka_addr: row.kafka_addr,
             region: row.region,
+            zone: row.zone,
             labels: serde_json::from_value(row.labels)?,
             capacity: NodeCapacity {
                 max_shards: row.capacity_max_shards.map(|v| v as u32),
@@ -504,9 +507,10 @@ fn bind_node<'q>(
         .bind(node.status.last_heartbeat_at_millis as i64)
         .bind(node.status.registered_at_millis as i64)
         .bind(node.status.incarnation as i64)
-        // Last, so both statements above can name them as $11 and $12.
+        // Last, so both statements above can name them as $11 to $13.
         .bind(node.spec.client_addr.as_deref())
         .bind(node.spec.kafka_addr.as_deref())
+        .bind(node.spec.zone.as_deref())
 }
 
 /// Append a change, taking its `seq` from the locked counter.

@@ -14,6 +14,11 @@ pub const SHARDS_PLACED_TOTAL: &str = "felix_shards_placed_total";
 /// liveness needs attention.
 pub const SHARDS_UNPLACEABLE: &str = "felix_shards_unplaceable";
 
+/// Shards whose copies share a zone although live brokers in other zones could
+/// hold them; see `Plan::unspread`. Non-zero means a zone lacks capacity, or a
+/// move that would spread the shard is waiting for a slot.
+pub const SHARDS_ZONE_UNSPREAD: &str = "felix_shards_zone_unspread";
+
 /// Passes that could not read the catalog at all.
 pub const RECONCILE_FAILURES_TOTAL: &str = "felix_shard_reconcile_failures_total";
 
@@ -325,6 +330,7 @@ pub(super) async fn apply_pass(
                     super::metrics::record(times);
                 }
                 metrics::counter!(SHARD_MOVE_STEPS_TOTAL, "step" => step.label()).increment(1);
+                warn_if_unspread(plan, key, &written);
                 if let super::MoveStep::TimedOut { successor } = step {
                     metrics::counter!(SHARD_MOVES_TIMED_OUT_TOTAL).increment(1);
                     tracing::warn!(
@@ -406,6 +412,7 @@ pub(super) async fn apply_pass(
                 fence += 1;
                 wakes.assignment_written();
                 outcome.placed += 1;
+                warn_if_unspread(plan, key, &assignment);
                 tracing::info!(
                     kind = %key.kind,
                     name = %key.stream,
@@ -458,7 +465,24 @@ pub(super) async fn apply_pass(
     metrics::counter!(PLACEMENT_WRITES_FENCED_TOTAL).increment(u64::from(outcome.fenced));
     metrics::gauge!(SHARDS_UNPLACEABLE).set(outcome.unplaceable as f64);
     metrics::gauge!(SHARD_MOVES_WAITING).set(outcome.waiting as f64);
+    metrics::gauge!(SHARDS_ZONE_UNSPREAD).set(plan.unspread.len() as f64);
     outcome
+}
+
+/// Say so when a write leaves a shard's copies sharing a zone that placement
+/// could not avoid. Only on a write, so a settled cluster does not repeat it
+/// every pass; the gauge carries the standing count.
+fn warn_if_unspread(plan: &Plan, key: &ShardKey, written: &ShardAssignment) {
+    if plan.unspread.contains(key) {
+        tracing::warn!(
+            kind = %key.kind,
+            name = %key.stream,
+            shard = key.shard,
+            leader = %written.leader,
+            replicas = ?written.replicas,
+            "shard copies share a zone: no broker with room is in a zone it lacks",
+        );
+    }
 }
 
 /// Place shards on an interval, and whenever `wakes` asks for a pass, until

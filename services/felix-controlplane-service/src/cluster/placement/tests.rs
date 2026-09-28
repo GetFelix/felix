@@ -13,6 +13,7 @@ mod regions;
 mod rendezvous;
 mod replicas;
 mod wakes;
+mod zones;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -65,6 +66,7 @@ fn node(id: &str, lifecycle: NodeLifecycle, max_shards: Option<u32>) -> Node {
             client_addr: None,
             kafka_addr: None,
             region: "us-west-2".to_string(),
+            zone: None,
             labels: Default::default(),
             capacity: NodeCapacity {
                 max_shards,

@@ -12,6 +12,7 @@ fn node(node_id: &str, region: &str, lifecycle: NodeLifecycle) -> Node {
             client_addr: None,
             kafka_addr: None,
             region: region.to_string(),
+            zone: None,
             labels: BTreeMap::new(),
             capacity: NodeCapacity::default(),
         },

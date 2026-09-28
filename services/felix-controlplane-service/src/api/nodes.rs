@@ -68,6 +68,7 @@ pub(crate) async fn register_node(
             client_addr: request.client_addr,
             kafka_addr: request.kafka_addr,
             region: request.region,
+            zone: request.zone,
             labels: request.labels,
             capacity: request.capacity,
         },

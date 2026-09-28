@@ -214,6 +214,7 @@ fn node_named(node_id: &str) -> Node {
             client_addr: None,
             kafka_addr: None,
             region: "r1".to_string(),
+            zone: None,
             labels: Default::default(),
             capacity: NodeCapacity::default(),
         },

@@ -52,6 +52,15 @@ for what the current release actually guarantees.
 
 ### Added
 
+- **Placement spreads a shard's copies across zones.** A broker registers
+  the failure domain it is in with `FELIX_NODE_ZONE` (the node's new optional
+  `zone`). Followers go to zones the shard has no copy in, drains and
+  rebalances never narrow a shard's zones when they can avoid it, and a
+  follower sharing a zone is replaced by one in a missing zone once a broker
+  there has room. Where the copies cannot be spread they are placed anyway,
+  with a warning and `felix_shards_zone_unspread`. A broker without a zone
+  shares one with nobody, so clusters that report none are placed as before.
+  Postgres gains a nullable `nodes.zone` column.
 - **Clients can offer the `felix/1` ALPN.** `felix_client::quic_client_config`
   builds the QUIC TLS config and offers `felix/1` when asked; the Python
   (`offer_alpn=True`) and TypeScript (`offerAlpn`) clients expose the same

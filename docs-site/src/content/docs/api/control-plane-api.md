@@ -160,6 +160,9 @@ A node's `spec` may also carry `client_addr`, the `host:port` Felix clients
 connect to, and `kafka_addr`, the `host:port` Kafka clients are told to connect
 to (present only on a broker running the Kafka listener; a hostname is
 allowed, an IPv6 host must be bracketed). Both are omitted when unset.
+It may also carry `zone`, the failure domain the broker registered from
+`FELIX_NODE_ZONE`; placement spreads each shard's copies across zones. A broker
+that sends none has no `zone` and is placed as if alone in its own.
 
 `cluster:*` sits outside the tenant hierarchy and no tenant scope contains it,
 so a tenant admin cannot grant themselves cluster access. The tenant comes from

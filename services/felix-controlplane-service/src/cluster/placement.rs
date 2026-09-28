@@ -29,6 +29,9 @@
 //! and on the placement token read before the pass decided, so the move
 //! limits hold however many instances write. See `docs/control-plane.md`.
 //!
+//! **Zones.** A shard's copies are spread across the zones brokers register,
+//! and a move never narrows that spread when it can avoid it; see `zones`.
+//!
 //! `NodeCapacity::weight` is ignored: weighted rendezvous needs a logarithm,
 //! and floating point that must agree bit-for-bit across instances is a bad
 //! foundation for a decision that has to be identical everywhere.
@@ -42,6 +45,7 @@ mod reconciler;
 mod rendezvous;
 mod replica_positions;
 mod wakes;
+mod zones;
 
 pub use caught_up::{CaughtUp, NothingCaughtUp};
 pub use decision::{Blocked, Decision, MoveStep, Unplaceable};
@@ -61,7 +65,7 @@ pub use reconciler::{
     PLACEMENT_LEASE_TAKEOVERS_TOTAL, PLACEMENT_WRITES_FENCED_TOTAL, PlacementRead,
     RECONCILE_FAILURES_TOTAL, ReconcileOutcome, SHARD_ASSIGNMENT_WRITE_CONFLICTS_TOTAL,
     SHARD_MOVE_STEPS_TOTAL, SHARD_MOVES_TIMED_OUT_TOTAL, SHARD_MOVES_WAITING, SHARDS_PLACED_TOTAL,
-    SHARDS_UNPLACEABLE, reconcile_once, spawn_reconciler,
+    SHARDS_UNPLACEABLE, SHARDS_ZONE_UNSPREAD, reconcile_once, spawn_reconciler,
 };
 pub use replica_positions::ReplicaPositions;
 pub use wakes::PlacementWakes;

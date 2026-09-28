@@ -168,6 +168,7 @@ impl Cluster {
                         client_addr: None,
                         kafka_addr: None,
                         region: "us-west-2".to_string(),
+                        zone: None,
                         labels: BTreeMap::new(),
                         capacity: NodeCapacity::default(),
                     },

@@ -108,6 +108,7 @@ pub(crate) async fn one_shard_cluster() -> (
                     client_addr: None,
                     kafka_addr: None,
                     region: "local".to_string(),
+                    zone: None,
                     labels: Default::default(),
                     capacity: NodeCapacity::default(),
                 },
