@@ -5,8 +5,12 @@ name: History checker (nightly)
 # an unlucky interleaving needs many interleavings to turn up, and the per-PR
 # run has a fixed seed and under a minute.
 #
-# The seed is printed before the run and in the job summary on failure, so a red
-# night can be replayed with FELIX_HISTORY_SEED.
+# The seed and mode are printed before the run and in the job summary, so a red
+# night can be replayed with FELIX_HISTORY_SEED and FELIX_HISTORY_MODE.
+#
+# The mode picks the replication path. `lease-free` (the default) finalizes the
+# generation_start, majority_ack and lease_free_reads fleet features once the
+# cluster is up; `lease` finalizes none.
 
 on:
   schedule:
@@ -22,6 +26,14 @@ on:
         description: "How long the nemesis runs"
         required: false
         default: "1200"
+      mode:
+        description: "Replication path"
+        required: false
+        type: choice
+        options:
+          - lease-free
+          - lease
+        default: lease-free
 
 permissions:
   contents: read
@@ -61,17 +73,26 @@ jobs:
         # Inputs reach the script through the environment, never pasted into it.
         env:
           SEED_INPUT: ${{ inputs.seed }}
+          MODE_INPUT: ${{ inputs.mode }}
         run: |
           seed="$SEED_INPUT"
           if [ -z "$seed" ]; then
             seed=$(od -An -N8 -tu8 /dev/urandom | tr -d ' ')
           fi
+          mode="${MODE_INPUT:-lease-free}"
+          case "$mode" in
+            lease|lease-free) ;;
+            *) echo "unknown mode: $mode"; exit 1 ;;
+          esac
           echo "seed=$seed" >> "$GITHUB_OUTPUT"
-          echo "history campaign seed: $seed"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "history campaign seed: $seed, mode: $mode"
+          echo "History campaign seed: \`$seed\`, mode: \`$mode\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run the campaign
         env:
           FELIX_HISTORY_SEED: ${{ steps.seed.outputs.seed }}
+          FELIX_HISTORY_MODE: ${{ steps.seed.outputs.mode }}
           FELIX_HISTORY_DURATION_SECS: ${{ inputs.duration_secs || '1200' }}
         run: |
           set -o pipefail
@@ -81,22 +102,23 @@ jobs:
         if: failure()
         env:
           SEED: ${{ steps.seed.outputs.seed }}
+          MODE: ${{ steps.seed.outputs.mode }}
           DURATION: ${{ inputs.duration_secs || '1200' }}
         run: |
           {
             echo "## History campaign failed"
             echo
-            echo "Seed: \`$SEED\`. Replay with:"
+            echo "Seed: \`$SEED\`, mode: \`$MODE\`. Replay with:"
             echo
             echo '```'
-            echo "FELIX_HISTORY_SEED=$SEED FELIX_HISTORY_DURATION_SECS=$DURATION cargo test -p felix-cluster --test history -- --nocapture"
+            echo "FELIX_HISTORY_SEED=$SEED FELIX_HISTORY_MODE=$MODE FELIX_HISTORY_DURATION_SECS=$DURATION cargo test -p felix-cluster --test history -- --nocapture"
             echo '```'
             echo
             echo '```'
             sed -n '/violation(s)/,/^test /p' /tmp/history-output.txt | head -80
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "history campaign seed: $SEED"
+          echo "history campaign seed: $SEED, mode: $MODE"
 
       - name: Upload the output
         if: failure()

@@ -494,11 +494,13 @@ being discarded, so that reason exists to be quoted.
 
 ## Fault campaigns
 
-`felix_cluster::history` runs clients against `Quorum` streams while a nemesis
+`felix_cluster::history` runs clients against `Quorum` streams and a `Quorum`
+cache, on the lease or lease-free path, while a nemesis
 kills, pauses and partitions brokers at random, and with
 `RandomNemesis::all_faults` also injects the link, clock and disk faults
 above through `Cluster::inject`. It then checks the recorded history for lost,
-duplicated, reordered, phantom and failed-but-present writes. The campaign has
+duplicated, reordered, phantom and failed-but-present writes, and for stale
+cache reads. The campaign has
 a `Fault` type of its own (`history::Fault`): a fault with its target chosen,
 built from this crate's `Fault` values. See
 [the history checker](history-checker.md).

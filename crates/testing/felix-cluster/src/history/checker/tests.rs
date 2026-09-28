@@ -75,6 +75,7 @@ fn history(ops: Vec<Op>, final_a: &[(u64, u64)]) -> History {
         lists,
         ops,
         final_reads,
+        registers: Vec::new(),
         faults: Vec::new(),
     }
 }

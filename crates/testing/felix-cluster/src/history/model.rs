@@ -8,6 +8,8 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use super::register::{RegisterAction, RegisterOp};
+
 /// The value a read reports for a payload no append could have written.
 ///
 /// Appends draw values from a counter that starts at zero, so it never reaches
@@ -24,6 +26,8 @@ pub struct History {
     /// What each list held once every fault was healed. Must start at the
     /// list's base offset and have no holes, or lost-write checks are unsound.
     pub final_reads: BTreeMap<String, Vec<Element>>,
+    /// Puts and gets on `Quorum` cache keys, in completion order.
+    pub registers: Vec<RegisterOp>,
     /// The nemesis's timeline, so a violation can be read against it.
     pub faults: Vec<FaultEvent>,
 }
@@ -135,15 +139,31 @@ impl History {
                 Action::Read { .. } => reads.push(took),
             }
         }
+        let (mut puts, mut gets) = (Vec::new(), Vec::new());
+        for op in &self.registers {
+            let took = op.complete - op.invoke;
+            match op.action {
+                RegisterAction::Put {
+                    acknowledged: true, ..
+                } => puts.push(took),
+                RegisterAction::Put { .. } => {}
+                RegisterAction::Get { .. } => gets.push(took),
+            }
+        }
         let records: usize = self.final_reads.values().map(Vec::len).sum();
         format!(
             "{} ops: {} appends ok (median {}), {fail} failed, {info} unknown; {} reads \
-             (median {}); {records} records in the final reads; {} fault events",
+             (median {}); {records} records in the final reads; {} cache puts ok (median {}), \
+             {} cache gets (median {}); {} fault events",
             self.ops.len(),
             ok.len(),
             median(&mut ok),
             reads.len(),
             median(&mut reads),
+            puts.len(),
+            median(&mut puts),
+            gets.len(),
+            median(&mut gets),
             self.faults.len(),
         )
     }
