@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790598261837,
+  "lastUpdate": 1790605289871,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19396,6 +19396,58 @@ window.BENCHMARK_DATA = {
             "range": "22444.99",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1621420.85\nmean: 1623962.47\nstdev: 22444.99\ncv: 1.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e77c190966a0bde45e86f7646968f6549ef810aa",
+          "message": "fix(controlplane): a Raft leader elected after a clock step expires a dead broker in one window (#816)\n\nThe leader judged a broker it had not heard from this term by the log's\nstamp whenever that was later than its own start. After a wall-clock step\nback, or on a leader whose clock is behind the last one's, that stamp is in\nthe future, so a dead broker stayed placeable until real time caught up.\nThe leader now ages every broker on its monotonic clock only: from the\nbroker's last heartbeat this term, else from its registration this term,\nelse from the election. Listings on the leader show a stamp ahead of its\nclock as now.\n\nThat alone did not help in the usual failover, because the new leader\ncounted the dead old leader at metadata level 0 (it had never probed it)\nand fell back to log-based heartbeats and expiry. The member probing a\npeer's standing now states its own level, so every member knows the\nleader's.\n\nSpec-Unaffected: FelixShard.tla models the control plane's expiry clock as drifting, never stepping; expiry still waits a full monotonic window after the last heartbeat or the election.",
+          "timestamp": "2026-09-28T07:09:31-07:00",
+          "tree_id": "b2dc101a942ffb55396f334fa4861f27a1dfebf9",
+          "url": "https://github.com/gabloe/felix/commit/e77c190966a0bde45e86f7646968f6549ef810aa"
+        },
+        "date": 1790605288701,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 381221.3,
+            "range": "12067.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 381221.30\nmean: 381571.21\nstdev: 12067.06\ncv: 3.16%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 381221.3,
+            "range": "12067.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 381221.30\nmean: 381571.21\nstdev: 12067.06\ncv: 3.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 95455.21,
+            "range": "745.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 95455.21\nmean: 95635.34\nstdev: 745.15\ncv: 0.78%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 954552.13,
+            "range": "7451.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 954552.13\nmean: 956353.38\nstdev: 7451.54\ncv: 0.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
