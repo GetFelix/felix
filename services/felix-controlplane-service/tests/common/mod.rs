@@ -97,3 +97,29 @@ mod tests {
         );
     }
 }
+
+/// A free localhost port for a child process to bind later, and to bind again
+/// after a restart.
+///
+/// Not `bind(":0")`: that draws from the ephemeral range, which is also where
+/// every outgoing connection gets its source port. Between releasing the port
+/// here and the child binding it — or while a killed child is down — any
+/// connection on the machine can take it, and the child exits with "Address
+/// already in use". CI hit exactly that. This hands out ports below the
+/// ephemeral range instead (32768 on Linux, 49152 on macOS), each at most
+/// once per process; the pid spreads concurrent test binaries apart.
+pub(crate) fn reserve_port() -> std::net::SocketAddr {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    const FIRST: u32 = 20_000;
+    const SPAN: u32 = 12_000;
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+
+    let base = std::process::id().wrapping_mul(7_919) % SPAN;
+    for _ in 0..SPAN {
+        let port = FIRST + (base + NEXT.fetch_add(1, Ordering::Relaxed)) % SPAN;
+        if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port as u16)) {
+            return listener.local_addr().expect("local addr");
+        }
+    }
+    panic!("no free port between {FIRST} and {}", FIRST + SPAN);
+}

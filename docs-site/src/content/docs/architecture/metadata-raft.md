@@ -124,8 +124,11 @@ serving. A release that adds a Raft command has its own rule, in
 [the design doc](https://github.com/gabloe/felix/blob/main/docs/metadata-raft-design.md#upgrading). Writes reaching
 a follower forward to the leader invisibly; the expiry sweep and shard
 placement run only on the leader, confirmed by a linearizable check each
-tick. A proposal that cannot commit — no leader, quorum lost — fails with an
-error after a bounded deadline (default 10s) rather than hanging.
+tick. A proposal that cannot commit — no leader, quorum lost — fails after a
+bounded deadline (default 10s) rather than hanging, and the API answers it
+`503` with code `unavailable`: retry once the group has a leader. The write
+may still have committed after the deadline, so a retried create can answer
+`409`.
 
 Timings are tunable when the defaults (150ms heartbeat, 600–1200ms election
 window, snapshot every 500 entries) don't fit: `FELIX_RAFT_HEARTBEAT_MS`,

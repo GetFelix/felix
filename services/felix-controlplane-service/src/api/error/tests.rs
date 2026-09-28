@@ -39,3 +39,20 @@ fn api_internal_logs_and_wraps_store_error() {
     assert_eq!(api.body.code, "internal");
     assert_eq!(api.body.message, "storage failed");
 }
+
+#[test]
+fn a_raft_write_out_of_budget_is_a_retryable_503() {
+    let err = StoreError::Unexpected(anyhow::Error::new(crate::raft::NoQuorum::for_test()));
+    let api = api_internal("failed to create tenant", &err);
+    assert_eq!(api.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(api.body.code, "unavailable");
+
+    // Wrapped in context on the way up, it is still found.
+    let err = StoreError::Unexpected(
+        anyhow::Error::new(crate::raft::NoQuorum::for_test()).context("propose"),
+    );
+    assert_eq!(
+        api_internal("x", &err).status,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+}

@@ -25,8 +25,10 @@
 //! also what lets this test mint operator tokens locally. That route is on
 //! the peer listener and needs the cluster id and peer token, so the test
 //! proposes as a peer would.
+mod common;
+
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -106,13 +108,6 @@ struct Instance {
     metrics: SocketAddr,
     data_dir: PathBuf,
     child: std::process::Child,
-}
-
-fn reserve() -> SocketAddr {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("reserve")
-        .local_addr()
-        .expect("addr")
 }
 
 /// Restart a member of a group that already exists.
@@ -355,6 +350,24 @@ fn find_leader(instances: &[Instance]) -> usize {
     }
 }
 
+/// Print the end of each member's log, for a failure message.
+fn dump_log_tails(instances: &[Instance], lines: usize) {
+    for instance in instances {
+        let log = instance
+            .data_dir
+            .parent()
+            .unwrap_or(&instance.data_dir)
+            .join(format!("cp-{}.log", instance.id));
+        if let Ok(content) = std::fs::read_to_string(&log) {
+            let tail: Vec<&str> = content.lines().rev().take(lines).collect();
+            eprintln!("--- log tail instance {} ---", instance.id);
+            for line in tail.iter().rev() {
+                eprintln!("{line}");
+            }
+        }
+    }
+}
+
 /// Deterministic signing keys the test holds both halves of, delivered to
 /// the group through #340's import path.
 fn seed_keys() -> felix_controlplane_service::auth::felix_token::TenantSigningKeys {
@@ -537,16 +550,23 @@ struct Group {
     peers: String,
     apis: Vec<SocketAddr>,
     bearer: String,
-    _dirs: Vec<tempfile::TempDir>,
+    _root: tempfile::TempDir,
 }
 
 fn start_group() -> Group {
     // --- Three members, fixed addresses, own volumes ------------------------
-    let apis: Vec<SocketAddr> = (0..3).map(|_| reserve()).collect();
-    let peer_addrs: Vec<SocketAddr> = (0..3).map(|_| reserve()).collect();
-    let metrics: Vec<SocketAddr> = (0..3).map(|_| reserve()).collect();
-    let dirs: Vec<tempfile::TempDir> = (0..3)
-        .map(|_| tempfile::tempdir().expect("tempdir"))
+    let apis: Vec<SocketAddr> = (0..3).map(|_| common::reserve_port()).collect();
+    let peer_addrs: Vec<SocketAddr> = (0..3).map(|_| common::reserve_port()).collect();
+    let metrics: Vec<SocketAddr> = (0..3).map(|_| common::reserve_port()).collect();
+    // One root per group: each member's log sits next to its volume, as
+    // `cp-<id>.log`, and the two tests in this binary must not share them.
+    let root = tempfile::tempdir().expect("tempdir");
+    let dirs: Vec<PathBuf> = (1..=3)
+        .map(|id| {
+            let dir = root.path().join(format!("member-{id}"));
+            std::fs::create_dir_all(&dir).expect("member dir");
+            dir
+        })
         .collect();
     let peers = peer_addrs
         .iter()
@@ -560,15 +580,8 @@ fn start_group() -> Group {
             id: (i + 1) as u64,
             api: apis[i],
             metrics: metrics[i],
-            data_dir: dirs[i].path().to_path_buf(),
-            child: spawn_with_state(
-                (i + 1) as u64,
-                apis[i],
-                metrics[i],
-                &dirs[i].path().to_path_buf(),
-                &peers,
-                "new",
-            ),
+            data_dir: dirs[i].clone(),
+            child: spawn_with_state((i + 1) as u64, apis[i], metrics[i], &dirs[i], &peers, "new"),
         })
         .collect();
     for instance in &mut instances {
@@ -637,7 +650,7 @@ fn start_group() -> Group {
         peers,
         apis,
         bearer,
-        _dirs: dirs,
+        _root: root,
     }
 }
 
@@ -648,7 +661,7 @@ fn the_group_survives_restart_kill_freeze_and_wipe_without_losing_a_write() {
         peers,
         apis,
         bearer,
-        _dirs,
+        _root,
     } = start_group();
 
     // The import committed on the leader; this member may be a follower
@@ -778,20 +791,7 @@ fn the_group_survives_restart_kill_freeze_and_wipe_without_losing_a_write() {
     );
 
     if failures > 0 {
-        for instance in &instances {
-            let log = instance
-                .data_dir
-                .parent()
-                .unwrap_or(&instance.data_dir)
-                .join(format!("cp-{}.log", instance.id));
-            if let Ok(content) = std::fs::read_to_string(&log) {
-                let tail: Vec<&str> = content.lines().rev().take(25).collect();
-                eprintln!("--- log tail instance {} ---", instance.id);
-                for line in tail.iter().rev() {
-                    eprintln!("{line}");
-                }
-            }
-        }
+        dump_log_tails(&instances, 25);
     }
     assert!(calls > 30, "the traffic loop barely ran ({calls} calls)");
     assert_eq!(failures, 0, "calls failed during the faults");
@@ -855,7 +855,7 @@ fn a_wiped_member_does_not_vote_a_lagging_member_into_leadership() {
         mut instances,
         peers,
         bearer,
-        _dirs,
+        _root,
         ..
     } = start_group();
 
@@ -869,15 +869,31 @@ fn a_wiped_member_does_not_vote_a_lagging_member_into_leadership() {
     // A is down; t-x commits on L and B.
     instances[a].child.kill().expect("kill a");
     instances[a].child.wait().expect("reap a");
-    let (status, body) = http(
-        instances[l].api,
-        "POST",
-        "/v1/tenants",
-        Some(&bearer),
-        Some(br#"{"tenant_id": "t-x", "display_name": "X"}"#),
-    )
-    .expect("write t-x");
-    assert_eq!(status, 201, "{body}");
+    // A 503 means the write ran out its budget uncommitted -- the group was
+    // mid-election -- and is the API's cue to retry. A retry can then meet
+    // the earlier attempt's commit as a 409, which acknowledges it all the
+    // same.
+    let deadline = Instant::now() + Duration::from_secs(30).mul_f64(scale());
+    let mut retried = false;
+    loop {
+        let (status, body) = http(
+            instances[l].api,
+            "POST",
+            "/v1/tenants",
+            Some(&bearer),
+            Some(br#"{"tenant_id": "t-x", "display_name": "X"}"#),
+        )
+        .expect("write t-x");
+        if status == 201 || (retried && status == 409) {
+            break;
+        }
+        if status != 503 || Instant::now() >= deadline {
+            dump_log_tails(&instances, 60);
+            panic!("write t-x: {body}");
+        }
+        eprintln!("write t-x not committed in time, retrying: {body}");
+        retried = true;
+    }
 
     // B freezes; L loses its volume and restarts empty; A restarts behind.
     signal(&instances[b].child, "-STOP");

@@ -58,10 +58,9 @@ impl RaftHandle {
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                return Err(AskLeaderError::Failed(last.context(format!(
-                    "no raft leader answered within {:?}",
-                    self.write_timeout
-                ))));
+                return Err(AskLeaderError::Failed(anyhow::Error::new(
+                    super::NoQuorum::new(self.write_timeout, &last),
+                )));
             }
             let (leader, recorded) = {
                 let metrics = self.raft.metrics();

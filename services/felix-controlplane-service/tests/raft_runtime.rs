@@ -2,8 +2,10 @@
 //! HTTP API with no external database, and keeping its metadata across a
 //! restart — the property the data directory exists to provide. Also that
 //! the Raft routes live only on the authenticated peer listener.
+mod common;
+
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -77,13 +79,6 @@ fn http_with_headers(
     Some((status, text))
 }
 
-fn reserve() -> SocketAddr {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("reserve port")
-        .local_addr()
-        .expect("addr")
-}
-
 fn command(addr: SocketAddr, peer: SocketAddr, data_dir: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_felix-controlplane"));
     command
@@ -147,8 +142,8 @@ fn stop(child: &mut std::process::Child) {
 
 #[test]
 fn the_binary_serves_and_survives_a_restart_with_no_database() {
-    let addr = reserve();
-    let peer = reserve();
+    let addr = common::reserve_port();
+    let peer = common::reserve_port();
     let data_dir = tempfile::tempdir().expect("tempdir");
 
     let mut first = spawn(addr, peer, data_dir.path(), "new");
@@ -257,11 +252,15 @@ fn seed_operator(addr: SocketAddr, peer: SocketAddr) -> String {
 #[test]
 fn the_binary_refuses_raft_without_a_peer_token() {
     let data_dir = tempfile::tempdir().expect("tempdir");
-    let output = command(reserve(), reserve(), data_dir.path())
-        .env_remove("FELIX_RAFT_PEER_TOKEN")
-        .stderr(Stdio::piped())
-        .output()
-        .expect("run controlplane");
+    let output = command(
+        common::reserve_port(),
+        common::reserve_port(),
+        data_dir.path(),
+    )
+    .env_remove("FELIX_RAFT_PEER_TOKEN")
+    .stderr(Stdio::piped())
+    .output()
+    .expect("run controlplane");
     assert!(!output.status.success(), "started without a peer token");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("FELIX_RAFT_PEER_TOKEN"), "{stderr}");

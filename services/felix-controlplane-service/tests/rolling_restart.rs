@@ -14,8 +14,10 @@
 //! Needs Postgres (or Docker to start one), like the other pg-tests; skips
 //! with a note otherwise. Run with
 //! `cargo test -p felix-controlplane-service --features pg-tests --test rolling_restart`.
+mod common;
+
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -81,13 +83,6 @@ fn response_json(raw: &str) -> Option<serde_json::Value> {
 struct Instance {
     addr: SocketAddr,
     child: std::process::Child,
-}
-
-fn reserve_addr() -> SocketAddr {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("reserve port")
-        .local_addr()
-        .expect("read port")
 }
 
 fn spawn_instance(addr: SocketAddr, pg_url: &str) -> Instance {
@@ -344,8 +339,8 @@ async fn a_rolling_restart_serves_every_watch_and_heartbeat() {
     drop(store);
 
     // --- Two instances, both ready -----------------------------------------
-    let addr_a = reserve_addr();
-    let addr_b = reserve_addr();
+    let addr_a = common::reserve_port();
+    let addr_b = common::reserve_port();
     let mut a = spawn_instance(addr_a, &pg_url);
     let mut b = spawn_instance(addr_b, &pg_url);
     wait_until_ready(&mut a, Duration::from_secs(30));

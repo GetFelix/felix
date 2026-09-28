@@ -6,6 +6,30 @@ use anyhow::{Context, Result};
 
 use super::RaftHandle;
 
+/// A proposal ran out its write budget: no leader, or no quorum, answered in
+/// time. The outcome is unknown rather than failed — it may still commit — so
+/// callers report it as retryable, and a retry can meet its own earlier write.
+#[derive(Debug, thiserror::Error)]
+#[error("raft write: not committed within {budget:?} (no leader, or quorum lost): {last}")]
+pub struct NoQuorum {
+    budget: Duration,
+    last: String,
+}
+
+impl NoQuorum {
+    pub(super) fn new(budget: Duration, last: &anyhow::Error) -> Self {
+        Self {
+            budget,
+            last: format!("{last:#}"),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self::new(Duration::from_secs(1), &anyhow::anyhow!("no leader"))
+    }
+}
+
 impl RaftHandle {
     /// Propose one command and wait until it is committed and applied;
     /// returns the state machine's response.
@@ -46,12 +70,9 @@ impl RaftHandle {
                 // The counter to alert on: a proposal ran out its whole
                 // budget, which means no leader or no quorum.
                 metrics::counter!("felix_meta_raft_write_timeouts_total").increment(1);
-                return Err(last_refusal
-                    .unwrap_or_else(|| anyhow::anyhow!("no quorum committed the proposal"))
-                    .context(format!(
-                        "raft write: not committed within {:?} — no leader, or quorum lost",
-                        self.write_timeout
-                    )));
+                let last = last_refusal
+                    .unwrap_or_else(|| anyhow::anyhow!("no quorum committed the proposal"));
+                return Err(anyhow::Error::new(NoQuorum::new(self.write_timeout, &last)));
             }
             let attempt = remaining.min(ATTEMPT_CAP);
             // Bounded per attempt too: a leader that lost quorum queues

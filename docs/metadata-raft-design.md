@@ -576,7 +576,11 @@ One finding from landing #339: **openraft's write path waits indefinitely**
 — a leader that has lost quorum queues proposals forever rather than
 failing them. The seam now owns an overall write deadline (default 10s,
 elections and forwarding included), so "no quorum" reaches callers as an
-error rather than a hang; the quorum-loss test is what surfaced it.
+error rather than a hang; the quorum-loss test is what surfaced it. The API
+answers that error `503 unavailable`, not `500`: the group is electing or has
+lost quorum, which a retry can outlast. The outcome is unknown rather than
+failed, since the entry may still commit, so a retried create can meet its
+own earlier write as `409`.
 
 Two findings from landing #338, recorded because they are the design's
 predictions coming true:
