@@ -4,8 +4,8 @@
 [`docs/replication-design.md`](../replication-design.md): the lease that lets a
 broker serve a shard, the replication that puts its records on a majority, and
 the promotion that names the next leader when the lease lapses. `task tla:check`
-runs TLC over every configuration, locally and in CI: about seven minutes on
-sixteen cores, and about half an hour on a four-core CI runner.
+runs TLC over every configuration, locally and in CI: about nine and a half
+minutes on sixteen cores, and about half an hour on a four-core CI runner.
 
 Prose about a safety interval is an argument; a model checker either finds the
 interleaving that breaks it or runs out of interleavings to try. This one found
@@ -152,10 +152,12 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardRealMarginsLease.cfg` | the margins the code runs: the broker gives up a quarter of the lease (`Eps = 1` of `L = 4`), and the control plane marks it down a quarter past its expiry (`Margin = 1`), against clocks that drift by a quarter; no writes | pass `AtMostOneServing` and `NoStaleCommit` (2.10M distinct states); with `Margin = 0` it finds two brokers serving |
 | `FelixShardRealMargins.cfg` | the same margins and drift with one `Quorum` write carried across a promotion, acknowledged on the report's answer and a valid lease, as the code does | pass every invariant (2.38M distinct states) |
 | `FelixShardAckWithoutLease.cfg` | the same with the lease taken out of the acknowledgement: the report alone releases it | pass every invariant (2.38M distinct states, the same ones: the report is only sent on a valid lease) |
-| `FelixShardFencedAck.cfg` | acknowledged by follower acks at the leader's generation, no lease or report in it, and the promotion fence; no margin on either side of the lease, drifting clocks, no commit check, two writes | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (2.62M distinct states) |
-| `FelixShardFencedAckTwoPromotions.cfg` | the same with two promotions (`L = 2`) and no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (14.3M distinct states, depth 35, 80 s on ten cores; by hand only, see below) |
+| `FelixShardFencedAck.cfg` | the broker once `majority_ack` is finalized: acknowledged by follower acks at the leader's generation, no lease anywhere on the write's path and no report, the promotion fence, and the start record; no margin on either side of the lease, drifting clocks, two writes | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (13.0M distinct states, depth 31, 100 s on sixteen cores) |
+| `FelixShardFencedAckTwoPromotions.cfg` | the same with two promotions (`L = 2`) and no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (14.3M distinct states, depth 35, 80 s on ten cores, before acks counted follower answers and not re-run since; by hand only, see below). With the start record on too it had not finished at 80M distinct states after nine minutes on sixteen cores |
 | `FelixShardFollowerLabels.cfg` | the same with followers labelling a shipped record with the sender's generation rather than the one that wrote it (`LabelOnReceipt`) | violate `AckedOnMajority` |
 | `FelixShardUnfencedAck.cfg` | the same without the fence | violate `AckedHeldByLeader` |
+| `FelixShardFigure8FollowerAcks.cfg` | `FelixShardFencedAck.cfg`'s acknowledgement from the seeded Figure 8 history, promotion still reading the report | pass every invariant it checks (7.67M distinct states, depth 36, 58 s on sixteen cores) |
+| `FelixShardFigure8FollowerAcksNoStartRecord.cfg` | the same without the start record: follower acks count a record the leader inherited | violate `AckedOnMajority` |
 | `FelixShardFigure8.cfg` | the broker as built (`FelixShardFencedPromotion.cfg`) with the generation start record (`StartRecord`), started from a history two leaderships in (`FelixShardFigure8.tla`) | pass every invariant it checks (5.99M distinct states, depth 39, 35 s on sixteen cores) |
 | `FelixShardFigure8NoStartRecord.cfg` | the same without the start record: the mark counts records the leader inherited | violate `AckedOnMajority`: Raft's Figure 8, see below |
 | `FelixShardFigure8CutOver.cfg` | the start record, from a history one leadership further (`SeededCutOverInit`): the next leader comes from a move's cut-over or a cancelled move's hand-back | pass every invariant it checks (12.9M distinct states, depth 39, 90 s) |
@@ -346,16 +348,26 @@ clock that can step.
 Under `Quorum` today, an acknowledged record survives because the report
 orders the ack and promotion reads the report, and the lease keeps a deposed
 leader from writing. `FelixShardAckWithoutLease.cfg` shows the lease check at
-release is not what does it. `FelixShardFencedAck.cfg` goes further: the ack
-counts followers at the leader's generation, no report and no lease, and the
-promoted leader fences a majority before it serves. It passes with no margin
-on either side of the lease, so two brokers do serve at once, and with the
-commit not checking the lease at all. The old leader keeps writing; it just
-cannot find a majority for it.
+release is not what does it. `FelixShardFencedAck.cfg` goes further, and is the broker once the fleet
+finalizes `majority_ack`: the ack counts followers at the leader's generation,
+no report and no lease, and the promoted leader fences a majority before it
+serves. `AckByFollowers` takes the lease off the whole write path (an `ASSUME`
+refuses a configuration that checks it at the commit or the ack, and
+`Serving` does not read it), so a deposed leader admits and commits until it
+steps down. It passes with no margin on either side of the lease, so two
+brokers do serve at once. The old leader keeps writing; it just cannot find a
+majority for it.
+
+The leader counts what each follower answered at its generation
+(`confirmed`), as the code counts `ReplicateOk`: a follower that took a newer
+leader's fence after answering still counts, because its fence answer carries
+the record. The leader counts itself only while it has taken no newer fence;
+counting itself after that is how a deposed leader would acknowledge on itself
+and a follower the fence missed.
 
 `FelixShardUnfencedAck.cfg` drops the fence and TLC finds the record lost in
-eleven steps: the old leader's clock runs slow, the control plane promotes a
-follower, and the old leader commits, ships to the other follower, which has
+eleven steps: the old leader still believes it leads, the control plane
+promotes a follower, and the old leader commits, ships to the other follower, which has
 never heard of the new generation, and acknowledges on that majority.
 
 The catch-up is load-bearing too. Checked by hand with the fence answering but
@@ -404,8 +416,14 @@ length the report measures holders at, stop only at a record of the
 leader's own generation, so an inherited record is acknowledged once the
 start record behind it reaches a majority. c's start record then has to be
 on a or b before x counts, which gives a's log the newer last generation,
-and `FelixShardFigure8.cfg` passes. Every other configuration sets
-`StartRecord = FALSE` and explores the states it did before.
+and `FelixShardFigure8.cfg` passes. With follower acks the same holds:
+`FelixShardFigure8FollowerAcks.cfg` passes, and without the start record
+(`FelixShardFigure8FollowerAcksNoStartRecord.cfg`) c acknowledges x once a and
+c answer for it, and loses it the same way. `HeldAtGen` applies the
+own-generation rule only under `StartRecord`, as the broker applies it only
+once `generation_start` is finalized, which is why `majority_ack` needs both.
+The other configurations without follower acks set `StartRecord = FALSE` and
+explore the states they did before.
 
 A move reaches the same loss one leadership later, which is why the broker
 writes the record on every leadership change and not only on a promotion.

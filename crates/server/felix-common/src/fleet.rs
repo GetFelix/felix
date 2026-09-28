@@ -50,7 +50,7 @@ impl std::fmt::Display for FleetFeature {
 ///
 /// Add a feature here in the same change that makes the broker honour it,
 /// never before: the report is a promise that this build behaves that way.
-pub const IMPLEMENTED: &[FleetFeature] = &[GENERATION_START];
+pub const IMPLEMENTED: &[FleetFeature] = &[GENERATION_START, MAJORITY_ACK];
 
 /// A leader writes a generation-start record whenever it starts leading a
 /// stream shard at a new generation, and its quorum mark counts only records
@@ -58,6 +58,15 @@ pub const IMPLEMENTED: &[FleetFeature] = &[GENERATION_START];
 /// build refuses, so it waits for the whole fleet. See
 /// `docs/replication-design.md` ("The generation-start record").
 pub const GENERATION_START: FleetFeature = FleetFeature::new("generation_start");
+
+/// A `Quorum` stream shard acknowledges a write once a majority of its
+/// replicas has answered that it holds it at the leader's generation, with
+/// neither the control-plane report nor the lease on the write's path. Safe
+/// only when every broker fences a majority before it serves a promoted
+/// shard, so a broker running with `FELIX_INTERNAL_FENCE=false` does not
+/// report it. Takes effect alongside [`GENERATION_START`]. See
+/// `docs/replication-design.md` ("Acknowledging by the followers").
+pub const MAJORITY_ACK: FleetFeature = FleetFeature::new("majority_ack");
 
 /// The most features one gate tracks. A report longer than this is cut, which
 /// only ever leaves features off.

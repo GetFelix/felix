@@ -149,6 +149,14 @@ answers each shard's report on its own merits, so a report it discarded (stale
 generation, not the leader) never counts as landed. `FelixShard.tla` explores
 5.38M distinct states of that design without violating it; the same model with
 the ordering removed loses an acknowledged record in a second.
+
+Once an operator finalizes the `majority_ack` fleet feature, a `Quorum` stream
+does without that ordering and without the lease: a write is acknowledged once
+a majority of its replicas has answered that it holds it at the leader's
+generation, and any promoted leader fences a majority and takes the furthest
+log before it serves. A leader cut off from the control plane then keeps
+acknowledging what its followers hold. `Leader` streams, caches and reads keep
+the lease. See the upgrades page for the runbook.
 :::
 
 #### What each one costs

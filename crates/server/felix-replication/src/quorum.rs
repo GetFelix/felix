@@ -19,6 +19,7 @@
 //! toward a newer generation's quorum. Resetting is what enforces that here.
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use parking_lot::Mutex;
 use tokio::sync::watch;
@@ -61,6 +62,32 @@ impl QuorumMarks {
         self.fleet
             .as_ref()
             .is_some_and(|fleet| fleet.supports(felix_common::fleet::GENERATION_START))
+    }
+
+    /// Whether a `Quorum` stream shard's mark is decided by its followers'
+    /// answers at the leader's generation ([`held_at_generation`]), with the
+    /// report and the lease off the write's path. True once the fleet
+    /// finalized both `majority_ack` and `generation_start`: the first says
+    /// every broker fences before it serves a promoted shard, the second that
+    /// the mark counts only past a record of the leader's own generation.
+    pub(crate) fn acks_by_followers(&self) -> bool {
+        self.own_generation_only()
+            && self
+                .fleet
+                .as_ref()
+                .is_some_and(|fleet| fleet.supports(felix_common::fleet::MAJORITY_ACK))
+    }
+
+    /// Whether `key`'s mark at `generation` was decided by its followers, so
+    /// an acknowledgement released on it needs no lease.
+    pub(crate) fn decided_by_followers(&self, key: &ShardKey, generation: u64) -> bool {
+        self.shards.decided_by_followers(key, generation)
+    }
+
+    /// [`Self::publish`], for a mark the followers decided. From here on the
+    /// shard's mark at `generation` releases writes without the lease.
+    pub(crate) fn publish_by_followers(&self, key: &ShardKey, generation: u64, offset: u64) {
+        self.shards.publish_marked(key, generation, offset, true);
     }
 
     /// The marks of the counter logs that ride cache shards.
@@ -128,6 +155,9 @@ pub struct MarkTable {
 struct ShardMark {
     generation: u64,
     offset: watch::Sender<u64>,
+    /// Set by the first mark the followers decided at this generation. Only
+    /// ever set: the fleet feature behind it only turns on.
+    by_followers: bool,
 }
 
 impl MarkTable {
@@ -136,9 +166,16 @@ impl MarkTable {
     /// A generation change restarts the mark at zero rather than carrying the
     /// old one forward.
     pub fn publish(&self, key: &ShardKey, generation: u64, offset: u64) {
+        self.publish_marked(key, generation, offset, false);
+    }
+
+    /// [`Self::publish`], marking the shard as decided by its followers first
+    /// when `by_followers`, so a waiter the new offset wakes already sees it.
+    fn publish_marked(&self, key: &ShardKey, generation: u64, offset: u64, by_followers: bool) {
         let mut shards = self.shards.lock();
         match shards.get_mut(key) {
             Some(mark) if mark.generation == generation => {
+                mark.by_followers |= by_followers;
                 // Monotonic within a generation: the mark is a high-water mark,
                 // and a pass that saw less than the last one saw a follower
                 // mid-answer rather than a record becoming un-stored.
@@ -157,11 +194,19 @@ impl MarkTable {
                     ShardMark {
                         generation,
                         offset: watch::Sender::new(offset),
+                        by_followers,
                     },
                 );
                 self.started.send_modify(|n| *n = n.wrapping_add(1));
             }
         }
+    }
+
+    fn decided_by_followers(&self, key: &ShardKey, generation: u64) -> bool {
+        self.shards
+            .lock()
+            .get(key)
+            .is_some_and(|mark| mark.generation == generation && mark.by_followers)
     }
 
     /// Stop tracking a shard this broker no longer leads.
@@ -396,16 +441,28 @@ pub async fn await_quorum<S: ShardServing + ?Sized>(
         return Ok(());
     }
 
-    // `last_offset` is inclusive, and the mark is one past what is held.
+    // `last_offset` is inclusive, and the mark is one past what is held. The
+    // wait reads the generation and then the mark at it, so the last one read
+    // is the one the mark was reached at.
+    let waited_at = std::sync::atomic::AtomicU64::new(0);
+    let leading = || {
+        let generation = ingress.generation(shard);
+        waited_at.store(generation.unwrap_or(0), Ordering::Relaxed);
+        generation
+    };
     match marks
-        .wait_while_leading(
-            shard,
-            || ingress.generation(shard),
-            last_offset + 1,
-            timeout,
-        )
+        .wait_while_leading(shard, leading, last_offset + 1, timeout)
         .await
     {
+        // A mark the followers decided holds without the lease: any newer
+        // leader fenced a majority before it served, and every copy counted
+        // either answered for the batch before it took that fence or was
+        // not counted.
+        crate::quorum::QuorumWait::Reached
+            if marks.decided_by_followers(shard, waited_at.load(Ordering::Relaxed)) =>
+        {
+            Ok(())
+        }
         crate::quorum::QuorumWait::Reached => release(ingress, "batch"),
         crate::quorum::QuorumWait::TimedOut => {
             crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
@@ -814,6 +871,46 @@ pub fn quorum_offset_without(
         )
         .collect();
     // Descending, so the `needed`-th is the highest offset that many hold.
+    held.sort_unstable_by(|a, b| b.cmp(a));
+    held.get(needed - 1).copied().unwrap_or(0)
+}
+
+/// The highest offset a majority has answered that it holds at this leader's
+/// generation: `HeldAtGen` in `docs/formal/FelixShard.tla`, before
+/// [`counted_offset`] clamps it to the leader's own records.
+///
+/// A follower counts up to its own `ReplicateOk` at this generation
+/// (`confirmed`), and keeps counting after it has taken a newer leader's
+/// fence, which this leader cannot see: the answer came first, so the fence's
+/// answer carries what it confirmed. A halted follower counts for nothing.
+///
+/// The leader counts its own tail only while `leader_current`, when no newer
+/// generation has been accepted on its log. Once it has answered a newer
+/// leader's fence, what it writes next is in no fence answer, and counting it
+/// would let a deposed leader acknowledge on itself and a follower the fence
+/// never reached. The caller reads the tail before it reads the generation,
+/// so a fence answered in between still carries the whole tail.
+pub(crate) fn held_at_generation(
+    leader_tail: u64,
+    leader_current: bool,
+    followers: &[FollowerCursor],
+    learner: Option<&str>,
+) -> u64 {
+    let voters = || {
+        followers
+            .iter()
+            .filter(move |follower| Some(follower.node_id.as_str()) != learner)
+    };
+    let needed = majority_of(voters().count());
+    let mut held: Vec<u64> = leader_current
+        .then_some(leader_tail)
+        .into_iter()
+        .chain(
+            voters()
+                .filter(|follower| follower.halted.is_none())
+                .map(|follower| follower.confirmed.min(leader_tail)),
+        )
+        .collect();
     held.sort_unstable_by(|a, b| b.cmp(a));
     held.get(needed - 1).copied().unwrap_or(0)
 }

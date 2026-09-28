@@ -292,13 +292,33 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let acks_at_quorum = !route.draining && quorum_shard;
     let mark_key = watch_key(key);
     let mark_key = &mark_key;
+    // A `Quorum` stream shard in a fleet that finalized `majority_ack` is
+    // acknowledged on what its followers answered at this generation, with
+    // the report and the lease off the write's path. Every other shard keeps
+    // both. A cache shard is never fenced on promotion, so its successor is
+    // only as good as the report it was chosen from.
+    let by_followers =
+        quorum_shard && key.kind == felix_router::ShardKind::Stream && marks.acks_by_followers();
+    if by_followers {
+        fence.serve_without_lease(mark_key, route.generation);
+    }
+    let held_offset = |tail: u64, followers: &[FollowerCursor]| {
+        let held = if by_followers {
+            // Read after the tail, which `held_at_generation` relies on.
+            let current = log.accepted_generation() <= route.generation;
+            crate::quorum::held_at_generation(tail, current, followers, learner.as_deref())
+        } else {
+            quorum_offset_without(tail, followers, learner.as_deref())
+        };
+        counted(held)
+    };
     let acknowledged = |tail: u64, followers: &[FollowerCursor]| {
         if !acks_at_quorum {
             return tail;
         }
         // Never below a mark already published, even if a follower's
         // position went back since: that mark's records were promised.
-        counted(quorum_offset_without(tail, followers, learner.as_deref()))
+        held_offset(tail, followers)
             .max(marks.offset(&watch_key(key), route.generation).unwrap_or(0))
     };
     // Counters on a `Quorum` cache are acknowledged at their own mark, under
@@ -421,7 +441,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let mut copying = false;
     let mut majority = None;
     if waiting == 0 {
-        let offset = counted(quorum_offset_without(tail, &positions, learner.as_deref()));
+        let offset = held_offset(tail, &positions);
         if offset > 0 {
             majority = Some((
                 shard_report(
@@ -446,7 +466,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         answered.insert(cursor.node_id.clone());
         settle(&mut positions, cursor);
         let tail = log.tail_offset().await.unwrap_or(tail);
-        let offset = counted(quorum_offset_without(tail, &positions, learner.as_deref()));
+        let offset = held_offset(tail, &positions);
         if offset > 0 {
             majority = Some((
                 shard_report(
@@ -485,6 +505,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         // one that does not have it. The acknowledged record is then gone,
         // which is the one thing `Quorum` is supposed to rule out.
         //
+        // A shard acknowledging by its followers skips all of this: whoever
+        // leads next fences a majority and takes the furthest log before it
+        // serves, so what promotion read no longer decides what survives.
+        //
         // A report that did not land leaves the mark where it was, because
         // the argument above rests on the control plane knowing who holds
         // the record: releasing on a failed report reaches the same window
@@ -499,6 +523,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             route.generation,
             &report,
             offset,
+            by_followers,
         )
         .await
             && let Some(counters) = &counters
@@ -639,11 +664,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             key,
             route.generation,
             &settled,
-            counted(quorum_offset_without(
-                tail,
-                &entry.followers,
-                learner.as_deref(),
-            )),
+            held_offset(tail, &entry.followers),
+            by_followers,
         )
         .await
             && let Some(counters) = &counters
@@ -1119,8 +1141,12 @@ pub(super) fn watch_key(key: &ShardKey) -> crate::ShardKey {
 
 /// Tell the control plane who holds what, then move the mark if it listened.
 ///
+/// With `by_followers` the followers already decided the mark: it moves at
+/// once, and the report goes out behind it for placement alone.
+///
 /// Returns whether the mark moved. A caller with nothing waiting on the mark
 /// can ignore it; a caller on the quorum path cannot.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn publish_mark(
     broker: &Broker,
     reporter: Option<&Reporter>,
@@ -1129,7 +1155,16 @@ pub(super) async fn publish_mark(
     generation: u64,
     report: &ShardReport,
     offset: u64,
+    by_followers: bool,
 ) -> bool {
+    if by_followers {
+        marks.publish_by_followers(&watch_key(key), generation, offset);
+        release_readers(broker, key).await;
+        if let Some(reporter) = reporter {
+            reporter.submit(report.clone());
+        }
+        return true;
+    }
     let reported = match reporter {
         Some(reporter) => reporter.send(report.clone()).await,
         // Nothing to report to, so nothing to be behind: a broker with no
@@ -1138,18 +1173,7 @@ pub(super) async fn publish_mark(
     };
     if reported {
         marks.publish(&watch_key(key), generation, offset);
-        // A `Quorum` stream's readers stop at the mark (see
-        // `quorum::read_bound`), so a fetch waiting for records is waiting
-        // for this as much as for the append, and the batches the stream held
-        // back from its subscribers go out now.
-        if key.kind == felix_router::ShardKind::Stream
-            && let Ok(handle) = broker
-                .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-                .await
-        {
-            handle.release_committed();
-            handle.appended().notify_waiters();
-        }
+        release_readers(broker, key).await;
     } else {
         metrics::record_mark_withheld();
         tracing::warn!(
@@ -1161,4 +1185,19 @@ pub(super) async fn publish_mark(
         );
     }
     reported
+}
+
+/// A `Quorum` stream's readers stop at the mark (see `quorum::read_bound`), so
+/// a fetch waiting for records is waiting for the mark as much as for the
+/// append, and the batches the stream held back from its subscribers go out
+/// once it moves.
+async fn release_readers(broker: &Broker, key: &ShardKey) {
+    if key.kind == felix_router::ShardKind::Stream
+        && let Ok(handle) = broker
+            .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await
+    {
+        handle.release_committed();
+        handle.appended().notify_waiters();
+    }
 }

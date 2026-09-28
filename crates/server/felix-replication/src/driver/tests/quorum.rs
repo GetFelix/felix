@@ -353,3 +353,165 @@ async fn before_finalize_inherited_records_count_as_before() {
     .await;
     assert_eq!(marks.offset(&watch_key(&key()), 4), Some(3));
 }
+
+/// Marks as a fleet that finalized both `generation_start` and
+/// `majority_ack` counts them: by the followers.
+fn follower_ack_marks() -> QuorumMarks {
+    use felix_common::fleet::{FleetGate, GENERATION_START, MAJORITY_ACK};
+    let names = [GENERATION_START.name(), MAJORITY_ACK.name()];
+    let fleet = FleetGate::new(names);
+    fleet.observe(names);
+    QuorumMarks::with_fleet(Arc::new(fleet))
+}
+
+/// A reporter whose control plane is gone: every report fails to land.
+fn unreachable_reporter() -> (
+    crate::reporter::Reporter,
+    tokio_util::sync::CancellationToken,
+) {
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let (reporter, _task) = crate::reporter::Reporter::spawn(
+        crate::reporter::ReportTo {
+            client: reqwest::Client::new(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            node_id: LOCAL.to_string(),
+            token: None,
+            incarnation: 1,
+        },
+        shutdown.clone(),
+    );
+    (reporter, shutdown)
+}
+
+/// Stores every batch on `broker-b`; `broker-c` is unreachable.
+struct OnlyB;
+
+impl PeerRequester for OnlyB {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let (InternalMessage::ReplicateRecords(batch)
+        | InternalMessage::ReplicateMarkedRecords(batch)) = message
+        else {
+            panic!("the driver sent something other than a replication batch");
+        };
+        if node_id != "broker-b" {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "partitioned".to_string(),
+            });
+        }
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: batch.first_offset + batch.payloads.len() as u64,
+        }))
+    }
+}
+
+/// [`leader_led_from`], with the stream registered as `Quorum`.
+async fn quorum_leader(count: usize, generation: u64) -> (Arc<Broker>, tempfile::TempDir) {
+    let (broker, dir) = leader_led_from(count, generation, 0).await;
+    broker.register_tenant(TENANT).await.expect("tenant");
+    broker
+        .register_namespace(TENANT, NAMESPACE)
+        .await
+        .expect("namespace");
+    broker
+        .register_stream(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            felix_broker::StreamMetadata {
+                durable: true,
+                shards: 1,
+                consistency: felix_broker::ConsistencyLevel::Quorum,
+            },
+        )
+        .await
+        .expect("stream");
+    (broker, dir)
+}
+
+async fn pass_with_reporter<R: PeerRequester + Sync>(
+    followers: &R,
+    broker: &Arc<Broker>,
+    router: &ShardRouter,
+    marks: &QuorumMarks,
+    reporter: &crate::reporter::Reporter,
+) {
+    let (mut cursors, mut group, mut dead, mut counters) = (
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    replicate_once(
+        followers,
+        broker,
+        router,
+        marks,
+        Some(reporter),
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    )
+    .await;
+}
+
+/// **With follower acks the mark moves on a majority's answers, whether or
+/// not the control plane heard the report.** Under the report rule the same
+/// pass withholds it.
+#[tokio::test]
+async fn follower_acks_move_the_mark_without_the_report() {
+    let (reporter, shutdown) = unreachable_reporter();
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let watched = watch_key(&key());
+
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let marks = follower_ack_marks();
+    pass_with_reporter(&OnlyB, &broker, &router, &marks, &reporter).await;
+    assert_eq!(marks.offset(&watched, 4), Some(3));
+    assert!(marks.decided_by_followers(&watched, 4));
+
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let marks = finalized_marks();
+    pass_with_reporter(&OnlyB, &broker, &router, &marks, &reporter).await;
+    assert_eq!(
+        marks.offset(&watched, 4).unwrap_or(0),
+        0,
+        "the report rule released a mark the control plane never heard of",
+    );
+    shutdown.cancel();
+}
+
+/// **A leader that took a newer leader's fence does not count itself.** Its
+/// one follower is not a majority of three, so nothing it holds is
+/// acknowledged.
+#[tokio::test]
+async fn a_fenced_leader_does_not_count_its_own_copy() {
+    let (reporter, shutdown) = unreachable_reporter();
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let watched = watch_key(&key());
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .accept_generation(5)
+        .await
+        .expect("accept a newer leader");
+    let marks = follower_ack_marks();
+
+    pass_with_reporter(&OnlyB, &broker, &router, &marks, &reporter).await;
+
+    assert_eq!(
+        marks.offset(&watched, 4).unwrap_or(0),
+        0,
+        "a deposed leader counted itself toward a majority",
+    );
+    shutdown.cancel();
+}

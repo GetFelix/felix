@@ -304,13 +304,19 @@ impl Owned {
         publish_ctx: &PublishContext,
         admitted: &mut Option<FenceGuard>,
     ) -> Result<Option<FenceGuard>, ClientError> {
-        fence::enter_or_keep(
+        let guard = fence::enter_or_keep(
             admitted,
             publish_ctx.ingress.as_deref(),
             Some(&self.key),
             self.generation,
         )
-        .map_err(ClientError::from)
+        .map_err(ClientError::from)?;
+        // The shard's own writes may get in without the lease; group state
+        // does not.
+        if let Some(ingress) = publish_ctx.ingress.as_deref() {
+            ingress.fence().require_lease().map_err(ClientError::from)?;
+        }
+        Ok(guard)
     }
 }
 

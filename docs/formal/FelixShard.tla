@@ -110,8 +110,9 @@
 (* a promoted leader fences a majority and catches up before it serves.    *)
 (* Without the fence, TLC finds a deposed leader whose slow clock still    *)
 (* lets it write acknowledging on a follower the new one never fenced      *)
-(* (AckedHeldByLeader). The broker has the fence and not yet the acks:   *)
-(* `FenceOnPromote` alone, alongside the report and the lease.             *)
+(* (AckedHeldByLeader). The broker acknowledges this way on a `Quorum`   *)
+(* stream shard once the fleet finalized `majority_ack`, and before that   *)
+(* with `FenceOnPromote` alone, alongside the report and the lease.        *)
 (*                                                                         *)
 (* `StartRecord` has a leader write a generation-start record before any   *)
 (* client write, and lets the mark and the report's length stop only at a  *)
@@ -175,6 +176,9 @@ ASSUME StartRecord \in BOOLEAN
 \* alongside follower acks. The fence without follower acks is the broker as
 \* built: acknowledgements still come from the report and the lease.
 ASSUME AckByFollowers => ~Handoff /\ ~Cancel
+\* And no lease anywhere on a `Quorum` write's path: not at admission (see
+\* Serving), not at the commit, not at the acknowledgement.
+ASSUME AckByFollowers => Quorum /\ ~CheckAtCommit /\ ~AckChecksLease
 ASSUME Eps < L /\ Margin >= 0
 
 VARIABLES
@@ -207,18 +211,19 @@ VARIABLES
     heard,      \* the last report each broker was told the control plane stored
     promised,   \* the highest generation each broker has durably accepted
     fencing,    \* a promoted leader that has not finished its fence
-    answered    \* who has answered each broker's fence at the generation it leads
+    answered,   \* who has answered each broker's fence at the generation it leads
+    confirmed   \* per leader, how far each follower answered that it holds, at the leader's generation
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
            draining, successor, stopped, moves, ver, cpView, staged, heard,
-           promised, fencing, answered >>
+           promised, fencing, answered, confirmed >>
 
 \* Placement's state, which only the control plane's decisions change.
 handoffVars == << draining, successor, stopped, moves, ver, cpView, staged >>
 
 \* The promotion fence's state.
-fenceVars == << promised, fencing, answered >>
+fenceVars == << promised, fencing, answered, confirmed >>
 
 \* Whether brokers keep and check `promised`: the fence needs it, and so do
 \* follower acks.
@@ -243,8 +248,12 @@ Symm == Permutations(Brokers) \cup Permutations(Planners)
 LeaseValid(b) == bgen[b] > 0 /\ clock[b] + Eps < bexpiry[b]
 
 \* It serves the shard on that lease until it has seen a fence, and not before
-\* its own promotion fence is done.
-Serving(b) == LeaseValid(b) /\ ~stopped[b] /\ ~fencing[b]
+\* its own promotion fence is done. With `AckByFollowers` a `Quorum` shard
+\* serves without the lease, for as long as the broker believes it leads:
+\* a deposed leader that goes on writing finds no majority to acknowledge
+\* on once its successor has fenced one.
+Serving(b) == /\ IF AckByFollowers THEN bgen[b] > 0 ELSE LeaseValid(b)
+              /\ ~stopped[b] /\ ~fencing[b]
 
 \* `g` is the generation the record was written at, `lg` the one the broker
 \* holding it believes that was: its generation history. They differ only
@@ -306,6 +315,7 @@ Init ==
     /\ promised = [b \in Brokers |-> IF b = leader THEN 1 ELSE 0]
     /\ fencing = [b \in Brokers |-> FALSE]
     /\ answered = [b \in Brokers |-> {}]
+    /\ confirmed = [b \in Brokers |-> [f \in Brokers |-> 0]]
 
 -----------------------------------------------------------------------------
 (* Time. Real time ticks, and with it each broker's clock moves by zero,   *)
@@ -373,7 +383,8 @@ StepDown(b) ==
     /\ fencing' = [fencing EXCEPT ![b] = FALSE]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
                     hbOut, hbAt, log, hwm, halted, acked, writes, staleCommit,
-                    draining, successor, moves, ver, cpView, staged, promised, answered >>
+                    draining, successor, moves, ver, cpView, staged, promised, answered,
+                    confirmed >>
 
 -----------------------------------------------------------------------------
 (* Writes. Admission checks the broker is serving; the write then waits,  *)
@@ -469,6 +480,13 @@ Diverge(a, c) ==
         d == { i \in 1..n : ~Same(a[i], c[i]) }
     IN IF d = {} THEN n + 1 ELSE CHOOSE i \in d : \A j \in d : i <= j
 
+\* The follower's answer to a ship: its first `k` records are the leader's.
+\* The leader keeps it in the follower's cursor as `confirmed`
+\* (crates/server/felix-replication/src/ship.rs) and counts it later, by
+\* which time the follower may have taken a newer leader's fence.
+Confirm(b, f, k) ==
+    confirmed' = IF AckByFollowers THEN [confirmed EXCEPT ![b][f] = k] ELSE confirmed
+
 \* Under `AckByFollowers` or `FenceOnPromote` the follower also refuses a
 \* leader older than the generation it persisted, and persists the leader's:
 \* `accept_sender` in crates/server/felix-replication/src/replica.rs. A leader still fencing
@@ -492,14 +510,16 @@ Ship(b, f) ==
           /\ log' = [log EXCEPT ![f] = Append(@, IF LabelOnReceipt
                                                     THEN [log[b][i] EXCEPT !.lg = bgen[b]]
                                                     ELSE log[b][i])]
+          /\ Confirm(b, f, i)
           /\ UNCHANGED halted
        \/ /\ i <= Len(log[f])
           /\ i <= Len(log[b])
           /\ IF bgen[b] > LastGen(f) /\ i > hwm[f]
              THEN /\ log' = [log EXCEPT ![f] = SubSeq(@, 1, i - 1)]
+                  /\ Confirm(b, f, i - 1)
                   /\ UNCHANGED halted
              ELSE /\ halted' = halted \cup {f}
-                  /\ UNCHANGED log
+                  /\ UNCHANGED << log, confirmed >>
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, hwm, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fencing, answered >>
@@ -540,18 +560,25 @@ AckReadyOver(b, i, of) ==
                           /\ MajorityOf(r.holders \cup {b}, of)
 
 \* The ack decided by the followers alone: a majority, the leader counted
-\* like anyone, holds the record and still holds the leader's generation as
-\* the highest it accepted. A broker fenced by a newer leader has moved past
-\* it, so a deposed leader cannot count it, nor itself once fenced.
+\* like anyone, has answered that it holds the record at the leader's
+\* generation.
 \*
-\* Only a record written at the leader's own generation is counted, taking the
-\* ones below it along, as in Raft. Counting an older record it inherited
-\* would let a later leader whose last record is newer overwrite it.
+\* A follower counts from its own answer (`confirmed`), which the leader
+\* goes on counting after the follower has taken a newer leader's fence:
+\* the leader cannot know. That is safe because the answer came first, so
+\* the follower's fence answer carries the record. The leader counts itself
+\* only while its own generation is still the highest it accepted: once
+\* fenced, what it writes next is in no fence's answer.
+\* `held_at_generation` in crates/server/felix-replication/src/quorum.rs.
+\*
+\* With `StartRecord` only a record written at the leader's own generation
+\* is counted, taking the ones below it along, as in Raft. Without it the
+\* leader counts a record it inherited, and a later leader whose last record
+\* is newer overwrites it: FelixShardFigure8FollowerAcksNoStartRecord.cfg.
 HeldAtGen(b, i) ==
-    /\ log[b][i].g = bgen[b]
-    /\ Majority({ m \in Brokers : /\ Len(log[m]) >= i
-                                  /\ Same(log[m][i], log[b][i])
-                                  /\ promised[m] = bgen[b] })
+    /\ OwnGen(b, i)
+    /\ Majority({ m \in Brokers \ {b} : confirmed[b][m] >= i }
+                \cup (IF promised[b] = bgen[b] THEN {b} ELSE {}))
 
 \* With `AckChecksLease = FALSE` the lease plays no part: a broker that still
 \* believes it leads acknowledges on the report alone, however lapsed its own
@@ -725,6 +752,8 @@ Promote(v, f, views) ==
     /\ promised' = IF Promises THEN [promised EXCEPT ![f] = gen + 1] ELSE promised
     /\ fencing' = [fencing EXCEPT ![f] = FenceOnPromote]
     /\ answered' = [answered EXCEPT ![f] = {}]
+    \* Cursors belong to a generation: the new leader starts with none.
+    /\ confirmed' = [confirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
     \* A fenced leader may still take another log; it writes its start record
     \* when it opens.
     /\ log' = IF FenceOnPromote THEN log ELSE [log EXCEPT ![f] = Opened(f, gen + 1)]
@@ -760,7 +789,7 @@ AnswerFence(b, f) ==
     /\ log' = IF Ahead(f, b) THEN [log EXCEPT ![b] = log[f]] ELSE log
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, hwm, halted, queued, pending, acked, writes, staleCommit,
-                    fencing >>
+                    fencing, confirmed >>
     /\ UNCHANGED handoffVars
 
 \* `open_promoted` in crates/server/felix-replication/src/driver.rs, on the
@@ -773,7 +802,7 @@ OpenForWrites(b) ==
     /\ log' = [log EXCEPT ![b] = Opened(b, bgen[b])]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, hwm, halted, queued, pending, acked, writes, staleCommit,
-                    promised, answered >>
+                    promised, answered, confirmed >>
     /\ UNCHANGED handoffVars
 
 -----------------------------------------------------------------------------
@@ -1013,5 +1042,6 @@ TypeOK ==
     /\ promised \in [Brokers -> Nat]
     /\ fencing \in [Brokers -> BOOLEAN]
     /\ answered \in [Brokers -> SUBSET Brokers]
+    /\ confirmed \in [Brokers -> [Brokers -> Nat]]
 
 =============================================================================

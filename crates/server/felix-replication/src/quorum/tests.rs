@@ -293,3 +293,80 @@ fn only_a_majority_past_the_start_record_counts() {
     assert_eq!(counted_offset(4, Some(3)), 4);
     assert_eq!(counted_offset(3, None), 3);
 }
+
+fn follower(node: &str, confirmed: u64) -> FollowerCursor {
+    let mut cursor = FollowerCursor::new(node, "127.0.0.1:1".parse().unwrap(), confirmed);
+    cursor.confirmed = confirmed;
+    cursor
+}
+
+/// A leader that has taken a newer leader's fence counts only its followers:
+/// what it writes from then on is in no fence's answer, so counting itself
+/// would let it acknowledge on one follower the fence never reached.
+#[test]
+fn a_deposed_leader_does_not_count_itself() {
+    let followers = [follower("b", 5), follower("c", 0)];
+    assert_eq!(held_at_generation(9, true, &followers, None), 5);
+    assert_eq!(held_at_generation(9, false, &followers, None), 0);
+    // Two followers are still a majority without it.
+    let followers = [follower("b", 5), follower("c", 3)];
+    assert_eq!(held_at_generation(9, false, &followers, None), 3);
+}
+
+/// A follower counts up to its own answer at this generation, not to where
+/// shipping resumes: a resume point is the follower's claim about a log
+/// nobody compared. An answer from before the follower took a newer fence
+/// still counts, which is safe because the fence's answer carries it; a
+/// follower that refused this leader since is halted and counts for nothing.
+#[test]
+fn an_answer_from_before_a_newer_fence_still_counts() {
+    let mut resumed = follower("b", 2);
+    resumed.next_offset = 8;
+    assert_eq!(held_at_generation(9, true, &[resumed], None), 2);
+
+    let mut fenced = follower("c", 6);
+    assert_eq!(held_at_generation(9, true, &[fenced.clone()], None), 6);
+    fenced.halted = Some(crate::Halt::Fenced);
+    assert_eq!(held_at_generation(9, true, &[fenced], None), 0);
+}
+
+/// A learner still copying is left out of the majority and its size, as
+/// under the report.
+#[test]
+fn a_learner_does_not_count_toward_follower_acks() {
+    let followers = [follower("b", 4), follower("d", 9)];
+    assert_eq!(held_at_generation(9, true, &followers, Some("d")), 4);
+    // Two voters, the leader and b: without the leader there is no majority.
+    assert_eq!(held_at_generation(9, false, &followers, Some("d")), 0);
+}
+
+/// Once the followers decide a shard's mark it releases without the lease
+/// for the rest of that generation, and a new generation starts over.
+#[test]
+fn a_mark_the_followers_decided_is_remembered_for_its_generation() {
+    let marks = QuorumMarks::new();
+    let shard = key("orders");
+    marks.publish(&shard, 1, 3);
+    assert!(!marks.decided_by_followers(&shard, 1));
+    marks.publish_by_followers(&shard, 1, 4);
+    assert!(marks.decided_by_followers(&shard, 1));
+    marks.publish(&shard, 1, 5);
+    assert!(marks.decided_by_followers(&shard, 1));
+    assert_eq!(marks.offset(&shard, 1), Some(5));
+    marks.publish(&shard, 2, 1);
+    assert!(!marks.decided_by_followers(&shard, 2));
+    assert!(!marks.decided_by_followers(&shard, 1));
+}
+
+/// Follower acks need `majority_ack` and `generation_start` both finalized.
+#[test]
+fn follower_acks_need_both_fleet_features() {
+    use felix_common::fleet::{FleetGate, GENERATION_START, MAJORITY_ACK};
+    let names = [GENERATION_START.name(), MAJORITY_ACK.name()];
+    let fleet = Arc::new(FleetGate::new(names));
+    let marks = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    fleet.observe([MAJORITY_ACK.name()]);
+    assert!(!marks.acks_by_followers());
+    fleet.observe([GENERATION_START.name()]);
+    assert!(marks.acks_by_followers());
+}

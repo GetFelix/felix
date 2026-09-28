@@ -47,7 +47,7 @@ That rejection is specific to *replicating records*. Making the control plane's 
 
 The control plane is off the data path for reads, subscribes, and `Leader` publishes: brokers read it in the background and serve from what they already hold.
 
-A **`Quorum`** publish is the exception, and a deliberate one. It is released by the shard's quorum mark, and the leader sends its replica report to the control plane *before* moving that mark, awaiting the answer — otherwise a leader could tell a client its record is on a majority while the control plane still knows nothing about which replica holds it, and a leader dying in that window is replaced by whichever replica scores highest, possibly the one without the record. So a quorum acknowledgement costs one control-plane round trip, and an unreachable control plane stalls `Quorum` publishes rather than acknowledging on a report that never landed.
+A **`Quorum`** publish is the exception, and a deliberate one. It is released by the shard's quorum mark, and the leader sends its replica report to the control plane *before* moving that mark, awaiting the answer — otherwise a leader could tell a client its record is on a majority while the control plane still knows nothing about which replica holds it, and a leader dying in that window is replaced by whichever replica scores highest, possibly the one without the record. So a quorum acknowledgement costs one control-plane round trip, and an unreachable control plane stalls `Quorum` publishes rather than acknowledging on a report that never landed. Once the fleet finalizes `majority_ack`, a `Quorum` stream drops that round trip: the followers' answers at the leader's generation decide the acknowledgement, the report goes out behind the mark for placement only, and every promoted leader fences a majority before it serves, which is what keeps an acknowledged record without the report.
 
 ### Control plane
 
@@ -262,7 +262,10 @@ rather than reopened empty, because a silently empty shard *is* the data loss.
 Once the fleet has finalized `generation_start`, every new leader, promoted or
 moved in, writes a generation-start record before it serves and counts a
 majority toward its quorum mark only from there, so it never acknowledges an
-inherited record that a later promotion could replace (Raft's Figure 8).
+inherited record that a later promotion could replace (Raft's Figure 8). Once
+it has also finalized `majority_ack`, a `Quorum` stream's writes need no lease
+at all: admission, commit and acknowledgement go by the followers' answers,
+and only `Leader` streams, caches and reads still stop when the lease lapses.
 
 **Delivery guarantees:**
 

@@ -17,7 +17,10 @@
 //! has to enter it -- publishes, forwarded writes, cache puts, counter adds,
 //! group acks -- so checking the lease here, against the clock, is what makes
 //! a lapsed lease refuse all of them rather than whichever paths remembered to
-//! ask. See "Leases" in `docs/replication-design.md`.
+//! ask. See "Leases" in `docs/replication-design.md`. The exception is a
+//! `Quorum` stream shard whose acknowledgements its followers decide: its
+//! writes get in without the lease, and only group state still asks for it
+//! ([`ShardFence::require_lease`]).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst};
@@ -116,11 +119,13 @@ impl ShardFence {
         // still sees this write in flight, so `quiesced` cannot miss a write
         // that got in; one that gets refused only delays it a moment.
         gate.in_flight.fetch_add(1, SeqCst);
-        let guard = FenceGuard { gate };
+        let guard = FenceGuard { gate, generation };
         if guard.gate.open_at.load(SeqCst) != generation {
             return Err(Fenced::NotServing);
         }
-        self.check_lease()?;
+        if !guard.lease_free() {
+            self.check_lease()?;
+        }
         Ok(guard)
     }
 
@@ -128,7 +133,17 @@ impl ShardFence {
     /// lapsed since it entered. The generation is not re-checked: a write in
     /// the fence is one a close waits for, which is what makes it safe to
     /// finish.
-    pub fn recheck(&self, _held: &FenceGuard) -> Result<(), Fenced> {
+    pub fn recheck(&self, held: &FenceGuard) -> Result<(), Fenced> {
+        if held.lease_free() {
+            return Ok(());
+        }
+        self.check_lease()
+    }
+
+    /// Refuse unless the lease is valid, whatever the shard's writes need.
+    /// Group state is acknowledged on the leader alone, so a deposed leader
+    /// taking it without the lease would lose it at the failover.
+    pub fn require_lease(&self) -> Result<(), Fenced> {
         self.check_lease()
     }
 
@@ -172,6 +187,12 @@ impl ShardFence {
 impl felix_replication::driver::WriteFence for ShardFence {
     fn quiesced(&self, key: &ShardKey) -> bool {
         ShardFence::quiesced(self, key)
+    }
+
+    fn serve_without_lease(&self, key: &ShardKey, generation: u64) {
+        if let Some(gate) = self.gates.read().get(key) {
+            gate.lease_free_at.store(generation, SeqCst);
+        }
     }
 }
 
@@ -244,6 +265,15 @@ impl std::error::Error for Fenced {}
 #[derive(Debug)]
 pub struct FenceGuard {
     gate: Arc<Gate>,
+    generation: u64,
+}
+
+impl FenceGuard {
+    /// Whether the write's generation acknowledges by its followers, so it
+    /// needs no lease.
+    pub(crate) fn lease_free(&self) -> bool {
+        self.gate.lease_free_at.load(SeqCst) == self.generation
+    }
 }
 
 impl Drop for FenceGuard {
@@ -258,6 +288,9 @@ impl Drop for FenceGuard {
 struct Gate {
     /// The generation writes must have been admitted at, or [`CLOSED`].
     open_at: AtomicU64,
+    /// The generation whose writes need no lease, or [`CLOSED`]: see
+    /// [`felix_replication::driver::WriteFence::serve_without_lease`].
+    lease_free_at: AtomicU64,
     in_flight: AtomicUsize,
     idle: Notify,
 }
@@ -266,6 +299,7 @@ impl Default for Gate {
     fn default() -> Self {
         Self {
             open_at: AtomicU64::new(CLOSED),
+            lease_free_at: AtomicU64::new(CLOSED),
             in_flight: AtomicUsize::new(0),
             idle: Notify::new(),
         }

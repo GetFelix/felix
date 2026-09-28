@@ -161,17 +161,17 @@ replaced, and no acknowledged record lost. What does keep it is the report:
 a leader acknowledges only on a report stored for its own generation, and
 promotion reads that generation's report.
 
-The lease still decides whether a deposed leader can write at all. The model
-has the design that takes the clock out of `Quorum` safety, which the broker
-does not implement yet: a promoted leader persists its generation on a
-majority and takes any tail ahead of its own before it serves, and a write is
-acknowledged once a majority holds it at the current generation. The fence is
-built, and a promoted leader uses it whenever every replica offers it; the
-acknowledgement still waits on the report and the lease. See
-[Fencing a promotion](#fencing-a-promotion).
+Once the fleet finalizes `majority_ack`, a `Quorum` stream shard takes the
+clock out of this altogether: a promoted leader fences a majority and takes
+any tail ahead of its own before it serves, and a write is acknowledged once a
+majority has answered that it holds it at the current generation, with no
+lease at admission, at the commit or at the acknowledgement, and no report.
+See [Acknowledging by the followers](#acknowledging-by-the-followers).
 `FelixShardFencedAck.cfg` keeps every acknowledged record with no margin on
 either side of the lease; `FelixShardUnfencedAck.cfg`, the same without the
-fence, loses one. See [`docs/formal/README.md`](formal/README.md).
+fence, loses one. See [`docs/formal/README.md`](formal/README.md). A `Leader`
+stream, a cache, and every shard in a fleet that has not finalized
+`majority_ack` keep the lease and the report exactly as above.
 
 The commit check refuses a publish even when it was acknowledged on enqueue
 (`ack_on_commit` off), since writing it would be the split brain. So admission
@@ -319,15 +319,15 @@ its replicas does not serve, where on the lease alone it would have opened;
 it retries every 200 ms. It could not have acknowledged a `Quorum` write
 without that majority anyway, but a `Leader` write it would have.
 
-**What this does not change yet.** Acknowledgements still come from the report
-and the lease (`AckByFollowers` is off), so a deposed leader's `Quorum` write
-is kept unacknowledged by the report gate as before; the fence adds the
-followers' refusal on top. A `Leader` stream acknowledges on the leader's own
-commit, which no follower sees, so its deposed leader is still kept out by the
-lease alone. Acknowledging on a majority at the leader's generation, and
-serving reads without a lease, are later changes.
+**What this does not change on its own.** Until the fleet finalizes
+`majority_ack`, acknowledgements still come from the report and the lease, so
+a deposed leader's `Quorum` write is kept unacknowledged by the report gate as
+before; the fence adds the followers' refusal on top.
 `FelixShardFencedPromotion.cfg` checks this configuration, the fence with the
-report and the lease, under the real margins.
+report and the lease, under the real margins. Once `majority_ack` is
+finalized, see [Acknowledging by the followers](#acknowledging-by-the-followers).
+A `Leader` stream acknowledges on the leader's own commit, which no follower
+sees, so its deposed leader is kept out by the lease alone either way.
 
 ### The generation-start record
 
@@ -395,6 +395,72 @@ rolled back. The control plane refuses the finalize while a serving broker
 lacks the feature and refuses such a broker after it, so every replica can
 decode the record before one is written. Finalizing is one-way: the first
 record rolls a log onto a v4 segment, which an older build refuses to open.
+
+### Acknowledging by the followers
+
+With `majority_ack` finalized, a `Quorum` stream shard acknowledges a write
+once a majority of its replica set, the leader included, has answered that it
+holds the write at the leader's generation. That is `AckByFollowers` in
+`docs/formal/FelixShard.tla`, `HeldAtGen` and `quorum::held_at_generation` in
+code. The report and the lease leave the write's path:
+
+- **Counting.** A follower counts up to the offset its own `ReplicateOk` at
+  this generation confirmed (`FollowerCursor::confirmed`), never to where it
+  asked shipping to resume, which nobody compared. A follower that refuses the
+  leader as fenced is halted and counts for nothing from then on; one that
+  answered before it took a newer leader's fence keeps counting, because that
+  fence's answer carries what it confirmed. The leader counts its own tail only
+  while its log has accepted no newer generation, read after the tail: once it
+  has answered a newer leader's fence, what it writes next is in no fence
+  answer. The generation-start rule still applies on top, so the mark moves
+  only once the majority reaches a record of the leader's own generation.
+- **The mark moves first.** The report still goes to the control plane every
+  pass, for placement and promotion, but it is sent behind the mark and
+  nothing waits for it to land.
+- **No lease on the write's path.** The shard's write fence admits and claims
+  its writes without the lease, and the acknowledgement is released without
+  re-reading it. Consumer-group state on the same shard is acknowledged on the
+  leader alone and still needs the lease.
+- **No promotion on the lease alone.** A promoted leader never opens a stream
+  shard on the lease: a replica that does not offer the fence, or cannot be
+  asked, is one that has not answered, and the shard waits for a majority that
+  has. An old leader no longer stops at its lease, so a new one must fence.
+
+Why this is safe without a clock: a newer leader serves only after a majority
+took its generation, and every majority the old leader could count shares a
+replica with it. That replica either confirmed the write before it took the
+fence, and its answer carries the write into the new leader's catch-up, or
+refuses the old leader from then on. So a leader cut off from the control
+plane goes on acknowledging what its followers hold, past its lease, until its
+successor's fence reaches them, and nothing it acknowledged is lost
+(`majority_ack` in the cluster tests). `FelixShardFencedAck.cfg` checks this
+with drifting clocks and no margin, `FelixShardUnfencedAck.cfg` loses a record
+without the fence, and `FelixShardFigure8FollowerAcksNoStartRecord.cfg` loses
+one without the own-generation rule.
+
+What still needs the lease, and why:
+
+- **`Leader` streams.** They acknowledge on the leader's own commit, which no
+  follower sees, so only the lease keeps a deposed leader from acknowledging.
+- **Caches and their counters.** A cache shard is never fenced on promotion,
+  so its successor is only as good as the report it was chosen from.
+- **Reads.** A `Quorum` read is still served only under a valid lease; serving
+  reads without it is a separate change.
+- **A fleet that has not finalized `majority_ack`,** or has not finalized
+  `generation_start`: both are needed.
+
+**Across versions: the `majority_ack` fleet feature.** A broker reports it only
+when it fences on promotion, so one running with `FELIX_INTERNAL_FENCE=false`
+never does and the feature cannot be finalized while it serves. Once
+finalized the control plane refuses such a broker, which is what lets an old
+leader stop honouring its lease: every broker that could be promoted fences.
+Nothing on the wire changes; the followers' answers are the `ReplicateOk`
+they already send. The runbook is on the upgrades page in the docs site.
+
+The cost is that a leader cut off from the control plane keeps taking writes
+until its successor's fence reaches its followers. Those writes then time out
+as unknown rather than being refused up front for the lease, and a client
+retries them against the new leader.
 
 ### The clock assumption, stated precisely
 
@@ -815,6 +881,14 @@ releases the acknowledgement — so the control plane cannot be behind a client.
 A report that does not land leaves the mark where it was, and the publish waits
 rather than being acknowledged on a report nobody received.
 
+With `majority_ack` finalized a `Quorum` stream shard drops this ordering: the
+report may trail the acknowledgement, and whichever replica is promoted fences
+a majority and takes the furthest log before it serves, which carries every
+acknowledged record ([Acknowledging by the followers](#acknowledging-by-the-followers)).
+Promotion still reads the report, and a report older than its freshness window
+still leaves the shard unplaced, so a leader cut off from the control plane for
+longer than that can only be replaced once it reports again.
+
 Both halves are checked. `docs/formal/FelixShard.tla` explores 5.38M distinct
 states of the implemented design without violating `AckedSurvive`, and
 `FelixShardNoReportOrder.cfg` — the same design with the ordering removed —
@@ -852,9 +926,9 @@ multi-instance work and not before.
 | --- | --- |
 | Leader fails | Lease lapses; a caught-up replica is promoted at `G+1` after the safety interval. Unavailable for at most `L + margin + promotion`. |
 | Leader fails before its first replica report | No report names a caught-up replica, so none is promoted. The shard is unavailable until that broker returns, or until an operator abandons the log. |
-| Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. |
+| Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. With `majority_ack` finalized, a `Quorum` stream keeps taking and acknowledging writes its followers hold until a promoted successor's fence reaches them; reads still stop with the lease. |
 | Leader partitioned from followers | `Quorum` writes fail — correctly, the majority is unreachable. `Leader` writes succeed and accumulate loss-window exposure, which the lag metric shows. |
-| Control plane unavailable | No new leases are granted. Existing leases run to expiry (5 to 11 s with the defaults), then shards go unavailable. Deliberate: granting without a functioning authority is how split-brain happens. When it comes back, brokers renew within about 3 s. The expiry sweep waits one expiry window after a restart, a Raft leader change, or regaining its store, so the outage does not mark the fleet down. |
+| Control plane unavailable | No new leases are granted. Existing leases run to expiry (5 to 11 s with the defaults), then shards go unavailable. Deliberate: granting without a functioning authority is how split-brain happens. When it comes back, brokers renew within about 3 s. The expiry sweep waits one expiry window after a restart, a Raft leader change, or regaining its store, so the outage does not mark the fleet down. With `majority_ack` finalized, `Quorum` streams go on acknowledging writes a majority of their replicas holds, since nothing on that path asks the control plane; `Leader` streams, caches and reads stop as described. |
 | Broker suspended past expiry | Refused at the durable-append check on waking. |
 | Stale broker after reassignment | Its lease has expired, so it refuses. This is what closes #239 by construction rather than by racing a watch. |
 
