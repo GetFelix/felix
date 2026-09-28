@@ -311,36 +311,18 @@ impl Publisher {
         sequence: u64,
     ) -> Result<()> {
         let worker = self.select_worker(tenant_id, namespace, stream)?;
-        let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
-        let request_id = worker.request_counter.fetch_add(1, Ordering::Relaxed);
         if self.supports_binary_idempotent() {
-            let bytes = felix_wire::binary::encode_idempotent_publish_batch_bytes(
-                request_id,
-                felix_wire::binary::ProducerSequence {
+            let response_rx = self
+                .enqueue_idempotent_binary(
+                    worker,
+                    tenant_id,
+                    namespace,
+                    stream,
+                    payloads,
                     producer_id,
                     sequence,
-                },
-                None,
-                tenant_id,
-                namespace,
-                stream,
-                &payloads,
-            )?;
-            let permit = self.inner.admission.acquire(bytes.len()).await?;
-            let (response_tx, response_rx) = oneshot::channel();
-            worker
-                .tx
-                .send(PublishRequest::BinaryBytes {
-                    bytes,
-                    item_count: payloads.len(),
-                    sample: false,
-                    ack: AckMode::PerBatch,
-                    request_id: Some(request_id),
-                    _permit: permit,
-                    response: response_tx,
-                })
-                .await
-                .context("enqueue idempotent binary batch")?;
+                )
+                .await?;
             let cancelled = CancelledAfterEnqueue::armed();
             let answer = response_rx
                 .await
@@ -348,6 +330,8 @@ impl Publisher {
             cancelled.answered();
             return answer.map(|_| ());
         }
+        let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
+        let request_id = worker.request_counter.fetch_add(1, Ordering::Relaxed);
         let message = Message::PublishIdempotent {
             tenant_id: tenant_id.to_string(),
             namespace: namespace.to_string(),
@@ -361,6 +345,160 @@ impl Publisher {
         self.send_message(worker, message, AckMode::PerBatch, Some(request_id))
             .await
             .map(|_| ())
+    }
+
+    /// Consecutive batches under consecutive sequences from `first_sequence`,
+    /// with up to the stream's window unanswered at once.
+    ///
+    /// Returns how many batches, from the first, were acknowledged, and the
+    /// first failure in sequence order if there was one. Everything from that
+    /// batch on is unsettled: it may or may not have landed. All of them go on
+    /// one stream, whose answers come back in the order it carried them, so
+    /// the failure reported is the earliest one and not a consequence of it.
+    ///
+    /// Without a window, or against a broker that cannot take a binary
+    /// idempotent batch, this sends one batch at a time.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn publish_idempotent_pipelined(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        batches: &[Vec<Vec<u8>>],
+        producer_id: u64,
+        first_sequence: u64,
+    ) -> (usize, Result<()>) {
+        let worker = match self.select_worker(tenant_id, namespace, stream) {
+            Ok(worker) => worker,
+            Err(err) => return (0, Err(err)),
+        };
+        let window = if self.supports_binary_idempotent() {
+            (worker.publish_window as usize).min(IDEMPOTENT_PIPELINE_MAX)
+        } else {
+            0
+        };
+        if window <= 1 {
+            for (index, payloads) in batches.iter().enumerate() {
+                if let Err(err) = self
+                    .publish_idempotent_batch(
+                        tenant_id,
+                        namespace,
+                        stream,
+                        payloads.clone(),
+                        producer_id,
+                        first_sequence + index as u64,
+                    )
+                    .await
+                {
+                    return (index, Err(err));
+                }
+            }
+            return (batches.len(), Ok(()));
+        }
+        let mut in_flight = std::collections::VecDeque::with_capacity(window);
+        let mut sent = 0;
+        let mut acked = 0;
+        loop {
+            while sent < batches.len() && in_flight.len() < window {
+                match self
+                    .enqueue_idempotent_binary(
+                        worker,
+                        tenant_id,
+                        namespace,
+                        stream,
+                        batches[sent].clone(),
+                        producer_id,
+                        first_sequence + sent as u64,
+                    )
+                    .await
+                {
+                    Ok(response_rx) => {
+                        in_flight.push_back(response_rx);
+                        sent += 1;
+                    }
+                    // Nothing from here on went out. What already did is
+                    // settled first, in order, so an earlier failure wins.
+                    Err(err) => {
+                        while let Some(response_rx) = in_flight.pop_front() {
+                            match response_rx.await {
+                                Ok(Ok(_)) => acked += 1,
+                                Ok(Err(first)) => return (acked, Err(first)),
+                                Err(_) => {
+                                    return (
+                                        acked,
+                                        Err(anyhow::anyhow!(
+                                            "idempotent binary batch response dropped"
+                                        )),
+                                    );
+                                }
+                            }
+                        }
+                        return (acked, Err(err));
+                    }
+                }
+            }
+            let Some(response_rx) = in_flight.pop_front() else {
+                return (acked, Ok(()));
+            };
+            let cancelled = CancelledAfterEnqueue::armed();
+            let answer = response_rx.await;
+            cancelled.answered();
+            match answer {
+                Ok(Ok(_)) => acked += 1,
+                Ok(Err(err)) => return (acked, Err(err)),
+                Err(_) => {
+                    return (
+                        acked,
+                        Err(anyhow::anyhow!("idempotent binary batch response dropped")),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Hand one binary idempotent batch to `worker`, returning where its
+    /// answer will arrive.
+    #[allow(clippy::too_many_arguments)]
+    async fn enqueue_idempotent_binary(
+        &self,
+        worker: &PublishWorker,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        payloads: Vec<Vec<u8>>,
+        producer_id: u64,
+        sequence: u64,
+    ) -> Result<oneshot::Receiver<AckOutcome>> {
+        let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
+        let request_id = worker.request_counter.fetch_add(1, Ordering::Relaxed);
+        let bytes = felix_wire::binary::encode_idempotent_publish_batch_bytes(
+            request_id,
+            felix_wire::binary::ProducerSequence {
+                producer_id,
+                sequence,
+            },
+            None,
+            tenant_id,
+            namespace,
+            stream,
+            &payloads,
+        )?;
+        let permit = self.inner.admission.acquire(bytes.len()).await?;
+        let (response_tx, response_rx) = oneshot::channel();
+        worker
+            .tx
+            .send(PublishRequest::BinaryBytes {
+                bytes,
+                item_count: payloads.len(),
+                sample: false,
+                ack: AckMode::PerBatch,
+                request_id: Some(request_id),
+                _permit: permit,
+                response: response_tx,
+            })
+            .await
+            .context("enqueue idempotent binary batch")?;
+        Ok(response_rx)
     }
 
     /// Close the publish streams once everything already queued has been
@@ -565,6 +703,13 @@ impl PublisherInner {
 /// The owner travels back so `ClusterClient` can send the next batch for this
 /// shard straight there. A forward is correct but costs a decrypt, a
 /// re-encrypt and a decrypt, roughly half the throughput per core (#536).
+/// Most idempotent batches one producer keeps unanswered on a stream.
+///
+/// A shard's leader remembers the last 64 sequences of each producer, and a
+/// batch re-sent after a failure has to find the whole unsettled run still
+/// remembered, or it is refused as expired instead of answered as a duplicate.
+pub(crate) const IDEMPOTENT_PIPELINE_MAX: usize = 64;
+
 pub(crate) type AckOutcome = Result<Option<felix_wire::binary::PublishOwner>>;
 
 #[cfg(test)]

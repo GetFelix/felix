@@ -736,6 +736,25 @@ pub_conn_inflight_bytes: 16777216
 - Must be smaller than `pub_inflight_bytes` to have any effect; setting it equal to or above `pub_inflight_bytes` means a single connection can once again claim the whole shared budget.
 - Roughly `pub_inflight_bytes / N` for the expected number of concurrently active connections gives each a fair share while still allowing the shared budget to absorb bursts from fewer connections.
 
+### `publish_window`
+
+**Description**: The most acknowledged publishes one connection may have unanswered when its client pipelines them. Granted to a client that offers `FEATURE_PUBLISH_PIPELINE`, in `AuthOk.publish_window`. The broker answers that client's publishes on each stream in the order they were sent, and stops reading the connection's publishes while this many are outstanding, so the client is slowed by QUIC flow control instead of being refused.
+
+**Type**: `u32`
+
+**Default**: `256`
+
+**Environment**: `FELIX_BROKER_PUBLISH_WINDOW`
+
+**Example**:
+```yaml
+publish_window: 256
+```
+
+**Tuning**:
+- `0` turns pipelining off; every client gets completion-order acks and no window.
+- An idempotent producer keeps at most 64 batches in flight whatever this says, because a leader remembers 64 sequences per producer and a re-send has to find its batch remembered.
+
 ### `pub_ingress_wait`
 
 **Description**: When true, un-acked (fire-and-forget) publishes wait — bounded by `publish_queue_wait_timeout_ms` — for ingress capacity instead of being shed when the publish queue or byte budget is full.

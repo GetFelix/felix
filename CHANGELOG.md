@@ -77,6 +77,15 @@ for what the current release actually guarantees.
 - **The Helm chart runs brokers per zone.** `broker.zones` renders one broker
   StatefulSet per zone, pinned to its nodes and setting `FELIX_NODE_ZONE`, with
   one disruption budget across all of them.
+- **Pipelined publishes.** A client that offers `FEATURE_PUBLISH_PIPELINE` is
+  granted a per-connection `publish_window` in `auth_ok`
+  (`FELIX_BROKER_PUBLISH_WINDOW`, default 256, `0` to turn off). The broker
+  answers that client's acked publishes on each stream in request order and
+  stops reading its publishes while the window is full. The Rust client offers
+  it and caps each connection at the window, and
+  `IdempotentProducer::publish_batches` keeps up to 64 batches in flight,
+  re-sending from the first unanswered one after a failure. Older clients see
+  no change.
 - **Connection-fault conformance scenarios.** A catalogue scenario can carry a
   `step` that drops, resets or stalls the client's link mid-publish or
   mid-subscribe. `felix_conformance::link` is the UDP interposer that does it;

@@ -25,7 +25,7 @@ use std::task::{Context as TaskContext, Poll, Waker};
 use anyhow::{Context, Result};
 use felix_transport::{QuicClient, QuicConnection};
 use quinn::{RecvStream, SendStream};
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 use tracing::debug;
 
 use super::{
@@ -226,6 +226,7 @@ impl NodeConnections {
             connection,
             router,
             streams: AtomicUsize::new(0),
+            publish_window: std::sync::OnceLock::new(),
         });
         let mut state = self.state.lock().expect("node state");
         if !state.listeners.contains(&target) {
@@ -280,6 +281,17 @@ impl StreamLease {
         &self.link.router
     }
 
+    /// The connection's publish window, sized by the first stream to ask.
+    /// Every stream on a connection negotiates with the same broker, so they
+    /// all ask for the same size.
+    pub(crate) fn publish_window(&self, size: u32) -> Arc<Semaphore> {
+        Arc::clone(
+            self.link
+                .publish_window
+                .get_or_init(|| Arc::new(Semaphore::new(size as usize))),
+        )
+    }
+
     /// The connection's position in the set, stable while it lives and below
     /// the ceiling. Used to label per-connection metrics.
     pub(crate) fn slot(&self) -> usize {
@@ -315,6 +327,10 @@ struct Link {
     connection: QuicConnection,
     router: mpsc::Sender<EventRouterCommand>,
     streams: AtomicUsize,
+    /// One permit per acknowledged publish the connection has unanswered,
+    /// shared by every publish stream on it, because the broker counts the
+    /// window per connection.
+    publish_window: std::sync::OnceLock<Arc<Semaphore>>,
 }
 
 impl Link {

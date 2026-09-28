@@ -30,6 +30,7 @@
 //! - `admission`: byte-budget admission control and the subscription cap.
 //! - `ingress`: bounded enqueue into the scheduler, and depth accounting.
 //! - `ack`: ack envelopes, waiter protocol, and the ack timeout window.
+//! - `order`: request-order answers and the publish window for a pipelining stream.
 //! - `route`: whether a publish is served here, forwarded, or refused.
 //! - `stream_cache`: the per-connection cache of resolved stream handles.
 //! - `control`: acked publish handlers on the bi-directional control stream.
@@ -44,6 +45,7 @@ mod ack;
 mod admission;
 mod control;
 mod ingress;
+mod order;
 mod route;
 mod scheduler;
 mod stream_cache;
@@ -60,6 +62,7 @@ pub(crate) use control::{
     handle_publish_batch_message, handle_publish_message, sequence_reuse,
 };
 pub(crate) use ingress::{PublishTarget, decrement_depth, reset_local_depth_only};
+pub(crate) use order::AckOrder;
 #[cfg(test)]
 pub(crate) use scheduler::test_channel;
 pub(crate) use stream_cache::StreamHandleCache;
@@ -75,7 +78,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
-use tokio::sync::oneshot;
+use tokio::sync::{Semaphore, oneshot};
 
 use super::subscribe::WriterLaneManager;
 use crate::serving::quic::preauth::PreAuthGate;
@@ -155,6 +158,10 @@ pub(crate) struct PublishContext {
     /// Per-tenant publish quotas. Shared by every connection and listener of
     /// the broker; see `serve_with_shutdown`.
     pub(crate) tenant_rates: Arc<crate::serving::limits::TenantRates>,
+    /// This connection's publish window: one permit per acknowledged publish
+    /// a pipelining stream has unanswered. `None` when the broker does not
+    /// pipeline (`publish_window = 0`).
+    pub(crate) publish_window: Option<Arc<Semaphore>>,
 }
 
 impl PublishContext {
@@ -176,6 +183,8 @@ impl PublishContext {
             subscriptions: Arc::new(SubscriptionLimiter::new()),
             lane_manager: WriterLaneManager::new(config),
             preauth: Arc::new(PreAuthGate::new(config)),
+            publish_window: (config.publish_window > 0)
+                .then(|| Arc::new(Semaphore::new(config.publish_window as usize))),
             ..self.clone()
         }
     }

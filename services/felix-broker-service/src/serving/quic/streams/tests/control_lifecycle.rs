@@ -107,6 +107,7 @@ async fn control_loop_handles_publish_and_cache_requests() -> Result<()> {
         Duration::from_millis(10),
         &mut scratch,
         Default::default(),
+        Default::default(),
     )
     .await?;
     assert!(!result);
@@ -207,6 +208,7 @@ async fn control_loop_handles_binary_and_decode_error() -> Result<()> {
             Duration::from_millis(10),
             &mut scratch,
             Default::default(),
+            Default::default(),
         )
         .await
         .is_err()
@@ -277,6 +279,7 @@ async fn control_loop_handles_cancel_and_graceful_close() -> Result<()> {
         Duration::from_millis(10),
         &mut scratch,
         Default::default(),
+        Default::default(),
     )
     .await?;
     assert!(!result);
@@ -342,6 +345,7 @@ async fn control_loop_handles_cancel_toggle_and_continues() -> Result<()> {
         Duration::from_millis(10),
         &mut scratch,
         Default::default(),
+        Default::default(),
     )
     .await?;
     assert!(result);
@@ -400,6 +404,7 @@ async fn control_loop_pre_canceled_exits() -> Result<()> {
         ack_waiter_tx,
         Duration::from_millis(10),
         &mut scratch,
+        Default::default(),
         Default::default(),
     )
     .await?;
@@ -466,6 +471,7 @@ async fn control_loop_cancel_changed_breaks() -> Result<()> {
         ack_waiter_tx,
         Duration::from_millis(10),
         &mut scratch,
+        Default::default(),
         Default::default(),
     )
     .await?;
@@ -534,6 +540,7 @@ async fn control_loop_cancel_changed_continues() -> Result<()> {
         ack_waiter_tx,
         Duration::from_millis(10),
         &mut scratch,
+        Default::default(),
         Default::default(),
     )
     .await?;
@@ -606,6 +613,7 @@ async fn control_loop_subscribe_done_true() -> Result<()> {
         Duration::from_millis(10),
         &mut scratch,
         Default::default(),
+        Default::default(),
     )
     .await?;
     assert!(result);
@@ -667,6 +675,7 @@ async fn control_loop_error_message_returns_false() -> Result<()> {
         ack_waiter_tx,
         Duration::from_millis(10),
         &mut scratch,
+        Default::default(),
         Default::default(),
     )
     .await?;

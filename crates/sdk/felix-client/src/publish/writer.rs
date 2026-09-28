@@ -6,6 +6,7 @@
 //! are resolved by that same task.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 #[cfg(feature = "telemetry")]
 use std::sync::atomic::Ordering;
@@ -14,7 +15,7 @@ use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
 use felix_wire::{AckMode, FrameHeader, Message};
 use quinn::{RecvStream, SendStream};
-use tokio::sync::{OwnedSemaphorePermit, mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 
 use super::AckOutcome;
 use super::ack::read_ack;
@@ -30,6 +31,9 @@ pub(crate) struct PublishWorker {
     pub(crate) request_counter: AtomicU64,
     /// Frame-flag bits the broker advertised for this stream during auth.
     pub(crate) server_flags: u16,
+    /// The publish window the broker granted this stream's connection, with
+    /// answers in request order. `0` when it did not.
+    pub(crate) publish_window: u32,
 }
 
 pub(crate) enum PublishRequest {
@@ -65,6 +69,8 @@ struct PendingAck {
     request_id: u64,
     response: oneshot::Sender<AckOutcome>,
     _permit: OwnedSemaphorePermit,
+    /// This publish's slot in the connection's window, freed with the answer.
+    _window: Option<OwnedSemaphorePermit>,
     // Read only by the telemetry counters in the ack reader.
     #[cfg_attr(not(feature = "telemetry"), allow(dead_code))]
     batch_count: u64,
@@ -78,6 +84,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
     mut rx: mpsc::Receiver<PublishRequest>,
     _chunk_bytes: usize,
     max_frame_bytes: usize,
+    window: Option<Arc<Semaphore>>,
 ) -> Result<()> {
     // Single writer: serialize publish requests over one bi-directional
     // stream. Acked publishes pipeline — written back to back, their acks
@@ -93,7 +100,8 @@ pub(crate) async fn run_publisher_writer_with_limit(
     //
     // Depth is bounded by the publisher's in-flight byte budget
     // (`publish_inflight_bytes`), since each entry holds its admission permit
-    // until the broker answers.
+    // until the broker answers, and by the connection's publish window when
+    // the broker granted one.
     let mut ack_scratch = BytesMut::with_capacity(64 * 1024);
     let mut json_scratch = BytesMut::with_capacity(64 * 1024);
     let mut pending: VecDeque<PendingAck> = VecDeque::new();
@@ -125,9 +133,9 @@ pub(crate) async fn run_publisher_writer_with_limit(
     // completes, not in the order they were written, so an answer goes to the
     // request it names. One naming no outstanding request means the stream
     // cannot be trusted, and neither can anything waiting on it.
-    macro_rules! resolve_pending {
+    macro_rules! resolve_one {
         () => {{
-            while !pending.is_empty() {
+            {
                 match read_ack(&mut recv, &mut ack_scratch, max_frame_bytes).await {
                     Ok((answered, answer)) => {
                         let Some(entry) = pending
@@ -169,6 +177,13 @@ pub(crate) async fn run_publisher_writer_with_limit(
             }
         }};
     }
+    macro_rules! resolve_pending {
+        () => {{
+            while !pending.is_empty() {
+                resolve_one!();
+            }
+        }};
+    }
     macro_rules! submit_pending {
         ($pending:expr) => {{
             pending.push_back($pending);
@@ -196,6 +211,25 @@ pub(crate) async fn run_publisher_writer_with_limit(
                     break;
                 }
             }
+        };
+        // A slot in the connection's window before an acked publish goes out.
+        // While none is free, settle this stream's own answers: they may be
+        // what holds the slots, and waiting on them unread would deadlock.
+        let needs_ack = match &request {
+            PublishRequest::Message { ack, .. } | PublishRequest::BinaryBytes { ack, .. } => {
+                *ack != AckMode::None
+            }
+            PublishRequest::Finish { .. } => false,
+        };
+        let mut window_permit = match window.as_ref().filter(|_| needs_ack) {
+            None => None,
+            Some(window) => loop {
+                match Arc::clone(window).try_acquire_owned() {
+                    Ok(permit) => break Some(permit),
+                    Err(_) if !pending.is_empty() => resolve_one!(),
+                    Err(_) => break Arc::clone(window).acquire_owned().await.ok(),
+                }
+            },
         };
         match request {
             PublishRequest::Message {
@@ -323,6 +357,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                                     request_id,
                                     response,
                                     _permit,
+                                    _window: window_permit.take(),
                                     batch_count: 1,
                                     item_count,
                                 });
@@ -404,6 +439,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                                     request_id,
                                     response,
                                     _permit,
+                                    _window: window_permit.take(),
                                     batch_count,
                                     item_count,
                                 });
@@ -491,6 +527,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                                 request_id,
                                 response,
                                 _permit,
+                                _window: window_permit.take(),
                                 batch_count: 1,
                                 item_count: item_count as u64,
                             });
@@ -565,6 +602,7 @@ pub(crate) async fn run_publisher_writer(
         rx,
         _chunk_bytes,
         crate::config::DEFAULT_MAX_FRAME_BYTES,
+        None,
     )
     .await
 }

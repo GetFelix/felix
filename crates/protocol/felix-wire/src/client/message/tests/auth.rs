@@ -20,6 +20,7 @@ fn an_auth_ok_without_features_reads_as_supporting_none() {
             server_flags: 7,
             server_features: None,
             listener_ports: None,
+            publish_window: None,
         }
     );
 }
@@ -32,6 +33,7 @@ fn an_auth_ok_advertising_nothing_omits_the_field() {
         server_flags: 7,
         server_features: None,
         listener_ports: None,
+        publish_window: None,
     }
     .encode()
     .expect("encode");
@@ -55,6 +57,7 @@ fn a_single_listener_auth_ok_is_unchanged_on_the_wire() {
         server_flags: 7,
         server_features: Some(crate::FEATURE_TOPOLOGY),
         listener_ports: None,
+        publish_window: None,
     }
     .encode()
     .expect("encode");
@@ -68,6 +71,7 @@ fn an_auth_ok_carries_the_listener_ports_it_binds() {
         server_flags: felix_wire_flags(),
         server_features: Some(crate::FEATURE_TOPOLOGY),
         listener_ports: Some(vec![5000, 5001, 5002, 5003]),
+        publish_window: None,
     };
     let decoded = Message::decode(message.encode().expect("encode")).expect("decode");
     assert_eq!(decoded, message);
@@ -79,6 +83,7 @@ fn an_auth_ok_carries_the_features_it_advertises() {
         server_flags: felix_wire_flags(),
         server_features: Some(crate::FEATURE_TOPOLOGY),
         listener_ports: None,
+        publish_window: None,
     };
     let decoded = Message::decode(message.encode().expect("encode")).expect("decode");
     assert_eq!(decoded, message);
@@ -127,4 +132,34 @@ fn an_auth_advertising_nothing_omits_the_field() {
         !json.contains("client_features"),
         "an absent feature set must not appear on the wire: {json}"
     );
+}
+
+#[test]
+fn an_auth_ok_without_a_publish_window_is_the_frame_old_clients_read() {
+    let json = String::from_utf8(
+        Message::AuthOk {
+            server_flags: 7,
+            server_features: Some(crate::FEATURE_TOPOLOGY),
+            listener_ports: None,
+            publish_window: None,
+        }
+        .encode()
+        .expect("encode")
+        .payload
+        .to_vec(),
+    )
+    .expect("utf8");
+    assert!(!json.contains("publish_window"), "{json}");
+}
+
+#[test]
+fn an_auth_ok_carries_the_publish_window_it_grants() {
+    let message = Message::AuthOk {
+        server_flags: felix_wire_flags(),
+        server_features: Some(crate::FEATURE_PUBLISH_PIPELINE),
+        listener_ports: None,
+        publish_window: Some(128),
+    };
+    let decoded = Message::decode(message.encode().expect("encode")).expect("decode");
+    assert_eq!(decoded, message);
 }
