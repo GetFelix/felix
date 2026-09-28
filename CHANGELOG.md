@@ -79,6 +79,8 @@ for what the current release actually guarantees.
   only when every replica offers both capabilities; otherwise the shard opens
   on the lease as before. `felix_broker_promotions_opened_total{path}` says
   which. Acknowledgements are unchanged: still the report and the lease.
+  Each peer connection opens one more stream, for the handshake and the
+  fence's requests only, so they never wait behind a forwarded publish.
 - **Replicas answer a promoted leader's fence.** A new peer message, `Fence`,
   makes a replica persist the leader's generation before it answers with its
   log end, commit offset and last record's generation, and refuse every older

@@ -305,7 +305,8 @@ impl PeerPool {
             state.evict_idle(self.config.idle_timeout);
             let live = state.live_connections();
             connections += live;
-            streams += live * self.config.streams_per_conn;
+            // Each connection's control stream too.
+            streams += live * (self.config.streams_per_conn + 1);
             if live == 0 && !state.in_backoff() {
                 idle_peers.push(id);
             }
