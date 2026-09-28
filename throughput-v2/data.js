@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790551904937,
+  "lastUpdate": 1790553654236,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18408,6 +18408,58 @@ window.BENCHMARK_DATA = {
             "range": "5134.13",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1014042.27\nmean: 1011543.75\nstdev: 5134.13\ncv: 0.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "64eaac35c184e58a2d5e48a93aebe27069475248",
+          "message": "spec(replication): model the fence and majority ack; lease-free config passes, no-fence twin fails (#780)\n\nFelixShard.tla gains the design that takes the clock out of Quorum safety:\na promoted leader persists its generation on a majority and takes any tail\nahead of its own before it serves (FenceOnPromote), and a write is\nacknowledged once a majority holds it at the leader's generation\n(AckByFollowers), with no lease or report in the condition.\n\n- FelixShardFencedAck.cfg passes with no margin on either side of the lease,\n  drifting clocks and no commit-time lease check; FelixShardUnfencedAck.cfg,\n  the same without the fence, violates AckedHeldByLeader at depth 11.\n- FelixShardRealMarginsLease.cfg checks the code's margins with no writes;\n  FelixShardRealMargins.cfg now carries a Quorum write across a promotion\n  under the same margins and drift.\n- FelixShardAckWithoutLease.cfg drops the lease check at ack release and\n  keeps every acknowledged record: the report, not the lease, is what does.\n- TypeOK covers the fence variables, and a halted broker does not answer a\n  fence.\n- check_tla.sh prints each configuration's search depth.\n\nState counts in the formal README, the replication design and the docs-site\nare the ones measured on this spec.",
+          "timestamp": "2026-09-27T16:57:19-07:00",
+          "tree_id": "1f91c876f680667435cb4afab71bee13f65c264a",
+          "url": "https://github.com/gabloe/felix/commit/64eaac35c184e58a2d5e48a93aebe27069475248"
+        },
+        "date": 1790553653528,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 367655.87,
+            "range": "15674.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 367655.87\nmean: 374671.78\nstdev: 15674.21\ncv: 4.18%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 367655.87,
+            "range": "15674.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 367655.87\nmean: 374671.78\nstdev: 15674.21\ncv: 4.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93685.96,
+            "range": "4462.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93685.96\nmean: 91670.16\nstdev: 4462.47\ncv: 4.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 936859.59,
+            "range": "44624.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 936859.59\nmean: 916701.57\nstdev: 44624.69\ncv: 4.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
