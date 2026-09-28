@@ -627,6 +627,12 @@ for what the current release actually guarantees.
 
 ### Fixed
 
+- **A cache write the store refused is no longer acknowledged.** A put or
+  delete whose log write failed (a failed fsync poisons the shard) was
+  logged and answered as a success, so a `Quorum` cache could acknowledge
+  writes that later reads did not return. It is now a storage error, and a
+  failed read is an error rather than a miss. `felix_storage::StorageApi`'s
+  `put`, `get` and `delete` return `Result`.
 - **A Raft leader elected after a clock step back expires a dead broker in
   one window.** The leader judged a broker it had not heard from by the
   log's stamp when that was later than its own start, so a stamp left in the

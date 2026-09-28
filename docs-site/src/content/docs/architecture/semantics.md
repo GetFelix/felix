@@ -160,8 +160,12 @@ lease for writes. Once `lease_free_reads` is finalized too, a get or counter
 get on a replicated `Quorum` cache is linearizable without the lease: after it
 takes its value the broker sends the promotion fence at its own generation to
 the shard's replicas, and answers only once a majority confirms no newer
-leader has reached it. A leader cut off from its replicas refuses the read at
-once; one cut off only from the control plane keeps serving it. Stream readers
+leader has reached it. A cache shard is not fenced on promotion, but a replica
+records a new leader's generation before it stores any of its writes, which is
+all the round needs. A leader cut off from its replicas refuses the read at
+once; one cut off only from the control plane keeps serving it. A cache write
+the owner's storage refuses is answered as an error, never acknowledged, so a
+read cannot miss a write it was told succeeded. Stream readers
 and watches keep the lease. See the upgrades page for the runbooks.
 :::
 

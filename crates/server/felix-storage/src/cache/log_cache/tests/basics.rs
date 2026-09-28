@@ -7,10 +7,11 @@ async fn a_value_reads_back() {
 
     cache
         .put(T, NS, C, 0, "k", Bytes::from_static(b"v"), None)
-        .await;
+        .await
+        .unwrap();
 
     assert_eq!(
-        cache.get(T, NS, C, 0, "k").await.as_deref(),
+        cache.get(T, NS, C, 0, "k").await.unwrap().as_deref(),
         Some(&b"v"[..])
     );
 }
@@ -19,7 +20,7 @@ async fn a_value_reads_back() {
 async fn a_missing_key_reads_as_absent() {
     let dir = tempfile::tempdir().expect("tempdir");
     let cache = cache(dir.path()).await;
-    assert!(cache.get(T, NS, C, 0, "nothing").await.is_none());
+    assert!(cache.get(T, NS, C, 0, "nothing").await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -29,13 +30,15 @@ async fn a_later_write_wins() {
 
     cache
         .put(T, NS, C, 0, "k", Bytes::from_static(b"first"), None)
-        .await;
+        .await
+        .unwrap();
     cache
         .put(T, NS, C, 0, "k", Bytes::from_static(b"second"), None)
-        .await;
+        .await
+        .unwrap();
 
     assert_eq!(
-        cache.get(T, NS, C, 0, "k").await.as_deref(),
+        cache.get(T, NS, C, 0, "k").await.unwrap().as_deref(),
         Some(&b"second"[..]),
         "the log is append-only, so the *newest* record has to win",
     );
@@ -48,12 +51,13 @@ async fn a_delete_hides_the_value_and_returns_it() {
 
     cache
         .put(T, NS, C, 0, "k", Bytes::from_static(b"v"), None)
-        .await;
+        .await
+        .unwrap();
     assert_eq!(
-        cache.delete(T, NS, C, 0, "k").await.as_deref(),
+        cache.delete(T, NS, C, 0, "k").await.unwrap().as_deref(),
         Some(&b"v"[..])
     );
-    assert!(cache.get(T, NS, C, 0, "k").await.is_none());
+    assert!(cache.get(T, NS, C, 0, "k").await.unwrap().is_none());
 }
 
 /// Caches are scoped, so the same key in two of them is two entries.
@@ -64,17 +68,19 @@ async fn caches_do_not_share_keys() {
 
     cache
         .put(T, NS, "a", 0, "k", Bytes::from_static(b"a"), None)
-        .await;
+        .await
+        .unwrap();
     cache
         .put(T, NS, "b", 0, "k", Bytes::from_static(b"b"), None)
-        .await;
+        .await
+        .unwrap();
 
     assert_eq!(
-        cache.get(T, NS, "a", 0, "k").await.as_deref(),
+        cache.get(T, NS, "a", 0, "k").await.unwrap().as_deref(),
         Some(&b"a"[..])
     );
     assert_eq!(
-        cache.get(T, NS, "b", 0, "k").await.as_deref(),
+        cache.get(T, NS, "b", 0, "k").await.unwrap().as_deref(),
         Some(&b"b"[..])
     );
 }
@@ -87,17 +93,19 @@ async fn tenants_do_not_share_keys() {
 
     cache
         .put("t1", NS, C, 0, "k", Bytes::from_static(b"one"), None)
-        .await;
+        .await
+        .unwrap();
     cache
         .put("t2", NS, C, 0, "k", Bytes::from_static(b"two"), None)
-        .await;
+        .await
+        .unwrap();
 
     assert_eq!(
-        cache.get("t1", NS, C, 0, "k").await.as_deref(),
+        cache.get("t1", NS, C, 0, "k").await.unwrap().as_deref(),
         Some(&b"one"[..])
     );
     assert_eq!(
-        cache.get("t2", NS, C, 0, "k").await.as_deref(),
+        cache.get("t2", NS, C, 0, "k").await.unwrap().as_deref(),
         Some(&b"two"[..])
     );
 }
@@ -112,25 +120,28 @@ async fn a_cache_survives_a_restart() {
         let cache = cache(dir.path()).await;
         cache
             .put(T, NS, C, 0, "a", Bytes::from_static(b"1"), None)
-            .await;
+            .await
+            .unwrap();
         cache
             .put(T, NS, C, 0, "b", Bytes::from_static(b"2"), None)
-            .await;
+            .await
+            .unwrap();
         cache
             .put(T, NS, C, 0, "a", Bytes::from_static(b"3"), None)
-            .await;
-        cache.delete(T, NS, C, 0, "b").await;
+            .await
+            .unwrap();
+        cache.delete(T, NS, C, 0, "b").await.unwrap();
         cache.shutdown().await.expect("shutdown");
     }
 
     let reopened = cache(dir.path()).await;
     assert_eq!(
-        reopened.get(T, NS, C, 0, "a").await.as_deref(),
+        reopened.get(T, NS, C, 0, "a").await.unwrap().as_deref(),
         Some(&b"3"[..]),
         "the newest value for a key has to survive, not the first",
     );
     assert!(
-        reopened.get(T, NS, C, 0, "b").await.is_none(),
+        reopened.get(T, NS, C, 0, "b").await.unwrap().is_none(),
         "a delete has to survive too, or a restart resurrects deleted keys",
     );
 }

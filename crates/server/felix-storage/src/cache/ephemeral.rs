@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::RwLock;
 
+use crate::Result;
 use crate::cache::StorageApi;
 
 /// Simple in-memory cache with optional TTL expiry.
@@ -79,7 +80,7 @@ impl StorageApi for EphemeralCache {
         key: &str,
         value: Bytes,
         ttl: Option<Duration>,
-    ) {
+    ) -> Result<()> {
         // Compute expiry once so reads only compare Instants.
         let expires_at = ttl.map(|ttl| Instant::now() + ttl);
         let entry = CacheEntry { value, expires_at };
@@ -94,6 +95,7 @@ impl StorageApi for EphemeralCache {
                 guard.remove(&key);
             }
         }
+        Ok(())
     }
 
     async fn get(
@@ -103,7 +105,7 @@ impl StorageApi for EphemeralCache {
         cache: &str,
         _shard: u32,
         key: &str,
-    ) -> Option<Bytes> {
+    ) -> Result<Option<Bytes>> {
         // Take a write lock so we can evict expired entries.
         let mut guard: tokio::sync::RwLockWriteGuard<'_, HashMap<CacheKey, CacheEntry>> =
             self.inner.write().await;
@@ -113,12 +115,12 @@ impl StorageApi for EphemeralCache {
                 // Lazy-expire on read to avoid a background sweeper.
                 if Instant::now() >= expires_at {
                     guard.remove(&scoped_key);
-                    return None;
+                    return Ok(None);
                 }
             }
-            return Some(entry.value.clone());
+            return Ok(Some(entry.value.clone()));
         }
-        None
+        Ok(None)
     }
 
     async fn delete(
@@ -128,13 +130,14 @@ impl StorageApi for EphemeralCache {
         cache: &str,
         _shard: u32,
         key: &str,
-    ) -> Option<Bytes> {
+    ) -> Result<Option<Bytes>> {
         // Remove and return the stored value, if any.
-        self.inner
+        Ok(self
+            .inner
             .write()
             .await
             .remove(&CacheKey::new(tenant_id, namespace, cache, key))
-            .map(|entry| entry.value)
+            .map(|entry| entry.value))
     }
 
     async fn len(&self) -> usize {

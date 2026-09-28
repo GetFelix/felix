@@ -15,10 +15,11 @@ async fn an_expired_entry_reads_as_absent() {
             Bytes::from_static(b"v"),
             Some(Duration::from_millis(1)),
         )
-        .await;
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(20)).await;
 
-    assert!(cache.get(T, NS, C, 0, "k").await.is_none());
+    assert!(cache.get(T, NS, C, 0, "k").await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -36,10 +37,11 @@ async fn an_unexpired_entry_still_reads() {
             Bytes::from_static(b"v"),
             Some(Duration::from_secs(300)),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert_eq!(
-        cache.get(T, NS, C, 0, "k").await.as_deref(),
+        cache.get(T, NS, C, 0, "k").await.unwrap().as_deref(),
         Some(&b"v"[..])
     );
 }
@@ -62,7 +64,8 @@ async fn an_expiry_survives_a_restart() {
                 Bytes::from_static(b"v"),
                 Some(Duration::from_millis(1)),
             )
-            .await;
+            .await
+            .unwrap();
         cache.shutdown().await.expect("shutdown");
     }
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -72,6 +75,7 @@ async fn an_expiry_survives_a_restart() {
             .await
             .get(T, NS, C, 0, "k")
             .await
+            .unwrap()
             .is_none()
     );
 }
@@ -83,11 +87,13 @@ async fn len_counts_live_entries_only() {
 
     cache
         .put(T, NS, C, 0, "a", Bytes::from_static(b"1"), None)
-        .await;
+        .await
+        .unwrap();
     cache
         .put(T, NS, C, 0, "b", Bytes::from_static(b"2"), None)
-        .await;
-    cache.delete(T, NS, C, 0, "a").await;
+        .await
+        .unwrap();
+    cache.delete(T, NS, C, 0, "a").await.unwrap();
     cache
         .put(
             T,
@@ -98,7 +104,8 @@ async fn len_counts_live_entries_only() {
             Bytes::from_static(b"3"),
             Some(Duration::from_millis(1)),
         )
-        .await;
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     assert_eq!(cache.len().await, 1, "only b is live");

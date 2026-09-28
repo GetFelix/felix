@@ -404,6 +404,57 @@ async fn a_forwarded_cache_op_is_checked_against_its_own_action() {
     }
 }
 
+/// A forwarded cache op the owner's store refused is answered as an error,
+/// never as a success the store never applied.
+#[tokio::test]
+async fn a_forwarded_cache_op_the_store_refused_is_an_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("caches");
+    let cache = felix_storage::LogCache::open(&root, LogConfig::default()).expect("open cache");
+    // The shard can never open once its root is a plain file.
+    std::fs::remove_dir(&root).expect("remove root");
+    std::fs::write(&root, b"not a directory").expect("replace root");
+    let broker = Broker::new(Box::new(cache));
+    broker.register_tenant(TENANT).await.expect("tenant");
+    broker
+        .register_namespace(TENANT, NAMESPACE)
+        .await
+        .expect("namespace");
+    broker
+        .register_cache(
+            TENANT,
+            NAMESPACE,
+            CACHE,
+            felix_broker::CacheMetadata::default(),
+        )
+        .await
+        .expect("cache");
+    let credentials = Credentials::new();
+    let handler = handler_with(
+        Arc::new(broker),
+        None,
+        Duration::from_secs(1),
+        Arc::clone(&credentials.auth),
+    );
+    let token = credentials.token(&[
+        &format!("cache.read:cache:{TENANT}/{NAMESPACE}/{CACHE}"),
+        &format!("cache.write:cache:{TENANT}/{NAMESPACE}/{CACHE}"),
+    ]);
+    for (op, code) in [
+        (CacheOpKind::Put, ErrorCode::StorageFailed),
+        (CacheOpKind::Delete, ErrorCode::StorageFailed),
+        (CacheOpKind::Get, ErrorCode::Unavailable),
+    ] {
+        match handler
+            .apply_cache_op(forwarded_cache_op(op, token.clone()))
+            .await
+        {
+            InternalMessage::ForwardCacheError(err) => assert_eq!(err.code, code, "{op:?}"),
+            other => panic!("a {op:?} the store failed was answered {other:?}"),
+        }
+    }
+}
+
 /// **A forwarded publish to a `Quorum` stream is not acknowledged until a
 /// majority holds it.** Answering on local durability made the guarantee depend
 /// on which broker the client happened to reach.

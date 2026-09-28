@@ -489,10 +489,14 @@ owner) answers it read-index style, with one round and no clock:
    fence. The broker counts itself only while its own log (and for a cache its
    counter log) has accepted no newer generation, as `held_at_generation` does.
 
-Why it is enough: a newer leader fences a majority before it serves a stream
-shard, and any write it acknowledges is held by a majority that accepted its
-generation. Every majority the round could reach shares a replica with each,
-and that replica refuses the round from then on. A round that started after
+Why it is enough: any write a newer leader acknowledges is held by a majority
+that accepted its generation. For a stream shard the promotion fence gets there
+before the leader serves. A cache shard is not fenced on promotion, but a
+replica persists a newer leader's generation before it stores anything that
+leader sends (`accept_sender` in `replica.rs`), so every replica holding the
+successor's write has accepted its generation all the same. Every majority the
+round could reach shares a replica with that majority, and that replica refuses
+the round from then on. A round that started after
 the value was taken and reached a majority therefore proves no newer leader
 had acknowledged anything before the read began, so the value holds every
 write acknowledged before it. `ReadIndex` in
@@ -501,6 +505,15 @@ write acknowledged before it. `ReadIndex` in
 passes `NoStaleRead` with drifting clocks and no margin, and
 `FelixShardReadsNoRound.cfg` and `FelixShardReadsLease.cfg` find the stale
 read.
+
+The round confirms leadership, not the value, so the value must hold every
+write the leader acknowledged. A put or delete the leader's own cache store
+refuses (a failed fsync poisons the shard's log, and every later write fails
+until the shard reopens) is answered as a storage error. Were it acknowledged,
+the quorum wait would pass on the unchanged tail and the round would then
+confirm reads that lack it. `store_failure` in
+`services/felix-broker-service/src/serving/cache_routing/tests.rs` and
+`a_forwarded_cache_op_the_store_refused_is_an_error` cover both paths.
 
 Concurrent reads of a shard share rounds, but only forward in time: a read
 that arrives while a round is in flight waits for the next one, because the

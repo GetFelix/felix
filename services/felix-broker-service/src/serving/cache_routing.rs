@@ -145,9 +145,13 @@ pub(crate) async fn apply_cache_op(
                     let fenced =
                         fence::enter_or_keep(&mut fenced, ingress, Some(&written), generation)
                             .map_err(ClientError::from)?;
+                    // A put the store refused is never acknowledged: the
+                    // quorum wait below would pass on the old tail and ack a
+                    // value no read can see.
                     cache_store
                         .put(tenant_id, namespace, cache, shard, key, value, ttl)
-                        .await;
+                        .await
+                        .map_err(storage)?;
                     drop(fenced);
                     felix_replication::quorum::await_cache_quorum(
                         broker,
@@ -173,7 +177,8 @@ pub(crate) async fn apply_cache_op(
                     }
                     let value = cache_store
                         .get(tenant_id, namespace, cache, shard, key)
-                        .await;
+                        .await
+                        .map_err(storage)?;
                     felix_replication::quorum::await_cache_quorum(
                         broker,
                         &written,
@@ -191,7 +196,8 @@ pub(crate) async fn apply_cache_op(
                             .map_err(ClientError::from)?;
                     let removed = cache_store
                         .delete(tenant_id, namespace, cache, shard, key)
-                        .await;
+                        .await
+                        .map_err(storage)?;
                     drop(fenced);
                     felix_replication::quorum::await_cache_quorum(
                         broker,

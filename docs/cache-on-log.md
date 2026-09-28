@@ -150,6 +150,9 @@ Three details are load-bearing:
   though refusing is the less helpful answer.
 - **A failed read is an error, not a miss.** Reporting a miss would let a client
   conclude a key does not exist when it does, on the owner.
+- **A failed write is an error, never an acknowledgement.** A put or delete the
+  owner's log refused (a failed fsync poisons it) is in no read's future, so
+  acknowledging it would let a later read return an older value.
 
 ## Delete
 
