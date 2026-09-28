@@ -3,12 +3,13 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
 use super::follow::ClusterSubscription;
 use super::sharded::{ShardOffsets, ShardedGroup, ShardedSubscription};
-use super::{ClusterClient, MAX_REDIRECTS};
+use super::{Attempt, ClusterClient, MAX_REDIRECTS, Next, Retrying};
 use crate::client::Client;
 
 impl ClusterClient {
@@ -46,7 +47,7 @@ impl ClusterClient {
         start: Option<felix_wire::StartPosition>,
     ) -> Result<ClusterSubscription> {
         let (client, subscription) = self
-            .subscribe_shard_following_redirects(tenant_id, namespace, stream, 0, start)
+            .open_shard(tenant_id, namespace, stream, 0, start)
             .await?;
         Ok(ClusterSubscription::new(
             Arc::clone(self),
@@ -130,6 +131,53 @@ impl ClusterClient {
             group,
             shards,
         ))
+    }
+
+    /// Open one shard for a new subscription, waiting out a refusal that
+    /// clears by itself.
+    ///
+    /// An owner that was just placed or promoted answers `not_ready` until it
+    /// has opened the shard, which for a replicated leader includes fencing a
+    /// majority. That is a moment, not an answer about the stream, so it and
+    /// the other retryable refusals get the policy's attempts and backoff, as
+    /// a publish does. A fatal refusal is returned at once.
+    pub(crate) async fn open_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        start: Option<felix_wire::StartPosition>,
+    ) -> Result<(Arc<Client>, crate::Subscription)> {
+        let started = Instant::now();
+        let mut retrying = Retrying::default();
+        let attempts = self.policy.attempts.max(1);
+        let mut attempt = 0;
+        loop {
+            let error = match self
+                .subscribe_shard_following_redirects(tenant_id, namespace, stream, shard, start)
+                .await
+            {
+                Ok(opened) => return Ok(opened),
+                Err(err) => err,
+            };
+            let at_least = match retrying.next(&error, Attempt::default()) {
+                Next::Fail => return Err(error),
+                Next::Reroute => Duration::ZERO,
+                Next::Backoff { at_least } => at_least,
+            };
+            attempt += 1;
+            if attempt >= attempts {
+                return Err(error);
+            }
+            let delay = self.policy.delay_before(attempt - 1).max(at_least);
+            if let Some(budget) = self.policy.deadline
+                && started.elapsed() + delay >= budget
+            {
+                return Err(error);
+            }
+            tokio::time::sleep(delay).await;
+        }
     }
 
     /// One shard, following the cluster to whichever broker owns *that shard*.

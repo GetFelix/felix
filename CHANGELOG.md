@@ -600,6 +600,12 @@ for what the current release actually guarantees.
   old leader stayed down. The member probing a peer's level now states its
   own, so every member knows the leader's.
 
+- **Opening a `ClusterClient` subscription waits out a shard that is still
+  opening.** `subscribe`, `subscribe_from` and `subscribe_sharded` failed at
+  once on `shard_unavailable`/`not_ready`, which a leader answers while it
+  fences its replicas after a promotion, including at cluster start. They now
+  retry `retry`-class refusals with the `ReconnectPolicy` attempts and
+  backoff, as a publish does; a `fatal` refusal still returns at once.
 - **A cache or counter shard that an older build left mid-compaction opens
   whole again.** Up to 0.6.0-preview, compaction swapped a shard directory
   with `<shard>.retired` and `<shard>.compacting` siblings. Background
