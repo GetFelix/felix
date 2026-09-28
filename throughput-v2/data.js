@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790607586926,
+  "lastUpdate": 1790608179820,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19552,6 +19552,58 @@ window.BENCHMARK_DATA = {
             "range": "12684.14",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1253886.75\nmean: 1248727.82\nstdev: 12684.14\ncv: 1.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "12662a2998a13482f95612a8e694ba7f38fe6a47",
+          "message": "test(kafka): take the fetch-wait baseline after the last kcat disconnects (#823)\n\nkcat_reads_every_shard_and_follows_a_moved_one gates the shard move on the\nold leader's fetch-wait counter rising, as proof the follower kcat is parked\nthere. The consume-everything kcat that runs just before can exit with a\nfetch still parked on the old leader; the broker finishes that wait and\ncounts it after the baseline was read. Under load, when the follower's\ncontainer starts slowly, that late count opened the gate, the shard moved\nbefore the follower's first Metadata, and kcat went straight to the new\nleader, so the old leader never had a fetch to refuse.\n\nWait for the old leader's Kafka connection gauge to reach zero before\nreading the baseline. The connection loop serves one request at a time, so\nby then any parked fetch has returned and been counted.\n\nSpec-Unaffected: test-only change to a cluster harness test",
+          "timestamp": "2026-09-28T08:04:21-07:00",
+          "tree_id": "58afc6b65f470436377756e694272dda7d3dfc59",
+          "url": "https://github.com/gabloe/felix/commit/12662a2998a13482f95612a8e694ba7f38fe6a47"
+        },
+        "date": 1790608178569,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 442910.83,
+            "range": "25994.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 442910.83\nmean: 435129.92\nstdev: 25994.51\ncv: 5.97%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 442910.83,
+            "range": "25994.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 442910.83\nmean: 435129.92\nstdev: 25994.51\ncv: 5.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 101500.47,
+            "range": "2939.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 101500.47\nmean: 100560.16\nstdev: 2939.72\ncv: 2.92%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1015004.73,
+            "range": "29397.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1015004.73\nmean: 1005601.65\nstdev: 29397.19\ncv: 2.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
