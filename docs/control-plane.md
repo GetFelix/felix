@@ -82,8 +82,13 @@ clock back to it (`clamp_future_heartbeats`) before judging, so a broker that
 dies after the step still goes down one window after it went silent. Lowering
 a stamp to now cannot expire anyone early: the broker was last heard no later
 than now, and the monotonic window still has to pass. Under Raft the leader
-judges a broker it has heard this term by the age of that heartbeat on its
-monotonic clock alone, so the log's stamp does not enter into it.
+judges every broker on its monotonic clock alone, so the log's stamp does not
+enter into it: a broker it has heard this term by the age of that heartbeat,
+any other from the moment it began leading (or from its registration, if that
+came later). A broker a new leader never hears from therefore goes down one
+window after the election, however far ahead of the new leader's clock its
+stamp is, and never sooner, so a leadership change expires no live broker.
+The leader lists a stamp ahead of its clock as now.
 
 ### `POST /v1/nodes/{node_id}/heartbeat`
 

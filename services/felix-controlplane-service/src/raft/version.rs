@@ -11,7 +11,10 @@
 //!
 //! A member that cannot be reached counts at what it last reported, or 0 if
 //! it never has: an unknown member holds a newer command back, it never lets
-//! one through.
+//! one through. The member asking says its own level on the probe, so every
+//! member has heard the leader's. A leader that dies is then not an unknown
+//! to the one elected after it, which would otherwise hold back every newer
+//! command, the leader's soft state included, for as long as it stays down.
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -24,6 +27,14 @@ use super::{NodeId, RaftHandle};
 /// rises within about this long of the last member upgrading.
 const FRESH_FOR: Duration = Duration::from_secs(2);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Who is asking for a member's standing, and the level it can apply.
+/// Absent from a member that predates it.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(super) struct Asker {
+    from: Option<NodeId>,
+    version: Option<u16>,
+}
 
 #[derive(Default)]
 pub(super) struct Versions {
@@ -83,6 +94,10 @@ impl RaftHandle {
             let request = self
                 .forward
                 .get(format!("{base}/internal/raft/standing"))
+                .query(&Asker {
+                    from: Some(self.id),
+                    version: Some(self.app.version()),
+                })
                 .timeout(PROBE_TIMEOUT);
             let id = *id;
             probes.spawn(async move {
@@ -109,5 +124,20 @@ impl RaftHandle {
         versions.checked = Some((Instant::now(), level));
         versions.refreshing = false;
         level
+    }
+
+    /// Remember the level a probing member said it is at.
+    pub(super) fn note_asker(&self, asker: Asker) {
+        let (Some(from), Some(version)) = (asker.from, asker.version) else {
+            return;
+        };
+        if from == self.id {
+            return;
+        }
+        self.versions
+            .lock()
+            .expect("versions lock")
+            .reported
+            .insert(from, version);
     }
 }

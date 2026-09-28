@@ -642,16 +642,17 @@ async fn a_heartbeat_does_not_extend_a_departed_node(store: &dyn ControlPlaneSto
 
 async fn expiry_moves_only_stale_serving_nodes(store: &dyn ControlPlaneStore) {
     clear(store).await;
-    // Ahead of the store's clock, so "fresh" and "stale" are decided by these
-    // timestamps and not by when a Raft leader started judging.
-    let base = past_every_window(store).await + 3_600_000;
-
+    // Real time on both sides of the cutoff: the Raft leader judges by when
+    // it heard from a node, not by the stamp a fixture writes.
     let mut stale = node("broker-stale", 7300);
-    stale.status.last_heartbeat_at_millis = base;
+    stale.status.last_heartbeat_at_millis = store.now_millis().await.expect("store clock");
     store.register_node(stale).await.expect("register");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let cutoff = store.now_millis().await.expect("store clock");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let mut fresh = node("broker-fresh", 7301);
-    fresh.status.last_heartbeat_at_millis = base + 10_000;
+    fresh.status.last_heartbeat_at_millis = store.now_millis().await.expect("store clock");
     store.register_node(fresh).await.expect("register");
     store
         .register_node(node("broker-left", 7302))
@@ -662,7 +663,7 @@ async fn expiry_moves_only_stale_serving_nodes(store: &dyn ControlPlaneStore) {
         .await
         .expect("leave");
 
-    let expired = store.expire_stale_nodes(base + 1).await.expect("expire");
+    let expired = store.expire_stale_nodes(cutoff).await.expect("expire");
     assert_eq!(
         expired
             .iter()
@@ -692,8 +693,9 @@ async fn expiry_moves_only_stale_serving_nodes(store: &dyn ControlPlaneStore) {
 }
 
 /// A backend may leave a future stamp alone (Raft judges age on the
-/// leader's monotonic clock instead), but one it moves lands on `now` and is
-/// counted, and a stamp already behind `now` never moves.
+/// leader's monotonic clock instead, and only lists such a stamp as its own
+/// now), but one it moves lands on `now` and is counted, and a stamp already
+/// behind `now` never moves.
 async fn a_clamp_only_ever_pulls_future_stamps_back_to_now(store: &dyn ControlPlaneStore) {
     clear(store).await;
     let now = store.now_millis().await.expect("store clock");
@@ -706,12 +708,21 @@ async fn a_clamp_only_ever_pulls_future_stamps_back_to_now(store: &dyn ControlPl
 
     let clamped = store.clamp_future_heartbeats(now).await.expect("clamp");
 
-    let ahead = store.get_node("broker-ahead").await.expect("get");
-    let moved = ahead.status.last_heartbeat_at_millis != now + 3_600_000;
-    if moved {
-        assert_eq!(ahead.status.last_heartbeat_at_millis, now);
+    let listed = store
+        .get_node("broker-ahead")
+        .await
+        .expect("get")
+        .status
+        .last_heartbeat_at_millis;
+    let later = store.now_millis().await.expect("store clock");
+    match clamped {
+        1 => assert_eq!(listed, now),
+        0 => assert!(
+            listed == now + 3_600_000 || (now..=later).contains(&listed),
+            "a stamp left alone was listed as {listed}, neither itself nor now",
+        ),
+        other => panic!("clamped {other} stamps, only one was ahead"),
     }
-    assert_eq!(clamped, u64::from(moved));
     assert_eq!(
         store
             .get_node("broker-behind")

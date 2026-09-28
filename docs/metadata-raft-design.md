@@ -156,11 +156,16 @@ build without that route, the follower falls back to the old log command.
 The log carries only the consequences. `ExpireNodes` names the nodes the
 leader judged stale, each at an incarnation. `CheckpointHeartbeats`, written
 at most every 5 s for the whole fleet, keeps node listings on followers
-roughly current. A node the leader has heard from this term is judged by that heartbeat's
-monotonic age alone: the log's stamp is a checkpoint of an earlier moment and,
-after a wall-clock step back, lies in the future. A new leader starts knowing
-nothing and treats its own start as a heartbeat from every node. It expires nobody until a full window has
-passed under it, and its view resets on every term change. The placement
+roughly current. The leader judges every node by a monotonic age alone, never
+by the log's stamp: that stamp is a checkpoint of an earlier moment and, after
+a wall-clock step back or on a leader whose clock is behind the last one's, it
+lies in the future. A node heard from this term is aged from that heartbeat. A
+new leader starts knowing nothing and treats its own start as a heartbeat from
+every node, and a registration during the term as a heartbeat from that node.
+So it expires nobody until a full window has passed under it, and a broker it
+never hears from goes down one window after the election, however far ahead
+its stamp is. Its view resets on every term change. Listings served by the
+leader show a stamp ahead of its clock as "now". The placement
 lease works the same way: renewals are soft state, only a change of holder is
 written, and a new leader counts the recorded holder as renewed when it took
 over.
@@ -439,7 +444,12 @@ route. A member proposes a command only when every member of the current
 membership, learners included, reports at least that command's level, in
 the manner of KRaft's `metadata.version`. A member that reports nothing
 predates this and counts as level 0; one that cannot be reached counts at
-what it last reported, or 0 if it never has. The group's level is
+what it last reported, or 0 if it never has. The member asking gives its
+own level on that probe, so every member has heard the leader's: when the
+leader dies, the member elected next still counts it at its level. Without
+that, a dead leader was an unknown to its successor, and the new leader fell
+back to heartbeats and expiry through the log for as long as it stayed down.
+The group's level is
 recomputed at most every two seconds, so it rises shortly after the last
 member restarts on the new build. The rollout order therefore does not
 matter: a StatefulSet can upgrade the leader first.
