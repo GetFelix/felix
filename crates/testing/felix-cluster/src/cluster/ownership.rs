@@ -47,6 +47,13 @@ impl Cluster {
             .collect())
     }
 
+    /// Replicated shards that could not fail over yet, because their leader has
+    /// not reported a caught-up replica at the current generation. See
+    /// [`ControlPlane::unreported_shards`](crate::ControlPlane::unreported_shards).
+    pub async fn unreported_shards(&self) -> Result<Vec<String>> {
+        self.control_plane().unreported_shards().await
+    }
+
     /// Who owns each shard of `stream`, by shard index.
     ///
     /// The point of a multi-shard test: a stream placed across brokers has

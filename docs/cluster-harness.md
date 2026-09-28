@@ -135,10 +135,20 @@ Nothing here sleeps for a fixed duration and hopes. Start-up returns only once:
 1. every broker answers `/ready`,
 2. the control plane considers every broker placeable,
 3. every shard has a leader — placement is *stepped*, not waited for, so it does
-   not depend on a reconcile timer, and
-4. **a publish succeeds**.
+   not depend on a reconcile timer,
+4. **a publish succeeds**,
+5. every broker routes each stream at its full width,
+6. placement has settled, with no move under way, and
+7. every replicated shard's leader has reported a caught-up replica at the
+   shard's current generation.
 
-The last one is the only honest check for the gap between "assigned" and
+The last one is what makes a started cluster one a test can fail over. A leader
+killed before its first report leaves its shard with nothing placement will
+promote, which is by design (see "Replica reports" in
+`replication-design.md`), so a test that kills a leader straight after start-up
+would otherwise be racing the first report.
+
+The publish is the only honest check for the gap between "assigned" and
 "servable": a broker can hold an assignment it has not finished opening, no
 control-plane state distinguishes the two, and a publish in that window is
 refused. The probe deliberately publishes through an arbitrary broker rather

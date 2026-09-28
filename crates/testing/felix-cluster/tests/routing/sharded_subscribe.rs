@@ -242,6 +242,13 @@ async fn an_unreachable_shard_refuses_the_subscription() {
 #[serial]
 async fn one_shard_failing_over_does_not_stop_the_others() {
     let mut cluster = Cluster::start(sharded()).await.expect("start cluster");
+    // Killed before its first report, a leader leaves its shard unplaceable,
+    // so a ready cluster must already have every report in.
+    let unreported = cluster.unreported_shards().await.expect("replica reports");
+    assert!(
+        unreported.is_empty(),
+        "the cluster was ready before these shards could fail over: {unreported:?}"
+    );
     let owners = cluster
         .shard_owners_for(STREAM)
         .await
