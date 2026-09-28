@@ -7,8 +7,9 @@
 //! invalidates the belief rather than the follower.
 
 mod shard;
+mod shards;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,7 +26,8 @@ use super::reporter::Reporter;
 use super::reporter::ShardReport;
 use super::{MoveThrottle, RebuildPolicy, Rebuilds, metrics};
 use crate::peer::PeerRequester;
-use shard::{AuxCursors, ShardCursors, ShardPass, replicate_shard, watch_key};
+use shard::{AuxCursors, ShardCursors, ShardPass, Stragglers, replicate_shard, watch_key};
+use shards::{Context, Event, Shards};
 
 /// How many shards a pass ships at the same time.
 ///
@@ -70,11 +72,15 @@ pub struct Replication {
 }
 
 /// What the passes so far have established.
+///
+/// Each wake-up starts a scan over every shard led here, numbered.
 #[derive(Debug, Clone, Copy, Default)]
 struct PassesSeen {
-    /// Passes finished.
+    /// The latest scan.
+    scan: u64,
+    /// Every shard led here has finished a pass started at this scan or later.
     finished: u64,
-    /// The last one left some shard with no follower holding all of its log.
+    /// The latest pass of some shard left no follower holding all of its log.
     behind: bool,
 }
 
@@ -89,8 +95,9 @@ impl Replication {
     /// once that is not so; the caller bounds the wait.
     pub async fn caught_up(&self) {
         let mut passes = self.passes.clone();
-        // The pass under way may have started before the last write landed.
-        let started_after = passes.borrow_and_update().finished + 1;
+        // A pass under way may have started before the last write landed, so
+        // only one from a later scan counts.
+        let started_after = passes.borrow_and_update().scan;
         loop {
             self.wake.notify_one();
             if passes.changed().await.is_err() {
@@ -152,67 +159,73 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
         // auxiliary logs, and the replica report, none of which a wake
         // signals.
         let appended = broker.appended();
-        let mut cursors = HashMap::new();
-        let mut group_cursors = HashMap::new();
-        let mut dead_letter_cursors = HashMap::new();
-        let mut counter_cursors = HashMap::new();
-        let mut copying = false;
-        let mut drain_pending = false;
-        let mut fencing = false;
+        let mut shards = Shards::new(Context {
+            requester: requester.as_ref(),
+            broker: &broker,
+            router: &router,
+            fence: &*fence,
+            gate: &*gate,
+            marks: &published.marks,
+            reporter: reporter.as_ref(),
+            rebuilds: &rebuilds,
+            throttle: &move_throttle,
+        });
         loop {
             // An append during the previous pass left a permit, so this
             // returns at once rather than waiting for the tick — see
             // `Broker::appended`.
             let woken = appended.notified();
-            if copying {
-                if shutdown.is_cancelled() {
-                    return;
+            let retry_in = shards.retry_in();
+            let retry = async move {
+                match retry_in {
+                    Some(delay) => tokio::time::sleep(delay).await,
+                    None => std::future::pending::<()>().await,
                 }
-                tokio::task::yield_now().await;
-            } else {
-                let retry = async {
-                    if drain_pending {
-                        tokio::time::sleep(DRAIN_RETRY).await;
-                    } else if fencing {
-                        tokio::time::sleep(FENCE_RETRY).await;
-                    } else {
-                        std::future::pending::<()>().await;
-                    }
-                };
-                tokio::select! {
-                    _ = shutdown.cancelled() => return,
-                    _ = ticker.tick() => {}
-                    _ = woken => {}
-                    _ = routes_changed.notified() => {}
-                    _ = retry => {}
+            };
+            let event = tokio::select! {
+                _ = shutdown.cancelled() => return,
+                _ = ticker.tick() => Event::Wake,
+                _ = woken => Event::Wake,
+                _ = routes_changed.notified() => Event::Wake,
+                _ = retry => Event::Retry,
+                Some((scan, pass)) = shards.passes.next(), if !shards.passes.is_empty() => {
+                    Event::Passed(scan, Box::new(pass))
+                }
+                Some(fenced) = shards.fences.next(), if !shards.fences.is_empty() => {
+                    Event::Fenced(fenced)
+                }
+                Some(answered) = shards.exchanges.next(), if !shards.exchanges.is_empty() => {
+                    Event::Answered(answered)
+                }
+            };
+            match event {
+                Event::Wake => {
+                    shards.scan();
+                    seen.send_modify(|seen| seen.scan = shards.scan);
+                }
+                Event::Retry => shards.retry(),
+                Event::Passed(scan, pass) => shards.fold(scan, *pass),
+                Event::Fenced(fenced) => shards.fenced(fenced),
+                // Changes no pass's outcome, so there is nothing new to say.
+                Event::Answered(answered) => {
+                    shards.apply(answered);
+                    continue;
                 }
             }
-            let pass = replicate_once_with(
-                requester.as_ref(),
-                &broker,
-                &router,
-                &*fence,
-                &*gate,
-                &published.marks,
-                reporter.as_ref(),
-                &mut cursors,
-                &mut group_cursors,
-                &mut dead_letter_cursors,
-                &mut counter_cursors,
-                &rebuilds,
-                &move_throttle,
-            )
-            .await;
             // Replaced wholesale, so a halt that has since resolved stops being
             // listed rather than sending an operator after a replica that is
             // already shipping again.
-            published.halted.publish(pass.halted);
-            copying = pass.copying;
-            drain_pending = pass.drain_pending;
-            fencing = pass.fencing;
-            seen.send_modify(|seen| {
-                seen.finished += 1;
-                seen.behind = pass.behind;
+            let (halted, worst_lag, finished, behind) = shards.summary();
+            metrics::record_halted(halted.len());
+            if let Some(lag) = worst_lag {
+                metrics::record_lag(lag);
+            }
+            published.halted.publish(halted);
+            seen.send_if_modified(|seen| {
+                let changed = seen.finished != finished || seen.behind != behind;
+                seen.finished = finished;
+                seen.behind = behind;
+                changed
             });
         }
     });
@@ -251,7 +264,7 @@ impl WriteFence for Unfenced {
 // One cursor map per log kind the pass ships, plus the shared context: folding
 // the maps into a struct would move the argument list rather than shorten it.
 #[allow(clippy::too_many_arguments)]
-pub async fn replicate_once<R: PeerRequester>(
+pub async fn replicate_once<R: PeerRequester + Sync>(
     requester: &R,
     broker: &Arc<Broker>,
     router: &ShardRouter,
@@ -284,7 +297,7 @@ pub async fn replicate_once<R: PeerRequester>(
 /// destination paced by `throttle`, and a draining shard held back until
 /// `fence` says its writes have stopped.
 #[allow(clippy::too_many_arguments)]
-pub async fn replicate_once_with<R: PeerRequester>(
+pub async fn replicate_once_with<R: PeerRequester + Sync>(
     requester: &R,
     broker: &Arc<Broker>,
     router: &ShardRouter,
@@ -341,33 +354,16 @@ pub async fn replicate_once_with<R: PeerRequester>(
             continue;
         }
 
-        let previous = cursors.remove(key);
-        let learner = shard::staged_learner(previous.as_ref(), route);
-        let mut entry = match previous {
-            Some(entry) if entry.generation == route.generation => entry,
-            _ => ShardCursors::at(route.generation),
-        };
-        entry.learner = learner;
-        // A draining shard reports even with nobody to ship to: its move lost
-        // its destination, and the cut-over waits on the drained report.
-        if route.replicas.is_empty() && !route.draining {
-            // Nothing to ship. Kept anyway, so a destination staged later is
-            // known to be one this shard did not have.
-            cursors.insert(key.clone(), entry);
-            continue;
+        if let Some((entry, aux)) = take_work(
+            key,
+            route,
+            cursors,
+            group_cursors,
+            dead_letter_cursors,
+            counter_cursors,
+        ) {
+            work.push((key.clone(), route.clone(), entry, aux));
         }
-        let aux = AuxCursors {
-            group: group_cursors
-                .remove(key)
-                .unwrap_or_else(|| ShardCursors::at(route.generation)),
-            dead_letters: dead_letter_cursors
-                .remove(key)
-                .unwrap_or_else(|| ShardCursors::at(route.generation)),
-            counters: counter_cursors
-                .remove(key)
-                .unwrap_or_else(|| ShardCursors::at(route.generation)),
-        };
-        work.push((key.clone(), route.clone(), entry, aux));
     }
 
     let fencing = open_promoted(requester, broker, router.local_node_id(), gate, promoted).await;
@@ -381,11 +377,23 @@ pub async fn replicate_once_with<R: PeerRequester>(
     // Bounded, because each shard in flight holds a peer request and may hold
     // an HTTP report: a broker leading thousands of shards must not open
     // thousands of those at once.
+    let no_one = HashSet::new();
     let passes: Vec<ShardPass> =
         futures::stream::iter(work.into_iter().map(|(key, route, entry, aux)| {
             replicate_shard(
-                requester, broker, fence, marks, reporter, rebuilds, throttle, key, route, entry,
+                requester,
+                broker,
+                fence,
+                marks,
+                reporter,
+                rebuilds,
+                throttle,
+                key,
+                route,
+                entry,
                 aux,
+                &no_one,
+                Stragglers::Await,
             )
         }))
         .buffer_unordered(SHARD_CONCURRENCY)
@@ -465,42 +473,93 @@ async fn open_promoted<R: PeerRequester>(
     .await;
     let mut pending = false;
     for (key, generation, outcome) in outcomes {
-        match outcome {
-            Outcome::Fenced { caught_up_from } => {
-                tracing::info!(
-                    stream = %key.stream,
-                    shard = key.shard,
-                    generation,
-                    caught_up_from = ?caught_up_from,
-                    "a majority took the fence; opening the shard for writes",
-                );
-                metrics::record_promotion_opened(metrics::PATH_FENCED);
-                gate.open(&watch_key(&key), generation).await;
-            }
-            Outcome::Lease { lacking } => {
-                tracing::info!(
-                    stream = %key.stream,
-                    shard = key.shard,
-                    generation,
-                    lacking = %lacking,
-                    "a replica does not offer the fence; opening the shard on the lease",
-                );
-                metrics::record_promotion_opened(metrics::PATH_LEASE);
-                gate.open(&watch_key(&key), generation).await;
-            }
-            Outcome::Pending(why) => {
-                tracing::warn!(
-                    stream = %key.stream,
-                    shard = key.shard,
-                    generation,
-                    why = %why,
-                    "the promoted shard is not fenced yet; it does not serve until it is",
-                );
-                pending = true;
-            }
-        }
+        pending |= !open_fenced(gate, &key, generation, outcome).await;
     }
     pending
+}
+
+/// Open a promoted shard whose fence has settled. False while it has not.
+async fn open_fenced(
+    gate: &dyn PromotionGate,
+    key: &ShardKey,
+    generation: u64,
+    outcome: Outcome,
+) -> bool {
+    match outcome {
+        Outcome::Fenced { caught_up_from } => {
+            tracing::info!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                caught_up_from = ?caught_up_from,
+                "a majority took the fence; opening the shard for writes",
+            );
+            metrics::record_promotion_opened(metrics::PATH_FENCED);
+            gate.open(&watch_key(key), generation).await;
+            true
+        }
+        Outcome::Lease { lacking } => {
+            tracing::info!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                lacking = %lacking,
+                "a replica does not offer the fence; opening the shard on the lease",
+            );
+            metrics::record_promotion_opened(metrics::PATH_LEASE);
+            gate.open(&watch_key(key), generation).await;
+            true
+        }
+        Outcome::Pending(why) => {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                why = %why,
+                "the promoted shard is not fenced yet; it does not serve until it is",
+            );
+            false
+        }
+    }
+}
+
+/// Take a shard's cursors out of the maps for a pass over `route`.
+///
+/// `None` when there is nothing to ship: the cursors stay in the map, so a
+/// destination staged later is known to be one this shard did not have.
+fn take_work(
+    key: &ShardKey,
+    route: &felix_router::Route,
+    cursors: &mut HashMap<ShardKey, ShardCursors>,
+    group_cursors: &mut HashMap<ShardKey, ShardCursors>,
+    dead_letter_cursors: &mut HashMap<ShardKey, ShardCursors>,
+    counter_cursors: &mut HashMap<ShardKey, ShardCursors>,
+) -> Option<(ShardCursors, AuxCursors)> {
+    let previous = cursors.remove(key);
+    let learner = shard::staged_learner(previous.as_ref(), route);
+    let mut entry = match previous {
+        Some(entry) if entry.generation == route.generation => entry,
+        _ => ShardCursors::at(route.generation),
+    };
+    entry.learner = learner;
+    // A draining shard reports even with nobody to ship to: its move lost
+    // its destination, and the cut-over waits on the drained report.
+    if route.replicas.is_empty() && !route.draining {
+        cursors.insert(key.clone(), entry);
+        return None;
+    }
+    let aux = AuxCursors {
+        group: group_cursors
+            .remove(key)
+            .unwrap_or_else(|| ShardCursors::at(route.generation)),
+        dead_letters: dead_letter_cursors
+            .remove(key)
+            .unwrap_or_else(|| ShardCursors::at(route.generation)),
+        counters: counter_cursors
+            .remove(key)
+            .unwrap_or_else(|| ShardCursors::at(route.generation)),
+    };
+    Some((entry, aux))
 }
 
 /// What one replication pass established.

@@ -33,7 +33,12 @@ impl PeerRequester for SlowNode {
 
 /// Publish routes where the local broker leads with `replicas`, moving to
 /// `successor` if one is named.
-fn publish_move(router: &ShardRouter, replicas: &[&str], successor: Option<&str>, generation: u64) {
+pub(super) fn publish_move(
+    router: &ShardRouter,
+    replicas: &[&str],
+    successor: Option<&str>,
+    generation: u64,
+) {
     let nodes = nodes();
     let table = RoutingTable::build_with(
         [felix_router::Placed {
@@ -68,7 +73,7 @@ impl Cursors {
 
     async fn pass(
         &mut self,
-        requester: &impl PeerRequester,
+        requester: &(impl PeerRequester + Sync),
         broker: &Arc<Broker>,
         router: &ShardRouter,
         marks: &QuorumMarks,
