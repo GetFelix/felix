@@ -555,6 +555,18 @@ for what the current release actually guarantees.
 
 ### Fixed
 
+- **A Raft leader elected after a clock step back expires a dead broker in
+  one window.** The leader judged a broker it had not heard from by the
+  log's stamp when that was later than its own start, so a stamp left in the
+  future by a step back, or by an old leader whose clock ran ahead, kept a
+  dead broker placeable until real time caught up. It now ages every broker
+  on its monotonic clock only, from its election or the broker's
+  registration, and lists a stamp ahead of its clock as now. Separately, a
+  leader that died was counted at metadata level 0 by its successor, which
+  then fell back to heartbeats and expiry through the log for as long as the
+  old leader stayed down. The member probing a peer's level now states its
+  own, so every member knows the leader's.
+
 - **A cache or counter shard that an older build left mid-compaction opens
   whole again.** Up to 0.6.0-preview, compaction swapped a shard directory
   with `<shard>.retired` and `<shard>.compacting` siblings. Background

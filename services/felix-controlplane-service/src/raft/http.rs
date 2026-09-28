@@ -91,7 +91,11 @@ async fn vote(
     Json(result).into_response()
 }
 
-async fn standing(State(handle): State<super::RaftHandle>) -> Json<super::join::Standing> {
+async fn standing(
+    State(handle): State<super::RaftHandle>,
+    axum::extract::Query(asker): axum::extract::Query<super::version::Asker>,
+) -> Json<super::join::Standing> {
+    handle.note_asker(asker);
     Json(handle.standing())
 }
 

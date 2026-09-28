@@ -13,7 +13,9 @@
 //! has passed under the new leader. That is what makes a leader change safe:
 //! a heartbeat the old leader answered was answered only after a quorum
 //! confirmed its leadership, so the new term began after it, and the broker's
-//! lease ends less than one window after that.
+//! lease ends less than one window after that. It also bounds the wait: a
+//! stamp in the log, however far ahead of this leader's clock, does not
+//! extend it.
 //!
 //! The design is in `docs/metadata-raft-design.md` ("Liveness is leader
 //! soft state").
@@ -73,6 +75,9 @@ struct View {
     /// `since` on the wall clock, which is what listings carry.
     since_millis: u64,
     beats: HashMap<String, Beat>,
+    /// Nodes (re)registered during this term, and when: a later start for
+    /// their silence than `since`.
+    registered: HashMap<String, Instant>,
     lease: Option<LeaseView>,
     last_checkpoint: Instant,
 }
@@ -131,11 +136,15 @@ impl SoftState {
         let beat = view
             .and_then(|view| view.beats.get(&node.node_id))
             .filter(|beat| beat.incarnation >= node.status.incarnation);
+        // A stamp ahead of this leader's clock was taken on another clock, or
+        // before a step back. Shown as now, never as later.
+        let now_millis = crate::clock::now_millis();
+        node.status.last_heartbeat_at_millis = node.status.last_heartbeat_at_millis.min(now_millis);
         let heard = match (beat, view) {
             (Some(beat), _) => Some(beat.at_millis),
             (None, _) if node.status.lifecycle != NodeLifecycle::Left => None,
             // Not judging yet in this term: as good as starting now.
-            (None, None) => Some(crate::clock::now_millis()),
+            (None, None) => Some(now_millis),
             (None, Some(view)) => Some(view.since_millis),
         };
         if let Some(heard) = heard {
@@ -265,16 +274,20 @@ impl SoftState {
                         .beats
                         .get(&node.node_id)
                         .filter(|beat| beat.incarnation >= node.status.incarnation);
-                    let last = match beat {
-                        // The log's stamp is at best a checkpoint of this beat,
-                        // and after a clock step back it lies in the future.
-                        // The monotonic age is the one a step cannot move.
-                        Some(beat) => seen_at(now.saturating_duration_since(beat.at)),
-                        None => node
-                            .status
-                            .last_heartbeat_at_millis
-                            .max(seen_at(now.saturating_duration_since(view.since))),
+                    // Only monotonic ages, never the log's stamp. That stamp
+                    // is a checkpoint from before this term, so it adds
+                    // nothing unless it is ahead of this leader's clock, and
+                    // then waiting it out would keep a dead broker placeable
+                    // for as long as the clocks disagree.
+                    let heard = match beat {
+                        Some(beat) => beat.at,
+                        None => view
+                            .registered
+                            .get(&node.node_id)
+                            .copied()
+                            .unwrap_or(view.since),
                     };
+                    let last = seen_at(now.saturating_duration_since(heard));
                     last < expiry_before_millis
                 })
                 .map(|node| NodeIncarnation {
@@ -438,10 +451,16 @@ impl SoftState {
             match node_id {
                 Some(node_id) => {
                     view.beats.remove(node_id);
+                    view.registered.insert(node_id.to_string(), Instant::now());
                 }
                 None => {
+                    // Every record may have been replaced: judge them all as
+                    // if this leadership had just begun.
                     view.beats.clear();
+                    view.registered.clear();
                     view.lease = None;
+                    view.since = Instant::now();
+                    view.since_millis = crate::clock::now_millis();
                 }
             }
         }
@@ -471,6 +490,7 @@ fn view_for(slot: &mut Option<View>, term: u64) -> &mut View {
             since: now,
             since_millis: crate::clock::now_millis(),
             beats: HashMap::new(),
+            registered: HashMap::new(),
             lease: None,
             last_checkpoint: now,
         });
