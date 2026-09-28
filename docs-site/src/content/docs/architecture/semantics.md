@@ -155,8 +155,14 @@ does without that ordering and without the lease: a write is acknowledged once
 a majority of its replicas has answered that it holds it at the leader's
 generation, and any promoted leader fences a majority and takes the furthest
 log before it serves. A leader cut off from the control plane then keeps
-acknowledging what its followers hold. `Leader` streams, caches and reads keep
-the lease. See the upgrades page for the runbook.
+acknowledging what its followers hold. `Leader` streams and caches keep the
+lease for writes. Once `lease_free_reads` is finalized too, a get or counter
+get on a replicated `Quorum` cache is linearizable without the lease: after it
+takes its value the broker sends the promotion fence at its own generation to
+the shard's replicas, and answers only once a majority confirms no newer
+leader has reached it. A leader cut off from its replicas refuses the read at
+once; one cut off only from the control plane keeps serving it. Stream readers
+and watches keep the lease. See the upgrades page for the runbooks.
 :::
 
 #### What each one costs

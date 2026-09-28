@@ -52,6 +52,21 @@ for what the current release actually guarantees.
 
 ### Added
 
+- **`Quorum` cache reads without the lease once the `lease_free_reads` fleet
+  feature is finalized** (with `majority_ack` and `generation_start`). A get
+  or counter get on a replicated `Quorum` cache, local or forwarded, takes its
+  value and then confirms leadership read-index style: the promotion fence at
+  the broker's own generation goes to every replica, and the read is answered
+  once a majority, the broker included, has taken it. Concurrent reads share
+  rounds, only ever one that started after them. A cache replica also refuses
+  the round when its counter log accepted a newer leader. A same-generation
+  fence is now counted as `fence_confirmed` and not logged. New
+  `FELIX_QUORUM_READS` (`majority` or `lease`) keeps a broker on the lease. No
+  wire change. Stream readers and watches keep the lease. TLA+:
+  `FelixShardReads.tla`, with `FelixShardReadsRound` passing `NoStaleRead`
+  under drift and no margin and `FelixShardReadsNoRound` /
+  `FelixShardReadsLease` violating it; `check_tla.sh` takes `TLC_WORKERS`.
+  See `docs/replication-design.md`, "Reads without the lease".
 - **`Quorum` streams acknowledge by their followers once the `majority_ack`
   fleet feature is finalized.** A write is acknowledged when a majority of the
   replica set, the leader included, has answered `ReplicateOk` for it at the

@@ -12,6 +12,7 @@ mod faults;
 mod fencing;
 mod fsync;
 mod kafka_produce;
+mod lease_free_reads;
 mod links;
 mod majority_ack;
 mod membership;

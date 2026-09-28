@@ -44,6 +44,7 @@ pub mod peer;
 pub mod driver;
 mod follower;
 pub mod halted;
+pub mod leadership;
 pub mod metrics;
 pub mod promotion;
 pub mod quorum;

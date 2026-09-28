@@ -444,8 +444,8 @@ What still needs the lease, and why:
   follower sees, so only the lease keeps a deposed leader from acknowledging.
 - **Caches and their counters.** A cache shard is never fenced on promotion,
   so its successor is only as good as the report it was chosen from.
-- **Reads.** A `Quorum` read is still served only under a valid lease; serving
-  reads without it is a separate change.
+- **Reads, until the fleet finalizes `lease_free_reads`.** Then a `Quorum`
+  cache read confirms leadership by a round instead; see below.
 - **A fleet that has not finalized `majority_ack`,** or has not finalized
   `generation_start`: both are needed.
 
@@ -461,6 +461,68 @@ The cost is that a leader cut off from the control plane keeps taking writes
 until its successor's fence reaches its followers. Those writes then time out
 as unknown rather than being refused up front for the lease, and a client
 retries them against the new leader.
+
+### Reads without the lease
+
+A read has its own question: has a newer leader acknowledged a write this
+broker never saw? The lease answered it by the clock. With `lease_free_reads`
+finalized (alongside `majority_ack` and `generation_start`), a read of a
+replicated `Quorum` cache (get and counter get, local or forwarded to the
+owner) answers it read-index style, with one round and no clock:
+
+1. The read takes its value, and waits for the quorum mark to pass the tail
+   it read, as before.
+2. The broker then sends the promotion fence (`Fence`) at its own generation
+   to every replica of the shard. A replica that has accepted no newer
+   generation takes it, which at a generation it already had writes nothing,
+   and answers `FenceOk`. One that has refuses with `FencedEpoch`. A cache
+   replica also refuses when its counter log has accepted a newer leader,
+   since a new cache leader that has only written counters reached it there
+   and nowhere else.
+3. The read is answered once a majority, the broker included, has taken the
+   fence. The broker counts itself only while its own log (and for a cache its
+   counter log) has accepted no newer generation, as `held_at_generation` does.
+
+Why it is enough: a newer leader fences a majority before it serves a stream
+shard, and any write it acknowledges is held by a majority that accepted its
+generation. Every majority the round could reach shares a replica with each,
+and that replica refuses the round from then on. A round that started after
+the value was taken and reached a majority therefore proves no newer leader
+had acknowledged anything before the read began, so the value holds every
+write acknowledged before it. `ReadIndex` in
+`crates/server/felix-replication/src/leadership.rs` is the code;
+`docs/formal/FelixShardReads.tla` the model, where `FelixShardReadsRound.cfg`
+passes `NoStaleRead` with drifting clocks and no margin, and
+`FelixShardReadsNoRound.cfg` and `FelixShardReadsLease.cfg` find the stale
+read.
+
+Concurrent reads of a shard share rounds, but only forward in time: a read
+that arrives while a round is in flight waits for the next one, because the
+one in flight may have been answered before the read took its value. So a
+shard has at most one round running and one queued, whatever the read rate.
+The cost is a round trip to the nearest majority per batch of reads, and in
+exchange a leader cut off from the control plane goes on serving reads its
+replicas confirm, while one cut off from its replicas stops at once rather
+than at its lease's expiry.
+
+What is left on the lease:
+
+- **`FELIX_QUORUM_READS=lease`** keeps a broker's reads on the lease, the
+  faster path that is only as safe as the clocks and margins
+  (`FelixShardRealMarginsLease.cfg`).
+- **An unreplicated shard**, which has no majority to ask, and `Leader`
+  caches, whose writes are only as good as the lease anyway.
+- **Stream readers** (subscriptions, replay, group polls, Kafka fetches) and
+  cache watches still stop at the lease. They never see a record past the
+  quorum mark, so what they deliver is never taken back; the lease is what
+  moves them off a leader that has lost the shard.
+
+**Across versions: the `lease_free_reads` fleet feature.** The round is the
+existing `Fence`, so nothing on the wire changes. A broker reports the
+feature only when it fences (`FELIX_INTERNAL_FENCE` not `false`), because the
+argument rests on every newer leader fencing before it serves; and only this
+build refuses a cache round on its counter log's generation. Until the
+feature is finalized every read is on the lease, as before.
 
 ### The clock assumption, stated precisely
 
@@ -926,9 +988,9 @@ multi-instance work and not before.
 | --- | --- |
 | Leader fails | Lease lapses; a caught-up replica is promoted at `G+1` after the safety interval. Unavailable for at most `L + margin + promotion`. |
 | Leader fails before its first replica report | No report names a caught-up replica, so none is promoted. The shard is unavailable until that broker returns, or until an operator abandons the log. |
-| Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. With `majority_ack` finalized, a `Quorum` stream keeps taking and acknowledging writes its followers hold until a promoted successor's fence reaches them; reads still stop with the lease. |
+| Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. With `majority_ack` finalized, a `Quorum` stream keeps taking and acknowledging writes its followers hold until a promoted successor's fence reaches them; with `lease_free_reads` too, `Quorum` cache reads its replicas confirm keep being served, and other reads stop with the lease. |
 | Leader partitioned from followers | `Quorum` writes fail — correctly, the majority is unreachable. `Leader` writes succeed and accumulate loss-window exposure, which the lag metric shows. |
-| Control plane unavailable | No new leases are granted. Existing leases run to expiry (5 to 11 s with the defaults), then shards go unavailable. Deliberate: granting without a functioning authority is how split-brain happens. When it comes back, brokers renew within about 3 s. The expiry sweep waits one expiry window after a restart, a Raft leader change, or regaining its store, so the outage does not mark the fleet down. With `majority_ack` finalized, `Quorum` streams go on acknowledging writes a majority of their replicas holds, since nothing on that path asks the control plane; `Leader` streams, caches and reads stop as described. |
+| Control plane unavailable | No new leases are granted. Existing leases run to expiry (5 to 11 s with the defaults), then shards go unavailable. Deliberate: granting without a functioning authority is how split-brain happens. When it comes back, brokers renew within about 3 s. The expiry sweep waits one expiry window after a restart, a Raft leader change, or regaining its store, so the outage does not mark the fleet down. With `majority_ack` finalized, `Quorum` streams go on acknowledging writes a majority of their replicas holds, since nothing on that path asks the control plane; `Leader` streams and caches stop as described, and reads too unless `lease_free_reads` is finalized, when `Quorum` cache reads go on as long as a majority of the shard's replicas answers. |
 | Broker suspended past expiry | Refused at the durable-append check on waking. |
 | Stale broker after reassignment | Its lease has expired, so it refuses. This is what closes #239 by construction rather than by racing a watch. |
 

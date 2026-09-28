@@ -38,6 +38,41 @@ pub struct QuorumMarks {
     shards: MarkTable,
     counters: MarkTable,
     fleet: Option<Arc<felix_common::fleet::FleetGate>>,
+    /// How a `Quorum` read may confirm this broker leads without the lease.
+    /// Unset on a broker that cannot send a round.
+    reads: std::sync::OnceLock<ReadRounds>,
+}
+
+/// Confirms, for a read, that no newer leader of a shard has taken over:
+/// [`crate::leadership::ReadIndex`] outside tests.
+#[async_trait::async_trait]
+pub trait LeadershipCheck: Send + Sync {
+    /// Whether a majority of `key`'s replicas, this broker included, answered
+    /// at `generation` in a round that started after this call did.
+    async fn confirm(&self, key: &ShardKey, generation: u64) -> Result<(), QuorumError>;
+}
+
+struct ReadRounds {
+    check: Arc<dyn LeadershipCheck>,
+    /// The operator kept reads on the lease (`FELIX_QUORUM_READS=lease`).
+    by_lease: bool,
+}
+
+impl std::fmt::Debug for ReadRounds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadRounds")
+            .field("by_lease", &self.by_lease)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What a quorum wait is for: a write is released on the lease, or on its
+/// followers' answers; a read on the lease or on a round
+/// ([`QuorumMarks::reads_by_round`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    Write,
+    Read,
 }
 
 impl QuorumMarks {
@@ -62,6 +97,24 @@ impl QuorumMarks {
         self.fleet
             .as_ref()
             .is_some_and(|fleet| fleet.supports(felix_common::fleet::GENERATION_START))
+    }
+
+    /// Let `Quorum` reads confirm leadership with `check` once the fleet has
+    /// finalized `lease_free_reads`, unless `by_lease` keeps them on the
+    /// lease. Only the first call counts.
+    pub fn set_read_check(&self, check: Arc<dyn LeadershipCheck>, by_lease: bool) {
+        let _ = self.reads.set(ReadRounds { check, by_lease });
+    }
+
+    /// The round a `Quorum` read confirms leadership with in place of the
+    /// lease, when it does: once the fleet finalized `lease_free_reads` along
+    /// with what follower acks need, since the round relies on a newer leader
+    /// fencing a majority before it serves.
+    pub fn reads_by_round(&self) -> Option<&Arc<dyn LeadershipCheck>> {
+        let reads = self.reads.get().filter(|reads| !reads.by_lease)?;
+        let fleet = self.fleet.as_ref()?;
+        (self.acks_by_followers() && fleet.supports(felix_common::fleet::LEASE_FREE_READS))
+            .then_some(&reads.check)
     }
 
     /// Whether a `Quorum` stream shard's mark is decided by its followers'
@@ -493,15 +546,21 @@ pub async fn await_quorum<S: ShardServing + ?Sized>(
 ///
 /// A read of a `Quorum` cache waits the same way, after it has read its
 /// value: every write that value reflects is below the tail read afterwards,
-/// so the answer is never one a failover could take back. `what` names which.
+/// so the answer is never one a failover could take back. It then confirms
+/// this broker still leads ([`confirm_read`]), after the value, so no newer
+/// leader can have acknowledged a write the value lacks.
 pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
     broker: &felix_broker::Broker,
     shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
     ingress: Option<&S>,
     timeout: std::time::Duration,
-    what: &'static str,
+    access: Access,
 ) -> Result<(), anyhow::Error> {
+    let what = match access {
+        Access::Write => "write",
+        Access::Read => "read",
+    };
     let consistency = broker
         .cache_consistency(&shard.tenant_id, &shard.namespace, &shard.stream)
         .await;
@@ -523,7 +582,7 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
         )
         .await
     else {
-        return Ok(());
+        return unreplicated(marks, ingress, access);
     };
     let tail = log.tail_offset().await?;
     if ingress.generation(shard).is_none() {
@@ -534,12 +593,13 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
         .into());
     }
     if !ingress.replicated(shard) {
-        return Ok(());
+        return unreplicated(marks, ingress, access);
     }
     match marks
         .wait_while_leading(shard, || ingress.generation(shard), tail, timeout)
         .await
     {
+        QuorumWait::Reached if access == Access::Read => confirm_read(shard, marks, ingress).await,
         QuorumWait::Reached => release(ingress, what),
         QuorumWait::TimedOut => {
             crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
@@ -616,6 +676,11 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
     let (Some(marks), Some(ingress)) = (marks, ingress) else {
         return Ok(());
     };
+    let access = if end.is_some() {
+        Access::Write
+    } else {
+        Access::Read
+    };
     let end = match end {
         Some(end) => end,
         None => {
@@ -629,7 +694,7 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
                 )
                 .await
             else {
-                return Ok(());
+                return unreplicated(marks, ingress, access);
             };
             log.tail_offset().await?
         }
@@ -642,7 +707,7 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
         .into());
     }
     if !ingress.replicated(shard) {
-        return Ok(());
+        return unreplicated(marks, ingress, access);
     }
     // The counter log ships on a replication pass; start one now rather than
     // wait out the tick.
@@ -652,6 +717,7 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
         .wait_while_leading(shard, || ingress.generation(shard), end, timeout)
         .await
     {
+        QuorumWait::Reached if access == Access::Read => confirm_read(shard, marks, ingress).await,
         QuorumWait::Reached => release(ingress, what),
         QuorumWait::TimedOut => {
             crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
@@ -795,6 +861,62 @@ pub async fn await_readable<S: ShardServing + ?Sized>(
             _ => tokio::time::sleep(left.min(SETTLING_RECHECK)).await,
         }
     }
+}
+
+/// Whether a read of `shard` confirms leadership by a round, so the lease
+/// check a read makes before it takes its value does not apply: a replicated
+/// `Quorum` cache in a fleet that reads without the lease. The round comes
+/// after the value, in [`await_cache_quorum`] or [`await_counter_quorum`].
+pub async fn read_skips_lease<S: ShardServing + ?Sized>(
+    broker: &felix_broker::Broker,
+    shard: &crate::ShardKey,
+    marks: Option<&QuorumMarks>,
+    ingress: Option<&S>,
+) -> bool {
+    if marks.is_none_or(|marks| marks.reads_by_round().is_none())
+        || !ingress.is_some_and(|ingress| ingress.replicated(shard))
+    {
+        return false;
+    }
+    broker
+        .cache_consistency(&shard.tenant_id, &shard.namespace, &shard.stream)
+        .await
+        == Some(felix_broker::ConsistencyLevel::Quorum)
+}
+
+/// Confirm, after a `Quorum` read took its value, that this broker still
+/// leads the shard: by a round when the fleet reads without the lease, and
+/// by the lease otherwise.
+async fn confirm_read<S: ShardServing + ?Sized>(
+    shard: &crate::ShardKey,
+    marks: &QuorumMarks,
+    ingress: &S,
+) -> Result<(), anyhow::Error> {
+    let Some(check) = marks.reads_by_round() else {
+        return release(ingress, "read");
+    };
+    let Some(generation) = ingress.generation(shard) else {
+        return Err(QuorumError::LeadershipLost {
+            what: "read",
+            detail: "shard ownership changed",
+        }
+        .into());
+    };
+    Ok(check.confirm(shard, generation).await?)
+}
+
+/// A `Quorum` shard with no replica set to wait for. A write is done. A read
+/// that skipped the lease up front for a round has no majority to ask, so
+/// the lease decides after all.
+fn unreplicated<S: ShardServing + ?Sized>(
+    marks: &QuorumMarks,
+    ingress: &S,
+    access: Access,
+) -> Result<(), anyhow::Error> {
+    if access == Access::Read && marks.reads_by_round().is_some() {
+        return release(ingress, "read");
+    }
+    Ok(())
 }
 
 /// The lease re-check at ack release.

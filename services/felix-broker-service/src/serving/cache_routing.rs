@@ -155,15 +155,22 @@ pub(crate) async fn apply_cache_op(
                         marks,
                         ingress,
                         quorum_timeout,
-                        "write",
+                        felix_replication::quorum::Access::Write,
                     )
                     .await?;
                     None
                 }
                 CacheRequest::Get => {
-                    // A read does not hold the fence, but it follows the lease.
+                    // A read does not hold the fence, but it follows the lease,
+                    // or confirms by a round once it has its value.
                     drop(fenced);
-                    refuse_read_on_lapse(ingress)?;
+                    if !felix_replication::quorum::read_skips_lease(
+                        broker, &written, marks, ingress,
+                    )
+                    .await
+                    {
+                        refuse_read_on_lapse(ingress)?;
+                    }
                     let value = cache_store
                         .get(tenant_id, namespace, cache, shard, key)
                         .await;
@@ -173,7 +180,7 @@ pub(crate) async fn apply_cache_op(
                         marks,
                         ingress,
                         quorum_timeout,
-                        "read",
+                        felix_replication::quorum::Access::Read,
                     )
                     .await?;
                     value
@@ -192,7 +199,7 @@ pub(crate) async fn apply_cache_op(
                         marks,
                         ingress,
                         quorum_timeout,
-                        "write",
+                        felix_replication::quorum::Access::Write,
                     )
                     .await?;
                     removed
@@ -309,7 +316,13 @@ pub(crate) async fn apply_counter_op(
                 }
                 CacheRequest::CounterGet => {
                     drop(fenced);
-                    refuse_read_on_lapse(ingress)?;
+                    if !felix_replication::quorum::read_skips_lease(
+                        broker, &shard_key, marks, ingress,
+                    )
+                    .await
+                    {
+                        refuse_read_on_lapse(ingress)?;
+                    }
                     let sum = counters
                         .get(tenant_id, namespace, cache, shard, key)
                         .await

@@ -156,6 +156,9 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardFencedAckTwoPromotions.cfg` | the same with two promotions (`L = 2`) and no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (14.3M distinct states, depth 35, 80 s on ten cores, before acks counted follower answers and not re-run since; by hand only, see below). With the start record on too it had not finished at 80M distinct states after nine minutes on sixteen cores |
 | `FelixShardFollowerLabels.cfg` | the same with followers labelling a shipped record with the sender's generation rather than the one that wrote it (`LabelOnReceipt`) | violate `AckedOnMajority` |
 | `FelixShardUnfencedAck.cfg` | the same without the fence | violate `AckedHeldByLeader` |
+| `FelixShardReadsRound.cfg` | `FelixShardReads.tla`: `FelixShardFencedAck.cfg`'s writes with one read, confirmed by a round of fences at the leader's generation after it takes its value (`ReadConfirm = "round"`); `L = 2`, time to 2, one write | pass `NoStaleRead`, `AckedHeldByLeader`, `AckedOnMajority` (22.1M distinct states, depth 27, 6 min on four workers) |
+| `FelixShardReadsNoRound.cfg` | the same with the round skipped | violate `NoStaleRead` |
+| `FelixShardReadsLease.cfg` | the same with the lease in place of the round | violate `NoStaleRead` |
 | `FelixShardFigure8FollowerAcks.cfg` | `FelixShardFencedAck.cfg`'s acknowledgement from the seeded Figure 8 history, promotion still reading the report | pass every invariant it checks (7.67M distinct states, depth 36, 58 s on sixteen cores) |
 | `FelixShardFigure8FollowerAcksNoStartRecord.cfg` | the same without the start record: follower acks count a record the leader inherited | violate `AckedOnMajority` |
 | `FelixShardFigure8.cfg` | the broker as built (`FelixShardFencedPromotion.cfg`) with the generation start record (`StartRecord`), started from a history two leaderships in (`FelixShardFigure8.tla`) | pass every invariant it checks (5.99M distinct states, depth 39, 35 s on sixteen cores) |
@@ -436,6 +439,25 @@ b's y in its fence, and AckedOnMajority fails. With it
 covered as well) the new leader's start record has to reach a majority before
 x counts, and every later fence prefers that log to b's. 12.9M distinct
 states, 90 s.
+
+### The round that makes a read linearizable
+
+`FelixShardReads.tla` adds reads to `FelixShard`. A read begins on a broker
+serving the shard, takes its value (everything in its log) and remembers which
+writes were acknowledged by then; it is answered later, and `NoStaleRead`
+says every one of those writes is in its value. With follower acks and the
+promotion fence, the deposed leader keeps believing it leads under drift and
+no margin, so it keeps beginning reads. `ReadConfirm = "round"` has it answer
+only once a majority has taken its fence at the read's generation after the
+value was taken (`ConfirmRead`; the broker votes for itself the same way, on
+`promised`), and `FelixShardReadsRound.cfg` passes: the successor fenced a
+majority before it acknowledged anything, and that majority shares a replica
+with the round's. `FelixShardReadsNoRound.cfg` answers on belief alone and
+`FelixShardReadsLease.cfg` on the lease; TLC finds the deposed leader
+answering without its successor's write in both, 14 steps in. The model has
+one log per broker, so the counter log a cache replica also checks is not in
+it, and the read's wait for the mark is left out: that keeps a read from
+returning a record a failover can take back, a different property.
 
 ### The check that is load-bearing
 

@@ -532,6 +532,20 @@ counter get, watch) hand out nothing past the mark. A broker whose lease has
 lapsed refuses reads of the shards it led, and ends their subscriptions and
 watches the way a shard move does.
 
+Once the fleet finalizes `lease_free_reads`, a get or counter get on a
+replicated `Quorum` cache is linearizable without the lease: after taking its
+value, the broker sends the promotion fence at its own generation to the
+shard's replicas and answers only once a majority, itself included, confirms
+that no newer leader has reached it. A leader cut off from its replicas
+refuses the read (`leadership_lost`, retryable) as soon as the round fails,
+lease or not, and one cut off only from the control plane keeps serving reads.
+`FELIX_QUORUM_READS=lease` keeps a broker on the lease. Watches still follow
+the lease. See "Reads without the lease" in `docs/replication-design.md`.
+
+> `crates/testing/felix-cluster/tests/failures/lease_free_reads.rs::a_cut_off_leader_cannot_serve_a_quorum_read_once_a_new_leader_took_writes`,
+> `quorum_reads_continue_while_the_control_plane_is_partitioned`,
+> `without_the_fleet_feature_a_quorum_read_follows_the_lease`.
+
 ## Authorization
 
 Enforced, contrary to what this document said for a long time. Tenant-scoped

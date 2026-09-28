@@ -173,6 +173,33 @@ streams, caches and reads keep the lease.
   at once for its lapsed lease. The client retries it against the new leader,
   and an idempotent producer keeps it from landing twice.
 
+#### `lease_free_reads`
+
+Once finalized, together with `majority_ack` and `generation_start`, a get or
+counter get on a replicated `Quorum` cache no longer trusts the lease. After
+the read takes its value, the broker sends the promotion fence at its own
+generation to the shard's replicas and answers once a majority, itself
+included, has taken it. Stream readers and cache watches keep the lease.
+
+- **Finalize `generation_start` and `majority_ack` first, or in the same
+  change window.** `lease_free_reads` has no effect until all three are
+  finalized.
+- **Every broker must fence on promotion.** As for `majority_ack`, a broker
+  running with `FELIX_INTERNAL_FENCE=false` does not report the feature, so
+  the dry run names it and the finalize is refused until it runs with the
+  fence.
+- **Nothing changes on the wire or on disk.** The round is the existing
+  `Fence`, sent at a generation the replica already accepted, which writes
+  nothing.
+- **What clients see.** A read costs a round trip to the nearest majority
+  (concurrent reads of a shard share rounds). A leader that loses the control
+  plane keeps serving reads its replicas confirm; one cut off from its
+  replicas refuses them as `leadership_lost`, which is retryable, as soon as
+  the round fails instead of at its lease's expiry.
+- **Keeping the lease.** `FELIX_QUORUM_READS=lease` keeps one broker's reads on
+  the lease after the finalize, the faster path that is only as safe as the
+  clocks and the lease margins.
+
 A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature
 can be finalized, only once every control-plane member is at metadata

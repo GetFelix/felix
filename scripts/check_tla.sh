@@ -9,6 +9,7 @@
 # turned into a pass would be a model that stopped saying anything.
 #
 # `scripts/check_tla.sh FelixShardFigure8 FelixShardLease` checks only those.
+# `TLC_WORKERS=4` caps TLC's worker threads; the default is one per core.
 #
 # Needs Java 11+ on PATH, or Docker. The TLA+ tools are fetched once, pinned
 # by release and checksum, into target/tla/.
@@ -50,8 +51,9 @@ tlc() {
   case "$cfg" in
     FelixPlacementPacing*) module="FelixPlacementPacing" ;;
     FelixShardFigure8*) module="FelixShardFigure8" ;;
+    FelixShardReads*) module="FelixShardReads" ;;
   esac
-  local flags=(-deadlock -workers auto -checkpoint 0 -config "$cfg.cfg" "$module.tla")
+  local flags=(-deadlock -workers "${TLC_WORKERS:-auto}" -checkpoint 0 -config "$cfg.cfg" "$module.tla")
   local status=0
   if command -v java >/dev/null 2>&1 && java -version >/dev/null 2>&1; then
     (cd "$SPEC_DIR" && java -XX:+UseParallelGC -jar "../../$JAR" \
@@ -87,6 +89,9 @@ expectations=(
   "FelixShardFigure8FollowerAcks pass"
   "FelixShardFigure8FollowerAcksNoStartRecord violates AckedOnMajority"
   "FelixShardUnfencedAck violates AckedHeldByLeader"
+  "FelixShardReadsRound pass"
+  "FelixShardReadsNoRound violates NoStaleRead"
+  "FelixShardReadsLease violates NoStaleRead"
   "FelixShardFencedPromotion pass"
   "FelixShardNoCommitCheck violates NoStaleCommit"
   "FelixShardNoReportOrder violates AckedSurvive"
