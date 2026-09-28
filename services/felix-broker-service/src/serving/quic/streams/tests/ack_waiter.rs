@@ -501,7 +501,7 @@ async fn a_quorum_timeout_is_answered_as_outcome_unknown() -> Result<()> {
     ));
     let waiters = Arc::new(Semaphore::new(10));
     let timed_out = || {
-        anyhow::Error::from(crate::replication::quorum::QuorumError::TimedOut {
+        anyhow::Error::from(felix_replication::quorum::QuorumError::TimedOut {
             what: "batch",
             timeout: Duration::from_millis(50),
         })

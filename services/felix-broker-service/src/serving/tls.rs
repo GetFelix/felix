@@ -251,7 +251,7 @@ fn carries_principal_uri(
 
 /// Same provider as the peer transport; see `peer::tls::provider`.
 fn provider() -> Arc<rustls::crypto::CryptoProvider> {
-    crate::peer::tls::provider()
+    felix_replication::peer::tls::provider()
 }
 
 /// Write the generated certificate where a client can trust it from.

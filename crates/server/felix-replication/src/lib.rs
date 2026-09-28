@@ -1,6 +1,13 @@
-//! Replication: the leader ships committed records to the followers of every
-//! shard it leads ([`driver`], [`ship_once`]), and a follower stores them
-//! ([`replica`]).
+//! Broker-to-broker replication: the leader ships committed records to the
+//! followers of every shard it leads ([`driver`], [`ship_once`]), and a
+//! follower stores them ([`replica`]). Both travel over the broker-internal
+//! transport in [`peer`].
+//!
+//! The broker service wires this in. What replication needs from it -- the
+//! serving state a quorum wait reads ([`quorum::ShardServing`]), the write
+//! fence a drain waits behind ([`driver::WriteFence`]) and the token a report
+//! carries ([`reporter::Credential`]) -- comes in through small traits, so
+//! nothing here depends on the service.
 //!
 //! # One cursor per follower
 //!
@@ -32,6 +39,8 @@
 //! stops answering stops consuming anything at all, because the next read does
 //! not start until the last answer arrives.
 
+pub mod peer;
+
 pub mod driver;
 mod follower;
 pub mod halted;
@@ -40,6 +49,7 @@ pub mod quorum;
 mod rebuild;
 pub mod replica;
 pub mod reporter;
+mod shard;
 mod ship;
 mod throttle;
 
@@ -47,6 +57,7 @@ pub use follower::{CATCH_UP_BOUND, FollowerCursor, Halt, caught_up, lag_records}
 pub use quorum::{majority_of, quorum_offset, quorum_offset_without};
 pub use rebuild::{RebuildPolicy, Rebuilds};
 pub use replica::ReplicaHandler;
+pub use shard::{ShardKey, ShardKind};
 pub use ship::{Progress, read_answer, ship_once, ship_once_with};
 pub use throttle::MoveThrottle;
 

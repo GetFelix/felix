@@ -52,9 +52,9 @@ fn an_absent_credential_says_so_rather_than_vanishing() {
 #[test]
 fn peer_timeouts_are_printed_as_milliseconds() {
     let config = BrokerConfig {
-        peer_transport: Some(crate::peer::PeerTransportConfig {
+        peer_transport: Some(felix_replication::peer::PeerTransportConfig {
             request_timeout: std::time::Duration::from_millis(2500),
-            ..crate::peer::PeerTransportConfig::default()
+            ..felix_replication::peer::PeerTransportConfig::default()
         }),
         ..BrokerConfig::default()
     };

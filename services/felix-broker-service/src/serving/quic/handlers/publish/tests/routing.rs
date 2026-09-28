@@ -121,9 +121,9 @@ async fn resolve_stream_cached_uses_cached_entry_until_cleared() {
 #[tokio::test]
 async fn a_forwarded_publish_is_stamped_with_the_shard_it_was_routed_for() {
     let shutdown = tokio_util::sync::CancellationToken::new();
-    let peers = crate::peer::PeerPool::new(
+    let peers = felix_replication::peer::PeerPool::new(
         "broker-a".to_string(),
-        crate::peer::PeerTransportConfig::default(),
+        felix_replication::peer::PeerTransportConfig::default(),
         shutdown.clone(),
     )
     .expect("bind a peer pool");

@@ -40,7 +40,7 @@ import sys
 MODELLED = (
     "services/felix-broker-service/src/cluster/lease",
     "services/felix-broker-service/src/cluster/membership",
-    "services/felix-broker-service/src/replication",
+    "crates/server/felix-replication/src",
     "services/felix-broker-service/src/serving",
     "services/felix-broker-service/src/shards/lifecycle",
     "services/felix-controlplane-service/src/api/nodes/reports",

@@ -429,6 +429,26 @@ impl IngressRouter {
     }
 }
 
+impl felix_replication::quorum::ShardServing for IngressRouter {
+    fn replicated(&self, key: &ShardKey) -> bool {
+        IngressRouter::replicated(self, key)
+    }
+
+    fn generation(&self, key: &ShardKey) -> Option<u64> {
+        IngressRouter::generation(self, key)
+    }
+
+    fn lease_valid(&self) -> bool {
+        self.fence.lease_valid()
+    }
+
+    fn record_ack_refusal(&self) {
+        crate::cluster::lease::metrics::record_refusal(
+            crate::cluster::lease::metrics::BOUNDARY_ACK,
+        );
+    }
+}
+
 /// Whether `key`'s leader in `view` has been fenced for a move.
 fn draining(view: &View, key: &ShardKey) -> bool {
     view.routes

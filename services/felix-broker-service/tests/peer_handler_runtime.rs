@@ -8,7 +8,7 @@
 use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
-use felix_broker_service::peer::{PeerPool, PeerRequestHandler, PeerServer, PeerTransportConfig};
+use felix_replication::peer::{PeerPool, PeerRequestHandler, PeerServer, PeerTransportConfig};
 use felix_wire::internal::{AckMode, ForwardPublish, ForwardPublishOk, InternalMessage, ShardRef};
 use tokio_util::sync::CancellationToken;
 

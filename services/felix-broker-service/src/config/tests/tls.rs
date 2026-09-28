@@ -100,9 +100,9 @@ fn a_control_plane_ca_over_plain_http_is_refused() {
 
 fn cluster_member(tls: bool, allow_unauthenticated: bool) -> BrokerConfig {
     BrokerConfig {
-        peer_transport: Some(crate::peer::PeerTransportConfig {
+        peer_transport: Some(felix_replication::peer::PeerTransportConfig {
             bind: "0.0.0.0:5001".parse().expect("addr"),
-            tls: tls.then(|| crate::peer::config::PeerTlsConfig {
+            tls: tls.then(|| felix_replication::peer::config::PeerTlsConfig {
                 cert_path: "/etc/felix/peer/tls.crt".into(),
                 key_path: "/etc/felix/peer/tls.key".into(),
                 ca_path: "/etc/felix/peer/ca.crt".into(),

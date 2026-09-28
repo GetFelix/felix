@@ -59,6 +59,12 @@ impl NodeCredential {
     }
 }
 
+impl felix_replication::reporter::Credential for NodeCredential {
+    fn bearer(&self) -> Arc<String> {
+        NodeCredential::bearer(self)
+    }
+}
+
 /// What a Felix access token says about itself.
 ///
 /// Read from the payload **without verifying the signature**, and that is

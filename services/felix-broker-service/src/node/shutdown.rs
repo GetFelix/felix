@@ -24,8 +24,8 @@ use super::handoff::Handoff;
 use crate::cluster::credential::NodeCredential;
 use crate::cluster::membership::{self, MembershipTask};
 use crate::config::BrokerConfig;
-use crate::peer::PeerPool;
 use crate::shards::watch::ShardOwnership;
+use felix_replication::peer::PeerPool;
 
 /// Everything a running node has to stop, in the fields the drain reads.
 pub(super) struct Running {

@@ -23,7 +23,7 @@ use parking_lot::Mutex;
 use tokio::sync::watch;
 
 use super::FollowerCursor;
-use crate::shards::ShardKey;
+use crate::ShardKey;
 
 /// The quorum-durable high-water mark for each shard this broker leads.
 ///
@@ -231,6 +231,23 @@ pub enum QuorumError {
     },
 }
 
+/// What the quorum waits need to know about this broker's hold on a shard.
+///
+/// The broker's ingress router answers it; it lives behind a trait so this
+/// crate does not depend on the broker service.
+pub trait ShardServing: Send + Sync {
+    /// Whether `key` has followers, so a `Quorum` write has to wait for them.
+    fn replicated(&self, key: &ShardKey) -> bool;
+    /// The generation this broker serves `key` at, or `None` when it does not
+    /// serve it here.
+    fn generation(&self, key: &ShardKey) -> Option<u64>;
+    /// Whether this broker's lease is valid right now, against the clock.
+    fn lease_valid(&self) -> bool;
+    /// Count a `Quorum` write held back from its acknowledgement because the
+    /// lease lapsed while it waited.
+    fn record_ack_refusal(&self);
+}
+
 /// Hold a `Quorum` publish until a majority of the shard's replica set has it.
 ///
 /// A `Leader` stream returns at once: local durability is the guarantee it
@@ -241,12 +258,12 @@ pub enum QuorumError {
 /// cannot say that it succeeded", which is the honest answer and the one a
 /// client can act on. Reporting success instead would make an acknowledgement
 /// mean less than the stream promises.
-pub async fn await_quorum(
+pub async fn await_quorum<S: ShardServing + ?Sized>(
     handle: &felix_broker::StreamHandle,
-    shard: Option<&crate::shards::ShardKey>,
+    shard: Option<&crate::ShardKey>,
     outcome: &felix_broker::PublishOutcome,
-    marks: Option<&crate::replication::quorum::QuorumMarks>,
-    ingress: Option<&crate::shards::routing::IngressRouter>,
+    marks: Option<&crate::quorum::QuorumMarks>,
+    ingress: Option<&S>,
     timeout: std::time::Duration,
 ) -> Result<(), anyhow::Error> {
     if handle.consistency() != felix_broker::ConsistencyLevel::Quorum {
@@ -282,21 +299,17 @@ pub async fn await_quorum(
         .wait_for(shard, generation, last_offset + 1, timeout)
         .await
     {
-        crate::replication::quorum::QuorumWait::Reached => release(ingress, "batch"),
-        crate::replication::quorum::QuorumWait::TimedOut => {
-            crate::replication::metrics::record_quorum(
-                crate::replication::metrics::QUORUM_TIMED_OUT,
-            );
+        crate::quorum::QuorumWait::Reached => release(ingress, "batch"),
+        crate::quorum::QuorumWait::TimedOut => {
+            crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
             Err(QuorumError::TimedOut {
                 what: "batch",
                 timeout,
             }
             .into())
         }
-        crate::replication::quorum::QuorumWait::NotLeading => {
-            crate::replication::metrics::record_quorum(
-                crate::replication::metrics::QUORUM_NOT_LEADING,
-            );
+        crate::quorum::QuorumWait::NotLeading => {
+            crate::metrics::record_quorum(crate::metrics::QUORUM_NOT_LEADING);
             Err(QuorumError::LeadershipLost {
                 what: "batch",
                 detail: "shard leadership moved",
@@ -317,11 +330,11 @@ pub async fn await_quorum(
 /// A read of a `Quorum` cache waits the same way, after it has read its
 /// value: every write that value reflects is below the tail read afterwards,
 /// so the answer is never one a failover could take back. `what` names which.
-pub async fn await_cache_quorum(
+pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
     broker: &felix_broker::Broker,
-    shard: &crate::shards::ShardKey,
+    shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
-    ingress: Option<&crate::shards::routing::IngressRouter>,
+    ingress: Option<&S>,
     timeout: std::time::Duration,
     what: &'static str,
 ) -> Result<(), anyhow::Error> {
@@ -362,15 +375,11 @@ pub async fn await_cache_quorum(
     match marks.wait_for(shard, generation, tail, timeout).await {
         QuorumWait::Reached => release(ingress, what),
         QuorumWait::TimedOut => {
-            crate::replication::metrics::record_quorum(
-                crate::replication::metrics::QUORUM_TIMED_OUT,
-            );
+            crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
             Err(QuorumError::TimedOut { what, timeout }.into())
         }
         QuorumWait::NotLeading => {
-            crate::replication::metrics::record_quorum(
-                crate::replication::metrics::QUORUM_NOT_LEADING,
-            );
+            crate::metrics::record_quorum(crate::metrics::QUORUM_NOT_LEADING);
             Err(QuorumError::LeadershipLost {
                 what,
                 detail: "shard leadership moved",
@@ -392,11 +401,11 @@ pub async fn await_cache_quorum(
 ///
 /// Zero while this broker has no mark for the shard at its current
 /// generation: nothing is known to be on a majority yet.
-pub fn read_bound(
+pub fn read_bound<S: ShardServing + ?Sized>(
     consistency: Option<felix_broker::ConsistencyLevel>,
-    shard: &crate::shards::ShardKey,
+    shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
-    ingress: Option<&crate::shards::routing::IngressRouter>,
+    ingress: Option<&S>,
 ) -> Option<u64> {
     if consistency != Some(felix_broker::ConsistencyLevel::Quorum) {
         return None;
@@ -422,11 +431,11 @@ pub fn read_bound(
 /// own mark in [`QuorumMarks::counters`], published only after a report the
 /// control plane stored names no follower missing them as caught up.
 #[allow(clippy::too_many_arguments)]
-pub async fn await_counter_quorum(
+pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
     broker: &felix_broker::Broker,
-    shard: &crate::shards::ShardKey,
+    shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
-    ingress: Option<&crate::shards::routing::IngressRouter>,
+    ingress: Option<&S>,
     timeout: std::time::Duration,
     end: Option<u64>,
     what: &'static str,
@@ -478,15 +487,11 @@ pub async fn await_counter_quorum(
     {
         QuorumWait::Reached => release(ingress, what),
         QuorumWait::TimedOut => {
-            crate::replication::metrics::record_quorum(
-                crate::replication::metrics::QUORUM_TIMED_OUT,
-            );
+            crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
             Err(QuorumError::TimedOut { what, timeout }.into())
         }
         QuorumWait::NotLeading => {
-            crate::replication::metrics::record_quorum(
-                crate::replication::metrics::QUORUM_NOT_LEADING,
-            );
+            crate::metrics::record_quorum(crate::metrics::QUORUM_NOT_LEADING);
             Err(QuorumError::LeadershipLost {
                 what,
                 detail: "shard leadership moved",
@@ -505,10 +510,10 @@ pub async fn await_counter_quorum(
 /// shard at all -- its lease lapsed, or the shard is led elsewhere -- so a
 /// reader waiting on the mark stops and resumes where the shard is served.
 /// Only asked for `Quorum` shards.
-pub fn committed_bound(
-    key: &crate::shards::ShardKey,
+pub fn committed_bound<S: ShardServing + ?Sized>(
+    key: &crate::ShardKey,
     marks: &QuorumMarks,
-    ingress: &crate::shards::routing::IngressRouter,
+    ingress: &S,
 ) -> felix_broker::ReadBound {
     use felix_broker::ReadBound;
     if !ingress.replicated(key) {
@@ -517,7 +522,7 @@ pub fn committed_bound(
     let Some(generation) = ingress.generation(key) else {
         return ReadBound::Refused;
     };
-    if !ingress.fence().lease_valid() {
+    if !ingress.lease_valid() {
         return ReadBound::Refused;
     }
     match marks.offset(key, generation) {
@@ -529,13 +534,13 @@ pub fn committed_bound(
 /// [`committed_bound`] for the broker core's stream readers.
 pub struct CommittedReads {
     marks: std::sync::Arc<QuorumMarks>,
-    ingress: std::sync::Arc<crate::shards::routing::IngressRouter>,
+    ingress: std::sync::Arc<dyn ShardServing>,
 }
 
 impl CommittedReads {
     pub fn new(
         marks: std::sync::Arc<QuorumMarks>,
-        ingress: std::sync::Arc<crate::shards::routing::IngressRouter>,
+        ingress: std::sync::Arc<dyn ShardServing>,
     ) -> Self {
         Self { marks, ingress }
     }
@@ -555,14 +560,14 @@ impl felix_broker::ReadBounds for CommittedReads {
         stream: &str,
         shard: u32,
     ) -> felix_broker::ReadBound {
-        let key = crate::shards::ShardKey {
+        let key = crate::ShardKey {
             tenant_id: tenant_id.to_string(),
             namespace: namespace.to_string(),
             stream: stream.to_string(),
             shard,
-            kind: crate::shards::ShardKind::Stream,
+            kind: crate::ShardKind::Stream,
         };
-        committed_bound(&key, &self.marks, &self.ingress)
+        committed_bound(&key, &self.marks, &*self.ingress)
     }
 }
 
@@ -574,11 +579,11 @@ impl felix_broker::ReadBounds for CommittedReads {
 /// the mark short of `end`: either way the reader has nothing it can stand
 /// behind, and says so rather than answering from records a failover may
 /// replace.
-pub async fn await_readable(
+pub async fn await_readable<S: ShardServing + ?Sized>(
     consistency: Option<felix_broker::ConsistencyLevel>,
-    key: &crate::shards::ShardKey,
+    key: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
-    ingress: Option<&crate::shards::routing::IngressRouter>,
+    ingress: Option<&S>,
     end: u64,
     timeout: std::time::Duration,
 ) -> Result<(), QuorumError> {
@@ -632,14 +637,11 @@ pub async fn await_readable(
 /// acknowledgement from a broker that may no longer lead is the one the model
 /// (`AckQuorum` requires `LeaseValid`) forbids. The write is on a majority or
 /// may yet be, so the answer is "unknown", never "failed".
-fn release(
-    ingress: &crate::shards::routing::IngressRouter,
-    what: &'static str,
-) -> Result<(), anyhow::Error> {
-    if ingress.fence().lease_valid() {
+fn release<S: ShardServing + ?Sized>(ingress: &S, what: &'static str) -> Result<(), anyhow::Error> {
+    if ingress.lease_valid() {
         return Ok(());
     }
-    crate::cluster::lease::metrics::record_refusal(crate::cluster::lease::metrics::BOUNDARY_ACK);
+    ingress.record_ack_refusal();
     Err(QuorumError::LeadershipLost {
         what,
         detail: "the lease lapsed",

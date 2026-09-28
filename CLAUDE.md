@@ -119,6 +119,14 @@ sends/receives a plain `Ok`, and the only safe reading of that silence is `ORIGI
 Optional JSON fields must default to the pre-existing behaviour so an old peer and a new peer
 exchange byte-identical frames.
 
+### Replication is its own crate
+
+`crates/server/felix-replication/` owns the broker-to-broker transport (`peer/`) and log
+replication (`driver/`, `replica.rs`, `quorum.rs`, `reporter.rs`). It does not depend on the
+broker service: the service hands in its ingress router, shard fence and node credential
+through `quorum::ShardServing`, `driver::WriteFence` and `reporter::Credential`, and
+`services/felix-broker-service/src/node/cluster.rs` wires it up.
+
 ### Control plane and startup ordering
 
 `services/felix-controlplane-service/` serves metadata over REST; the broker seeds from it at startup.

@@ -25,9 +25,9 @@ async fn a_stalled_forward_does_not_hold_up_another_shard() {
         .expect("handle");
     // Bound and never read, so a handshake to it hangs rather than failing.
     let blackhole = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind a silent peer");
-    let peers = crate::peer::PeerPool::new(
+    let peers = felix_replication::peer::PeerPool::new(
         "broker-a".to_string(),
-        crate::peer::PeerTransportConfig::default(),
+        felix_replication::peer::PeerTransportConfig::default(),
         CancellationToken::new(),
     )
     .expect("bind a peer pool");

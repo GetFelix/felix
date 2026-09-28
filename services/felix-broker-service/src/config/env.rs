@@ -45,7 +45,10 @@ impl BrokerConfig {
         let membership = membership_from_env(&controlplane_url, &controlplane_token)?;
         let peer_transport = match &membership {
             Some(membership) => {
-                let peer = crate::peer::PeerTransportConfig::from_env(quic_bind, quic_listeners)?;
+                let peer = felix_replication::peer::PeerTransportConfig::from_env(
+                    quic_bind,
+                    quic_listeners,
+                )?;
                 warn_on_unreachable_advertise(membership, &peer);
                 // Under mTLS the node id is the name on the certificate, and a
                 // dialler verifies a peer's certificate against the node id it

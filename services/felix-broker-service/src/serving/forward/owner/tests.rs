@@ -23,7 +23,7 @@ use felix_wire::internal::{AckMode, ShardRef};
 use tempfile::TempDir;
 
 use super::*;
-use crate::replication::quorum::QuorumMarks;
+use felix_replication::quorum::QuorumMarks;
 
 const TENANT: &str = "t1";
 const NAMESPACE: &str = "ns";

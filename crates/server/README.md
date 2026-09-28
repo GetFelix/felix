@@ -3,6 +3,9 @@
 The libraries the two services in [`../../services`](../../services) are built
 from. None of them opens a socket or reads the environment on its own; the
 services do the wiring, which is what lets these be tested without a network.
+The one exception is `felix-replication`'s peer transport, which binds its
+listener and reads its `FELIX_INTERNAL_*` settings when the broker service
+asks it to.
 
 - [`felix-broker`](felix-broker) is the broker's semantics: streams, caches and
   consumer groups over one log, the publish path, and fanout. Start at
@@ -15,6 +18,9 @@ services do the wiring, which is what lets these be tested without a network.
   service owns its socket and TLS and hands it each connection.
 - [`felix-router`](felix-router) answers which node serves a shard, from the
   assignments the control plane publishes.
+- [`felix-replication`](felix-replication) is how brokers talk to each other:
+  the broker-internal transport, and the log replication that runs over it.
+  The broker service plugs in through three small traits.
 - [`felix-authz`](felix-authz) is tokens and permissions: the broker uses it
   to verify a client's token and match its permissions, and the test tools and
   demos use it to mint tokens.

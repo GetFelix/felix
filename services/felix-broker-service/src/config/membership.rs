@@ -195,7 +195,7 @@ pub(crate) fn kafka_advertise_addr(
 /// start on a legitimate NAT would be worse than saying so.
 pub(super) fn warn_on_unreachable_advertise(
     membership: &MembershipConfig,
-    peer: &crate::peer::PeerTransportConfig,
+    peer: &felix_replication::peer::PeerTransportConfig,
 ) {
     // Port 0 is an ephemeral bind, so there is nothing to compare against.
     if peer.bind.port() == 0 {

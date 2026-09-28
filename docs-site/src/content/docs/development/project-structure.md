@@ -36,6 +36,7 @@ crates/
 ├── felix-client/        # Client SDK
 ├── felix-common/        # Shared types and utilities
 ├── felix-router/        # Region-aware routing
+├── felix-replication/   # Broker-to-broker transport and log replication
 ├── felix-authz/         # Authentication and authorization
 └── felix-conformance/   # Wire protocol conformance tests
 ```
@@ -226,6 +227,17 @@ publisher
 - `shard.rs` with `shard/table.rs` and `shard/router.rs`: The routing table the control plane's assignments are built into, and `ShardRouter`, which resolves a shard against it
 - `region.rs`: `RegionRouter`, the directional region bridge allowlist, and `parse_bridges` for `FELIX_REGION_BRIDGES`
 
+#### felix-replication
+
+**Purpose**: Brokers talking to brokers.
+
+**Contents**:
+- `peer.rs` / `peer/`: The broker-internal transport — connection pool, listener, mTLS
+- `driver.rs`, `ship.rs`, `quorum.rs`, `rebuild.rs`, `reporter.rs`: Shipping to followers, the `Quorum` wait, and replica reports to the control plane
+- `replica.rs`: Applying shipped records as a follower
+
+The broker service plugs in through three traits: `quorum::ShardServing` (its ingress router), `driver::WriteFence` (its shard fence) and `reporter::Credential` (its node credential).
+
 #### felix-authz
 
 **Purpose**: Authentication and authorization.
@@ -263,8 +275,6 @@ services/
 │   │   ├── serving/             # Client-facing QUIC, auth, forwarding to shard owners
 │   │   ├── cluster/             # Membership, lease, credential, catalog sync
 │   │   ├── shards/              # Shard ownership: watch, lifecycle, ingress routing
-│   │   ├── replication.rs, replication/  # Leader-side shipping and follower-side apply
-│   │   ├── peer.rs, peer/       # Broker-to-broker transport
 │   │   ├── config.rs, config/   # Configuration loading and validation
 │   │   ├── observability.rs, observability/  # Tracing, metrics, sampled timings
 │   │   └── bin/soak/            # Resource-leak and lifecycle soak harness
@@ -296,8 +306,6 @@ demos/
 - `serving/`: Serving clients — `quic/` (connections, streams, publish and subscribe handlers), `auth.rs`, `forward.rs` (forwarding to a shard's owner), `core_shards.rs`, `group_ops.rs`, `cache_routing.rs`
 - `cluster/`: Belonging to a cluster — `membership.rs`, `lease.rs`, `credential.rs`, `catalog_sync.rs`, `node_catalog.rs`, `client_endpoints.rs`
 - `shards/`: Owning shards — `watch.rs` (assignments from the control plane), `lifecycle.rs`, `routing.rs` (ingress dispatch)
-- `replication.rs` / `replication/`: Shipping to followers (`driver.rs`, `ship.rs`, `quorum.rs`, `rebuild.rs`, `reporter.rs`) and applying as one (`replica.rs`)
-- `peer.rs` / `peer/`: The broker-internal transport — connection pool, listener, mTLS
 - `config.rs` / `config/`: `BrokerConfig` from env and YAML, durable storage config, validation
 - `observability.rs` / `observability/`: Tracing, the metrics server, sampled timings
 

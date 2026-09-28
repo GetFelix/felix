@@ -187,12 +187,12 @@ impl ClientError {
             if let Some(broker) = cause.downcast_ref::<felix_broker::BrokerError>() {
                 return Self::classify_broker(broker, message);
             }
-            if let Some(quorum) = cause.downcast_ref::<crate::replication::quorum::QuorumError>() {
+            if let Some(quorum) = cause.downcast_ref::<felix_replication::quorum::QuorumError>() {
                 let code = match quorum {
-                    crate::replication::quorum::QuorumError::TimedOut { .. } => {
+                    felix_replication::quorum::QuorumError::TimedOut { .. } => {
                         ErrorCode::QuorumTimeout
                     }
-                    crate::replication::quorum::QuorumError::LeadershipLost { .. } => {
+                    felix_replication::quorum::QuorumError::LeadershipLost { .. } => {
                         ErrorCode::LeadershipLost
                     }
                 };

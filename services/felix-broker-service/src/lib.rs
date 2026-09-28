@@ -44,11 +44,13 @@
 //!
 //! # 4. Replicating
 //!
-//! [`replication`] ships committed records to the followers of every shard
-//! this broker leads, and applies them on a follower, over the broker-to-broker
-//! transport in [`peer`]. It is also what tells the control plane which
-//! replicas hold the log, which is what a failover and a planned move both
-//! read.
+//! The `felix-replication` crate ships committed records to the followers of
+//! every shard this broker leads, and applies them on a follower, over its
+//! broker-to-broker transport in `felix_replication::peer`. It is also what
+//! tells the control plane which replicas hold the log, which is what a
+//! failover and a planned move both read. `node` wires it in: the ingress
+//! router, the shard fence and the node credential are what it reads through
+//! its traits.
 //!
 //! [`config`] parses the environment and decides where logs live, and
 //! [`observability`] serves metrics and health and holds the opt-in per-stage
@@ -62,9 +64,6 @@ pub mod serving;
 pub mod cluster;
 
 pub mod shards;
-
-pub mod peer;
-pub mod replication;
 
 pub mod config;
 pub mod node;

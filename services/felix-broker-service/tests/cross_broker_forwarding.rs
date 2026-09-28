@@ -18,13 +18,13 @@ use felix_authz::{
     FelixTokenIssuer, Jwk, Jwks, KeyUse, TenantId, TenantKeyCache, TenantKeyMaterial,
 };
 use felix_broker::{Broker, StreamMetadata};
-use felix_broker_service::peer::{PeerPool, PeerServer, PeerTransportConfig};
 use felix_broker_service::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
 use felix_broker_service::serving::forward::{
     ForwardError, ForwardKey, ForwardTarget, ForwardingHandler, forward_publish,
 };
 use felix_broker_service::shards::routing::{IngressRouter, routing_table_from};
 use felix_broker_service::shards::{ShardKey, watch::ShardAssignment};
+use felix_replication::peer::{PeerPool, PeerServer, PeerTransportConfig};
 use felix_router::{NodeRef, RegionRouter, ShardRouter};
 use felix_storage::EphemeralCache;
 use felix_wire::internal::{AckMode, ErrorCode, InternalMessage};
@@ -241,10 +241,7 @@ struct Listener {
 }
 
 impl Listener {
-    fn start(
-        node_id: &str,
-        handler: Arc<dyn felix_broker_service::peer::PeerRequestHandler>,
-    ) -> Self {
+    fn start(node_id: &str, handler: Arc<dyn felix_replication::peer::PeerRequestHandler>) -> Self {
         let server = PeerServer::bind(node_id.to_string(), &peer_config(), handler).expect("bind");
         let addr = server.local_addr().expect("addr");
         let shutdown = CancellationToken::new();
@@ -415,7 +412,7 @@ async fn a_redirect_that_loops_back_to_a_tried_owner_is_refused() {
     struct AlwaysRedirectsBackwards;
 
     #[async_trait]
-    impl felix_broker_service::peer::PeerRequestHandler for AlwaysRedirectsBackwards {
+    impl felix_replication::peer::PeerRequestHandler for AlwaysRedirectsBackwards {
         async fn handle(&self, request: InternalMessage) -> InternalMessage {
             InternalMessage::NotLeader(NotLeader {
                 correlation_id: request.correlation_id(),
@@ -463,7 +460,7 @@ async fn a_retryable_refusal_converges() {
     }
 
     #[async_trait]
-    impl felix_broker_service::peer::PeerRequestHandler for UnavailableOnce {
+    impl felix_replication::peer::PeerRequestHandler for UnavailableOnce {
         async fn handle(&self, request: InternalMessage) -> InternalMessage {
             if self.seen.fetch_add(1, Ordering::SeqCst) == 0 {
                 return InternalMessage::ForwardPublishError(ForwardPublishError {
@@ -518,7 +515,7 @@ async fn a_permanently_refusing_owner_fails_within_the_budget() {
     }
 
     #[async_trait]
-    impl felix_broker_service::peer::PeerRequestHandler for AlwaysUnavailable {
+    impl felix_replication::peer::PeerRequestHandler for AlwaysUnavailable {
         async fn handle(&self, request: InternalMessage) -> InternalMessage {
             self.seen.fetch_add(1, Ordering::SeqCst);
             InternalMessage::ForwardPublishError(ForwardPublishError {
@@ -584,7 +581,7 @@ async fn a_lost_answer_is_reported_as_indeterminate_and_never_retried() {
     }
 
     #[async_trait]
-    impl felix_broker_service::peer::PeerRequestHandler for WritesThenGoesSilent {
+    impl felix_replication::peer::PeerRequestHandler for WritesThenGoesSilent {
         async fn handle(&self, request: InternalMessage) -> InternalMessage {
             if let InternalMessage::ForwardPublish(publish) = &request {
                 self.broker

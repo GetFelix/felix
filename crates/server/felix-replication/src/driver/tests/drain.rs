@@ -1,14 +1,34 @@
 //! A shard being drained reports once its write fence is quiet.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::*;
-use crate::shards::lifecycle::fence::ShardFence;
+use crate::driver::{Unfenced, WriteFence};
+
+/// A fence closed with one write still inside, until [`Self::let_out`].
+#[derive(Default)]
+struct ClosedWithWriteInside {
+    left: AtomicBool,
+}
+
+impl ClosedWithWriteInside {
+    fn let_out(&self) {
+        self.left.store(true, Ordering::SeqCst);
+    }
+}
+
+impl WriteFence for ClosedWithWriteInside {
+    fn quiesced(&self, _key: &crate::ShardKey) -> bool {
+        self.left.load(Ordering::SeqCst)
+    }
+}
 
 /// One pass over a draining shard with one follower and no reporter.
 async fn drain_pass(
     follower: &AcceptingFollower,
     broker: &Arc<Broker>,
     router: &ShardRouter,
-    fence: &ShardFence,
+    fence: &dyn WriteFence,
     cursors: &mut HashMap<ShardKey, ShardCursors>,
 ) -> Pass {
     replicate_once_with(
@@ -37,13 +57,8 @@ async fn a_draining_shard_reports_drained_once_its_fence_is_quiet() {
     let (broker, _dir) = leader_with(3).await;
     let router = draining_router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
-    let fence = ShardFence::default();
-    let shard = watch_key(&key());
+    let fence = ClosedWithWriteInside::default();
     let mut cursors = HashMap::new();
-
-    fence.open(&shard, 4);
-    let in_flight = fence.enter(&shard, 4).expect("open");
-    fence.close(&shard);
 
     // The tail is not moving, and that is not enough: a write is inside.
     for _ in 0..3 {
@@ -61,7 +76,7 @@ async fn a_draining_shard_reports_drained_once_its_fence_is_quiet() {
         .open_stream(TENANT, NAMESPACE, STREAM, 0)
         .expect("open");
     log.append(&[Bytes::from("late")]).await.expect("append");
-    drop(in_flight);
+    fence.let_out();
 
     let pass = drain_pass(&follower, &broker, &router, &fence, &mut cursors).await;
     let report = pass
@@ -85,14 +100,7 @@ async fn a_draining_shard_never_served_here_drains_on_its_first_pass() {
     let router = draining_router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
 
-    let pass = drain_pass(
-        &follower,
-        &broker,
-        &router,
-        &ShardFence::default(),
-        &mut HashMap::new(),
-    )
-    .await;
+    let pass = drain_pass(&follower, &broker, &router, &Unfenced, &mut HashMap::new()).await;
     let report = pass
         .reports
         .into_iter()
@@ -158,12 +166,12 @@ async fn aux_pass(
     broker: &Arc<Broker>,
     router: &ShardRouter,
     cursors: &mut AllCursors,
-) -> Vec<crate::replication::reporter::ShardReport> {
+) -> Vec<crate::reporter::ShardReport> {
     replicate_once_with(
         follower,
         broker,
         router,
-        &ShardFence::default(),
+        &Unfenced,
         &QuorumMarks::new(),
         None,
         &mut cursors.main,
@@ -367,14 +375,7 @@ async fn a_draining_shard_with_no_replicas_reports_drained() {
     let follower = AcceptingFollower::default();
     let mut cursors = HashMap::new();
 
-    let pass = drain_pass(
-        &follower,
-        &broker,
-        &router,
-        &ShardFence::default(),
-        &mut cursors,
-    )
-    .await;
+    let pass = drain_pass(&follower, &broker, &router, &Unfenced, &mut cursors).await;
     let report = pass
         .reports
         .into_iter()
@@ -436,10 +437,10 @@ async fn a_fenced_shard_retries_its_remainder_without_waiting_for_the_tick() {
         Arc::clone(&follower),
         Arc::clone(&broker),
         router,
-        Arc::default(),
+        Arc::new(Unfenced),
         Published {
             marks: Arc::new(QuorumMarks::new()),
-            halted: Arc::new(crate::replication::halted::HaltedReplicas::new()),
+            halted: Arc::new(crate::halted::HaltedReplicas::new()),
         },
         None,
         // A tick long enough that reaching it would mean nothing retried.
@@ -486,10 +487,10 @@ async fn behind_driver(refusals: usize) -> (Arc<BehindFollower>, Replication, Te
         Arc::clone(&follower),
         broker,
         router(LOCAL, &["broker-b"], 4),
-        Arc::default(),
+        Arc::new(Unfenced),
         Published {
             marks: Arc::new(QuorumMarks::new()),
-            halted: Arc::new(crate::replication::halted::HaltedReplicas::new()),
+            halted: Arc::new(crate::halted::HaltedReplicas::new()),
         },
         None,
         // Reaching the tick would mean the wait did not ask for passes.

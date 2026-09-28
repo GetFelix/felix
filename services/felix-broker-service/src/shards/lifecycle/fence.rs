@@ -149,6 +149,12 @@ impl ShardFence {
     }
 }
 
+impl felix_replication::driver::WriteFence for ShardFence {
+    fn quiesced(&self, key: &ShardKey) -> bool {
+        ShardFence::quiesced(self, key)
+    }
+}
+
 /// Enter the fence for a write about to claim its place in `key`'s log, having
 /// been admitted at `generation`.
 ///

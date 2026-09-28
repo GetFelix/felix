@@ -26,12 +26,12 @@ use crate::cluster::client_endpoints::ClientEndpoints;
 use crate::cluster::lease::LeaseState;
 use crate::config::KafkaListenerConfig;
 use crate::observability::tenants;
-use crate::replication::quorum::{QuorumError, QuorumMarks};
 use crate::serving::auth::BrokerAuth;
 use crate::serving::limits::{PerIpLimiter, TenantRates};
 use crate::shards::lifecycle::fence;
 use crate::shards::routing::{Dispatch, IngressRouter, Reason, dispatch, dispatch_write};
 use crate::shards::{ShardKey, ShardKind};
+use felix_replication::quorum::{QuorumError, QuorumMarks};
 
 /// A TLS handshake that has not finished by now is abandoned, so a client
 /// that connects and sends nothing does not hold a connection slot.
@@ -240,7 +240,7 @@ impl Cluster for BrokerCluster {
         outcome: &PublishOutcome,
     ) -> Result<(), WriteError> {
         let key = self.ingress.as_ref().map(|_| Self::key(shard));
-        crate::replication::quorum::await_quorum(
+        felix_replication::quorum::await_quorum(
             handle,
             key.as_ref(),
             outcome,
@@ -257,7 +257,7 @@ impl Cluster for BrokerCluster {
 
     fn committed_until(&self, shard: &ShardRef<'_>, handle: &StreamHandle) -> Option<u64> {
         let key = Self::key(shard);
-        crate::replication::quorum::read_bound(
+        felix_replication::quorum::read_bound(
             Some(handle.consistency()),
             &key,
             self.marks.as_deref(),

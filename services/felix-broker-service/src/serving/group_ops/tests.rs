@@ -256,7 +256,7 @@ async fn a_quorum_group_poll_stops_at_the_quorum_mark() {
         )
         .await
         .expect("publish");
-    let marks = Arc::new(crate::replication::quorum::QuorumMarks::new());
+    let marks = Arc::new(felix_replication::quorum::QuorumMarks::new());
     let publish_ctx = build_publish_context(
         Arc::clone(&leader.broker),
         &BrokerConfig::default(),

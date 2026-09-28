@@ -387,7 +387,7 @@ that generation, and the replication driver, which withholds the drained
 report until the fence is closed with no write inside it and the successor
 holds the shard's auxiliary logs as well as its main one, and names as caught
 up only followers that hold both (`drain_ready` in
-`services/felix-broker-service/src/replication/driver/shard.rs`; with no
+`crates/server/felix-replication/src/driver/shard.rs`; with no
 successor, every follower level on the main log must hold them). That is what
 lets the model treat those logs as part of the one log: a drained report over
 the main log alone would let the cut-over drop a record the model says
@@ -481,7 +481,7 @@ just older than the last acknowledgement.
 **What closes it is ordering, not freshness**, and the broker does it: the
 leader reports who holds the record, waits for that report to land, and only
 then moves the quorum mark that releases the acknowledgement. That is
-`publish_mark` in `services/felix-broker-service/src/replication/driver/shard.rs`, which moves the
+`publish_mark` in `crates/server/felix-replication/src/driver/shard.rs`, which moves the
 mark only `if reported`, and `await_quorum`, which blocks the publish on the
 mark. With `ReportBeforeAck = TRUE` — `FelixShard.cfg`, the implemented design
 — TLC explores 5.4M distinct states and finds no violation.

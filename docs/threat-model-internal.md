@@ -11,7 +11,7 @@ that is stated plainly rather than described as future work.
 ## The surface
 
 One listener, separate from the client-facing one
-(`services/felix-broker-service/src/peer/server.rs`), speaking `felix-internal/1` over QUIC.
+(`crates/server/felix-replication/src/peer/server.rs`), speaking `felix-internal/1` over QUIC.
 It accepts four families of request:
 
 | Family | Messages | Effect on the receiver |
@@ -77,7 +77,7 @@ verified.
 A forwarded publish or cache operation carries the client's own bearer token,
 and the owner verifies it itself — against the tenant's keys, for the action
 the request performs on the stream or cache it names — before it writes
-anything (`peer/handler.rs`, `ForwardingHandler::authorize`). A forward with
+anything (`serving/forward/owner.rs`, `ForwardingHandler::authorize`). A forward with
 no credential, a credential that does not verify, or one that does not allow
 the action is refused `Unauthorized`. The legacy credential-less kinds are still
 decoded, so the refusal is typed rather than a decode failure, but they are
@@ -98,7 +98,7 @@ client's authority, correctly applied; the token's lifetime and scope bound it.
 The replication path checks more than the forwarding path does:
 
 - **Role.** A broker that is not a replica of the named shard answers
-  `Unauthorized` (`replication/replica.rs`).
+  `Unauthorized` (`felix-replication`'s `replica.rs`).
 - **Generation.** A sender at an older epoch is fenced; one naming a newer
   generation than this broker knows is refused rather than believed.
 - **Content.** A batch is compared byte-for-byte against what the follower

@@ -115,7 +115,7 @@ async fn poll_rechecking(
         };
         first = false;
         // Read each round: the mark moves while a poll waits.
-        let committed = crate::replication::quorum::read_bound(
+        let committed = felix_replication::quorum::read_bound(
             broker
                 .stream_consistency(tenant_id, namespace, stream)
                 .await,

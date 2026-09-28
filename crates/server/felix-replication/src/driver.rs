@@ -24,7 +24,6 @@ use super::reporter::Reporter;
 use super::reporter::ShardReport;
 use super::{MoveThrottle, RebuildPolicy, Rebuilds, metrics};
 use crate::peer::PeerRequester;
-use crate::shards::lifecycle::fence::ShardFence;
 use shard::{AuxCursors, ShardCursors, ShardPass, replicate_shard, watch_key};
 
 /// How many shards a pass ships at the same time.
@@ -117,7 +116,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
     requester: Arc<R>,
     broker: Arc<Broker>,
     router: Arc<ShardRouter>,
-    fence: Arc<ShardFence>,
+    fence: Arc<dyn WriteFence>,
     published: Published,
     reporter: Option<Reporter>,
     interval: Duration,
@@ -182,7 +181,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
                 requester.as_ref(),
                 &broker,
                 &router,
-                &fence,
+                &*fence,
                 &published.marks,
                 reporter.as_ref(),
                 &mut cursors,
@@ -213,6 +212,25 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
     }
 }
 
+/// The write fence a draining shard is held behind until its writes stop.
+///
+/// The broker's shard fence answers it; a trait so this crate does not depend
+/// on the broker service.
+pub trait WriteFence: Send + Sync {
+    /// Whether `key` is closed with no write still inside. A shard that was
+    /// never fenced here has nothing in flight, so it counts as quiet.
+    fn quiesced(&self, key: &crate::ShardKey) -> bool;
+}
+
+/// A fence that holds nothing back: every shard is quiet.
+pub(crate) struct Unfenced;
+
+impl WriteFence for Unfenced {
+    fn quiesced(&self, _key: &crate::ShardKey) -> bool {
+        true
+    }
+}
+
 /// Ship for every shard this broker leads, once.
 ///
 /// Returns the largest lag seen, so a caller can report it without recomputing.
@@ -236,7 +254,7 @@ pub async fn replicate_once<R: PeerRequester>(
         requester,
         broker,
         router,
-        &ShardFence::default(),
+        &Unfenced,
         marks,
         reporter,
         cursors,
@@ -257,7 +275,7 @@ pub async fn replicate_once_with<R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
     router: &ShardRouter,
-    fence: &ShardFence,
+    fence: &dyn WriteFence,
     marks: &QuorumMarks,
     reporter: Option<&Reporter>,
     cursors: &mut HashMap<ShardKey, ShardCursors>,

@@ -201,7 +201,7 @@ pub(super) fn client_config(tls: Option<&PeerTls>) -> Result<ClientConfig> {
 /// `ring` and `aws-lc-rs` are in the dependency graph, so there is no unambiguous
 /// process default, and this matches the provider quinn's own config helpers
 /// pick for the client-facing endpoints.
-pub(crate) fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+pub fn provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
