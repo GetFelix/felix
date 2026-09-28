@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790625430829,
+  "lastUpdate": 1790630108463,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -25146,6 +25146,72 @@ window.BENCHMARK_DATA = {
             "range": "101.97",
             "unit": "us",
             "extra": "trials: 5\nmedian: 584.00\nmean: 615.40\nstdev: 101.97\ncv: 16.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "19f562379d4ae7060451dff7257c182e3f4722f0",
+          "message": "feat(replication): confirm Quorum cache reads by a majority round, not the lease (#829)\n\nOnce the fleet finalizes `lease_free_reads` (with `majority_ack` and\n`generation_start`), a get or counter get on a replicated `Quorum` cache,\nlocal or forwarded, takes its value and then confirms leadership read-index\nstyle: the promotion fence at the broker's own generation goes to every\nreplica, and the read is answered once a majority, the broker included, has\ntaken it. No wire change: a replica takes a fence at a generation it already\naccepted without writing anything.\n\n- `ReadIndex` (felix-replication `leadership.rs`) runs the rounds. Concurrent\n  reads of a shard share them, but a read never joins a round already in\n  flight, which may have been answered before it took its value.\n- The broker counts itself only while its log, and for a cache its counter\n  log, has accepted no newer generation. A cache replica refuses the round\n  when its counter log accepted a newer leader.\n- A same-generation fence counts as `fence_confirmed` and is not logged.\n- `FELIX_QUORUM_READS=lease` keeps a broker on the lease; unreplicated\n  shards, `Leader` caches, stream readers and watches keep the lease.\n- A broker running with `FELIX_INTERNAL_FENCE=false` does not report the\n  feature.\n\nTLA+: FelixShardReads.tla adds reads. FelixShardReadsRound (drift, no margin,\nfollower acks, fence, start record) passes NoStaleRead; FelixShardReadsNoRound\nand FelixShardReadsLease violate it. check_tla.sh takes TLC_WORKERS.",
+          "timestamp": "2026-09-28T14:10:27-07:00",
+          "tree_id": "7c17208359852d7dad08b943089447fae39385f5",
+          "url": "https://github.com/gabloe/felix/commit/19f562379d4ae7060451dff7257c182e3f4722f0"
+        },
+        "date": 1790630105297,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 97,
+            "range": "3.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 97.00\nmean: 97.20\nstdev: 3.27\ncv: 3.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 143,
+            "range": "10.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 143.00\nmean: 149.00\nstdev: 10.10\ncv: 6.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 203,
+            "range": "2390.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 203.00\nmean: 1273.40\nstdev: 2390.72\ncv: 187.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 114,
+            "range": "3.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 114.00\nmean: 115.80\nstdev: 3.63\ncv: 3.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 546,
+            "range": "535.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 546.00\nmean: 673.80\nstdev: 535.90\ncv: 79.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1807,
+            "range": "2089.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1807.00\nmean: 2417.80\nstdev: 2089.72\ncv: 86.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
