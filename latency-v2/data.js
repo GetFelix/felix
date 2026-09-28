@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790559037075,
+  "lastUpdate": 1790560217143,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -23760,6 +23760,72 @@ window.BENCHMARK_DATA = {
             "range": "130.60",
             "unit": "us",
             "extra": "trials: 5\nmedian: 602.00\nmean: 633.00\nstdev: 130.60\ncv: 20.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2105b1d957dcbfcdba460463ae28d4f827de6594",
+          "message": "fix(controlplane): expire a dead broker promptly after a clock step back (#785)\n\nHeartbeat stamps never move backwards, so after the control plane's wall\nclock steps back every stamp sits in the future. A broker that died in that\nwindow had a last heartbeat newer than any expiry threshold the stepped-back\nclock could produce, and stayed live and placeable for the length of the step.\n\nThe expiry sweep now pulls any stamp ahead of the store's clock back to it\n(new ControlPlaneStore::clamp_future_heartbeats) before judging. The clamped\nstamp is a change the monotonic silence watch sees, so the node gets one full\nwindow of silence from there, like any other. Under Raft the leader judges a\nnode it has heard this term by that beat's monotonic age alone, rather than\nmax-merging it with the log's (possibly future) stamp; the Raft clamp is a\nno-op.\n\nUn-ignores a_control_plane_clock_stepped_back_still_expires_a_dead_broker and\nadds a controlplane test that steps the clock back through the clock seam.\n\nSpec-Unaffected: FelixShard.tla models the control plane's expiry clock as drifting, never stepping; expiry still waits a full window on the monotonic clock after the last heartbeat, which is what the model assumes.",
+          "timestamp": "2026-09-27T18:32:29-07:00",
+          "tree_id": "b0d0f2a15b67912479c06892771b98eeaa844d19",
+          "url": "https://github.com/gabloe/felix/commit/2105b1d957dcbfcdba460463ae28d4f827de6594"
+        },
+        "date": 1790560213654,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 107,
+            "range": "2.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 107.00\nmean: 106.00\nstdev: 2.00\ncv: 1.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 161,
+            "range": "3.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 161.00\nmean: 161.40\nstdev: 3.58\ncv: 2.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 192,
+            "range": "94.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 192.00\nmean: 232.80\nstdev: 94.78\ncv: 40.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 106,
+            "range": "4.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 106.00\nmean: 107.20\nstdev: 4.55\ncv: 4.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 244,
+            "range": "212.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 244.00\nmean: 340.80\nstdev: 212.19\ncv: 62.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 413,
+            "range": "920.62",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 413.00\nmean: 1027.40\nstdev: 920.62\ncv: 89.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
