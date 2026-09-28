@@ -194,7 +194,7 @@ pub(crate) fn preallocate(file: &File, len: u64) -> io::Result<()> {
 /// The measured cost is the same either way (~4ms per flush on APFS), which is
 /// itself the evidence that the flush is reaching the device.
 pub(crate) fn sync_data(file: &File) -> io::Result<()> {
-    before_sync(file, SyncKind::Data);
+    before_sync(file, SyncKind::Data)?;
     #[cfg(target_os = "macos")]
     {
         use std::os::unix::io::AsRawFd;
@@ -224,7 +224,7 @@ pub(crate) fn sync_data(file: &File) -> io::Result<()> {
 /// entry is durable too; without this a crash can leave a segment that exists in
 /// the page cache but not in the directory after reboot.
 pub(crate) fn sync_dir(path: &std::path::Path) -> io::Result<()> {
-    before_sync_dir(path);
+    before_sync_dir(path)?;
     #[cfg(unix)]
     {
         File::open(path)?.sync_all()
@@ -242,7 +242,7 @@ pub(crate) fn sync_dir(path: &std::path::Path) -> io::Result<()> {
 /// renamed into place (indexes, generation history), where the extra metadata
 /// round trip does not matter.
 pub(crate) fn sync_all(file: &File) -> io::Result<()> {
-    before_sync(file, SyncKind::All);
+    before_sync(file, SyncKind::All)?;
     file.sync_all()
 }
 
@@ -260,25 +260,39 @@ pub(crate) enum SyncKind {
 
 /// The fault hooks every blocking file flush passes before it is issued. In a
 /// release build without `fault-injection` this is empty.
-fn before_sync(file: &File, kind: SyncKind) {
-    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
-    if let Some(delay) = crate::fault::fsync_delay() {
-        std::thread::sleep(delay);
-    }
+///
+/// An injected failure returns before the flush and before the power-loss
+/// layer sees it: a flush that reported `EIO` made nothing durable.
+fn before_sync(file: &File, kind: SyncKind) -> io::Result<()> {
+    injected_fault()?;
     #[cfg(all(test, target_os = "linux"))]
     power_loss::observe_file(file, kind);
     let _ = (file, kind);
+    Ok(())
 }
 
 /// [`before_sync`] for a directory flush.
-fn before_sync_dir(path: &std::path::Path) {
-    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
-    if let Some(delay) = crate::fault::fsync_delay() {
-        std::thread::sleep(delay);
-    }
+fn before_sync_dir(path: &std::path::Path) -> io::Result<()> {
+    injected_fault()?;
     #[cfg(all(test, target_os = "linux"))]
     power_loss::observe_dir(path);
     let _ = path;
+    Ok(())
+}
+
+/// A slow or failing device, from `crate::fault`.
+fn injected_fault() -> io::Result<()> {
+    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+    {
+        crate::fault::refresh();
+        if let Some(delay) = crate::fault::fsync_delay() {
+            std::thread::sleep(delay);
+        }
+        if let Some(err) = crate::fault::injected_failure() {
+            return Err(err);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

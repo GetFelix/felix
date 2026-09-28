@@ -15,11 +15,20 @@ publish = false
 name = "felix-cluster"
 path = "src/bin/felix-cluster/main.rs"
 
+[features]
+# Clock faults on the in-process control plane in an optimised test build.
+# A debug build has them regardless. Not on by default: a
+# `cargo build --workspace --release` would unify it into the service
+# binaries too.
+fault-injection = ["felix-common/fault-injection"]
+
 [dependencies]
 anyhow = { workspace = true }
 # Peer certificates for the brokers this harness spawns: every cluster test
 # runs under broker-to-broker mTLS.
 rcgen = { workspace = true, features = ["x509-parser"] }
+# The clock fault seam the in-process control plane reads time through.
+felix-common = { path = "../../server/felix-common", version = "0.6.0-preview" }
 felix-controlplane-service = { path = "../../../services/felix-controlplane-service", version = "0.6.0-preview" }
 felix-client = { path = "../../sdk/felix-client", version = "0.6.0-preview" }
 felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview" }
@@ -31,7 +40,8 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true }
+# `io-util` for the control-plane link proxy, which copies TCP streams.
+tokio = { workspace = true, features = ["io-util"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

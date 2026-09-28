@@ -6,9 +6,12 @@
 //! Run with `cargo test -p felix-cluster --test failures`, or one module with
 //! `--test failures fencing::`.
 
+mod clocks;
 mod failover;
 mod faults;
 mod fencing;
+mod fsync;
 mod kafka_produce;
+mod links;
 mod membership;
 mod partition;

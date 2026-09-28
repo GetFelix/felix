@@ -1,15 +1,223 @@
-//! Faults a test can inject: stopping the control plane, killing, pausing
-//! and partitioning brokers.
+//! Faults a test can inject: the composable [`Fault`] values, and the
+//! primitives under them (stopping the control plane, killing, pausing and
+//! partitioning brokers).
+//!
+//! Every fault a broker has to cooperate with is a file the broker was
+//! pointed at when it started (partition, clock, storage), so injecting is a
+//! write and healing a delete. Link faults need no cooperation at all: they
+//! are rules in the harness's own proxies.
 
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 
 use super::{Cluster, READY_TIMEOUT};
-use crate::node::partition_file;
+use crate::fault::{ClockFault, Endpoint, Fault, FsyncFault};
+use crate::node::{clock_fault_file, partition_file, storage_fault_file};
+use crate::proxy::Links;
 use crate::wait;
 
+/// How long after a clock file is written before every reader has seen it.
+/// The readers re-read at most every 50ms, on their next clock reading, and
+/// a broker's lease refresh reads the clock about that often.
+const CLOCK_SETTLE: Duration = Duration::from_millis(250);
+
+/// The same for the storage fault file, which a broker re-reads on its next
+/// flush once 50ms have passed.
+const STORAGE_SETTLE: Duration = Duration::from_millis(150);
+
+/// How long a broker may go on using its last reading of the partition file.
+/// See [`await_partition_reread`].
+const PARTITION_REREAD: Duration = Duration::from_millis(400);
+
 impl Cluster {
+    /// Inject `fault`, returning once it is in effect.
+    ///
+    /// Faults compose: inject as many as the scenario needs, of any family,
+    /// and undo each with [`Self::heal`] or all of them with
+    /// [`Self::heal_all`]. A fault naming a node the cluster does not have is
+    /// an error, never a silent no-op.
+    pub async fn inject(&self, fault: &Fault) -> Result<()> {
+        match fault {
+            Fault::Drop { from, to } => {
+                self.links_between(from, to)?
+                    .rules()
+                    .set_dropped(from, to, true);
+            }
+            Fault::Delay { from, to, by } => {
+                self.links_between(from, to)?
+                    .rules()
+                    .set_delay(from, to, *by);
+            }
+            Fault::Refuse { node, peers } => {
+                self.require_node(node)?;
+                for peer in peers {
+                    self.require_node(peer)?;
+                }
+                {
+                    let mut injected = self.injected();
+                    injected
+                        .refused
+                        .entry(node.clone())
+                        .or_default()
+                        .extend(peers.iter().cloned());
+                    self.write_refusals(&injected.refused)?;
+                }
+                tokio::time::sleep(PARTITION_REREAD).await;
+            }
+            Fault::Suspend { node } => self.suspend(node)?,
+            Fault::Clock { process, fault } => {
+                check_clock_fault(process, fault)?;
+                let path = self.clock_file(process)?;
+                let content = {
+                    let mut injected = self.injected();
+                    let clock = injected.clocks.entry(process.clone()).or_default();
+                    match fault {
+                        ClockFault::StepMillis(by) => {
+                            clock.offset_ms = clock.offset_ms.saturating_add(*by)
+                        }
+                        ClockFault::Rate(rate) => clock.rate = *rate,
+                    }
+                    clock.file_body()
+                };
+                std::fs::write(&path, content)
+                    .with_context(|| format!("write the clock fault for {process:?}"))?;
+                if *process == Endpoint::ControlPlane {
+                    self.follow_clock(&path)?;
+                }
+                tokio::time::sleep(CLOCK_SETTLE).await;
+            }
+            Fault::Fsync { node, fault } => {
+                self.require_node(node)?;
+                {
+                    let mut injected = self.injected();
+                    injected.disk_generation += 1;
+                    let generation = injected.disk_generation;
+                    let disk = injected.disks.entry(node.clone()).or_default();
+                    match fault {
+                        FsyncFault::Delay(delay) => disk.delay = *delay,
+                        FsyncFault::Fail | FsyncFault::FailOnce => {
+                            disk.failure = Some(*fault);
+                            disk.generation = generation;
+                        }
+                    }
+                    self.write_disk(node, disk)?;
+                }
+                tokio::time::sleep(STORAGE_SETTLE).await;
+            }
+        }
+        self.injected().active.push(fault.clone());
+        Ok(())
+    }
+
+    /// Undo `fault`. Healing one that is not in effect is not an error.
+    ///
+    /// Healing a clock fault puts that process back on the true clock, which
+    /// is a step of its own; healing a failed fsync does not un-poison a log
+    /// that already refused to go on, which is the point of the fault.
+    pub async fn heal(&self, fault: &Fault) -> Result<()> {
+        match fault {
+            Fault::Drop { from, to } => {
+                let links = self.links_between(from, to)?;
+                links.rules().set_dropped(from, to, false);
+                warn_if_unattributed(links, fault);
+            }
+            Fault::Delay { from, to, .. } => {
+                let links = self.links_between(from, to)?;
+                links.rules().set_delay(from, to, Duration::ZERO);
+                warn_if_unattributed(links, fault);
+            }
+            Fault::Refuse { node, peers } => {
+                {
+                    let mut injected = self.injected();
+                    if let Some(refused) = injected.refused.get_mut(node) {
+                        for peer in peers {
+                            refused.remove(peer);
+                        }
+                    }
+                    self.write_refusals(&injected.refused)?;
+                }
+                tokio::time::sleep(PARTITION_REREAD).await;
+            }
+            Fault::Suspend { node } => self.unsuspend(node)?,
+            Fault::Clock { process, fault } => {
+                let path = self.clock_file(process)?;
+                match process {
+                    Endpoint::ControlPlane => {
+                        self.injected().clocks.remove(process);
+                        remove_if_present(&path)?;
+                    }
+                    // A broker's lease clock is boottime, which never runs
+                    // back, so healing only stops the fault from getting
+                    // worse: the rate returns to 1x with its drift kept, and
+                    // a forward step stays taken.
+                    Endpoint::Node(_) => {
+                        let content = {
+                            let mut injected = self.injected();
+                            match injected.clocks.get_mut(process) {
+                                Some(clock) if matches!(fault, ClockFault::Rate(_)) => {
+                                    clock.rate = 1.0;
+                                    Some(clock.file_body())
+                                }
+                                _ => None,
+                            }
+                        };
+                        if let Some(content) = content {
+                            std::fs::write(&path, content).with_context(|| {
+                                format!("write the clock fault for {process:?}")
+                            })?;
+                        }
+                    }
+                }
+                tokio::time::sleep(CLOCK_SETTLE).await;
+            }
+            Fault::Fsync { node, fault } => {
+                {
+                    let mut injected = self.injected();
+                    let disk = injected.disks.entry(node.clone()).or_default();
+                    match fault {
+                        FsyncFault::Delay(_) => disk.delay = Duration::ZERO,
+                        FsyncFault::Fail | FsyncFault::FailOnce => disk.failure = None,
+                    }
+                    self.write_disk(node, disk)?;
+                }
+                tokio::time::sleep(STORAGE_SETTLE).await;
+            }
+        }
+        let mut injected = self.injected();
+        if let Some(index) = injected.active.iter().position(|active| active == fault) {
+            injected.active.remove(index);
+        }
+        Ok(())
+    }
+
+    /// Heal every fault injected through [`Self::inject`] and not yet healed,
+    /// newest first.
+    pub async fn heal_all(&self) -> Result<()> {
+        let active = std::mem::take(&mut self.injected().active);
+        for fault in active.iter().rev() {
+            self.heal(fault).await?;
+        }
+        Ok(())
+    }
+
+    /// The faults in effect, in the order they were injected.
+    pub fn active_faults(&self) -> Vec<Fault> {
+        self.injected().active.clone()
+    }
+
+    /// Datagrams the peer proxies passed while a link fault was in effect
+    /// without knowing which broker sent them. Each one skipped whatever
+    /// [`Fault::Drop`] or [`Fault::Delay`] applied to its sender, so a test
+    /// that depends on a link fault holding can assert this is zero.
+    pub fn unattributed_datagrams(&self) -> u64 {
+        self.links
+            .as_ref()
+            .map_or(0, |links| links.rules().unattributed())
+    }
+
     /// Stop the control plane, leaving the brokers running.
     ///
     /// A failure primitive rather than a teardown: brokers keep serving on the
@@ -105,34 +313,48 @@ impl Cluster {
     ///
     /// Written on both sides, because a partition is symmetric and a broker
     /// still reachable inbound would not be isolated.
+    ///
+    /// The partition-file fault ([`Fault::Refuse`]) both ways, rather than
+    /// dropped packets: see [`Fault::Drop`] for the proxied kind.
     pub fn partition_node(&self, node_id: &str) -> Result<()> {
-        let others: Vec<String> = self
-            .nodes
-            .iter()
-            .map(|node| node.node_id.clone())
-            .filter(|id| id != node_id)
-            .collect();
-        for node in &self.nodes {
-            let listed = if node.node_id == node_id {
-                others.clone()
-            } else {
-                vec![node_id.to_string()]
-            };
-            std::fs::write(partition_file(&node.data_dir), listed.join("\n"))
-                .with_context(|| format!("write the partition file for {}", node.node_id))?;
+        self.require_node(node_id)?;
+        {
+            let mut injected = self.injected();
+            for node in &self.nodes {
+                if node.node_id == node_id {
+                    let others = self
+                        .nodes
+                        .iter()
+                        .map(|other| other.node_id.clone())
+                        .filter(|id| id != node_id);
+                    injected
+                        .refused
+                        .entry(node_id.to_string())
+                        .or_default()
+                        .extend(others);
+                } else {
+                    injected
+                        .refused
+                        .entry(node.node_id.clone())
+                        .or_default()
+                        .insert(node_id.to_string());
+                }
+            }
+            self.write_refusals(&injected.refused)?;
         }
         await_partition_reread();
         Ok(())
     }
 
-    /// Reconnect everything.
+    /// Reconnect everything the partition file severed.
     pub fn heal_partitions(&self) -> Result<()> {
-        for node in &self.nodes {
-            let path = partition_file(&node.data_dir);
-            if path.exists() {
-                std::fs::remove_file(&path)
-                    .with_context(|| format!("heal the partition for {}", node.node_id))?;
-            }
+        {
+            let mut injected = self.injected();
+            injected.refused.clear();
+            injected
+                .active
+                .retain(|fault| !matches!(fault, Fault::Refuse { .. }));
+            self.write_refusals(&injected.refused)?;
         }
         await_partition_reread();
         Ok(())
@@ -223,6 +445,212 @@ impl Cluster {
         }
         Ok(())
     }
+
+    /// The record of what has been injected. Never held across an await.
+    fn injected(&self) -> std::sync::MutexGuard<'_, Injected> {
+        self.faults
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn require_node(&self, node_id: &str) -> Result<()> {
+        self.node(node_id)
+            .map(|_| ())
+            .ok_or_else(|| anyhow!("unknown node {node_id}"))
+    }
+
+    /// The proxies a fault on `from -> to` acts through.
+    fn links_between(&self, from: &Endpoint, to: &Endpoint) -> Result<&Links> {
+        if from == to {
+            bail!("a link needs two different ends, not {from:?} twice");
+        }
+        for end in [from, to] {
+            if let Endpoint::Node(node_id) = end {
+                self.require_node(node_id)?;
+            }
+        }
+        self.links.as_ref().ok_or_else(|| {
+            anyhow!(
+                "link faults need a cluster started with `ClusterConfig {{ proxy_links: true, .. }}`"
+            )
+        })
+    }
+
+    #[cfg(unix)]
+    fn suspend(&self, node_id: &str) -> Result<()> {
+        self.pause_node(node_id)
+    }
+
+    #[cfg(unix)]
+    fn unsuspend(&self, node_id: &str) -> Result<()> {
+        self.resume_node(node_id)
+    }
+
+    #[cfg(not(unix))]
+    fn suspend(&self, node_id: &str) -> Result<()> {
+        bail!("cannot suspend {node_id}: SIGSTOP is Unix only")
+    }
+
+    #[cfg(not(unix))]
+    fn unsuspend(&self, node_id: &str) -> Result<()> {
+        bail!("cannot resume {node_id}: SIGCONT is Unix only")
+    }
+
+    /// Where `process` reads its clock skew from.
+    fn clock_file(&self, process: &Endpoint) -> Result<PathBuf> {
+        match process {
+            Endpoint::Node(node_id) => self
+                .node(node_id)
+                .map(|node| clock_fault_file(&node.data_dir))
+                .ok_or_else(|| anyhow!("unknown node {node_id}")),
+            Endpoint::ControlPlane => Ok(self._root.path().join("controlplane-clock-fault")),
+        }
+    }
+
+    /// Point this process's clock, which the in-process control plane reads,
+    /// at `path`. Once per cluster: following again would restart the skew.
+    #[cfg(any(debug_assertions, feature = "fault-injection"))]
+    fn follow_clock(&self, path: &Path) -> Result<()> {
+        let mut injected = self.injected();
+        if injected.control_plane_clock.as_deref() != Some(path) {
+            // Skews the whole test process, not just this cluster. Safe only
+            // because cluster tests are `#[serial]`.
+            felix_common::clock::fault::follow(path);
+            injected.control_plane_clock = Some(path.to_path_buf());
+        }
+        Ok(())
+    }
+
+    #[cfg(not(any(debug_assertions, feature = "fault-injection")))]
+    fn follow_clock(&self, _path: &Path) -> Result<()> {
+        bail!("control-plane clock faults need a debug build or the `fault-injection` feature")
+    }
+
+    /// Put this process back on the true clock, if this cluster moved it.
+    pub(super) fn stop_following_clock(&self) {
+        #[cfg(any(debug_assertions, feature = "fault-injection"))]
+        if let Some(path) = self.injected().control_plane_clock.take() {
+            felix_common::clock::fault::stop_following(&path);
+        }
+    }
+
+    /// Write every broker's partition file from `refused`, removing the ones
+    /// that list nobody.
+    fn write_refusals(&self, refused: &HashMap<String, BTreeSet<String>>) -> Result<()> {
+        for node in &self.nodes {
+            let path = partition_file(&node.data_dir);
+            match refused.get(&node.node_id).filter(|peers| !peers.is_empty()) {
+                Some(peers) => {
+                    let listed: Vec<&str> = peers.iter().map(String::as_str).collect();
+                    std::fs::write(&path, listed.join("\n"))
+                        .with_context(|| format!("write the partition file for {}", node.node_id))?
+                }
+                None => remove_if_present(&path)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn write_disk(&self, node_id: &str, disk: &DiskFault) -> Result<()> {
+        let node = self
+            .node(node_id)
+            .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
+        let path = storage_fault_file(&node.data_dir);
+        if disk.delay.is_zero() && disk.failure.is_none() {
+            return remove_if_present(&path);
+        }
+        let failure = match disk.failure {
+            Some(FsyncFault::Fail) => "fail",
+            Some(FsyncFault::FailOnce) => "fail_once",
+            _ => "ok",
+        };
+        let body = format!(
+            "fsync_delay_ms={}\nfsync={failure}\ngeneration={}\n",
+            disk.delay.as_millis(),
+            disk.generation,
+        );
+        std::fs::write(&path, body)
+            .with_context(|| format!("write the storage fault for {node_id}"))
+    }
+}
+
+/// What a cluster has injected and not yet healed, so a heal can undo
+/// exactly its own part of a file several faults share.
+#[derive(Default)]
+pub(super) struct Injected {
+    active: Vec<Fault>,
+    /// Per broker, the peers its partition file lists.
+    refused: HashMap<String, BTreeSet<String>>,
+    clocks: HashMap<Endpoint, ClockSkew>,
+    disks: HashMap<String, DiskFault>,
+    /// Bumped per fsync failure injected, so a second `FailOnce` fires again.
+    disk_generation: u64,
+    /// The file this process's clock follows for the control plane, once a
+    /// test has skewed it.
+    control_plane_clock: Option<PathBuf>,
+}
+
+/// One process's clock, as its fault file describes it.
+struct ClockSkew {
+    offset_ms: i64,
+    rate: f64,
+}
+
+impl Default for ClockSkew {
+    fn default() -> Self {
+        Self {
+            offset_ms: 0,
+            rate: 1.0,
+        }
+    }
+}
+
+impl ClockSkew {
+    /// The fault file's contents, in `felix_common::clock::fault`'s format.
+    fn file_body(&self) -> String {
+        format!("offset_ms={}\nrate={}\n", self.offset_ms, self.rate)
+    }
+}
+
+/// One broker's disk, as its fault file describes it.
+#[derive(Default)]
+struct DiskFault {
+    delay: Duration,
+    failure: Option<FsyncFault>,
+    generation: u64,
+}
+
+/// Say so when a link fault may not have held: the proxy passed datagrams it
+/// could not attribute to a broker while faults were in effect.
+fn warn_if_unattributed(links: &Links, fault: &Fault) {
+    let unattributed = links.rules().unattributed();
+    if unattributed > 0 {
+        tracing::warn!(
+            unattributed,
+            ?fault,
+            "datagrams bypassed link faults unattributed; this fault may not have held",
+        );
+    }
+}
+
+/// Refuse a clock fault the process could never see for real.
+///
+/// A broker's lease runs on `CLOCK_BOOTTIME`, which never goes backwards, so
+/// stepping it back would stretch its lease and report unsafety no real
+/// machine can produce. The control plane stamps with the wall clock, which
+/// can be stepped either way.
+fn check_clock_fault(process: &Endpoint, fault: &ClockFault) -> Result<()> {
+    match (process, fault) {
+        (Endpoint::Node(node), ClockFault::StepMillis(by)) if *by < 0 => {
+            bail!(
+                "cannot step {node}'s clock back: its lease clock is boottime, which never goes backwards"
+            )
+        }
+        (_, ClockFault::Rate(rate)) if !rate.is_finite() || *rate < 0.0 => {
+            bail!("a clock rate must be finite and not negative, not {rate}")
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Whether the kernel reports `pid` as stopped.
@@ -256,5 +684,16 @@ fn process_is_stopped(pid: u32) -> bool {
 /// per fault, and a test that races the injector fails for a reason that has
 /// nothing to do with what it is testing.
 fn await_partition_reread() {
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    std::thread::sleep(PARTITION_REREAD);
 }
+
+fn remove_if_present(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("remove {}", path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests;

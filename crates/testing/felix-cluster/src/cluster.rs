@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::node::{BrokerNode, FAILURE_LOG_LINES};
+use crate::proxy::Links;
 use crate::{ClusterConfig, ControlPlane, session};
 
 /// How long any single start-up wait may take before the harness gives up.
@@ -46,6 +47,11 @@ pub struct Cluster {
     /// Kept so a broker that loses the port race can be started again.
     binary: PathBuf,
     config: ClusterConfig,
+    /// The proxies every link runs through, when the config asked for them.
+    /// Dropped after the brokers, which is the order `Drop` fields run in.
+    links: Option<Links>,
+    /// What has been injected and not yet healed.
+    faults: std::sync::Mutex<faults::Injected>,
     /// Held so the data directories outlive the brokers and are removed with
     /// the cluster.
     _root: tempfile::TempDir,
@@ -110,6 +116,7 @@ impl Cluster {
     }
 
     fn kill_brokers(&mut self) {
+        self.stop_following_clock();
         for node in &mut self.nodes {
             if let Some(mut process) = node.take_process() {
                 let _ = process.kill();

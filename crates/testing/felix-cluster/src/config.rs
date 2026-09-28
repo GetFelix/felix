@@ -33,6 +33,12 @@ pub struct ClusterConfig {
     /// every interface and advertises the address a kcat container reaches
     /// the host by, since the tests drive it from Docker.
     pub kafka: bool,
+    /// Route every broker-to-broker and broker-to-control-plane link through
+    /// the harness's own proxies, so [`Fault::Drop`](crate::Fault::Drop) and
+    /// [`Fault::Delay`](crate::Fault::Delay) can act on them. Off by default:
+    /// a test that injects no link fault talks over the direct path it always
+    /// did.
+    pub proxy_links: bool,
 }
 
 impl Default for ClusterConfig {
@@ -49,6 +55,7 @@ impl Default for ClusterConfig {
             regions: Vec::new(),
             broker_env: Vec::new(),
             kafka: false,
+            proxy_links: false,
         }
     }
 }

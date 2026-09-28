@@ -197,8 +197,14 @@ pub(crate) async fn fsync(file: Arc<File>) -> Option<io::Result<()>> {
     // the fallback runs them itself.
     ring()?;
     #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
-    if let Some(delay) = crate::fault::fsync_delay() {
-        tokio::time::sleep(delay).await;
+    {
+        crate::fault::refresh();
+        if let Some(delay) = crate::fault::fsync_delay() {
+            tokio::time::sleep(delay).await;
+        }
+        if let Some(err) = crate::fault::injected_failure() {
+            return Some(Err(err));
+        }
     }
     #[cfg(test)]
     super::power_loss::observe_file(&file, super::SyncKind::Uring);

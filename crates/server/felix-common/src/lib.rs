@@ -4,6 +4,9 @@
 //! depend on each other must agree on it exactly — a type crossing a process
 //! boundary, or a name an operator types.
 //!
+//! - [`clock`] — the clocks a lease and its expiry are judged on, read
+//!   through one seam so a test can skew them. The broker's lease and the
+//!   control plane's heartbeat stamps are two ends of one comparison.
 //! - [`membership`] — the broker-to-control-plane shapes. These cross a
 //!   process boundary as JSON, so a field renamed on one side and not the
 //!   other is a silent mismatch; sharing the types puts that back in the
@@ -18,6 +21,7 @@
 //!   `tls` feature.
 //! - [`ids`] and [`Error`] — the region id and its parse error.
 
+pub mod clock;
 pub mod env_registry;
 mod error;
 pub mod ids;

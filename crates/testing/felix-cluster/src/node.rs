@@ -16,7 +16,9 @@ pub struct BrokerNode {
     pub node_id: String,
     /// Where clients publish and subscribe.
     pub client_addr: SocketAddr,
-    /// Where peer brokers forward to. This is what the catalog advertises.
+    /// Where the internal listener binds. Peers dial this, or its proxy in a
+    /// cluster started with
+    /// [`ClusterConfig::proxy_links`](crate::ClusterConfig::proxy_links).
     pub internal_addr: SocketAddr,
     pub metrics_addr: SocketAddr,
     /// The Kafka listener's advertised `host:port`, when the cluster was
@@ -56,6 +58,16 @@ impl BrokerNode {
     pub(crate) fn take_process(&mut self) -> Option<Child> {
         self.process.take()
     }
+}
+
+/// Where a broker's test-only clock skew lives. See `felix_common::clock::fault`.
+pub(crate) fn clock_fault_file(data_dir: impl AsRef<Path>) -> PathBuf {
+    data_dir.as_ref().join("clock-fault")
+}
+
+/// Where a broker's test-only disk faults live. See `felix_storage::fault`.
+pub(crate) fn storage_fault_file(data_dir: impl AsRef<Path>) -> PathBuf {
+    data_dir.as_ref().join("storage-fault")
 }
 
 /// Where a broker's test-only partition list lives.

@@ -1190,6 +1190,7 @@ dependencies = [
  "axum",
  "bytes",
  "felix-client",
+ "felix-common",
  "felix-conformance",
  "felix-controlplane-service",
  "felix-wire",
@@ -1214,6 +1215,7 @@ name = "felix-common"
 version = "0.6.0-preview"
 dependencies = [
  "arc-swap",
+ "libc",
  "metrics",
  "rcgen",
  "rustls",
