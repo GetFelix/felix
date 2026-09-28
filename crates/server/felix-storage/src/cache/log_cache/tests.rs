@@ -9,6 +9,8 @@ mod compaction;
 mod concurrency;
 mod expiry;
 mod observer;
+#[cfg(target_os = "linux")]
+mod power_loss;
 
 use std::time::Duration;
 
@@ -42,5 +44,39 @@ struct RecordingObserver {
 impl CacheObserver for RecordingObserver {
     fn cache_changed(&self, change: CacheChange) {
         self.changes.lock().push(change);
+    }
+}
+
+/// Put `keys` keys, then overwrite each once, so every key's first record is
+/// garbage. Returns the value each key should read back.
+async fn overwritten(cache: &LogCache, keys: usize) -> Vec<(String, Bytes)> {
+    let mut expected = Vec::with_capacity(keys);
+    for round in 0..2u8 {
+        for i in 0..keys {
+            let key = format!("k{i}");
+            let value = Bytes::from(vec![round; 512 + i]);
+            cache
+                .put_checked(T, NS, C, 0, &key, value.clone(), None)
+                .await
+                .expect("put");
+            if round == 1 {
+                expected.push((key, value));
+            }
+        }
+    }
+    expected
+}
+
+async fn assert_reads(cache: &LogCache, expected: &[(String, Bytes)], when: &str) {
+    for (key, value) in expected {
+        let found = cache.get_checked(T, NS, C, 0, key).await.expect("get");
+        // Compared whole, reported by shape: the values are hundreds of bytes.
+        assert!(
+            found.as_ref() == Some(value),
+            "{key} {when}: read {:?}, wanted {} bytes of {}",
+            found.map(|v| (v.len(), v.first().copied())),
+            value.len(),
+            value[0],
+        );
     }
 }

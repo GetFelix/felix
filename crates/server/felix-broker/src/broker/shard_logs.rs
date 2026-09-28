@@ -50,8 +50,8 @@ impl Broker {
     /// and getting that wrong writes a stream log for a cache — an empty
     /// directory nothing reads, while the real records go unreplicated.
     ///
-    /// Not cached by the caller: a cache shard's log is replaced by compaction,
-    /// so a handle held across one goes stale.
+    /// Not cached by the caller: a cache shard's log is replaced when the shard
+    /// is closed and reopened, so a handle held across that goes stale.
     pub async fn shard_log(
         &self,
         kind: LogKind,

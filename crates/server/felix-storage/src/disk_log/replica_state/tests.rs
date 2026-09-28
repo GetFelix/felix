@@ -37,16 +37,3 @@ fn a_damaged_file_fails_rather_than_reading_as_zero() {
     std::fs::write(&path, bytes).expect("write");
     assert!(load(dir.path()).is_err());
 }
-
-#[test]
-fn copy_into_carries_the_state_to_a_replacement_directory() {
-    let from = tempfile::tempdir().expect("tempdir");
-    let to = tempfile::tempdir().expect("tempdir");
-    let state = ReplicaState {
-        accepted_generation: 4,
-        commit_offset: 99,
-    };
-    store(from.path(), &state).expect("store");
-    copy_into(from.path(), to.path()).expect("copy");
-    assert_eq!(load(to.path()).expect("load"), state);
-}

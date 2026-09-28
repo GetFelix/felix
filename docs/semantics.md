@@ -430,8 +430,9 @@ how-to; this is the contract.
   because there is nowhere to write a log.
 - **TTL:** lazy on access, against an absolute expiry time, so an expiry that
   passes while the process is down is still an expiry.
-- **Reclamation:** compaction rewrites the live set and drops superseded and
-  expired records, without ever rewriting a record in place.
+- **Reclamation:** compaction copies the live set forward and drops superseded
+  and expired records, without ever rewriting a record in place. It runs in the
+  background, so no write waits for it.
 
 > `a_cache_survives_a_restart`, `an_expiry_survives_a_restart`,
 > `a_later_write_wins`, `compaction_reclaims_overwritten_records`.

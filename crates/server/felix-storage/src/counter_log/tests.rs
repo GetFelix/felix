@@ -108,6 +108,7 @@ async fn compaction_moves_neither_the_sum_nor_the_offsets() {
         );
         last_offset = offset;
     }
+    store.compactor.idle().await;
 
     let shard = store.shard(T, NS, C, 0).expect("shard");
     let state = shard.state.lock().await;
@@ -133,37 +134,97 @@ async fn compaction_moves_neither_the_sum_nor_the_offsets() {
     );
 }
 
-/// A crash between compaction's two renames leaves the shard directory
-/// missing and every delta in `.retired` (plus a finished `.compacting`). An
-/// open that ignored that would start every counter at zero.
+/// **An add never waits on compaction.** Compaction is held indefinitely, and
+/// every add, including the one that crosses the threshold, still completes.
 #[tokio::test]
-async fn a_shard_interrupted_mid_compaction_keeps_its_sums() {
+async fn adds_do_not_wait_on_a_slow_compaction() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let shard_dir = layout::shard_dir(
-        dir.path(),
-        &ShardKey {
-            tenant: T.to_string(),
-            namespace: NS.to_string(),
-            stream: C.to_string(),
-            shard: 0,
-        },
-    );
-    {
-        let store = store(dir.path());
-        store.add(T, NS, C, 0, "a", 40).await.expect("add");
-        store.add(T, NS, C, 0, "a", 2).await.expect("add");
-        store.add(T, NS, C, 0, "b", -3).await.expect("add");
-        store.shutdown().await.expect("shutdown");
+    let store = store(dir.path());
+    store.compactor.hold();
+
+    for i in 0..4000i64 {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            store.add(T, NS, C, 0, "hot", 1),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("add {i} waited on compaction"))
+        .expect("add");
     }
 
-    // Exactly the state a crash between the renames leaves behind.
-    std::fs::rename(&shard_dir, shard_dir.with_extension("retired")).expect("retire");
-    std::fs::create_dir_all(shard_dir.with_extension("compacting")).expect("staging");
+    store.compactor.release();
+    store.compactor.idle().await;
+    let shard = store.shard(T, NS, C, 0).expect("shard");
+    let log_bytes = shard.state.lock().await.index.log_bytes;
+    assert!(
+        log_bytes < 4000 * 24,
+        "the held compaction never ran once released: {log_bytes} bytes",
+    );
+    assert_eq!(
+        store.get(T, NS, C, 0, "hot").await.expect("get"),
+        Some(4000)
+    );
+}
 
+/// A pass trims the head and the sums survive it, a crash partway through it,
+/// and a restart. The crash is a pass stopped after its first batch of
+/// checkpoints, which is what a process death between batches leaves.
+#[tokio::test]
+async fn a_crash_mid_compaction_keeps_every_sum() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let keys = 3 * crate::compaction::COPY_BATCH;
+    {
+        let store = store(dir.path());
+        for round in 0..3i64 {
+            for key in 0..keys {
+                store
+                    .add(T, NS, C, 0, &format!("c{key}"), round + key as i64)
+                    .await
+                    .expect("add");
+            }
+        }
+        store.compactor.hold();
+        let shard = store.shard(T, NS, C, 0).expect("shard");
+        let pass = tokio::spawn(async move { shard.compact().await });
+        // Let the pass seal its cut and park on the budget, then stop it the
+        // way a dying process would: nothing after this point happens.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        pass.abort();
+        let _ = pass.await;
+    }
+
+    let expected = |key: usize| 3 + 3 * key as i64;
     let reopened = store(dir.path());
-    assert_eq!(reopened.get(T, NS, C, 0, "a").await.expect("get"), Some(42));
-    assert_eq!(reopened.get(T, NS, C, 0, "b").await.expect("get"), Some(-3));
-    assert!(!shard_dir.with_extension("retired").exists());
+    for key in 0..keys {
+        assert_eq!(
+            reopened
+                .get(T, NS, C, 0, &format!("c{key}"))
+                .await
+                .expect("get"),
+            Some(expected(key)),
+        );
+    }
+
+    let shard = reopened.shard(T, NS, C, 0).expect("shard");
+    let tail_before = shard.current_log().await.tail_offset().await.expect("tail");
+    shard
+        .compact()
+        .await
+        .expect("a later pass finishes the job");
+    assert!(shard.current_log().await.base_offset() >= tail_before);
+    reopened.shutdown().await.expect("shutdown");
+
+    let again = store(dir.path());
+    for key in 0..keys {
+        assert_eq!(
+            again
+                .get(T, NS, C, 0, &format!("c{key}"))
+                .await
+                .expect("get"),
+            Some(expected(key)),
+            "a sum moved across compaction and a restart",
+        );
+    }
 }
 
 /// The fold catches up with records that reached the log without going

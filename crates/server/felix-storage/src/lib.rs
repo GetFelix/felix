@@ -27,7 +27,7 @@
 //!   implementation), [`segment`] (one segment file and its index), and `io`
 //!   (positioned reads, preallocation, flushes).
 //! - Projections of a log: [`cache`] ([`StorageApi`] and its two stores) and
-//!   [`counter_log`], which both compact through `log_swap`.
+//!   [`counter_log`], which both compact in the background through `compaction`.
 //! - `shard_slots`: the per-shard open and close every store above shares.
 //! - Ordering and reporting: `commit_order` ([`CommitSequencer`]),
 //!   [`metrics_names`], and the errors every call returns ([`StorageError`],
@@ -38,6 +38,7 @@
 
 pub mod cache;
 mod commit_order;
+mod compaction;
 pub mod counter_log;
 pub mod disk_log;
 mod error;
@@ -48,7 +49,6 @@ pub mod fault;
 pub mod fuzzing;
 pub(crate) mod io;
 pub mod log;
-mod log_swap;
 pub mod metrics_names;
 pub mod segment;
 mod shard_slots;

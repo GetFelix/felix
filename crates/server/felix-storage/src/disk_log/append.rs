@@ -286,6 +286,35 @@ impl LogInner {
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
 
+    /// Seal the active segment now, off the append path, and return the
+    /// active segment's base afterwards: every offset below it is in a sealed
+    /// segment. Waits out a rollover already in flight rather than racing it.
+    pub(super) async fn roll_now(self: Arc<Self>) -> Result<crate::log::Offset> {
+        loop {
+            self.check_healthy()?;
+            match self.roll_state.compare_exchange(
+                RollState::Idle as u8,
+                RollState::Preparing as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(1)).await,
+            }
+        }
+        match Arc::clone(&self).roll_in_background().await {
+            Ok(()) => {
+                self.roll_state
+                    .store(RollState::Idle as u8, Ordering::Release);
+                Ok(self.segments.read().active().base_offset())
+            }
+            Err(err) => {
+                self.record_roll_failure(&err);
+                Err(err)
+            }
+        }
+    }
+
     /// Whether a background rollover is between its start and its completion.
     fn roll_pending(&self) -> bool {
         matches!(

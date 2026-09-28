@@ -370,6 +370,7 @@ async fn compaction_under_concurrent_writers_loses_nothing() {
     for task in tasks {
         task.await.expect("writer");
     }
+    cache.compactor.idle().await;
 
     {
         let changes = observer.changes.lock();
@@ -394,4 +395,16 @@ async fn compaction_under_concurrent_writers_loses_nothing() {
         "{} bytes on the log for {written} written: compaction never ran",
         state.index.log_bytes,
     );
+    drop(state);
+
+    // Replay of the compacted log is the same cache.
+    cache.shutdown().await.expect("shutdown");
+    let reopened = super::cache(dir.path()).await;
+    for writer in 0..4 {
+        let value = reopened
+            .get(T, NS, C, 0, &format!("key-{writer}"))
+            .await
+            .expect("key survived a restart");
+        assert_eq!(value.len(), payload.len());
+    }
 }

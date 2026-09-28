@@ -81,9 +81,12 @@ at that offset.
   follower be promoted and serve records that arrived by replication rather
   than through a put.
 
-Compaction rewrites the live set and drops superseded and expired records. It
-**appends the live set at the tail** rather than renumbering from zero, so an
-offset names the same record for the life of the shard.
+Compaction copies the live set forward and drops superseded and expired
+records. It **appends the live set at the tail** rather than renumbering from
+zero, so an offset names the same record for the life of the shard, then
+deletes the sealed segments below the point it copied from. It runs on a
+background task with its own I/O budget, so no write waits for it, and a crash
+anywhere in a pass replays to the same cache.
 
 > `a_cache_survives_a_restart` — the index is rebuilt from the log.
 > `the_index_catches_up_with_records_appended_behind_it` — records that arrive

@@ -1795,6 +1795,26 @@ syscall, falls back to the flush thread rather than failing — durability must
 not depend on an optimisation being available. The kernel still runs each sync
 on a worker thread, so this is not faster than the flush thread for one log.
 
+### `FELIX_STORAGE_COMPACTION_BYTES_PER_SEC`
+
+**Description**: I/O budget for cache and counter compaction, in bytes per
+second. Each store (caches, counters) paces its background compaction passes
+against its own budget.
+
+**Type**: Integer (bytes per second; `0` for unlimited)
+
+**Default**: `67108864` (64 MiB/s)
+
+**Example**:
+```bash
+export FELIX_STORAGE_COMPACTION_BYTES_PER_SEC="16777216"
+```
+
+**Note**: Compaction never delays a write, so this does not trade latency for
+space; it bounds how hard compaction can lean on the device. Too low a budget
+on a write-heavy cache lets the log grow further between passes. An
+unparseable value falls back to the default with a warning.
+
 ### `FELIX_DURABLE_VERIFY_ALL_ON_OPEN`
 
 **Description**: Checksum every record of every segment at startup.

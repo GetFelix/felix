@@ -406,8 +406,8 @@ offset again.
 **Unlike `epochs`, this file is authoritative.** Nothing in the log can rebuild
 it, and reading a damaged one as zero would accept any leader, so a file that
 is present and does not decode fails the open. Absent reads as zero: nothing
-accepted, nothing known committed. Cache and counter compaction carry it into
-the directory they swap in.
+accepted, nothing known committed. Cache and counter compaction leave it
+alone: they trim segments in place and never replace the directory.
 
 A truncation or rebuild that would discard a record held below the commit
 offset is refused with `StorageError::BelowCommit`; see

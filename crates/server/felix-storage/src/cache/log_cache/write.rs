@@ -12,7 +12,7 @@ use std::sync::Arc;
 use parking_lot::Mutex as SyncMutex;
 
 use super::CacheOp;
-use super::shard::{CacheShard, ShardState};
+use super::shard::{CacheShard, KeyInFlight, ShardState};
 use crate::Result;
 use crate::cache::{CacheChange, CacheObserver};
 use crate::commit_order::CommitTurn;
@@ -30,15 +30,13 @@ pub(super) struct StagedWrite {
     pub(super) bytes: u64,
     pub(super) change: CacheChange,
     pub(super) observer: Observer,
+    pub(super) _in_flight: KeyInFlight,
 }
 
 impl StagedWrite {
     /// Wait until the record is durable and every earlier write has applied.
     async fn commit(&self) -> Result<()> {
         self.log.commit(&self.pending).await?;
-        // Compaction is the one reset that can land with a turn held, and it
-        // runs only once every staged write has applied, so nothing waiting
-        // here can be superseded.
         let _ = self.turn.wait().await;
         Ok(())
     }
@@ -76,13 +74,10 @@ impl FinishOnDrop {
         Ok(())
     }
 
-    /// Apply a committed write under the shard lock. The returned write still
-    /// holds its turn; keep it until anything that must stay ordered behind
-    /// this write (compaction) is done.
-    pub(super) fn apply(mut self, state: &mut ShardState) -> StagedWrite {
+    /// Apply a committed write under the shard lock.
+    pub(super) fn apply(mut self, state: &mut ShardState) {
         let write = self.0.take().expect("armed until applied");
         write.apply(state);
-        write
     }
 }
 

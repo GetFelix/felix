@@ -16,6 +16,7 @@
 //! safety, group commit, offsets that never rewind across compaction, and
 //! replication that ships records at their offsets.
 
+mod compaction;
 pub(crate) mod record;
 
 use record::CounterOp;
@@ -23,24 +24,17 @@ use record::CounterOp;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use tokio::sync::Mutex;
 
+use crate::compaction::Compactor;
 use crate::disk_log::{DiskLog, layout};
 use crate::log::{AppendOnlyLog, AppendRecord, LogConfig, Offset, ReadRange, ShardKey};
-use crate::log_swap::{recover_interrupted_swap, swap_in_compacted};
 use crate::shard_slots::ShardSlots;
 use crate::{Corruption, CorruptionKind, Result, StorageError};
-
-/// How much larger than its live bytes a log may grow before it is compacted.
-/// The same proportional rule the cache uses, for the same reason: cost scales
-/// with the garbage, and a mostly-live log is never compacted.
-const COMPACT_WHEN_TIMES_LIVE: u64 = 4;
-
-/// Below this there is nothing worth reclaiming, whatever the ratio says.
-const COMPACT_FLOOR_BYTES: u64 = 64 * 1024;
 
 /// How much of the log one fold or compaction pass reads at a time.
 const SCAN_CHUNK_BYTES: usize = 4 * 1024 * 1024;
@@ -51,6 +45,7 @@ pub struct CounterStore {
     root: PathBuf,
     config: LogConfig,
     shards: ShardSlots<CounterId, Arc<CounterShard>>,
+    compactor: Arc<Compactor>,
 }
 
 impl CounterStore {
@@ -66,6 +61,7 @@ impl CounterStore {
             root,
             config,
             shards: ShardSlots::new(),
+            compactor: Arc::new(Compactor::from_env()),
         })
     }
 
@@ -96,9 +92,7 @@ impl CounterStore {
             )
             .await?;
         let sum = state.index.entries.get(key).map_or(0, |entry| entry.sum);
-        if CounterShard::should_compact(&state.index) {
-            shard.compact(&mut state).await?;
-        }
+        shard.maybe_compact(&state.index);
         Ok((sum, offset))
     }
 
@@ -124,7 +118,7 @@ impl CounterStore {
     /// The log backing one counter shard, for replication.
     ///
     /// Same contract as the cache's: fetch it per pass rather than holding it,
-    /// because compaction swaps the directory underneath a held handle.
+    /// because closing the shard replaces it, and compaction trims its head.
     pub async fn shard_log(
         &self,
         tenant_id: &str,
@@ -180,8 +174,10 @@ impl CounterStore {
             .await
     }
 
-    /// Flush every open shard. Call once during graceful shutdown.
+    /// Flush every open shard. Call once during graceful shutdown. Compaction
+    /// passes stop at their next step first.
     pub async fn shutdown(&self) -> Result<()> {
+        self.compactor.shutdown().await;
         let shards = self.shards.open_values();
         for shard in shards {
             shard.state.lock().await.log.shutdown().await?;
@@ -225,7 +221,6 @@ impl CounterStore {
                 let key = key();
                 let dir = layout::shard_dir(&self.root, &key);
                 let label = layout::shard_label(&key);
-                recover_interrupted_swap(&dir)?;
                 let log = match base_offset {
                     Some(base) => {
                         DiskLog::open_at(dir.clone(), label.clone(), self.config.clone(), base)?
@@ -233,9 +228,9 @@ impl CounterStore {
                     None => DiskLog::open(dir.clone(), label.clone(), self.config.clone())?,
                 };
                 Ok(Arc::new(CounterShard {
-                    dir,
                     label,
-                    config: self.config.clone(),
+                    compactor: Arc::clone(&self.compactor),
+                    compacting: Default::default(),
                     state: Mutex::new(ShardState {
                         log,
                         index: Index::default(),
@@ -254,13 +249,13 @@ type CounterId = (String, String, String, u32);
 
 /// One shard's log and the sum folded from it.
 struct CounterShard {
-    dir: PathBuf,
     label: String,
-    config: LogConfig,
-    /// Held across a write and across compaction, exactly as the cache holds
-    /// its shard lock: a counter write is serialised here anyway, and the
+    compactor: Arc<Compactor>,
+    /// Set while a background compaction pass runs, so only one does.
+    compacting: AtomicBool,
+    /// Held across a write: a counter write is serialised here anyway, and the
     /// read-fold-append of `add` has to be atomic or two adds could both fold
-    /// from the same starting sum.
+    /// from the same starting sum. Compaction takes it only to stage a batch.
     state: Mutex<ShardState>,
 }
 
@@ -305,7 +300,7 @@ impl CounterShard {
                 index.log_bytes += record.payload.len() as u64;
                 let op = CounterOp::decode(&record.payload)
                     .map_err(|err| StorageError::Corruption(err.in_shard(&self.label)))?;
-                Self::fold(&mut index, op);
+                Self::fold(&mut index, op, record.offset);
                 offset = record.offset + 1;
             }
         }
@@ -315,16 +310,19 @@ impl CounterShard {
     }
 
     /// Fold one record into the index. The whole semantic is this function.
-    fn fold(index: &mut Index, op: CounterOp) {
-        let (key, sum) = match op {
+    fn fold(index: &mut Index, op: CounterOp, offset: Offset) {
+        let (key, sum, since) = match op {
             CounterOp::Delta { key, delta } => {
-                let current = index.entries.get(&key).map_or(0, |entry| entry.sum);
-                (key, current.saturating_add(delta))
+                let (current, since) = index
+                    .entries
+                    .get(&key)
+                    .map_or((0, offset), |entry| (entry.sum, entry.since));
+                (key, current.saturating_add(delta), since)
             }
             // A checkpoint replaces the fold so far: it *is* the collapsed
             // history, which is what lets compaction reclaim the deltas
             // without the sum moving.
-            CounterOp::Checkpoint { key, sum } => (key, sum),
+            CounterOp::Checkpoint { key, sum } => (key, sum, offset),
         };
         let checkpoint_bytes = CounterOp::Checkpoint {
             key: key.clone(),
@@ -337,6 +335,7 @@ impl CounterShard {
             Entry {
                 sum,
                 checkpoint_bytes,
+                since,
             },
         ) {
             index.live_bytes -= previous.checkpoint_bytes;
@@ -360,74 +359,8 @@ impl CounterShard {
         if state.index.covered_through.is_some() {
             state.index.covered_through = Some(appended.first_offset + 1);
         }
-        Self::fold(&mut state.index, op);
+        Self::fold(&mut state.index, op, appended.first_offset);
         Ok(appended.first_offset)
-    }
-
-    fn should_compact(index: &Index) -> bool {
-        index.log_bytes > COMPACT_FLOOR_BYTES
-            && index.log_bytes > index.live_bytes.saturating_mul(COMPACT_WHEN_TIMES_LIVE)
-    }
-
-    /// Collapse the applied deltas into one checkpoint per key and swap the
-    /// fresh log in.
-    ///
-    /// **The offset space continues.** The checkpoints are appended starting
-    /// at the current tail, never renumbered from zero: replication ships
-    /// records at their offsets, so a leader that renumbered would make its
-    /// offset 0 a different record from every follower's. The observable sum
-    /// does not move either — a checkpoint is the fold, restated. Both are
-    /// regression-tested.
-    async fn compact(&self, state: &mut ShardState) -> Result<()> {
-        let staging = self.dir.with_extension("compacting");
-        if staging.exists() {
-            // Left by a crash mid-compaction. Never swapped in, so it holds
-            // nothing the current log does not.
-            std::fs::remove_dir_all(&staging).map_err(StorageError::Io)?;
-        }
-        let resume_at = state.log.tail_offset().await?;
-        let fresh = DiskLog::open_at(
-            staging.clone(),
-            self.label.clone(),
-            self.config.clone(),
-            resume_at,
-        )?;
-
-        let mut index = Index::default();
-        for (key, entry) in &state.index.entries {
-            let payload = CounterOp::Checkpoint {
-                key: key.clone(),
-                sum: entry.sum,
-            }
-            .encode();
-            let bytes = payload.len() as u64;
-            fresh
-                .append(&[AppendRecord {
-                    payload,
-                    timestamp_micros: now_micros(),
-                    mark: Default::default(),
-                }])
-                .await?;
-            index.entries.insert(
-                key.clone(),
-                Entry {
-                    sum: entry.sum,
-                    checkpoint_bytes: bytes,
-                },
-            );
-            index.live_bytes += bytes;
-            index.log_bytes += bytes;
-        }
-        fresh.shutdown().await?;
-        state.log.shutdown().await?;
-        crate::disk_log::replica_state::copy_into(&self.dir, &staging)?;
-
-        swap_in_compacted(&self.dir, &staging)?;
-
-        state.log = DiskLog::open(self.dir.clone(), self.label.clone(), self.config.clone())?;
-        index.covered_through = Some(state.log.tail_offset().await?);
-        state.index = index;
-        Ok(())
     }
 }
 
@@ -454,7 +387,7 @@ struct Index {
     entries: HashMap<String, Entry>,
     /// Bytes one checkpoint per live key would occupy.
     live_bytes: u64,
-    /// Bytes appended since the log was last compacted, live or not.
+    /// Payload bytes of every record still in the log, live or not.
     log_bytes: u64,
     /// The offset this index has folded up to. `None` means nothing read yet.
     covered_through: Option<u64>,
@@ -468,6 +401,9 @@ struct Entry {
     /// What one checkpoint for this key costs on disk, for deciding when to
     /// compact: the live set is exactly one checkpoint per key.
     checkpoint_bytes: u64,
+    /// The first record the fold needs: this key's latest checkpoint, or its
+    /// first delta. Everything before it can be trimmed without moving `sum`.
+    since: Offset,
 }
 
 /// The eight bytes a forwarded counter answer travels as.
