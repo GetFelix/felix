@@ -127,6 +127,20 @@ async fn kcat_reads_every_shard_and_follows_a_moved_one() {
         .expect("the moved shard has records")
         + 1;
     let old_bootstrap = kafka_addr(&cluster, &old);
+    // The kcat above can exit with a fetch still parked on the old leader,
+    // which counts its wait only when it returns. Read the baseline once its
+    // connections are gone, or that late wait passes for the follower's.
+    wait::until(
+        Duration::from_secs(30),
+        "the last kcat to disconnect",
+        || {
+            let cluster = &cluster;
+            let old = old.clone();
+            async move { kafka_connections(cluster, &old).await == 0.0 }
+        },
+    )
+    .await
+    .expect("the old leader kept a kafka connection open");
     let waits_before = fetch_waits(&cluster, &old).await;
     let follower = {
         let (partition, offset, count) =
@@ -283,6 +297,14 @@ fn leaders(listing: &str) -> BTreeMap<u32, String> {
 async fn fetch_waits(cluster: &Cluster, node: &str) -> f64 {
     cluster
         .metric(node, "felix_kafka_fetch_waits_total")
+        .await
+        .expect("scrape")
+        .unwrap_or(0.0)
+}
+
+async fn kafka_connections(cluster: &Cluster, node: &str) -> f64 {
+    cluster
+        .metric(node, "felix_kafka_connections")
         .await
         .expect("scrape")
         .unwrap_or(0.0)
