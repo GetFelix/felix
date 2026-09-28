@@ -148,6 +148,30 @@ waits on completions and on an eventfd that callers signal, so a flush queued
 while other logs' syncs are in flight reaches the kernel at once instead of
 waiting for one of them to finish.
 
+### 10. Compaction runs beside writes, not in front of them
+
+Cache and counter compaction used to run inline: the write that pushed a log
+over its threshold rewrote the whole live set under the shard lock before it
+returned, and every write queued behind that lock waited too. Compaction now
+runs on a background task (see `docs/durable-storage.md`, "Cache and counter
+compaction"). A write waits for at most one batch of copies being staged, which
+is a buffered write of 64 records with no flush, and the pass paces itself
+against `FELIX_STORAGE_COMPACTION_BYTES_PER_SEC`.
+
+An indicative before/after, on a shared and loaded laptop (load average about
+20 on 16 cores), so read the shape rather than the digits. One writer put 20,000
+keys of 1 KiB six times over (120,000 puts), with `FsyncMode::None` and 16 MiB
+segments, so the cache compacted mid-run with about 20 MiB live:
+
+| | total | p50 | p99 | p99.99 | max |
+| --- | --- | --- | --- | --- | --- |
+| inline (before), 2 runs | 19.7–22.5 s | 4.8–5.7 µs | 16–19 µs | 2.1–5.9 ms | 18.6–21.0 s |
+| background (after), 6 runs | 1.0–1.8 s (one run 9.5 s) | 4.5–5.8 µs | 12–27 µs (one run 3.1 ms) | 2.8–22 ms | 33–899 ms |
+
+Before, the one put that triggered compaction waited the entire rewrite, about
+20 seconds. After, no put waited for compaction; the remaining tail tracks
+segment rolls and machine load, and one run in six was slow throughout.
+
 ## Where the time goes
 
 ```mermaid

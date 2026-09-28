@@ -165,6 +165,14 @@ it is `Trimmed { requested, oldest }` rather than an empty answer. That
 distinction is the point of the feature: it lets a resuming subscriber tell
 "those records existed and are gone" from "nothing here yet".
 
+Cache and counter logs are trimmed the same way, by compaction rather than by
+a bound. A background pass seals the active segment, copies each record still
+live below it to the tail (a put of the same value, or a counter checkpoint),
+flushes, and deletes the sealed segments below the seal point, oldest first.
+No record is rewritten, a crash anywhere in the pass replays to the same state,
+and no write waits for it: the pass is paced by its own I/O budget,
+`FELIX_STORAGE_COMPACTION_BYTES_PER_SEC`.
+
 The full byte layout, versioning rules, and corruption verdicts are in the
 [Durable Segment Format specification](/felix/architecture/storage-format/).
 
@@ -299,6 +307,7 @@ optimisation are in
 | `FELIX_DURABLE_PREALLOCATE` | `true` | Reserve segment blocks at creation |
 | `FELIX_DURABLE_VERIFY_ALL_ON_OPEN` | `false` | Checksum every segment at startup |
 | `FELIX_DURABLE_REPAIR_CHECKSUM_TAIL` | `false` | Truncate a complete trailing record that fails its checksum (see below) |
+| `FELIX_STORAGE_COMPACTION_BYTES_PER_SEC` | `67108864` | I/O budget for cache and counter compaction; `0` is unlimited |
 
 Invalid combinations fail at startup, not at the first publish.
 

@@ -105,17 +105,6 @@ pub(super) fn store(dir: &Path, state: &ReplicaState) -> Result<()> {
     Ok(())
 }
 
-/// Carry the state into a directory about to replace this one, as cache
-/// compaction does. The replacement starts without it otherwise, and a
-/// compacted replica would forget which leaders it has refused.
-pub(crate) fn copy_into(from: &Path, to: &Path) -> Result<()> {
-    let state = load(from)?;
-    if state == ReplicaState::default() {
-        return Ok(());
-    }
-    store(to, &state)
-}
-
 fn path_in(dir: &Path) -> PathBuf {
     dir.join(FILE_NAME)
 }

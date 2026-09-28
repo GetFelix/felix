@@ -1,15 +1,27 @@
-//! Rewriting a cache shard's log down to its live set.
+//! Reclaiming a cache shard's overwritten records, off the write path.
 //!
-//! A log that only ever grows makes "the cache is a log" a slow leak.
-//! Compaction writes the live entries into a fresh log in a sibling directory
-//! and swaps the two, so no record is ever edited in place.
+//! A log that only ever grows makes "the cache is a log" a slow leak. A pass
+//! seals the active segment, which fixes a cut: every record below it is in a
+//! sealed segment. It then copies each live record below the cut to the tail
+//! as an ordinary put, through the same staging and commit order as a write,
+//! and finally deletes the sealed segments below the cut.
+//!
+//! Nothing is edited in place, and a crash at any point leaves a log whose
+//! replay is the same cache: a copy restates a value the log already holds,
+//! and the segments are deleted only once nothing live is left in them. The
+//! pass runs on its own task and spends from the store's I/O budget; a write
+//! only ever waits for the brief staging step of one batch of copies.
+
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
 
 use super::CacheOp;
-use super::shard::{CacheShard, Entry, Index, ShardState, now_millis};
+use super::shard::{CacheShard, Entry, Index, now_millis};
+use crate::compaction::{COPY_BATCH, payload_bytes};
 use crate::disk_log::DiskLog;
-use crate::log::{AppendOnlyLog, AppendRecord, Offset};
+use crate::log::{AppendRecord, Offset};
 use crate::{Result, StorageError};
 
 /// How much larger than its live bytes a log may grow before it is compacted.
@@ -23,41 +35,31 @@ const COMPACT_WHEN_TIMES_LIVE: u64 = 4;
 /// a cache holding a handful of keys from compacting on every other write.
 const COMPACT_FLOOR_BYTES: u64 = 1024 * 1024;
 
+/// Copy rounds before a pass gives up on keys that keep being rewritten under
+/// it. Those keys land above the cut by themselves; the next pass trims.
+const COPY_ROUNDS: usize = 3;
+
 impl CacheShard {
-    /// Compact when worthwhile — but only from an apply whose record is the
-    /// newest in the log, with nothing staged behind it.
-    ///
-    /// The gate is load-bearing: compaction swaps the shard directory, and a
-    /// record another writer has staged but not yet committed lives only in
-    /// the old directory. Swapping under it would discard the record while its
-    /// writer is told the write succeeded. `sequenced_through == our_end`
-    /// rules out staged writers (staging advances it under this lock), and
-    /// `tail == our_end` rules out records appended outside the write path.
-    pub(super) async fn maybe_compact(
-        &self,
-        state: &mut ShardState,
-        our_end: Offset,
-    ) -> Result<()> {
-        // Closed after this write staged: the directory is no longer ours
-        // to swap.
-        if state.closed || !Self::should_compact(&state.index) {
-            return Ok(());
+    /// Start a background pass when the log holds enough garbage and none is
+    /// running. Called after a write applies; never waits for the pass.
+    pub(super) fn maybe_compact(self: &Arc<Self>, index: &Index) {
+        if !Self::should_compact(index) || self.compacting.swap(true, Ordering::AcqRel) {
+            return;
         }
-        if state.sequenced_through != Some(our_end) {
-            return Ok(());
+        let shard = Arc::clone(self);
+        let spawned = self.compactor.spawn(async move {
+            match shard.compact().await {
+                Ok(()) | Err(StorageError::Closed(_)) => {}
+                Err(err) => tracing::warn!(
+                    shard = %shard.label, error = %err,
+                    "cache compaction failed; it is retried on a later write",
+                ),
+            }
+            shard.compacting.store(false, Ordering::Release);
+        });
+        if !spawned {
+            self.compacting.store(false, Ordering::Release);
         }
-        let tail = state.log.tail_offset().await?;
-        if tail != our_end {
-            return Ok(());
-        }
-        self.compact(state).await?;
-        // Compaction re-appended the live set outside the reserve path, so
-        // the sequence restarts at the new tail. The caller's own turn is
-        // still held; the generation bump makes its release a no-op.
-        let new_tail = state.log.tail_offset().await?;
-        self.sequencer.reset(new_tail);
-        state.sequenced_through = Some(new_tail);
-        Ok(())
     }
 
     /// True when the log holds enough garbage to be worth rewriting.
@@ -66,86 +68,183 @@ impl CacheShard {
             && index.log_bytes > index.live_bytes.saturating_mul(COMPACT_WHEN_TIMES_LIVE)
     }
 
-    /// Rewrite the live set into a fresh log and swap it in.
-    ///
-    /// **Records are never rewritten**, which is the invariant the whole storage
-    /// layer rests on. Compaction honours it: it writes new segments in a new
-    /// directory and swaps directories, and never edits a byte in place. A crash
-    /// at any point leaves either the old log or the new one whole: see
-    /// `crate::log_swap`.
-    pub(super) async fn compact(&self, state: &mut ShardState) -> Result<()> {
-        let now = now_millis();
-        let mut live: Vec<(String, Bytes, u64)> = Vec::with_capacity(state.index.entries.len());
-        for (key, entry) in &state.index.entries {
-            if entry.is_expired(now) {
-                // Expired entries are exactly what compaction is for: reclaimed
-                // here rather than carried into the new log.
-                continue;
+    /// One compaction pass. Returns early, having changed nothing a replay
+    /// would notice, when the shard closes or the store shuts down.
+    pub(super) async fn compact(&self) -> Result<()> {
+        let log = self.live_log().await?;
+        let cut = log.roll_now().await?;
+
+        // Every write below the cut must have applied before the index can say
+        // what is live below it. Writers already hold their offsets, so this
+        // is a wait of one fsync at most.
+        loop {
+            {
+                let mut state = self.state.lock().await;
+                self.ensure_index(&mut state).await?;
+                if self.sequencer.next_offset() >= cut {
+                    break;
+                }
             }
-            if let Some(value) = self.read_value(state, *entry).await? {
-                live.push((key.clone(), value, entry.expires_at_millis));
+            if self.compactor.stopping() {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+
+        for _ in 0..COPY_ROUNDS {
+            let below = self.live_below(cut).await?;
+            if below.is_empty() {
+                break;
+            }
+            for batch in below.chunks(COPY_BATCH) {
+                if !self.copy_forward(&log, batch).await? {
+                    return Ok(());
+                }
             }
         }
 
-        let staging = self.dir.with_extension("compacting");
-        if staging.exists() {
-            // Left by a crash mid-compaction. It was never swapped in, so it
-            // holds nothing the current log does not.
-            std::fs::remove_dir_all(&staging).map_err(StorageError::Io)?;
-        }
-        // The compacted log continues the offset space rather than restarting
-        // it. An offset has to name the same record for the life of the shard:
-        // replication ships records at their offsets, so a leader that renumbered
-        // on compaction would make its offset 0 a different record from every
-        // follower's, with no way for either to tell. Continuing from the tail
-        // makes compaction an append of the live set, which is the one shape
-        // the rest of the storage layer already assumes.
-        let resume_at = state.log.tail_offset().await?;
-        let fresh = DiskLog::open_at(
-            staging.clone(),
-            self.label.clone(),
-            self.config.clone(),
-            resume_at,
-        )?;
-
-        let mut index = Index::default();
-        for (key, value, expires_at_millis) in live {
-            let payload = CacheOp::Put {
-                key: key.clone(),
-                value,
-                expires_at_millis,
+        {
+            let mut state = self.state.lock().await;
+            self.ensure_index(&mut state).await?;
+            let now = now_millis();
+            if state
+                .index
+                .entries
+                .values()
+                .any(|entry| entry.offset < cut && !entry.is_expired(now))
+            {
+                return Ok(());
             }
-            .encode();
-            let bytes = payload.len() as u64;
-            let appended = fresh
-                .append(&[AppendRecord {
-                    payload,
-                    timestamp_micros: now * 1000,
-                    mark: Default::default(),
-                }])
-                .await?;
-            index.entries.insert(
-                key,
-                Entry {
-                    offset: appended.first_offset,
-                    expires_at_millis,
-                    bytes,
-                },
-            );
-            index.live_bytes += bytes;
-            index.log_bytes += bytes;
+            // Expired entries below the cut are exactly what compaction is
+            // for: reclaimed with their segments rather than copied.
+            let index = &mut state.index;
+            let expired: Vec<String> = index
+                .entries
+                .iter()
+                .filter(|(_, entry)| entry.offset < cut)
+                .map(|(key, _)| key.clone())
+                .collect();
+            for key in expired {
+                if let Some(entry) = index.entries.remove(&key) {
+                    index.live_bytes -= entry.bytes;
+                }
+            }
         }
-        fresh.shutdown().await?;
-        state.log.shutdown().await?;
-        // After the shutdown, which writes it through: a replica's accepted
-        // generation and commit offset outlive the records being rewritten.
-        crate::disk_log::replica_state::copy_into(&self.dir, &staging)?;
 
-        crate::log_swap::swap_in_compacted(&self.dir, &staging)?;
-
-        state.log = DiskLog::open(self.dir.clone(), self.label.clone(), self.config.clone())?;
-        index.covered_through = Some(state.log.tail_offset().await?);
-        state.index = index;
+        // The copies must be on the device before the originals leave it,
+        // whatever the fsync mode says about ordinary writes.
+        log.sync().await?;
+        let removed = log.trim_before(cut).await?;
+        let reclaimed: u64 = removed.iter().map(payload_bytes).sum();
+        let mut state = self.state.lock().await;
+        state.index.log_bytes = state.index.log_bytes.saturating_sub(reclaimed);
         Ok(())
+    }
+
+    async fn live_log(&self) -> Result<DiskLog> {
+        let state = self.state.lock().await;
+        if state.closed {
+            return Err(StorageError::Closed(self.label.clone()));
+        }
+        Ok(state.log.clone())
+    }
+
+    /// Live, unexpired entries whose record sits below `cut`.
+    pub(super) async fn live_below(&self, cut: Offset) -> Result<Vec<(String, Entry)>> {
+        let mut state = self.state.lock().await;
+        self.ensure_index(&mut state).await?;
+        let now = now_millis();
+        Ok(state
+            .index
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.offset < cut && !entry.is_expired(now))
+            .map(|(key, entry)| (key.clone(), *entry))
+            .collect())
+    }
+
+    /// Re-append one batch of live records at the tail. False when the pass
+    /// should stop: the store is shutting down or the shard closed.
+    pub(super) async fn copy_forward(
+        &self,
+        log: &DiskLog,
+        batch: &[(String, Entry)],
+    ) -> Result<bool> {
+        // Read without the lock: records are never rewritten, so the bytes at
+        // an offset cannot change, and the staging step below checks the
+        // index still points there.
+        let mut copies: Vec<(String, Entry, Bytes)> = Vec::with_capacity(batch.len());
+        let mut cost = 0;
+        for (key, entry) in batch {
+            if let Some(value) = Self::read_from(log, &self.label, *entry).await? {
+                cost += 2 * entry.bytes;
+                copies.push((key.clone(), *entry, value));
+            }
+        }
+        if copies.is_empty() {
+            return Ok(true);
+        }
+        if !self.compactor.spend(cost).await {
+            return Ok(false);
+        }
+
+        let (pending, turn, ops) = {
+            let mut state = self.state.lock().await;
+            if state.closed {
+                return Ok(false);
+            }
+            self.ensure_index(&mut state).await?;
+            // A key with a write staged but not applied is skipped: the copy
+            // would land after that write and undo it on replay. The write
+            // itself lands above the cut, so the key needs no copy.
+            let kept: Vec<_> = {
+                let in_flight = self.keys_in_flight.lock();
+                copies
+                    .into_iter()
+                    .filter(|(key, entry, _)| {
+                        let current = state.index.entries.get(key).map(|e| e.offset);
+                        current == Some(entry.offset) && !in_flight.contains_key(key)
+                    })
+                    .collect()
+            };
+            let now = now_millis() * 1000;
+            let mut ops = Vec::with_capacity(kept.len());
+            let mut records = Vec::with_capacity(kept.len());
+            for (key, entry, value) in kept {
+                let op = CacheOp::Put {
+                    key,
+                    value,
+                    expires_at_millis: entry.expires_at_millis,
+                };
+                let payload = op.encode();
+                ops.push((op, payload.len() as u64));
+                records.push(AppendRecord {
+                    payload,
+                    timestamp_micros: now,
+                    mark: Default::default(),
+                });
+            }
+            if records.is_empty() {
+                return Ok(true);
+            }
+            let pending = state.log.append_pending(&records).await?;
+            let turn = self
+                .sequencer
+                .reserve_owned(pending.first_offset(), pending.last_offset() + 1);
+            state.sequenced_through = Some(pending.last_offset() + 1);
+            (pending, turn, ops)
+        };
+
+        log.commit(&pending).await?;
+        let _ = turn.wait().await;
+        let mut state = self.state.lock().await;
+        // Not reported to the observer: a copy moves where a value lives, not
+        // what it is, and a watcher told about it would see a phantom write.
+        for (offset, (op, bytes)) in (pending.first_offset()..).zip(&ops) {
+            Self::apply_op(&mut state, op, offset, *bytes);
+        }
+        drop(state);
+        drop(turn);
+        Ok(true)
     }
 }

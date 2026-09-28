@@ -505,6 +505,7 @@ cursors.
 | `FELIX_DURABLE_VERIFY_ALL_ON_OPEN` | `false` | Checksum every segment at startup |
 | `FELIX_DURABLE_REPAIR_CHECKSUM_TAIL` | `false` | Truncate a complete trailing record that fails its checksum (see below) |
 | `FELIX_STORAGE_IO_URING` | `0` | Submit device flushes to `io_uring` instead of the log's flush thread (Linux only) |
+| `FELIX_STORAGE_COMPACTION_BYTES_PER_SEC` | `67108864` | I/O budget for cache and counter compaction, per store; `0` is unlimited |
 
 Invalid combinations fail at startup, not at the first publish.
 
@@ -540,8 +541,8 @@ shard's log and its counters, and drops the broker's in-memory `StreamState`.
   retryable: once the close finishes, the next open recovers the shard afresh
   from disk.
 - A cache or counter operation that found the shard before the close and gets
-  its lock after it is refused with `Closed`, and a staged cache write does
-  not compact a closed shard.
+  its lock after it is refused with `Closed`, and a compaction pass stops at
+  its next step.
 - A broker open racing the close either installs its state before the close
   clears it, or sees its log closed and fails instead of installing it.
 
@@ -670,6 +671,71 @@ a trimmed stream instead of becoming an error.
 
 An operator can force a pass with `StreamLog::enforce_retention_now` instead of
 waiting out the interval.
+
+## Cache and counter compaction
+
+The cache (`LogCache`) and the counters (`CounterStore`) are projections of
+their own logs, and those logs collect superseded records: an overwritten key,
+a deleted one, a counter's folded deltas. Compaction reclaims them. It runs on a
+background task, never on a write, and follows the same rules as everything
+else here: records are never rewritten, and the index is derived.
+
+A pass starts when a write leaves the log more than four times its live bytes
+(and past a floor: 1 MiB for a cache, 64 KiB for counters). One pass runs per
+shard at a time. It:
+
+1. **Seals the active segment.** Its base becomes the *cut*: every record below
+   it is now in a sealed segment. The roll is the background rollover, so its
+   flushes are off the append path.
+2. **Copies the live records below the cut to the tail**, in batches of 64. A
+   cache copy is an ordinary put of the same value and expiry; a counter copy
+   is a checkpoint of the current sum. Each batch is staged under the shard lock
+   like a write (claim offsets, reserve a commit turn), committed outside it,
+   and applied in commit order. The shard lock is held only for staging; the
+   reads of the old values and the flush are outside it.
+3. **Flushes the log**, whatever the fsync mode, so every copy is on the device.
+4. **Deletes the sealed segments below the cut**, oldest first, syncing the
+   directory after each unlink.
+
+Writers keep going throughout. A cache key with a write staged but not yet
+applied is not copied: the copy would land after that write and bring the old
+value back on replay, and the write itself lands above the cut anyway. A pass
+that finds live records still below the cut after three rounds leaves the
+segments alone and lets the next pass trim them.
+
+**Crash safety.** A copy restates a value the log already holds, so a crash
+after any number of copies replays to the same cache or sums. Nothing is
+deleted until every live record has a copy above the cut and that copy has been
+flushed. A crash partway through the deletes leaves a longer log, not a broken
+one: the unlinks are synced one at a time, oldest first, so a power loss can
+only bring back segments at the head of the chain, never leave a gap in it.
+Recovery needs nothing compaction-specific.
+
+**Offsets never rewind.** Copies are appended at the tail, so an offset names
+the same record for the life of the shard, and replication ships copies like
+any other record. After a pass the log's base is the cut; a reader below it
+gets `StorageError::Trimmed`, exactly as after retention.
+
+**The I/O budget.** Each store's passes share one pacer:
+`FELIX_STORAGE_COMPACTION_BYTES_PER_SEC` (default 64 MiB/s, `0` for unlimited).
+A cache copy costs twice its record's payload, one read and one write. The
+budget bounds how hard compaction can lean on the device; it does not delay a
+write, because a write never waits for compaction.
+
+**Shutdown.** `LogCache::shutdown` and `CounterStore::shutdown` stop every
+pass at its next step, including one waiting on the budget, and wait for them
+before flushing. A pass cut short leaves only redundant copies, which the next
+pass after a restart reclaims. Closing a shard stops its pass the same way.
+
+> `writes_do_not_wait_on_a_slow_compaction` and
+> `adds_do_not_wait_on_a_slow_compaction` — a held pass delays no write.
+> `a_crash_mid_compaction_replays_to_the_same_cache`,
+> `a_crash_mid_compaction_keeps_every_sum` and
+> `a_crash_mid_trim_leaves_a_longer_log` — a crash anywhere in a pass recovers.
+> `a_power_loss_anywhere_in_a_pass_keeps_every_live_value` — the same under a
+> simulated power loss, with `FsyncMode::None` (Linux only).
+> `a_key_with_a_write_in_flight_is_not_copied` — a copy never undoes a write.
+> `shutdown_abandons_a_held_compaction` — shutdown does not wait on the budget.
 
 ## Tiered storage: what is already in place
 
