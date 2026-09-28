@@ -104,3 +104,9 @@ features = [
     "blocking",
     "watchdog",
 ]
+
+# Felix: upstream's `gap` types are `pub(crate)` and mostly unused, which crates.io
+# builds never show because cargo caps lints for registry dependencies. As a path
+# crate every build would print them, so accept that one lint here.
+[lints.rust]
+dead_code = "allow"

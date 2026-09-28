@@ -13,4 +13,4 @@
 [[crate]]
 name = "kafka-protocol"
 version = "0.18.0"
-patch = "Caps reservations sized by client-supplied counts so their size in bytes stays within the bytes left in the buffer, so a tiny frame cannot ask for gigabytes."
+patch = "Caps reservations sized by client-supplied counts so their size in bytes stays within the bytes left in the buffer, so a tiny frame cannot ask for gigabytes. Its Cargo.toml also allows dead_code, which crates.io builds cap anyway."
