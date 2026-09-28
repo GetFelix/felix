@@ -864,11 +864,15 @@ impl Record {
 
         // Timestamp delta
         let timestamp_delta: i64 = types::VarLong.decode(buf)?;
-        let timestamp = batch_decode_info.min_timestamp + timestamp_delta;
+        let Some(timestamp) = batch_decode_info.min_timestamp.checked_add(timestamp_delta) else {
+            bail!("Record timestamp delta {timestamp_delta} overflows the batch's base timestamp");
+        };
 
         // Offset delta
         let offset_delta: i32 = types::VarInt.decode(buf)?;
-        let offset = batch_decode_info.min_offset + offset_delta as i64;
+        let Some(offset) = batch_decode_info.min_offset.checked_add(offset_delta as i64) else {
+            bail!("Record offset delta {offset_delta} overflows the batch's base offset");
+        };
         let sequence = batch_decode_info.base_sequence.wrapping_add(offset_delta);
 
         // Key
