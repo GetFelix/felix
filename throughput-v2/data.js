@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790625434270,
+  "lastUpdate": 1790630111803,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19812,6 +19812,58 @@ window.BENCHMARK_DATA = {
             "range": "5486.49",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 825988.75\nmean: 826566.11\nstdev: 5486.49\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "19f562379d4ae7060451dff7257c182e3f4722f0",
+          "message": "feat(replication): confirm Quorum cache reads by a majority round, not the lease (#829)\n\nOnce the fleet finalizes `lease_free_reads` (with `majority_ack` and\n`generation_start`), a get or counter get on a replicated `Quorum` cache,\nlocal or forwarded, takes its value and then confirms leadership read-index\nstyle: the promotion fence at the broker's own generation goes to every\nreplica, and the read is answered once a majority, the broker included, has\ntaken it. No wire change: a replica takes a fence at a generation it already\naccepted without writing anything.\n\n- `ReadIndex` (felix-replication `leadership.rs`) runs the rounds. Concurrent\n  reads of a shard share them, but a read never joins a round already in\n  flight, which may have been answered before it took its value.\n- The broker counts itself only while its log, and for a cache its counter\n  log, has accepted no newer generation. A cache replica refuses the round\n  when its counter log accepted a newer leader.\n- A same-generation fence counts as `fence_confirmed` and is not logged.\n- `FELIX_QUORUM_READS=lease` keeps a broker on the lease; unreplicated\n  shards, `Leader` caches, stream readers and watches keep the lease.\n- A broker running with `FELIX_INTERNAL_FENCE=false` does not report the\n  feature.\n\nTLA+: FelixShardReads.tla adds reads. FelixShardReadsRound (drift, no margin,\nfollower acks, fence, start record) passes NoStaleRead; FelixShardReadsNoRound\nand FelixShardReadsLease violate it. check_tla.sh takes TLC_WORKERS.",
+          "timestamp": "2026-09-28T14:10:27-07:00",
+          "tree_id": "7c17208359852d7dad08b943089447fae39385f5",
+          "url": "https://github.com/gabloe/felix/commit/19f562379d4ae7060451dff7257c182e3f4722f0"
+        },
+        "date": 1790630111135,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 476492.36,
+            "range": "11231.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 476492.36\nmean: 472885.18\nstdev: 11231.44\ncv: 2.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 476492.36,
+            "range": "11231.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 476492.36\nmean: 472885.18\nstdev: 11231.44\ncv: 2.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 108052.36,
+            "range": "554.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 108052.36\nmean: 108016.41\nstdev: 554.97\ncv: 0.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1080523.61,
+            "range": "5549.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1080523.61\nmean: 1080164.08\nstdev: 5549.75\ncv: 0.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
