@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790605289871,
+  "lastUpdate": 1790606830680,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19448,6 +19448,58 @@ window.BENCHMARK_DATA = {
             "range": "7451.54",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 954552.13\nmean: 956353.38\nstdev: 7451.54\ncv: 0.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "68770b71398b6338a9115f32f11160b2bba9c09e",
+          "message": "build(deps): move the OpenTelemetry crates to 0.33 together (#820)\n\n* build(deps): move the OpenTelemetry crates to 0.33 together\n\nopentelemetry, opentelemetry_sdk and opentelemetry-otlp go to 0.33 in one\nstep, with tracing-opentelemetry 0.34, the release built against them. The\nindividual dependabot bumps each failed to build because the crates share\ntypes and must move as a set. No call-site changes were needed.\n\nThe standalone demo lockfiles move with the workspace.\n\n* build(deps): use aws-lc-rs as the only TLS provider and trim duplicate crates (#822)\n\nring and aws-lc-rs were both compiled in: rustls and jsonwebtoken used\naws-lc-rs, while quinn, rcgen, reqwest 0.12 and felix-client's rustls\nfeatures pulled in ring. jsonwebtoken 11 cannot use ring at all, so\naws-lc-rs is the provider that every crate can agree on. quinn and\nquinn-proto now use rustls-aws-lc-rs, rcgen uses aws_lc_rs, and reqwest\nmoves to 0.13, whose rustls backend is aws-lc-rs. ring is no longer built\non any native target. The broker and control plane install aws-lc-rs as the\nprocess default at startup, and every config we build names it explicitly.\n\nreqwest 0.13 verifies against the platform trust store instead of bundled\nwebpki roots. add_root_certificate is deprecated there, so the call sites\nuse tls_certs_merge for the control-plane CA and tls_certs_only for the\nRaft peer CA and in tests.\n\nAlso:\n- opentelemetry-otlp drops its default HTTP exporter features. Only the\n  tonic exporter is used, and the defaults pulled in a second reqwest.\n- casbin drops its unused logging feature, which removes slog. rhai is a\n  hard dependency of casbin, not a feature, so it stays.\n- zstd 0.14 for felix-kafka and the vendored kafka-protocol together, so the\n  bump doesn't leave two zstd copies.\n- A lockfile refresh within semver ranges. Together with the above, this\n  takes duplicated crates in Cargo.lock from 35 to 25.\n\nThe TLS rotation test opens a fresh client for its second handshake. A\nresumed session reports the original certificate, and under aws-lc-rs the\nsecond handshake resumed.\n\nSpec-Unaffected: only the rustls crypto provider named in the peer and Kafka TLS configs changes; no lease, quorum, report, promotion or handoff logic is touched.",
+          "timestamp": "2026-09-28T07:38:33-07:00",
+          "tree_id": "7171961b7c41ee05ad8318d264ea55b28ef116d8",
+          "url": "https://github.com/gabloe/felix/commit/68770b71398b6338a9115f32f11160b2bba9c09e"
+        },
+        "date": 1790606829906,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 390839.35,
+            "range": "33187.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 390839.35\nmean: 383552.50\nstdev: 33187.80\ncv: 8.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 390839.35,
+            "range": "33187.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 390839.35\nmean: 383552.50\nstdev: 33187.80\ncv: 8.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 94207.79,
+            "range": "4598.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 94207.79\nmean: 92351.43\nstdev: 4598.09\ncv: 4.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 942077.91,
+            "range": "45980.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 942077.91\nmean: 923514.25\nstdev: 45980.90\ncv: 4.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
