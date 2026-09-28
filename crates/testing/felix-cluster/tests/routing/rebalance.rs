@@ -809,7 +809,9 @@ async fn a_quorum_publish_during_a_copy_is_not_held_by_it() {
         .any(|a| a.key.stream == STREAM && a.successor.as_deref() == Some(destination.as_str()));
     assert!(staged, "the move was not staged toward {destination}");
 
-    let budget = felix_cluster::wait::budget(Duration::from_secs(4));
+    // Under the peer pool's 2 s handshake timeout: a publish held by the
+    // dial to the suspended destination takes at least that.
+    let budget = felix_cluster::wait::budget(Duration::from_millis(1500));
     let mut slowest = Duration::ZERO;
     for i in 0..20 {
         let payload = format!("during-{i}").into_bytes();
@@ -823,8 +825,8 @@ async fn a_quorum_publish_during_a_copy_is_not_held_by_it() {
     }
     println!("slowest Quorum publish during the stalled copy: {slowest:?}");
     // The quorum timeout is 5 s. A publish that waited for the copy would
-    // have run it out; one that did not waits at most for a replication pass
-    // held by the first dial to the suspended destination.
+    // have run it out, and one that waited for the pass dialling the
+    // destination would have taken the dial's timeout.
     assert!(
         slowest < budget,
         "a Quorum publish took {slowest:?} while the destination was copying",

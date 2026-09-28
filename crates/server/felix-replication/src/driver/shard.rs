@@ -1,6 +1,7 @@
 //! One shard's pass: ship to each follower, advance the quorum mark, and
 //! build the report.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,13 +28,12 @@ use crate::{
 /// batch, not the distance it is behind.
 pub(super) const MAX_BATCH_BYTES: usize = 1024 * 1024;
 
-/// How long one pass ships to a destination that is still copying.
+/// How long one exchange ships to a destination that is still copying.
 ///
-/// A pass ends when its slowest follower does, and the next quorum mark waits
-/// for the next pass. A copy left to run to the tail would hold every `Quorum`
-/// publish on the shard for the length of the copy; cut into slices, it costs
-/// them at most this much. The driver runs the next pass at once while a copy
-/// is unfinished, so the copy itself is not slowed.
+/// The driver hands an exchange still under way back from the pass, so the
+/// mark does not wait for it; the slice bounds how stale the destination's
+/// position in the reports gets. The driver passes again as each slice ends,
+/// so the copy itself is not slowed.
 pub(super) const COPY_SLICE: Duration = Duration::from_millis(50);
 
 /// Cursors for one shard, valid only at `generation`.
@@ -61,9 +61,34 @@ impl ShardCursors {
     }
 }
 
+/// What a pass does with exchanges still under way once its mark is out.
+#[derive(Debug, Clone)]
+pub(super) enum Stragglers {
+    /// Wait for every follower before the pass ends.
+    Await,
+    /// Wait for them until the driver wants the shard's next pass, then hand
+    /// back whatever is still under way, so a slow follower does not hold the
+    /// next mark.
+    HandOff {
+        next_wanted: Arc<tokio::sync::Notify>,
+    },
+}
+
+/// One exchange with a follower, as a future the driver can hold across
+/// passes: the cursor it took, and whether a copy was cut at its slice.
+pub(super) type Exchange<'a> = futures::future::BoxFuture<'a, (FollowerCursor, bool)>;
+
 /// One shard's pass: what it shipped, and the cursors it owned while doing it.
-pub(super) struct ShardPass {
+pub(super) struct ShardPass<'a> {
     pub(super) key: ShardKey,
+    /// The generation the pass shipped at, which its stragglers belong to.
+    pub(super) generation: u64,
+    /// Exchanges handed back unfinished; always empty under
+    /// [`Stragglers::Await`]. Each yields its follower's cursor.
+    pub(super) exchanges: Vec<Exchange<'a>>,
+    /// The followers those belong to, and whether each went in halted or
+    /// rebuilding and so may hold a rebuild slot.
+    pub(super) straggling: Vec<(String, bool)>,
     pub(super) cursors: ShardCursors,
     pub(super) aux: AuxCursors,
     pub(super) report: Option<ShardReport>,
@@ -78,13 +103,16 @@ pub(super) struct ShardPass {
     pub(super) behind: bool,
 }
 
-impl ShardPass {
+impl ShardPass<'_> {
     /// Nothing shipped, nothing to report — the shard could not be opened or
     /// read. The cursors travel back untouched so the next pass resumes from
     /// where this one found them.
     fn quiet(key: ShardKey, cursors: ShardCursors, aux: AuxCursors) -> Self {
         Self {
             key,
+            generation: cursors.generation,
+            exchanges: Vec::new(),
+            straggling: Vec::new(),
             cursors,
             aux,
             report: None,
@@ -105,20 +133,26 @@ pub(super) struct AuxCursors {
 }
 
 /// Ship one shard, and everything that rides with it.
+///
+/// `busy` names followers whose exchange from an earlier pass is still under
+/// way. They are not shipped to again until it ends; their cursors here are
+/// where they stood when it began, which is a floor for the quorum.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn replicate_shard<R: PeerRequester>(
-    requester: &R,
+pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
+    requester: &'a R,
     broker: &Arc<Broker>,
     fence: &dyn WriteFence,
-    marks: &QuorumMarks,
+    marks: &'a QuorumMarks,
     reporter: Option<&Reporter>,
-    rebuilds: &Rebuilds,
-    throttle: &MoveThrottle,
+    rebuilds: &'a Rebuilds,
+    throttle: &'a MoveThrottle,
     key: ShardKey,
     route: felix_router::Route,
     mut entry: ShardCursors,
     mut aux: AuxCursors,
-) -> ShardPass {
+    busy: &HashSet<String>,
+    stragglers: Stragglers,
+) -> ShardPass<'a> {
     let route = &route;
     let shard_key = key.clone();
     let key = &key;
@@ -238,13 +272,13 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
             &mut aux,
             learner.as_deref(),
             rebuilds,
+            busy,
         )
         .await
     } else {
         None
     };
     let mut positions: Vec<FollowerCursor> = entry.followers.clone();
-    let (log_ref, shard_ref) = (&log, &shard);
     // Not once the leader is fenced: the shard is not serving until the
     // remainder is across, and the remainder is bounded by the fence's lag
     // bound anyway. A learner is never needed by the quorum; any other
@@ -256,13 +290,24 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
                 .or_else(|| paced_destination(route, &entry.followers).map(str::to_string))
         })
         .flatten();
-    let mut in_flight: futures::stream::FuturesUnordered<_> = entry
+    // Each exchange owns what it ships from, so one still under way when the
+    // pass ends can be handed to the driver and outlive it.
+    let mut launched: Vec<(String, bool)> = Vec::new();
+    let mut in_flight: futures::stream::FuturesUnordered<Exchange<'a>> = entry
         .followers
-        .drain(..)
-        .map(|mut cursor| {
+        .iter()
+        .filter(|cursor| !busy.contains(&cursor.node_id))
+        .map(|cursor| {
+            let mut cursor = cursor.clone();
+            launched.push((
+                cursor.node_id.clone(),
+                cursor.halted.is_some() || cursor.rebuilding,
+            ));
             let sliced = learner.as_deref() == Some(cursor.node_id.as_str());
             let paced = paced.as_deref() == Some(cursor.node_id.as_str());
-            async move {
+            let (log, shard, mark_key) = (log.clone(), shard.clone(), mark_key.clone());
+            let generation = route.generation;
+            let exchange: Exchange<'a> = Box::pin(async move {
                 // Keep going while there is more to send, so a follower
                 // catching up is not limited to one batch per tick. It ends on
                 // the first answer that is not progress, which bounds the work
@@ -278,12 +323,12 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
                     let before = cursor.shipped_bytes;
                     // Read per batch: the mark moves while followers ship.
                     let commit = quorum_shard
-                        .then(|| marks.offset(mark_key, route.generation))
+                        .then(|| marks.offset(&mark_key, generation))
                         .flatten();
                     let progress = ship_once_with(
                         requester,
-                        log_ref,
-                        shard_ref,
+                        &log,
+                        &shard,
                         log_kind,
                         &mut cursor,
                         MAX_BATCH_BYTES,
@@ -303,9 +348,11 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
                     }
                 }
                 (cursor, cut)
-            }
+            });
+            exchange
         })
         .collect();
+    let mut answered: HashSet<String> = HashSet::new();
 
     /// Put a finished cursor back where its stale copy was.
     fn settle(positions: &mut [FollowerCursor], cursor: FollowerCursor) {
@@ -328,7 +375,7 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
     // Only followers that count toward the quorum are waited for here. With
     // none, the leader's own copy is the majority.
     let counts = |node: &str| learner.as_deref() != Some(node);
-    let mut waiting = positions.iter().filter(|c| counts(&c.node_id)).count();
+    let mut waiting = launched.iter().filter(|(node, _)| counts(node)).count();
     let mut copying = false;
     let mut majority = None;
     if waiting == 0 {
@@ -354,6 +401,7 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
         if counts(&cursor.node_id) {
             waiting -= 1;
         }
+        answered.insert(cursor.node_id.clone());
         settle(&mut positions, cursor);
         let tail = log.tail_offset().await.unwrap_or(tail);
         let offset = quorum_offset_without(tail, &positions, learner.as_deref());
@@ -378,59 +426,93 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
     // `in_flight`, so a slow control plane would stall replication to the rest
     // of the replica set — the same head-of-line block this change exists to
     // remove, just moved onto the reporting hop.
-    let (rest, reported) = futures::future::join(
-        async {
-            let mut rest = Vec::new();
-            while let Some(finished) = in_flight.next().await {
-                rest.push(finished);
-            }
-            rest
-        },
-        async {
-            let (mut report, offset) = majority?;
-            if let Some(counters) = &counters {
-                counters.limit(&mut report);
-            }
+    let report = async {
+        let (mut report, offset) = majority?;
+        if let Some(counters) = &counters {
+            counters.limit(&mut report);
+        }
 
-            // **Reported before the mark is published, and awaited.**
-            //
-            // The mark is what releases a `Quorum` publish, and the report is
-            // what promotion later reads. Releasing the publish first leaves a
-            // window in which a leader has told a client its record is on a
-            // majority and has told the control plane nothing about which
-            // replica holds it — and a leader that dies in that window is
-            // replaced by whichever replica scores highest, which may be the
-            // one that does not have it. The acknowledged record is then gone,
-            // which is the one thing `Quorum` is supposed to rule out.
-            //
-            // A report that did not land leaves the mark where it was, because
-            // the argument above rests on the control plane knowing who holds
-            // the record: releasing on a failed report reaches the same window
-            // by another route. The publish waits, the next pass retries, and a
-            // client is told a timeout rather than an acknowledgement this
-            // broker cannot stand behind.
-            if publish_mark(
-                broker,
-                reporter,
-                marks,
-                key,
-                route.generation,
-                &report,
-                offset,
-            )
-            .await
-                && let Some(counters) = &counters
-            {
-                counters.publish(marks, key, route.generation);
+        // **Reported before the mark is published, and awaited.**
+        //
+        // The mark is what releases a `Quorum` publish, and the report is
+        // what promotion later reads. Releasing the publish first leaves a
+        // window in which a leader has told a client its record is on a
+        // majority and has told the control plane nothing about which
+        // replica holds it — and a leader that dies in that window is
+        // replaced by whichever replica scores highest, which may be the
+        // one that does not have it. The acknowledged record is then gone,
+        // which is the one thing `Quorum` is supposed to rule out.
+        //
+        // A report that did not land leaves the mark where it was, because
+        // the argument above rests on the control plane knowing who holds
+        // the record: releasing on a failed report reaches the same window
+        // by another route. The publish waits, the next pass retries, and a
+        // client is told a timeout rather than an acknowledgement this
+        // broker cannot stand behind.
+        if publish_mark(
+            broker,
+            reporter,
+            marks,
+            key,
+            route.generation,
+            &report,
+            offset,
+        )
+        .await
+            && let Some(counters) = &counters
+        {
+            counters.publish(marks, key, route.generation);
+        }
+        Some(report)
+    };
+    let mut rest = Vec::new();
+    let reported = match stragglers {
+        // A shard being handed over waits for everyone: its fence holds the
+        // writes, so no publish waits on the mark, and the drained report
+        // wants the destination's answer.
+        Stragglers::HandOff { next_wanted } if !route.draining => {
+            // The followers still ship while the report is out.
+            let mut report = std::pin::pin!(report);
+            let reported = loop {
+                tokio::select! {
+                    reported = &mut report => break reported,
+                    Some(finished) = in_flight.next(), if !in_flight.is_empty() => {
+                        rest.push(finished);
+                    }
+                }
+            };
+            // Then the rest, until the next pass is wanted: a follower that
+            // has not answered by then is the driver's to wait for.
+            let mut wanted = std::pin::pin!(next_wanted.notified());
+            while !in_flight.is_empty() {
+                tokio::select! {
+                    biased;
+                    Some(finished) = in_flight.next() => rest.push(finished),
+                    _ = &mut wanted => break,
+                }
             }
-            Some(report)
-        },
-    )
-    .await;
+            reported
+        }
+        _ => {
+            let drain = async {
+                while let Some(finished) = in_flight.next().await {
+                    rest.push(finished);
+                }
+            };
+            futures::future::join(drain, report).await.1
+        }
+    };
     for (cursor, cut) in rest {
         copying |= cut;
+        answered.insert(cursor.node_id.clone());
         settle(&mut positions, cursor);
     }
+    // Only non-empty when the next pass was wanted first.
+    let straggling: Vec<(String, bool)> = launched
+        .into_iter()
+        .filter(|(node, _)| !answered.contains(node))
+        .collect();
+    let exchanges: Vec<Exchange<'a>> = in_flight.into_iter().collect();
     let mut report_out = reported;
 
     entry.followers = positions;
@@ -453,12 +535,29 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
     // Checked before the read: the other way round, a write finishing in
     // between would be quiesced but not in the tail.
     let quiesced = route.draining && fence.quiesced(&watch_key(key));
+    // A follower still answering the shard's own log is one this pass could
+    // not reach in time; its auxiliary logs wait for a pass that can, rather
+    // than holding this one on the same slow peer.
+    let still_busy: HashSet<String> = busy
+        .iter()
+        .cloned()
+        .chain(straggling.iter().map(|(node, _)| node.clone()))
+        .collect();
     // The control plane cuts over on the drained report, so the logs that ride
     // the shard have to be on the destination by then too: a dead letter or a
     // counter add left behind is lost at the cut-over. Once quiesced they
     // cannot grow either, so they are shipped first and their level is final.
     let aux_behind = if quiesced {
-        ship_aux_logs(requester, broker, key, route, &mut aux, rebuilds).await
+        ship_aux_logs(
+            requester,
+            broker,
+            key,
+            route,
+            &mut aux,
+            rebuilds,
+            &still_busy,
+        )
+        .await
     } else {
         Vec::new()
     };
@@ -526,7 +625,16 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
     // either: no publish waits on group state or counters, and those lagging
     // must not hold up the records they describe.
     if !quiesced {
-        ship_aux_logs(requester, broker, key, route, &mut aux, rebuilds).await;
+        ship_aux_logs(
+            requester,
+            broker,
+            key,
+            route,
+            &mut aux,
+            rebuilds,
+            &still_busy,
+        )
+        .await;
     }
 
     // Named, not counted. The metric cannot carry the shard without a label
@@ -557,6 +665,9 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
 
     ShardPass {
         key: shard_key,
+        generation: route.generation,
+        exchanges,
+        straggling,
         cursors: entry,
         aux,
         report: report_out,
@@ -607,6 +718,7 @@ async fn counter_level<R: PeerRequester>(
     aux: &mut AuxCursors,
     learner: Option<&str>,
     rebuilds: &Rebuilds,
+    busy: &HashSet<String>,
 ) -> Option<CounterLevel> {
     let log = broker
         .shard_log(
@@ -617,6 +729,15 @@ async fn counter_level<R: PeerRequester>(
             key.shard,
         )
         .await?;
+    // Not to a destination still copying, which does not count toward this
+    // mark, nor to a follower still answering an earlier exchange: either may
+    // be the slow peer the mark must not wait on, and a skipped follower counts
+    // at the position it already had.
+    let skip: HashSet<String> = busy
+        .iter()
+        .cloned()
+        .chain(learner.map(str::to_string))
+        .collect();
     ship_aux_log(
         requester,
         broker,
@@ -625,6 +746,7 @@ async fn counter_level<R: PeerRequester>(
         felix_broker::LogKind::Counters,
         &mut aux.counters,
         rebuilds,
+        &skip,
     )
     .await;
     let tail = log.tail_offset().await.ok()?;
@@ -656,6 +778,7 @@ pub(super) async fn ship_aux_logs<R: PeerRequester>(
     route: &Route,
     aux: &mut AuxCursors,
     rebuilds: &Rebuilds,
+    skip: &HashSet<String>,
 ) -> Vec<(felix_broker::LogKind, String)> {
     let logs: Vec<(felix_broker::LogKind, &mut ShardCursors)> = match key.kind {
         felix_router::ShardKind::Stream => vec![
@@ -671,7 +794,11 @@ pub(super) async fn ship_aux_logs<R: PeerRequester>(
     };
     let mut behind = Vec::new();
     for (log_kind, entry) in logs {
-        for node in ship_aux_log(requester, broker, key, route, log_kind, entry, rebuilds).await {
+        for node in ship_aux_log(
+            requester, broker, key, route, log_kind, entry, rebuilds, skip,
+        )
+        .await
+        {
             behind.push((log_kind, node));
         }
     }
@@ -756,6 +883,7 @@ pub(super) async fn ship_aux_log<R: PeerRequester>(
     log_kind: felix_broker::LogKind,
     entry: &mut ShardCursors,
     rebuilds: &Rebuilds,
+    skip: &HashSet<String>,
 ) -> Vec<String> {
     let Some(log) = broker
         .shard_log(
@@ -786,19 +914,23 @@ pub(super) async fn ship_aux_log<R: PeerRequester>(
         shard: key.shard,
         generation: route.generation,
     };
-    let shipping = entry.followers.iter_mut().map(|cursor| async {
-        while let Progress::Stored { .. } = crate::ship_once(
-            requester,
-            &log,
-            &shard,
-            log_kind,
-            cursor,
-            MAX_BATCH_BYTES,
-            rebuilds,
-        )
-        .await
-        {}
-    });
+    let shipping = entry
+        .followers
+        .iter_mut()
+        .filter(|cursor| !skip.contains(&cursor.node_id))
+        .map(|cursor| async {
+            while let Progress::Stored { .. } = crate::ship_once(
+                requester,
+                &log,
+                &shard,
+                log_kind,
+                cursor,
+                MAX_BATCH_BYTES,
+                rebuilds,
+            )
+            .await
+            {}
+        });
     futures::future::join_all(shipping).await;
 
     // Read after shipping. A tail that cannot be read says nothing about who

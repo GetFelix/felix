@@ -800,9 +800,28 @@ soon as enough of them have answered to make one — with three replicas, the
 moment the first follower has the records. Waiting for all of them put one dead
 or slow replica's whole timeout in front of every acknowledgement on the shard,
 every pass, which is the failure `Quorum` exists to tolerate rather than be
-stalled by (#411). The rest of the set is still shipped to and still finishes
-the pass; what changed is when the acknowledgement is released, not who gets the
-records.
+stalled by (#411). The rest of the set is still shipped to; what changed is when
+the acknowledgement is released, not who gets the records.
+
+**Nor does the next mark wait for a slow peer.** Releasing the first mark at
+the majority was not enough while a pass still ended with its slowest follower
+and every shard's pass ended together: the next record's mark waited for the
+next pass, so one paused peer held every `Quorum` publish on the broker for a
+dial timeout, even a move's destination that counts toward no quorum. So each
+shard passes on its own, starting again as soon as its last pass ends. Once its
+mark and report are out, a pass keeps waiting on the followers still answering
+only until the shard's next pass is wanted, by an append or anything else that
+wakes the driver; then it hands their exchanges to the driver. A shard being
+handed over waits for everyone, since its fence already holds the writes and the
+drained report needs the destination's answer. Until such an exchange ends,
+its follower is not shipped to again and counts at the position it had when
+the exchange began, a floor like any follower that has not answered yet. Its auxiliary logs wait too, so they do not
+dial the same slow peer again. When the exchange ends, the cursor goes back and
+the shard passes again if the follower moved; one that failed waits for the
+next wake, so a peer that fails fast is not redialled in a loop. The report
+still lands before the mark moves, and a shard promoted here still ships
+nothing and moves no mark until a majority has taken its fence, so nothing here
+changes what an acknowledgement rests on.
 
 The replica report goes to the control plane **before** the mark is published,
 and is awaited. Releasing the publish first leaves a window in which a leader
@@ -1006,8 +1025,8 @@ to hold everything to the final tail; the bound only limits how long the
 switch-over waits on the copy. A follower whose last batch did not reach it
 is left out of the report's offsets, so an unreachable successor is never
 fenced on the position it had before it went quiet. While a fenced shard has not
-reported drained, the leader runs its next pass 10 ms later rather than on
-the next wake, so the remainder, and a destination that has not yet seen the
+reported drained, the leader runs that shard's next pass 10 ms later rather
+than on the next wake, so the remainder, and a destination that has not yet seen the
 new generation, cost milliseconds rather than a sync interval.
 
 The copy to the successor can be held to `FELIX_SHARD_MOVE_BYTES_PER_SEC`,
@@ -1064,8 +1083,8 @@ promotion picks only a replica the last report names caught up, and the
 cut-over waits for the destination to be level. A destination that was
 already a replica keeps counting, and a leader with no earlier pass to compare
 against counts it too — slower, never weaker. The copy is also shipped in
-slices of 50 ms per pass, with the next pass run at once, because a pass ends
-with its slowest follower and the next mark waits for the next pass.
+slices of 50 ms, with the shard's next pass run as each slice ends, so the
+copy is not slowed by waiting for a wake.
 `FelixShardStagedMoveVotes` in `docs/formal/` shows the wait without this, and
 `FelixShardStagedMove` and `FelixShardStagedMoveSingle` that safety holds with
 it.
