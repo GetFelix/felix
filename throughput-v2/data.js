@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790586739988,
+  "lastUpdate": 1790595733978,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19292,6 +19292,58 @@ window.BENCHMARK_DATA = {
             "range": "6967.49",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 943216.65\nmean: 945369.87\nstdev: 6967.49\ncv: 0.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8987379cb90cb952801bd3a5171f15850079683d",
+          "message": "fix(replication): keep a slow peer from holding other quorum marks (#804)\n\nOne paused or slow peer held every quorum mark on the broker for a dial\ntimeout. A pass could not start until the previous pass's slowest follower\nhad answered, a move's destination and followers beyond the majority\nincluded, and until every other shard's pass had ended.\n\nEach shard now passes on its own. Once its mark and report are out, a pass\nwaits on the followers still answering only until the shard's next pass is\nwanted, then hands their exchanges to the driver. Until such an exchange\nends, its follower is not shipped to again, its auxiliary logs are skipped,\nand it counts at the position it had, a floor. A draining shard still waits\nfor everyone.\n\nThe slowest Quorum publish in the rebalance copy test drops from about\n2.07 s (the peer handshake timeout) to about 90 ms.\n\nSpec-Unaffected: the report still lands before the mark moves, and every position a report or mark is computed from is one the follower acknowledged; only when the driver starts a shard's next pass changes.",
+          "timestamp": "2026-09-28T04:36:45-07:00",
+          "tree_id": "188e5a97c66b8746286a96ccb4cb8bcc9de92505",
+          "url": "https://github.com/gabloe/felix/commit/8987379cb90cb952801bd3a5171f15850079683d"
+        },
+        "date": 1790595733447,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 382755.47,
+            "range": "18316.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 382755.47\nmean: 377598.59\nstdev: 18316.88\ncv: 4.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 382755.47,
+            "range": "18316.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 382755.47\nmean: 377598.59\nstdev: 18316.88\ncv: 4.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 95367.49,
+            "range": "924.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 95367.49\nmean: 95762.05\nstdev: 924.02\ncv: 0.96%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 953674.94,
+            "range": "9240.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 953674.94\nmean: 957620.52\nstdev: 9240.25\ncv: 0.96%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
