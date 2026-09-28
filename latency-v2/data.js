@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790598258986,
+  "lastUpdate": 1790605285463,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -24618,6 +24618,72 @@ window.BENCHMARK_DATA = {
             "range": "69.90",
             "unit": "us",
             "extra": "trials: 5\nmedian: 298.00\nmean: 320.00\nstdev: 69.90\ncv: 21.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e77c190966a0bde45e86f7646968f6549ef810aa",
+          "message": "fix(controlplane): a Raft leader elected after a clock step expires a dead broker in one window (#816)\n\nThe leader judged a broker it had not heard from this term by the log's\nstamp whenever that was later than its own start. After a wall-clock step\nback, or on a leader whose clock is behind the last one's, that stamp is in\nthe future, so a dead broker stayed placeable until real time caught up.\nThe leader now ages every broker on its monotonic clock only: from the\nbroker's last heartbeat this term, else from its registration this term,\nelse from the election. Listings on the leader show a stamp ahead of its\nclock as now.\n\nThat alone did not help in the usual failover, because the new leader\ncounted the dead old leader at metadata level 0 (it had never probed it)\nand fell back to log-based heartbeats and expiry. The member probing a\npeer's standing now states its own level, so every member knows the\nleader's.\n\nSpec-Unaffected: FelixShard.tla models the control plane's expiry clock as drifting, never stepping; expiry still waits a full monotonic window after the last heartbeat or the election.",
+          "timestamp": "2026-09-28T07:09:31-07:00",
+          "tree_id": "b2dc101a942ffb55396f334fa4861f27a1dfebf9",
+          "url": "https://github.com/gabloe/felix/commit/e77c190966a0bde45e86f7646968f6549ef810aa"
+        },
+        "date": 1790605283047,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 174,
+            "range": "2.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 174.00\nmean: 175.20\nstdev: 2.39\ncv: 1.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 238,
+            "range": "25.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 238.00\nmean: 247.60\nstdev: 25.40\ncv: 10.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 348,
+            "range": "1500.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 348.00\nmean: 1399.00\nstdev: 1500.07\ncv: 107.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 210,
+            "range": "8.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 210.00\nmean: 213.60\nstdev: 8.85\ncv: 4.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 678,
+            "range": "362.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 678.00\nmean: 750.20\nstdev: 362.38\ncv: 48.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 2244,
+            "range": "474.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 2244.00\nmean: 2207.00\nstdev: 474.55\ncv: 21.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
