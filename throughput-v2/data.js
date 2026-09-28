@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790559040107,
+  "lastUpdate": 1790560219602,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18720,6 +18720,58 @@ window.BENCHMARK_DATA = {
             "range": "52153.60",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 927736.28\nmean: 907924.25\nstdev: 52153.60\ncv: 5.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2105b1d957dcbfcdba460463ae28d4f827de6594",
+          "message": "fix(controlplane): expire a dead broker promptly after a clock step back (#785)\n\nHeartbeat stamps never move backwards, so after the control plane's wall\nclock steps back every stamp sits in the future. A broker that died in that\nwindow had a last heartbeat newer than any expiry threshold the stepped-back\nclock could produce, and stayed live and placeable for the length of the step.\n\nThe expiry sweep now pulls any stamp ahead of the store's clock back to it\n(new ControlPlaneStore::clamp_future_heartbeats) before judging. The clamped\nstamp is a change the monotonic silence watch sees, so the node gets one full\nwindow of silence from there, like any other. Under Raft the leader judges a\nnode it has heard this term by that beat's monotonic age alone, rather than\nmax-merging it with the log's (possibly future) stamp; the Raft clamp is a\nno-op.\n\nUn-ignores a_control_plane_clock_stepped_back_still_expires_a_dead_broker and\nadds a controlplane test that steps the clock back through the clock seam.\n\nSpec-Unaffected: FelixShard.tla models the control plane's expiry clock as drifting, never stepping; expiry still waits a full window on the monotonic clock after the last heartbeat, which is what the model assumes.",
+          "timestamp": "2026-09-27T18:32:29-07:00",
+          "tree_id": "b0d0f2a15b67912479c06892771b98eeaa844d19",
+          "url": "https://github.com/gabloe/felix/commit/2105b1d957dcbfcdba460463ae28d4f827de6594"
+        },
+        "date": 1790560218982,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 496700.82,
+            "range": "14316.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 496700.82\nmean: 502947.04\nstdev: 14316.59\ncv: 2.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 496700.82,
+            "range": "14316.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 496700.82\nmean: 502947.04\nstdev: 14316.59\ncv: 2.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 111197.85,
+            "range": "1095.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 111197.85\nmean: 110718.86\nstdev: 1095.21\ncv: 0.99%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1111978.51,
+            "range": "10952.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1111978.51\nmean: 1107188.65\nstdev: 10952.12\ncv: 0.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
