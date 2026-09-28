@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790595733978,
+  "lastUpdate": 1790598261837,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19344,6 +19344,58 @@ window.BENCHMARK_DATA = {
             "range": "9240.25",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 953674.94\nmean: 957620.52\nstdev: 9240.25\ncv: 0.96%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7f27b9bdf0500005572c95c8c769c9a6264637ca",
+          "message": "docs(env): drop the variable count from the registry header (#812)\n\nA stated count has to be bumped by every PR that adds a variable, and two\nsuch PRs in flight always collide; it drifted twice in a day. KNOWN_VARS is\nthe count. The check now fails if the header states a number at all, so it\ncannot come back.\n\nSpec-Unaffected: doc comment and check script only.",
+          "timestamp": "2026-09-28T05:20:11-07:00",
+          "tree_id": "e86b9dd088d2a4ac6e4b235086ec89045d711303",
+          "url": "https://github.com/gabloe/felix/commit/7f27b9bdf0500005572c95c8c769c9a6264637ca"
+        },
+        "date": 1790598261062,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 638678.75,
+            "range": "22257.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 638678.75\nmean: 631942.66\nstdev: 22257.51\ncv: 3.52%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 638678.75,
+            "range": "22257.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 638678.75\nmean: 631942.66\nstdev: 22257.51\ncv: 3.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 162142.09,
+            "range": "2244.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 162142.09\nmean: 162396.25\nstdev: 2244.50\ncv: 1.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1621420.85,
+            "range": "22444.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1621420.85\nmean: 1623962.47\nstdev: 22444.99\ncv: 1.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
