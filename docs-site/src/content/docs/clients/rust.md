@@ -458,7 +458,9 @@ while let Some(event) = subscription.next_event().await? {
 `SubscriptionLost`, so the loop above stops with `?` rather than exiting as if
 the stream had finished. A `ClusterClient` subscription resubscribes by itself
 from the offset after the last one it delivered; on an in-memory stream there
-is no offset to resume from, so it returns the error.
+is no offset to resume from, so it returns the error. `next_event` is
+cancel-safe, so wrapping it in `tokio::time::timeout` is fine: a resubscribe in
+progress keeps running in the background and the next call picks it up.
 
 ### Event Structure
 

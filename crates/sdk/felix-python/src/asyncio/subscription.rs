@@ -53,6 +53,11 @@ impl AsyncSubscription {
                 }
                 None => subscription.next_event().await.map_err(to_py_err)?,
             };
+            // The broker ended the stream. Released here so `closed` reads
+            // true, which is how a caller tells this `None` from a timeout.
+            if next.is_none() {
+                guard.take();
+            }
             Ok(next.map(OwnedEvent::from))
         })
     }
@@ -90,7 +95,10 @@ impl AsyncSubscription {
             };
             match subscription.next_event().await.map_err(to_py_err)? {
                 Some(event) => Ok(OwnedEvent::from(event)),
-                None => Err(PyStopAsyncIteration::new_err("stream ended")),
+                None => {
+                    guard.take();
+                    Err(PyStopAsyncIteration::new_err("stream ended"))
+                }
             }
         })
     }

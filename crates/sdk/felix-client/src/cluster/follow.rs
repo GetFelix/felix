@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use felix_wire::StartPosition;
+use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use super::{Attempt, ClusterClient, Next, next_step};
@@ -62,6 +63,8 @@ pub struct ClusterSubscription {
     reconnects: u64,
     /// A loss that could not be resumed from yet, retried on the next call.
     lost: Option<anyhow::Error>,
+    /// A resubscribe in progress.
+    pending: Option<Pending>,
 }
 
 impl ClusterSubscription {
@@ -86,6 +89,7 @@ impl ClusterSubscription {
             moves: 0,
             reconnects: 0,
             lost: None,
+            pending: None,
         }
     }
 
@@ -117,28 +121,66 @@ impl ClusterSubscription {
     /// Following a move or a lost connection happens inside this call. If no
     /// broker can be subscribed to within the client's reconnect deadline, the
     /// error is returned; calling again retries.
+    ///
+    /// Cancel-safe: dropping the call partway, as a read under a timeout does,
+    /// loses nothing. A resubscribe in progress carries on in the background
+    /// and the next call picks it up.
     pub async fn next_event(&mut self) -> Result<Option<Event>> {
         loop {
-            let next = match self.lost.take() {
-                Some(lost) => Err(lost),
-                None => self.subscription.next_event().await,
-            };
-            let next = match next {
+            if let Some(pending) = self.pending.as_mut() {
+                let outcome = (&mut pending.task).await;
+                let reason = pending.reason;
+                self.pending = None;
+                let (client, subscription) = match outcome {
+                    Ok(Ok(next)) => next,
+                    // A lost connection stays in `lost`, and a move stays in
+                    // the dead subscription's `shard_moved`, so the next call
+                    // tries again.
+                    Ok(Err(err)) => return Err(err),
+                    Err(join) => return Err(anyhow::Error::new(join).context("resubscribe task")),
+                };
+                self.client = client;
+                self.subscription = subscription;
+                match reason {
+                    Resubscribe::AfterLoss => {
+                        self.lost = None;
+                        self.reconnects += 1;
+                    }
+                    Resubscribe::AfterMove => self.moves += 1,
+                }
+                continue;
+            }
+            // `lost` stays set until the resubscribe lands. Cleared any earlier,
+            // a failed or cancelled attempt would send the next call to the dead
+            // subscription's closed queue, which reads as a clean end.
+            if self.lost.is_some()
+                && let Some(start) = self.resume_point()
+            {
+                let cluster = Arc::clone(&self.cluster);
+                let lost_client = Arc::clone(&self.client);
+                let (tenant_id, namespace, stream, shard) = self.shard_key();
+                self.pending = Some(Pending::spawn(Resubscribe::AfterLoss, async move {
+                    cluster
+                        .resume_after_loss(
+                            &lost_client,
+                            &tenant_id,
+                            &namespace,
+                            &stream,
+                            shard,
+                            start,
+                        )
+                        .await
+                }));
+                continue;
+            }
+            let next = match self.subscription.next_event().await {
                 Ok(next) => next,
                 Err(err) if err.chain().any(|cause| cause.is::<SubscriptionLost>()) => {
-                    let Some(start) = self.resume_point() else {
+                    if self.resume_point().is_none() {
                         return Err(err);
-                    };
-                    match self.resume_after_loss(start).await {
-                        Ok(()) => continue,
-                        Err(resume_err) => {
-                            // Kept so the next call tries again rather than
-                            // reading the dead subscription's closed queue as a
-                            // clean end.
-                            self.lost = Some(err);
-                            return Err(resume_err);
-                        }
                     }
+                    self.lost = Some(err);
+                    continue;
                 }
                 Err(err) => return Err(err),
             };
@@ -151,20 +193,14 @@ impl ClusterSubscription {
             let Some(moved) = self.subscription.shard_moved().cloned() else {
                 return Ok(None);
             };
-            let (client, subscription) = self
-                .cluster
-                .follow_moved_shard(
-                    &self.tenant_id,
-                    &self.namespace,
-                    &self.stream,
-                    self.shard,
-                    &moved,
-                    self.last_offset,
-                )
-                .await?;
-            self.subscription = subscription;
-            self.client = client;
-            self.moves += 1;
+            let cluster = Arc::clone(&self.cluster);
+            let last_offset = self.last_offset;
+            let (tenant_id, namespace, stream, shard) = self.shard_key();
+            self.pending = Some(Pending::spawn(Resubscribe::AfterMove, async move {
+                cluster
+                    .follow_moved_shard(&tenant_id, &namespace, &stream, shard, &moved, last_offset)
+                    .await
+            }));
         }
     }
 
@@ -183,59 +219,100 @@ impl ClusterSubscription {
             .map(StartPosition::Offset)
     }
 
-    /// Resubscribe from `start` on whichever broker owns the shard now,
-    /// reconnecting the cluster client when the broker it holds is the one
-    /// that was lost.
-    async fn resume_after_loss(&mut self, start: StartPosition) -> Result<()> {
-        let deadline = Instant::now() + self.cluster.policy.deadline.unwrap_or(FOLLOW_DEADLINE);
+    fn shard_key(&self) -> (String, String, String, u32) {
+        (
+            self.tenant_id.clone(),
+            self.namespace.clone(),
+            self.stream.clone(),
+            self.shard,
+        )
+    }
+}
+
+/// Why a [`ClusterSubscription`] is resubscribing.
+#[derive(Clone, Copy)]
+enum Resubscribe {
+    AfterLoss,
+    AfterMove,
+}
+
+/// A resubscribe on a task of its own, aborted if the subscription is dropped
+/// before it lands.
+struct Pending {
+    reason: Resubscribe,
+    task: JoinHandle<Result<(Arc<Client>, Subscription)>>,
+}
+
+impl Pending {
+    fn spawn<F>(reason: Resubscribe, resubscribe: F) -> Self
+    where
+        F: Future<Output = Result<(Arc<Client>, Subscription)>> + Send + 'static,
+    {
+        Self {
+            reason,
+            task: tokio::spawn(resubscribe),
+        }
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl ClusterClient {
+    /// Resubscribe to a shard from `start` on whichever broker owns it now,
+    /// reconnecting first when the client in use is `lost_client`, the one
+    /// whose connection was lost.
+    async fn resume_after_loss(
+        &self,
+        lost_client: &Arc<Client>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        start: StartPosition,
+    ) -> Result<(Arc<Client>, Subscription)> {
+        let deadline = Instant::now() + self.policy.deadline.unwrap_or(FOLLOW_DEADLINE);
         let mut attempt = 0usize;
         loop {
             // The entry broker may be the dead one, and after a failed attempt
             // it may have died too; `connect_any` moves on to one that answers.
-            if (attempt > 0 || Arc::ptr_eq(&self.cluster.client().await, &self.client))
-                && let Err(err) = self.cluster.reconnect().await
+            if (attempt > 0 || Arc::ptr_eq(&self.client().await, lost_client))
+                && let Err(err) = self.reconnect().await
             {
                 tracing::debug!(error = %err, "no broker answered while resubscribing");
             }
             let error = match self
-                .cluster
                 .subscribe_shard_following_redirects(
-                    &self.tenant_id,
-                    &self.namespace,
-                    &self.stream,
-                    self.shard,
+                    tenant_id,
+                    namespace,
+                    stream,
+                    shard,
                     Some(start),
                 )
                 .await
             {
-                Ok((client, subscription)) => {
-                    self.client = client;
-                    self.subscription = subscription;
-                    self.reconnects += 1;
-                    return Ok(());
-                }
+                Ok(resumed) => return Ok(resumed),
                 Err(err) => err,
             };
             if next_step(&error, Attempt::default()) == Next::Fail {
                 return Err(error.context(format!(
-                    "resubscribe to shard {} of {} after losing the connection",
-                    self.shard, self.stream
+                    "resubscribe to shard {shard} of {stream} after losing the connection"
                 )));
             }
-            let delay = self.cluster.policy.delay_before(attempt);
+            let delay = self.policy.delay_before(attempt);
             if Instant::now() + delay >= deadline {
                 return Err(error.context(format!(
-                    "no broker took shard {} of {} back before the deadline",
-                    self.shard, self.stream
+                    "no broker took shard {shard} of {stream} back before the deadline"
                 )));
             }
             tokio::time::sleep(delay).await;
             attempt += 1;
         }
     }
-}
 
-impl ClusterClient {
     /// Subscribe to a shard on its new owner after `moved` ended the old
     /// subscription, resuming where that one left off.
     pub(crate) async fn follow_moved_shard(

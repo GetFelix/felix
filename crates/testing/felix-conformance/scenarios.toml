@@ -410,6 +410,110 @@ forever instead turns a routine shutdown into a hung consumer.
 """
 
 # ---------------------------------------------------------------------------
+# Connection faults
+#
+# Each of these carries a `step`: the client's connection is broken partway
+# through a publish or a subscribe, and the client has to either carry on or
+# say that it could not. The fixture puts an interposer in front of the broker
+# that owns `link_stream` and serves it at `link_addr`; a suite connects a
+# client with `link_addr` as its only seed and asks for the fault with
+# `POST /link {"fault": ..., "hold_ms": ...}` once `after_records` records
+# have been handled.
+#
+#   drop   every datagram, both ways, is discarded for `hold_ms`
+#   reset  every connection open through the interposer dies for good; a new
+#          one gets through at once
+#   stall  every datagram is held for `hold_ms`, then delivered in order
+#
+# QUIC gives a middlebox nothing to forge, so a client learns of a drop or a
+# reset from its idle timeout (6 s by default). The drop holds past it on
+# purpose; the stall stays well under it, and a client must ride it out.
+#
+# `during = "publish"`: publish `records` records one at a time, each
+# acknowledged, through the interposed client. Every call must return, with an
+# acknowledgement or an error, and none may hang. Once the fault is over a
+# publish must succeed again (retrying until then is fine), and every record
+# that was acknowledged must be readable afterwards.
+#
+# `during = "subscribe"`: subscribe through the interposed client, then publish
+# `records` records through an ordinary one. After `after_records` have
+# arrived, inject the fault. From there the subscription must either deliver
+# the rest with contiguous offsets, no gap and no duplicate, or fail with an
+# error. Ending as though the broker had closed the stream (`None`, `null`,
+# `StopIteration`) fails the scenario: that is a consumer loop exiting quietly
+# on a dead connection, with nothing to tell it records were missed.
+#
+# A stall is shorter than the idle timeout, so the connection never dies, and
+# an error during one fails the scenario too: every publish is acknowledged
+# and every record arrives.
+# ---------------------------------------------------------------------------
+
+[[scenario]]
+id = "fault.publish_through_a_dropped_link"
+required = true
+title = "A publish interrupted by a dropped link returns, and the client recovers"
+detail = """
+The link goes silent mid-publish. The publish in flight must end, with an
+acknowledgement or an error, rather than hang; a record the client said was
+acknowledged must not be lost; and the client must publish again once the link
+is back.
+"""
+step = { during = "publish", fault = "drop", after_records = 3, records = 10, hold_ms = 8000 }
+
+[[scenario]]
+id = "fault.publish_through_a_reset_link"
+required = true
+title = "A publish interrupted by a reset connection returns, and the client recovers"
+detail = """
+The connection dies for good mid-publish while a new one would get through at
+once. The client must not keep writing into the dead connection: the publish
+ends, and the next one goes out on a new connection.
+"""
+step = { during = "publish", fault = "reset", after_records = 3, records = 10, hold_ms = 0 }
+
+[[scenario]]
+id = "fault.publish_through_a_stalled_link"
+required = true
+title = "A publish rides out a stall shorter than the idle timeout"
+detail = """
+Every packet is late and none is lost. Publishes during the stall are slow,
+not failed, and every acknowledged record is readable afterwards.
+"""
+step = { during = "publish", fault = "stall", after_records = 3, records = 10, hold_ms = 2000 }
+
+[[scenario]]
+id = "fault.subscription_through_a_dropped_link"
+required = true
+title = "A subscription on a dropped link resumes or reports the loss, and never just ends"
+detail = """
+The subscription's connection goes silent past the idle timeout. A client that
+resumes must continue at the next offset with no gap and no duplicate; one that
+cannot must raise. Returning end-of-stream instead is the failure this exists
+to catch.
+"""
+step = { during = "subscribe", fault = "drop", after_records = 3, records = 10, hold_ms = 8000 }
+
+[[scenario]]
+id = "fault.subscription_through_a_reset_link"
+required = true
+title = "A subscription on a reset connection resumes or reports the loss, and never just ends"
+detail = """
+The subscription's connection dies for good while a new one would get through.
+Same bar as the dropped link: resume exactly, or raise.
+"""
+step = { during = "subscribe", fault = "reset", after_records = 3, records = 10, hold_ms = 0 }
+
+[[scenario]]
+id = "fault.subscription_through_a_stalled_link"
+required = true
+title = "A subscription rides out a stall shorter than the idle timeout"
+detail = """
+Every packet is late and none is lost. The records published during the stall
+arrive after it, in order, with contiguous offsets.
+"""
+step = { during = "subscribe", fault = "stall", after_records = 3, records = 10, hold_ms = 2000 }
+
+# ---------------------------------------------------------------------------
 # Queues (consumer groups)
 #
 # A queue is a different shape from a stream: records are pulled, claimed by
