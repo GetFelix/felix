@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790605285463,
+  "lastUpdate": 1790606826831,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -24684,6 +24684,72 @@ window.BENCHMARK_DATA = {
             "range": "474.55",
             "unit": "us",
             "extra": "trials: 5\nmedian: 2244.00\nmean: 2207.00\nstdev: 474.55\ncv: 21.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "68770b71398b6338a9115f32f11160b2bba9c09e",
+          "message": "build(deps): move the OpenTelemetry crates to 0.33 together (#820)\n\n* build(deps): move the OpenTelemetry crates to 0.33 together\n\nopentelemetry, opentelemetry_sdk and opentelemetry-otlp go to 0.33 in one\nstep, with tracing-opentelemetry 0.34, the release built against them. The\nindividual dependabot bumps each failed to build because the crates share\ntypes and must move as a set. No call-site changes were needed.\n\nThe standalone demo lockfiles move with the workspace.\n\n* build(deps): use aws-lc-rs as the only TLS provider and trim duplicate crates (#822)\n\nring and aws-lc-rs were both compiled in: rustls and jsonwebtoken used\naws-lc-rs, while quinn, rcgen, reqwest 0.12 and felix-client's rustls\nfeatures pulled in ring. jsonwebtoken 11 cannot use ring at all, so\naws-lc-rs is the provider that every crate can agree on. quinn and\nquinn-proto now use rustls-aws-lc-rs, rcgen uses aws_lc_rs, and reqwest\nmoves to 0.13, whose rustls backend is aws-lc-rs. ring is no longer built\non any native target. The broker and control plane install aws-lc-rs as the\nprocess default at startup, and every config we build names it explicitly.\n\nreqwest 0.13 verifies against the platform trust store instead of bundled\nwebpki roots. add_root_certificate is deprecated there, so the call sites\nuse tls_certs_merge for the control-plane CA and tls_certs_only for the\nRaft peer CA and in tests.\n\nAlso:\n- opentelemetry-otlp drops its default HTTP exporter features. Only the\n  tonic exporter is used, and the defaults pulled in a second reqwest.\n- casbin drops its unused logging feature, which removes slog. rhai is a\n  hard dependency of casbin, not a feature, so it stays.\n- zstd 0.14 for felix-kafka and the vendored kafka-protocol together, so the\n  bump doesn't leave two zstd copies.\n- A lockfile refresh within semver ranges. Together with the above, this\n  takes duplicated crates in Cargo.lock from 35 to 25.\n\nThe TLS rotation test opens a fresh client for its second handshake. A\nresumed session reports the original certificate, and under aws-lc-rs the\nsecond handshake resumed.\n\nSpec-Unaffected: only the rustls crypto provider named in the peer and Kafka TLS configs changes; no lease, quorum, report, promotion or handoff logic is touched.",
+          "timestamp": "2026-09-28T07:38:33-07:00",
+          "tree_id": "7171961b7c41ee05ad8318d264ea55b28ef116d8",
+          "url": "https://github.com/gabloe/felix/commit/68770b71398b6338a9115f32f11160b2bba9c09e"
+        },
+        "date": 1790606822452,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 115,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 115.00\nmean: 115.00\nstdev: 1.00\ncv: 0.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 168,
+            "range": "17.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 168.00\nmean: 169.80\nstdev: 17.06\ncv: 10.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 814,
+            "range": "2125.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 814.00\nmean: 1666.00\nstdev: 2125.49\ncv: 127.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 149,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 149.00\nmean: 148.80\nstdev: 0.84\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 333,
+            "range": "248.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 333.00\nmean: 462.20\nstdev: 248.40\ncv: 53.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1047,
+            "range": "2124.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1047.00\nmean: 2232.80\nstdev: 2124.50\ncv: 95.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
