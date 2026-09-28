@@ -339,7 +339,10 @@ async fn a_generation_older_than_the_finalize_serves_again_after_a_restart() {
             assert_eq!(event.skipped_before, 0);
             break;
         }
-        payloads.push(payload);
+        // Start-up readiness can land a probe on this stream.
+        if payload != "harness-probe" {
+            payloads.push(payload);
+        }
     }
     let expected: Vec<String> = (0..10).map(|i| format!("before-{i}")).collect();
     assert_eq!(
