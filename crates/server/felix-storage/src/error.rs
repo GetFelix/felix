@@ -41,6 +41,16 @@ pub enum StorageError {
         offset: u64,
         commit: u64,
     },
+    /// A restore asked for a point this copy of the log cannot reach: its
+    /// records end before `offset`, or retention or compaction already
+    /// dropped the records below it. Either way the copy does not hold the
+    /// log as it stood at `offset`, and padding or emptying it would pass off
+    /// an incomplete backup as a good one.
+    OutsideLog {
+        offset: u64,
+        base: u64,
+        tail: u64,
+    },
     /// The log was closed, because the shard it holds moved away. Names the
     /// shard. Reopening it through its provider gives a working log.
     Closed(String),
@@ -72,6 +82,10 @@ impl fmt::Display for StorageError {
                 f,
                 "refusing to discard records from offset {offset}: everything below \
                  {commit} is committed"
+            ),
+            StorageError::OutsideLog { offset, base, tail } => write!(
+                f,
+                "offset {offset} is outside this log, which holds [{base}, {tail})"
             ),
             StorageError::Closed(shard) => write!(f, "the log for {shard} is closed"),
             StorageError::ShardMismatch {

@@ -266,6 +266,10 @@ rebuild is the right move.
 
 A healthy broker answers `[]`, not 404.
 
+The same listener answers `GET /backup/offsets`: the committed offset of every
+log of every shard the broker leads, which is what a backup point records (see
+[Backup and restore](/felix/deployment/backup-and-restore/)).
+
 ### Bootstrap attempts
 
 `felix_bootstrap_attempts_total{outcome,reason}` covers the day-0 credential.

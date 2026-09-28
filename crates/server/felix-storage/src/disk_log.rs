@@ -374,6 +374,52 @@ impl DiskLog {
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
 
+    /// Cut the log back to `offset` to put a copy of it back as it stood at
+    /// a backup point. Offline only: run against a copy, with no broker
+    /// serving it.
+    ///
+    /// Unlike truncation this may cut below the commit offset. A restore goes
+    /// back in time on purpose, so the commit offset is lowered to `offset`
+    /// and made durable first, and then the suffix goes through the same path
+    /// truncation takes. Refused with [`StorageError::OutsideLog`] when the
+    /// log ends before `offset` (the copy is incomplete) or begins after it
+    /// (retention or compaction dropped records the point still had). Running
+    /// it again is a no-op.
+    pub async fn restore_to(&self, offset: Offset) -> Result<()> {
+        let inner = Arc::clone(&self.inner);
+        let _flush_guard = inner.durability.lock_flushes().await;
+        let operation = Arc::clone(&inner);
+        tokio::task::spawn_blocking(move || {
+            let mut segments = operation.segments.write();
+            segments.check_open()?;
+            let (base, tail) = (segments.base_offset(), segments.tail_offset());
+            if offset > tail || offset < base {
+                return Err(StorageError::OutsideLog { offset, base, tail });
+            }
+            // Lowered on disk before anything is cut, so a restore interrupted
+            // between the two can simply be run again.
+            {
+                let mut persisted = operation.replica_persisted.lock();
+                if operation.commit_offset.load(Ordering::Acquire) > offset {
+                    let state = replica_state::ReplicaState {
+                        accepted_generation: operation.accepted_generation.load(Ordering::Acquire),
+                        commit_offset: offset,
+                    };
+                    replica_state::store(&operation.dir, &state)?;
+                    operation.commit_offset.store(offset, Ordering::Release);
+                    *persisted = (state, Some(std::time::Instant::now()));
+                }
+            }
+            if offset == tail {
+                return Ok(());
+            }
+            let rewound = operation.cut_suffix(&mut segments, offset);
+            operation.poison_after_rewind(rewound)
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+
     /// The highest leadership generation a leader of this shard was accepted
     /// at here, as a follower or as the leader itself. Zero if none.
     pub fn accepted_generation(&self) -> u64 {
@@ -808,20 +854,7 @@ impl AppendOnlyLog for DiskLog {
                     return Err(StorageError::BelowCommit { offset, commit });
                 }
                 segments.check_open()?;
-                let rewound = (|| {
-                    segments.truncate(offset)?;
-                    segments.active_mut().sync()?;
-                    operation.note_rewound(&segments)?;
-                    let tail = segments.tail_offset();
-                    operation.durability.reset_after_truncate(tail);
-                    // The history cannot outlive the records it describes, or
-                    // it would answer with a start offset the log no longer
-                    // holds.
-                    let mut epochs = operation.epochs.lock();
-                    epochs.truncate_from(offset);
-                    epochs::store(&operation.dir, &epochs)?;
-                    operation.reset_producers(&segments)
-                })();
+                let rewound = operation.cut_suffix(&mut segments, offset);
                 operation.poison_after_rewind(rewound)
             })
             .await
@@ -1020,6 +1053,22 @@ impl LogInner {
         }
         self.batch_open
             .store(producers.is_open(), Ordering::Release);
+    }
+
+    /// Drop every record at or after `offset` and bring the durable mark,
+    /// the generation history and the producer table down with them. Called
+    /// holding the flush lock and the `segments` write lock.
+    fn cut_suffix(&self, segments: &mut SegmentSet, offset: Offset) -> Result<()> {
+        segments.truncate(offset)?;
+        segments.active_mut().sync()?;
+        self.note_rewound(segments)?;
+        self.durability.reset_after_truncate(segments.tail_offset());
+        // The history cannot outlive the records it describes, or it would
+        // answer with a start offset the log no longer holds.
+        let mut epochs = self.epochs.lock();
+        epochs.truncate_from(offset);
+        epochs::store(&self.dir, &epochs)?;
+        self.reset_producers(segments)
     }
 
     /// Whether `producer_id`'s batch `sequence` is open with its next record

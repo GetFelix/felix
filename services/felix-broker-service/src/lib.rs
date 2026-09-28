@@ -52,6 +52,9 @@
 //! router, the shard fence and the node credential are what it reads through
 //! its traits.
 //!
+//! [`restore`] is the one offline job: cutting a stopped broker's logs back
+//! to a backup point.
+//!
 //! [`config`] parses the environment and decides where logs live, and
 //! [`observability`] serves metrics and health and holds the opt-in per-stage
 //! latency instrumentation in [`observability::timings`].
@@ -68,6 +71,7 @@ pub mod shards;
 pub mod config;
 pub mod node;
 pub mod observability;
+pub mod restore;
 
 // HTTP helpers shared by the unit tests of several modules.
 #[cfg(test)]

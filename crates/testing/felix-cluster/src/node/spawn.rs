@@ -144,7 +144,7 @@ pub(crate) fn spawn_broker(
 /// Taken from this executable's own directory rather than by running cargo: the
 /// harness is often already inside a cargo invocation, and a nested one would
 /// deadlock on the build lock.
-pub(crate) fn broker_binary() -> Result<PathBuf> {
+pub fn broker_binary() -> Result<PathBuf> {
     let mut dir = std::env::current_exe().context("locate the running executable")?;
     dir.pop();
     // Integration test binaries live in `target/<profile>/deps`.

@@ -26,7 +26,8 @@ const VERSION: u16 = 1;
 pub(super) const ENCODED_LEN: usize = 28;
 const FILE_NAME: &str = "replica";
 
-/// The persisted state. Both fields only ever rise.
+/// The persisted state. Both fields only ever rise, except that an offline
+/// restore to a backup point lowers the commit offset.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct ReplicaState {
     pub(super) accepted_generation: u64,

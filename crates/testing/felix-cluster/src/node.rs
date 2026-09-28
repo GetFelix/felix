@@ -5,7 +5,8 @@ mod logs;
 mod spawn;
 
 pub(crate) use logs::FAILURE_LOG_LINES;
-pub(crate) use spawn::{broker_binary, spawn_broker};
+pub use spawn::broker_binary;
+pub(crate) use spawn::spawn_broker;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

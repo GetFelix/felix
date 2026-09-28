@@ -854,6 +854,57 @@ cache.
 `ClusterClient::subscribe_sharded` does all of this for you: it asks, opens one
 subscription per shard, and follows each shard's own redirect.
 
+## HTTP Endpoints
+
+Besides QUIC, each broker serves plain HTTP on its metrics listener
+(`FELIX_BROKER_METRICS_BIND`, `0.0.0.0:8080` by default): `/metrics`, `/live`,
+`/ready`, `/replication/halted` (see
+[Observability](/felix/features/observability/)) and the one below. The
+listener has no authentication, so everything on it is read-only.
+
+### Backup Offsets
+
+```bash
+curl -s http://broker-1:8080/backup/offsets | jq
+```
+
+```json
+{
+  "node_id": "broker-1",
+  "shards": [
+    { "tenant_id": "t1", "namespace": "ns", "name": "orders", "shard": 0,
+      "kind": "stream", "generation": 7,
+      "logs": { "records": 918233, "group_cursors": 12, "group_dead_letters": 0 } },
+    { "tenant_id": "t1", "namespace": "ns", "name": "prices", "shard": 0,
+      "kind": "cache", "generation": 3,
+      "logs": { "records": 44120, "counters": 310 } }
+  ],
+  "skipped": [
+    { "tenant_id": "t1", "namespace": "ns", "name": "orders", "shard": 3,
+      "kind": "stream", "reason": "settling" }
+  ]
+}
+```
+
+Every shard this broker leads, with the committed offset of each of its logs:
+one past the last record a reader may see. For a `Quorum` shard that is the
+quorum mark, never past what the leader itself has made durable; for anything
+else, what the leader has acknowledged. A log the broker does not keep for that
+shard is left out. The group and dead-letter offsets are read before the
+records', so neither names a record past the records offset. `generation` is
+the leadership the offsets belong to.
+
+A shard this broker leads but has no committed answer for is under `skipped`,
+with a `reason`: `settling` (just taken, no quorum mark yet), `refused` (its
+lease lapsed or it no longer serves the shard), `moved` (its leadership changed
+while it was read), `error` (with a `detail`), or `not_durable` (an in-memory
+stream, with nothing on disk to back up). All but the last are worth asking
+again shortly. A broker with no cluster leads nothing and answers with empty
+lists.
+
+`felix-controlplane admin backup-point` is what reads this; see
+[Backup and restore](/felix/deployment/backup-and-restore/).
+
 ## Error Handling
 
 ### Error Response Format

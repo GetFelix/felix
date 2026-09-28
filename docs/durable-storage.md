@@ -586,6 +586,36 @@ FELIX_DURABLE_FSYNC_MODE=on_commit \
 The first two together answer the question that actually comes up: *is durability
 the bottleneck?* If sync dominates append, the fsync policy is the cost.
 
+## Restoring to a backup point
+
+A backup point (see
+`docs-site/src/content/docs/deployment/backup-and-restore.md`) records one
+committed offset per shard log. The shard's directories are copied while its
+broker keeps writing, so the copy usually holds more than the point, and
+`felix-broker restore-point` cuts it back with `DiskLog::restore_to`.
+
+Copying a live shard is safe because **records are never rewritten**. Once a
+record below the point is in a segment, those bytes are final: later appends
+only add bytes past them, rollover seals and starts a new file, and
+preallocation reserves blocks without moving the file size. A copy taken after
+the point therefore holds every byte below it, and whatever it caught past it,
+a torn last record included, is either repaired by recovery on open or cut by
+the restore. The small files are copied before the segments (`durable.mark`,
+`replica`, `epochs`, `producers`), so none of them claims more than the
+segments copied after them hold; each is also rewritten or rebuilt by the cut.
+
+`restore_to(offset)` is truncation with one difference. Ordinary truncation
+refuses to cut below the commit offset (`StorageError::BelowCommit`), because
+those records were acknowledged on a majority and this copy may be the last
+one. A restore goes back in time on purpose, so it first lowers the commit
+offset to `offset` and writes the `replica` file, then drops the suffix
+through the same path truncation takes, which also cuts `epochs`, rewinds
+`durable.mark` and rebuilds `producers`. It refuses a copy that ends before
+`offset` (incomplete) or begins after it (retention or compaction dropped what
+the point still had) with `StorageError::OutsideLog`, rather than padding or
+emptying it. Lowering first makes an interrupted restore safe to run again, and
+running it again on a restored log changes nothing.
+
 ## Tools
 
 ```sh
@@ -615,6 +645,7 @@ fail rather than print the wrong numbers.
 | `tests/format_fuzz.rs` | seeded mutation fuzzing: no panics, no unbounded allocation, no silent loss |
 | `fuzz/` | libFuzzer targets exploring the same properties much further, plus the cache and counter records and the per-shard state files; run nightly (see `docs-site/src/content/docs/development/fuzzing.md`) |
 | `felix-broker/tests/durable_streams.rs` | ordering, restart, rejection without storage, durable vs non-durable isolation |
+| `felix-cluster --test backup` | a backup point taken under load is committed and misses nothing acknowledged before it (`a_point_under_load_is_committed_and_misses_nothing_acknowledged_before_it`), and a live copy restored to it keeps every earlier acknowledgement and nothing past it (`a_live_copy_restored_to_the_point_keeps_every_ack_before_it_and_nothing_after`) |
 | `felix-cluster --test failures fsync::` | a real broker whose fsyncs are slow, fail with `EIO`, or fail once and then succeed, injected through `FELIX_STORAGE_FAULT_FILE`: a failed flush is never acknowledged, nor is anything after it on that log (see `docs/cluster-harness.md`) |
 
 ## Limits today

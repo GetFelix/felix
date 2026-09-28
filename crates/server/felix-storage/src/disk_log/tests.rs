@@ -10,6 +10,7 @@ mod power_loss;
 mod producers;
 mod provider;
 mod replica_state;
+mod restore;
 mod retention;
 mod rollover;
 mod truncation;

@@ -26,7 +26,7 @@ mod listeners;
 mod membership;
 pub(crate) mod peer_dispatch;
 mod shutdown;
-mod storage;
+pub(crate) mod storage;
 mod sync;
 
 use std::future::Future;
@@ -174,6 +174,7 @@ where
 
     // Start the Prometheus metrics HTTP server. This is separate from QUIC traffic and
     // intentionally lightweight so metrics remain available even under load.
+    let broker = Arc::new(broker);
     let metrics_task = {
         let metrics_shutdown = metrics_shutdown.clone();
         tokio::spawn(crate::observability::serve_metrics(
@@ -181,6 +182,12 @@ where
             config.metrics_bind,
             readiness.clone(),
             Arc::clone(&halted_replicas),
+            crate::observability::backup::BackupOffsets {
+                node_id: config.membership.as_ref().map(|m| m.node_id.clone()),
+                broker: Arc::clone(&broker),
+                ingress: ingress_router.clone(),
+                marks: Arc::clone(&quorum_marks),
+            },
             async move { metrics_shutdown.cancelled().await },
         ))
     };
@@ -189,7 +196,6 @@ where
     let client_tls = ClientTls::from_config(&config.client_tls)?;
     client_tls.spawn_reload(&accept_shutdown);
     let quic_servers = listeners::bind(&config, &client_tls)?;
-    let broker = Arc::new(broker);
     let key_store =
         ControlPlaneKeyStore::new(controlplane_url, Arc::new(TenantKeyCache::default()))
             .with_tenant_catalog(TenantCatalog::new(

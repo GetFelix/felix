@@ -20,6 +20,11 @@ async fn main() -> Result<()> {
     if std::env::args().any(|arg| arg == "--print-config") {
         return print_config();
     }
+    // Offline, over the data directory: no listener is bound and no shard is
+    // served while it runs.
+    if std::env::args().nth(1).as_deref() == Some("restore-point") {
+        return felix_broker_service::restore::run(std::env::args().skip(2).collect()).await;
+    }
 
     // Default shutdown trigger: SIGTERM or SIGINT. SIGTERM is what Kubernetes,
     // systemd, and `docker stop` actually send; SIGINT only covers an interactive

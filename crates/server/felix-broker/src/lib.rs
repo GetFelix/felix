@@ -51,8 +51,8 @@ pub mod replication;
 pub mod timings;
 
 pub use broker::{
-    Broker, CacheMetadata, ClaimedPublish, ConsistencyLevel, IdempotentOutcome, LogKind,
-    PublishOutcome, RECORD_SEQUENCE_WRAP, SequenceReuse, StreamHandle, StreamMetadata,
+    Broker, CacheMetadata, ClaimedPublish, CommittedOffsets, ConsistencyLevel, IdempotentOutcome,
+    LogKind, PublishOutcome, RECORD_SEQUENCE_WRAP, SequenceReuse, StreamHandle, StreamMetadata,
 };
 pub use error::{BrokerError, NotReadable, Result};
 pub use handoff::{ShardHandoff, ShardMoved};

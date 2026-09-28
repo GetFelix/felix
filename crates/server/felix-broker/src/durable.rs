@@ -27,8 +27,8 @@ use bytes::Bytes;
 use felix_storage::DiskLogProvider;
 use felix_storage::disk_log::{DiskLog, PendingAppend, ProducerSequence};
 use felix_storage::log::{
-    AppendOnlyLog, AppendRecord, AppendResult, LogConfig, LogRecord, Offset, ReadRange, RecordMark,
-    ShardKey,
+    AppendOnlyLog, AppendRecord, AppendResult, FsyncMode, LogConfig, LogRecord, Offset, ReadRange,
+    RecordMark, ShardKey,
 };
 
 use crate::error::{BrokerError, Result};
@@ -280,6 +280,28 @@ impl StreamLog {
     /// Bounded by the generation history — see `docs/replication-design.md`.
     pub async fn truncate(&self, offset: Offset) -> Result<()> {
         self.log.truncate(offset).await.map_err(storage_error)
+    }
+
+    /// The tail as far as every record below it has been acknowledged, or
+    /// may be: what the log itself has committed, before any quorum.
+    ///
+    /// Under `FsyncMode::OnCommit` an append is acknowledged only once it is
+    /// on the device, so a record past the durable offset is still in flight
+    /// and may yet fail. Under the other modes Felix acknowledges before the
+    /// sync, so everything written is as committed as it will get here.
+    pub(crate) async fn acknowledged_tail(&self) -> Result<Offset> {
+        let tail = self.tail_offset().await?;
+        Ok(match self.log.config().fsync_mode {
+            FsyncMode::OnCommit => tail.min(self.durable_offset()),
+            _ => tail,
+        })
+    }
+
+    /// Cut this log back to `offset`, below its commit offset if need be,
+    /// to put a copy back as it stood at a backup point. Offline only; see
+    /// `DiskLog::restore_to`.
+    pub async fn restore_to(&self, offset: Offset) -> Result<()> {
+        self.log.restore_to(offset).await.map_err(storage_error)
     }
 
     /// Discard this log and start again, empty, at `base_offset`.

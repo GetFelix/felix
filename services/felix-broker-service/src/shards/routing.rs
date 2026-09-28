@@ -244,6 +244,19 @@ impl IngressRouter {
             .cloned()
     }
 
+    /// Every shard this broker leads and has opened, with the generation it
+    /// leads each at.
+    pub(crate) fn led_shards(&self) -> Vec<(ShardKey, u64)> {
+        let view = self.view.load();
+        view.servable
+            .keys()
+            .filter_map(|key| match self.dispatch_in(&view, key) {
+                Dispatch::Local { generation } => Some((key.clone(), generation)),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// How many shards this stream or cache was placed with.
     ///
     /// Read from the published routes, which is an `ArcSwap` load and no lock.
