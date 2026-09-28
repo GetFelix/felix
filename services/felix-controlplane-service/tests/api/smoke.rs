@@ -1036,6 +1036,11 @@ impl ControlPlaneStore for FailingStore {
     }
 
     async fn enabled_fleet_features(&self) -> StoreResult<std::collections::BTreeSet<String>> {
+        // A stream create reads the fleet gate first; let it through so the
+        // create's own failure is the one that surfaces.
+        if self.stream_create_not_found {
+            return Ok(Default::default());
+        }
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 

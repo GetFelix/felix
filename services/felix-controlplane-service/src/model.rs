@@ -27,6 +27,6 @@ pub use shard::{
 pub(crate) use stream::default_replication_factor;
 pub use stream::{
     ConsistencyLevel, DeliveryGuarantee, RetentionPolicy, Stream, StreamChange, StreamChangeOp,
-    StreamKey, StreamKind, StreamPatchRequest,
+    StreamKey, StreamKind, StreamPatchRequest, StreamRouting,
 };
 pub use tenant::{Tenant, TenantChange, TenantChangeOp};

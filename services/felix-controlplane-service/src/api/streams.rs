@@ -27,7 +27,7 @@ use crate::auth::bearer::{require_cluster_action, require_tenant_action, tenant_
 use crate::auth::rbac::authorize::{
     ACTION_NODE_VIEW, ACTION_STREAM_MANAGE, ParsedObject, Segment, object_within_scope,
 };
-use crate::model::{Stream, StreamKey, StreamPatchRequest, validate_identifier};
+use crate::model::{Stream, StreamKey, StreamPatchRequest, StreamRouting, validate_identifier};
 use crate::store::StoreError;
 
 #[utoipa::path(
@@ -86,7 +86,7 @@ pub(crate) async fn list_streams(
     responses(
         (status = 201, description = "Stream created", body = Stream),
         (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse),
-        (status = 409, description = "Stream already exists", body = crate::api::types::ErrorResponse)
+        (status = 409, description = "Stream already exists, or `jump_hash` routing was asked for before the fleet finalized it", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn create_stream(
@@ -104,6 +104,7 @@ pub(crate) async fn create_stream(
         }
         region => region,
     };
+    let routing = creation_routing(&state, body.routing).await?;
     let stream = Stream {
         tenant_id,
         namespace,
@@ -116,12 +117,44 @@ pub(crate) async fn create_stream(
         delivery: body.delivery,
         durable: body.durable,
         region,
+        routing,
     };
     match state.store.create_stream(stream.clone()).await {
         Ok(created) => Ok((StatusCode::CREATED, Json(created))),
         Err(StoreError::Conflict(_)) => Err(api_conflict("conflict", "stream already exists")),
         Err(StoreError::NotFound(_)) => Err(api_not_found("namespace not found")),
         Err(err) => Err(api_internal("failed to create stream", &err)),
+    }
+}
+
+/// The mapping a new stream gets: jump hash once the fleet has finalized
+/// `jump_hash_routing`, modulo before.
+///
+/// Read before the create rather than in the same transaction. A finalize that
+/// lands in between only means this stream gets modulo, which every broker
+/// serves; the reverse cannot happen because finalizing is one-way and, once
+/// done, refuses any broker that could not serve jump hash.
+async fn creation_routing(
+    state: &AppState,
+    asked: Option<StreamRouting>,
+) -> Result<StreamRouting, ApiError> {
+    if asked == Some(StreamRouting::Modulo) {
+        return Ok(StreamRouting::Modulo);
+    }
+    let feature = felix_common::fleet::JUMP_HASH_ROUTING.name();
+    let enabled = state
+        .store
+        .enabled_fleet_features()
+        .await
+        .map_err(|ref err| api_internal("read the enabled fleet features", err))?
+        .contains(feature);
+    match (asked, enabled) {
+        (_, true) => Ok(StreamRouting::JumpHash),
+        (None, false) => Ok(StreamRouting::Modulo),
+        (Some(_), false) => Err(api_conflict(
+            "not_finalized",
+            &format!("routing jump_hash needs the {feature} fleet feature to be finalized"),
+        )),
     }
 }
 

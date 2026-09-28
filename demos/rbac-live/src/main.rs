@@ -540,6 +540,7 @@ async fn create_stream(
         delivery: DeliveryGuarantee::AtLeastOnce,
         durable: false,
         region: None,
+        routing: None,
     };
     let response = http
         .post(url)

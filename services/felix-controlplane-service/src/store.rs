@@ -59,6 +59,27 @@ pub trait ControlPlaneStore: Send + Sync {
         page: PageRequest<String>,
     ) -> StoreResult<Page<Stream>>;
     async fn get_stream(&self, key: &StreamKey) -> StoreResult<Stream>;
+    /// The streams among `keys` whose routing is not modulo. A stream that is
+    /// missing, or modulo, is left out, which is how every caller reads it.
+    ///
+    /// The shard-assignment feeds call this per answer, so a store that pays
+    /// per query answers it in one.
+    async fn stream_routings(
+        &self,
+        keys: &[StreamKey],
+    ) -> StoreResult<std::collections::HashMap<StreamKey, crate::model::StreamRouting>> {
+        let mut routings = std::collections::HashMap::new();
+        for key in keys {
+            match self.get_stream(key).await {
+                Ok(stream) if !stream.routing.is_modulo() => {
+                    routings.insert(key.clone(), stream.routing);
+                }
+                Ok(_) | Err(StoreError::NotFound(_)) => {}
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(routings)
+    }
     async fn create_stream(&self, stream: Stream) -> StoreResult<Stream>;
     async fn patch_stream(&self, key: &StreamKey, patch: StreamPatchRequest)
     -> StoreResult<Stream>;

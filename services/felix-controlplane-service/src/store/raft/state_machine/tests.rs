@@ -63,6 +63,7 @@ fn stream(tenant_id: &str, namespace: &str, name: &str) -> Stream {
         delivery: DeliveryGuarantee::AtLeastOnce,
         durable: false,
         region: None,
+        routing: Default::default(),
     }
 }
 

@@ -13,7 +13,8 @@ use crate::api::{
         NamespaceSnapshotResponse, NodeHeartbeatRequest, NodeHeartbeatResponse, NodeListResponse,
         NodePlacement, NodeRegistrationRequest, NodeRegistrationResponse, NodeView,
         PlacementPlanResponse, PlacementStatusResponse, PlannedShard, PolicyListResponse,
-        PolicyListing, Region, ShardAssignmentChangesResponse, ShardAssignmentListResponse,
+        PolicyListing, Region, RoutedShardAssignment, RoutedShardAssignmentChange,
+        ShardAssignmentChangesResponse, ShardAssignmentListResponse,
         ShardAssignmentSnapshotResponse, ShardMove, ShardMoveListResponse, ShardMoveRequest,
         ShardMoveResponse, ShardMoveStep, StreamChangesResponse, StreamCreateRequest,
         StreamListResponse, StreamSnapshotResponse, SystemInfo, TenantChangesResponse,
@@ -35,7 +36,7 @@ use crate::model::{
     Node, NodeCapacity, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest, NodeSpec,
     NodeStatus, RetentionPolicy, ShardAssignment, ShardAssignmentChange, ShardAssignmentChangeOp,
     ShardKey, ShardKind, ShardState, Stream, StreamChange, StreamChangeOp, StreamKey, StreamKind,
-    StreamPatchRequest, Tenant, TenantChange, TenantChangeOp,
+    StreamPatchRequest, StreamRouting, Tenant, TenantChange, TenantChangeOp,
 };
 
 #[derive(OpenApi)]
@@ -178,6 +179,9 @@ use crate::model::{
         ShardAssignmentSnapshotResponse,
         ShardAssignmentChangesResponse,
         ShardAssignmentChange,
+        RoutedShardAssignment,
+        RoutedShardAssignmentChange,
+        StreamRouting,
         ShardAssignmentChangeOp,
         ShardKind,
         MoveReason,

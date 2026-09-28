@@ -36,6 +36,47 @@ pub struct Stream {
     /// always were. Fixed at creation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    /// How routing keys map to shards. Fixed at creation: remapping a live
+    /// stream would move keys between shards and break per-key order.
+    /// Absent is `modulo`, the mapping every stream had before there was a
+    /// choice.
+    #[serde(default, skip_serializing_if = "StreamRouting::is_modulo")]
+    pub routing: StreamRouting,
+}
+
+/// How a stream maps routing keys to shards. The names are the ones
+/// `felix_wire::routing::ShardRouting` uses, since brokers and clients read
+/// this value as that type.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamRouting {
+    /// `hash(key) % shards`.
+    #[default]
+    Modulo,
+    /// Jump consistent hashing. Only given to a stream created after the
+    /// `jump_hash_routing` fleet feature was finalized.
+    JumpHash,
+}
+
+impl StreamRouting {
+    pub fn is_modulo(&self) -> bool {
+        *self == Self::Modulo
+    }
+
+    /// The name it is stored and sent under.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Modulo => "modulo",
+            Self::JumpHash => "jump_hash",
+        }
+    }
+
+    /// The reverse of [`Self::as_str`].
+    pub fn parse(value: &str) -> Option<Self> {
+        [Self::Modulo, Self::JumpHash]
+            .into_iter()
+            .find(|routing| routing.as_str() == value)
+    }
 }
 
 /// Leader-only. The value a stream has unless it asks for more, and the value

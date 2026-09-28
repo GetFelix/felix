@@ -94,6 +94,7 @@ fn stream(name: &str, shards: u32) -> Stream {
         delivery: DeliveryGuarantee::AtMostOnce,
         durable: true,
         region: None,
+        routing: Default::default(),
     }
 }
 

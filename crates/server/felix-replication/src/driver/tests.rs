@@ -169,6 +169,7 @@ fn draining_router(leader: &str, replicas: &[&str], generation: u64) -> Arc<Shar
             draining: true,
             // A move names where it is going; the drained report waits on it.
             successor: replicas.first().map(|r| r.to_string()),
+            routing: Default::default(),
         }],
         &nodes,
     );

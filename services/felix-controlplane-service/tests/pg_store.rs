@@ -192,6 +192,7 @@ async fn pg_stream_sequences_monotonic() {
         delivery: DeliveryGuarantee::AtLeastOnce,
         durable: false,
         region: None,
+        routing: Default::default(),
     };
     store
         .create_stream(stream.clone())
@@ -273,6 +274,7 @@ async fn pg_delete_namespace_emits_cascades() {
             delivery: DeliveryGuarantee::AtLeastOnce,
             durable: false,
             region: None,
+            routing: Default::default(),
         })
         .await
         .expect("stream");
@@ -548,6 +550,7 @@ async fn pg_store_stream_conflict_and_not_found() {
             delivery: DeliveryGuarantee::AtLeastOnce,
             durable: false,
             region: None,
+            routing: Default::default(),
         })
         .await
         .expect_err("missing namespace");
@@ -568,6 +571,7 @@ async fn pg_store_stream_conflict_and_not_found() {
         delivery: DeliveryGuarantee::AtLeastOnce,
         durable: false,
         region: None,
+        routing: Default::default(),
     };
     store.create_stream(stream.clone()).await.expect("stream");
     let err = store.create_stream(stream).await.expect_err("conflict");
@@ -650,6 +654,7 @@ async fn pg_store_keeps_a_streams_replication_factor() {
             delivery: DeliveryGuarantee::AtLeastOnce,
             durable: true,
             region: None,
+            routing: Default::default(),
         })
         .await
         .expect("stream");
@@ -832,6 +837,7 @@ async fn pg_store_list_get_and_exists_roundtrip() {
             delivery: DeliveryGuarantee::AtLeastOnce,
             durable: false,
             region: None,
+            routing: Default::default(),
         })
         .await
         .expect("stream");
@@ -966,6 +972,7 @@ async fn pg_delete_tenant_emits_stream_retention_max_size() {
             delivery: DeliveryGuarantee::AtLeastOnce,
             durable: true,
             region: None,
+            routing: Default::default(),
         })
         .await
         .expect("stream");

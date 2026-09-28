@@ -89,6 +89,11 @@ pub struct StreamCreateRequest {
     /// in it, or in a region it has a bridge to. Omitted means any region.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    /// How routing keys map to shards. Omitted means `jump_hash` once the
+    /// `jump_hash_routing` fleet feature is finalized and `modulo` before.
+    /// Asking for `jump_hash` before then is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<crate::model::StreamRouting>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -352,9 +357,36 @@ pub struct NodeListResponse {
     pub next_cursor: Option<String>,
 }
 
+/// A shard assignment as the control plane serves it: the stored record with
+/// its stream's key mapping alongside.
+///
+/// The mapping travels with the assignment, not only with the stream catalog,
+/// so a broker learns a stream's width and mapping from the same record and
+/// can never resolve a key against one without the other.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct RoutedShardAssignment {
+    #[serde(flatten)]
+    pub assignment: crate::model::ShardAssignment,
+    /// The stream's routing. Absent is `modulo`, and always absent for a cache.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::model::StreamRouting::is_modulo"
+    )]
+    pub routing: crate::model::StreamRouting,
+}
+
+/// [`crate::model::ShardAssignmentChange`] with [`RoutedShardAssignment`].
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct RoutedShardAssignmentChange {
+    pub seq: u64,
+    pub op: crate::model::ShardAssignmentChangeOp,
+    pub key: crate::model::ShardKey,
+    pub assignment: Option<RoutedShardAssignment>,
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ShardAssignmentListResponse {
-    pub items: Vec<crate::model::ShardAssignment>,
+    pub items: Vec<RoutedShardAssignment>,
     /// Where the next page starts; absent on the last page. Pass it back as
     /// `cursor`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -363,7 +395,7 @@ pub struct ShardAssignmentListResponse {
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ShardAssignmentSnapshotResponse {
-    pub items: Vec<crate::model::ShardAssignment>,
+    pub items: Vec<RoutedShardAssignment>,
     /// Where to start polling changes. A consumer that applies this snapshot and
     /// then polls from here sees every committed change exactly once.
     pub next_seq: u64,
@@ -371,7 +403,7 @@ pub struct ShardAssignmentSnapshotResponse {
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ShardAssignmentChangesResponse {
-    pub items: Vec<crate::model::ShardAssignmentChange>,
+    pub items: Vec<RoutedShardAssignmentChange>,
     pub next_seq: u64,
 }
 

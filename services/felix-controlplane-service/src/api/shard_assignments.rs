@@ -13,9 +13,10 @@ use crate::api::error::{ApiError, api_internal};
 use crate::api::nodes::require_cluster_node_view;
 use crate::api::pagination::{PageParams, list_visible};
 use crate::api::types::{
-    ShardAssignmentChangesResponse, ShardAssignmentListResponse, ShardAssignmentSnapshotResponse,
+    RoutedShardAssignment, RoutedShardAssignmentChange, ShardAssignmentChangesResponse,
+    ShardAssignmentListResponse, ShardAssignmentSnapshotResponse,
 };
-use crate::model::ShardAssignment;
+use crate::model::{ShardAssignment, ShardAssignmentChange, ShardKey, StreamRouting};
 
 /// The longest a changes request waits. Under the usual 30 s idle timeout of
 /// proxies and HTTP clients, so a wait ends in an answer rather than a cut
@@ -67,7 +68,7 @@ pub(crate) async fn list_shard_assignments(
     .map_err(|ref err| api_internal("failed to list shard assignments", err))?;
 
     Ok(Json(ShardAssignmentListResponse {
-        items: listed.items,
+        items: with_routing(&state, listed.items).await?,
         next_cursor: listed.next_cursor,
     }))
 }
@@ -97,7 +98,7 @@ pub(crate) async fn shard_assignment_snapshot(
         .await
         .map_err(|ref err| api_internal("failed to snapshot shard assignments", err))?;
     Ok(Json(ShardAssignmentSnapshotResponse {
-        items: snapshot.items,
+        items: with_routing(&state, snapshot.items).await?,
         next_seq: snapshot.next_seq,
     }))
 }
@@ -157,7 +158,7 @@ pub(crate) async fn shard_assignment_changes(
                     _ = tokio::time::sleep(CHANGES_RECHECK.min(deadline - now)) => {}
                     _ = state.placement_wakes.closing().cancelled() => {
                         return Ok(Json(ShardAssignmentChangesResponse {
-                            items: changes.items,
+                            items: changes_with_routing(&state, changes.items).await?,
                             next_seq: changes.next_seq,
                         }));
                     }
@@ -165,12 +166,76 @@ pub(crate) async fn shard_assignment_changes(
             }
             _ => {
                 return Ok(Json(ShardAssignmentChangesResponse {
-                    items: changes.items,
+                    items: changes_with_routing(&state, changes.items).await?,
                     next_seq: changes.next_seq,
                 }));
             }
         }
     }
+}
+
+/// The non-modulo routing of every stream `keys` name.
+///
+/// Read from the stream, which is where a stream's routing is fixed at
+/// creation; it never changes afterwards, so an answer read after the
+/// assignment cannot disagree with it. Stamped here rather than stored on the
+/// assignment so no placement write can lose it.
+async fn routings<'a>(
+    state: &AppState,
+    keys: impl Iterator<Item = &'a ShardKey>,
+) -> Result<HashMap<crate::model::StreamKey, StreamRouting>, ApiError> {
+    let mut streams: Vec<_> = keys.filter_map(ShardKey::stream_key).collect();
+    streams.sort_by(|a, b| {
+        (&a.tenant_id, &a.namespace, &a.stream).cmp(&(&b.tenant_id, &b.namespace, &b.stream))
+    });
+    streams.dedup();
+    state
+        .store
+        .stream_routings(&streams)
+        .await
+        .map_err(|ref err| api_internal("failed to read stream routing", err))
+}
+
+fn routed(
+    routings: &HashMap<crate::model::StreamKey, StreamRouting>,
+    assignment: ShardAssignment,
+) -> RoutedShardAssignment {
+    let routing = assignment
+        .key
+        .stream_key()
+        .and_then(|stream| routings.get(&stream).copied())
+        .unwrap_or_default();
+    RoutedShardAssignment {
+        assignment,
+        routing,
+    }
+}
+
+async fn with_routing(
+    state: &AppState,
+    items: Vec<ShardAssignment>,
+) -> Result<Vec<RoutedShardAssignment>, ApiError> {
+    let routings = routings(state, items.iter().map(|item| &item.key)).await?;
+    Ok(items
+        .into_iter()
+        .map(|item| routed(&routings, item))
+        .collect())
+}
+
+async fn changes_with_routing(
+    state: &AppState,
+    items: Vec<ShardAssignmentChange>,
+) -> Result<Vec<RoutedShardAssignmentChange>, ApiError> {
+    let routings = routings(state, items.iter().map(|item| &item.key)).await?;
+    Ok(items
+        .into_iter()
+        .map(|change| RoutedShardAssignmentChange {
+            seq: change.seq,
+            op: change.op,
+            assignment: change.assignment.map(|item| routed(&routings, item)),
+            key: change.key,
+        })
+        .collect())
 }
 
 #[cfg(test)]

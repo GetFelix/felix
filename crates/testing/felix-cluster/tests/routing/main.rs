@@ -7,6 +7,7 @@
 
 mod cross_broker;
 mod generation_start;
+mod jump_hash;
 mod kafka_leaders;
 mod moved_readers;
 mod operator_moves;

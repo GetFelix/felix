@@ -96,6 +96,7 @@ pub(crate) async fn one_shard_cluster() -> (
             delivery: DeliveryGuarantee::AtMostOnce,
             durable: true,
             region: None,
+            routing: Default::default(),
         })
         .await
         .expect("stream");

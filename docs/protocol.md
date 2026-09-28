@@ -462,12 +462,20 @@ in exactly the way any routing answer can.
 
 ### StreamShardsView (server -> client)
 ```
-{ "type": "stream_shards_view", "shards": <u32>, "request_id": <u64> }
+{ "type": "stream_shards_view", "shards": <u32>, "request_id": <u64>,
+  "routing": "jump_hash" }
 ```
 
 `0` means this broker knows nothing of that stream, which is **not** the same as
 one shard. A client that rounded it up would read shard 0 and call it the
 stream.
+
+`routing` says how the stream maps routing keys to shards: `modulo` or
+`jump_hash`, computed by `felix_wire::routing::shard_for_routing`. It is sent
+only for a `jump_hash` stream; absent means `modulo`, so a modulo stream's
+answer is byte-identical to what a broker sent before the field existed. A
+client that routes keyed publishes itself must use it, or it computes a
+different shard than the broker does.
 
 ### CacheShards
 ```
@@ -1380,7 +1388,8 @@ unknown `type` to `Message::Unknown` rather than failing, so a new request no
 longer needs its own feature bit before a client can try it.
 
 `stream_shards_view` may carry `routing` (`modulo` or `jump_hash`); absent means
-`modulo`. The broker currently always omits it.
+`modulo`. The broker sends it for a stream created with `jump_hash` routing and
+omits it otherwise.
 
 ## Future Compatibility
 - Undefined `flags` bits are reserved. Receivers MUST reject frames carrying an

@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 
 use super::*;
 use crate::RegionRouter;
+use felix_wire::routing::ShardRouting;
 
 fn key(shard: u32) -> ShardKey {
     ShardKey {
@@ -392,5 +393,68 @@ fn an_unplaced_stream_is_distinguishable_from_a_single_shard_one() {
         1,
         "routing lost its fallback, so a publish to a stream the snapshot has \
          not caught up on now has nowhere to go",
+    );
+}
+
+fn placed(stream: &str, shard: u32, routing: ShardRouting) -> Placed {
+    Placed {
+        key: ShardKey {
+            stream: stream.to_string(),
+            ..key(shard)
+        },
+        leader: "broker-a".to_string(),
+        replicas: Vec::new(),
+        generation: 1,
+        draining: false,
+        successor: None,
+        routing,
+    }
+}
+
+/// Each stream resolves keys with the mapping its assignments carry, so a
+/// jump-hash stream and a legacy one side by side in one table each keep
+/// their own.
+#[test]
+fn keys_resolve_with_each_streams_own_mapping() {
+    let nodes = catalog(&[node("broker-a", 7001, "us-west-2", true)]);
+    let table = RoutingTable::build_with(
+        (0..8).flat_map(|shard| {
+            [
+                placed("legacy", shard, ShardRouting::Modulo),
+                placed("fresh", shard, ShardRouting::JumpHash),
+            ]
+        }),
+        &nodes,
+    );
+    assert_eq!(
+        table.placement_for(ShardKind::Stream, "t1", "ns", "fresh"),
+        Some(StreamPlacement {
+            shards: 8,
+            routing: ShardRouting::JumpHash
+        })
+    );
+
+    let mut differ = 0;
+    for i in 0..200 {
+        let key = format!("key-{i}");
+        let key = Some(key.as_bytes());
+        let legacy = table.shard_for_key(ShardKind::Stream, "t1", "ns", "legacy", key);
+        let fresh = table.shard_for_key(ShardKind::Stream, "t1", "ns", "fresh", key);
+        assert_eq!(legacy, felix_wire::routing::shard_for(8, key));
+        assert_eq!(
+            fresh,
+            felix_wire::routing::shard_for_routing(ShardRouting::JumpHash, 8, key)
+        );
+        differ += usize::from(legacy != fresh);
+    }
+    assert!(
+        differ > 100,
+        "the two mappings agreed on {} of 200 keys",
+        200 - differ
+    );
+    assert_eq!(
+        table.shard_for_key(ShardKind::Stream, "t1", "ns", "unknown", Some(b"k")),
+        0,
+        "an unplaced stream routes to shard 0"
     );
 }

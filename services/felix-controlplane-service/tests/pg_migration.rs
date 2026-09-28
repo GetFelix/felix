@@ -159,6 +159,7 @@ async fn seed(store: &(dyn ControlPlaneAuthStore + Send + Sync)) {
             delivery: DeliveryGuarantee::AtLeastOnce,
             durable: true,
             region: None,
+            routing: Default::default(),
         })
         .await
         .expect("stream");

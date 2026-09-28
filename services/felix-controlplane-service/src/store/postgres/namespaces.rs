@@ -3,7 +3,8 @@ use serde_json::Value;
 use sqlx::FromRow;
 
 use super::codec::{
-    DbCache, DbNamespace, DbStream, parse_consistency, parse_delivery, parse_stream_kind,
+    DbCache, DbNamespace, DbStream, parse_consistency, parse_delivery, parse_routing,
+    parse_stream_kind,
 };
 use super::{PostgresStore, is_unique_violation, page_fetch};
 use crate::model::{
@@ -143,7 +144,7 @@ pub(super) async fn delete_namespace(store: &PostgresStore, key: &NamespaceKey) 
     });
 
     let streams = sqlx::query_as::<_, DbStream>(
-        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region
+        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing
                FROM streams WHERE tenant_id = $1 AND namespace = $2"#,
     )
     .bind(&key.tenant_id)
@@ -216,6 +217,7 @@ pub(super) async fn delete_namespace(store: &PostgresStore, key: &NamespaceKey) 
             delivery: parse_delivery(&stream.delivery)?,
             durable: stream.durable,
             region: stream.region,
+            routing: parse_routing(stream.routing.as_deref())?,
         };
         sqlx::query(
             r#"INSERT INTO stream_changes (op, tenant_id, namespace, stream, payload) VALUES ($1, $2, $3, $4, $5)"#,
