@@ -39,6 +39,23 @@ pub struct ReplicateRecords {
     /// kind, byte for byte what an older follower reads. `Some` travels as
     /// `ReplicateCommittedRecords`, which an older follower refuses.
     pub commit_offset: Option<u64>,
+    /// Where each generation that wrote a record in this batch began in the
+    /// sender's log, oldest first: the one the first record belongs to, and
+    /// every later one starting at or before the batch's end, which includes
+    /// the sender's own when nothing of it follows yet.
+    ///
+    /// `None` is a sender that predates labels: the batch travels as any
+    /// other kind, and the follower labels what it appends with the sender's
+    /// generation. `Some` travels as `ReplicateLabelledRecords`, sent only to
+    /// a peer that advertised `GENERATION_LABELS`.
+    pub generations: Option<Vec<GenerationStart>>,
+}
+
+/// One leadership generation, and the offset of its first record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GenerationStart {
+    pub generation: u64,
+    pub start_offset: u64,
 }
 
 /// Which idempotent producer's batch a replicated record belongs to.

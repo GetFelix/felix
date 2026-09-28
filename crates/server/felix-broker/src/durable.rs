@@ -319,6 +319,18 @@ impl StreamLog {
             .map_err(storage_error)
     }
 
+    /// Label the records from `from` on with the generations that wrote them.
+    /// See `DiskLog::label_generations`.
+    pub fn label_generations(
+        &self,
+        from: Offset,
+        generations: &[felix_storage::log::Epoch],
+    ) -> Result<()> {
+        self.log
+            .label_generations(from, generations)
+            .map_err(storage_error)
+    }
+
     /// The highest generation a leader of this shard was accepted at here.
     pub fn accepted_generation(&self) -> u64 {
         self.log.accepted_generation()

@@ -23,6 +23,13 @@ impl PeerCapabilities {
     pub const FENCE: Self = Self(1 << 0);
     /// Answers [`ReplicateFetch`] from the leader that fenced it.
     pub const TAIL_FETCH: Self = Self(1 << 1);
+    /// Reads records labelled with the generations that wrote them
+    /// ([`ReplicateRecords::generations`]), and answers a labelled
+    /// [`ReplicateFetch`] with them.
+    ///
+    /// [`ReplicateRecords::generations`]: super::ReplicateRecords::generations
+    pub const GENERATION_LABELS: Self = Self(1 << 2);
+
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
     }
@@ -87,4 +94,8 @@ pub struct ReplicateFetch {
     pub log: ReplicaLog,
     pub from_offset: u64,
     pub max_bytes: u32,
+    /// Answer with the records' generations, as a labelled batch. Travels as
+    /// `ReplicateLabelledFetch`, sent only to a peer that advertised
+    /// [`PeerCapabilities::GENERATION_LABELS`].
+    pub labelled: bool,
 }

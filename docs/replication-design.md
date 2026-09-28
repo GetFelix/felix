@@ -554,6 +554,49 @@ or after where that older generation began. Both conditions matter — a leader
 disagreeing with *itself* is an inconsistency rather than a predecessor's
 leftovers, and repairing that would let a leader rewrite its own history.
 
+**Each record keeps the generation it was written at.** The map is also what
+a fence answer's last generation and promotion by log order read, and those
+orderings are only safe when a label says who *wrote* the record. A leader
+ships a follower records it inherited as well as its own, so "the generation
+of the leader that sent it" is the wrong answer for the first kind. Labelled
+that way, a follower's copy of an inherited record looks newer than it is: a
+leader at 1 acknowledges x1 and x2 on a and b; b is promoted at 2, ships x1 to
+c, and dies; c is promoted at 3, and its fence finds a's log (generation 1,
+two records) behind its own (generation 2, one record), so x2 is never taken
+(`FelixShardFollowerLabels.cfg`, and
+`a_follower_keeps_the_generation_a_record_was_written_at`).
+
+So a stream shard's batch carries the labels; the shard's other logs are not
+compared by a fence, and their leader keeps no history of its own to send.
+`ReplicateLabelledRecords` is a replication batch with the sender's history
+over its records: the generation the first
+record belongs to, and every later one that starts by the batch's end, which
+includes the sender's own start once the batch reaches it. The follower
+records exactly those for the records the batch appended, and first drops any
+generation of its own that starts at or past them: one it led without
+writing anything describes no record, and left in place it would label the
+records that arrive after it. A leader taking a replica's tail in its fence
+asks for the same labels (`ReplicateLabelledFetch`), so what it took keeps
+its generation on the leader too, and on every follower it ships to. Once its
+records past the end of that log are dropped, their labels with them, the
+leader puts the replica's labels over everything it compared, including
+records it already held and so never appended.
+
+The labels are negotiated with the `GENERATION_LABELS` capability, offered
+whatever `FELIX_INTERNAL_FENCE` says. A follower that did not offer it is sent
+the batch it reads, and labels the records as before: the sender's
+generation, from where the batch appended. That fallback is the overclaim
+above, so a cluster is only as safe as its oldest broker until every one
+offers the capability.
+
+Correct labels are not the whole of it. A promoted leader's quorum mark counts
+the records it inherited as it counts its own, so it can acknowledge one on a
+majority that a later leader's fence then replaces with a newer generation's
+log: Raft's Figure 8, which `docs/formal/FelixShardFigure8.cfg` reaches from a
+seeded history. Raft counts only records of the leader's own generation, and
+appends one at the start of each term so the inherited ones are carried along;
+Felix has no such record yet, and until it does this is an open gap.
+
 Dropping a suffix also resets the stream's in-memory tail: the replay ring,
 its next offset and the commit order. Storing the new leader's records only
 moves that tail forward, so when they end below where the dropped ones did, the
@@ -613,10 +656,13 @@ answered with a `LogGap` naming the first uncompared record — the later of
 where the older generation began here and the commit offset. The leader rewinds
 and the overlap is compared like any other, so a conflict is found and repaired
 as above. When that takes several batches, the follower remembers in memory how
-far it has got, and it records the new generation's start only once it is level
-with the leader, so a conflict found partway is still the older generation's
-suffix and repairable. A restart forgets the progress and costs a re-compare,
-not correctness.
+far it has got. The newest generation it holds stays older than the leader's
+until the batches reach where the leader's own began: before that it holds only
+records the leader inherited, labelled with the generations that wrote them.
+Until then a conflict below how far it has got is the leader disagreeing with
+itself and halts, while one past it is still the older generation's suffix and
+repairable. A restart forgets the progress and costs a re-compare, not
+correctness.
 
 Without a history entry for the generation it falls back to zero, which is slow
 rather than wrong. A shard's consumer-group cursors, dead letters and counters

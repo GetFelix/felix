@@ -321,7 +321,10 @@ would misparse every field after the length.
 
 A shard directory may hold an `epochs` file beside its segments. It records
 where each leadership generation began, as `(generation, start offset)` pairs —
-one entry per leadership change, not per record.
+one entry per leadership change, not per record. An entry names the generation
+that wrote the records from its offset on, on a follower too: a follower copies
+the entries from the leader's batches rather than labelling what it is sent
+with the generation of the leader that sent it.
 
 ```text
  0   4  magic        u32  "FLEP"

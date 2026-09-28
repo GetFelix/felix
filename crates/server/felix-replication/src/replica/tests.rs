@@ -107,6 +107,7 @@ fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecord
         payloads,
         marks: Vec::new(),
         commit_offset: None,
+        generations: None,
     }
 }
 
@@ -932,6 +933,7 @@ mod replica_state {
     ) -> ReplicateRecords {
         ReplicateRecords {
             commit_offset: Some(commit),
+            generations: None,
             ..batch(generation, first_offset, values)
         }
     }
@@ -1143,4 +1145,156 @@ async fn comparing_an_older_generation_over_several_batches_still_repairs() {
     new.apply(batch(6, 2, &["c", "d", "e"]), felix_broker::LogKind::Stream)
         .await;
     assert_eq!(held(&broker).await, ["a", "b", "c", "d", "e"]);
+}
+
+mod labels {
+    use felix_storage::log::Epoch;
+    use felix_wire::internal::GenerationStart;
+
+    use super::*;
+
+    fn labelled(
+        generation: u64,
+        first_offset: u64,
+        values: &[&str],
+        generations: &[(u64, u64)],
+    ) -> ReplicateRecords {
+        ReplicateRecords {
+            generations: Some(
+                generations
+                    .iter()
+                    .map(|&(generation, start_offset)| GenerationStart {
+                        generation,
+                        start_offset,
+                    })
+                    .collect(),
+            ),
+            ..batch(generation, first_offset, values)
+        }
+    }
+
+    async fn history(broker: &Broker) -> Vec<(u64, u64)> {
+        broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log")
+            .generations()
+            .iter()
+            .map(|epoch| (epoch.generation, epoch.start_offset))
+            .collect()
+    }
+
+    /// **Records keep the generations that wrote them**, not the generation
+    /// of the leader that shipped them, and the leader's own is recorded
+    /// where it began. The fence answer then says the last record is from 3.
+    #[tokio::test]
+    async fn a_labelled_batch_keeps_the_generations_that_wrote_it() {
+        let (broker, _dir) = broker_with_storage().await;
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
+
+        let answer = handler
+            .apply(
+                labelled(5, 0, &["a", "b", "c"], &[(1, 0), (3, 2), (5, 3)]),
+                felix_broker::LogKind::Stream,
+            )
+            .await;
+
+        assert!(matches!(answer, InternalMessage::ReplicateOk(_)));
+        assert_eq!(history(&broker).await, [(1, 0), (3, 2), (5, 3)]);
+        let log = broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log");
+        assert_eq!(last_generation(&log.generations(), 3), 3);
+    }
+
+    /// The leader's inherited records can take several batches to arrive.
+    /// Until its own generation starts, the newest one recorded here is
+    /// older, and each batch must still be taken where the last one ended,
+    /// not sent back over records this leader has already compared.
+    #[tokio::test]
+    async fn inherited_records_over_several_batches_are_not_sent_back() {
+        let (broker, _dir) = broker_with_storage().await;
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
+
+        for (offset, value) in ["a", "b", "c"].into_iter().enumerate() {
+            let offset = offset as u64;
+            let answer = handler
+                .apply(
+                    labelled(5, offset, &[value], &[(1, 0)]),
+                    felix_broker::LogKind::Stream,
+                )
+                .await;
+            assert!(
+                matches!(answer, InternalMessage::ReplicateOk(_)),
+                "batch at {offset}: {answer:?}"
+            );
+        }
+        let answer = handler
+            .apply(
+                labelled(5, 3, &["d"], &[(1, 0), (5, 3)]),
+                felix_broker::LogKind::Stream,
+            )
+            .await;
+        assert!(matches!(answer, InternalMessage::ReplicateOk(_)));
+        assert_eq!(held(&broker).await, ["a", "b", "c", "d"]);
+        assert_eq!(history(&broker).await, [(1, 0), (5, 3)]);
+    }
+
+    /// A generation this broker led without writing anything describes no
+    /// record. Left in place it would label the records that arrive after
+    /// it, however much older they are.
+    #[tokio::test]
+    async fn a_generation_that_wrote_nothing_does_not_label_what_arrives() {
+        let (broker, _dir) = broker_with_storage().await;
+        broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log")
+            .record_generation(4, 0)
+            .expect("term start");
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
+
+        handler
+            .apply(
+                labelled(5, 0, &["a"], &[(2, 0)]),
+                felix_broker::LogKind::Stream,
+            )
+            .await;
+
+        assert_eq!(history(&broker).await, [(2, 0)]);
+    }
+
+    #[test]
+    fn a_batch_names_the_generations_over_its_records() {
+        let history = [
+            Epoch {
+                generation: 1,
+                start_offset: 0,
+            },
+            Epoch {
+                generation: 3,
+                start_offset: 4,
+            },
+            Epoch {
+                generation: 5,
+                start_offset: 9,
+            },
+        ];
+        let over = |first, end| -> Vec<(u64, u64)> {
+            generations_over(&history, first, end)
+                .iter()
+                .map(|start| (start.generation, start.start_offset))
+                .collect()
+        };
+        assert_eq!(over(0, 3), [(1, 0)]);
+        assert_eq!(over(2, 6), [(1, 0), (3, 4)]);
+        assert_eq!(
+            over(4, 9),
+            [(3, 4), (5, 9)],
+            "the next one, starting at the end"
+        );
+        assert_eq!(over(10, 12), [(5, 9)]);
+        assert!(generations_over(&[], 0, 3).is_empty());
+    }
 }

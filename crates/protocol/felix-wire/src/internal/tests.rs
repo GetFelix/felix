@@ -105,6 +105,7 @@ fn every_message() -> Vec<InternalMessage> {
             log: ReplicaLog::Stream,
             from_offset: 100,
             max_bytes: 1 << 20,
+            labelled: false,
         }),
         replicate(),
         InternalMessage::ReplicateOk(ReplicateOk {
@@ -176,6 +177,7 @@ fn every_message() -> Vec<InternalMessage> {
             payloads: vec![Bytes::from_static(b"a"), Bytes::from_static(b"bb")],
             marks: Vec::new(),
             commit_offset: None,
+            generations: None,
         }),
         InternalMessage::ReplicateCacheBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -190,6 +192,7 @@ fn every_message() -> Vec<InternalMessage> {
             payloads: vec![Bytes::from_static(b"cursor")],
             marks: Vec::new(),
             commit_offset: None,
+            generations: None,
         }),
         InternalMessage::ReplicateGroupBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -204,6 +207,7 @@ fn every_message() -> Vec<InternalMessage> {
             payloads: vec![Bytes::from_static(b"dead letter")],
             marks: Vec::new(),
             commit_offset: None,
+            generations: None,
         }),
         InternalMessage::ReplicateDeadLetterBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -218,6 +222,7 @@ fn every_message() -> Vec<InternalMessage> {
             payloads: vec![Bytes::from_static(b"delta")],
             marks: Vec::new(),
             commit_offset: None,
+            generations: None,
         }),
         InternalMessage::ReplicateCounterBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -244,6 +249,7 @@ fn every_message() -> Vec<InternalMessage> {
                 ProducerMark::Continues,
             ],
             commit_offset: None,
+            generations: None,
         }),
         InternalMessage::ReplicateRecords(ReplicateRecords {
             correlation_id: 42,
@@ -253,6 +259,7 @@ fn every_message() -> Vec<InternalMessage> {
             payloads: vec![Bytes::from_static(b"a")],
             marks: Vec::new(),
             commit_offset: Some(90),
+            generations: None,
         }),
         InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
             correlation_id: 42,
@@ -266,6 +273,7 @@ fn every_message() -> Vec<InternalMessage> {
                 len: 1,
             }],
             commit_offset: Some(100),
+            generations: None,
         }),
         InternalMessage::ReplicateCacheRecords(ReplicateRecords {
             correlation_id: 42,
@@ -275,6 +283,7 @@ fn every_message() -> Vec<InternalMessage> {
             payloads: vec![Bytes::from_static(b"put")],
             marks: Vec::new(),
             commit_offset: Some(0),
+            generations: None,
         }),
     ]
 }
@@ -289,5 +298,6 @@ fn replicate() -> InternalMessage {
         payloads,
         marks: Vec::new(),
         commit_offset: None,
+        generations: None,
     })
 }

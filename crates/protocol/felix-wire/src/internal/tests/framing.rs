@@ -148,6 +148,7 @@ fn every_body_begins_with_its_correlation_id() {
             log: ReplicaLog::Stream,
             from_offset: 1,
             max_bytes: 1,
+            labelled: false,
         }),
         InternalMessage::ReplicateRecords(ReplicateRecords {
             correlation_id: id,
@@ -157,6 +158,7 @@ fn every_body_begins_with_its_correlation_id() {
             payloads: vec![Bytes::from_static(b"r")],
             marks: Vec::new(),
             commit_offset: None,
+            generations: None,
         }),
         InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: id,

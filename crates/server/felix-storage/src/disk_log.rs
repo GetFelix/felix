@@ -467,6 +467,29 @@ impl DiskLog {
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
 
+    /// Label the records from `from` on with the generations that wrote them,
+    /// as the log they were copied from has them.
+    ///
+    /// Generations this history held from `from` on go first: they describe
+    /// no record here, since those records have just arrived, and one left
+    /// in place would label them. Each of `generations` then begins no
+    /// earlier than `from`; one already covered by a newer entry is skipped,
+    /// as [`AppendOnlyLog::record_generation`] skips it.
+    pub fn label_generations(&self, from: Offset, generations: &[Epoch]) -> Result<()> {
+        let segments = self.inner.segments.read();
+        segments.check_open()?;
+        let mut epochs = self.inner.epochs.lock();
+        let before = epochs.entries().to_vec();
+        epochs.truncate_from(from);
+        for epoch in generations {
+            epochs.record(epoch.generation, epoch.start_offset.max(from));
+        }
+        if epochs.entries() != before.as_slice() {
+            epochs::store(&self.inner.dir, &epochs)?;
+        }
+        Ok(())
+    }
+
     /// One past the last record known committed. Zero if none is known.
     pub fn commit_offset(&self) -> Offset {
         self.inner.commit_offset.load(Ordering::Acquire)

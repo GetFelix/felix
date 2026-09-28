@@ -228,11 +228,14 @@ fn env_millis(name: &str) -> Option<Duration> {
 impl PeerTransportConfig {
     /// What this broker offers its peers in the handshake.
     pub fn capabilities(&self) -> felix_wire::internal::PeerCapabilities {
+        use felix_wire::internal::PeerCapabilities;
+        let labels = PeerCapabilities::GENERATION_LABELS;
         if self.fence {
-            felix_wire::internal::PeerCapabilities::FENCE
-                .union(felix_wire::internal::PeerCapabilities::TAIL_FETCH)
+            labels
+                .union(PeerCapabilities::FENCE)
+                .union(PeerCapabilities::TAIL_FETCH)
         } else {
-            felix_wire::internal::PeerCapabilities::NONE
+            labels
         }
     }
 

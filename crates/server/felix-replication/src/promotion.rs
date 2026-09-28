@@ -291,6 +291,13 @@ async fn catch_up<R: PeerRequester>(
         .find(|epoch| epoch.start_offset < tail)
         .map_or(0, |epoch| epoch.start_offset);
     let mut next = log.commit_offset().max(last_start).min(tail);
+    let compared_from = next;
+    // Taken with the generations that wrote them, so this broker's fence
+    // answers and the followers it ships to do not see them as newer.
+    let labelled = requester
+        .recorded_capabilities(from)
+        .is_some_and(|offered| offered.contains(PeerCapabilities::GENERATION_LABELS));
+    let mut taken_labels = labelled.then(Vec::new);
     while next < target.log_end {
         let request = InternalMessage::ReplicateFetch(ReplicateFetch {
             correlation_id: 0,
@@ -298,6 +305,7 @@ async fn catch_up<R: PeerRequester>(
             log: ReplicaLog::Stream,
             from_offset: next,
             max_bytes: FETCH_BYTES,
+            labelled,
         });
         let batch = match requester.request(from, addr, request).await {
             Ok(
@@ -326,8 +334,31 @@ async fn catch_up<R: PeerRequester>(
         )
         .await
         .map_err(|err| err.to_string())?;
+        match (&mut taken_labels, batch.generations.as_deref()) {
+            (Some(taken), Some(generations)) => taken.extend_from_slice(generations),
+            _ => taken_labels = None,
+        }
         match applied {
-            Ok(applied) => next = applied.durable_offset,
+            Ok(applied) => {
+                let level = log
+                    .tail_offset()
+                    .await
+                    .is_ok_and(|tail| applied.durable_offset >= tail);
+                if let Some(generations) = batch.generations.as_deref()
+                    && level
+                {
+                    let start = applied.durable_offset - applied.appended as u64;
+                    crate::replica::label_appended(
+                        log,
+                        start,
+                        applied.durable_offset,
+                        shard.generation,
+                        Some(generations),
+                    )
+                    .map_err(|err| format!("could not label the records from {start}: {err}"))?;
+                }
+                next = applied.durable_offset;
+            }
             // This broker's own records from `offset` are a generation the
             // replica's log superseded. The model replaces the whole log; here
             // only the part that differs goes.
@@ -346,6 +377,14 @@ async fn catch_up<R: PeerRequester>(
         drop_superseded(broker, log, key, next, from).await?;
     }
     let tail = log.tail_offset().await.map_err(|err| err.to_string())?;
+    // A batch that only matched records this broker held past it was not
+    // labelled then: those records kept this broker's own labels. With the
+    // log now ending where the replica's does, its labels go over all of it,
+    // as the model's log' = log[f] carries them.
+    if let Some(taken) = taken_labels.filter(|taken| !taken.is_empty()) {
+        crate::replica::label_appended(log, compared_from, tail, shard.generation, Some(&taken))
+            .map_err(|err| format!("could not label the records from {compared_from}: {err}"))?;
+    }
     if let Err(err) = broker
         .adopt_replicated(&key.tenant_id, &key.namespace, &key.stream, key.shard, tail)
         .await

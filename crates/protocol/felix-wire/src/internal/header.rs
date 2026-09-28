@@ -132,6 +132,12 @@ pub enum Kind {
     FenceOk = 30,
     /// The leader that fenced a replica reads its log's tail.
     ReplicateFetch = 31,
+    /// Any of a shard's logs' records, as `ReplicateCommittedRecords` carries
+    /// them, with the generations that wrote them. An older follower refuses
+    /// it rather than labelling the records with the sender's generation.
+    ReplicateLabelledRecords = 32,
+    /// `ReplicateFetch`, answered with `ReplicateLabelledRecords`.
+    ReplicateLabelledFetch = 33,
 }
 
 impl Kind {
@@ -170,6 +176,8 @@ impl Kind {
             29 => Ok(Kind::Fence),
             30 => Ok(Kind::FenceOk),
             31 => Ok(Kind::ReplicateFetch),
+            32 => Ok(Kind::ReplicateLabelledRecords),
+            33 => Ok(Kind::ReplicateLabelledFetch),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

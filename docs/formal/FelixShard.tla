@@ -146,7 +146,8 @@ CONSTANTS
     AckChecksLease, \* whether a Quorum acknowledgement needs a valid lease, or only the report
     AckOnResponse,  \* whether the leader judges its report by the answer it got, or by the store
     AckByFollowers, \* whether a Quorum ack counts followers at this generation instead of the report
-    FenceOnPromote  \* whether a promoted leader fences a majority and catches up before serving
+    FenceOnPromote, \* whether a promoted leader fences a majority and catches up before serving
+    LabelOnReceipt  \* whether a follower labels a shipped record with the sender's generation
 
 ASSUME Promotion \in {"leader-report", "log-order"}
 ASSUME ReportBeforeAck \in BOOLEAN
@@ -159,6 +160,7 @@ ASSUME Cancel \in BOOLEAN /\ CancelCas \in BOOLEAN
 ASSUME ReportBound \in {"acknowledged", "tail", "unpaired"}
 ASSUME AckChecksLease \in BOOLEAN /\ AckOnResponse \in BOOLEAN
 ASSUME AckByFollowers \in BOOLEAN /\ FenceOnPromote \in BOOLEAN
+ASSUME LabelOnReceipt \in BOOLEAN
 \* The fence is modelled on promotion only, as the broker fences: a planned
 \* move and a cancel name a leader without one, so neither is checked
 \* alongside follower acks. The fence without follower acks is the broker as
@@ -235,9 +237,15 @@ LeaseValid(b) == bgen[b] > 0 /\ clock[b] + Eps < bexpiry[b]
 \* its own promotion fence is done.
 Serving(b) == LeaseValid(b) /\ ~stopped[b] /\ ~fencing[b]
 
-Record(g, id) == [g |-> g, id |-> id]
+\* `g` is the generation the record was written at, `lg` the one the broker
+\* holding it believes that was: its generation history. They differ only
+\* under `LabelOnReceipt`. Records are compared by what was written, as the
+\* code compares checksums, and ordered by what the broker believes.
+Record(g, id) == [g |-> g, id |-> id, lg |-> g]
 
-LastGen(b) == IF Len(log[b]) = 0 THEN 0 ELSE log[b][Len(log[b])].g
+Same(r, s) == r.g = s.g /\ r.id = s.id
+
+LastGen(b) == IF Len(log[b]) = 0 THEN 0 ELSE log[b][Len(log[b])].lg
 
 -----------------------------------------------------------------------------
 
@@ -432,13 +440,19 @@ Resend(b) ==
 \* The first offset at which two logs disagree, or one past the shorter.
 Diverge(a, c) ==
     LET n == IF Len(a) < Len(c) THEN Len(a) ELSE Len(c)
-        d == { i \in 1..n : a[i] /= c[i] }
+        d == { i \in 1..n : ~Same(a[i], c[i]) }
     IN IF d = {} THEN n + 1 ELSE CHOOSE i \in d : \A j \in d : i <= j
 
 \* Under `AckByFollowers` or `FenceOnPromote` the follower also refuses a
 \* leader older than the generation it persisted, and persists the leader's:
 \* `accept_sender` in crates/server/felix-replication/src/replica.rs. A leader still fencing
 \* does not ship: it may yet take a tail from a follower it would truncate.
+\*
+\* With `LabelOnReceipt` the follower labels what it appends with the
+\* sender's generation rather than the one the record was written at, as a
+\* follower did when it recorded a new generation as starting where the
+\* batch that brought it appended. A record the leader inherited then looks
+\* newer on the follower than it is, and its fence answer overclaims.
 Ship(b, f) ==
     /\ bgen[b] > 0 /\ f /= b /\ f \notin halted
     /\ bgen[f] = 0
@@ -449,7 +463,9 @@ Ship(b, f) ==
     /\ LET i == Diverge(log[b], log[f]) IN
        \/ /\ i > Len(log[f])
           /\ i <= Len(log[b])
-          /\ log' = [log EXCEPT ![f] = Append(@, log[b][i])]
+          /\ log' = [log EXCEPT ![f] = Append(@, IF LabelOnReceipt
+                                                    THEN [log[b][i] EXCEPT !.lg = bgen[b]]
+                                                    ELSE log[b][i])]
           /\ UNCHANGED halted
        \/ /\ i <= Len(log[f])
           /\ i <= Len(log[b])
@@ -491,7 +507,7 @@ Ship(b, f) ==
 \* stored a newer report -- until the broker learns otherwise.
 AckReadyOver(b, i, of) ==
     LET r == IF AckOnResponse THEN heard[b] ELSE report IN
-    /\ MajorityOf({ m \in Brokers : Len(log[m]) >= i /\ log[m][i] = log[b][i] } \cup {b}, of)
+    /\ MajorityOf({ m \in Brokers : Len(log[m]) >= i /\ Same(log[m][i], log[b][i]) } \cup {b}, of)
     /\ ReportBeforeAck => /\ r.gen = bgen[b]
                           /\ i <= r.len
                           /\ MajorityOf(r.holders \cup {b}, of)
@@ -507,7 +523,7 @@ AckReadyOver(b, i, of) ==
 HeldAtGen(b, i) ==
     /\ log[b][i].g = bgen[b]
     /\ Majority({ m \in Brokers : /\ Len(log[m]) >= i
-                                  /\ log[m][i] = log[b][i]
+                                  /\ Same(log[m][i], log[b][i])
                                   /\ promised[m] = bgen[b] })
 
 \* With `AckChecksLease = FALSE` the lease plays no part: a broker that still
@@ -556,7 +572,7 @@ LearnHwm(b, f) ==
 \* A write that holds the fence from admission is counted from there.
 \* Whether `m` holds the first `k` records of `b`'s log.
 HoldsPrefix(m, b, k) ==
-    Len(log[m]) >= k /\ SubSeq(log[m], 1, k) = SubSeq(log[b], 1, k)
+    Len(log[m]) >= k /\ \A j \in 1..k : Same(log[m][j], log[b][j])
 
 \* The most of `b`'s log a majority holds, `b` included and halted followers
 \* not: `quorum_offset_without`.
