@@ -36,6 +36,7 @@ fn node(node_id: &str, port: u16, now: u64) -> Node {
             client_addr: None,
             kafka_addr: None,
             region: "local".to_string(),
+            zone: None,
             labels: BTreeMap::new(),
             capacity: NodeCapacity {
                 max_shards: None,
