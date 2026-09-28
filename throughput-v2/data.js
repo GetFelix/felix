@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790618602108,
+  "lastUpdate": 1790625434270,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19760,6 +19760,58 @@ window.BENCHMARK_DATA = {
             "range": "5355.53",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 823945.81\nmean: 824979.41\nstdev: 5355.53\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "646d4adf0b057e7f12dc74844d5c1aa0ae0df47d",
+          "message": "feat(replication): acknowledge Quorum writes by a majority at the leader's generation (#828)\n\nOnce the fleet finalizes `majority_ack` (with `generation_start`), a Quorum\nstream shard acknowledges a write when a majority of its replica set, the\nleader included, has answered ReplicateOk for it at the leader's generation.\nThe control-plane report goes out behind the mark for placement only, and\nthe lease is off the write's path: admission, commit and acknowledgement.\n\n- A follower counts up to its own ReplicateOk at this generation\n  (`FollowerCursor::confirmed`), never a resume point; a fenced follower is\n  halted and counts for nothing. The leader counts itself only while its log\n  has accepted no newer generation.\n- The shard's write fence admits without the lease for such a shard;\n  consumer-group state still requires it. The early lease shed on publish\n  moves after dispatch so it can tell.\n- A promoted leader never opens a stream shard on the lease once follower\n  acks are on: an unreachable or non-fencing replica is a non-answer.\n- A broker running with FELIX_INTERNAL_FENCE=false does not report\n  `majority_ack`, so it cannot be finalized while one serves.\n- Leader streams, caches, counters and reads keep the lease and report.\n\nTLA+: HeldAtGen counts follower answers (`confirmed`) and applies the\nown-generation rule under StartRecord; AckByFollowers takes the lease off\nServing and asserts no commit or ack lease check. FelixShardFencedAck (drift,\nno margin, start record) passes; FelixShardUnfencedAck and the new\nFelixShardFigure8FollowerAcksNoStartRecord violate.",
+          "timestamp": "2026-09-28T12:53:42-07:00",
+          "tree_id": "f1bb5754c4fbc34957a839c9e6070894b9c30943",
+          "url": "https://github.com/gabloe/felix/commit/646d4adf0b057e7f12dc74844d5c1aa0ae0df47d"
+        },
+        "date": 1790625433708,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 336476.88,
+            "range": "10383.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 336476.88\nmean: 335814.55\nstdev: 10383.73\ncv: 3.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 336476.88,
+            "range": "10383.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 336476.88\nmean: 335814.55\nstdev: 10383.73\ncv: 3.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82598.88,
+            "range": "548.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82598.88\nmean: 82656.61\nstdev: 548.65\ncv: 0.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 825988.75,
+            "range": "5486.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 825988.75\nmean: 826566.11\nstdev: 5486.49\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
