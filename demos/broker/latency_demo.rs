@@ -1060,12 +1060,7 @@ async fn run_case(config: DemoConfig) -> Result<(DemoResult, Option<TimingSummar
     }
     let expected_delivered_total = config.total * config.fanout;
     publisher.finish().await?;
-    for task in drain_tasks {
-        tokio::time::timeout(idle_timeout, task)
-            .await
-            .context("subscriber drain task did not finish before idle timeout")?
-            .context("subscriber drain task panicked")??;
-    }
+    join_drain_tasks(drain_tasks, idle_timeout).await?;
     // End the delivery window at the last event that actually arrived, not when
     // the drain tasks were joined.
     let delivery_elapsed = delivery_tracker
@@ -1166,10 +1161,7 @@ async fn setup_subscribers(
     delivery_tracker: DeliveryTracker,
     reserve_primary_slot: bool,
     idle_timeout: Duration,
-) -> Result<(
-    Option<Subscription>,
-    Vec<tokio::task::JoinHandle<Result<()>>>,
-)> {
+) -> Result<(Option<Subscription>, Vec<DrainTask>)> {
     let mut drain_tasks = Vec::new();
     let mut primary_sub = None;
     let mut primary_slot_reserved = reserve_primary_slot;
@@ -1200,7 +1192,10 @@ async fn setup_subscribers(
                 // this subscription makes `expected - observed` look like queue
                 // shedding even though every delivery queue is configured Block.
                 let tracker = delivery_tracker.clone();
-                drain_tasks.push(tokio::spawn(async move {
+                let received = Arc::new(AtomicUsize::new(0));
+                let task_received = received.clone();
+                let label = format!("{stream}#{}", drain_tasks.len());
+                let handle = tokio::spawn(async move {
                     let mut remaining = per_stream_total;
                     let mut seen = 0usize;
                     while remaining > 0 {
@@ -1208,6 +1203,7 @@ async fn setup_subscribers(
                         match next {
                             Ok(Ok(Some(_))) => {
                                 remaining -= 1;
+                                task_received.fetch_add(1, Ordering::Relaxed);
                                 if seen >= per_stream_warmup {
                                     tracker.record();
                                 }
@@ -1219,9 +1215,8 @@ async fn setup_subscribers(
                                 );
                             }
                             Ok(Err(err)) => {
-                                return Err(err).with_context(|| {
-                                    format!("subscriber stream {stream} failed")
-                                });
+                                return Err(err)
+                                    .with_context(|| format!("subscriber stream {stream} failed"));
                             }
                             Err(_) => {
                                 anyhow::bail!(
@@ -1231,11 +1226,95 @@ async fn setup_subscribers(
                         }
                     }
                     Ok(())
-                }));
+                });
+                drain_tasks.push(DrainTask {
+                    label,
+                    expected: per_stream_total,
+                    received,
+                    handle,
+                });
             }
         }
     }
     Ok((primary_sub, drain_tasks))
+}
+
+/// A non-primary subscriber draining its share of the run.
+struct DrainTask {
+    label: String,
+    expected: usize,
+    received: Arc<AtomicUsize>,
+    handle: tokio::task::JoinHandle<Result<()>>,
+}
+
+/// Waits for every drain task, failing only when none has made progress for
+/// `idle_timeout` or one fails on its own.
+///
+/// Waiting on them together matters: a per-task deadline measures how long a
+/// subscriber takes to finish, not whether it stalled, so a healthy subscriber
+/// that is simply behind the others trips it. On failure the error lists every
+/// subscriber still draining and how far it got.
+async fn join_drain_tasks(tasks: Vec<DrainTask>, idle_timeout: Duration) -> Result<()> {
+    use futures::stream::{FuturesUnordered, StreamExt};
+
+    let progress: Vec<_> = tasks
+        .iter()
+        .map(|task| (task.label.clone(), task.expected, task.received.clone()))
+        .collect();
+    let mut done = vec![false; tasks.len()];
+    let mut pending: FuturesUnordered<_> = tasks
+        .into_iter()
+        .enumerate()
+        .map(|(index, task)| async move { (index, task.handle.await) })
+        .collect();
+    let received_total = || {
+        progress
+            .iter()
+            .map(|(_, _, received)| received.load(Ordering::Relaxed))
+            .sum::<usize>()
+    };
+    let unfinished = |done: &[bool]| {
+        progress
+            .iter()
+            .zip(done)
+            .filter(|(_, done)| !**done)
+            .map(|((label, expected, received), _)| {
+                format!("{label} {}/{expected}", received.load(Ordering::Relaxed))
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    let mut last_total = received_total();
+    let mut deadline = tokio::time::Instant::now() + idle_timeout;
+    loop {
+        tokio::select! {
+            next = pending.next() => {
+                let Some((index, joined)) = next else {
+                    return Ok(());
+                };
+                done[index] = true;
+                let result = joined.context("subscriber drain task panicked")?;
+                if let Err(err) = result {
+                    return Err(err.context(format!(
+                        "subscriber drain failed; still draining: [{}]",
+                        unfinished(&done)
+                    )));
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                let total = received_total();
+                if total == last_total {
+                    anyhow::bail!(
+                        "subscriber drain stalled: no event in {idle_timeout:?}; still draining: [{}]",
+                        unfinished(&done)
+                    );
+                }
+                last_total = total;
+                deadline = tokio::time::Instant::now() + idle_timeout;
+            }
+        }
+    }
 }
 
 async fn publish_batches(publisher: &Publisher, config: &PublishBatchConfig) -> Result<()> {
@@ -2540,6 +2619,57 @@ mod tests {
         {
             let _ = format_optional_duration(None);
         }
+    }
+
+    /// A drain task that receives `steps` events `every` apart, then either
+    /// finishes or, if `stall` is set, hangs.
+    fn paced_drain(label: &str, steps: usize, every: Duration, stall: bool) -> DrainTask {
+        let received = Arc::new(AtomicUsize::new(0));
+        let task_received = received.clone();
+        let handle = tokio::spawn(async move {
+            for _ in 0..steps {
+                tokio::time::sleep(every).await;
+                task_received.fetch_add(1, Ordering::Relaxed);
+            }
+            if stall {
+                std::future::pending::<()>().await;
+            }
+            Ok(())
+        });
+        DrainTask {
+            label: label.to_string(),
+            expected: 10,
+            received,
+            handle,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drain_join_waits_out_a_subscriber_that_is_slow_but_live() -> Result<()> {
+        // Each event lands well inside the idle window, but the subscriber as a
+        // whole takes 2.5x the window to finish.
+        let tasks = vec![
+            paced_drain("fast", 10, Duration::from_millis(1), false),
+            paced_drain("slow", 10, Duration::from_millis(50), false),
+        ];
+        join_drain_tasks(tasks, Duration::from_millis(200)).await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drain_join_reports_every_stalled_subscriber() {
+        let tasks = vec![
+            paced_drain("done", 10, Duration::from_millis(1), false),
+            paced_drain("stuck-a", 3, Duration::from_millis(10), true),
+            paced_drain("stuck-b", 7, Duration::from_millis(10), true),
+        ];
+        let err = join_drain_tasks(tasks, Duration::from_millis(200))
+            .await
+            .expect_err("stalled subscribers must fail the run");
+        let message = format!("{err:#}");
+        assert!(message.contains("stalled"), "{message}");
+        assert!(message.contains("stuck-a 3/10"), "{message}");
+        assert!(message.contains("stuck-b 7/10"), "{message}");
+        assert!(!message.contains("done"), "{message}");
     }
 
     #[tokio::test]
