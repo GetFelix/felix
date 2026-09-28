@@ -47,6 +47,12 @@ pub(super) struct Pending {
 
 impl PeerConnection {
     /// Open the request streams and exchange the handshake.
+    ///
+    /// One stream more than `streams`: the first carries only the handshake
+    /// and the promotion fence's requests. A peer answers a stream's requests
+    /// one at a time, and a forwarded `Quorum` publish can hold a stream for
+    /// its whole quorum timeout; a promoted leader waiting behind it does not
+    /// serve at all.
     pub(super) async fn establish(
         connection: QuicConnection,
         node_id: String,
@@ -56,10 +62,10 @@ impl PeerConnection {
         handshake_timeout: Duration,
     ) -> Result<Arc<Self>> {
         let pending = Arc::new(Mutex::new(Pending::default()));
-        let mut lanes = Vec::with_capacity(streams);
+        let mut lanes = Vec::with_capacity(streams + 1);
         let mut tasks = Vec::new();
 
-        for _ in 0..streams {
+        for _ in 0..=streams {
             let (mut send, mut recv) = connection.open_bi().await.context("open peer stream")?;
             let (tx, mut rx) = mpsc::channel::<Bytes>(64);
 
@@ -238,7 +244,11 @@ impl PeerConnection {
         }
         *self.last_used.lock() = Instant::now();
 
-        let lane = self.cursor.fetch_add(1, Ordering::Relaxed) % self.lanes.len();
+        let lane = if on_control_lane(&message) {
+            0
+        } else {
+            1 + self.cursor.fetch_add(1, Ordering::Relaxed) % (self.lanes.len() - 1)
+        };
         if self.lanes[lane].send(frame).await.is_err() {
             self.pending.lock().waiters.remove(&correlation_id);
             return Err(PeerError::Disconnected {
@@ -316,6 +326,14 @@ impl Drop for PeerConnection {
             task.abort();
         }
     }
+}
+
+/// Whether `message` goes on the stream nothing slow shares.
+fn on_control_lane(message: &InternalMessage) -> bool {
+    matches!(
+        message,
+        InternalMessage::Hello(_) | InternalMessage::Fence(_) | InternalMessage::ReplicateFetch(_)
+    )
 }
 
 /// Stamp the pool's correlation id onto a caller-supplied message.

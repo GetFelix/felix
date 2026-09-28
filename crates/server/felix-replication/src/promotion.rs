@@ -209,6 +209,42 @@ pub async fn fence_shard<R: PeerRequester>(
     }
 }
 
+/// Drop this broker's records from `offset`, superseded by `from`'s log.
+/// Storage refuses to cut below the commit offset.
+async fn drop_superseded(
+    broker: &Arc<Broker>,
+    log: &felix_broker::StreamLog,
+    key: &ShardKey,
+    offset: u64,
+    from: &str,
+) -> Result<(), String> {
+    log.truncate(offset)
+        .await
+        .map_err(|err| format!("could not drop this broker's records from {offset}: {err}"))?;
+    if let Err(err) = broker
+        .reset_replicated(
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+            key.shard,
+            offset,
+        )
+        .await
+    {
+        tracing::warn!(stream = %key.stream, shard = key.shard, error = %err,
+            "dropped superseded records but could not reset the stream's tail");
+    }
+    metrics::record_promotion_truncated();
+    tracing::warn!(
+        stream = %key.stream,
+        shard = key.shard,
+        offset,
+        from,
+        "dropped this broker's records a replica's newer log superseded",
+    );
+    Ok(())
+}
+
 async fn ask_fence<R: PeerRequester>(
     requester: &R,
     node_id: String,
@@ -292,39 +328,22 @@ async fn catch_up<R: PeerRequester>(
         .map_err(|err| err.to_string())?;
         match applied {
             Ok(applied) => next = applied.durable_offset,
+            // This broker's own records from `offset` are a generation the
+            // replica's log superseded. The model replaces the whole log; here
+            // only the part that differs goes.
             Err(Divergence::Conflict { offset, .. }) => {
-                // This broker's own records from `offset` are a generation the
-                // replica's log superseded. The model replaces the whole log;
-                // here only the part that differs goes. Storage refuses to cut
-                // below the commit offset.
-                log.truncate(offset).await.map_err(|err| {
-                    format!("could not drop this broker's records from {offset}: {err}")
-                })?;
-                if let Err(err) = broker
-                    .reset_replicated(
-                        &key.tenant_id,
-                        &key.namespace,
-                        &key.stream,
-                        key.shard,
-                        offset,
-                    )
-                    .await
-                {
-                    tracing::warn!(stream = %key.stream, shard = key.shard, error = %err,
-                        "dropped superseded records but could not reset the stream's tail");
-                }
-                metrics::record_promotion_truncated();
-                tracing::warn!(
-                    stream = %key.stream,
-                    shard = key.shard,
-                    offset,
-                    from,
-                    "dropped this broker's records a replica's newer log superseded",
-                );
+                drop_superseded(broker, log, key, offset, from).await?;
             }
             Err(Divergence::Gap { expected, .. }) => next = expected,
             Err(other) => return Err(format!("reading {from}'s log: {other}")),
         }
+    }
+    // What this broker holds past the replica's end was written under an
+    // older generation than the replica's last record, and goes with the
+    // rest of what the model replaces.
+    let tail = log.tail_offset().await.map_err(|err| err.to_string())?;
+    if tail > next {
+        drop_superseded(broker, log, key, next, from).await?;
     }
     let tail = log.tail_offset().await.map_err(|err| err.to_string())?;
     if let Err(err) = broker

@@ -422,3 +422,30 @@ async fn a_longer_log_from_an_older_generation_is_not_taken() {
     assert_eq!(held(&leader).await, vec!["a", "x"]);
     assert!(replicas.sent(Kind::ReplicateFetch).is_empty());
 }
+
+/// **Records past the winning log's end go too.** They are older than its
+/// last record, and the model replaces the leader's whole log with it. Here
+/// the leader's own history under-reports what it holds, as it does when a
+/// generation was never recorded, so nothing disagrees until the end.
+#[tokio::test]
+async fn a_suffix_past_the_winning_log_is_dropped() {
+    let replicas = Replicas::new();
+    for id in ["broker-b", "broker-c"] {
+        replicas.get(id).holds(id, 3, 0, &["a"]).await;
+        replicas.get(id).holds(id, 4, 0, &["a", "y"]).await;
+    }
+    let (leader, _dir) = leader_holding(3, &["a", "y", "older"]).await;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route()).await;
+
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Fenced {
+                caught_up_from: Some(_)
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(held(&leader).await, vec!["a", "y"]);
+}

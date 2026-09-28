@@ -281,3 +281,77 @@ async fn a_broker_with_the_fence_off_neither_offers_nor_answers_it() {
     pool.shutdown().await;
     listener.stop().await;
 }
+
+/// Holds every forwarded publish for a long time and answers the fence at
+/// once, as a broker waiting on a quorum for the forward would.
+struct SlowForwards;
+
+#[async_trait::async_trait]
+impl PeerRequestHandler for SlowForwards {
+    async fn handle(&self, request: InternalMessage) -> InternalMessage {
+        match request {
+            InternalMessage::Fence(fence) => {
+                InternalMessage::FenceOk(felix_wire::internal::FenceOk {
+                    correlation_id: fence.correlation_id,
+                    log_end: 0,
+                    commit_offset: 0,
+                    last_generation: 0,
+                })
+            }
+            other => {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                InternalMessage::ForwardPublishOk(ForwardPublishOk {
+                    correlation_id: other.correlation_id(),
+                    first_offset: 1,
+                    last_offset: 1,
+                })
+            }
+        }
+    }
+}
+
+/// **The fence does not wait behind slow requests.** A peer answers each
+/// stream's requests in order, and a forwarded `Quorum` publish can hold one
+/// for its whole timeout; a promoted leader queued behind it does not serve.
+/// The fence has a stream of its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_fence_is_not_queued_behind_slow_requests() {
+    let config = PeerTransportConfig {
+        request_timeout: Duration::from_secs(10),
+        ..config()
+    };
+    let listener = Listener::start_on(PEER, Arc::new(SlowForwards), config.clone()).await;
+    let pool = pool(config.clone());
+    pool.capabilities(PEER, listener.addr)
+        .await
+        .expect("handshake");
+
+    // One slow forward on every data stream, and one more behind them.
+    let mut forwards = Vec::new();
+    for _ in 0..=config.streams_per_conn {
+        let pool = Arc::clone(&pool);
+        let addr = listener.addr;
+        forwards.push(tokio::spawn(async move {
+            pool.request(PEER, addr, forward()).await
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let started = std::time::Instant::now();
+    let answer = pool
+        .request(PEER, listener.addr, fence())
+        .await
+        .expect("fence");
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the fence waited {:?} behind forwarded publishes",
+        started.elapsed()
+    );
+
+    for forward in forwards {
+        let _ = forward.await;
+    }
+    pool.shutdown().await;
+    listener.stop().await;
+}

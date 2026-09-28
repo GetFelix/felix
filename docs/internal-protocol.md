@@ -678,7 +678,11 @@ reach.
 **Connections are pooled and reused.** Repeated requests to one peer share a
 connection; several multiplexed streams carry them, because a QUIC stream is
 ordered and one large forwarded batch would otherwise hold up every smaller
-request behind it.
+request behind it. A peer also answers each stream's requests one at a time,
+and a forwarded `Quorum` publish can hold one for its whole quorum timeout, so
+one more stream per connection carries only the handshake, `Fence` and
+`ReplicateFetch`: a promoted leader serves nothing until those are answered,
+and must not wait behind forwarded writes.
 
 **Every request terminates.** A connection that drops fails every request
 waiting on it at that moment, rather than leaving each to reach its own timeout.

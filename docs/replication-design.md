@@ -284,7 +284,10 @@ counted. Before it opens, the leader takes the log of the answer furthest
 ahead by (generation of the last record, length), when that is ahead of its
 own: it reads it with `ReplicateFetch` from where the two may disagree (the
 later of its commit offset and the start of its own last generation), drops
-its own records past the first disagreement, and appends the rest. Where this
+its own records past the first disagreement and any past the end of that log,
+and appends the rest. Its requests have a stream of their own on each peer
+connection, so they never queue behind a forwarded publish waiting on a
+quorum. Where this
 leadership begins is recorded only then, so the records it took keep their
 own generation. Answers that arrive after the majority are not waited for,
 as in the model.
