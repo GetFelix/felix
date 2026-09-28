@@ -80,6 +80,31 @@ against the node id it dialled. An address the catalog has since reassigned
 answers with a different id, which is a connection to the wrong broker whether
 or not it would have served the request.
 
+### Capabilities
+
+A build that has something to offer beyond the base protocol says so in the
+handshake. The caller sends `HelloCapable` (kind 27), which is `Hello` followed
+by a `u64` of capability bits, and a responder that knows the kind answers
+`HelloCapableOk` (kind 28), `HelloOk` followed by its own bits. A responder that
+predates them refuses kind 27 as `UnsupportedKind`, and the caller greets it
+again with the plain `Hello`. A peer greeted either way with the plain kinds has
+no capabilities, and the plain kinds stay byte for byte what they were.
+
+Each bit says a peer answers some request. None changes how a body is read, so a
+bit this build does not know is carried and never asked about, rather than
+refused as an unknown client flag is. The pool refuses to send a request whose
+bit the peer did not offer (`PeerError::Unsupported`), and nothing is written.
+Both ends note what the other offered, the dialler from the answer and the
+listener from the offer, because a leader deciding what its replicas can do may
+never have dialled the one that shipped to it.
+
+| Bit | Name | The peer |
+| --- | --- | --- |
+| `1 << 0` | `FENCE` | answers `Fence`, and refuses every older leader of the shard once it has |
+
+`FELIX_INTERNAL_FENCE=false` turns the bit off: the broker offers nothing and
+refuses `Fence` as an unknown kind, as an older build would.
+
 ### Versioning
 
 `version` is this protocol's own, independent of the client protocol's. A peer
@@ -296,6 +321,24 @@ sequenceDiagram
     end
 ```
 
+With capabilities, the same exchange opens with the kind that carries them:
+
+```mermaid
+sequenceDiagram
+    participant A as Broker A (caller)
+    participant B as Broker B
+
+    A->>B: HelloCapable(correlation, node_id = A, bits)
+    alt B knows the kind
+        B-->>A: HelloCapableOk(correlation, node_id = B, bits)
+    else B predates it
+        B-->>A: UnsupportedKind(correlation)
+        A->>B: Hello(correlation', node_id = A)
+        B-->>A: HelloOk(correlation', node_id = B)
+        Note over A: B has no capabilities
+    end
+```
+
 ### Subscribe
 
 A subscription for a shard this broker does not own is **redirected**, not
@@ -447,6 +490,36 @@ log, and a broker outside the replica set cannot be given a shard. Placing a log
 and filling it are the same authority question, and a fence applied to one and
 not the other is a fence with a way round it.
 
+### Fencing a promotion
+
+`Fence` (kind 29) is sent by a newly promoted leader to a replica that offered
+the `FENCE` capability, and never to one that did not. It names the shard, the
+leader's generation, and the shard's own log (`ReplicaLog` stream or cache).
+The replica persists the generation, fsynced, before it answers, and from then
+on refuses any leader older than it: records, bootstraps, rebuilds, and a
+batch that would otherwise have been told where to resume all get
+`FencedEpoch`. The shard's cursor, dead-letter and counter logs check the
+shard's own log as well as theirs, so the fence covers them without a request
+each.
+
+The answer, `FenceOk` (kind 30), says where the replica's copy stands: one past
+its last record, its commit offset, and the generation its last record was
+written at. See `docs/replication-design.md`, "Fencing a promotion", for what
+the leader does with it.
+
+| The replica | Answer |
+| --- | --- |
+| has accepted this generation or an older one, and its routing view is not past it | persists it, `FenceOk` |
+| is asked again at the generation it took | `FenceOk` again |
+| has accepted a newer generation, or its routing view has one | `FencedEpoch` |
+| is outside the replica set | `Unauthorized` |
+| names a log other than the shard's own | `Malformed` |
+| predates the kind, or runs with `FELIX_INTERNAL_FENCE=false` | `UnsupportedKind`; the leader should never have sent it |
+
+The fence comes with a promotion, usually before the replica's routing view
+has the new generation, so a replica that is behind takes it rather than
+answering `StaleRoute`.
+
 ## Errors
 
 Typed, because they need different responses:
@@ -468,7 +541,8 @@ Typed, because they need different responses:
 | `UnsupportedKind` | the responder predates the kind that was sent | do not retry with that kind; a forwarder falls back to the legacy forward kind once |
 
 `ReplicateBootstrap` is kind 10, `ReplicateRebuild` kind 24,
-`ReplicateMarkedRecords` kind 25 and `ReplicateCommittedRecords` kind 26. A peer
+`ReplicateMarkedRecords` kind 25, `ReplicateCommittedRecords` kind 26,
+`HelloCapable` 27, `HelloCapableOk` 28, `Fence` 29 and `FenceOk` 30. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol

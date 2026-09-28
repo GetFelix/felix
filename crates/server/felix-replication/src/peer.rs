@@ -10,6 +10,7 @@
 //! travels over it belongs elsewhere: forwarding in the broker service's
 //! `serving::forward`, and replication in the rest of this crate.
 
+pub mod capabilities;
 pub mod codec;
 pub mod config;
 pub mod metrics;
@@ -19,6 +20,7 @@ pub mod tls;
 
 mod partition;
 
+pub use capabilities::KnownCapabilities;
 pub use config::PeerTransportConfig;
 pub use partition::PartitionInjector;
 pub use pool::{PeerError, PeerPool, PeerRequester};

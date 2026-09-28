@@ -1,9 +1,9 @@
 //! The decoded internal message, and the shard reference most of them carry.
 
 use super::{
-    ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardPublish, ForwardPublishError,
-    ForwardPublishOk, Hello, HelloOk, Kind, NotLeader, ReplicateBootstrap, ReplicateError,
-    ReplicateOk, ReplicateRebuild, ReplicateRecords,
+    Fence, FenceOk, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardPublish,
+    ForwardPublishError, ForwardPublishOk, Hello, HelloOk, Kind, NotLeader, ReplicateBootstrap,
+    ReplicateError, ReplicateOk, ReplicateRebuild, ReplicateRecords,
 };
 
 /// A decoded internal message.
@@ -56,6 +56,8 @@ pub enum InternalMessage {
     /// A stream shard's records with their producer marks. The body is
     /// `ReplicateRecords` followed by one mark per record.
     ReplicateMarkedRecords(ReplicateRecords),
+    Fence(Fence),
+    FenceOk(FenceOk),
 }
 
 /// The record kinds, whichever log they are for, send as
@@ -79,8 +81,10 @@ impl InternalMessage {
             Self::ForwardPublishOk(_) => Kind::ForwardPublishOk,
             Self::ForwardPublishError(_) => Kind::ForwardPublishError,
             Self::NotLeader(_) => Kind::NotLeader,
-            Self::Hello(_) => Kind::Hello,
-            Self::HelloOk(_) => Kind::HelloOk,
+            Self::Hello(m) if m.capabilities.is_none() => Kind::Hello,
+            Self::Hello(_) => Kind::HelloCapable,
+            Self::HelloOk(m) if m.capabilities.is_none() => Kind::HelloOk,
+            Self::HelloOk(_) => Kind::HelloCapableOk,
             Self::ReplicateRecords(m) => records_kind(m, Kind::ReplicateRecords),
             Self::ReplicateOk(_) => Kind::ReplicateOk,
             Self::ReplicateError(_) => Kind::ReplicateError,
@@ -101,6 +105,8 @@ impl InternalMessage {
             Self::ReplicateCounterBootstrap(_) => Kind::ReplicateCounterBootstrap,
             Self::ReplicateRebuild(_) => Kind::ReplicateRebuild,
             Self::ReplicateMarkedRecords(m) => records_kind(m, Kind::ReplicateMarkedRecords),
+            Self::Fence(_) => Kind::Fence,
+            Self::FenceOk(_) => Kind::FenceOk,
         }
     }
 
@@ -134,6 +140,8 @@ impl InternalMessage {
             Self::ReplicateCounterBootstrap(m) => m.correlation_id,
             Self::ReplicateRebuild(m) => m.correlation_id,
             Self::ReplicateMarkedRecords(m) => m.correlation_id,
+            Self::Fence(m) => m.correlation_id,
+            Self::FenceOk(m) => m.correlation_id,
         }
     }
 }

@@ -90,6 +90,8 @@ pub const OUTCOME_CONFLICT: &str = "conflict";
 pub const OUTCOME_TRUNCATED: &str = "truncated";
 /// The batch did not survive the trip.
 pub const OUTCOME_CORRUPT: &str = "corrupt";
+/// This broker took a promoted leader's fence.
+pub const OUTCOME_FENCE_TAKEN: &str = "fence_taken";
 /// This broker placed a shard log to begin where the leader's surviving log
 /// begins. Rare and deliberate: it happens once per replica per shard.
 pub const OUTCOME_BOOTSTRAPPED: &str = "bootstrapped";

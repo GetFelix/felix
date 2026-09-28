@@ -693,7 +693,10 @@ Ahead(f, b) ==
 
 \* One replica answers the fence, and the leader takes its log if it is ahead.
 \* That is the catch-up: whatever a majority acknowledged is in the answer
-\* furthest ahead.
+\* furthest ahead. The replica's half is `ReplicaHandler::fence` in
+\* crates/server/felix-replication/src/replica.rs: the generation is fsynced
+\* before the answer, which carries the log's end, its commit offset and its
+\* last record's generation, the two halves of `Ahead`.
 AnswerFence(b, f) ==
     /\ fencing[b] /\ bgen[b] > 0 /\ f /= b /\ f \notin halted
     /\ promised[f] < bgen[b]

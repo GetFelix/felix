@@ -303,6 +303,7 @@ async fn an_unexpected_answer_is_refused() {
     let owner = ScriptedOwner::new([Ok(InternalMessage::HelloOk(HelloOk {
         correlation_id: 0,
         node_id: "broker-b".to_string(),
+        capabilities: None,
     }))]);
 
     let err = forward(&owner).await.expect_err("should be refused");

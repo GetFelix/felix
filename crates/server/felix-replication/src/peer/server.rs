@@ -17,9 +17,12 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use felix_transport::{QuicConnection, QuicServer};
-use felix_wire::internal::{ErrorCode, ForwardPublishError, HelloOk, InternalMessage};
+use felix_wire::internal::{
+    ErrorCode, ForwardPublishError, HelloOk, InternalMessage, PeerCapabilities,
+};
 use tokio_util::sync::CancellationToken;
 
+use super::KnownCapabilities;
 use super::codec::{Incoming, read_frame, write_frame};
 use super::config::{INTERNAL_ALPN, PeerTransportConfig};
 use super::metrics;
@@ -139,6 +142,9 @@ pub struct PeerServer {
     /// endpoint's driver; an auth check or quorum wait there stalls every
     /// peer's socket I/O.
     app: tokio::runtime::Handle,
+    /// What this broker offers peers, and where it notes what they offer.
+    capabilities: PeerCapabilities,
+    known: KnownCapabilities,
 }
 
 impl PeerServer {
@@ -179,7 +185,16 @@ impl PeerServer {
             max_inbound_per_source: config.max_inbound_per_source,
             tls,
             app,
+            capabilities: config.capabilities(),
+            known: KnownCapabilities::default(),
         })
+    }
+
+    /// Note what each inbound peer offers in `known`, which the broker's
+    /// [`super::PeerPool`] also fills from the handshakes it makes.
+    pub fn with_known_capabilities(mut self, known: KnownCapabilities) -> Self {
+        self.known = known;
+        self
     }
 
     pub fn local_addr(&self) -> Result<std::net::SocketAddr> {
@@ -262,14 +277,26 @@ impl PeerServer {
             let served = connection.clone();
             let tls = self.tls.clone();
             let app = self.app.clone();
+            let offered = Offered {
+                capabilities: self.capabilities,
+                known: self.known.clone(),
+            };
             connection.spawn_pump(async move {
                 // The guard lives as long as the connection is served, and
                 // gives its place back however that ends.
                 let _admission = admission;
-                serve_connection(served, node_id, handler, tls, app, shutdown).await;
+                serve_connection(served, node_id, handler, tls, offered, app, shutdown).await;
             });
         }
     }
+}
+
+/// What this broker offers in the handshake, and where it notes what the
+/// peer offered.
+#[derive(Clone)]
+struct Offered {
+    capabilities: PeerCapabilities,
+    known: KnownCapabilities,
 }
 
 /// Serve every stream a peer opens on one connection.
@@ -278,6 +305,7 @@ async fn serve_connection(
     node_id: String,
     handler: Arc<dyn PeerRequestHandler>,
     tls: Option<Arc<tls::PeerTls>>,
+    offered: Offered,
     app: tokio::runtime::Handle,
     shutdown: CancellationToken,
 ) {
@@ -301,6 +329,7 @@ async fn serve_connection(
         let peer_certs = peer_certs.clone();
         let stream_connection = connection.clone();
         let app = app.clone();
+        let offered = offered.clone();
         connection.spawn_pump(async move {
             let connection = stream_connection;
             let (mut send, mut recv) = stream;
@@ -377,10 +406,34 @@ async fn serve_connection(
                             return;
                         }
                         tracing::debug!(peer = %hello.node_id, "internal peer connected");
+                        // A plain `Hello` is a peer that predates the bits, so
+                        // it can do none of it, and is answered as it expects.
+                        offered.known.record(
+                            &hello.node_id,
+                            hello.capabilities.unwrap_or(PeerCapabilities::NONE),
+                        );
                         InternalMessage::HelloOk(HelloOk {
                             correlation_id: hello.correlation_id,
                             node_id: node_id.clone(),
+                            capabilities: hello.capabilities.map(|_| offered.capabilities),
                         })
+                    }
+                    // Refused as a build without the fence would refuse it, so
+                    // a broker with the fence turned off is exactly an older one
+                    // to whoever sends it.
+                    InternalMessage::Fence(fence)
+                        if !offered.capabilities.contains(PeerCapabilities::FENCE) =>
+                    {
+                        metrics::record_served(metrics::OUTCOME_UNSUPPORTED);
+                        let refusal = InternalMessage::ForwardPublishError(ForwardPublishError {
+                            correlation_id: fence.correlation_id,
+                            code: ErrorCode::UnsupportedKind,
+                            detail: "this broker does not answer the fence".to_string(),
+                        });
+                        if write_frame(&mut send, &refusal).await.is_err() {
+                            break;
+                        }
+                        continue;
                     }
                     // Off the pump's runtime; the pump only waits. The stream
                     // stays one request at a time, as the requester expects.

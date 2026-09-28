@@ -5,6 +5,7 @@
 
 mod codec;
 mod error_code;
+mod fence;
 mod forward;
 mod framing;
 mod golden;
@@ -70,10 +71,33 @@ fn every_message() -> Vec<InternalMessage> {
         InternalMessage::Hello(Hello {
             correlation_id: 42,
             node_id: "broker-a".to_string(),
+            capabilities: None,
         }),
         InternalMessage::HelloOk(HelloOk {
             correlation_id: 42,
             node_id: "broker-b".to_string(),
+            capabilities: None,
+        }),
+        InternalMessage::Hello(Hello {
+            correlation_id: 42,
+            node_id: "broker-a".to_string(),
+            capabilities: Some(PeerCapabilities::FENCE),
+        }),
+        InternalMessage::HelloOk(HelloOk {
+            correlation_id: 42,
+            node_id: "broker-b".to_string(),
+            capabilities: Some(PeerCapabilities::NONE),
+        }),
+        InternalMessage::Fence(Fence {
+            correlation_id: 42,
+            shard: shard(),
+            log: ReplicaLog::Stream,
+        }),
+        InternalMessage::FenceOk(FenceOk {
+            correlation_id: 42,
+            log_end: 120,
+            commit_offset: 100,
+            last_generation: 6,
         }),
         replicate(),
         InternalMessage::ReplicateOk(ReplicateOk {

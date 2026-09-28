@@ -119,6 +119,17 @@ pub enum Kind {
     /// an older follower reads exactly what it always did, and it refuses
     /// this kind rather than storing records without learning the offset.
     ReplicateCommittedRecords = 26,
+    /// `Hello` followed by the caller's capability bits. A separate kind so a
+    /// peer that predates the bits refuses it, and the caller learns that in
+    /// one round trip instead of guessing.
+    HelloCapable = 27,
+    /// `HelloOk` followed by the responder's capability bits; the answer to
+    /// `HelloCapable`.
+    HelloCapableOk = 28,
+    /// A promoted leader fences a replica.
+    Fence = 29,
+    /// The replica took the fence.
+    FenceOk = 30,
 }
 
 impl Kind {
@@ -152,6 +163,10 @@ impl Kind {
             24 => Ok(Kind::ReplicateRebuild),
             25 => Ok(Kind::ReplicateMarkedRecords),
             26 => Ok(Kind::ReplicateCommittedRecords),
+            27 => Ok(Kind::HelloCapable),
+            28 => Ok(Kind::HelloCapableOk),
+            29 => Ok(Kind::Fence),
+            30 => Ok(Kind::FenceOk),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }
