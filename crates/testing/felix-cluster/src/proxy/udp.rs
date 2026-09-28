@@ -27,6 +27,15 @@ use crate::fault::Endpoint;
 /// Large enough for any UDP datagram, so nothing is truncated on the way.
 const MAX_DATAGRAM: usize = 65_536;
 
+/// Each proxy socket's send and receive buffer.
+///
+/// Brokers treat loopback as a path with a guaranteed 16 KB MTU, so they never
+/// fall back to smaller packets. macOS refuses a UDP send larger than the
+/// socket's send buffer, 9216 bytes by default, so a proxy on default buffers
+/// dropped every full-size datagram and a large replication batch never
+/// arrived.
+const SOCKET_BUFFER: usize = 4 * 1024 * 1024;
+
 /// How often a source nobody could attribute is looked up again.
 const RERESOLVE_AFTER: Duration = Duration::from_millis(500);
 
@@ -50,10 +59,7 @@ impl UdpProxy {
         resolve: Resolver,
         shutdown: CancellationToken,
     ) -> Result<Self> {
-        let socket = std::net::UdpSocket::bind("127.0.0.1:0").context("bind UDP proxy listener")?;
-        socket
-            .set_nonblocking(true)
-            .context("make UDP proxy non-blocking")?;
+        let socket = bind_loopback().context("bind UDP proxy listener")?;
         let addr = socket.local_addr().context("read UDP proxy address")?;
         let (upstream_tx, upstream_rx) = watch::channel(upstream);
         let context = Arc::new(Shared {
@@ -148,6 +154,28 @@ async fn serve(socket: std::net::UdpSocket, context: Arc<Shared>) {
     }
 }
 
+/// A non-blocking loopback UDP socket with [`SOCKET_BUFFER`] each way.
+pub(super) fn bind_loopback() -> Result<std::net::UdpSocket> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )
+    .context("create UDP socket")?;
+    socket
+        .set_send_buffer_size(SOCKET_BUFFER)
+        .context("size UDP send buffer")?;
+    socket
+        .set_recv_buffer_size(SOCKET_BUFFER)
+        .context("size UDP receive buffer")?;
+    let loopback: SocketAddr = ([127, 0, 0, 1], 0).into();
+    socket.bind(&loopback.into()).context("bind UDP socket")?;
+    socket
+        .set_nonblocking(true)
+        .context("make UDP socket non-blocking")?;
+    Ok(socket.into())
+}
+
 /// Start a session for `source`: its own upstream socket, a queue each way,
 /// and a reader for replies.
 async fn open(
@@ -156,9 +184,8 @@ async fn open(
     context: &Arc<Shared>,
 ) -> Result<Session> {
     let upstream = Arc::new(
-        UdpSocket::bind("127.0.0.1:0")
-            .await
-            .context("bind UDP proxy upstream socket")?,
+        UdpSocket::from_std(bind_loopback().context("bind UDP proxy upstream socket")?)
+            .context("register UDP proxy upstream socket")?,
     );
     let sender = Arc::new(Sender {
         source,
@@ -173,7 +200,9 @@ async fn open(
             let upstream = Arc::clone(&upstream);
             let to = *address.borrow();
             async move {
-                let _ = upstream.send_to(&datagram, to).await;
+                if let Err(err) = upstream.send_to(&datagram, to).await {
+                    tracing::warn!(%to, len = datagram.len(), error = %err, "UDP proxy could not forward a datagram");
+                }
             }
         }));
     }
@@ -184,7 +213,9 @@ async fn open(
         tokio::spawn(deliver(queue, context.shutdown.clone(), move |datagram| {
             let listener = Arc::clone(&listener);
             async move {
-                let _ = listener.send_to(&datagram, source).await;
+                if let Err(err) = listener.send_to(&datagram, source).await {
+                    tracing::warn!(%source, len = datagram.len(), error = %err, "UDP proxy could not return a datagram");
+                }
             }
         }));
     }

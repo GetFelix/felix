@@ -135,6 +135,7 @@ rustls = "0.23"
 rustls-platform-verifier = "0.7"
 rustls-webpki = "0.103"
 serial_test = "4"
+socket2 = "0.6"
 sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "macros", "migrate", "chrono", "json"] }
 tempfile = "3"
 tokio-util = { version = "0.7", features = ["rt"] }
