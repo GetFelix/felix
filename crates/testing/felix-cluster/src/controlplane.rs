@@ -342,6 +342,42 @@ impl ControlPlane {
         .await
     }
 
+    /// Shards with replicas whose leader has not yet reported a caught-up
+    /// replica at the shard's current generation, by name.
+    ///
+    /// Such a shard cannot fail over: with no report, placement cannot tell a
+    /// replica holding the log from one that does not, and refuses to guess.
+    pub async fn unreported_shards(&self) -> Result<Vec<String>> {
+        let assignments = self
+            .store
+            .list_shard_assignments()
+            .await
+            .context("list shard assignments")?;
+        let reports: std::collections::HashMap<_, _> = self
+            .store
+            .list_replica_reports()
+            .await
+            .context("list replica reports")?
+            .into_iter()
+            .map(|report| (report.key.clone(), report))
+            .collect();
+        Ok(assignments
+            .iter()
+            .filter(|assignment| !assignment.replicas.is_empty())
+            .filter(|assignment| {
+                !reports.get(&assignment.key).is_some_and(|report| {
+                    report.generation == assignment.generation && !report.caught_up.is_empty()
+                })
+            })
+            .map(|assignment| {
+                format!(
+                    "{}/{} generation {}",
+                    assignment.key.stream, assignment.key.shard, assignment.generation
+                )
+            })
+            .collect())
+    }
+
     /// Run placement the way a deployment does: on `interval`, and whenever a
     /// report a move waits on arrives. Off unless a test asks, because most
     /// tests step placement themselves.

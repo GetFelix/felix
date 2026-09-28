@@ -280,6 +280,21 @@ impl Cluster {
             outcome.moved == 0 && outcome.waiting == 0
         })
         .await?;
+        // Settled is not failover-ready. A shard that has just opened, often
+        // after fencing its replicas, has not reported yet, and a leader killed
+        // before its first report leaves a shard placement will never promote.
+        // The probe above only proves shard 0 serves.
+        wait::until(
+            READY_TIMEOUT,
+            "every replicated shard's leader to report its replicas",
+            || async {
+                self.control_plane()
+                    .unreported_shards()
+                    .await
+                    .is_ok_and(|unreported| unreported.is_empty())
+            },
+        )
+        .await?;
         Ok(())
     }
 

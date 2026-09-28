@@ -776,11 +776,19 @@ A bound above zero is a bound on how much a promotion may silently lose, and
 there is no honest value for it that is not a policy decision; zero needs no
 such decision, and a follower reaches it constantly on a healthy shard.
 
-Reports expire, after the node expiry timeout plus one heartbeat. A report says
-a follower *was* caught up; the leader kept writing afterwards, and promoting on
-a stale report loses whatever was written since. The window is derived from the
+Reports expire, after twice the node expiry timeout plus one heartbeat
+(`report_ttl_millis` in `placement/replica_positions.rs`). A report says a
+follower *was* caught up; the leader kept writing afterwards, and promoting on a
+stale report loses whatever was written since. The window is derived from the
 liveness settings rather than configured separately, because it has to outlive
 exactly one thing: the time it takes to notice the leader is gone.
+
+A leader that dies before its first report at its generation leaves no report
+to promote on, and the shard is `NoCaughtUpReplica` until that broker returns.
+Placement does not guess in that case. At a later generation the acknowledged
+records may be on the dead leader alone, and with no report a caught-up replica
+cannot be told from a lagging one. The window runs from the assignment, through
+the promotion fence, to the first replication pass.
 
 A halted follower is never reported, however close its last position was. It has
 stopped rather than fallen behind.
@@ -843,6 +851,7 @@ multi-instance work and not before.
 | Situation | Behaviour |
 | --- | --- |
 | Leader fails | Lease lapses; a caught-up replica is promoted at `G+1` after the safety interval. Unavailable for at most `L + margin + promotion`. |
+| Leader fails before its first replica report | No report names a caught-up replica, so none is promoted. The shard is unavailable until that broker returns, or until an operator abandons the log. |
 | Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. |
 | Leader partitioned from followers | `Quorum` writes fail — correctly, the majority is unreachable. `Leader` writes succeed and accumulate loss-window exposure, which the lag metric shows. |
 | Control plane unavailable | No new leases are granted. Existing leases run to expiry (5 to 11 s with the defaults), then shards go unavailable. Deliberate: granting without a functioning authority is how split-brain happens. When it comes back, brokers renew within about 3 s. The expiry sweep waits one expiry window after a restart, a Raft leader change, or regaining its store, so the outage does not mark the fleet down. |
