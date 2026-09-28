@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790557800889,
+  "lastUpdate": 1790558053020,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18616,6 +18616,58 @@ window.BENCHMARK_DATA = {
             "range": "4446.09",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 892693.74\nmean: 895565.02\nstdev: 4446.09\ncv: 0.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2d627b2e7aa0bb5c0c43632cce4152bbe37745a4",
+          "message": "refactor(replication): move peer and replication into felix-replication (#788)\n\nThe broker-to-broker transport and log replication move out of\nfelix-broker-service into crates/server/felix-replication. The service\nplugs in through three small traits: quorum::ShardServing (the ingress\nrouter), driver::WriteFence (the shard fence) and reporter::Credential\n(the node credential). ShardKey and ShardKind move with them and are\nre-exported from felix_broker_service::shards.\n\nNo behaviour change.\n\nSpec-Unaffected: pure code move",
+          "timestamp": "2026-09-27T17:58:58-07:00",
+          "tree_id": "382aea53a5e9a8b329dd6c1a8471ae0569fdbe5c",
+          "url": "https://github.com/gabloe/felix/commit/2d627b2e7aa0bb5c0c43632cce4152bbe37745a4"
+        },
+        "date": 1790558052243,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 488723.16,
+            "range": "17842.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 488723.16\nmean: 492286.68\nstdev: 17842.74\ncv: 3.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 488723.16,
+            "range": "17842.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 488723.16\nmean: 492286.68\nstdev: 17842.74\ncv: 3.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118349.39,
+            "range": "1795.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118349.39\nmean: 117747.60\nstdev: 1795.28\ncv: 1.52%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1183493.89,
+            "range": "17952.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1183493.89\nmean: 1177475.96\nstdev: 17952.82\ncv: 1.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
