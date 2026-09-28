@@ -11,7 +11,7 @@ use crate::{QuicClient, QuicServer, TransportConfig};
 const PROTOCOL: &[u8] = b"felix/1";
 
 fn provider() -> Arc<rustls::crypto::CryptoProvider> {
-    Arc::new(rustls::crypto::ring::default_provider())
+    Arc::new(rustls::crypto::aws_lc_rs::default_provider())
 }
 
 fn identity() -> Result<(rustls::ServerConfig, CertificateDer<'static>)> {

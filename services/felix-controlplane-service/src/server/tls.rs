@@ -46,8 +46,8 @@ pub fn load_api_identity(tls: &ApiTlsConfig) -> Result<Arc<felix_common::tls::Re
     )?))
 }
 
-/// Named explicitly: more than one rustls crypto provider is linked into
-/// this binary, so there is no unambiguous process default to rely on.
+/// Passed explicitly so the listener never depends on an installed process
+/// default.
 fn provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(rustls::crypto::aws_lc_rs::default_provider())
 }

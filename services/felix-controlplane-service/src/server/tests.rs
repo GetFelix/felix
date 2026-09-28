@@ -152,7 +152,7 @@ async fn the_api_serves_the_configured_certificate() {
     }));
 
     let trusting = reqwest::Client::builder()
-        .add_root_certificate(ca)
+        .tls_certs_only([ca])
         .build()
         .expect("client");
     let url = format!("https://localhost:{port}/v1/system/live");

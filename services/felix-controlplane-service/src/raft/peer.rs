@@ -84,10 +84,9 @@ impl PeerSecurity {
             );
             // Only the cluster CA: a peer certificate from a public CA must not
             // be enough to receive the log.
-            builder = builder.tls_built_in_root_certs(false);
-            for cert in reqwest::Certificate::from_pem_bundle(&ca).context("parse raft peer CA")? {
-                builder = builder.add_root_certificate(cert);
-            }
+            builder = builder.tls_certs_only(
+                reqwest::Certificate::from_pem_bundle(&ca).context("parse raft peer CA")?,
+            );
             builder = builder.identity(
                 reqwest::Identity::from_pem(&identity).context("parse raft peer identity")?,
             );

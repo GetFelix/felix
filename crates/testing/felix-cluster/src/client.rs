@@ -73,9 +73,7 @@ fn client_config(tenant_id: &str, token: &str) -> Result<ClientConfig> {
 }
 
 fn provider() -> Arc<rustls::crypto::CryptoProvider> {
-    // Both `ring` and `aws-lc-rs` are in the graph, so there is no unambiguous
-    // process default. This matches what quinn's own helpers pick.
-    Arc::new(rustls::crypto::ring::default_provider())
+    Arc::new(rustls::crypto::aws_lc_rs::default_provider())
 }
 
 #[derive(Debug)]

@@ -567,8 +567,7 @@ async fn peers_replicate_over_mtls_and_refuse_a_caller_without_a_certificate() {
     // The token alone is not enough without a certificate.
     let ca = std::fs::read(&tls.ca_path).expect("read ca");
     let no_cert = reqwest::Client::builder()
-        .tls_built_in_root_certs(false)
-        .add_root_certificate(reqwest::Certificate::from_pem(&ca).expect("ca"))
+        .tls_certs_only([reqwest::Certificate::from_pem(&ca).expect("ca")])
         .build()
         .expect("client");
     let result = no_cert

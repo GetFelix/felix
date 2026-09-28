@@ -393,6 +393,14 @@ for what the current release actually guarantees.
 
 ### Changed
 
+- **aws-lc-rs is the only TLS crypto provider.** `ring` is gone from the
+  build: quinn, rcgen and reqwest now use aws-lc-rs, which rustls and
+  jsonwebtoken already did. The broker and control plane install it as the
+  process-wide rustls default at startup. reqwest moves to 0.13, so HTTPS
+  calls to the control plane and to IdPs are verified against the system
+  trust store (plus `FELIX_CONTROLPLANE_CA`) instead of a bundled copy of
+  the Mozilla roots; the container images already ship `ca-certificates`.
+
 - **Replication and the broker-to-broker transport are their own crate,
   `felix-replication`.** `felix_broker_service::peer` is now
   `felix_replication::peer`, and `felix_broker_service::replication::*` is at

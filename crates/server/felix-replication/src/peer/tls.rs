@@ -197,12 +197,10 @@ pub(super) fn client_config(tls: Option<&PeerTls>) -> Result<ClientConfig> {
 
 /// The crypto provider both internal endpoints use.
 ///
-/// Named explicitly rather than left to `CryptoProvider::get_default`: both
-/// `ring` and `aws-lc-rs` are in the dependency graph, so there is no unambiguous
-/// process default, and this matches the provider quinn's own config helpers
-/// pick for the client-facing endpoints.
+/// aws-lc-rs, the workspace's only rustls provider. Passed explicitly so the
+/// config never depends on whether a process default was installed.
 pub fn provider() -> Arc<rustls::crypto::CryptoProvider> {
-    Arc::new(rustls::crypto::ring::default_provider())
+    Arc::new(rustls::crypto::aws_lc_rs::default_provider())
 }
 
 /// Accepts any server certificate.

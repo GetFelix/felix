@@ -142,8 +142,7 @@ async fn a_client_certificate_from_the_configured_ca_is_required() {
     // With the client certificate: the handshake passes and the API answers.
     let identity_pem = format!("{}{}", pki.client_key_pem, pki.client_cert_pem);
     let with_cert = reqwest::Client::builder()
-        .use_rustls_tls()
-        .add_root_certificate(ca.clone())
+        .tls_certs_only([ca.clone()])
         .identity(reqwest::Identity::from_pem(identity_pem.as_bytes()).expect("identity"))
         .build()
         .expect("client");
@@ -159,8 +158,7 @@ async fn a_client_certificate_from_the_configured_ca_is_required() {
     // Without one, the correct token never gets a chance to matter: the
     // request fails at the TLS layer instead of reaching the handler.
     let without_cert = reqwest::Client::builder()
-        .use_rustls_tls()
-        .add_root_certificate(ca.clone())
+        .tls_certs_only([ca.clone()])
         .build()
         .expect("client");
     let refused = without_cert
@@ -178,8 +176,7 @@ async fn a_client_certificate_from_the_configured_ca_is_required() {
     let stranger = generate_pki();
     let stranger_pem = format!("{}{}", stranger.client_key_pem, stranger.client_cert_pem);
     let wrong_ca = reqwest::Client::builder()
-        .use_rustls_tls()
-        .add_root_certificate(ca)
+        .tls_certs_only([ca])
         .identity(reqwest::Identity::from_pem(stranger_pem.as_bytes()).expect("identity"))
         .build()
         .expect("client");
