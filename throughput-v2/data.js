@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790553654236,
+  "lastUpdate": 1790554236020,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18460,6 +18460,58 @@ window.BENCHMARK_DATA = {
             "range": "44624.69",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 936859.59\nmean: 916701.57\nstdev: 44624.69\ncv: 4.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "773282c7ef10cbe610ebbc7450c186641eb89969",
+          "message": "test(cluster): fault layer with link, clock and fsync faults, wired into the history nemesis (#781)\n\n* test(common,storage): clock and fsync fault seams for the cluster harness\n\nBrokers read their lease clock and the control plane its wall clock through\nfelix_common::clock. In debug builds, and with the new fault-injection\nfeature, both can be skewed, stepped or sped up from FELIX_CLOCK_FAULT_FILE.\nStorage flushes can likewise be delayed or failed with EIO (always, or once\nper generation) from FELIX_STORAGE_FAULT_FILE.\n\nA plain release build compiles both seams out and reads the real clocks and\nflushes directly. Both variables are registered as test-only.\n\nSpec-Unaffected: test harness only; the lease clock reads the same source through a shared seam, and nothing the model describes changes.\n\n* test(cluster): fault API with link, clock and fsync faults, wired into the history nemesis\n\nCluster::inject / heal / heal_all apply faults as values: one-way drops and\ndelays on broker-to-broker and broker-to-control-plane links (through UDP and\nTCP proxies the harness owns, with ClusterConfig::proxy_links), peer\nrefusals, SIGSTOP suspends, clock steps and rates, and slow or failing\nfsyncs. A broker's boottime lease clock is never stepped back.\n\nRandomNemesis::all_faults draws from every family, and Campaign::cluster_config\nstarts the cluster a nemesis needs (proxied links, on-commit flushes). The\nper-PR run keeps process_faults and adds a fixed-order campaign that injects\nand heals each family once. The nightly run uses every family.\n\na_control_plane_clock_stepped_back_still_expires_a_dead_broker is ignored:\na backward control-plane wall-clock step delays expiring a dead broker by the\nsize of the step.\n\nSpec-Unaffected: test harness only.",
+          "timestamp": "2026-09-27T17:00:55-07:00",
+          "tree_id": "ec51cb64c4d487e314c86526f1ca0cde3f73b9ec",
+          "url": "https://github.com/gabloe/felix/commit/773282c7ef10cbe610ebbc7450c186641eb89969"
+        },
+        "date": 1790554234710,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 637077.38,
+            "range": "64427.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 637077.38\nmean: 612750.83\nstdev: 64427.47\ncv: 10.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 637077.38,
+            "range": "64427.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 637077.38\nmean: 612750.83\nstdev: 64427.47\ncv: 10.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 149915.81,
+            "range": "7790.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 149915.81\nmean: 146689.79\nstdev: 7790.77\ncv: 5.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1499158.1,
+            "range": "77907.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1499158.10\nmean: 1466897.87\nstdev: 77907.68\ncv: 5.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
