@@ -533,6 +533,14 @@ for what the current release actually guarantees.
 
 ### Fixed
 
+- **A cache or counter shard that an older build left mid-compaction opens
+  whole again.** Up to 0.6.0-preview, compaction swapped a shard directory
+  with `<shard>.retired` and `<shard>.compacting` siblings. Background
+  compaction dropped that swap and its recovery, so on upgrade a shard
+  stopped between the two renames opened empty. Opening a shard now settles
+  the old swap first: it restores `<shard>.retired` when the shard directory
+  is missing, and it deletes leftover siblings when the directory is there.
+
 - **A `ClusterSubscription` read cancelled mid-resume no longer ends the
   subscription.** After a lost connection, `next_event` cleared the loss
   before resubscribing, so a caller that dropped the call partway (a read

@@ -737,6 +737,27 @@ pass after a restart reclaims. Closing a shard stops its pass the same way.
 > `a_key_with_a_write_in_flight_is_not_copied` — a copy never undoes a write.
 > `shutdown_abandons_a_held_compaction` — shutdown does not wait on the budget.
 
+**Upgrading from 0.6.0-preview or earlier.** Older builds compacted by
+writing the live set into a sibling `<shard>.compacting` directory, renaming
+the shard directory to `<shard>.retired`, renaming the compacted one into its
+place, and deleting `<shard>.retired`. Each rename was followed by a sync of the
+parent directory. A shard can therefore be found stopped anywhere in that
+sequence. Opening a cache or counter shard settles it first, the same way the
+old code did:
+
+- If the shard directory is missing and `<shard>.retired` is present, the crash
+  fell between the renames. `<shard>.retired` is the whole pre-compaction log,
+  so it is renamed back. The compaction is lost and nothing else is.
+- If the shard directory is present, any `<shard>.compacting` was never
+  swapped in and any `<shard>.retired` was already replaced, so both are
+  deleted.
+
+Current builds never create either directory.
+
+> `a_shard_left_mid_swap_by_an_older_build_opens_whole` and
+> `a_shard_left_mid_swap_by_an_older_build_keeps_every_sum` run a port of the
+> old swap, stop it after each step, and reopen.
+
 ## Tiered storage: what is already in place
 
 Tiering is not built. The log is shaped so that adding it means adding a tier

@@ -8,6 +8,7 @@ mod closing;
 mod compaction;
 mod concurrency;
 mod expiry;
+mod legacy_swap;
 mod observer;
 #[cfg(target_os = "linux")]
 mod power_loss;

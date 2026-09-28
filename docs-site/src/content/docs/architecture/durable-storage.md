@@ -173,6 +173,12 @@ No record is rewritten, a crash anywhere in the pass replays to the same state,
 and no write waits for it: the pass is paced by its own I/O budget,
 `FELIX_STORAGE_COMPACTION_BYTES_PER_SEC`.
 
+Builds up to 0.6.0-preview compacted by swapping the shard directory for a
+compacted copy instead, through `<shard>.compacting` and `<shard>.retired`
+siblings. A shard found stopped partway through that swap is settled on open,
+as the old code did: a missing shard directory is restored from
+`<shard>.retired`, and leftover siblings are deleted.
+
 The full byte layout, versioning rules, and corruption verdicts are in the
 [Durable Segment Format specification](/felix/architecture/storage-format/).
 
