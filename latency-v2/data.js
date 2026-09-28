@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790569608880,
+  "lastUpdate": 1790569799631,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -24354,6 +24354,72 @@ window.BENCHMARK_DATA = {
             "range": "1017.04",
             "unit": "us",
             "extra": "trials: 5\nmedian: 360.00\nmean: 1092.60\nstdev: 1017.04\ncv: 93.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1f44de7b4759e1b76f529b6c6bbb3456e24ba090",
+          "message": "fix(storage): sync each retention unlink so a power loss leaves no gap (#800)\n\nRetention unlinked a sweep's segments without syncing the directory. A\npower loss could then keep a newer unlink and undo an older one, and\nrecovery refused the resulting offset gap as corruption. Unlink oldest\nfirst with a directory sync after each, as compaction's head trim does,\nso an interrupted sweep leaves a longer log.\n\nAlso corrects the docs-site \"no retention\" limit: broker-wide retention\nexists; only per-stream policies are not acted on.",
+          "timestamp": "2026-09-27T21:23:24-07:00",
+          "tree_id": "c63234ba239943fc552f5f2f2e14a3223276f3b2",
+          "url": "https://github.com/gabloe/felix/commit/1f44de7b4759e1b76f529b6c6bbb3456e24ba090"
+        },
+        "date": 1790569796365,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 68.40\nstdev: 1.52\ncv: 2.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 90,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 90.20\nstdev: 1.30\ncv: 1.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 114,
+            "range": "4.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 114.00\nmean: 113.20\nstdev: 4.66\ncv: 4.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 85,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 85.00\nmean: 84.60\nstdev: 0.55\ncv: 0.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 196,
+            "range": "11.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 196.00\nmean: 194.40\nstdev: 11.22\ncv: 5.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 284,
+            "range": "652.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 284.00\nmean: 664.00\nstdev: 652.48\ncv: 98.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
