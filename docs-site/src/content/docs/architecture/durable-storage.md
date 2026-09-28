@@ -165,6 +165,10 @@ it is `Trimmed { requested, oldest }` rather than an empty answer. That
 distinction is the point of the feature: it lets a resuming subscriber tell
 "those records existed and are gone" from "nothing here yet".
 
+The segments go oldest first, with a directory sync after each unlink, so a
+power loss partway through a sweep leaves a longer log rather than a gap that
+recovery would refuse.
+
 Cache and counter logs are trimmed the same way, by compaction rather than by
 a bound. A background pass seals the active segment, copies each record still
 live below it to the tail (a put of the same value, or a counter checkpoint),
@@ -351,9 +355,10 @@ makes it fail rather than print the wrong numbers.
 
 ## Limits today
 
-- **No retention.** `truncate` exists for replication's benefit; nothing deletes
-  segments on age or size yet. A stream's retention policy is accepted and
-  recorded, and nothing acts on it.
+- **Retention is broker-wide and off by default.** `FELIX_DURABLE_RETENTION_BYTES`
+  and `FELIX_DURABLE_RETENTION_SECONDS` bound each durable stream shard. A
+  stream's own retention policy is accepted and recorded, and nothing acts on
+  it.
 - **No tiered storage.** `TieredStore` and its companions are declared traits
   with no implementation. There is no hot/cold split and no cold-tier read path;
   every read comes from local segments. Sealed segments are immutable and carry

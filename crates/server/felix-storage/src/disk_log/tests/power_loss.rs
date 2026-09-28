@@ -527,3 +527,55 @@ async fn the_uring_path_is_observed() {
     log.append(&records(&["a"])).await.expect("append");
     assert!(observer.counts().uring > 0, "{:?}", observer.counts());
 }
+
+/// Retention's unlinks survive a power loss as a prefix of the chain. If the
+/// device could keep a newer unlink and lose an older one, the recovered log
+/// would have a gap, which recovery refuses as corruption.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_power_loss_after_retention_leaves_no_gap() {
+    let dir = tempdir().expect("dir");
+    let root = dir.path().join("log");
+    std::fs::create_dir_all(&root).expect("log dir");
+    let observer = PowerLoss::install(&root).expect("install the power-loss observer");
+    let config = LogConfig {
+        retention_bytes: Some(crate::segment::SEGMENT_HEADER_LEN + 120),
+        retention_check_interval: Duration::from_secs(3600),
+        ..super::config(FsyncMode::None)
+    };
+    let log = DiskLog::open(&root, "t/ns/s/0", config.clone()).expect("open");
+    let payloads: Vec<String> = (0..24).map(|i| format!("record-{i:02}")).collect();
+    for payload in &payloads {
+        log.append(&records(&[payload])).await.expect("append");
+    }
+    log.sync().await.expect("make every record durable");
+
+    let outcome = log.enforce_retention_now().await.expect("retention");
+    assert!(
+        outcome.segments_deleted >= 4,
+        "too few segments deleted to leave a gap: {outcome:?}"
+    );
+    let trimmed_to = log.base_offset();
+
+    for seed in 0x7e7e_0000..0x7e7e_0020u64 {
+        for writeback in [Writeback::AnySubset, Writeback::InOrder] {
+            let image = tempdir().expect("image dir");
+            observer
+                .crash(seed, writeback, image.path())
+                .expect("build the crash image");
+            let recovered = DiskLog::open(image.path(), "t/ns/s/0", config.clone())
+                .unwrap_or_else(|err| panic!("seed {seed:#x} ({writeback:?}): {err}"));
+            let base = recovered.base_offset();
+            assert!(
+                base <= trimmed_to,
+                "seed {seed:#x}: base {base} is past retention's {trimmed_to}"
+            );
+            assert_eq!(
+                read_all(&recovered, base).await,
+                payloads[base as usize..],
+                "seed {seed:#x} ({writeback:?}): records lost above the base",
+            );
+            recovered.shutdown().await.expect("shutdown");
+        }
+    }
+    log.shutdown().await.expect("shutdown");
+}

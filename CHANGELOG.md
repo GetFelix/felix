@@ -551,6 +551,13 @@ for what the current release actually guarantees.
   the old swap first: it restores `<shard>.retired` when the shard directory
   is missing, and it deletes leftover siblings when the directory is there.
 
+- **A power loss during a retention sweep no longer leaves a log that refuses
+  to open.** Retention unlinked a sweep's segments without syncing the
+  directory, so the device could keep a newer unlink and lose an older one.
+  Recovery then found an offset gap and reported corruption. Segments are now
+  unlinked oldest first with a directory sync after each, so an interrupted
+  sweep leaves a longer log instead.
+
 - **A `ClusterSubscription` read cancelled mid-resume no longer ends the
   subscription.** After a lost connection, `next_event` cleared the loss
   before resubscribing, so a caller that dropped the call partway (a read
