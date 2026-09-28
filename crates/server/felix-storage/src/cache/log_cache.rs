@@ -29,9 +29,9 @@ use self::shard::{CacheShard, Index, ShardState, now_millis};
 use self::write::{FinishOnDrop, Observer, StagedWrite};
 use crate::cache::{CacheChange, CacheObserver, CacheSnapshotEntry, StorageApi};
 use crate::commit_order::CommitSequencer;
+use crate::compaction::Compactor;
 use crate::disk_log::{DiskLog, layout};
 use crate::log::{AppendRecord, LogConfig, ShardKey};
-use crate::log_swap::recover_interrupted_swap;
 use crate::shard_slots::ShardSlots;
 use crate::{Result, StorageError};
 
@@ -41,6 +41,7 @@ pub struct LogCache {
     root: PathBuf,
     config: LogConfig,
     shards: ShardSlots<CacheId, Arc<CacheShard>>,
+    compactor: Arc<Compactor>,
     /// Told about every applied write, while the shard's write lock is held —
     /// which is what makes the order it sees the shard's order.
     observer: Observer,
@@ -60,6 +61,7 @@ impl LogCache {
             root,
             config,
             shards: ShardSlots::new(),
+            compactor: Arc::new(Compactor::from_env()),
             observer: Arc::new(SyncMutex::new(None)),
         })
     }
@@ -134,15 +136,14 @@ impl LogCache {
                 op,
                 bytes,
                 observer: Arc::clone(&self.observer),
+                _in_flight: shard.key_in_flight(key),
             })
         };
 
         staged.commit().await?;
         let mut state = shard.state.lock().await;
-        let write = staged.apply(&mut state);
-        shard
-            .maybe_compact(&mut state, write.pending.last_offset() + 1)
-            .await?;
+        staged.apply(&mut state);
+        shard.maybe_compact(&state.index);
         Ok(())
     }
 
@@ -231,6 +232,7 @@ impl LogCache {
                 op,
                 bytes,
                 observer: Arc::clone(&self.observer),
+                _in_flight: shard.key_in_flight(key),
             });
             (previous, staged)
         };
@@ -306,11 +308,10 @@ impl LogCache {
     /// the same log the cache writes to — a second log over the same directory
     /// would interleave offsets and corrupt the segment.
     ///
-    /// Returns the log as it stands now, and callers must fetch it again per
-    /// pass rather than holding it. Compaction swaps the shard directory, so a
-    /// handle kept across one keeps reading the retired log. That is harmless
-    /// but not useful: since compaction re-appends the live set at the tail,
-    /// the retired log holds only records the caller already shipped.
+    /// Fetch it per pass rather than holding it: closing the shard replaces
+    /// it. Compaction trims its head, so a reader far enough behind can find
+    /// its next offset gone; the live set was re-appended at the tail first,
+    /// so starting again from the new base loses nothing live.
     pub async fn shard_log(
         &self,
         tenant: &str,
@@ -366,8 +367,8 @@ impl LogCache {
         );
         self.shards
             .close(&id, |shard: Arc<CacheShard>| async move {
-                // Under the state lock, so no compaction is mid-swap, and
-                // marked first so nothing queued behind it reopens the log.
+                // Marked under the state lock, so a compaction pass sees it at
+                // its next step and stops, and nothing queued reopens the log.
                 let mut state = shard.state.lock().await;
                 state.closed = true;
                 state.log.close().await
@@ -376,7 +377,11 @@ impl LogCache {
     }
 
     /// Flush every open cache. Call once during graceful shutdown.
+    ///
+    /// Compaction passes stop at their next step first; one cut short leaves
+    /// only redundant copies, which the next pass after a restart reclaims.
     pub async fn shutdown(&self) -> Result<()> {
+        self.compactor.shutdown().await;
         let shards = self.shards.open_values();
         for shard in shards {
             shard.state.lock().await.log.shutdown().await?;
@@ -422,7 +427,6 @@ impl LogCache {
                 let key = key();
                 let dir = layout::shard_dir(&self.root, &key);
                 let label = layout::shard_label(&key);
-                recover_interrupted_swap(&dir)?;
                 let log = match base_offset {
                     Some(base) => {
                         DiskLog::open_at(dir.clone(), label.clone(), self.config.clone(), base)?
@@ -430,9 +434,10 @@ impl LogCache {
                     None => DiskLog::open(dir.clone(), label.clone(), self.config.clone())?,
                 };
                 Ok(Arc::new(CacheShard {
-                    dir,
                     label,
-                    config: self.config.clone(),
+                    compactor: Arc::clone(&self.compactor),
+                    compacting: Default::default(),
+                    keys_in_flight: Default::default(),
                     state: Mutex::new(ShardState {
                         log,
                         index: Index::default(),

@@ -335,6 +335,10 @@ impl ControlPlaneStore for PostgresStore {
         nodes::expire_stale_nodes(self, expiry_before_millis).await
     }
 
+    async fn clamp_future_heartbeats(&self, now_millis: u64) -> StoreResult<u64> {
+        nodes::clamp_future_heartbeats(self, now_millis).await
+    }
+
     async fn set_node_lifecycle(
         &self,
         node_id: &str,

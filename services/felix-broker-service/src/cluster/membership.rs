@@ -65,6 +65,10 @@ struct RegistrationRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     kafka_addr: Option<&'a str>,
     region: &'a str,
+    /// Omitted when unset, so a broker without a zone registers the body it
+    /// always did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    zone: Option<&'a str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,6 +192,7 @@ pub async fn register(
             client_addr: config.client_advertise_addr.as_deref(),
             kafka_addr: config.kafka_advertise_addr.as_deref(),
             region: &config.region,
+            zone: config.zone.as_deref(),
         })
         .send()
         .await

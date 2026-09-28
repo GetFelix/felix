@@ -161,6 +161,16 @@ pub trait ControlPlaneStore: Send + Sync {
     /// Safe to run from several control-plane instances at once: each node is
     /// moved by exactly one of them, and only that one publishes the change.
     async fn expire_stale_nodes(&self, expiry_before_millis: u64) -> StoreResult<Vec<Node>>;
+    /// Pull every heartbeat stamp later than `now_millis` back to it, and
+    /// return how many moved.
+    ///
+    /// Stamps never move backwards on a heartbeat, so after the store's clock
+    /// steps back they sit in the future, and a broker that dies then looks
+    /// fresh to [`Self::expire_stale_nodes`] until real time catches up. The
+    /// sweep calls this when it sees such a stamp. Lowering a stamp to now
+    /// cannot expire anyone early: the broker was last heard no later than
+    /// now, and the sweep still waits a full window on its monotonic clock.
+    async fn clamp_future_heartbeats(&self, now_millis: u64) -> StoreResult<u64>;
     /// Move a node's lifecycle from an observed signal rather than an operator.
     ///
     /// Unlike [`ControlPlaneStore::patch_node`] this may drive transitions an

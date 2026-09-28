@@ -30,6 +30,10 @@ pub struct MembershipConfig {
     /// Set only when the Kafka listener is on. See [`kafka_advertise_addr`].
     pub kafka_advertise_addr: Option<String>,
     pub region: String,
+    /// The failure domain within the region, from `FELIX_NODE_ZONE`. `None`
+    /// registers no zone, which placement treats as sharing one with no
+    /// other broker.
+    pub zone: Option<String>,
     /// `(source, dest)` region pairs traffic may cross, from
     /// `FELIX_REGION_BRIDGES`. This broker forwards to a shard's leader only
     /// in its own region or one it has a bridge to.
@@ -163,6 +167,10 @@ pub(super) fn membership_from_env(
             std::env::var("FELIX_KAFKA_LISTEN").ok().as_deref(),
         ),
         region: std::env::var("FELIX_REGION_ID").unwrap_or_else(|_| "local".to_string()),
+        zone: std::env::var("FELIX_NODE_ZONE")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
     }))
 }
 

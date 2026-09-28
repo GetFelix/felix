@@ -114,6 +114,7 @@ fn config() -> MembershipConfig {
         client_advertise_addr: None,
         kafka_advertise_addr: None,
         region: "us-west-2".to_string(),
+        zone: None,
         region_bridges: Vec::new(),
     }
 }
@@ -144,6 +145,7 @@ async fn registration_sends_the_identity_and_returns_the_incarnation() {
     assert!(sent.get("status").is_none());
     // Omitted, not null, so an older control plane sees the body it expects.
     assert!(sent.get("kafka_addr").is_none());
+    assert!(sent.get("zone").is_none());
 
     let _ = stop.send(());
     let _ = handle.await;
@@ -170,6 +172,32 @@ async fn registration_sends_the_kafka_address_when_the_listener_is_on() {
 
     let sent = calls.lock().expect("lock").registrations[0].clone();
     assert_eq!(sent["kafka_addr"], "host.docker.internal:9092");
+
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+#[tokio::test]
+async fn registration_sends_the_zone_when_one_is_set() {
+    let calls: Shared = Arc::default();
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let config = MembershipConfig {
+        zone: Some("us-west-2b".to_string()),
+        ..config()
+    };
+
+    register(
+        &client,
+        &base_url,
+        &config,
+        &crate::cluster::credential::NodeCredential::new("a-node-token"),
+    )
+    .await
+    .expect("register");
+
+    let sent = calls.lock().expect("lock").registrations[0].clone();
+    assert_eq!(sent["zone"], "us-west-2b");
 
     let _ = stop.send(());
     let _ = handle.await;

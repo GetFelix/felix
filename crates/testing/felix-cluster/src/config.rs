@@ -26,6 +26,10 @@ pub struct ClusterConfig {
     /// the list is in `local`, so a test that says nothing about regions
     /// gets one region.
     pub regions: Vec<String>,
+    /// Each broker's `FELIX_NODE_ZONE`, by index. A broker past the end of
+    /// the list registers no zone, which is what every test that says nothing
+    /// about zones gets.
+    pub zones: Vec<String>,
     /// Extra environment for every broker, set after the harness's own so a
     /// test can override any of them. Empty by default.
     pub broker_env: Vec<(String, String)>,
@@ -53,6 +57,7 @@ impl Default for ClusterConfig {
             quic_listeners: 1,
             sync_interval_ms: 200,
             regions: Vec::new(),
+            zones: Vec::new(),
             broker_env: Vec::new(),
             kafka: false,
             proxy_links: false,

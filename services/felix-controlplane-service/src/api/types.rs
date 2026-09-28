@@ -251,6 +251,10 @@ pub struct NodeRegistrationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kafka_addr: Option<String>,
     pub region: String,
+    /// The broker's failure domain within its region. Absent from a broker
+    /// that predates zones, which is then placed as it always was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
     #[serde(default)]
     pub labels: std::collections::BTreeMap<String, String>,
     #[serde(default)]

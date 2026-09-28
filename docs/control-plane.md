@@ -72,6 +72,19 @@ one comes back every heartbeat stamp is as old as the outage, and sweeping at
 once would mark the whole fleet down. A broker that stays silent through the
 grace window is expired as usual.
 
+Expiry needs two clocks to agree. The last heartbeat stamp has to be older
+than the timeout on the store's wall clock, and the instance running the sweep
+has to have seen the stamp stay unchanged for as long on its own monotonic
+clock. A wall-clock step forward cannot move the second, so it expires no
+heartbeating broker. A step back leaves stamps in the future, since a heartbeat
+never moves one backwards; the sweep pulls any stamp ahead of the store's
+clock back to it (`clamp_future_heartbeats`) before judging, so a broker that
+dies after the step still goes down one window after it went silent. Lowering
+a stamp to now cannot expire anyone early: the broker was last heard no later
+than now, and the monotonic window still has to pass. Under Raft the leader
+judges a broker it has heard this term by the age of that heartbeat on its
+monotonic clock alone, so the log's stamp does not enter into it.
+
 ### `POST /v1/nodes/{node_id}/heartbeat`
 
 Request carries the reporting process's own `incarnation`, from its last
@@ -113,6 +126,7 @@ put a node in the catalog that placement would then try to use.
 | `FELIX_NODE_ADVERTISE_ADDR` | with `FELIX_NODE_ID` | `host:port` peers reach this broker's **internal** listener on. Not the bind address: a broker bound to `0.0.0.0` has to advertise something routable. |
 | `FELIX_CONTROLPLANE_URL` | with `FELIX_NODE_ID` | Where to register. |
 | `FELIX_REGION_ID` | no | Defaults to `local`. |
+| `FELIX_NODE_ZONE` | no | The broker's failure domain within its region: an availability zone, a rack. Unset or blank registers none. See [Zones](#zones). |
 | `FELIX_REGION_BRIDGES` | no | Directional `source>dest` pairs, comma-separated, of regions this broker may forward to besides its own. Unset is none. Give the control plane the same value; see [Regions](#regions). |
 | `FELIX_INTERNAL_BIND` | no | Where the internal listener binds. Defaults to `0.0.0.0:5001`. Must not share a port with `FELIX_QUIC_BIND`. |
 | `FELIX_INTERNAL_TLS_CERT`, `FELIX_INTERNAL_TLS_KEY`, `FELIX_INTERNAL_TLS_CA` | yes, or the opt-out below | Peer mTLS: this broker's certificate (its DNS name must be `FELIX_NODE_ID`), its key, and the CA every peer must chain to. All three or none. See `docs/internal-protocol.md`. |
@@ -532,7 +546,8 @@ Two deliberate omissions:
   and floating point that must agree bit-for-bit across every instance is a bad
   foundation for a decision that has to be identical everywhere. `max_shards` is
   honoured, as a hard cap.
-- **No label affinity.** Region is the only placement constraint; see below.
+- **No label affinity.** Region is the only hard placement constraint, and
+  zone the only preference; see below.
 
 #### Regions
 
@@ -565,6 +580,49 @@ process (give every control-plane instance and broker the same value), brokers
 ship to the replica set placement assigned without checking its regions
 themselves, and a follower already outside the region stays until a broker
 inside it can take its place, since dropping it would cost a copy.
+
+#### Zones
+
+A broker may register a zone (`FELIX_NODE_ZONE`): the failure domain it shares
+with other brokers inside its region, such as an availability zone or a rack.
+Placement spreads each shard's copies across zones, so losing one zone costs a
+shard at most the copies that zone held.
+
+- **First placement and failover.** The leader is chosen as before. Each
+  follower then goes to the best-scoring broker in a zone the shard has no copy
+  in yet; only when no broker with room is in such a zone does it go to the
+  best-scoring broker regardless. A copy that shares a zone still survives a
+  single broker failure, so the fallback places rather than leaving the shard
+  short.
+- **Moves.** A drain goes to the destination that leaves the shard spanning the
+  most zones, and only then prefers balance and score. A rebalance, which is
+  optional, goes only where the shard loses no zone. At the cut-over the copies
+  kept are the ones in zones the shard would otherwise lose, so dropping the
+  surplus copy never narrows the spread.
+- **Followers.** A follower on a draining broker is replaced in a zone the
+  shard would otherwise lose. With nothing draining, a follower sharing a zone
+  with another copy is replaced, the same way, by one in a zone the shard
+  lacks, once a broker there has room: copies placed before a zone had brokers
+  (or before brokers reported zones) are spread as the cluster allows. Each
+  replacement takes a move slot, so it is paced like any other copy.
+
+A broker without a zone is its own failure domain, shared with nobody. A
+cluster in which no broker reports one is therefore placed exactly as it was
+before zones existed, and a broker or stored record that predates the field
+reads as having none. Zones mix with zoneless brokers: two brokers in `a` and
+two with no zone give a replication-factor-three shard one copy in `a` and one
+on each zoneless broker.
+
+When a shard's copies share a zone although the brokers it may use span more
+zones, placement still places it, logs a warning on the write, and counts it in
+`felix_shards_zone_unspread`. That happens when every broker in a missing zone
+is at `max_shards`, or while the move that would spread the shard waits for a
+slot.
+
+Zones sit inside regions: a stream with a home region is spread across the
+zones of the brokers it may use there. An operator's move
+(`POST /v1/shard-moves`) is not checked against zones; the cut-over still keeps
+the copies that hold the spread.
 
 Reconciliation is idempotent: a pass over a settled cluster writes nothing, so
 running it on a timer does not churn rows or flood the changefeed.
@@ -1086,6 +1144,7 @@ Control plane:
 | `felix_shard_assignment_changes_total{op}` | shard ownership changes: `assigned`, `updated`, `unassigned` |
 | `felix_shards_placed_total` | shards given a leader by reconciliation |
 | `felix_shards_unplaceable` | shards with no eligible leader right now; non-zero needs attention |
+| `felix_shards_zone_unspread` | shards whose copies share a zone although brokers in other zones could hold them; non-zero means a zone is out of room or a spreading move is waiting for a slot |
 | `felix_shard_move_steps_total{step}` | planned-move steps written |
 | `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout |
 | `felix_shard_moves_waiting` | moves that could not advance in the last pass |

@@ -13,6 +13,7 @@ pub(crate) fn node(node_id: &str, port: u16) -> Node {
             client_addr: None,
             kafka_addr: None,
             region: "us-west-2".to_string(),
+            zone: None,
             labels: BTreeMap::from([("rack".to_string(), "a1".to_string())]),
             capacity: NodeCapacity {
                 max_shards: Some(64),
@@ -47,6 +48,7 @@ pub(crate) async fn run_node_contract(store: Arc<dyn ControlPlaneStore>) {
     a_heartbeat_does_not_extend_a_departed_node(store).await;
     expiry_moves_only_stale_serving_nodes(store).await;
     expiry_is_idempotent_across_instances(store).await;
+    a_clamp_only_ever_pulls_future_stamps_back_to_now(store).await;
     set_lifecycle_is_idempotent(store).await;
     missing_nodes_report_not_found(store).await;
     delete_removes_and_publishes(store).await;
@@ -209,18 +211,20 @@ async fn register_is_readable(store: &dyn ControlPlaneStore) {
     assert_eq!(store.list_nodes().await.expect("list"), vec![stored]);
 }
 
-/// The optional listener addresses live in their own columns in Postgres, so
-/// every backend has to be shown to keep them.
+/// The optional listener addresses and zone live in their own columns in
+/// Postgres, so every backend has to be shown to keep them.
 async fn optional_addresses_survive_a_round_trip(store: &dyn ControlPlaneStore) {
     clear(store).await;
     let mut with_addrs = node("broker-a", 7001);
     with_addrs.spec.client_addr = Some("10.0.0.4:5001".to_string());
     with_addrs.spec.kafka_addr = Some("host.docker.internal:9092".to_string());
+    with_addrs.spec.zone = Some("us-west-2b".to_string());
     let stored = store.register_node(with_addrs).await.expect("register");
     assert_eq!(
         stored.spec.kafka_addr.as_deref(),
         Some("host.docker.internal:9092")
     );
+    assert_eq!(stored.spec.zone.as_deref(), Some("us-west-2b"));
     assert_eq!(store.get_node("broker-a").await.expect("get"), stored);
 
     // A restart without the Kafka listener has to clear the address, or Kafka
@@ -230,6 +234,8 @@ async fn optional_addresses_survive_a_round_trip(store: &dyn ControlPlaneStore) 
         .await
         .expect("re-register");
     assert_eq!(stored.spec.kafka_addr, None);
+    // Likewise a broker restarted without a zone is placed as having none.
+    assert_eq!(stored.spec.zone, None);
     assert_eq!(store.get_node("broker-a").await.expect("get"), stored);
 }
 
@@ -682,6 +688,38 @@ async fn expiry_moves_only_stale_serving_nodes(store: &dyn ControlPlaneStore) {
             .status
             .lifecycle,
         NodeLifecycle::Left,
+    );
+}
+
+/// A backend may leave a future stamp alone (Raft judges age on the
+/// leader's monotonic clock instead), but one it moves lands on `now` and is
+/// counted, and a stamp already behind `now` never moves.
+async fn a_clamp_only_ever_pulls_future_stamps_back_to_now(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    let now = store.now_millis().await.expect("store clock");
+    let mut ahead = node("broker-ahead", 7310);
+    ahead.status.last_heartbeat_at_millis = now + 3_600_000;
+    store.register_node(ahead).await.expect("register");
+    let mut behind = node("broker-behind", 7311);
+    behind.status.last_heartbeat_at_millis = now - 5_000;
+    let behind = store.register_node(behind).await.expect("register");
+
+    let clamped = store.clamp_future_heartbeats(now).await.expect("clamp");
+
+    let ahead = store.get_node("broker-ahead").await.expect("get");
+    let moved = ahead.status.last_heartbeat_at_millis != now + 3_600_000;
+    if moved {
+        assert_eq!(ahead.status.last_heartbeat_at_millis, now);
+    }
+    assert_eq!(clamped, u64::from(moved));
+    assert_eq!(
+        store
+            .get_node("broker-behind")
+            .await
+            .expect("get")
+            .status
+            .last_heartbeat_at_millis,
+        behind.status.last_heartbeat_at_millis,
     );
 }
 

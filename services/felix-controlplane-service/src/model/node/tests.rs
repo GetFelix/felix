@@ -9,6 +9,7 @@ fn node() -> Node {
             client_addr: None,
             kafka_addr: None,
             region: "us-west-2".to_string(),
+            zone: None,
             labels: BTreeMap::from([("rack".to_string(), "a1".to_string())]),
             capacity: NodeCapacity {
                 max_shards: Some(64),
@@ -92,6 +93,27 @@ fn an_empty_region_is_rejected() {
     let mut node = node();
     node.spec.region = "   ".to_string();
     assert_eq!(node.validate(), Err(NodeValidationError::EmptyRegion));
+}
+
+#[test]
+fn a_blank_or_overlong_zone_is_rejected() {
+    let mut node = node();
+    node.spec.zone = Some(" ".to_string());
+    assert_eq!(node.validate(), Err(NodeValidationError::EmptyZone));
+    node.spec.zone = Some("z".repeat(254));
+    assert_eq!(node.validate(), Err(NodeValidationError::ZoneTooLong));
+    node.spec.zone = Some("us-west-2a".to_string());
+    assert_eq!(node.validate(), Ok(()));
+}
+
+/// A record stored before zones existed has no `zone` key, and one without a
+/// zone serializes without it, so old and new instances read each other.
+#[test]
+fn a_node_without_a_zone_has_no_zone_key() {
+    let json = serde_json::to_value(node()).expect("serialize");
+    assert!(json["spec"].get("zone").is_none(), "{json}");
+    let back: Node = serde_json::from_value(json).expect("deserialize");
+    assert_eq!(back.spec.zone, None);
 }
 
 #[test]

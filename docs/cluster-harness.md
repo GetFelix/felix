@@ -339,11 +339,11 @@ Not skewed: tokio's timers, and the control plane's silence watch, which runs
 on tokio's monotonic clock on purpose. That watch is why a wall-clock step
 forward does not expire a heartbeating broker
 (`a_control_plane_clock_stepped_forward_expires_no_live_broker`). A step
-*back* does delay expiry: heartbeat stamps never move backwards, so a broker
-that dies within the step keeps a stamp newer than any threshold the clock can
-produce until real time catches up, and stays placeable for the length of the
-step. `a_control_plane_clock_stepped_back_still_expires_a_dead_broker` shows
-it and is ignored until that is fixed.
+*back* leaves every heartbeat stamp in the future, because stamps never move
+backwards. The sweep pulls any such stamp back to its clock before judging, so
+a broker that dies just after the step goes down one window after it went
+silent rather than once real time catches up
+(`a_control_plane_clock_stepped_back_still_expires_a_dead_broker`).
 
 #### Disks
 

@@ -152,4 +152,44 @@ impl LogInner {
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
+
+    /// Delete the sealed head segments that hold only offsets below `before`.
+    ///
+    /// For compaction, which has copied everything live out of them first.
+    /// Out of the list under the lock, then unlinked without it, so a crash in
+    /// between leaves a longer log. Each unlink is made durable before the
+    /// next: a power loss that undid an older one but kept a newer one would
+    /// leave a gap in the chain, which recovery rightly refuses.
+    pub(super) async fn trim_head_before(
+        self: Arc<Self>,
+        before: crate::log::Offset,
+    ) -> Result<Vec<crate::log::SegmentDescriptor>> {
+        let inner = Arc::clone(&self);
+        tokio::task::spawn_blocking(move || {
+            let removed = {
+                let mut segments = inner.segments.write();
+                let active = segments.active().id();
+                let chosen: Vec<_> = segments
+                    .descriptors()
+                    .into_iter()
+                    .take_while(|descriptor| {
+                        descriptor.id != active && descriptor.last_offset < before
+                    })
+                    .map(|descriptor| descriptor.id)
+                    .collect();
+                let removed = segments.remove_head(&chosen)?;
+                if !removed.is_empty() {
+                    inner.producers.lock().prune(segments.base_offset());
+                }
+                removed
+            };
+            for descriptor in &removed {
+                remove_segment_files(&inner.dir, descriptor.id)?;
+                crate::io::sync_dir(&inner.dir).map_err(StorageError::Io)?;
+            }
+            Ok(removed)
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
 }

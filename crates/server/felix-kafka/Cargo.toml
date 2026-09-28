@@ -43,7 +43,7 @@ zstd = "0.13"
 # test compress the batches a producer would.
 kafka-protocol = { workspace = true, features = ["broker", "client", "gzip", "snappy", "lz4", "zstd"] }
 # Replication's wire marks, to seed a log with a producer near the sequence wrap.
-felix-wire = { path = "../../protocol/felix-wire" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview" }
 tempfile = { workspace = true }
 
 [lints]

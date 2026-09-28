@@ -104,6 +104,9 @@ pub(crate) fn spawn_broker(
     } else {
         None
     };
+    if let Some(zone) = config.zones.get(index) {
+        command.env("FELIX_NODE_ZONE", zone);
+    }
     command.envs(config.broker_env.iter().map(|(key, value)| (key, value)));
 
     if config.inherit_output {

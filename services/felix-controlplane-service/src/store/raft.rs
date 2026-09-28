@@ -390,6 +390,13 @@ impl ControlPlaneStore for RaftStore {
         }
     }
 
+    /// Nothing to do: the leader ages heartbeats on its monotonic clock and
+    /// does not trust a stamp that lies in the future (see `soft_state`), and
+    /// rewriting the log's copies would cost an entry for a display value.
+    async fn clamp_future_heartbeats(&self, _now_millis: u64) -> StoreResult<u64> {
+        Ok(0)
+    }
+
     /// Judged by the leader from what it has heard since it began leading;
     /// see `soft_state`.
     async fn expire_stale_nodes(&self, expiry_before_millis: u64) -> StoreResult<Vec<Node>> {

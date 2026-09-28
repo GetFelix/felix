@@ -13,6 +13,7 @@ async fn compaction_reclaims_overwritten_records() {
     for _ in 0..40 {
         cache.put(T, NS, C, 0, "hot", value.clone(), None).await;
     }
+    cache.compactor.idle().await;
 
     let shard = cache.shard(T, NS, C, 0).expect("shard");
     let state = shard.state.lock().await;
@@ -54,6 +55,7 @@ async fn compaction_drops_expired_entries() {
     for _ in 0..40 {
         cache.put(T, NS, C, 0, "hot", value.clone(), None).await;
     }
+    cache.compactor.idle().await;
 
     let shard = cache.shard(T, NS, C, 0).expect("shard");
     let state = shard.state.lock().await;
@@ -63,7 +65,7 @@ async fn compaction_drops_expired_entries() {
     );
 }
 
-/// A compacted cache still reopens. Compaction swaps directories, so a bug
+/// A compacted cache still reopens. Compaction deletes segments, so a bug
 /// there would be invisible until the next restart.
 #[tokio::test]
 async fn a_compacted_cache_survives_a_restart() {
@@ -77,6 +79,7 @@ async fn a_compacted_cache_survives_a_restart() {
         cache
             .put(T, NS, C, 0, "cold", Bytes::from_static(b"kept"), None)
             .await;
+        cache.compactor.idle().await;
         cache.shutdown().await.expect("shutdown");
     }
 
@@ -119,10 +122,7 @@ async fn compaction_does_not_rewind_the_offset_space() {
         state.log.tail_offset().await.expect("tail")
     };
 
-    {
-        let mut state = shard.state.lock().await;
-        shard.compact(&mut state).await.expect("compact");
-    }
+    shard.compact().await.expect("compact");
 
     let after = {
         let state = shard.state.lock().await;
@@ -162,10 +162,7 @@ async fn the_offset_space_survives_compaction_and_a_restart() {
         }
 
         let shard = cache.shard(T, NS, C, 0).expect("shard");
-        {
-            let mut state = shard.state.lock().await;
-            shard.compact(&mut state).await.expect("compact");
-        }
+        shard.compact().await.expect("compact");
         let tail = {
             let state = shard.state.lock().await;
             state.log.tail_offset().await.expect("tail")
@@ -185,26 +182,139 @@ async fn the_offset_space_survives_compaction_and_a_restart() {
     }
 }
 
-/// A crash between compaction's two renames must not lose the shard.
-///
-/// Compaction moves the shard directory to `.retired`, moves the compacted one
-/// into its place, then deletes the retired copy. Crash in between and the
-/// shard directory is gone while all its data sits in `.retired`. An open that
-/// ignored that would start the shard empty, and the next compaction would
-/// delete the only copy.
+/// **A write never waits on compaction.** Compaction is held for as long as
+/// the test likes, standing in for one rewriting a large live set on a slow
+/// device, and every put, including the one that crosses the threshold, still
+/// completes promptly.
 #[tokio::test]
-async fn a_shard_interrupted_mid_compaction_is_recovered_from_its_retired_copy() {
+async fn writes_do_not_wait_on_a_slow_compaction() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let shard_dir = {
+    let cache = cache(dir.path()).await;
+    cache.compactor.hold();
+
+    let value = Bytes::from(vec![b'x'; 64 * 1024]);
+    for i in 0..40 {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            cache.put_checked(T, NS, C, 0, "hot", value.clone(), None),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("put {i} waited on compaction"))
+        .expect("put");
+    }
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        cache.put_checked(T, NS, C, 0, "cold", Bytes::from_static(b"kept"), None),
+    )
+    .await
+    .expect("a put to another key waited on compaction")
+    .expect("put");
+
+    cache.compactor.release();
+    cache.compactor.idle().await;
+
+    let shard = cache.shard(T, NS, C, 0).expect("shard");
+    let log_bytes = shard.state.lock().await.index.log_bytes;
+    assert!(
+        log_bytes < 40 * value.len() as u64,
+        "the held compaction never ran once released: {log_bytes} bytes",
+    );
+    assert_eq!(
+        cache.get(T, NS, C, 0, "hot").await.map(|v| v.len()),
+        Some(value.len())
+    );
+    assert_eq!(
+        cache.get(T, NS, C, 0, "cold").await.as_deref(),
+        Some(&b"kept"[..])
+    );
+}
+
+/// A pass trims the log's head: the base moves up past everything below the
+/// cut, and the live set is still there, in memory and after a restart.
+#[tokio::test]
+async fn compaction_trims_the_head_and_keeps_the_live_set() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = cache(dir.path()).await;
+    let expected = overwritten(&cache, 200).await;
+    let shard = cache.shard(T, NS, C, 0).expect("shard");
+    let tail_before = shard.current_log().await.tail_offset().await.expect("tail");
+
+    shard.compact().await.expect("compact");
+
+    let log = shard.current_log().await;
+    assert!(
+        log.base_offset() >= tail_before,
+        "base {} is below the pre-compaction tail {tail_before}: garbage was kept",
+        log.base_offset(),
+    );
+    assert_reads(&cache, &expected, "after compaction").await;
+    cache.shutdown().await.expect("shutdown");
+    let reopened = super::cache(dir.path()).await;
+    assert_reads(&reopened, &expected, "after compaction and a restart").await;
+}
+
+/// **A crash mid-compaction recovers.** Half the live set copied forward and
+/// nothing trimmed is exactly what a crash between two batches leaves, and it
+/// must replay to the same cache, which a later pass then finishes.
+#[tokio::test]
+async fn a_crash_mid_compaction_replays_to_the_same_cache() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let expected = {
         let cache = cache(dir.path()).await;
-        cache
-            .put(T, NS, C, 0, "a", Bytes::from_static(b"1"), None)
-            .await;
-        cache
-            .put(T, NS, C, 0, "b", Bytes::from_static(b"2"), None)
-            .await;
+        let expected = overwritten(&cache, 200).await;
+        let shard = cache.shard(T, NS, C, 0).expect("shard");
+        let log = shard.current_log().await;
+        let cut = log.roll_now().await.expect("roll");
+        let below = shard.live_below(cut).await.expect("live");
+        assert!(below.len() > 2 * crate::compaction::COPY_BATCH);
+        for batch in below[..below.len() / 2].chunks(crate::compaction::COPY_BATCH) {
+            assert!(shard.copy_forward(&log, batch).await.expect("copy"));
+        }
+        // No shutdown: the process dies here.
+        expected
+    };
+
+    let reopened = cache(dir.path()).await;
+    assert_reads(&reopened, &expected, "after a crash mid-compaction").await;
+
+    let shard = reopened.shard(T, NS, C, 0).expect("shard");
+    shard
+        .compact()
+        .await
+        .expect("a later pass finishes the job");
+    assert_reads(&reopened, &expected, "after the later pass").await;
+    reopened.shutdown().await.expect("shutdown");
+    let again = cache(dir.path()).await;
+    assert_reads(&again, &expected, "after the later pass and a restart").await;
+}
+
+/// A crash partway through deleting the trimmed segments leaves the newer of
+/// them behind. That is a longer log, not a broken one.
+#[tokio::test]
+async fn a_crash_mid_trim_leaves_a_longer_log() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let expected = {
+        let cache = cache(dir.path()).await;
+        let expected = overwritten(&cache, 200).await;
+        let shard = cache.shard(T, NS, C, 0).expect("shard");
+        let log = shard.current_log().await;
+        let cut = log.roll_now().await.expect("roll");
+        let below = shard.live_below(cut).await.expect("live");
+        for batch in below.chunks(crate::compaction::COPY_BATCH) {
+            assert!(shard.copy_forward(&log, batch).await.expect("copy"));
+        }
+        log.sync().await.expect("sync");
+        // Only the oldest segment is gone when the process dies.
+        let oldest = log.segments()[0].id;
+        assert!(
+            log.segments()[1].last_offset < cut,
+            "want two segments below the cut"
+        );
+        drop(log);
+        drop(shard);
+        drop(cache);
         let shard_dir = layout::shard_dir(
-            cache.root(),
+            dir.path(),
             &crate::log::ShardKey {
                 tenant: T.to_string(),
                 namespace: NS.to_string(),
@@ -212,27 +322,102 @@ async fn a_shard_interrupted_mid_compaction_is_recovered_from_its_retired_copy()
                 shard: 0,
             },
         );
-        cache.shutdown().await.expect("shutdown");
-        shard_dir
+        std::fs::remove_file(shard_dir.join(crate::segment::segment_file_name(oldest)))
+            .expect("unlink the oldest segment");
+        expected
     };
 
-    // Exactly the state a crash between the renames leaves behind.
-    std::fs::rename(&shard_dir, shard_dir.with_extension("retired")).expect("retire");
-    assert!(!shard_dir.exists());
+    let reopened = cache(dir.path()).await;
+    assert_reads(&reopened, &expected, "after a crash mid-trim").await;
+}
 
+/// Shutdown abandons a pass that cannot make progress rather than waiting on
+/// it, and what the abandoned pass left replays to the same cache.
+#[tokio::test]
+async fn shutdown_abandons_a_held_compaction() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let value = Bytes::from(vec![b'x'; 64 * 1024]);
+    {
+        let cache = cache(dir.path()).await;
+        cache.compactor.hold();
+        for _ in 0..40 {
+            cache
+                .put_checked(T, NS, C, 0, "hot", value.clone(), None)
+                .await
+                .expect("put");
+        }
+        // A pass of our own, so there is certainly one parked on the budget
+        // whatever the puts' own passes managed before the hold bit.
+        let shard = cache.shard(T, NS, C, 0).expect("shard");
+        let (done, finished) = tokio::sync::oneshot::channel();
+        assert!(cache.compactor.spawn(async move {
+            let _ = done.send(shard.compact().await);
+        }));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::timeout(Duration::from_secs(5), cache.shutdown())
+            .await
+            .expect("shutdown waited on a held compaction")
+            .expect("shutdown");
+        finished
+            .await
+            .expect("the pass ran")
+            .expect("an abandoned pass is not an error");
+    }
     let reopened = cache(dir.path()).await;
     assert_eq!(
-        reopened.get(T, NS, C, 0, "a").await.as_deref(),
-        Some(&b"1"[..]),
-        "the shard came back empty, so the retired copy is now unreferenced and \
-         the next compaction deletes it",
+        reopened.get(T, NS, C, 0, "hot").await.map(|v| v.len()),
+        Some(value.len())
     );
+}
+
+/// A key with a write staged but not yet applied is not copied: the copy
+/// would land after the write and bring the old value back on replay.
+#[tokio::test]
+async fn a_key_with_a_write_in_flight_is_not_copied() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = cache(dir.path()).await;
+    let expected = overwritten(&cache, 4).await;
+    let shard = cache.shard(T, NS, C, 0).expect("shard");
+    let log = shard.current_log().await;
+    let cut = log.roll_now().await.expect("roll");
+    let below = shard.live_below(cut).await.expect("live");
+    let tail = log.tail_offset().await.expect("tail");
+
+    let in_flight: Vec<_> = expected
+        .iter()
+        .map(|(key, _)| shard.key_in_flight(key))
+        .collect();
+    assert!(shard.copy_forward(&log, &below).await.expect("copy"));
     assert_eq!(
-        reopened.get(T, NS, C, 0, "b").await.as_deref(),
-        Some(&b"2"[..]),
+        log.tail_offset().await.expect("tail"),
+        tail,
+        "copied a key whose write was still in flight",
     );
-    assert!(
-        !shard_dir.with_extension("retired").exists(),
-        "the retired copy should have been moved back, not copied",
-    );
+
+    drop(in_flight);
+    assert!(shard.copy_forward(&log, &below).await.expect("copy"));
+    assert_eq!(log.tail_offset().await.expect("tail"), tail + 4);
+}
+
+/// The replica state in the shard directory (accepted generation, commit
+/// offset) survives compaction, which no longer replaces the directory.
+#[tokio::test]
+async fn replica_state_survives_compaction() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let cache = cache(dir.path()).await;
+        overwritten(&cache, 200).await;
+        let log = cache.shard_log(T, NS, C, 0).await.expect("log");
+        log.accept_generation(7).await.expect("accept");
+        cache
+            .shard(T, NS, C, 0)
+            .expect("shard")
+            .compact()
+            .await
+            .expect("compact");
+        cache.shutdown().await.expect("shutdown");
+    }
+    let reopened = cache(dir.path()).await;
+    let log = reopened.shard_log(T, NS, C, 0).await.expect("log");
+    assert_eq!(log.accepted_generation(), 7);
 }

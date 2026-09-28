@@ -72,6 +72,7 @@ fn a_complete_identity_is_accepted() {
         env::set_var("FELIX_NODE_ID", "broker-a");
         env::set_var("FELIX_NODE_ADVERTISE_ADDR", "10.0.0.4:7000");
         env::set_var("FELIX_REGION_ID", "eu-central-1");
+        env::set_var("FELIX_NODE_ZONE", " eu-central-1a ");
         env::set_var("FELIX_CONTROLPLANE_URL", "http://localhost:8443");
         env::set_var("FELIX_NODE_TOKEN", "a-node-token");
     }
@@ -82,6 +83,31 @@ fn a_complete_identity_is_accepted() {
     assert_eq!(membership.node_id, "broker-a");
     assert_eq!(membership.advertise_addr, "10.0.0.4:7000");
     assert_eq!(membership.region, "eu-central-1");
+    assert_eq!(membership.zone.as_deref(), Some("eu-central-1a"));
+}
+
+/// No zone, or a blank one, registers none rather than an empty zone every
+/// other zoneless broker would then share.
+#[serial]
+#[test]
+fn a_blank_zone_is_no_zone() {
+    for zone in [None, Some("  ")] {
+        clear_felix_env();
+        unsafe {
+            env::set_var("FELIX_NODE_ID", "broker-a");
+            env::set_var("FELIX_NODE_ADVERTISE_ADDR", "10.0.0.4:7000");
+            env::set_var("FELIX_CONTROLPLANE_URL", "http://localhost:8443");
+            env::set_var("FELIX_NODE_TOKEN", "a-node-token");
+            if let Some(zone) = zone {
+                env::set_var("FELIX_NODE_ZONE", zone);
+            }
+        }
+        let membership = BrokerConfig::from_env()
+            .expect("config")
+            .membership
+            .expect("membership");
+        assert_eq!(membership.zone, None, "{zone:?}");
+    }
 }
 
 /// A broker with an identity and no credential cannot register. Starting it

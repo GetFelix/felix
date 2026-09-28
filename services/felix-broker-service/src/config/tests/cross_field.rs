@@ -131,6 +131,7 @@ fn joining_with(token: &str, refresh: bool, token_file: bool) -> BrokerConfig {
             refresh_token_file: refresh.then(|| "/run/felix/refresh".into()),
             node_token_file: token_file.then(|| "/run/felix/node.token".into()),
             region: "us-west-2".to_string(),
+            zone: None,
             region_bridges: Vec::new(),
         }),
         ..BrokerConfig::default()

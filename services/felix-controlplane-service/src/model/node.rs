@@ -30,6 +30,10 @@ pub enum NodeValidationError {
     NodeIdCharacter(char),
     #[error("region must not be empty")]
     EmptyRegion,
+    #[error("zone must not be empty when set")]
+    EmptyZone,
+    #[error("zone must be at most {MAX_IDENTIFIER_LEN} characters")]
+    ZoneTooLong,
     #[error("advertise_addr {0:?} is not a valid host:port address")]
     InvalidAdvertiseAddr(String),
     #[error("client_addr {0:?} is not a valid host:port address")]
@@ -169,6 +173,14 @@ pub struct NodeSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kafka_addr: Option<String>,
     pub region: String,
+    /// The failure domain within the region: an availability zone, a rack.
+    /// Placement spreads each shard's copies across zones where it can.
+    ///
+    /// Optional. A node without one shares a zone with no other node, so a
+    /// cluster that reports no zones is placed exactly as it was before zones
+    /// existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
     #[serde(default)]
@@ -179,6 +191,14 @@ impl NodeSpec {
     pub fn validate(&self) -> Result<(), NodeValidationError> {
         if self.region.trim().is_empty() {
             return Err(NodeValidationError::EmptyRegion);
+        }
+        if let Some(zone) = &self.zone {
+            if zone.trim().is_empty() {
+                return Err(NodeValidationError::EmptyZone);
+            }
+            if zone.len() > MAX_IDENTIFIER_LEN {
+                return Err(NodeValidationError::ZoneTooLong);
+            }
         }
         validate_advertise_addr(&self.advertise_addr)?;
         if let Some(client_addr) = &self.client_addr {

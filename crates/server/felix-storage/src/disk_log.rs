@@ -316,6 +316,19 @@ impl DiskLog {
         Arc::clone(&self.inner).sweep_retention().await
     }
 
+    /// Seal the active segment and start a new one, returning the new
+    /// segment's base. Everything below it is then in sealed segments, which
+    /// is what lets compaction trim them whole.
+    pub(crate) async fn roll_now(&self) -> Result<Offset> {
+        Arc::clone(&self.inner).roll_now().await
+    }
+
+    /// Delete the sealed head segments holding only offsets below `before`,
+    /// returning what was removed. The active segment is never removed.
+    pub(crate) async fn trim_before(&self, before: Offset) -> Result<Vec<SegmentDescriptor>> {
+        Arc::clone(&self.inner).trim_head_before(before).await
+    }
+
     /// Discard every record and start again, empty, at `base_offset`.
     ///
     /// The one caller is a follower rebuilding a shard whose copy has

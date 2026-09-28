@@ -13,6 +13,26 @@ async fn satisfies_the_node_store_contract() {
     crate::store::contract::nodes::run_node_concurrency_contract(store).await;
 }
 
+/// The contract allows a backend to leave a future stamp; this one must not,
+/// or a broker dying after a clock step back stays live for the step.
+#[tokio::test]
+async fn a_clamp_pulls_a_future_stamp_back_to_now() {
+    let store = store_with_limits(100, 1000);
+    let mut ahead = crate::store::contract::nodes::node("broker-ahead", 7001);
+    ahead.status.last_heartbeat_at_millis = 2_000_000;
+    store.register_node(ahead).await.expect("register");
+
+    assert_eq!(
+        store
+            .clamp_future_heartbeats(1_000_000)
+            .await
+            .expect("clamp"),
+        1
+    );
+    let node = store.get_node("broker-ahead").await.expect("get");
+    assert_eq!(node.status.last_heartbeat_at_millis, 1_000_000);
+}
+
 /// The same suite Postgres runs. These are the security properties —
 /// single use, replay detection, revocation — so parity is not a nicety.
 #[tokio::test]

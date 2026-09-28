@@ -72,6 +72,7 @@ async fn compaction_is_not_observed_as_changes() {
     for _ in 0..40 {
         cache.put(T, NS, C, 0, "hot", value.clone(), None).await;
     }
+    cache.compactor.idle().await;
 
     let shard = cache.shard(T, NS, C, 0).expect("shard");
     let state = shard.state.lock().await;

@@ -6,17 +6,19 @@
 //! by another route.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
+use parking_lot::Mutex as SyncMutex;
 use tokio::sync::Mutex;
 
 use super::CacheOp;
 use crate::commit_order::CommitSequencer;
+use crate::compaction::Compactor;
 use crate::disk_log::DiskLog;
-use crate::log::{AppendOnlyLog, LogConfig, Offset, ReadRange};
+use crate::log::{AppendOnlyLog, Offset, ReadRange};
 use crate::{Result, StorageError};
 
 /// How much of the log one replay or compaction pass reads at a time.
@@ -27,9 +29,13 @@ const SCAN_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 
 /// One cache: its log, and the index derived from it.
 pub(super) struct CacheShard {
-    pub(super) dir: PathBuf,
     pub(super) label: String,
-    pub(super) config: LogConfig,
+    pub(super) compactor: Arc<Compactor>,
+    /// Set while a background compaction pass runs, so only one does.
+    pub(super) compacting: AtomicBool,
+    /// Keys with a write staged but not yet applied, and how many. Compaction
+    /// must not copy these forward; see `compaction::copy_forward`.
+    pub(super) keys_in_flight: SyncMutex<HashMap<String, usize>>,
     /// Guards the log handle and the index. A write holds it twice, briefly —
     /// once to stage (claim an offset, no fsync) and once to apply — never
     /// across the fsync, which is what lets concurrent writers share one
@@ -43,8 +49,7 @@ pub(super) struct CacheShard {
 impl CacheShard {
     /// The log this shard is writing to right now.
     ///
-    /// Takes the state lock so it cannot observe compaction halfway through the
-    /// directory swap.
+    /// Takes the state lock so it cannot race a close.
     pub(super) async fn current_log(&self) -> DiskLog {
         self.state.lock().await.log.clone()
     }
@@ -61,7 +66,7 @@ impl CacheShard {
         }
         let tail = state.log.tail_offset().await?;
         // Align the sequencer with records that did not come through the
-        // write path — recovery on open, compaction, or a leader shipping
+        // write path — recovery on open, or a leader shipping
         // records to this shard as a follower. Without this, the next writer
         // would reserve its range past a gap nobody will ever resolve, and
         // wait on a turn that cannot arrive.
@@ -205,8 +210,17 @@ impl CacheShard {
         state: &ShardState,
         entry: Entry,
     ) -> Result<Option<Bytes>> {
-        let records = state
-            .log
+        Self::read_from(&state.log, &self.label, entry).await
+    }
+
+    /// [`CacheShard::read_value`] through a log handle, for a caller not
+    /// holding the state lock.
+    pub(super) async fn read_from(
+        log: &DiskLog,
+        label: &str,
+        entry: Entry,
+    ) -> Result<Option<Bytes>> {
+        let records = log
             .read_range(ReadRange {
                 start: entry.offset,
                 // One record. The cap has to exceed it, and a record larger
@@ -220,12 +234,43 @@ impl CacheShard {
             return Err(StorageError::NotFound);
         };
         match CacheOp::decode(&found.payload)
-            .map_err(|err| StorageError::Corruption(err.in_shard(&self.label)))?
+            .map_err(|err| StorageError::Corruption(err.in_shard(label)))?
         {
             CacheOp::Put { value, .. } => Ok(Some(value)),
             // The index only ever points at a put; a tombstone here means the
             // index and the log disagree, which is a bug rather than a miss.
             CacheOp::Delete { .. } => Err(StorageError::NotFound),
+        }
+    }
+
+    /// Mark `key` as having a write in flight until the guard drops.
+    pub(super) fn key_in_flight(self: &Arc<Self>, key: &str) -> KeyInFlight {
+        *self
+            .keys_in_flight
+            .lock()
+            .entry(key.to_string())
+            .or_default() += 1;
+        KeyInFlight {
+            shard: Arc::clone(self),
+            key: key.to_string(),
+        }
+    }
+}
+
+/// Held by a staged write until it has applied or failed.
+pub(super) struct KeyInFlight {
+    shard: Arc<CacheShard>,
+    key: String,
+}
+
+impl Drop for KeyInFlight {
+    fn drop(&mut self) {
+        let mut keys = self.shard.keys_in_flight.lock();
+        if let Some(count) = keys.get_mut(&self.key) {
+            *count -= 1;
+            if *count == 0 {
+                keys.remove(&self.key);
+            }
         }
     }
 }
@@ -243,7 +288,7 @@ pub(super) struct ShardState {
     pub(super) index: Index,
     /// Exclusive end of the last offset range a writer here has reserved with
     /// the sequencer. Offsets past it were appended by someone else — recovery
-    /// on open, compaction, or a leader shipping records to this follower —
+    /// on open, or a leader shipping records to this follower —
     /// and `ensure_index` resolves that gap so the sequence can walk past it.
     /// `None` until the first `ensure_index` aligns the sequencer to the tail.
     pub(super) sequenced_through: Option<u64>,
@@ -258,7 +303,7 @@ pub(super) struct Index {
     pub(super) entries: HashMap<String, Entry>,
     /// Bytes held by records the index still points at.
     pub(super) live_bytes: u64,
-    /// Bytes appended since the log was last compacted, live or not.
+    /// Payload bytes of every record still in the log, live or not.
     pub(super) log_bytes: u64,
     /// The offset this index has read up to. Records at or past it are not
     /// reflected here yet.

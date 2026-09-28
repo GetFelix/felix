@@ -41,6 +41,7 @@ struct Running {
     cert: CertificateDer<'static>,
     tokens: HashMap<String, String>,
     server: Arc<QuicServer>,
+    broker: Arc<Broker>,
     task: tokio::task::JoinHandle<Result<()>>,
 }
 
@@ -92,6 +93,7 @@ async fn start_with(cache: Box<dyn felix_storage::StorageApi + Send>) -> Result<
         cert,
         tokens: demo_auth.tokens,
         server,
+        broker,
         task,
     })
 }
@@ -381,6 +383,22 @@ async fn a_watch_from_a_compacted_offset_resnapshots() -> Result<()> {
             None,
         )
         .await?;
+    // Compaction runs in the background, so wait for it to trim offset 0.
+    tokio::time::timeout(RECV_TIMEOUT, async {
+        loop {
+            let base = running
+                .broker
+                .shard_log(felix_broker::LogKind::Cache, "t1", "default", CACHE, 0)
+                .await
+                .map(|log| log.base_offset());
+            if base.is_some_and(|base| base > 0) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .context("the cache was never compacted")?;
 
     let mut watch = client
         .watch_cache(

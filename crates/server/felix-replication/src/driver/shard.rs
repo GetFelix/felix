@@ -123,7 +123,7 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
     let shard_key = key.clone();
     let key = &key;
     // Resolved per pass rather than cached: a cache shard's log is replaced
-    // by compaction, and a handle held across one reads the retired copy.
+    // when the shard is closed and reopened, and a held handle goes stale.
     let log_kind = match key.kind {
         felix_router::ShardKind::Cache => felix_broker::LogKind::Cache,
         felix_router::ShardKind::Stream => felix_broker::LogKind::Stream,

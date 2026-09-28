@@ -13,6 +13,7 @@ fn with_membership(token: &str) -> BrokerConfig {
             refresh_token_file: None,
             node_token_file: None,
             region: "us-west-2".to_string(),
+            zone: None,
             region_bridges: Vec::new(),
         }),
         ..BrokerConfig::default()

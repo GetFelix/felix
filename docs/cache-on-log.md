@@ -98,23 +98,24 @@ compaction.
 Without it the log grows forever, and "the cache is a log" would be a slow leak
 rather than a design.
 
-Compaction writes the live set — the newest surviving record for each key that
-is neither deleted nor expired — into a fresh log, then swaps it in. **Records
-are never rewritten**, which is the invariant everything in the storage layer
-rests on: compaction produces new segments and drops old ones, and never edits a
-byte in place.
+Compaction copies the live set — the newest surviving record for each key that
+is neither deleted nor expired — forward to the tail, then deletes the sealed
+segments that held only superseded records. **Records are never rewritten**,
+which is the invariant everything in the storage layer rests on: a copy is a new
+put of the same value, and whole segments are dropped from the head, the way
+retention drops them.
 
 It runs when the log has grown past a multiple of its live bytes, so the cost is
 proportional to the garbage and a cache that is mostly live is never compacted.
-It runs only from the apply step of a write whose record is the newest in the
-log, with nothing staged behind it — compaction swaps the shard directory, and
-a record another writer has staged but not yet committed lives only in the old
-one, so swapping under it would silently drop an acknowledged write. Under a
-gapless write storm that defers compaction to the first quiet apply, which every
-burst ends with.
+It runs on a background task with its own I/O budget, never on a write: a pass
+seals the active segment to fix a cut, copies what is live below it in small
+batches staged and committed like writes, flushes, and deletes the segments
+below the cut. A key with a write in flight is not copied, because the copy
+would land after the write and undo it on replay. `docs/durable-storage.md`,
+"Cache and counter compaction", has the steps and the crash analysis.
 
 **Compaction continues the offset space rather than restarting it.** The live set
-is appended at the current tail, so an offset names the same record for the life
+is appended at the tail, so an offset names the same record for the life
 of the shard even across many compactions and restarts. Two things depend on
 this. A reader tracking offsets never sees them go backwards. And replication
 ships records *at* their offsets, so a leader that renumbered on compaction would
