@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790562523075,
+  "lastUpdate": 1790565363879,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18876,6 +18876,58 @@ window.BENCHMARK_DATA = {
             "range": "36956.04",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1500531.54\nmean: 1520827.31\nstdev: 36956.04\ncv: 2.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e70d532faa4574ce1962cc2c2c975f75e5bd8ca7",
+          "message": "feat(replication): a Fence peer message replicas persist and keep (#794)\n\nA promoted leader can now ask a replica to take its generation. The replica\nfsyncs it in the file that keeps the highest generation it accepted, then\nanswers with its log end, commit offset and the generation of its last\nrecord. From then on it refuses every older leader: records, bootstraps,\nrebuilds and gap answers, across restarts and whatever its routing view\nsays. The shard's cursor, dead-letter and counter logs check the shard's own\nlog too.\n\nThe message is negotiated. Brokers offer capability bits in the peer\nhandshake (HelloCapable and HelloCapableOk, kinds 27 and 28); a peer that\npredates them refuses the kind and is greeted with the plain Hello again,\nbyte for byte what it always read. The pool will not send Fence to a peer\nthat did not offer FENCE. FELIX_INTERNAL_FENCE=false withdraws the offer.\n\nNo leader sends the fence yet. This is AnswerFence in\ndocs/formal/FelixShard.tla; FelixShardFencedAck.cfg now cites it.",
+          "timestamp": "2026-09-27T20:07:44-07:00",
+          "tree_id": "69e7d4e88d193e72357d5f51d8eec698d6edb543",
+          "url": "https://github.com/gabloe/felix/commit/e70d532faa4574ce1962cc2c2c975f75e5bd8ca7"
+        },
+        "date": 1790565363338,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 395942.22,
+            "range": "14908.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 395942.22\nmean: 398724.40\nstdev: 14908.37\ncv: 3.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 395942.22,
+            "range": "14908.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 395942.22\nmean: 398724.40\nstdev: 14908.37\ncv: 3.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93339.73,
+            "range": "848.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93339.73\nmean: 93553.73\nstdev: 848.38\ncv: 0.91%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 933397.25,
+            "range": "8483.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 933397.25\nmean: 935537.29\nstdev: 8483.86\ncv: 0.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
