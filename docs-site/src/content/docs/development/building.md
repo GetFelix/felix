@@ -432,6 +432,12 @@ Felix uses GitHub Actions for CI:
 - Upload to coverage service
 - Update coverage badge
 
+**.github/workflows/fuzz-nightly.yml**:
+- Every decoder's fuzz target for 25 minutes, nightly, from a corpus that
+  carries over between runs
+- See [Fuzzing](/felix/development/fuzzing/) for the targets and how to
+  reproduce a crash
+
 ### Running CI Locally
 
 Replicate CI checks locally:

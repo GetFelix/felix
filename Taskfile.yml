@@ -429,13 +429,14 @@ tasks:
           cargo +nightly fuzz run {{.ITEM}} corpus/{{.ITEM}} seeds/{{.ITEM}}
           -- -max_total_time={{.SECONDS}}
       # The Kafka listener's record-batch decoder: bytes from any Kafka client.
-      - for: ["kafka_records"]
+      - for: ["kafka_records", "kafka_request"]
         cmd: >
           cd crates/server/felix-kafka/fuzz &&
           mkdir -p corpus/{{.ITEM}} &&
           cargo +nightly fuzz run {{.ITEM}} corpus/{{.ITEM}} seeds/{{.ITEM}}
           -- -max_total_time={{.SECONDS}}
-      - for: ["segment_record", "segment_recovery", "sparse_index"]
+      - for: ["segment_record", "segment_recovery", "sparse_index",
+              "cache_record", "counter_record", "sidecar_state"]
         cmd: >
           cd crates/server/felix-storage/fuzz &&
           cargo +nightly fuzz run {{.ITEM}}

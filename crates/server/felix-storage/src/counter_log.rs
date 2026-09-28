@@ -16,7 +16,7 @@
 //! safety, group commit, offsets that never rewind across compaction, and
 //! replication that ships records at their offsets.
 
-mod record;
+pub(crate) mod record;
 
 use record::CounterOp;
 

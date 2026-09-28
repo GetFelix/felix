@@ -23,7 +23,7 @@ use crate::{Result, StorageError};
 const MAGIC: u32 = 0x464C_5253;
 const VERSION: u16 = 1;
 /// magic(4) + version(2) + reserved(2) + generation(8) + commit(8) + crc(4)
-const ENCODED_LEN: usize = 28;
+pub(super) const ENCODED_LEN: usize = 28;
 const FILE_NAME: &str = "replica";
 
 /// The persisted state. Both fields only ever rise.
@@ -36,7 +36,7 @@ pub(super) struct ReplicaState {
 }
 
 impl ReplicaState {
-    fn encode(&self) -> [u8; ENCODED_LEN] {
+    pub(super) fn encode(&self) -> [u8; ENCODED_LEN] {
         let mut out = [0u8; ENCODED_LEN];
         out[0..4].copy_from_slice(&MAGIC.to_be_bytes());
         out[4..6].copy_from_slice(&VERSION.to_be_bytes());
@@ -47,7 +47,7 @@ impl ReplicaState {
         out
     }
 
-    fn decode(bytes: &[u8]) -> Option<Self> {
+    pub(super) fn decode(bytes: &[u8]) -> Option<Self> {
         if bytes.len() != ENCODED_LEN {
             return None;
         }

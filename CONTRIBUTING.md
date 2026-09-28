@@ -119,6 +119,10 @@ a caller uses them, then private helpers.
   setup can be one binary: `tests/<area>/main.rs` with a module per file.
   Keep a test in a binary of its own when it changes process-wide state such
   as environment variables.
+- A decoder that reads bytes from outside the process (the network, disk, a
+  peer) gets a fuzz target in its crate's `fuzz/`. `task fuzz` runs them all
+  briefly; a nightly workflow runs them for longer. See
+  `docs-site/src/content/docs/development/fuzzing.md`.
 
 ## Pull Requests
 

@@ -1,0 +1,177 @@
+name: Nightly fuzz
+
+# The per-PR `fuzz` job in ci.yml gives each target 30 s from the committed
+# seeds: a regression gate. This is the campaign behind it. Each target gets a
+# long budget and starts from everything earlier nights found, so coverage
+# accumulates instead of being rediscovered from the seeds every time.
+#
+# The corpus lives in the Actions cache, one entry per target per run. A run
+# restores the newest entry for its target, fuzzes on top of it, and saves the
+# result under a new key; older entries are deleted once the new one is saved.
+# See docs-site/src/content/docs/development/fuzzing.md.
+
+on:
+  schedule:
+    # 03:17 UTC nightly, off the hour so it does not queue behind every other
+    # scheduled workflow on GitHub.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Fuzzing budget per target, in seconds"
+        required: false
+        default: "1500"
+      minimize:
+        description: "Minimize each corpus (cargo fuzz cmin) before saving it"
+        type: boolean
+        required: false
+        default: false
+
+# The only write is to the Actions cache: deleting this target's superseded
+# corpus entries so they do not crowd the build caches out of the quota.
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: fuzz-nightly
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    # The budget plus a cold nightly build, cmin, and the cache round trip.
+    timeout-minutes: 60
+    strategy:
+      # One target crashing says nothing about the others; let them finish
+      # and keep their corpus.
+      fail-fast: false
+      matrix:
+        include:
+          - { target: frame, dir: crates/protocol/felix-wire/fuzz }
+          - { target: internal_message, dir: crates/protocol/felix-wire/fuzz }
+          - { target: binary_payload, dir: crates/protocol/felix-wire/fuzz }
+          - { target: client_message, dir: crates/protocol/felix-wire/fuzz }
+          - { target: kafka_records, dir: crates/server/felix-kafka/fuzz }
+          - { target: kafka_request, dir: crates/server/felix-kafka/fuzz }
+          - { target: segment_record, dir: crates/server/felix-storage/fuzz }
+          - { target: segment_recovery, dir: crates/server/felix-storage/fuzz }
+          - { target: sparse_index, dir: crates/server/felix-storage/fuzz }
+          - { target: cache_record, dir: crates/server/felix-storage/fuzz }
+          - { target: counter_record, dir: crates/server/felix-storage/fuzz }
+          - { target: sidecar_state, dir: crates/server/felix-storage/fuzz }
+    env:
+      TARGET: ${{ matrix.target }}
+      SECONDS_PER_TARGET: ${{ inputs.seconds || '1500' }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # toolchain-exempt: cargo-fuzz needs nightly, as in ci.yml's fuzz job.
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.dir }}
+          # Its own key: the sanitizer flags make these builds useless to
+          # every other job.
+          shared-key: fuzz-nightly
+
+      - name: Install cargo-fuzz
+        working-directory: .
+        run: cargo install cargo-fuzz --locked
+
+      - name: Restore corpus
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ matrix.dir }}/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+
+      - name: Build
+        run: cargo +nightly fuzz build "$TARGET"
+
+      - name: Fuzz
+        run: |
+          mkdir -p "corpus/$TARGET"
+          echo "corpus: $(ls "corpus/$TARGET" | wc -l) inputs before the run"
+          seeds=()
+          if [ -d "seeds/$TARGET" ]; then seeds=("seeds/$TARGET"); fi
+          # The corpus first, so new coverage is written there and never into
+          # the committed seeds. -timeout turns a hang into a reported crash
+          # rather than a job that runs into its own timeout with nothing saved.
+          cargo +nightly fuzz run "$TARGET" "corpus/$TARGET" "${seeds[@]}" -- \
+            -max_total_time="$SECONDS_PER_TARGET" -timeout=30 -print_final_stats=1
+          echo "corpus: $(ls "corpus/$TARGET" | wc -l) inputs after the run"
+
+      # Weekly, or on request: drop inputs that add no coverage, so the
+      # restore stays fast and each night's replay stays a small slice of its
+      # budget. It runs after a crash too; the corpus is still good.
+      - name: Minimize corpus
+        if: ${{ !cancelled() }}
+        env:
+          MINIMIZE: ${{ inputs.minimize }}
+        run: |
+          if [ "$MINIMIZE" != "true" ] && [ "$(date -u +%u)" != "7" ]; then
+            echo "cmin runs on Sundays or on request"
+            exit 0
+          fi
+          before=$(ls "corpus/$TARGET" | wc -l)
+          cargo +nightly fuzz cmin "$TARGET" "corpus/$TARGET"
+          echo "corpus: $before -> $(ls "corpus/$TARGET" | wc -l) inputs after cmin"
+
+      - name: Save corpus
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ matrix.dir }}/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+
+      - name: Delete superseded corpus entries
+        if: ${{ !cancelled() }}
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Keep the newest two: tonight's, and last night's in case tonight's
+          # turns out to be the one worth bisecting against.
+          gh cache list --repo "$GITHUB_REPOSITORY" --key "fuzz-corpus-$TARGET-" \
+            --sort created_at --order desc --limit 100 --json id --jq '.[2:][].id' |
+            xargs -r -n1 gh cache delete --repo "$GITHUB_REPOSITORY"
+
+      # libFuzzer writes the input that crashed into artifacts/<target>/; that
+      # file is all anyone needs to reproduce it.
+      - name: Upload crash inputs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: ${{ matrix.dir }}/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
+
+      - name: Say how to reproduce
+        if: failure()
+        run: |
+          {
+            echo "### \`$TARGET\` failed"
+            echo
+            echo "Download the \`fuzz-crash-$TARGET\` artifact from this run, then:"
+            echo
+            echo '```sh'
+            echo "cd ${{ matrix.dir }}"
+            echo "cargo +nightly fuzz run $TARGET path/to/crash-<hash>"
+            echo "cargo +nightly fuzz tmin $TARGET path/to/crash-<hash>   # optional: shrink it"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          ls -l "artifacts/$TARGET" 2>/dev/null || true

@@ -28,7 +28,7 @@ const MARK_VERSION: u16 = 1;
 /// magic(4) + version(2) + reserved(2) + segment(8) + synced(8) + crc(4) +
 /// reserved(4). Well inside one sector, so a torn write is unlikely and a
 /// failed checksum reads as no mark at all.
-const MARK_LEN: usize = 32;
+pub(super) const MARK_LEN: usize = 32;
 
 /// What the mark file says: segment `segment` was synced through `synced_bytes`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +67,7 @@ impl DurableMark {
         }
     }
 
-    fn encode(&self) -> [u8; MARK_LEN] {
+    pub(super) fn encode(&self) -> [u8; MARK_LEN] {
         let mut buf = [0u8; MARK_LEN];
         buf[0..4].copy_from_slice(&MARK_MAGIC.to_be_bytes());
         buf[4..6].copy_from_slice(&MARK_VERSION.to_be_bytes());
@@ -78,7 +78,7 @@ impl DurableMark {
         buf
     }
 
-    fn decode(bytes: &[u8]) -> Option<Self> {
+    pub(super) fn decode(bytes: &[u8]) -> Option<Self> {
         let bytes: &[u8; MARK_LEN] = bytes.get(..MARK_LEN)?.try_into().ok()?;
         let word = |at: usize| u64::from_be_bytes(bytes[at..at + 8].try_into().expect("8 bytes"));
         if u32::from_be_bytes(bytes[0..4].try_into().ok()?) != MARK_MAGIC

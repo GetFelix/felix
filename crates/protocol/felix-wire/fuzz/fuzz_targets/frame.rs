@@ -14,6 +14,19 @@ use felix_wire::{Frame, FrameHeader, KNOWN_FLAGS, has_unknown_flags};
 fuzz_target!(|data: &[u8]| {
     let input = Bytes::copy_from_slice(data);
 
+    // The QUIC reader takes the header without the flag check so it can
+    // consume the body and refuse the frame on a boundary. It must agree with
+    // the strict decoder on everything but the flags.
+    let lenient = FrameHeader::decode_allowing_unknown_flags(input.clone());
+    match FrameHeader::decode(input.clone()) {
+        Ok(strict) => assert_eq!(lenient.expect("strict decoded"), strict),
+        Err(_) => {
+            if let Ok(header) = lenient {
+                assert!(has_unknown_flags(header.flags));
+            }
+        }
+    }
+
     // Property 1: arbitrary bytes decode or error, never panic.
     let Ok(frame) = Frame::decode(input.clone()) else {
         return;

@@ -12,7 +12,7 @@ mod metadata;
 mod partition;
 mod produce;
 mod producer_id;
-mod sasl;
+pub(crate) mod sasl;
 mod transactions;
 mod versions;
 

@@ -22,6 +22,9 @@ A crash leaves its input in `artifacts/`; re-run the target with that file as
 an argument to reproduce it. CI uploads that directory when a target dies,
 because otherwise the bytes go with the runner.
 
+Every target also runs for much longer each night, from a corpus kept between
+runs; see `docs-site/src/content/docs/development/fuzzing.md`.
+
 ## `seeds` and `corpus`
 
 `seeds/` is the committed set: one well-formed input per layout, so a run

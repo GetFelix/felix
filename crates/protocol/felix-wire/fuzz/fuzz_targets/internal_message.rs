@@ -10,7 +10,9 @@
 use bytes::Bytes;
 use libfuzzer_sys::fuzz_target;
 
-use felix_wire::internal::{InternalMessage, Kind};
+use felix_wire::internal::{
+    FrameEnvelope, InternalHeader, InternalMessage, Kind, correlation_id_in,
+};
 
 fuzz_target!(|data: &[u8]| {
     // Property 1: an unknown kind is rejected, never skipped. The kind selects
@@ -21,6 +23,17 @@ fuzz_target!(|data: &[u8]| {
             assert_eq!(kind as u16, raw);
         }
     }
+
+    // The peer reader steps over a kind it does not know using only the
+    // envelope, so the envelope must agree with the full header whenever both
+    // read the same bytes.
+    let input = Bytes::copy_from_slice(data);
+    if let Ok(header) = InternalHeader::decode(&input) {
+        let envelope = FrameEnvelope::decode(&input).expect("header decoded");
+        assert_eq!(envelope.kind, header.kind as u16);
+        assert_eq!(envelope.length, header.length);
+    }
+    let _ = correlation_id_in(input.get(InternalHeader::LEN..).unwrap_or_default());
 
     // Property 2: arbitrary bytes decode or error, never panic, and never
     // allocate on the strength of an unvalidated length.

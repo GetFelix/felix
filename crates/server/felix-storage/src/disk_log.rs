@@ -44,6 +44,8 @@ mod append;
 mod durable_mark;
 mod epochs;
 mod flush;
+#[cfg(feature = "fuzzing")]
+pub(crate) mod fuzzing;
 mod producers;
 mod provider;
 mod recovery;

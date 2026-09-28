@@ -21,9 +21,9 @@ use crate::{Result, StorageError};
 const EPOCH_MAGIC: u32 = 0x464C_4550;
 const EPOCH_VERSION: u16 = 1;
 /// magic(4) + version(2) + count(2) + crc(4)
-const EPOCH_HEADER_LEN: usize = 12;
+pub(super) const EPOCH_HEADER_LEN: usize = 12;
 /// generation(8) + start_offset(8)
-const EPOCH_ENTRY_LEN: usize = 16;
+pub(super) const EPOCH_ENTRY_LEN: usize = 16;
 
 /// A cap on how much history is kept.
 ///
@@ -123,7 +123,7 @@ impl EpochMap {
         self.entries.retain(|epoch| epoch.start_offset < offset);
     }
 
-    fn encode(&self) -> Vec<u8> {
+    pub(super) fn encode(&self) -> Vec<u8> {
         let mut body = Vec::with_capacity(self.entries.len() * EPOCH_ENTRY_LEN);
         for epoch in &self.entries {
             body.extend_from_slice(&epoch.generation.to_be_bytes());
@@ -138,7 +138,7 @@ impl EpochMap {
         out
     }
 
-    fn decode(bytes: &[u8]) -> Option<Self> {
+    pub(super) fn decode(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < EPOCH_HEADER_LEN {
             return None;
         }

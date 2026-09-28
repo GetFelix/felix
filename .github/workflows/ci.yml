@@ -389,8 +389,7 @@ jobs:
   # in front of the suite everything else waits on.
   #
   # A budget rather than exhaustion: this is a regression gate, not a campaign.
-  # Deep runs belong in a scheduled job or a developer's afternoon; what a pull
-  # request needs to know is that the committed seeds and everything a minute of
+  # The deep runs are fuzz-nightly.yml's; what a pull request needs to know is that the committed seeds and everything a minute of
   # mutation reaches still decode or refuse cleanly.
   fuzz:
     name: Fuzz the decoders
@@ -398,7 +397,7 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
-      # Eight targets; keep the whole job inside a few minutes.
+      # Twelve targets; keep the whole job inside a few minutes.
       FUZZ_SECONDS: "30"
     steps:
       - name: Checkout

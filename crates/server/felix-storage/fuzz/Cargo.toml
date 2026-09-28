@@ -8,6 +8,7 @@
 #     cargo install cargo-fuzz
 #     cargo +nightly fuzz run segment_record   -- -max_total_time=300
 #     cargo +nightly fuzz run segment_recovery -- -max_total_time=300
+#     cargo +nightly fuzz run sidecar_state    -- -max_total_time=300
 [package]
 name = "felix-storage-fuzz"
 version = "0.0.0"
@@ -20,7 +21,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 tempfile = "3"
-felix-storage = { path = ".." }
+bytes = "1"
+felix-storage = { path = "..", features = ["fuzzing"] }
 
 [[bin]]
 name = "segment_record"
@@ -39,6 +41,27 @@ bench = false
 [[bin]]
 name = "sparse_index"
 path = "fuzz_targets/sparse_index.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cache_record"
+path = "fuzz_targets/cache_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "counter_record"
+path = "fuzz_targets/counter_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sidecar_state"
+path = "fuzz_targets/sidecar_state.rs"
 test = false
 doc = false
 bench = false
