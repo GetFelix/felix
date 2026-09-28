@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790560219602,
+  "lastUpdate": 1790560507923,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18772,6 +18772,58 @@ window.BENCHMARK_DATA = {
             "range": "10952.12",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1111978.51\nmean: 1107188.65\nstdev: 10952.12\ncv: 0.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d76e464422fc0f741502d48b17f04346a769f9f2",
+          "message": "chore(hooks): check formatting on commit, run the full lint on push (#793)\n\nThe pre-commit hook ran the whole workspace clippy, which made every WIP\ncommit take minutes. Commits now only check formatting; task lint moves to\na new pre-push hook, so nothing reaches the remote unlinted. The docs-site\ninstall steps pointed at a manual cp and claimed the hook ran tests; they\nnow use scripts/setup-githooks.sh and say what each hook does.\n\nSpec-Unaffected: developer tooling only.",
+          "timestamp": "2026-09-27T18:40:11-07:00",
+          "tree_id": "a36880a6dcacac76eaace7c09942ee11b1eae6fe",
+          "url": "https://github.com/gabloe/felix/commit/d76e464422fc0f741502d48b17f04346a769f9f2"
+        },
+        "date": 1790560507379,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 396491.71,
+            "range": "28019.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 396491.71\nmean: 392202.92\nstdev: 28019.86\ncv: 7.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 396491.71,
+            "range": "28019.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 396491.71\nmean: 392202.92\nstdev: 28019.86\ncv: 7.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 92226.45,
+            "range": "998.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 92226.45\nmean: 92434.86\nstdev: 998.13\ncv: 1.08%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 922264.48,
+            "range": "9981.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 922264.48\nmean: 924348.60\nstdev: 9981.33\ncv: 1.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
