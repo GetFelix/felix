@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790586736412,
+  "lastUpdate": 1790595730760,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -24486,6 +24486,72 @@ window.BENCHMARK_DATA = {
             "range": "282.19",
             "unit": "us",
             "extra": "trials: 5\nmedian: 614.00\nmean: 759.60\nstdev: 282.19\ncv: 37.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8987379cb90cb952801bd3a5171f15850079683d",
+          "message": "fix(replication): keep a slow peer from holding other quorum marks (#804)\n\nOne paused or slow peer held every quorum mark on the broker for a dial\ntimeout. A pass could not start until the previous pass's slowest follower\nhad answered, a move's destination and followers beyond the majority\nincluded, and until every other shard's pass had ended.\n\nEach shard now passes on its own. Once its mark and report are out, a pass\nwaits on the followers still answering only until the shard's next pass is\nwanted, then hands their exchanges to the driver. Until such an exchange\nends, its follower is not shipped to again, its auxiliary logs are skipped,\nand it counts at the position it had, a floor. A draining shard still waits\nfor everyone.\n\nThe slowest Quorum publish in the rebalance copy test drops from about\n2.07 s (the peer handshake timeout) to about 90 ms.\n\nSpec-Unaffected: the report still lands before the mark moves, and every position a report or mark is computed from is one the follower acknowledged; only when the driver starts a shard's next pass changes.",
+          "timestamp": "2026-09-28T04:36:45-07:00",
+          "tree_id": "188e5a97c66b8746286a96ccb4cb8bcc9de92505",
+          "url": "https://github.com/gabloe/felix/commit/8987379cb90cb952801bd3a5171f15850079683d"
+        },
+        "date": 1790595728364,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 172,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 172.00\nmean: 172.40\nstdev: 1.14\ncv: 0.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 232,
+            "range": "18.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 232.00\nmean: 239.20\nstdev: 18.40\ncv: 7.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 298,
+            "range": "29.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 298.00\nmean: 305.20\nstdev: 29.00\ncv: 9.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 206,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 206.00\nmean: 205.80\nstdev: 1.30\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 436,
+            "range": "14.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 436.00\nmean: 435.20\nstdev: 14.92\ncv: 3.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 764,
+            "range": "437.08",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 764.00\nmean: 880.60\nstdev: 437.08\ncv: 49.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
