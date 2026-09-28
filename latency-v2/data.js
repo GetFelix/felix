@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790595730760,
+  "lastUpdate": 1790598258986,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -24552,6 +24552,72 @@ window.BENCHMARK_DATA = {
             "range": "437.08",
             "unit": "us",
             "extra": "trials: 5\nmedian: 764.00\nmean: 880.60\nstdev: 437.08\ncv: 49.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7f27b9bdf0500005572c95c8c769c9a6264637ca",
+          "message": "docs(env): drop the variable count from the registry header (#812)\n\nA stated count has to be bumped by every PR that adds a variable, and two\nsuch PRs in flight always collide; it drifted twice in a day. KNOWN_VARS is\nthe count. The check now fails if the header states a number at all, so it\ncannot come back.\n\nSpec-Unaffected: doc comment and check script only.",
+          "timestamp": "2026-09-28T05:20:11-07:00",
+          "tree_id": "e86b9dd088d2a4ac6e4b235086ec89045d711303",
+          "url": "https://github.com/gabloe/felix/commit/7f27b9bdf0500005572c95c8c769c9a6264637ca"
+        },
+        "date": 1790598256524,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 69.40\nstdev: 1.14\ncv: 1.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 93,
+            "range": "7.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 93.00\nmean: 95.20\nstdev: 7.22\ncv: 7.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 119,
+            "range": "34.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 119.00\nmean: 136.40\nstdev: 34.07\ncv: 24.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 89,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 89.00\nmean: 88.80\nstdev: 0.84\ncv: 0.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 198,
+            "range": "8.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 197.00\nstdev: 8.49\ncv: 4.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 298,
+            "range": "69.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 298.00\nmean: 320.00\nstdev: 69.90\ncv: 21.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
