@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790562520502,
+  "lastUpdate": 1790565361074,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -23958,6 +23958,72 @@ window.BENCHMARK_DATA = {
             "range": "670.06",
             "unit": "us",
             "extra": "trials: 5\nmedian: 416.00\nmean: 814.00\nstdev: 670.06\ncv: 82.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e70d532faa4574ce1962cc2c2c975f75e5bd8ca7",
+          "message": "feat(replication): a Fence peer message replicas persist and keep (#794)\n\nA promoted leader can now ask a replica to take its generation. The replica\nfsyncs it in the file that keeps the highest generation it accepted, then\nanswers with its log end, commit offset and the generation of its last\nrecord. From then on it refuses every older leader: records, bootstraps,\nrebuilds and gap answers, across restarts and whatever its routing view\nsays. The shard's cursor, dead-letter and counter logs check the shard's own\nlog too.\n\nThe message is negotiated. Brokers offer capability bits in the peer\nhandshake (HelloCapable and HelloCapableOk, kinds 27 and 28); a peer that\npredates them refuses the kind and is greeted with the plain Hello again,\nbyte for byte what it always read. The pool will not send Fence to a peer\nthat did not offer FENCE. FELIX_INTERNAL_FENCE=false withdraws the offer.\n\nNo leader sends the fence yet. This is AnswerFence in\ndocs/formal/FelixShard.tla; FelixShardFencedAck.cfg now cites it.",
+          "timestamp": "2026-09-27T20:07:44-07:00",
+          "tree_id": "69e7d4e88d193e72357d5f51d8eec698d6edb543",
+          "url": "https://github.com/gabloe/felix/commit/e70d532faa4574ce1962cc2c2c975f75e5bd8ca7"
+        },
+        "date": 1790565357732,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 163,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 163.00\nmean: 163.20\nstdev: 1.64\ncv: 1.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 208,
+            "range": "12.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 208.00\nmean: 213.00\nstdev: 12.92\ncv: 6.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 258,
+            "range": "588.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 258.00\nmean: 567.40\nstdev: 588.73\ncv: 103.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 201,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 200.60\nstdev: 1.14\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 462,
+            "range": "19.99",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 462.00\nmean: 456.40\nstdev: 19.99\ncv: 4.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1742,
+            "range": "470.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1742.00\nmean: 1496.40\nstdev: 470.68\ncv: 31.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
