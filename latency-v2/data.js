@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790565361074,
+  "lastUpdate": 1790565955685,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -24024,6 +24024,72 @@ window.BENCHMARK_DATA = {
             "range": "470.68",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1742.00\nmean: 1496.40\nstdev: 470.68\ncv: 31.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ca3f008105ad9663b865adac7f9b40c51141033d",
+          "message": "fix(storage): settle a compaction swap an older build left mid-way (#797)\n\nUp to 0.6.0-preview, cache and counter compaction swapped the shard\ndirectory for a compacted copy through <shard>.compacting and\n<shard>.retired siblings. Background compaction removed that swap and its\nrecovery, so an upgraded broker opened a shard stopped between the two\nrenames as empty.\n\nOpening a cache or counter shard now settles the old swap first, as the\nold code did: a missing shard directory is restored from .retired, and\nleftover .retired/.compacting siblings are deleted when the shard is in\nplace. Tested against a port of the old swap stopped after every step.",
+          "timestamp": "2026-09-27T20:15:01-07:00",
+          "tree_id": "ef651bcb86ac5e522282e2200ad17b51773b7da7",
+          "url": "https://github.com/gabloe/felix/commit/ca3f008105ad9663b865adac7f9b40c51141033d"
+        },
+        "date": 1790565953549,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 171,
+            "range": "1.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 171.00\nmean: 169.60\nstdev: 1.95\ncv: 1.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 213,
+            "range": "5.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 213.00\nmean: 216.20\nstdev: 5.81\ncv: 2.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 275,
+            "range": "23.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 275.00\nmean: 272.40\nstdev: 23.46\ncv: 8.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 205,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 205.00\nmean: 205.40\nstdev: 1.67\ncv: 0.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 418,
+            "range": "19.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 418.00\nmean: 425.80\nstdev: 19.12\ncv: 4.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 661,
+            "range": "886.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 661.00\nmean: 1166.00\nstdev: 886.91\ncv: 76.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
