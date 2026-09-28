@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790560217143,
+  "lastUpdate": 1790560504942,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -23826,6 +23826,72 @@ window.BENCHMARK_DATA = {
             "range": "920.62",
             "unit": "us",
             "extra": "trials: 5\nmedian: 413.00\nmean: 1027.40\nstdev: 920.62\ncv: 89.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d76e464422fc0f741502d48b17f04346a769f9f2",
+          "message": "chore(hooks): check formatting on commit, run the full lint on push (#793)\n\nThe pre-commit hook ran the whole workspace clippy, which made every WIP\ncommit take minutes. Commits now only check formatting; task lint moves to\na new pre-push hook, so nothing reaches the remote unlinted. The docs-site\ninstall steps pointed at a manual cp and claimed the hook ran tests; they\nnow use scripts/setup-githooks.sh and say what each hook does.\n\nSpec-Unaffected: developer tooling only.",
+          "timestamp": "2026-09-27T18:40:11-07:00",
+          "tree_id": "a36880a6dcacac76eaace7c09942ee11b1eae6fe",
+          "url": "https://github.com/gabloe/felix/commit/d76e464422fc0f741502d48b17f04346a769f9f2"
+        },
+        "date": 1790560501744,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 173,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 173.00\nmean: 172.60\nstdev: 1.14\ncv: 0.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 222,
+            "range": "3.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 222.00\nmean: 224.40\nstdev: 3.91\ncv: 1.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 285,
+            "range": "123.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 285.00\nmean: 337.20\nstdev: 123.64\ncv: 36.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 208,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 208.00\nmean: 208.00\nstdev: 1.22\ncv: 0.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 415,
+            "range": "16.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 415.00\nmean: 420.20\nstdev: 16.63\ncv: 3.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 585,
+            "range": "221.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 585.00\nmean: 686.80\nstdev: 221.96\ncv: 32.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
