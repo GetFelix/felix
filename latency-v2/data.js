@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790608464884,
+  "lastUpdate": 1790612166234,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -24948,6 +24948,72 @@ window.BENCHMARK_DATA = {
             "range": "1214.40",
             "unit": "us",
             "extra": "trials: 5\nmedian: 494.00\nmean: 1162.80\nstdev: 1214.40\ncv: 104.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d579ed00d1774b2da9f520b4b868e58edd84fa6d",
+          "message": "fix(replication): a new leader writes a generation-start record and counts only past it (#826)\n\nA promoted leader counted the records it inherited toward its quorum mark,\nso a record acknowledged on a majority could be replaced when a later fence\npreferred a log with a newer last generation (Raft's Figure 8, found by TLC\nfrom a seeded history). A move's cut-over or a cancelled move's hand-back\nreaches the same loss one leadership later.\n\nOnce the fleet finalizes the `generation_start` feature, a leader appends a\ngeneration-start record at its generation's start before it serves (after a\npromotion's fence, at either end of a move, on a hand-back), and a stream\nleader's mark counts a majority only once it reaches a record of its own\ngeneration. Inherited records become readable as soon as the record is on a\nmajority, with no client write needed. Before the finalize nothing changes.\n\n- Storage format v4: flag bit 29 of payload_len. Segments stay v3 until a\n  log's first record needs v4, so the upgrade stays reversible until the\n  finalize.\n- Readers skip the record: subscriptions, replay, Kafka, groups, cache and\n  counter projections, hydrate, cache watch, felix-log-tool.\n- Client flag FLAG_EVENT_BATCH_SKIPPED (0x0800) and Event::skipped_before\n  keep \"an offset jump is a drop\" truthful.\n- Model: StartRecord knob. FelixShardFigure8 and FelixShardFigure8CutOver\n  pass; their twins without the record violate AckedOnMajority.\n  check_tla.sh takes configuration names.\n- Cluster tests for a cut-over, a hand-back and the not-finalized path;\n  upgrade runbook for finalizing generation_start.",
+          "timestamp": "2026-09-28T09:12:23-07:00",
+          "tree_id": "0c0666bd6bb3bf1e56ce4352ad9b7219e84cf6b2",
+          "url": "https://github.com/gabloe/felix/commit/d579ed00d1774b2da9f520b4b868e58edd84fa6d"
+        },
+        "date": 1790612161943,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 179,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 178.80\nstdev: 0.84\ncv: 0.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 245,
+            "range": "5.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 245.00\nmean: 245.80\nstdev: 5.07\ncv: 2.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 304,
+            "range": "668.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 304.00\nmean: 623.80\nstdev: 668.87\ncv: 107.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 215,
+            "range": "8.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 215.00\nmean: 218.40\nstdev: 8.29\ncv: 3.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 432,
+            "range": "35.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 432.00\nmean: 446.40\nstdev: 35.58\ncv: 7.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 598,
+            "range": "374.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 598.00\nmean: 758.80\nstdev: 374.82\ncv: 49.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
