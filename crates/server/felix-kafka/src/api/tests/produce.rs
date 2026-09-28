@@ -43,7 +43,11 @@ fn batch(producer: Producer, values: &[&str], compression: Compression) -> Bytes
             producer_epoch,
             timestamp_type: TimestampType::Creation,
             offset: i as i64,
-            sequence: if base < 0 { base } else { base + i as i32 },
+            sequence: if base < 0 {
+                base
+            } else {
+                base.wrapping_add(i as i32)
+            },
             timestamp: 1_700_000_000_000,
             key: Some(Bytes::from_static(b"key")),
             value: Some(Bytes::copy_from_slice(value.as_bytes())),
@@ -268,6 +272,133 @@ async fn sequence_refusals_use_the_codes_librdkafka_acts_on() {
     .await;
     assert_eq!(unknown.error_code, 59, "UNKNOWN_PRODUCER_ID");
     assert_eq!(stored(&mut client).await, owned(&[(0, "a")]));
+}
+
+/// Store `values` as `producer`'s records from `first_sequence` on, the way a
+/// replica is shipped them. Reaching the wrap by producing 2^31 records is out
+/// of reach for a test; a promoted replica holding the tail of them is not.
+async fn ship_producer(
+    fixture: &super::Fixture,
+    producer: i64,
+    first_sequence: i32,
+    values: &[&str],
+) {
+    use felix_wire::internal::{ProducerMark, batch_checksum};
+    let handle = fixture
+        .broker
+        .resolve_stream_handle(super::TENANT, "orders", "created", 0)
+        .await
+        .expect("handle");
+    let log = handle.log().expect("durable");
+    let from = log.tail_offset().await.expect("tail");
+    let payloads: Vec<Bytes> = values
+        .iter()
+        .map(|value| Bytes::copy_from_slice(value.as_bytes()))
+        .collect();
+    let marks: Vec<ProducerMark> = (0..values.len())
+        .map(|i| ProducerMark::Opens {
+            producer_id: producer as u64,
+            sequence: first_sequence.wrapping_add(i as i32) as u64,
+            len: 1,
+        })
+        .collect();
+    let applied = felix_broker::replication::apply(
+        log,
+        from,
+        batch_checksum(&payloads, &marks),
+        &payloads,
+        &marks,
+    )
+    .await
+    .expect("apply")
+    .expect("in order");
+    fixture
+        .broker
+        .adopt_replicated(
+            super::TENANT,
+            "orders",
+            "created",
+            0,
+            applied.durable_offset,
+        )
+        .await
+        .expect("adopt");
+}
+
+fn idempotent(id: i64, sequence: i32, values: &[&str]) -> Bytes {
+    batch(
+        Producer::Idempotent { id, sequence },
+        values,
+        Compression::None,
+    )
+}
+
+/// **Sequences wrap from `i32::MAX` to 0, as Kafka's do.** After a record at
+/// `i32::MAX` the next batch starts at 0; a re-send from either side of the
+/// wrap is a duplicate, and a batch past the wrap's next sequence is a gap.
+#[tokio::test]
+async fn a_sequence_wraps_to_zero_after_i32_max() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    let mut client = fixture.connect();
+    let id = producer_id(&mut client).await;
+    ship_producer(&fixture, id, i32::MAX - 2, &["a", "b"]).await;
+
+    let last = idempotent(id, i32::MAX, &["c"]);
+    let wrapped = idempotent(id, 0, &["d", "e"]);
+    let answer = produce(&mut client, -1, last.clone()).await;
+    assert_eq!((answer.error_code, answer.base_offset), (0, 2));
+    let gap = produce(&mut client, -1, idempotent(id, 1, &["x"])).await;
+    assert_eq!(gap.error_code, 45, "OUT_OF_ORDER_SEQUENCE_NUMBER");
+    let answer = produce(&mut client, -1, wrapped.clone()).await;
+    assert_eq!((answer.error_code, answer.base_offset), (0, 3));
+
+    for (resent, offset) in [(last, 2), (wrapped, 3)] {
+        let again = produce(&mut client, -1, resent).await;
+        assert_eq!((again.error_code, again.base_offset), (0, offset));
+    }
+    let gap = produce(&mut client, -1, idempotent(id, 5, &["x"])).await;
+    assert_eq!(gap.error_code, 45, "OUT_OF_ORDER_SEQUENCE_NUMBER");
+    let answer = produce(&mut client, -1, idempotent(id, 2, &["f"])).await;
+    assert_eq!((answer.error_code, answer.base_offset), (0, 5));
+    assert_eq!(
+        stored(&mut client).await,
+        owned(&[(0, "a"), (1, "b"), (2, "c"), (3, "d"), (4, "e"), (5, "f")])
+    );
+}
+
+/// **A batch may straddle the wrap.** Its records carry `i32::MAX - 1`,
+/// `i32::MAX`, 0 and 1; the next batch starts at 2, and a re-send of the
+/// straddling batch is a duplicate.
+#[tokio::test]
+async fn a_batch_spans_the_sequence_wrap() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    let mut client = fixture.connect();
+    let id = producer_id(&mut client).await;
+    ship_producer(&fixture, id, i32::MAX - 3, &["a", "b"]).await;
+
+    let spanning = idempotent(id, i32::MAX - 1, &["c", "d", "e", "f"]);
+    let answer = produce(&mut client, -1, spanning.clone()).await;
+    assert_eq!((answer.error_code, answer.base_offset), (0, 2));
+    let again = produce(&mut client, -1, spanning).await;
+    assert_eq!((again.error_code, again.base_offset), (0, 2));
+    let gap = produce(&mut client, -1, idempotent(id, 3, &["x"])).await;
+    assert_eq!(gap.error_code, 45, "OUT_OF_ORDER_SEQUENCE_NUMBER");
+    let answer = produce(&mut client, -1, idempotent(id, 2, &["g"])).await;
+    assert_eq!((answer.error_code, answer.base_offset), (0, 6));
+    assert_eq!(
+        stored(&mut client).await,
+        owned(&[
+            (0, "a"),
+            (1, "b"),
+            (2, "c"),
+            (3, "d"),
+            (4, "e"),
+            (5, "f"),
+            (6, "g")
+        ])
+    );
 }
 
 /// Writing needs `stream.publish`, checked before the stream is looked up.

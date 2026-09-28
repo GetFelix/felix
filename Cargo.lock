@@ -1316,6 +1316,7 @@ dependencies = [
  "felix-authz",
  "felix-broker",
  "felix-storage",
+ "felix-wire",
  "flate2",
  "futures",
  "kafka-protocol",
