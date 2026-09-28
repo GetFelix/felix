@@ -84,8 +84,16 @@ pub struct ReportTo {
     pub node_id: String,
     /// Held, not copied: this reports for the life of the process, across
     /// however many access tokens that spans.
-    pub token: Option<crate::cluster::credential::NodeCredential>,
+    pub token: Option<std::sync::Arc<dyn Credential>>,
     pub incarnation: u64,
+}
+
+/// The token a report is sent with.
+///
+/// Read on every request rather than copied, because the broker refreshes it
+/// for the life of the process.
+pub trait Credential: Send + Sync {
+    fn bearer(&self) -> std::sync::Arc<String>;
 }
 
 /// One shard's replicas, as this leader currently sees them.

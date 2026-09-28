@@ -31,7 +31,7 @@ use tempfile::TempDir;
 use super::shard::*;
 use super::*;
 use crate::peer::PeerError;
-use crate::replication::reporter::ReportTo;
+use crate::reporter::ReportTo;
 
 const TENANT: &str = "t1";
 const NAMESPACE: &str = "ns";

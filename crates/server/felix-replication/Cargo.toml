@@ -1,0 +1,48 @@
+[package]
+name = "felix-replication"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Broker-to-broker transport and log replication for Felix"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["felix", "replication"]
+categories = ["network-programming"]
+# Built into the broker service, not consumed from a registry.
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+# `PeerRequestHandler` is a trait object with async methods.
+async-trait = { workspace = true }
+bytes = { workspace = true }
+felix-broker = { path = "../felix-broker", version = "0.6.0-preview" }
+felix-common = { path = "../felix-common", version = "0.6.0-preview", features = ["tls"] }
+felix-router = { path = "../felix-router", version = "0.6.0-preview" }
+felix-storage = { path = "../felix-storage", version = "0.6.0-preview" }
+felix-transport = { path = "../../protocol/felix-transport", version = "0.6.0-preview" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview" }
+futures = "0.3"
+metrics = { workspace = true }
+parking_lot = { workspace = true }
+quinn = { workspace = true }
+rcgen = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+rustls-webpki = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

@@ -332,6 +332,13 @@ for what the current release actually guarantees.
 
 ### Changed
 
+- **Replication and the broker-to-broker transport are their own crate,
+  `felix-replication`.** `felix_broker_service::peer` is now
+  `felix_replication::peer`, and `felix_broker_service::replication::*` is at
+  the root of `felix_replication`. `ShardKey` and `ShardKind` are defined there
+  and still re-exported from `felix_broker_service::shards`. No behaviour
+  change.
+
 - **`felix-conformance` is AGPL-3.0-only.** It links the broker, storage and
   authz crates to run its suite, so a build of it was AGPL whatever its label
   said. It is not published; running `verify` over a client's results puts no

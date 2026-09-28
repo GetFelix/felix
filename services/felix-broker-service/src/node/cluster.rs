@@ -14,10 +14,10 @@ use super::peer_dispatch;
 use crate::cluster::client_endpoints::ClientEndpoints;
 use crate::cluster::credential::NodeCredential;
 use crate::config::BrokerConfig;
-use crate::peer::{self, PeerPool, tls::PeerTls};
-use crate::replication::{self, halted::HaltedReplicas, quorum::QuorumMarks};
 use crate::serving::auth::BrokerAuth;
 use crate::shards::{lifecycle as shard_lifecycle, routing as shard_routing, watch as shard_watch};
+use felix_replication::peer::{self, PeerPool, tls::PeerTls};
+use felix_replication::{self as replication, halted::HaltedReplicas, quorum::QuorumMarks};
 
 /// The router, ingress router, shard lifecycle and ownership of a cluster member.
 pub(super) type ShardState = (
@@ -266,7 +266,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                     Arc::clone(pool),
                     Arc::clone(broker),
                     Arc::clone(router),
-                    Arc::clone(ingress.fence()),
+                    Arc::clone(ingress.fence()) as Arc<dyn replication::driver::WriteFence>,
                     replication::driver::Published {
                         marks: Arc::clone(quorum_marks),
                         halted: Arc::clone(halted_replicas),
@@ -283,7 +283,10 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                                 client: membership_client.clone(),
                                 base_url: base_url.clone(),
                                 node_id: membership.node_id.clone(),
-                                token: credential.clone(),
+                                token: credential.clone().map(|credential| {
+                                    Arc::new(credential)
+                                        as Arc<dyn replication::reporter::Credential>
+                                }),
                                 incarnation: 0,
                             },
                             sync_shutdown.clone(),

@@ -158,7 +158,7 @@ async fn init_observability_succeeds() {
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn the_halted_listing_names_each_stopped_replica() {
-    use crate::replication::halted::{HaltedReplica, HaltedReplicas};
+    use felix_replication::halted::{HaltedReplica, HaltedReplicas};
 
     let handle = init_observability("test-halted-service");
     let halted = std::sync::Arc::new(HaltedReplicas::new());

@@ -80,7 +80,7 @@ pub(crate) async fn serve_metrics<F>(
     handle: PrometheusHandle,
     addr: SocketAddr,
     readiness: Readiness,
-    halted: std::sync::Arc<crate::replication::halted::HaltedReplicas>,
+    halted: std::sync::Arc<felix_replication::halted::HaltedReplicas>,
     shutdown: F,
 ) -> std::io::Result<()>
 where
@@ -172,7 +172,7 @@ fn resource_attributes(service_name: &str) -> Vec<KeyValue> {
 fn health_router(
     handle: PrometheusHandle,
     readiness: Readiness,
-    halted: std::sync::Arc<crate::replication::halted::HaltedReplicas>,
+    halted: std::sync::Arc<felix_replication::halted::HaltedReplicas>,
 ) -> axum::Router {
     axum::Router::new()
         .route(

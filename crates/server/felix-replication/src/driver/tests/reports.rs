@@ -163,7 +163,7 @@ async fn a_failed_replica_report_holds_the_quorum_mark_back() {
     });
 
     let report_shutdown = CancellationToken::new();
-    let (reporter, _reporter_task) = crate::replication::reporter::Reporter::spawn(
+    let (reporter, _reporter_task) = crate::reporter::Reporter::spawn(
         ReportTo {
             client: reqwest::Client::new(),
             base_url: format!("http://{addr}"),
@@ -203,8 +203,7 @@ async fn a_failed_replica_report_holds_the_quorum_mark_back() {
             marks
                 .wait_for(&watch_key(&key()), 4, 1, Duration::from_millis(50))
                 .await,
-            crate::replication::quorum::QuorumWait::TimedOut
-                | crate::replication::quorum::QuorumWait::NotLeading
+            crate::quorum::QuorumWait::TimedOut | crate::quorum::QuorumWait::NotLeading
         ),
         "the mark was published on a report the control plane never took, so a \
          client would be told its record is on a majority the control plane \
@@ -337,7 +336,7 @@ async fn a_slow_control_plane_does_not_stall_the_remaining_followers() {
     });
 
     let report_shutdown = CancellationToken::new();
-    let (reporter, _reporter_task) = crate::replication::reporter::Reporter::spawn(
+    let (reporter, _reporter_task) = crate::reporter::Reporter::spawn(
         ReportTo {
             client: reqwest::Client::new(),
             base_url: format!("http://{addr}"),
@@ -412,7 +411,7 @@ async fn registered_leader(
 async fn pass_with_a_publish_behind_the_report(
     broker: &Arc<Broker>,
     marks: &QuorumMarks,
-) -> crate::replication::reporter::ShardReport {
+) -> crate::reporter::ShardReport {
     let log = broker
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
         .await
@@ -440,7 +439,7 @@ async fn pass_with_a_publish_behind_the_report(
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, app.into_make_service()).await;
     });
-    let (reporter, _reporter_task) = crate::replication::reporter::Reporter::spawn(
+    let (reporter, _reporter_task) = crate::reporter::Reporter::spawn(
         ReportTo {
             client: reqwest::Client::new(),
             base_url: format!("http://{addr}"),

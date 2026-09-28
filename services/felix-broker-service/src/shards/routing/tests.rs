@@ -8,6 +8,7 @@ use crate::shards::lifecycle::ShardLifecycle;
 use crate::shards::watch::ShardAssignment;
 
 mod hold;
+mod quorum;
 
 fn key(shard: u32) -> ShardKey {
     ShardKey {

@@ -88,7 +88,7 @@ pub struct BrokerConfig {
     pub membership: Option<MembershipConfig>,
     /// Broker-internal transport, present only when this broker joins a cluster.
     /// A broker with no peers has nothing to listen for.
-    pub peer_transport: Option<crate::peer::PeerTransportConfig>,
+    pub peer_transport: Option<felix_replication::peer::PeerTransportConfig>,
     /// If true, publish acks are sent after commit.
     pub ack_on_commit: bool,
     /// Max frame size accepted on QUIC streams.

@@ -1122,6 +1122,7 @@ dependencies = [
  "felix-common",
  "felix-controlplane-service",
  "felix-kafka",
+ "felix-replication",
  "felix-router",
  "felix-storage",
  "felix-transport",
@@ -1342,6 +1343,37 @@ dependencies = [
  "rustls",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "felix-replication"
+version = "0.6.0-preview"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bytes",
+ "felix-broker",
+ "felix-common",
+ "felix-router",
+ "felix-storage",
+ "felix-transport",
+ "felix-wire",
+ "futures",
+ "metrics",
+ "parking_lot",
+ "quinn",
+ "rcgen",
+ "reqwest 0.12.28",
+ "rustls",
+ "rustls-webpki",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

@@ -72,6 +72,7 @@ felix-kafka = { path = "../../crates/server/felix-kafka", version = "0.6.0-previ
 felix-transport = { path = "../../crates/protocol/felix-transport", version = "0.6.0-preview" }
 felix-wire = { path = "../../crates/protocol/felix-wire", version = "0.6.0-preview" }
 felix-storage = { path = "../../crates/server/felix-storage", version = "0.6.0-preview" }
+felix-replication = { path = "../../crates/server/felix-replication", version = "0.6.0-preview" }
 bytes = { workspace = true }
 dashmap = { workspace = true }
 ed25519-dalek = { workspace = true }

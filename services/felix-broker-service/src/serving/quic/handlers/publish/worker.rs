@@ -134,8 +134,8 @@ pub(crate) fn build_tracked_publish_context(
 /// lane, go on without it.
 struct LaneWork {
     broker: Arc<Broker>,
-    peers: Option<Arc<crate::peer::PeerPool>>,
-    marks: Option<Arc<crate::replication::quorum::QuorumMarks>>,
+    peers: Option<Arc<felix_replication::peer::PeerPool>>,
+    marks: Option<Arc<felix_replication::quorum::QuorumMarks>>,
     ingress: Option<Arc<crate::shards::routing::IngressRouter>>,
     quorum_timeout: Duration,
     forward_budget: Duration,
@@ -297,7 +297,7 @@ impl LaneWork {
             drop(fenced);
             let result = match completed {
                 Ok(outcome) => {
-                    crate::replication::quorum::await_quorum(
+                    felix_replication::quorum::await_quorum(
                         &handle,
                         shard.as_ref(),
                         &outcome,
@@ -361,7 +361,7 @@ impl LaneWork {
                 let ingress = self.ingress.clone();
                 let quorum_timeout = self.quorum_timeout;
                 self.work.spawn(async move {
-                    let result = crate::replication::quorum::await_quorum(
+                    let result = felix_replication::quorum::await_quorum(
                         &handle,
                         shard.as_ref(),
                         &outcome,
@@ -425,7 +425,7 @@ impl LaneWork {
             // offsets are the original's, and the answer must mean the same
             // thing.
             Ok(idempotent) => {
-                crate::replication::quorum::await_quorum(
+                felix_replication::quorum::await_quorum(
                     handle,
                     shard.as_ref(),
                     &idempotent.outcome,
@@ -483,7 +483,7 @@ const FLUSH_SLOTS_PRUNE_MIN: usize = 1024;
 
 /// Send a forwarded batch and wait for the owner's answer.
 async fn forward(
-    pool: &crate::peer::PeerPool,
+    pool: &felix_replication::peer::PeerPool,
     job: &PublishJob,
     budget: Duration,
 ) -> anyhow::Result<()> {

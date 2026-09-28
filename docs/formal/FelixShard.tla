@@ -461,7 +461,7 @@ Ship(b, f) ==
 \* With `ReportBeforeAck`, the mark may not move past what the control plane
 \* has already been told: the leader reports who holds the record, waits for
 \* that report to land, and only then releases the acknowledgement. This is
-\* `publish_mark` in `services/felix-broker-service/src/replication/driver/shard.rs`, which moves
+\* `publish_mark` in `crates/server/felix-replication/src/driver/shard.rs`, which moves
 \* the mark only `if reported`, and `await_quorum`, which blocks the publish on
 \* the mark. Without it a leader can tell a client its record is on a majority
 \* while the control plane knows nothing about which replica holds it, and a

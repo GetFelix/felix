@@ -111,11 +111,11 @@ pub(crate) async fn apply_cache_op(
     // Read by a write to a `Quorum` cache, which is not acknowledged until a
     // majority of the shard's replicas hold it.
     quorum: (
-        Option<&crate::replication::quorum::QuorumMarks>,
+        Option<&felix_replication::quorum::QuorumMarks>,
         std::time::Duration,
     ),
     ingress: Option<&IngressRouter>,
-    peers: Option<&crate::peer::PeerPool>,
+    peers: Option<&felix_replication::peer::PeerPool>,
     // The caller's token, carried on a forward for the owner to verify.
     credential: &str,
     tenant_id: &str,
@@ -149,7 +149,7 @@ pub(crate) async fn apply_cache_op(
                         .put(tenant_id, namespace, cache, shard, key, value, ttl)
                         .await;
                     drop(fenced);
-                    crate::replication::quorum::await_cache_quorum(
+                    felix_replication::quorum::await_cache_quorum(
                         broker,
                         &written,
                         marks,
@@ -167,7 +167,7 @@ pub(crate) async fn apply_cache_op(
                     let value = cache_store
                         .get(tenant_id, namespace, cache, shard, key)
                         .await;
-                    crate::replication::quorum::await_cache_quorum(
+                    felix_replication::quorum::await_cache_quorum(
                         broker,
                         &written,
                         marks,
@@ -186,7 +186,7 @@ pub(crate) async fn apply_cache_op(
                         .delete(tenant_id, namespace, cache, shard, key)
                         .await;
                     drop(fenced);
-                    crate::replication::quorum::await_cache_quorum(
+                    felix_replication::quorum::await_cache_quorum(
                         broker,
                         &written,
                         marks,
@@ -251,11 +251,11 @@ pub(crate) async fn apply_counter_op(
     // As for a cache op: a `Quorum` cache acknowledges a counter add, and
     // answers a counter read, only once a majority holds the counter log.
     quorum: (
-        Option<&crate::replication::quorum::QuorumMarks>,
+        Option<&felix_replication::quorum::QuorumMarks>,
         std::time::Duration,
     ),
     ingress: Option<&IngressRouter>,
-    peers: Option<&crate::peer::PeerPool>,
+    peers: Option<&felix_replication::peer::PeerPool>,
     credential: &str,
     tenant_id: &str,
     namespace: &str,
@@ -295,7 +295,7 @@ pub(crate) async fn apply_counter_op(
                         .await
                         .map_err(storage)?;
                     drop(fenced);
-                    crate::replication::quorum::await_counter_quorum(
+                    felix_replication::quorum::await_counter_quorum(
                         broker,
                         &shard_key,
                         marks,
@@ -314,7 +314,7 @@ pub(crate) async fn apply_counter_op(
                         .get(tenant_id, namespace, cache, shard, key)
                         .await
                         .map_err(storage)?;
-                    crate::replication::quorum::await_counter_quorum(
+                    felix_replication::quorum::await_counter_quorum(
                         broker,
                         &shard_key,
                         marks,

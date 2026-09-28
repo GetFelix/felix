@@ -40,9 +40,9 @@ use tokio_util::task::TaskTracker;
 
 use crate::cluster::{controlplane_http, credential};
 use crate::config::{self, DurableStorageConfig};
-use crate::replication;
 use crate::serving::auth::{BrokerAuth, ControlPlaneKeyStore, TenantCatalog};
 use crate::serving::tls::ClientTls;
+use felix_replication as replication;
 
 /// Start the broker and run until the provided `shutdown` future resolves.
 ///
@@ -163,7 +163,7 @@ where
     if let Some(ingress) = &ingress_router {
         broker.set_read_bounds(Arc::new(replication::quorum::CommittedReads::new(
             Arc::clone(&quorum_marks),
-            Arc::clone(ingress),
+            Arc::clone(ingress) as Arc<dyn replication::quorum::ShardServing>,
         )));
     }
     tracing::info!("broker started");

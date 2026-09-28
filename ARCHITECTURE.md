@@ -34,7 +34,7 @@ crate; this section says what is inside the important ones.
 ```
 crates/protocol/   how peers talk            felix-wire, felix-transport
 crates/server/     what the services use     felix-broker, felix-storage, felix-router,
-                                             felix-authz, felix-common
+                                             felix-replication, felix-authz, felix-common
 crates/sdk/        what applications link    felix-client, felix-python, felix-typescript
 crates/testing/    exercising Felix          felix-cluster, felix-conformance, felix-loadgen
 services/          the two deployables       felix-broker-service, felix-controlplane-service
@@ -85,6 +85,15 @@ matching. `felix-common` is what the broker and control plane must agree on exac
 membership JSON shapes, the registry of every `FELIX_*` variable (`env_registry.rs`), and the
 start-up and drain helpers both services use.
 
+### `felix-replication`: brokers talking to brokers
+
+The broker-to-broker transport in `peer/` (connection pool, listener, mTLS) and the log
+replication that travels over it: `driver/` ships committed records to each shard's
+followers, `replica.rs` stores them on a follower, `quorum.rs` is what a `Quorum` write waits
+on, and `reporter.rs` tells the control plane which replicas hold the log. What it needs from
+the broker service comes in through three small traits: `quorum::ShardServing`,
+`driver::WriteFence` and `reporter::Credential`.
+
 ### `felix-broker-service`: a broker node
 
 The process around `felix_broker::Broker`. `node.rs` is the entry point: it starts every
@@ -101,8 +110,8 @@ listener and background task and owns the shutdown order. The rest groups into f
 - `shards/` is owning shards: `watch` follows assignments, `lifecycle` is what this broker has
   actually done about them, and `routing` answers whether a shard is local, remote or
   unavailable.
-- `replication/` ships records to followers and applies them on a follower, over the
-  broker-to-broker transport in `peer/`.
+- `node/cluster.rs` wires in `felix-replication`, which ships records to followers and
+  applies them on a follower, over its own broker-to-broker transport.
 
 `config/` reads the environment, and `observability/` serves metrics and health.
 

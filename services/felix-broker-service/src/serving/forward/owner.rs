@@ -32,12 +32,12 @@ use felix_wire::internal::{
     ForwardPublishError, ForwardPublishOk, InternalMessage, NotLeader,
 };
 
-use crate::peer::metrics;
-use crate::peer::server::PeerRequestHandler;
 use crate::serving::auth::BrokerAuth;
 use crate::shards::lifecycle::fence::Fenced;
 use crate::shards::routing::{Dispatch, IngressRouter};
 use crate::shards::{ShardKey, ShardKind};
+use felix_replication::peer::metrics;
+use felix_replication::peer::server::PeerRequestHandler;
 
 /// Applies forwarded publishes against the local broker.
 pub struct ForwardingHandler {
@@ -55,7 +55,7 @@ pub struct ForwardingHandler {
     /// happened to reach — honoured when it talked to the leader, silently
     /// downgraded to `Leader` through any other broker, which is where a
     /// failover then lost the record.
-    marks: Option<Arc<crate::replication::quorum::QuorumMarks>>,
+    marks: Option<Arc<felix_replication::quorum::QuorumMarks>>,
     quorum_timeout: std::time::Duration,
     /// Verifies the client credential a forward carries, against the same
     /// keys a direct request is checked with.
@@ -68,7 +68,7 @@ impl ForwardingHandler {
         ingress: Arc<IngressRouter>,
         router: Arc<ShardRouter>,
         advertise_addr: String,
-        marks: Option<Arc<crate::replication::quorum::QuorumMarks>>,
+        marks: Option<Arc<felix_replication::quorum::QuorumMarks>>,
         quorum_timeout: std::time::Duration,
         auth: Arc<BrokerAuth>,
     ) -> Self {
@@ -151,7 +151,7 @@ impl ForwardingHandler {
                 // publish is still a publish to this stream, and the client on
                 // the other end of the forward asked for the stream's guarantee,
                 // not for whichever one this path happened to provide.
-                if let Err(err) = crate::replication::quorum::await_quorum(
+                if let Err(err) = felix_replication::quorum::await_quorum(
                     &handle,
                     Some(&key),
                     &outcome,
@@ -310,7 +310,7 @@ impl ForwardingHandler {
         // The same wait the requester's own path makes for a local write or
         // read: the client asked for the cache's guarantee, wherever the key
         // happens to live.
-        if let Err(err) = crate::replication::quorum::await_cache_quorum(
+        if let Err(err) = felix_replication::quorum::await_cache_quorum(
             &self.broker,
             &key,
             self.marks.as_deref(),
@@ -584,7 +584,7 @@ impl ForwardingHandler {
         }
     }
 
-    /// [`crate::replication::quorum::await_counter_quorum`] for a forwarded
+    /// [`felix_replication::quorum::await_counter_quorum`] for a forwarded
     /// counter op, as the requester's own path waits for a local one.
     async fn counter_quorum(
         &self,
@@ -592,7 +592,7 @@ impl ForwardingHandler {
         end: Option<u64>,
         what: &'static str,
     ) -> Result<(), String> {
-        crate::replication::quorum::await_counter_quorum(
+        felix_replication::quorum::await_counter_quorum(
             &self.broker,
             key,
             self.marks.as_deref(),

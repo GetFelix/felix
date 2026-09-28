@@ -105,7 +105,7 @@ pub(crate) struct PublishContext {
     /// Connections to peer brokers, when this broker is in a cluster. Present so
     /// the handlers can tell "forwardable" from "cannot forward" before
     /// enqueueing rather than after.
-    pub(crate) peers: Option<Arc<crate::peer::PeerPool>>,
+    pub(crate) peers: Option<Arc<felix_replication::peer::PeerPool>>,
     /// This broker's authority to serve the shards it leads.
     ///
     /// `None` on a single-node broker, which leads by construction and has
@@ -121,7 +121,7 @@ pub(crate) struct PublishContext {
     pub(crate) client_endpoints: Option<Arc<crate::cluster::client_endpoints::ClientEndpoints>>,
     /// How far a majority of each shard's replica set has got, for a write
     /// that must not be acknowledged before it does. `None` off a cluster.
-    pub(crate) marks: Option<Arc<crate::replication::quorum::QuorumMarks>>,
+    pub(crate) marks: Option<Arc<felix_replication::quorum::QuorumMarks>>,
     /// How long such a write waits for its majority before saying it cannot
     /// confirm one.
     pub(crate) quorum_timeout: Duration,

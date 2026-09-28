@@ -42,7 +42,7 @@ async fn pass(
         follower,
         broker,
         router,
-        &ShardFence::default(),
+        &Unfenced,
         &QuorumMarks::new(),
         None,
         cursors,

@@ -37,9 +37,9 @@ use felix_wire::internal::{
     AckMode, CacheOpKind, ErrorCode, ForwardCacheOp, ForwardPublish, InternalMessage, ShardRef,
 };
 
-use crate::peer::PeerRequester;
-use crate::peer::metrics;
-use crate::peer::pool::PeerError;
+use felix_replication::peer::PeerRequester;
+use felix_replication::peer::metrics;
+use felix_replication::peer::pool::PeerError;
 
 /// Total attempts for one publish, across every owner it is redirected to.
 ///

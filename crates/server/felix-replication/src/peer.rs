@@ -7,8 +7,8 @@
 //!
 //! The transport is complete on its own terms: a request sent through the pool
 //! always terminates, and an unhealthy peer cannot consume this broker. What
-//! travels over it belongs elsewhere: forwarding in `serving::forward`, and
-//! replication in `replication`.
+//! travels over it belongs elsewhere: forwarding in the broker service's
+//! `serving::forward`, and replication in the rest of this crate.
 
 pub mod codec;
 pub mod config;

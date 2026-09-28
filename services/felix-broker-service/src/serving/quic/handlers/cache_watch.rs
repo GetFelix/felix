@@ -469,7 +469,7 @@ pub(crate) async fn handle_cache_watch_message(
 struct CommitGate {
     broker: Arc<Broker>,
     key: crate::shards::ShardKey,
-    marks: Option<Arc<crate::replication::quorum::QuorumMarks>>,
+    marks: Option<Arc<felix_replication::quorum::QuorumMarks>>,
     ingress: Option<Arc<crate::shards::routing::IngressRouter>>,
     timeout: std::time::Duration,
 }
@@ -477,12 +477,12 @@ struct CommitGate {
 impl CommitGate {
     /// Wait until every change below `end` is committed. Returns at once for
     /// a cache that is not `Quorum`, or a broker with no replicas to wait for.
-    async fn wait(&self, end: u64) -> Result<(), crate::replication::quorum::QuorumError> {
+    async fn wait(&self, end: u64) -> Result<(), felix_replication::quorum::QuorumError> {
         let consistency = self
             .broker
             .cache_consistency(&self.key.tenant_id, &self.key.namespace, &self.key.stream)
             .await;
-        crate::replication::quorum::await_readable(
+        felix_replication::quorum::await_readable(
             consistency,
             &self.key,
             self.marks.as_deref(),
@@ -500,8 +500,8 @@ impl CommitGate {
         loop {
             match self.wait(end).await {
                 Ok(()) => return true,
-                Err(crate::replication::quorum::QuorumError::TimedOut { .. }) => continue,
-                Err(crate::replication::quorum::QuorumError::LeadershipLost { .. }) => {
+                Err(felix_replication::quorum::QuorumError::TimedOut { .. }) => continue,
+                Err(felix_replication::quorum::QuorumError::LeadershipLost { .. }) => {
                     return false;
                 }
             }

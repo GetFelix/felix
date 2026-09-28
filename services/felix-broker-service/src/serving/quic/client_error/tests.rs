@@ -1,9 +1,9 @@
 use felix_wire::{ErrorCode, Message, RetryClass};
 
 use super::{ClientError, ErrorCodeSupport, MOVING_RETRY_AFTER_MS};
-use crate::replication::quorum::QuorumError;
 use crate::serving::forward::ForwardError;
 use crate::shards::routing::Reason;
+use felix_replication::quorum::QuorumError;
 
 fn code_of(err: anyhow::Error) -> (ErrorCode, RetryClass) {
     let classified = ClientError::from_anyhow(&err);

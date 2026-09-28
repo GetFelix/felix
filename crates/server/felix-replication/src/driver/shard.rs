@@ -9,17 +9,17 @@ use felix_router::{Route, ShardKey};
 use felix_wire::internal::ShardRef;
 use futures::StreamExt;
 
+use super::WriteFence;
+use crate::halted::HaltedReplica;
 use crate::peer::PeerRequester;
-use crate::replication::halted::HaltedReplica;
-use crate::replication::quorum::QuorumMarks;
-use crate::replication::reporter::Reporter;
-use crate::replication::reporter::{ShardReport, shard_report};
-use crate::replication::throttle::{MoveThrottle, paced_destination};
-use crate::replication::{
+use crate::quorum::QuorumMarks;
+use crate::reporter::Reporter;
+use crate::reporter::{ShardReport, shard_report};
+use crate::throttle::{MoveThrottle, paced_destination};
+use crate::{
     FollowerCursor, Progress, Rebuilds, caught_up, lag_records, metrics, quorum_offset_without,
     ship_once_with,
 };
-use crate::shards::lifecycle::fence::ShardFence;
 
 /// How much of the log one exchange may carry.
 ///
@@ -109,7 +109,7 @@ pub(super) struct AuxCursors {
 pub(super) async fn replicate_shard<R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
-    fence: &ShardFence,
+    fence: &dyn WriteFence,
     marks: &QuorumMarks,
     reporter: Option<&Reporter>,
     rebuilds: &Rebuilds,
@@ -535,7 +535,7 @@ pub(super) async fn replicate_shard<R: PeerRequester>(
         .followers
         .iter()
         .filter_map(|follower| {
-            let (reason, remedy) = crate::replication::halted::describe(follower.halted?);
+            let (reason, remedy) = crate::halted::describe(follower.halted?);
             Some(HaltedReplica {
                 tenant_id: key.tenant_id.clone(),
                 namespace: key.namespace.clone(),
@@ -787,7 +787,7 @@ pub(super) async fn ship_aux_log<R: PeerRequester>(
         generation: route.generation,
     };
     let shipping = entry.followers.iter_mut().map(|cursor| async {
-        while let Progress::Stored { .. } = crate::replication::ship_once(
+        while let Progress::Stored { .. } = crate::ship_once(
             requester,
             &log,
             &shard,
@@ -926,15 +926,15 @@ async fn acknowledges_at_quorum(broker: &Broker, key: &ShardKey) -> bool {
 /// The watch's key for a route, carrying the kind across rather than assuming
 /// it. A cache shard filed under a stream key would take the mark belonging to
 /// the stream of the same name.
-pub(super) fn watch_key(key: &ShardKey) -> crate::shards::ShardKey {
-    crate::shards::ShardKey {
+pub(super) fn watch_key(key: &ShardKey) -> crate::ShardKey {
+    crate::ShardKey {
         tenant_id: key.tenant_id.clone(),
         namespace: key.namespace.clone(),
         stream: key.stream.clone(),
         shard: key.shard,
         kind: match key.kind {
-            felix_router::ShardKind::Cache => crate::shards::ShardKind::Cache,
-            felix_router::ShardKind::Stream => crate::shards::ShardKind::Stream,
+            felix_router::ShardKind::Cache => crate::ShardKind::Cache,
+            felix_router::ShardKind::Stream => crate::ShardKind::Stream,
         },
     }
 }

@@ -102,7 +102,7 @@ fn a_destination_the_quorum_needs_is_not_paced() {
 
     // One of the others halted: the successor may be needed after all.
     let mut halted = followers;
-    halted[0].halted = Some(crate::replication::Halt::Diverged);
+    halted[0].halted = Some(crate::Halt::Diverged);
     assert_eq!(paced_destination(&three, &halted), None);
 
     let no_move = route(&["broker-b", "broker-c"], None);

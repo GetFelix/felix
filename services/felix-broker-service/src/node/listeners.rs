@@ -14,13 +14,13 @@ use tokio_util::task::TaskTracker;
 use crate::cluster::client_endpoints::ClientEndpoints;
 use crate::cluster::lease::LeaseState;
 use crate::config::{BrokerConfig, KafkaListenerConfig};
-use crate::peer::PeerPool;
-use crate::replication::quorum::QuorumMarks;
 use crate::serving::kafka::{BrokerCluster, KafkaListener, STANDALONE_NODE_ID};
 use crate::serving::limits::{ListenerLimits, TenantRates};
 use crate::serving::tls::ClientTls;
 use crate::serving::{auth::BrokerAuth, quic};
 use crate::shards::routing::IngressRouter;
+use felix_replication::peer::PeerPool;
+use felix_replication::quorum::QuorumMarks;
 
 /// Bind one QUIC listener per configured address.
 pub(super) fn bind(config: &BrokerConfig, tls: &ClientTls) -> Result<Vec<Arc<QuicServer>>> {
