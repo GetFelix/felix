@@ -245,6 +245,15 @@ every record it returns, so bit rot in cold data is still caught — when it is
 read rather than at boot. Set `FELIX_DURABLE_VERIFY_ALL_ON_OPEN=true` to trade
 startup time for eager detection.
 
+Anything that deletes segments does it one synced unlink at a time, in an
+order that keeps the chain whole. Retention and compaction go oldest first.
+Replication's truncation and reset go newest first, and a reset creates its
+new segment only once the old ones are gone. A power loss partway through
+leaves a longer log, never a gap. Older builds could leave a gap at the head
+after a power loss during retention. Recovery refuses to guess about that case,
+and the manual fix is in `docs/durable-storage.md`, under "A gap at the head
+left by an older build".
+
 Idempotent producers' sequences are part of what an open rebuilds. Each record
 a producer writes carries its producer id and sequence, and a broker derives
 every producer's place from its own log before the shard takes a write: from

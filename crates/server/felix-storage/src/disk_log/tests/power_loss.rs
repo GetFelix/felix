@@ -579,3 +579,122 @@ async fn a_power_loss_after_retention_leaves_no_gap() {
     }
     log.shutdown().await.expect("shutdown");
 }
+
+/// Crash images built at each stop of a truncation or reset.
+const IMAGES_PER_STOP: u64 = 8;
+
+/// A log of 24 records in small segments under `FsyncMode::None`, made
+/// durable, and watched for a power loss. Returns what was written.
+async fn watched_log(root: &Path, config: &LogConfig) -> (Arc<PowerLoss>, DiskLog, Vec<String>) {
+    std::fs::create_dir_all(root).expect("log dir");
+    let observer = PowerLoss::install(root).expect("install the power-loss observer");
+    let log = DiskLog::open(root, "t/ns/s/0", config.clone()).expect("open");
+    let payloads: Vec<String> = (0..24).map(|i| format!("record-{i:02}")).collect();
+    for payload in &payloads {
+        log.append(&records(&[payload])).await.expect("append");
+    }
+    log.sync().await.expect("make every record durable");
+    (observer, log, payloads)
+}
+
+/// Every crash image the observer can build now opens, and passes `check`.
+async fn check_images<F>(observer: &PowerLoss, config: &LogConfig, seed: &mut u64, check: F)
+where
+    F: AsyncFn(&DiskLog, &str),
+{
+    for _ in 0..IMAGES_PER_STOP {
+        *seed += 1;
+        for writeback in [Writeback::AnySubset, Writeback::InOrder] {
+            let image = tempdir().expect("image dir");
+            observer
+                .crash(*seed, writeback, image.path())
+                .expect("build the crash image");
+            let when = format!("seed {:#x} ({writeback:?})", *seed);
+            let recovered = DiskLog::open(image.path(), "t/ns/s/0", config.clone())
+                .unwrap_or_else(|err| panic!("{when}: {err}"));
+            check(&recovered, &when).await;
+            recovered.shutdown().await.expect("shutdown");
+        }
+    }
+}
+
+/// A truncation that drops several whole segments leaves, after a power loss
+/// at any point in it, a longer log rather than a gap. Truncation removes a
+/// suffix, so its unlinks go newest first, each synced: an older unlink that
+/// stuck while a newer one was undone would leave survivors that do not meet.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_power_loss_during_truncation_leaves_no_gap() {
+    let config = config(FsyncMode::None);
+    let cut = 3;
+    let mut seed = 0x7a0c_0000u64;
+    let mut stops = 0..;
+    loop {
+        let stop = stops.next().expect("unbounded");
+        let dir = tempdir().expect("dir");
+        let root = dir.path().join("log");
+        let (observer, log, payloads) = watched_log(&root, &config).await;
+        let segments = log.segments().len();
+        assert!(segments >= 5, "only {segments} segments; too few for a gap");
+
+        crate::disk_log::segments::stop_after_unlinks(&root, stop);
+        let finished = log.truncate(cut).await.is_ok();
+        check_images(&observer, &config, &mut seed, async |recovered, when| {
+            assert_eq!(recovered.base_offset(), 0, "{when}: the head moved");
+            let tail = recovered.tail_offset().await.expect("tail");
+            assert!(tail >= cut, "{when}: cut to {tail}, below {cut}");
+            assert_eq!(
+                read_all(recovered, 0).await,
+                payloads[..tail as usize],
+                "{when}, stopped after {stop} unlinks: not a prefix of what was written",
+            );
+        })
+        .await;
+        log.shutdown().await.ok();
+        if finished {
+            assert!(
+                stop >= 4,
+                "the truncation finished after only {stop} unlinks"
+            );
+            break;
+        }
+    }
+}
+
+/// A reset discards the whole log. After a power loss at any point in it the
+/// directory holds a prefix of the old log or the new empty one, never old
+/// segments beside the new one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_power_loss_during_a_reset_leaves_old_or_new() {
+    let config = config(FsyncMode::None);
+    let new_base = 1_000;
+    let mut seed = 0x7a0d_0000u64;
+    let mut stops = 0..;
+    loop {
+        let stop = stops.next().expect("unbounded");
+        let dir = tempdir().expect("dir");
+        let root = dir.path().join("log");
+        let (observer, log, payloads) = watched_log(&root, &config).await;
+
+        crate::disk_log::segments::stop_after_unlinks(&root, stop);
+        let finished = log.reset_to(new_base).await.is_ok();
+        check_images(&observer, &config, &mut seed, async |recovered, when| {
+            let base = recovered.base_offset();
+            let tail = recovered.tail_offset().await.expect("tail");
+            if base == new_base {
+                assert_eq!(tail, new_base, "{when}: records in the new log");
+            } else {
+                assert_eq!(base, 0, "{when}: neither the old base nor the new");
+                assert_eq!(
+                    read_all(recovered, 0).await,
+                    payloads[..tail as usize],
+                    "{when}, stopped after {stop} unlinks: not a prefix of the old log",
+                );
+            }
+        })
+        .await;
+        log.shutdown().await.ok();
+        if finished {
+            break;
+        }
+    }
+}
