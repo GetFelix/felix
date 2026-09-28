@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790612171882,
+  "lastUpdate": 1790618602108,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19708,6 +19708,58 @@ window.BENCHMARK_DATA = {
             "range": "6998.70",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 809518.21\nmean: 807076.70\nstdev: 6998.70\ncv: 0.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "255004229d6a2737f6909c5c8fadbf6c582aa773",
+          "message": "fix(cluster): a started cluster is ready only once every leader has reported (#827)\n\nrouting::one_shard_failing_over_does_not_stop_the_others failed about one\nrun in three under fsync load with \"reassignment: timed out\". The leader was\nnot stalling: the test killed it within a millisecond of its fence opening a\nshard, before that shard's first replica report. With no report naming a\ncaught-up replica, placement refuses to promote (NoCaughtUpReplica), which\nis intended. Start-up readiness only proved shard 0 served, so tests could\nrace a newly opened shard's first report.\n\nReadiness now also waits until every replicated shard has a report at its\ncurrent generation that names a caught-up replica. The failover test asserts\nthis right after start-up.\n\nDocs: the report expiry is twice the expiry timeout plus one heartbeat, not\nthe expiry plus one heartbeat; the failure table and the harness's waiting\nlist now cover a leader lost before its first report.\n\nSpec-Unaffected: harness readiness and docs only; no promotion or reporting rule changed",
+          "timestamp": "2026-09-28T10:59:52-07:00",
+          "tree_id": "2be713d3b7b3e9a95f85c5693c5ce113fb5815a2",
+          "url": "https://github.com/gabloe/felix/commit/255004229d6a2737f6909c5c8fadbf6c582aa773"
+        },
+        "date": 1790618601515,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 338996.1,
+            "range": "5012.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 338996.10\nmean: 338682.82\nstdev: 5012.10\ncv: 1.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 338996.1,
+            "range": "5012.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 338996.10\nmean: 338682.82\nstdev: 5012.10\ncv: 1.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82394.58,
+            "range": "535.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82394.58\nmean: 82497.94\nstdev: 535.55\ncv: 0.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 823945.81,
+            "range": "5355.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 823945.81\nmean: 824979.41\nstdev: 5355.53\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
