@@ -391,6 +391,31 @@ def main() -> int:
     if "FELIX_CONTROLPLANE_CA" not in env:
         fail("mtls: brokers are not given the control plane's CA")
 
+    print("render: one StatefulSet per zone")
+    docs = render(postgres, "broker.zones={za,zb,zc}", "broker.replicas=1")
+    check_controlplane(docs, "zones", "postgres")
+    brokers = [sts for sts in by_kind(docs, "StatefulSet") if "-broker-z" in sts["metadata"]["name"]]
+    if len(brokers) != 3:
+        fail(f"zones: expected a broker StatefulSet per zone, got {len(brokers)}")
+    for sts in brokers:
+        zone = sts["metadata"]["name"].rsplit("-", 1)[1]
+        spec = sts["spec"]["template"]["spec"]
+        env = env_of(containers(sts)[0])
+        if env.get("FELIX_NODE_ZONE", {}).get("value") != zone:
+            fail(f"zones: {sts['metadata']['name']} does not report zone {zone}")
+        if spec.get("nodeSelector", {}).get("topology.kubernetes.io/zone") != zone:
+            fail(f"zones: {sts['metadata']['name']} is not pinned to zone {zone}")
+        if sts["spec"]["selector"]["matchLabels"].get("felix/zone") != zone:
+            fail(f"zones: {sts['metadata']['name']} selects pods of other zones")
+    # One budget over every zone's brokers, so a disruption cannot take a
+    # broker in each zone at once.
+    pdbs = [pdb for pdb in by_kind(docs, "PodDisruptionBudget") if pdb["metadata"]["name"].endswith("-broker")]
+    if len(pdbs) != 1 or "felix/zone" in pdbs[0]["spec"]["selector"]["matchLabels"]:
+        fail("zones: the broker budget does not span every zone")
+    docs = render(postgres)
+    if any("FELIX_NODE_ZONE" in env_of(containers(sts)[0]) for sts in by_kind(docs, "StatefulSet")):
+        fail("postgres: a broker reports a zone although none is set")
+
     print("render: memory (brokers off)")
     docs = render(memory)
     check_controlplane(docs, "memory", "memory")
@@ -447,6 +472,14 @@ def main() -> int:
                 "controlplane.storage.backend=sqlite")
     must_refuse("values don't meet the specifications of the schema", postgres,
                 "broker.replicaCount=3")
+
+    must_refuse("lists a zone twice", postgres, "broker.zones={za,za}")
+    must_refuse("remove topology.kubernetes.io/zone from broker.nodeSelector", postgres,
+                "broker.zones={za}", "broker.nodeSelector.topology\\.kubernetes\\.io/zone=za")
+    must_refuse("permit evicting every broker", postgres,
+                "broker.zones={za}", "broker.replicas=1")
+    must_refuse("values don't meet the specifications of the schema", postgres,
+                "broker.zones={US_East}")
 
     if failures:
         print(f"\n{len(failures)} chart check(s) failed")

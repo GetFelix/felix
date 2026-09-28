@@ -73,6 +73,19 @@ already moving, its leader is down, or the move limits
 (`FELIX_SHARD_MOVES_MAX_CONCURRENT`, `FELIX_SHARD_MOVES_MAX_PER_NODE`) are
 reached. It is not refused for a pause.
 
+`--dry-run` shows what the move would do without starting it. When brokers
+report zones, both say how many zones the shard's copies span now and will
+span after the move:
+
+```text
+dry run, nothing written: stage: t1/ns/orders/0 leader broker-1 generation 12, moving to broker-3
+zones: 2 -> 3
+```
+
+A move that would leave the shard in fewer zones is not refused; the line
+says so, the control plane logs a warning, and `felix_shards_zone_unspread`
+counts the shard until placement spreads it again.
+
 While placement runs, it keeps leadership even, so it can move a shard you
 placed on a broker that is now over its share. To keep a layout that is not
 even, pause placement first.

@@ -73,6 +73,25 @@ fn a_plan_says_what_each_shard_would_get() {
     );
 }
 
+#[test]
+fn a_move_says_what_it_does_to_the_zone_spread() {
+    let response = json!({
+        "step": "stage",
+        "dry_run": true,
+        "zones_before": 3,
+        "zones_after": 2,
+        "assignment": {
+            "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+            "kind": "stream", "leader": "broker-a", "successor": "broker-b", "generation": 4,
+        },
+    });
+    assert_eq!(
+        render_step(&response),
+        "dry run, nothing written: stage: t1/ns/orders/0 leader broker-a generation 4, moving to broker-b\n\
+         zones: 3 -> 2 (the shard's copies will span fewer zones)\n"
+    );
+}
+
 /// Against a running API: every command reaches its endpoint, and a refusal
 /// comes back as the API's code and message.
 #[tokio::test]
@@ -118,6 +137,14 @@ async fn each_command_drives_the_api() {
 
     admin(&["pause"]).await.expect("pause");
     assert!(store.moves_paused().await.expect("read"));
+    admin(&["move", "t1/ns/orders/0", "broker-y", "--dry-run"])
+        .await
+        .expect("dry run");
+    let untouched = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_eq!(untouched.successor, None, "a dry run writes nothing");
     admin(&["move", "t1/ns/orders/0", "broker-y"])
         .await
         .expect("move");

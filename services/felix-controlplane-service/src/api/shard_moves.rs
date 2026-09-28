@@ -19,8 +19,8 @@ use crate::api::types::{
 use crate::auth::bearer::require_cluster_action;
 use crate::auth::rbac::authorize::ACTION_NODE_MANAGE;
 use crate::cluster::placement::{
-    CaughtUp, Decision, OperatorError, PlacementRead, Refused, abandon_log, cancel_move,
-    run_operator, start_move,
+    CaughtUp, Decision, OperatorError, OperatorStep, PlacementRead, Refused, abandon_log,
+    cancel_move, preview_operator, run_operator, start_move,
 };
 use crate::model::{ShardKey, ShardKind, ShardState};
 
@@ -59,7 +59,7 @@ pub(crate) async fn list_shard_moves(
     tag = "placement",
     request_body = ShardMoveRequest,
     responses(
-        (status = 200, description = "Move started", body = ShardMoveResponse),
+        (status = 200, description = "Move started, or with `dry_run` what it would write", body = ShardMoveResponse),
         (status = 404, description = "No such shard or node", body = crate::api::types::ErrorResponse),
         (status = 409, description = "The move cannot start", body = crate::api::types::ErrorResponse)
     )
@@ -69,6 +69,12 @@ pub(crate) async fn list_shard_moves(
 /// The move then runs like any other: staged, fenced once the destination is
 /// close, cut over once the leader has drained. Held to the move limits, but
 /// not to a pause.
+///
+/// When brokers report zones, the response says how many the shard's copies
+/// span before and after. A move that narrows the spread is not refused, so
+/// an operator can still move a shard anywhere; it is logged as a warning,
+/// and `felix_shards_zone_unspread` counts the shard until placement spreads
+/// it again. `dry_run` answers the same without starting anything.
 ///
 /// # Errors
 /// - 404 when the shard has no assignment or the destination is not
@@ -82,8 +88,42 @@ pub(crate) async fn start_shard_move(
     Json(request): Json<ShardMoveRequest>,
 ) -> Result<Json<ShardMoveResponse>, ApiError> {
     require_cluster_action(&state, &headers, ACTION_NODE_MANAGE).await?;
-    let ShardMoveRequest { key, destination } = request;
-    run(&state, |catalog| start_move(catalog, &key, &destination)).await
+    let ShardMoveRequest {
+        key,
+        destination,
+        dry_run,
+    } = request;
+    let decide =
+        |catalog: &crate::cluster::placement::Catalog<'_>| start_move(catalog, &key, &destination);
+    if dry_run {
+        let decided = preview_operator(
+            state.store.as_ref(),
+            &state.node_liveness,
+            state.move_policy.clone(),
+            decide,
+        )
+        .await
+        .map_err(operator_error)?;
+        return Ok(Json(ShardMoveResponse {
+            dry_run: true,
+            ..response(decided)
+        }));
+    }
+    let response = run(&state, decide).await?;
+    if let (Some(before), Some(after)) = (response.zones_before, response.zones_after)
+        && after < before
+    {
+        tracing::warn!(
+            kind = %key.kind,
+            name = %key.stream,
+            shard = key.shard,
+            destination = %destination,
+            zones_before = before,
+            zones_after = after,
+            "an operator moved a shard to where its copies span fewer zones",
+        );
+    }
+    Ok(response)
 }
 
 /// Which kind of shard a path names; a stream's unless it says otherwise.
@@ -327,21 +367,34 @@ async fn run(
     )
     .await
     {
-        Ok((step, assignment)) => Ok(Json(ShardMoveResponse {
-            step: step.label().to_string(),
-            assignment,
-        })),
-        Err(OperatorError::Refused(refused)) => Err(match refused {
+        Ok(written) => Ok(Json(response(written))),
+        Err(err) => Err(operator_error(err)),
+    }
+}
+
+fn response(decided: OperatorStep) -> ShardMoveResponse {
+    ShardMoveResponse {
+        step: decided.step.label().to_string(),
+        assignment: decided.assignment,
+        dry_run: false,
+        zones_before: decided.zones.map(|zones| zones.before),
+        zones_after: decided.zones.map(|zones| zones.after),
+    }
+}
+
+fn operator_error(err: OperatorError) -> ApiError {
+    match err {
+        OperatorError::Refused(refused) => match refused {
             Refused::UnknownShard | Refused::UnknownNode(_) => {
                 api_error(StatusCode::NOT_FOUND, refused.code(), &refused.to_string())
             }
             other => api_conflict(other.code(), &other.to_string()),
-        }),
-        Err(OperatorError::Store(err)) => Err(api_internal("change a shard move", &err)),
-        Err(OperatorError::Contended) => Err(api_conflict(
+        },
+        OperatorError::Store(err) => api_internal("change a shard move", &err),
+        OperatorError::Contended => api_conflict(
             "contended",
             "the shard kept changing while this was decided; try again",
-        )),
+        ),
     }
 }
 
