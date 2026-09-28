@@ -290,6 +290,14 @@ guessing would fault a link the test never named, but it is counted and
 logged: `Cluster::unattributed_datagrams` should be zero in a test that relies
 on a link fault holding, and healing a link fault warns when it is not.
 
+The proxy's sockets are sized to forward the largest datagram a broker sends.
+Brokers treat loopback as a path with a guaranteed 16 KB MTU and never fall
+back to smaller packets, while macOS refuses a UDP send larger than the
+socket's send buffer (9216 bytes by default). A proxy on default buffers
+therefore lost every full-size datagram without a fault being injected, and a
+request too large for one small packet, such as a leader's catch-up batch
+after a restart, never arrived. A send the proxy cannot make is logged.
+
 The control-plane proxy is per broker, so the port says whose connection it
 is. A dropped direction is a black hole: bytes are accepted and never arrive,
 and the sender learns nothing until its own timeout, as on a real partition. A

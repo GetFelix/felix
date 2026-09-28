@@ -16,7 +16,7 @@ anyhow = { workspace = true }
 quinn = { workspace = true }
 quinn-proto = { workspace = true }
 rustls = { workspace = true }
-socket2 = "0.6"
+socket2 = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
 tracing = { workspace = true }
 

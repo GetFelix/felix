@@ -107,6 +107,49 @@ async fn udp_forwards_both_ways_when_nothing_is_faulted() {
     assert!(round_trip(&fixture.from_b, to, QUIET * 3).await.is_some());
 }
 
+/// **A full-size loopback datagram gets through both ways.** Brokers send
+/// 16 KB packets over loopback and never fall back to smaller ones; a proxy
+/// that dropped them stalled any request too big for one small packet.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn udp_forwards_a_full_size_loopback_datagram() {
+    // The size the brokers' loopback transport settles on.
+    const DATAGRAM: usize = 16_336;
+    let echo = UdpSocket::from_std(super::udp::bind_loopback().expect("bind echo"))
+        .expect("register echo");
+    let upstream = echo.local_addr().expect("echo addr");
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 65_536];
+        while let Ok((len, from)) = echo.recv_from(&mut buf).await {
+            let _ = echo.send_to(&buf[..len], from).await;
+        }
+    });
+    let client = UdpSocket::from_std(super::udp::bind_loopback().expect("bind client"))
+        .expect("register client");
+    let names = HashMap::from([(client.local_addr().expect("client addr").port(), a())]);
+    let shutdown = CancellationToken::new();
+    let _stop = shutdown.clone().drop_guard();
+    let proxy = UdpProxy::start(
+        &Handle::current(),
+        server(),
+        upstream,
+        Arc::new(Rules::new()),
+        resolver(names),
+        shutdown,
+    )
+    .expect("start proxy");
+
+    client
+        .send_to(&vec![7u8; DATAGRAM], proxy.addr())
+        .await
+        .expect("send");
+    let mut buf = vec![0u8; 65_536];
+    let (len, _) = tokio::time::timeout(QUIET * 3, client.recv_from(&mut buf))
+        .await
+        .expect("the datagram came back through the proxy")
+        .expect("receive");
+    assert_eq!(len, DATAGRAM);
+}
+
 /// Dropping `a -> server` loses a's datagrams and nobody else's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn udp_drops_one_source_towards_the_target() {
