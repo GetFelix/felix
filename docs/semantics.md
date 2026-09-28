@@ -308,9 +308,12 @@ throughput rather than correctness.
   bounded queue with an explicit overflow policy, `DropNew` by default. A
   publisher never waits for a subscriber.
 - **A drop is detectable.** Delivered events on durable streams carry log
-  offsets, so a gap in offsets is exactly a drop. This is the only way an
-  application can tell, and it is why offsets are on the event rather than
-  inferred.
+  offsets, so a gap in offsets is a drop. The one gap that is not is a
+  new leader's generation-start record, which takes an offset and is never
+  delivered; a client that negotiated `EVENT_BATCH_SKIPPED` is told about it on
+  the next event (`skipped_before`), and an older client reads it as a drop of
+  one. This is the only way an application can tell, and it is why offsets are
+  on the event rather than inferred.
 - **A subscription can resume.** `Subscribe` takes `latest`, `earliest`, or an
   offset; stored history joins live delivery with no gap.
 - **What a reader sees of a `Quorum` stream.** Every reader stops at the

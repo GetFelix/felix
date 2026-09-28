@@ -40,6 +40,9 @@ pub trait PromotionGate: Send + Sync {
     /// The generation `key` is waiting at to be opened for writes, if it is.
     fn awaiting(&self, key: &crate::ShardKey) -> Option<u64>;
     /// Open `key` for writes at `generation`.
+    ///
+    /// Once the fleet has finalized `generation_start`, the broker writes its
+    /// generation-start record first.
     async fn open(&self, key: &crate::ShardKey, generation: u64);
 }
 

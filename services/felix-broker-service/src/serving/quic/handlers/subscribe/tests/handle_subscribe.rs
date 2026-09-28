@@ -609,3 +609,187 @@ async fn a_moved_subscription_ends_with_shard_moved_only_when_offered() -> Resul
     );
     Ok(())
 }
+
+/// Resume a durable stream from offset 0 over QUIC with `peer_flags`, across a
+/// generation start in its history and another one while live, and return
+/// every event frame up to the end of the stream.
+async fn frames_across_generation_starts(peer_flags: u16) -> Result<Vec<bytes::Bytes>> {
+    let dir = tempfile::tempdir()?;
+    let storage = felix_broker::DurableStorage::open(
+        dir.path(),
+        felix_storage::log::LogConfig {
+            fsync_mode: felix_storage::log::FsyncMode::None,
+            preallocate_segments: false,
+            ..Default::default()
+        },
+    )?;
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_stream(
+            "t1",
+            "default",
+            "orders",
+            felix_broker::StreamMetadata {
+                durable: true,
+                ..Default::default()
+            },
+        )
+        .await?;
+    for value in ["a", "b"] {
+        broker
+            .publish("t1", "default", "orders", Bytes::from(value))
+            .await?;
+    }
+    broker
+        .append_generation_start("t1", "default", "orders", 0, 2)
+        .await?;
+    broker
+        .publish("t1", "default", "orders", Bytes::from_static(b"c"))
+        .await?;
+
+    let (server_config, cert) = make_server_config()?;
+    let transport = TransportConfig::default();
+    let server = QuicServer::bind("127.0.0.1:0".parse()?, server_config, transport.clone())?;
+    let addr = server.local_addr()?;
+    let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
+    let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
+    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
+    let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
+    let broker_for_server = broker.clone();
+    let lane_manager = WriterLaneManager::new(&test_config());
+    let server_lane_manager = Arc::clone(&lane_manager);
+    let server_task = tokio::spawn(async move {
+        let connection = server.accept().await?;
+        let held = connection.clone();
+        handle_subscribe_message(
+            broker_for_server,
+            connection,
+            test_config(),
+            &Arc::new(SubscriptionLimiter::new()),
+            &server_lane_manager,
+            &out_ack_tx,
+            &out_ack_depth,
+            &ack_throttle_tx,
+            &ack_timeout_state,
+            &cancel_tx,
+            "t1".to_string(),
+            "default".to_string(),
+            "orders".to_string(),
+            Some(7),
+            Some(felix_wire::StartPosition::Offset(0)),
+            None,
+            peer_flags,
+            0,
+        )
+        .await?;
+        Result::<_>::Ok(held)
+    });
+    let client = QuicClient::bind("0.0.0.0:0".parse()?, make_client_config(cert)?, transport)?;
+    let connection = client.connect(addr, "localhost").await?;
+    let _held = server_task.await.context("server join")??;
+    tokio::time::timeout(Duration::from_secs(1), out_ack_rx.recv())
+        .await
+        .context("ack timeout")?
+        .context("ack missing")?;
+    let mut event_recv = tokio::time::timeout(Duration::from_secs(1), connection.accept_uni())
+        .await
+        .context("accept uni timeout")??;
+    let mut scratch = BytesMut::new();
+    crate::serving::quic::codec::read_message_limited(&mut event_recv, 16 * 1024, &mut scratch)
+        .await?
+        .expect("hello");
+
+    // Live: the leader changes again with the subscription open.
+    broker
+        .append_generation_start("t1", "default", "orders", 0, 3)
+        .await?;
+    broker
+        .publish("t1", "default", "orders", Bytes::from_static(b"d"))
+        .await?;
+    // Let the feeder deliver before the stream is ended under it.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    broker
+        .end_subscriptions("t1", "default", "orders", 0, None)
+        .await;
+
+    let mut frames = Vec::new();
+    while let Some(frame) = tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::serving::quic::codec::read_frame_limited_into(
+            &mut event_recv,
+            16 * 1024,
+            &mut scratch,
+        ),
+    )
+    .await
+    .context("the stream was not finished")??
+    {
+        frames.push(frame.encode());
+    }
+    let _ = felix_broker::timings::take_samples();
+    Ok(frames)
+}
+
+/// `(offset, skipped_before, payload)` for every event in `frames`.
+fn events_of(frames: &[bytes::Bytes]) -> Result<Vec<(u64, u64, Bytes)>> {
+    let mut events = Vec::new();
+    for frame in frames {
+        let frame = felix_wire::Frame::decode(frame.clone())?;
+        let (payloads, base, skipped) =
+            if frame.header.flags & felix_wire::FLAG_BINARY_EVENT_BATCH_SHARED != 0 {
+                let batch = felix_wire::binary::decode_shared_event_batch(&frame)?;
+                (batch.payloads, batch.base_offset, batch.skipped_before)
+            } else {
+                let batch = felix_wire::binary::decode_event_batch(&frame)?;
+                (batch.payloads, batch.base_offset, batch.skipped_before)
+            };
+        let base = base.context("offsets were negotiated")?;
+        for (index, payload) in payloads.into_iter().enumerate() {
+            let skipped = if index == 0 { skipped } else { 0 };
+            events.push((base + index as u64, skipped, payload));
+        }
+    }
+    Ok(events)
+}
+
+/// Generation-start records are never delivered, history or live, and a
+/// client that offered `EVENT_BATCH_SKIPPED` is told about each one on the
+/// event after it. A client that did not gets offsets alone, and no frame
+/// carrying a bit it would reject.
+#[tokio::test]
+async fn generation_starts_are_reported_only_to_a_client_that_offered_the_bit() -> Result<()> {
+    let offsets = felix_wire::ORIGINAL_V1_FLAGS | felix_wire::FLAG_EVENT_BATCH_OFFSETS;
+
+    let with = events_of(
+        &frames_across_generation_starts(offsets | felix_wire::FLAG_EVENT_BATCH_SKIPPED).await?,
+    )?;
+    assert_eq!(
+        with,
+        vec![
+            (0, 0, Bytes::from_static(b"a")),
+            (1, 0, Bytes::from_static(b"b")),
+            (3, 1, Bytes::from_static(b"c")),
+            (5, 1, Bytes::from_static(b"d")),
+        ]
+    );
+
+    let frames = frames_across_generation_starts(offsets).await?;
+    assert!(frames.iter().all(|frame| {
+        felix_wire::Frame::decode(frame.clone())
+            .is_ok_and(|frame| frame.header.flags & felix_wire::FLAG_EVENT_BATCH_SKIPPED == 0)
+    }));
+    let without = events_of(&frames)?;
+    assert_eq!(
+        without
+            .iter()
+            .map(|(offset, skipped, _)| (*offset, *skipped))
+            .collect::<Vec<_>>(),
+        vec![(0, 0), (1, 0), (3, 0), (5, 0)],
+    );
+    Ok(())
+}

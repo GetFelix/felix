@@ -13,11 +13,17 @@ export interface Event {
   /**
    * The record's log offset on a durable stream, absent on an ephemeral one.
    *
-   * A jump in these is exactly a drop: subscriber queues shed under the
-   * default policy rather than blocking the publisher, so a gap here is the
-   * signal that it happened.
+   * Subscriber queues shed under the default policy rather than blocking the
+   * publisher, so a gap here is the signal that it happened:
+   * `offset - previous - 1n - skippedBefore` records were dropped.
    */
   offset: bigint | null;
+  /**
+   * How many offsets just before `offset` hold no event. Non-zero only on the
+   * first event after a leader change, whose generation-start record took an
+   * offset; `0n` from a broker that predates it.
+   */
+  skippedBefore: bigint;
 }
 
 /** One record handed out by a consumer group. */

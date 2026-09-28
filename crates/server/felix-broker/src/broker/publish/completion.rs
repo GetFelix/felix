@@ -223,7 +223,7 @@ impl Completion {
             .or(self.released_at);
         let turn = self.durable.as_ref().map(|claimed| &claimed.turn);
         // `wait` passed, but a reset can still land before the ring lock.
-        let senders = self
+        let (senders, skipped_before) = self
             .handle
             .state
             .append_batch_at(&self.payloads, first_offset, turn, self.log_capacity)
@@ -239,7 +239,7 @@ impl Completion {
             senders,
             // The offsets travel with the batch, so live delivery reports them
             // exactly as replay does.
-            envelope: DeliveryEnvelope::with_base_offset(&self.payloads, first_offset),
+            envelope: DeliveryEnvelope::with_offsets(&self.payloads, first_offset, skipped_before),
             first_offset,
             next: 0,
             sent: 0,

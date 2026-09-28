@@ -79,6 +79,11 @@ pub enum RecordMark {
     Opens(ProducerBatch),
     /// A later record of the batch the record before it belongs to.
     Continues,
+    /// A leader's first record at its generation, written before it serves.
+    /// It is what lets the leader's quorum mark cover records it inherited;
+    /// no reader outside replication ever sees it. The payload is the
+    /// generation, a big-endian `u64`.
+    GenerationStart,
 }
 
 /// An idempotent producer's batch, as its first record describes it.
@@ -91,6 +96,12 @@ pub struct ProducerBatch {
 }
 
 impl RecordMark {
+    /// Whether the record is a generation-start record rather than a
+    /// client's.
+    pub fn is_generation_start(&self) -> bool {
+        matches!(self, Self::GenerationStart)
+    }
+
     /// The marks for a batch of `len` records: the first opens it, the rest
     /// continue it.
     pub fn for_batch(producer_id: u64, sequence: u64, len: usize) -> impl Iterator<Item = Self> {

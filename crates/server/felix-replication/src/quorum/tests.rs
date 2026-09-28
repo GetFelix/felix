@@ -283,3 +283,13 @@ async fn losing_the_shard_before_its_first_mark_ends_the_wait() {
         QuorumWait::NotLeading,
     );
 }
+
+/// A leader that wrote a start record counts nothing until a majority holds
+/// it, then everything up to what the majority holds.
+#[test]
+fn only_a_majority_past_the_start_record_counts() {
+    assert_eq!(counted_offset(3, Some(3)), 0);
+    assert_eq!(counted_offset(2, Some(3)), 0);
+    assert_eq!(counted_offset(4, Some(3)), 4);
+    assert_eq!(counted_offset(3, None), 3);
+}

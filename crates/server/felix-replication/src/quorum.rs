@@ -18,6 +18,7 @@
 //! an acknowledgement from a replica at an older generation does not count
 //! toward a newer generation's quorum. Resetting is what enforces that here.
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 use tokio::sync::watch;
@@ -35,11 +36,31 @@ use crate::ShardKey;
 pub struct QuorumMarks {
     shards: MarkTable,
     counters: MarkTable,
+    fleet: Option<Arc<felix_common::fleet::FleetGate>>,
 }
 
 impl QuorumMarks {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Marks counted under the rule `fleet` has enabled: see
+    /// [`Self::own_generation_only`].
+    pub fn with_fleet(fleet: Arc<felix_common::fleet::FleetGate>) -> Self {
+        Self {
+            fleet: Some(fleet),
+            ..Self::default()
+        }
+    }
+
+    /// Whether a stream leader's mark counts only a majority that reaches a
+    /// record of its own generation ([`counted_offset`]). True once the fleet
+    /// finalized `generation_start`, which is also when leaders start writing
+    /// the record that lets the mark cover what they inherited.
+    pub fn own_generation_only(&self) -> bool {
+        self.fleet
+            .as_ref()
+            .is_some_and(|fleet| fleet.supports(felix_common::fleet::GENERATION_START))
     }
 
     /// The marks of the counter logs that ride cache shards.
@@ -795,6 +816,47 @@ pub fn quorum_offset_without(
     // Descending, so the `needed`-th is the highest offset that many hold.
     held.sort_unstable_by(|a, b| b.cmp(a));
     held.get(needed - 1).copied().unwrap_or(0)
+}
+
+/// The most of the log a majority holds that this leader may count, given
+/// where its generation begins (`own_start`, when it counts that way).
+///
+/// Only a majority holding a record of the leader's own generation counts,
+/// carrying everything before it along; `0`, nothing, until then. Counting a
+/// record it inherited is Raft's Figure 8: a later fence can prefer a log
+/// whose last generation is newer and overwrite it after it was
+/// acknowledged. The generation-start record is what reaches a majority
+/// first. With `None` the leader counts as it did before the fleet finalized
+/// `generation_start`.
+pub fn counted_offset(majority: u64, own_start: Option<u64>) -> u64 {
+    match own_start {
+        Some(start) if majority <= start => 0,
+        _ => majority,
+    }
+}
+
+/// Where `log`'s generation-start record for `generation` sits, if the log
+/// begins that generation with one.
+pub async fn generation_start(log: &felix_broker::StreamLog, generation: u64) -> Option<u64> {
+    let start = log
+        .generations()
+        .iter()
+        .rev()
+        .find(|epoch| epoch.generation == generation)?
+        .start_offset;
+    let first = log.read_log_from(start, 1).await.ok()?.into_iter().next()?;
+    starts_generation(&first, start, generation).then_some(start)
+}
+
+/// Whether `record` is `generation`'s start record, at `start`.
+pub(crate) fn starts_generation(
+    record: &felix_storage::log::LogRecord,
+    start: u64,
+    generation: u64,
+) -> bool {
+    record.offset == start
+        && record.mark.is_generation_start()
+        && record.payload.as_ref() == generation.to_be_bytes()
 }
 
 #[cfg(test)]

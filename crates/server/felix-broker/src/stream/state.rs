@@ -85,6 +85,7 @@ impl StreamState {
             log_state: Mutex::new(LogState {
                 log: VecDeque::new(),
                 next_seq: 0,
+                generation_start_run: None,
             }),
             subscriber_queue_capacity,
             subscriber_queue_policy,
@@ -240,6 +241,7 @@ impl StreamState {
         }
         state.log.clear();
         state.next_seq = next_seq;
+        state.generation_start_run = None;
         // Writes arriving as a follower: whatever this broker held as a
         // leader was not committed under it.
         self.held.discard();
@@ -257,6 +259,7 @@ impl StreamState {
         let mut state = self.log_state.lock();
         state.log.clear();
         state.next_seq = next_seq;
+        state.generation_start_run = None;
         self.held.discard();
         // Under the ring lock, as in `advance_to`.
         self.commit_sequencer.reset(next_seq);
@@ -297,9 +300,9 @@ impl StreamState {
         first_seq: Option<u64>,
         turn: Option<&CommitTurn<'_>>,
         log_capacity: usize,
-    ) -> Option<Arc<Vec<SubscriberEntry>>> {
+    ) -> Option<(Arc<Vec<SubscriberEntry>>, u64)> {
         if payloads.is_empty() {
-            return Some(self.subscribers_snapshot.load_full());
+            return Some((self.subscribers_snapshot.load_full(), 0));
         }
 
         // Hot path: one lock per publish batch (instead of per payload).
@@ -322,6 +325,10 @@ impl StreamState {
             return None;
         }
 
+        let skipped_before = match (first_seq, state.generation_start_run) {
+            (Some(first), Some((at, run))) if first == at => run,
+            _ => 0,
+        };
         let mut seq = first_seq.unwrap_or(state.next_seq);
         for payload in payloads {
             state.log.push_back(LogEntry {
@@ -343,7 +350,32 @@ impl StreamState {
 
         // Captured while the log lock is still held, so any subscriber that
         // registers after this point takes these records as backlog instead.
-        Some(self.subscribers_snapshot.load_full())
+        Some((self.subscribers_snapshot.load_full(), skipped_before))
+    }
+
+    /// A generation-start record sits at `offset` at the tail, the last of
+    /// `run` in a row. The next publish follows it, and the stream's
+    /// sequence and commit order move past it the way `advance_to` moves
+    /// them past replicated records, but the ring and held batches stay.
+    ///
+    /// Only before the leader serves: resetting the commit order under a
+    /// publish in flight would let it jump its turn.
+    pub(crate) fn skip_generation_start(&self, offset: u64, run: u64) {
+        let mut state = self.log_state.lock();
+        let next = offset + 1;
+        if state.next_seq < next {
+            state.next_seq = next;
+            self.commit_sequencer.reset(next);
+        }
+        state.generation_start_run = Some((next, run));
+    }
+
+    /// The `run` offsets just below `next_offset` hold generation-start
+    /// records; a publish at `next_offset` reports them as skipped. For a
+    /// recovered log whose tail is one.
+    pub(crate) fn set_generation_start_run(&self, next_offset: u64, run: u64) {
+        let mut state = self.log_state.lock();
+        state.generation_start_run = (run > 0).then_some((next_offset, run));
     }
 
     /// Append with sequence numbers drawn from the ring's own counter.
@@ -566,6 +598,10 @@ pub(crate) struct LogState {
     pub(crate) log: VecDeque<LogEntry>,
     // Next sequence number to assign.
     pub(crate) next_seq: u64,
+    /// `(offset, run)`: the `run` offsets just below `offset` hold
+    /// generation-start records, so the batch published at `offset` reports
+    /// them as skipped rather than letting a subscriber read them as a drop.
+    pub(crate) generation_start_run: Option<(u64, u64)>,
 }
 
 #[derive(Debug)]

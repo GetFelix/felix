@@ -205,6 +205,7 @@ impl Workload {
             elements.push(Element {
                 offset,
                 value: decode(&event.payload),
+                skipped_before: event.skipped_before,
             });
         }
         Ok(Read {

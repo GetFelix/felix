@@ -191,6 +191,7 @@ pub(super) struct ShardTaskDeps<'a> {
     pub(super) broker: &'a Arc<Broker>,
     pub(super) quorum_marks: &'a Arc<QuorumMarks>,
     pub(super) halted_replicas: &'a Arc<HaltedReplicas>,
+    pub(super) fleet: &'a Arc<felix_common::fleet::FleetGate>,
     pub(super) sync_shutdown: &'a CancellationToken,
 }
 
@@ -209,6 +210,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
         broker,
         quorum_marks,
         halted_replicas,
+        fleet,
         sync_shutdown,
     } = deps;
     match (cluster, &config.controlplane_url, durable_storage) {
@@ -236,6 +238,8 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                             Arc::clone(lifecycle),
                             Arc::clone(ingress),
                             Arc::new(storage.clone()),
+                            Arc::clone(broker),
+                            Arc::clone(fleet),
                         ))
                     }
                     Err(_) => {
@@ -250,7 +254,11 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
             let store: Arc<dyn shard_lifecycle::ShardStore> = match storage {
                 Some(storage) => Arc::new(
                     shard_lifecycle::DurableShardStore::new(Arc::new(storage.clone()))
-                        .with_readers(readers),
+                        .with_readers(readers)
+                        .with_generation_starts(shard_lifecycle::GenerationStarts {
+                            broker: Arc::clone(broker),
+                            fleet: Arc::clone(fleet),
+                        }),
                 ),
                 // Without durable storage there is no log to open, so taking a
                 // shard is bookkeeping only.

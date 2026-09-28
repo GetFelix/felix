@@ -141,8 +141,11 @@ where
     }
 
     // Shared between the replication driver, which advances it, and the publish
-    // path, which waits on it for `Quorum` streams.
-    let quorum_marks = Arc::new(replication::quorum::QuorumMarks::new());
+    // path, which waits on it for `Quorum` streams. The fleet decides how it
+    // counts: see `QuorumMarks::own_generation_only`.
+    let quorum_marks = Arc::new(replication::quorum::QuorumMarks::with_fleet(Arc::clone(
+        &fleet,
+    )));
     // What replication has stopped for. Read by the admin listing, because the
     // metric is a bare count: a label per shard is a label per stream per
     // tenant, and a halt is useless to act on without knowing which replica.
@@ -325,6 +328,7 @@ where
         broker: &broker,
         quorum_marks: &quorum_marks,
         halted_replicas: &halted_replicas,
+        fleet: &fleet,
         sync_shutdown: &sync_shutdown,
     });
 

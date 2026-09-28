@@ -112,6 +112,13 @@
 (* lets it write acknowledging on a follower the new one never fenced      *)
 (* (AckedHeldByLeader). The broker has the fence and not yet the acks:   *)
 (* `FenceOnPromote` alone, alongside the report and the lease.             *)
+(*                                                                         *)
+(* `StartRecord` has a leader write a generation-start record before any   *)
+(* client write, and lets the mark and the report's length stop only at a  *)
+(* record of its own generation. Without it, a leader acknowledges a       *)
+(* record it inherited once a majority holds it, and a later leader whose  *)
+(* last record is newer overwrites it: Raft's Figure 8, which             *)
+(* FelixShardFigure8NoStartRecord.cfg finds.                               *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -147,7 +154,8 @@ CONSTANTS
     AckOnResponse,  \* whether the leader judges its report by the answer it got, or by the store
     AckByFollowers, \* whether a Quorum ack counts followers at this generation instead of the report
     FenceOnPromote, \* whether a promoted leader fences a majority and catches up before serving
-    LabelOnReceipt  \* whether a follower labels a shipped record with the sender's generation
+    LabelOnReceipt, \* whether a follower labels a shipped record with the sender's generation
+    StartRecord     \* whether a new leader writes a generation-start record and the mark waits for it
 
 ASSUME Promotion \in {"leader-report", "log-order"}
 ASSUME ReportBeforeAck \in BOOLEAN
@@ -161,6 +169,7 @@ ASSUME ReportBound \in {"acknowledged", "tail", "unpaired"}
 ASSUME AckChecksLease \in BOOLEAN /\ AckOnResponse \in BOOLEAN
 ASSUME AckByFollowers \in BOOLEAN /\ FenceOnPromote \in BOOLEAN
 ASSUME LabelOnReceipt \in BOOLEAN
+ASSUME StartRecord \in BOOLEAN
 \* The fence is modelled on promotion only, as the broker fences: a planned
 \* move and a cancel name a leader without one, so neither is checked
 \* alongside follower acks. The fence without follower acks is the broker as
@@ -244,6 +253,23 @@ Serving(b) == LeaseValid(b) /\ ~stopped[b] /\ ~fencing[b]
 Record(g, id) == [g |-> g, id |-> id, lg |-> g]
 
 Same(r, s) == r.g = s.g /\ r.id = s.id
+
+\* With `StartRecord`, a leader's first record at a new generation is a
+\* generation-start record, Raft's no-op at the start of a term. It ships and
+\* occupies an offset like any record but is no client's write: it is never
+\* acknowledged and costs no write. Two generations' start records differ by
+\* `g`, which `Same` compares.
+StartId == 0
+Start(g) == Record(g, StartId)
+
+\* `b`'s log once it starts leading at `g`.
+Opened(b, g) == IF StartRecord THEN Append(log[b], Start(g)) ELSE log[b]
+
+\* With `StartRecord` the mark stops only at a record of the leader's own
+\* generation, so an inherited record is acknowledged by the start record (or
+\* a later write) reaching a majority, never on its own. Counting it on its
+\* own is Raft's Figure 8: FelixShardFigure8NoStartRecord.cfg.
+OwnGen(b, k) == StartRecord => log[b][k].g = bgen[b]
 
 LastGen(b) == IF Len(log[b]) = 0 THEN 0 ELSE log[b][Len(log[b])].lg
 
@@ -507,6 +533,7 @@ Ship(b, f) ==
 \* stored a newer report -- until the broker learns otherwise.
 AckReadyOver(b, i, of) ==
     LET r == IF AckOnResponse THEN heard[b] ELSE report IN
+    /\ OwnGen(b, i)
     /\ MajorityOf({ m \in Brokers : Len(log[m]) >= i /\ Same(log[m][i], log[b][i]) } \cup {b}, of)
     /\ ReportBeforeAck => /\ r.gen = bgen[b]
                           /\ i <= r.len
@@ -539,7 +566,7 @@ AckQuorum(b) ==
     /\ AckChecksLease => LeaseValid(b)
     /\ \E i \in (hwm[b] + 1)..Len(log[b]) :
         /\ IF AckByFollowers THEN HeldAtGen(b, i) ELSE AckReadyOver(b, i, QuorumSet)
-        /\ acked' = acked \cup { log[b][j].id : j \in 1..i }
+        /\ acked' = acked \cup ({ log[b][j].id : j \in 1..i } \ {StartId})
         /\ hwm' = [hwm EXCEPT ![b] = i]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, halted, queued, pending, writes, staleCommit >>
@@ -575,11 +602,13 @@ HoldsPrefix(m, b, k) ==
     Len(log[m]) >= k /\ \A j \in 1..k : Same(log[m][j], log[b][j])
 
 \* The most of `b`'s log a majority holds, `b` included and halted followers
-\* not: `quorum_offset_without`.
+\* not: `quorum_offset_without`. With `StartRecord`, only up to a record of
+\* `b`'s own generation, as the mark.
 MajorityLen(b) ==
     LET held == { k \in 0..Len(log[b]) :
-                    MajorityOf({ m \in Brokers \ halted : HoldsPrefix(m, b, k) } \cup {b},
-                               QuorumSet) }
+                    /\ k > 0 => OwnGen(b, k)
+                    /\ MajorityOf({ m \in Brokers \ halted : HoldsPrefix(m, b, k) } \cup {b},
+                                  QuorumSet) }
     IN IF held = {} THEN 0 ELSE CHOOSE k \in held : \A j \in held : j <= k
 
 \* What a follower must hold to be reported caught up. Under `Quorum`, the
@@ -696,7 +725,10 @@ Promote(v, f, views) ==
     /\ promised' = IF Promises THEN [promised EXCEPT ![f] = gen + 1] ELSE promised
     /\ fencing' = [fencing EXCEPT ![f] = FenceOnPromote]
     /\ answered' = [answered EXCEPT ![f] = {}]
-    /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted, acked, writes,
+    \* A fenced leader may still take another log; it writes its start record
+    \* when it opens.
+    /\ log' = IF FenceOnPromote THEN log ELSE [log EXCEPT ![f] = Opened(f, gen + 1)]
+    /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
                     staleCommit, successor, moves >>
 
 -----------------------------------------------------------------------------
@@ -738,8 +770,9 @@ OpenForWrites(b) ==
     /\ fencing[b]
     /\ Majority(answered[b] \cup {b})
     /\ fencing' = [fencing EXCEPT ![b] = FALSE]
+    /\ log' = [log EXCEPT ![b] = Opened(b, bgen[b])]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
-                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
+                    hbOut, hbAt, hwm, halted, queued, pending, acked, writes, staleCommit,
                     promised, answered >>
     /\ UNCHANGED handoffVars
 
@@ -772,7 +805,8 @@ Fence(v, f, views) ==
     /\ ver' = ver + 1
     /\ cpView' = views
     /\ IF v.leader = leader
-       THEN UNCHANGED << gen, leader, cpExpiry, report, bgen, bexpiry, queued, pending, stopped >>
+       THEN UNCHANGED << gen, leader, cpExpiry, report, bgen, bexpiry, queued, pending, stopped,
+                         log >>
        ELSE /\ gen' = gen + 1
             /\ leader' = v.leader
             /\ cpExpiry' = now + L
@@ -782,10 +816,11 @@ Fence(v, f, views) ==
             /\ pending' = [pending EXCEPT ![v.leader] = 0]
             /\ report' = NoReport
             /\ stopped' = [stopped EXCEPT ![v.leader] = TRUE]
+            /\ log' = [log EXCEPT ![v.leader] = Opened(v.leader, gen + 1)]
     /\ draining' = TRUE
     /\ successor' = f
     /\ moves' = moves + 1
-    /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted, acked, writes,
+    /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
                     staleCommit, staged >>
     /\ UNCHANGED fenceVars
 
@@ -818,7 +853,8 @@ CutOver(v, f, views) ==
     /\ draining' = FALSE
     /\ stopped' = [stopped EXCEPT ![f] = FALSE]
     /\ staged' = staged \ {f}
-    /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted, acked, writes,
+    /\ log' = [log EXCEPT ![f] = Opened(f, gen + 1)]
+    /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
                     staleCommit, successor, moves >>
     /\ UNCHANGED fenceVars
 
@@ -845,7 +881,8 @@ Retake(v, f, views) ==
     /\ report' = NoReport
     /\ draining' = FALSE
     /\ stopped' = [stopped EXCEPT ![f] = FALSE]
-    /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted, queued, pending,
+    /\ log' = [log EXCEPT ![f] = Opened(f, gen + 1)]
+    /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, queued, pending,
                     acked, writes, staleCommit, successor, moves, staged >>
     /\ UNCHANGED fenceVars
 
@@ -927,10 +964,10 @@ AckedAgree ==
         => log[a][i].id = log[c][i].id
 
 \* No log holds one write twice: a re-send of a write the shard already has
-\* is answered, not appended.
+\* is answered, not appended. Start records are no one's write.
 NoDuplicate ==
     \A b \in Brokers : \A i, j \in 1..Len(log[b]) :
-        i /= j => log[b][i].id /= log[b][j].id
+        i /= j /\ log[b][i].id /= StartId => log[b][i].id /= log[b][j].id
 
 \* No broker commits a write at a generation the control plane has superseded:
 \* once the next leader is named, the old one's lease has run out by its own

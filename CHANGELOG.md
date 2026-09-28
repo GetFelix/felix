@@ -52,6 +52,7 @@ for what the current release actually guarantees.
 
 ### Added
 
+- `scripts/check_tla.sh` takes configuration names to check only those.
 - **Fleet features: cross-broker behaviour turns on only when an operator
   finalizes it.** A broker reports the features it implements at
   registration (`features`, optional), and the control plane tracks the set
@@ -608,6 +609,24 @@ for what the current release actually guarantees.
   then fell back to heartbeats and expiry through the log for as long as the
   old leader stayed down. The member probing a peer's level now states its
   own, so every member knows the leader's.
+- **A record a new leader inherited is no longer lost after it was
+  acknowledged** (Raft's Figure 8), once an operator finalizes the new fleet
+  feature `generation_start`. A leader then appends a generation-start record
+  whenever it starts leading a stream shard (after a promotion's fence, at
+  either end of a move, on a cancelled move's hand-back) and its quorum mark
+  counts a majority only once it reaches a record of the leader's own
+  generation, so an inherited record is acknowledged only when a later fence
+  cannot prefer a log without it. Acknowledged inherited records are readable
+  at the new leader without waiting for a client write. Until the finalize,
+  brokers count as before. Readers skip the record's offset; see
+  `docs/protocol.md` for how a subscriber tells it from a drop. Finalize it
+  only once every broker runs this version; it is one-way (see the upgrades
+  page).
+- **Storage format v4.** The generation-start record is flag bit 29 of a
+  record's `payload_len`, and only a v4 segment may hold one. Segments stay
+  v3 until a log's first record, so an upgrade stays reversible until
+  `generation_start` is finalized; after that an older build cannot open the
+  logs. v2 and v3 segments are still read. No migration is needed.
 
 - **Opening a `ClusterClient` subscription waits out a shard that is still
   opening.** `subscribe`, `subscribe_from` and `subscribe_sharded` failed at

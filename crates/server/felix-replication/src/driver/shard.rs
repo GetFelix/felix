@@ -45,6 +45,9 @@ pub struct ShardCursors {
     /// A move's destination this broker saw added to the replica set, still
     /// copying: left out of the quorum. See [`staged_learner`].
     pub(super) learner: Option<String>,
+    /// The generation this leader leads at, and where it begins. See
+    /// [`own_start`].
+    pub(super) own_start: Option<(u64, u64)>,
 }
 
 impl ShardCursors {
@@ -57,7 +60,38 @@ impl ShardCursors {
             base: 0,
             followers: Vec::new(),
             learner: None,
+            own_start: None,
         }
+    }
+}
+
+/// Where this leader's generation begins in a stream log, for
+/// [`crate::quorum::counted_offset`]: the offset of its first record, the
+/// generation-start record when it wrote one.
+///
+/// `u64::MAX` while the generation has no recorded start, which counts
+/// nothing: every record in the log is then one this leader inherited.
+fn own_start(
+    log: &felix_broker::StreamLog,
+    generation: u64,
+    known: &mut Option<(u64, u64)>,
+) -> u64 {
+    if let Some((at, start)) = *known
+        && at == generation
+    {
+        return start;
+    }
+    match log
+        .generations()
+        .iter()
+        .rev()
+        .find(|epoch| epoch.generation == generation)
+    {
+        Some(epoch) => {
+            *known = Some((generation, epoch.start_offset));
+            epoch.start_offset
+        }
+        None => u64::MAX,
     }
 }
 
@@ -201,6 +235,14 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         entry.base = compare_from(&log.generations(), route.generation);
     }
     reconcile_followers(&mut entry, route);
+    // Once the fleet finalized `generation_start`, a stream leader counts only
+    // a majority that reaches a record of its own generation. Counting the
+    // records it inherited is Raft's Figure 8. A cache shard is never fenced
+    // and so never takes a longer log on promotion, which is what makes an
+    // inherited record unsafe to count; see `docs/replication-design.md`.
+    let own_start = (key.kind == felix_router::ShardKind::Stream && marks.own_generation_only())
+        .then(|| own_start(&log, route.generation, &mut entry.own_start));
+    let counted = |majority: u64| crate::quorum::counted_offset(majority, own_start);
 
     let shard = ShardRef {
         tenant_id: key.tenant_id.clone(),
@@ -256,7 +298,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         }
         // Never below a mark already published, even if a follower's
         // position went back since: that mark's records were promised.
-        quorum_offset_without(tail, followers, learner.as_deref())
+        counted(quorum_offset_without(tail, followers, learner.as_deref()))
             .max(marks.offset(&watch_key(key), route.generation).unwrap_or(0))
     };
     // Counters on a `Quorum` cache are acknowledged at their own mark, under
@@ -379,7 +421,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let mut copying = false;
     let mut majority = None;
     if waiting == 0 {
-        let offset = quorum_offset_without(tail, &positions, learner.as_deref());
+        let offset = counted(quorum_offset_without(tail, &positions, learner.as_deref()));
         if offset > 0 {
             majority = Some((
                 shard_report(
@@ -404,7 +446,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         answered.insert(cursor.node_id.clone());
         settle(&mut positions, cursor);
         let tail = log.tail_offset().await.unwrap_or(tail);
-        let offset = quorum_offset_without(tail, &positions, learner.as_deref());
+        let offset = counted(quorum_offset_without(tail, &positions, learner.as_deref()));
         if offset > 0 {
             majority = Some((
                 shard_report(
@@ -597,7 +639,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             key,
             route.generation,
             &settled,
-            quorum_offset_without(tail, &entry.followers, learner.as_deref()),
+            counted(quorum_offset_without(
+                tail,
+                &entry.followers,
+                learner.as_deref(),
+            )),
         )
         .await
             && let Some(counters) = &counters

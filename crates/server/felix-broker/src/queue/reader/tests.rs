@@ -823,3 +823,62 @@ async fn a_claim_from_before_a_new_term_is_still_settled() {
         Err(BrokerError::GroupOffsetNotHandedOut { .. })
     ));
 }
+
+/// A generation-start record holds an offset but is no one's work. A group
+/// is never handed it, each record keeps its own offset, and the cursor
+/// closes over it once the records around it are finished.
+#[tokio::test]
+async fn a_group_steps_over_a_generation_start_record() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    publish(&fx.log, &["a"]).await;
+    let marker = fx.log.append_generation_start(3).await.expect("marker");
+    assert_eq!(marker, 1);
+    publish(&fx.log, &["b"]).await;
+    let key = key();
+
+    let claimed = fx
+        .reader
+        .poll(&key, &fx.log, 10, Instant::now())
+        .await
+        .expect("poll");
+    let seen: Vec<(u64, String)> = claimed
+        .iter()
+        .map(|c| {
+            (
+                c.offset,
+                String::from_utf8(c.payload.to_vec()).expect("utf8"),
+            )
+        })
+        .collect();
+    assert_eq!(seen, vec![(0, "a".to_string()), (2, "b".to_string())]);
+
+    fx.reader.ack(&key, 0).await.expect("ack");
+    fx.reader.ack(&key, 2).await.expect("ack");
+    assert_eq!(fx.reader.committed(&key).await.expect("committed"), Some(3));
+    let nothing = fx
+        .reader
+        .poll(&key, &fx.log, 10, Instant::now())
+        .await
+        .expect("poll");
+    assert!(nothing.is_empty());
+}
+
+/// With the generation start last, the group is not stalled owing it.
+#[tokio::test]
+async fn a_trailing_generation_start_does_not_stall_a_group() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    publish(&fx.log, &["a"]).await;
+    fx.log.append_generation_start(3).await.expect("marker");
+    let key = key();
+
+    let claimed = fx
+        .reader
+        .poll(&key, &fx.log, 10, Instant::now())
+        .await
+        .expect("poll");
+    assert_eq!(payloads(&claimed), vec!["a"]);
+    fx.reader.ack(&key, 0).await.expect("ack");
+    assert_eq!(fx.reader.committed(&key).await.expect("committed"), Some(2));
+}

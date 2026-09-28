@@ -92,6 +92,9 @@ pub enum AppendOutcome {
 pub struct Element {
     pub offset: u64,
     pub value: u64,
+    /// Offsets just before this one that hold a generation-start record, not
+    /// a value: the next element of a whole read is `offset + 1` past them.
+    pub skipped_before: u64,
 }
 
 /// A fault starting or ending, at a time on the clients' clock.

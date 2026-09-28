@@ -95,7 +95,7 @@ file:
 | Offset | Size | Field | Value |
 | --- | --- | --- | --- |
 | 0 | 4 | `magic` | `0x464C5347` (`"FLSG"`) |
-| 4 | 2 | `version` | `3` when written; `2` is still read |
+| 4 | 2 | `version` | `3` when written, or `4` for a segment that holds a generation-start record; `2` is still read |
 | 6 | 2 | `flags` | `0`; any other value is rejected |
 | 8 | 8 | `base_offset` | logical offset of this segment's first record |
 | 16 | 8 | `created_at_micros` | wall clock at creation, informational |
@@ -113,7 +113,7 @@ segment, so damage here is never a torn write — it is always an error.
 
 | Offset | Size | Field | Notes |
 | --- | --- | --- | --- |
-| 0 | 4 | `payload_len` | low 30 bits: ≤ `MAX_PAYLOAD_BYTES` (64 MiB); top two bits: the producer mark, below |
+| 0 | 4 | `payload_len` | low 29 bits: ≤ `MAX_PAYLOAD_BYTES` (64 MiB); top three bits: the record's kind, below |
 | 4 | 8 | `offset` | logical offset; ascends by exactly 1 within a segment |
 | 12 | 8 | `timestamp_micros` | publish time |
 | 20 | 4 | `header_crc` | CRC-32 over bytes `0..20` |
@@ -161,6 +161,30 @@ off; a v3 header makes the v2 build refuse the segment instead. So a v3 build
 that reopens a v2 active segment rolls it before writing the first marked
 record, and leaves unmarked records in it as before.
 
+### Generation-start records
+
+**Bit 29** of `payload_len` marks a leader's generation-start record: the first
+record a leader writes at a new generation, before it serves. Its payload
+is the generation, a big-endian `u64`, and it has no tag. It is the replication
+protocol's, not a client's: it lets the leader's quorum mark cover the records
+it inherited (`docs/replication-design.md`, "The generation-start record").
+
+It takes an offset like any record, and every reader but replication skips it:
+subscriptions and replay, Kafka fetch, consumer groups, and the cache and
+counter projections. Replication ships and compares it exactly as stored.
+
+At most one of bits 29, 30 and 31 is set; any two is `RecordFlags`. Only a v4
+segment may hold the record, for the reason only a v3 one may hold marks: a v3
+build reading bit 29 would see a length past the limit and could cut the record
+off as a torn tail, where a v4 header makes it refuse the segment. A v4 build
+that reopens an older active segment rolls it before writing the record.
+
+A segment is written at v4 only to hold that record, and the record is written
+only once the fleet has finalized `generation_start` (see the upgrades page in
+the docs site). Until then this build creates v3 segments and a v3 build can
+still open everything it wrote; after it, the first record rolls the log onto a
+v4 segment, and later segments stay at v4. Indexes stay at v3.
+
 ## Index file
 
 Index files accelerate reads and are **never trusted**. Every entry is used only
@@ -177,7 +201,7 @@ its segment. Consequently they carry no checksums.
 | Offset | Size | Field | Value |
 | --- | --- | --- | --- |
 | 0 | 4 | `magic` | `0x464C5349` (`"FLSI"`) |
-| 4 | 2 | `version` | `3` when written; `2` is still read, the layout is the same |
+| 4 | 2 | `version` | `3` when written; `2` and `4` are still read, the layout is the same |
 | 6 | 2 | `flags` | `0` |
 | 8 | 8 | `base_offset` | must equal the segment's `base_offset` |
 | 16 | 8 | `reserved` | `0` |
@@ -211,7 +235,7 @@ the file is read up to the last whole entry.
 | Short read | `Truncated { needed, available }` — the one shape recovery may repair |
 | Bad record header CRC | `RecordHeaderChecksum` — the length cannot be trusted |
 | Bad record CRC | `RecordChecksum` |
-| Both producer mark bits set | `RecordFlags` |
+| More than one of the three kind bits set | `RecordFlags` |
 | `payload_len` over the limit | `RecordTooLarge`, raised *before* any allocation |
 | Offset gap within a segment | `OffsetOutOfOrder` |
 
@@ -295,10 +319,10 @@ migration path.
 
 ```text
 SegmentHeader::new(base_offset = 1, created_at_micros = 2):
-  46 4C 53 47  00 03  00 00
+  46 4C 53 47  00 04  00 00
   00 00 00 00 00 00 00 01
   00 00 00 00 00 00 00 02
-  AD EB 65 E9
+  E7 D5 EE A2
   00 00 00 00
 
 encode_record(offset = 7, timestamp = 9, payload = "hi"):
@@ -317,6 +341,7 @@ encode_record(offset = 7, timestamp = 9, payload = "hi"):
 | 1 | Initial format. Unreleased. |
 | 2 | Added `header_crc` to the record header (24 → 28 bytes), making a corrupted length field detectable without reading the payload. |
 | 3 | Producer marks: two flag bits in `payload_len` and an optional 20-byte tag. A v2 segment is read unchanged; an unmarked record is byte for byte a v2 record. |
+| 4 | Generation-start records: a third flag bit in `payload_len`. Written only to hold that record, once `generation_start` is finalized; v2 and v3 segments are read unchanged. |
 
 A v1 segment is rejected on open with `CorruptionKind::SegmentVersion`, naming
 the version found. v1 was only ever written by unreleased builds, so the

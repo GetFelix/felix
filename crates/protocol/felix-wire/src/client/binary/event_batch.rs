@@ -6,6 +6,7 @@ use bytes::{Buf, Bytes, BytesMut};
 use super::checked_payload_count;
 use crate::client::flags::{
     FLAG_BINARY_EVENT_BATCH, FLAG_BINARY_EVENT_BATCH_SHARED, FLAG_EVENT_BATCH_OFFSETS,
+    FLAG_EVENT_BATCH_SKIPPED,
 };
 use crate::client::frame::{Frame, FrameHeader};
 use crate::error::{Error, Result};
@@ -18,6 +19,9 @@ pub struct EventBatch {
     /// Offset of `payloads[0]`, when the sender negotiated
     /// `FLAG_EVENT_BATCH_OFFSETS`. Payload `i` is at `base_offset + i`.
     pub base_offset: Option<u64>,
+    /// How many offsets immediately before `base_offset` hold no event, from
+    /// `FLAG_EVENT_BATCH_SKIPPED`. Zero when the frame does not carry it.
+    pub skipped_before: u64,
 }
 
 /// Parsed representation of a shared event batch frame. It names no
@@ -27,6 +31,8 @@ pub struct SharedEventBatch {
     pub payloads: Vec<Bytes>,
     /// Offset of `payloads[0]`, when negotiated. See [`EventBatch::base_offset`].
     pub base_offset: Option<u64>,
+    /// See [`EventBatch::skipped_before`].
+    pub skipped_before: u64,
 }
 
 /// An event batch as segments, so a writer can send each payload's existing
@@ -76,32 +82,21 @@ pub fn encode_event_batch_bytes_with_offset(
     payloads: &[Bytes],
     base_offset: u64,
 ) -> Result<Bytes> {
-    let mut payload_len = 8usize + 8 + 4;
-    for payload in payloads {
-        let len = u32::try_from(payload.len()).map_err(|_| Error::FrameTooLarge)?;
-        payload_len = payload_len
-            .checked_add(4 + len as usize)
-            .ok_or(Error::FrameTooLarge)?;
-    }
-    if payload_len > u32::MAX as usize {
-        return Err(Error::FrameTooLarge);
-    }
+    encode_offset_batch(Some(subscription_id), payloads, base_offset, 0)
+}
 
-    let mut buf = BytesMut::with_capacity(FrameHeader::LEN + payload_len);
-    FrameHeader::new(
-        FLAG_BINARY_EVENT_BATCH | FLAG_EVENT_BATCH_OFFSETS,
-        payload_len as u32,
-    )
-    .encode(&mut buf);
-    buf.extend_from_slice(&subscription_id.to_be_bytes());
-    buf.extend_from_slice(&base_offset.to_be_bytes());
-    buf.extend_from_slice(&(payloads.len() as u32).to_be_bytes());
-    for payload in payloads {
-        let len = u32::try_from(payload.len()).map_err(|_| Error::FrameTooLarge)?;
-        buf.extend_from_slice(&len.to_be_bytes());
-        buf.extend_from_slice(payload);
-    }
-    Ok(buf.freeze())
+/// [`encode_event_batch_bytes_with_offset`], also saying how many offsets
+/// immediately before `base_offset` hold no event.
+///
+/// With `skipped_before` zero the frame is exactly the offsets-only one. Only
+/// for a peer that negotiated `FLAG_EVENT_BATCH_SKIPPED`.
+pub fn encode_event_batch_bytes_with_skip(
+    subscription_id: u64,
+    payloads: &[Bytes],
+    base_offset: u64,
+    skipped_before: u64,
+) -> Result<Bytes> {
+    encode_offset_batch(Some(subscription_id), payloads, base_offset, skipped_before)
 }
 
 /// [`encode_event_batch_bytes`] as segments; see [`EncodedEventBatchParts`].
@@ -180,7 +175,41 @@ pub fn encode_shared_event_batch_bytes_with_offset(
     payloads: &[Bytes],
     base_offset: u64,
 ) -> Result<Bytes> {
-    let mut payload_len = 8usize + 4;
+    encode_offset_batch(None, payloads, base_offset, 0)
+}
+
+/// [`encode_shared_event_batch_bytes_with_offset`] with a skip count; see
+/// [`encode_event_batch_bytes_with_skip`].
+pub fn encode_shared_event_batch_bytes_with_skip(
+    payloads: &[Bytes],
+    base_offset: u64,
+    skipped_before: u64,
+) -> Result<Bytes> {
+    encode_offset_batch(None, payloads, base_offset, skipped_before)
+}
+
+/// An event batch carrying offsets: per-subscriber when `subscription_id` is
+/// set, shared otherwise. The skip count is written only when it is non-zero.
+fn encode_offset_batch(
+    subscription_id: Option<u64>,
+    payloads: &[Bytes],
+    base_offset: u64,
+    skipped_before: u64,
+) -> Result<Bytes> {
+    let (mut flags, mut payload_len) = match subscription_id {
+        Some(_) => (
+            FLAG_BINARY_EVENT_BATCH | FLAG_EVENT_BATCH_OFFSETS,
+            8usize + 8 + 4,
+        ),
+        None => (
+            FLAG_BINARY_EVENT_BATCH_SHARED | FLAG_EVENT_BATCH_OFFSETS,
+            8usize + 4,
+        ),
+    };
+    if skipped_before > 0 {
+        flags |= FLAG_EVENT_BATCH_SKIPPED;
+        payload_len += 8;
+    }
     for payload in payloads {
         let len = u32::try_from(payload.len()).map_err(|_| Error::FrameTooLarge)?;
         payload_len = payload_len
@@ -192,12 +221,14 @@ pub fn encode_shared_event_batch_bytes_with_offset(
     }
 
     let mut buf = BytesMut::with_capacity(FrameHeader::LEN + payload_len);
-    FrameHeader::new(
-        FLAG_BINARY_EVENT_BATCH_SHARED | FLAG_EVENT_BATCH_OFFSETS,
-        payload_len as u32,
-    )
-    .encode(&mut buf);
+    FrameHeader::new(flags, payload_len as u32).encode(&mut buf);
+    if let Some(subscription_id) = subscription_id {
+        buf.extend_from_slice(&subscription_id.to_be_bytes());
+    }
     buf.extend_from_slice(&base_offset.to_be_bytes());
+    if skipped_before > 0 {
+        buf.extend_from_slice(&skipped_before.to_be_bytes());
+    }
     buf.extend_from_slice(&(payloads.len() as u32).to_be_bytes());
     for payload in payloads {
         let len = u32::try_from(payload.len()).map_err(|_| Error::FrameTooLarge)?;
@@ -207,16 +238,28 @@ pub fn encode_shared_event_batch_bytes_with_offset(
     Ok(buf.freeze())
 }
 
+/// Which optional fields an event batch's flags say it carries. A skip count
+/// means nothing without the offset it counts back from.
+fn offset_fields(flags: u16) -> Result<(bool, bool)> {
+    let has_offsets = flags & FLAG_EVENT_BATCH_OFFSETS != 0;
+    let has_skip = flags & FLAG_EVENT_BATCH_SKIPPED != 0;
+    if has_skip && !has_offsets {
+        return Err(Error::UnknownFlags(flags));
+    }
+    Ok((has_offsets, has_skip))
+}
+
 /// Decode binary event batch frame into its structured form.
 pub fn decode_event_batch(frame: &Frame) -> Result<EventBatch> {
     let mut buf = frame.payload.clone();
-    let has_offsets = frame.header.flags & FLAG_EVENT_BATCH_OFFSETS != 0;
-    let fixed = if has_offsets { 20 } else { 12 };
+    let (has_offsets, has_skip) = offset_fields(frame.header.flags)?;
+    let fixed = 12 + if has_offsets { 8 } else { 0 } + if has_skip { 8 } else { 0 };
     if buf.remaining() < fixed {
         return Err(Error::Incomplete);
     }
     let subscription_id = buf.get_u64();
     let base_offset = has_offsets.then(|| buf.get_u64());
+    let skipped_before = if has_skip { buf.get_u64() } else { 0 };
     let count = checked_payload_count(buf.get_u32() as usize, buf.remaining())?;
     let mut payloads = Vec::with_capacity(count);
     for _ in 0..count {
@@ -234,18 +277,20 @@ pub fn decode_event_batch(frame: &Frame) -> Result<EventBatch> {
         subscription_id,
         payloads,
         base_offset,
+        skipped_before,
     })
 }
 
 /// Decode a shared event batch frame.
 pub fn decode_shared_event_batch(frame: &Frame) -> Result<SharedEventBatch> {
     let mut buf = frame.payload.clone();
-    let has_offsets = frame.header.flags & FLAG_EVENT_BATCH_OFFSETS != 0;
-    let fixed = if has_offsets { 12 } else { 4 };
+    let (has_offsets, has_skip) = offset_fields(frame.header.flags)?;
+    let fixed = 4 + if has_offsets { 8 } else { 0 } + if has_skip { 8 } else { 0 };
     if buf.remaining() < fixed {
         return Err(Error::Incomplete);
     }
     let base_offset = has_offsets.then(|| buf.get_u64());
+    let skipped_before = if has_skip { buf.get_u64() } else { 0 };
     let count = checked_payload_count(buf.get_u32() as usize, buf.remaining())?;
     let mut payloads = Vec::with_capacity(count);
     for _ in 0..count {
@@ -261,6 +306,7 @@ pub fn decode_shared_event_batch(frame: &Frame) -> Result<SharedEventBatch> {
     Ok(SharedEventBatch {
         payloads,
         base_offset,
+        skipped_before,
     })
 }
 

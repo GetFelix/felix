@@ -108,6 +108,22 @@ pub const FLAG_BINARY_PUBLISH_ACK_CODE: u16 = 0x0200;
 /// advertised it, and only alongside the code.
 pub const FLAG_BINARY_PUBLISH_ACK_DETAIL: u16 = 0x0400;
 
+/// Modifier on `FLAG_EVENT_BATCH_OFFSETS`: a `u64 skipped_before` follows the
+/// `base_offset`, counting the offsets immediately before the batch's first
+/// event that hold no event.
+///
+/// A durable stream's log holds records that are not events: a promoted
+/// leader writes a generation-start record before it serves, and it takes an
+/// offset like any other. Without this, a subscriber sees `N-1` then `N+1`
+/// and reads a drop that never happened. With it, a jump of exactly
+/// `skipped_before` is not a drop.
+///
+/// Set only on a batch that follows such a record, so every other batch is
+/// byte-identical to the offsets-only frame. Only sent to a client that
+/// advertised it in `Auth.client_flags`; a frame with this bit and no
+/// `FLAG_EVENT_BATCH_OFFSETS` is rejected.
+pub const FLAG_EVENT_BATCH_SKIPPED: u16 = 0x0800;
+
 /// Every flag bit this version understands.
 ///
 /// Frames carrying bits outside this mask are rejected rather than parsed with
@@ -128,7 +144,8 @@ pub const KNOWN_FLAGS: u16 = FLAG_BINARY_PUBLISH_BATCH
     | FLAG_BINARY_PUBLISH_ACK_OWNER
     | FLAG_BINARY_PUBLISH_IDEMPOTENT
     | FLAG_BINARY_PUBLISH_ACK_CODE
-    | FLAG_BINARY_PUBLISH_ACK_DETAIL;
+    | FLAG_BINARY_PUBLISH_ACK_DETAIL
+    | FLAG_EVENT_BATCH_SKIPPED;
 
 /// The flag bits that existed before capability negotiation.
 ///

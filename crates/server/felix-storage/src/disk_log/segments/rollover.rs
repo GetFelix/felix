@@ -14,7 +14,7 @@ use super::SegmentSet;
 use crate::Result;
 use crate::disk_log::now_micros;
 use crate::disk_log::sealed::{SealedEntry, SealedHandle};
-use crate::log::{AppendRecord, RecordMark, SegmentId};
+use crate::log::{AppendRecord, SegmentId};
 use crate::segment::writer::BlankSegment;
 use crate::segment::{SegmentReader, SegmentWriter, index_file_name};
 use crate::{StorageError, metrics_names};
@@ -42,13 +42,13 @@ impl SegmentSet {
     /// roll inline and take the latency hit, which is the correct trade when the
     /// alternative is an unboundedly large segment to re-scan after a crash.
     ///
-    /// A marked record also rolls a v2 active segment, left over from a build
-    /// that could not write marks, so marks only ever land in v3 segments.
+    /// A record the active segment's version cannot hold also rolls it: a
+    /// segment left over from an older build is never given a flag bit that
+    /// build would misread.
     pub(crate) fn would_roll_within(&self, records: &[AppendRecord], roll_pending: bool) -> bool {
         let full = self.active.projected_size(records) > self.size_ceiling(roll_pending)
             && self.active.record_count() > 0;
-        full || (!self.active.holds_marks()
-            && records.iter().any(|record| record.mark != RecordMark::None))
+        full || !self.active.holds(records)
     }
 
     /// Whether the active segment has crossed the point where a rollover should
@@ -132,9 +132,11 @@ impl SegmentSet {
         }
         let descriptor = self.active.descriptor();
         // One page-cache write, no flush: see `BlankSegment::activate`.
-        let replacement = prepared
-            .blank
-            .activate(self.active.next_offset(), now_micros())?;
+        let replacement = prepared.blank.activate(
+            self.active.next_offset(),
+            now_micros(),
+            self.active.successor_version(&[]),
+        )?;
         self.bump_next_segment_id(replacement.id() + 1);
         let retired = std::mem::replace(&mut self.active, replacement);
         self.active_reader = Arc::new(SegmentReader::open(
@@ -158,18 +160,25 @@ impl SegmentSet {
     /// several fsyncs; the split `roll_plan`/`commit_roll` pair is what the
     /// async log uses to keep that off the append path.
     pub(crate) fn roll(&mut self) -> Result<()> {
+        self.roll_for(&[])
+    }
+
+    /// [`Self::roll`] to a segment that can hold `records`.
+    pub(crate) fn roll_for(&mut self, records: &[AppendRecord]) -> Result<()> {
         self.check_open()?;
+        let version = self.active.successor_version(records);
         let descriptor = self.active.seal()?;
         let base_offset = self.active.next_offset();
         let id = self.next_segment_id.fetch_add(1, Ordering::AcqRel);
 
-        let replacement = SegmentWriter::create(
+        let replacement = SegmentWriter::create_at_version(
             &self.dir,
             id,
             base_offset,
             now_micros(),
             self.config.preallocate_bytes(),
             self.config.index_spacing_bytes,
+            version,
         )?;
         let retired = std::mem::replace(&mut self.active, replacement);
         self.active_reader = Arc::new(SegmentReader::open(

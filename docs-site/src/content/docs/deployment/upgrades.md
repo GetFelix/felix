@@ -128,6 +128,27 @@ was down during the finalize too.
 After step 3, rolling back means a build that still has the feature. There
 is no way to disable a finalized feature.
 
+#### `generation_start`
+
+Once finalized, a leader writes a generation-start record whenever it starts
+leading a stream shard (a promotion, either end of a move, a cancelled move
+handing the shard back), and its quorum mark counts only past that record.
+That closes a way a promotion could lose an acknowledged record (Raft's
+Figure 8; see the replication design notes). Until it is finalized, brokers
+count as before and keep that exposure.
+
+- **Finalize it only after every broker runs a version that supports it.**
+  The control plane refuses the finalize otherwise, and the dry run above
+  names the brokers still missing it.
+- **It is one-way twice over.** Beyond the gate refusing an older broker, the
+  first record rolls each log onto a v4 segment, which an older build cannot
+  open (see [Storage format](#storage-format--the-one-that-does-not-roll-back)).
+  Take a backup before finalizing.
+- **Subscribers see a gap.** The record takes an offset that no reader
+  delivers. Current clients report it as `skipped_before` on the next event;
+  an older client that treats every offset jump as a drop reports a drop of
+  one at each leadership change.
+
 A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature
 can be finalized, only once every control-plane member is at metadata
@@ -136,9 +157,9 @@ restart. Upgrade the control plane first.
 
 ### Storage format — the one that does not roll back
 
-`FORMAT_VERSION` (currently 2) is in every segment header, and a version that
-does not match is a `Corruption`, not a warning. **A broker will not open a log
-written by a newer build.**
+The format version is in every segment header, and one newer than the build
+knows is a `Corruption`, not a warning. **A broker will not open a log written
+by a newer build.**
 
 That makes a storage format bump irreversible without restoring from backup: a
 broker that has written one segment at the new version cannot be rolled back to
@@ -153,8 +174,12 @@ Two things soften it, and neither is a rollback path:
   automatic divergence repair and never a record.
 
 **So before an upgrade that changes `FORMAT_VERSION`: take a backup, and treat
-the rollout as one-way.** Nothing in the current release does; this is the rule
-for when one does.
+the rollout as one-way.**
+
+The current build reads format 4 but writes 3, which the previous release
+reads, so upgrading to it is still reversible. It writes a v4 segment only
+for a generation-start record, and only once `generation_start` is finalized
+(see below), so that finalize is the one-way step.
 
 ## Upgrade order
 

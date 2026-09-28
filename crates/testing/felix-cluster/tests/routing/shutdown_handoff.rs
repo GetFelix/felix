@@ -176,14 +176,18 @@ async fn a_stopping_broker_hands_its_shard_over_under_load() {
     );
     owed.extend(during);
 
+    // Offsets less the generation-start records skipped so far, so a promotion
+    // leaves no gap and any other jump is a drop.
     let mut offsets = Vec::new();
+    let mut skipped = 0;
     let mut payloads = Vec::new();
     let deadline =
         tokio::time::Instant::now() + felix_cluster::wait::budget(Duration::from_secs(60));
     while !owed.iter().all(|payload| payloads.contains(payload)) {
         match tokio::time::timeout_at(deadline, subscription.next_event()).await {
             Ok(Ok(Some(event))) => {
-                offsets.push(event.offset.expect("a durable stream carries offsets"));
+                skipped += event.skipped_before;
+                offsets.push(event.offset.expect("a durable stream carries offsets") - skipped);
                 payloads.push(event.payload.to_vec());
             }
             Ok(Ok(None)) => panic!(
@@ -444,14 +448,19 @@ async fn read_every_shard(cluster: &Cluster, shards: u32) -> Vec<ShardRecords> {
         .expect("replay");
         readers.push(tokio::spawn(async move {
             let _client = client;
+            // As above: offsets less the generation-start records skipped.
             let mut records = Vec::new();
+            let mut skipped = 0;
             loop {
                 match tokio::time::timeout(Duration::from_secs(2), subscription.next_event()).await
                 {
-                    Ok(Ok(Some(event))) => records.push((
-                        event.offset.expect("a durable stream carries offsets"),
-                        event.payload.to_vec(),
-                    )),
+                    Ok(Ok(Some(event))) => {
+                        skipped += event.skipped_before;
+                        records.push((
+                            event.offset.expect("a durable stream carries offsets") - skipped,
+                            event.payload.to_vec(),
+                        ));
+                    }
                     Ok(Ok(None)) => break,
                     Ok(Err(err)) => panic!("replay of shard {shard} failed: {err:#}"),
                     Err(_) => break,

@@ -199,15 +199,17 @@ async fn read_partition(
     if offset >= high_watermark || budget == 0 {
         return answer;
     }
-    let mut records = match log.read_from(offset, budget).await {
+    // The raw log, generation-start records included: `encode_page` needs to
+    // see a trailing run of them to move the consumer past it.
+    let mut records = match log.read_log_from(offset, budget).await {
         Ok(records) => records,
         Err(err) => return answer.with_error_code(crate::errors::from_broker(&err).code()),
     };
     records.retain(|record| record.offset < high_watermark);
-    match crate::records::encode_batch(&records) {
-        Ok(batch) => {
+    match crate::records::encode_page(&records) {
+        Ok((batch, visible)) => {
             pass.bytes += batch.len();
-            pass.records += records.len() as u64;
+            pass.records += visible as u64;
             answer.with_records(Some(batch))
         }
         Err(err) => {

@@ -156,8 +156,10 @@ behaves as `DropNew`: the arriving record is the one discarded. The metric
 :::caution[At-Most-Once Semantics]
 A dropped event is not redelivered. A subscriber that falls behind its queue
 misses messages — but on a **durable** stream the loss is detectable and
-recoverable: delivered events carry log offsets, so a gap in offsets is exactly
-a drop, and the subscriber can resume from the offset it last saw. On an
+recoverable: delivered events carry log offsets, so a gap in offsets is a drop
+(less any `skipped_before` the event reports, for the generation-start records a
+new leader writes), and the subscriber can resume from the offset it last
+saw. On an
 ephemeral stream there is nothing to resume from.
 
 If you need redelivery rather than detection, use a **consumer group**: it

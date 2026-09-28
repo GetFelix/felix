@@ -8,6 +8,8 @@
 # finding the design has not yet acted on, and a "violation" that quietly
 # turned into a pass would be a model that stopped saying anything.
 #
+# `scripts/check_tla.sh FelixShardFigure8 FelixShardLease` checks only those.
+#
 # Needs Java 11+ on PATH, or Docker. The TLA+ tools are fetched once, pinned
 # by release and checksum, into target/tla/.
 set -euo pipefail
@@ -78,7 +80,10 @@ expectations=(
   "FelixShardAckWithoutLease pass"
   "FelixShardFencedAck pass"
   "FelixShardFollowerLabels violates AckedOnMajority"
-  "FelixShardFigure8 violates AckedOnMajority"
+  "FelixShardFigure8 pass"
+  "FelixShardFigure8NoStartRecord violates AckedOnMajority"
+  "FelixShardFigure8CutOver pass"
+  "FelixShardFigure8CutOverNoStartRecord violates AckedOnMajority"
   "FelixShardUnfencedAck violates AckedHeldByLeader"
   "FelixShardFencedPromotion pass"
   "FelixShardNoCommitCheck violates NoStaleCommit"
@@ -119,6 +124,8 @@ failed=0
 for entry in "${expectations[@]}"; do
   cfg="${entry%% *}"
   expect="${entry#* }"
+  # Configurations named on the command line, when any are, and no others.
+  if [ "$#" -gt 0 ] && [[ " $* " != *" $cfg "* ]]; then continue; fi
   echo "== $cfg (expected: $expect)"
   output="$(tlc "$cfg" 2>&1)" && status=0 || status=$?
   summary="$(echo "$output" | grep -E "states generated|depth of the complete|Error:|is violated|Finished in" | tail -5)"

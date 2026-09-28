@@ -51,7 +51,11 @@ fn read(process: usize, invoke: u64, complete: u64, list: &str, seen: &[(u64, u6
 fn elements(pairs: &[(u64, u64)]) -> Vec<Element> {
     pairs
         .iter()
-        .map(|&(offset, value)| Element { offset, value })
+        .map(|&(offset, value)| Element {
+            offset,
+            value,
+            skipped_before: 0,
+        })
         .collect()
 }
 
@@ -378,6 +382,19 @@ fn a_final_read_with_a_hole_is_reported_as_incomplete() {
     assert_only(&h, Rule::IncompleteFinalRead);
 }
 
+/// A generation-start record's offset, which the read was told about, is not
+/// a hole.
+#[test]
+fn a_skipped_generation_start_is_not_a_hole() {
+    let mut h = history(
+        vec![append(0, 0, 1, "a", 0, OK), append(0, 2, 3, "a", 1, OK)],
+        &[(0, 0), (2, 1)],
+    );
+    h.final_reads.get_mut("a").unwrap()[1].skipped_before = 1;
+    let report = check(&h);
+    assert!(report.is_valid(), "{report}");
+}
+
 #[test]
 fn a_final_read_that_starts_past_the_base_is_incomplete() {
     let h = history(vec![append(0, 0, 1, "a", 0, OK)], &[(1, 0)]);
@@ -441,6 +458,7 @@ fn breaking_a_valid_history_is_caught() {
         final_a.push(Element {
             offset: next,
             value: victim,
+            skipped_before: 0,
         });
         assert!(
             check(&duplicated).has(Rule::Duplicate),

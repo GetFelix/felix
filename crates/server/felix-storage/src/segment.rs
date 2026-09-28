@@ -17,7 +17,7 @@ mod cursor;
 mod test_support;
 
 pub use format::{
-    DecodedRecord, FORMAT_VERSION, IndexEntry, IndexHeader, MAX_PAYLOAD_BYTES,
+    BASELINE_VERSION, DecodedRecord, FORMAT_VERSION, IndexEntry, IndexHeader, MAX_PAYLOAD_BYTES,
     OLDEST_READABLE_VERSION, PRODUCER_TAG_LEN, RECORD_HEADER_LEN, RecordHeader, SEGMENT_HEADER_LEN,
     SegmentHeader, record_len,
 };

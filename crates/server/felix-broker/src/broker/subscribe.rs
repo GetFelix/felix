@@ -318,6 +318,7 @@ impl Broker {
                 stream: stream.to_string(),
             });
         };
+        let mut from_offset = from_offset;
         loop {
             let appended = Arc::clone(&handle.state.appended);
             let moved = appended.notified();
@@ -330,7 +331,14 @@ impl Broker {
                 ReadBound::Committed(mark) if from_offset < mark => {
                     let mut records = log.read_from(from_offset, max_bytes).await?;
                     records.retain(|record| record.offset < mark);
-                    return Ok(records);
+                    if !records.is_empty() {
+                        return Ok(records);
+                    }
+                    // Nothing below the mark but generation-start records,
+                    // which `read_from` leaves out. Empty means the tail to a
+                    // caller, so wait at the mark instead.
+                    from_offset = mark;
+                    continue;
                 }
                 ReadBound::Refused => {
                     return Err(not_readable(stream, shard, NotReadable::Refused));

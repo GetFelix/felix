@@ -18,10 +18,14 @@ pub struct Event {
     /// Log offset on a durable stream; `None` on an in-memory stream or from a
     /// broker that did not negotiate offsets.
     ///
-    /// Two uses. Checkpoint `offset + 1` to resume after a reconnect. And
-    /// because offsets are contiguous, a jump between consecutive events means
-    /// the subscriber queue dropped something — which is otherwise invisible.
+    /// Two uses. Checkpoint `offset + 1` to resume after a reconnect. And to
+    /// see drops: `offset - previous - 1 - skipped_before` events were dropped
+    /// between two consecutive events.
     pub offset: Option<u64>,
+    /// How many offsets just before `offset` hold no event. Non-zero only on
+    /// the first event after a leader change, whose generation-start record
+    /// took an offset; always zero from a broker that predates it.
+    pub skipped_before: u64,
 }
 
 #[pymethods]
@@ -276,6 +280,7 @@ pub(crate) struct OwnedEvent {
     stream: String,
     payload: Vec<u8>,
     offset: Option<u64>,
+    skipped_before: u64,
 }
 
 impl From<felix_client::Event> for OwnedEvent {
@@ -286,6 +291,7 @@ impl From<felix_client::Event> for OwnedEvent {
             stream: event.stream.to_string(),
             payload: event.payload.to_vec(),
             offset: event.offset,
+            skipped_before: event.skipped_before,
         }
     }
 }
@@ -304,6 +310,7 @@ impl<'py> IntoPyObject<'py> for OwnedEvent {
                 stream: self.stream,
                 payload: PyBytes::new(py, &self.payload).unbind(),
                 offset: self.offset,
+                skipped_before: self.skipped_before,
             },
         )
     }
@@ -419,6 +426,7 @@ pub(crate) enum OwnedShardEvent {
         stream: String,
         payload: Vec<u8>,
         offset: Option<u64>,
+        skipped_before: u64,
     },
     Lost {
         shard: u32,
@@ -455,6 +463,7 @@ impl OwnedShardEvent {
                 stream: event.stream.to_string(),
                 payload: event.payload.to_vec(),
                 offset: event.offset,
+                skipped_before: event.skipped_before,
             },
             felix_client::ShardEvent::ShardLost { shard, error } => Self::Lost { shard, error },
             felix_client::ShardEvent::ShardRecovered { shard } => Self::Recovered { shard },
@@ -478,6 +487,7 @@ impl<'py> IntoPyObject<'py> for OwnedShardEvent {
                 stream,
                 payload,
                 offset,
+                skipped_before,
             } => {
                 let event = Bound::new(
                     py,
@@ -487,6 +497,7 @@ impl<'py> IntoPyObject<'py> for OwnedShardEvent {
                         stream,
                         payload: PyBytes::new(py, &payload).unbind(),
                         offset,
+                        skipped_before,
                     },
                 )?;
                 Ok(Bound::new(
