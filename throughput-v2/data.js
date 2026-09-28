@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790555024361,
+  "lastUpdate": 1790557800889,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18564,6 +18564,58 @@ window.BENCHMARK_DATA = {
             "range": "36702.42",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 922209.58\nmean: 917575.46\nstdev: 36702.42\ncv: 4.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ec8856cc74fd4753a32037cbaf2ab8dac30a1145",
+          "message": "ci(fuzz): nightly fuzz campaign with a persisted corpus, and targets for every decoder (#786)\n\nA scheduled and dispatchable workflow runs each libFuzzer target for 25\nminutes, restoring its corpus from the Actions cache, minimizing it weekly,\nand uploading crash inputs as a per-target artifact. The 30 s per-PR job\nstays as the regression gate.\n\nNew targets: kafka_request (request frames and SASL/PLAIN), cache_record,\ncounter_record and sidecar_state (durable mark, replica state, generation\nhistory, producer snapshot, with CRC fix-up so mutation gets past the\nchecksum). frame and internal_message now also cover the lenient header and\nenvelope readers the broker uses.\n\nSpec-Unaffected: CI and fuzz harness",
+          "timestamp": "2026-09-27T17:58:36-07:00",
+          "tree_id": "9c6ed708e150381fdfbd6badbc522d879b4eac16",
+          "url": "https://github.com/gabloe/felix/commit/ec8856cc74fd4753a32037cbaf2ab8dac30a1145"
+        },
+        "date": 1790557800340,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 367288.13,
+            "range": "21244.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 367288.13\nmean: 369027.10\nstdev: 21244.12\ncv: 5.76%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 367288.13,
+            "range": "21244.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 367288.13\nmean: 369027.10\nstdev: 21244.12\ncv: 5.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 89269.37,
+            "range": "444.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 89269.37\nmean: 89556.50\nstdev: 444.61\ncv: 0.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 892693.74,
+            "range": "4446.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 892693.74\nmean: 895565.02\nstdev: 4446.09\ncv: 0.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
