@@ -25,7 +25,7 @@ async fn https_server(dir: &std::path::Path) -> (String, String) {
         .signed_by(&key, &ca)
         .expect("sign");
     let config = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
+        rustls::crypto::aws_lc_rs::default_provider(),
     ))
     .with_safe_default_protocol_versions()
     .expect("versions")
@@ -70,7 +70,7 @@ async fn a_private_control_plane_ca_is_trusted_only_once_configured() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (url, ca) = https_server(dir.path()).await;
 
-    trust_ca(None).expect("public roots only");
+    trust_ca(None).expect("system store only");
     assert!(
         builder()
             .build()

@@ -246,13 +246,13 @@ export FELIX_CONTROLPLANE_URL="https://cp.example.com:8443"
 
 ### `FELIX_CONTROLPLANE_CA`
 
-**Description**: PEM CA bundle trusted, in addition to the public roots, when
+**Description**: PEM CA bundle trusted, in addition to the system trust store, when
 `FELIX_CONTROLPLANE_URL` is `https://`. Read by brokers and by
 `felix-controlplane admin`.
 
 **Type**: File path
 
-**Default**: unset — public roots only
+**Default**: unset — system trust store only
 
 **Notes**:
 - Set it when the control plane's certificate comes from a private CA

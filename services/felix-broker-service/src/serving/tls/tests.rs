@@ -187,7 +187,10 @@ async fn a_rotated_certificate_is_served_on_the_next_handshake() {
         "the rotation was missed"
     );
 
-    let (second, _) = handshake(&server, &trusting, "broker.felix.test").await;
+    // A fresh client: the first one may resume its session, and a resumed
+    // session reports the certificate from the original handshake.
+    let fresh = client(pki.roots(), None);
+    let (second, _) = handshake(&server, &fresh, "broker.felix.test").await;
     let second = second.expect("second").peer_certificates().expect("certs");
     assert_ne!(first, second, "the rotated certificate was not served");
 }

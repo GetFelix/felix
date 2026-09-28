@@ -34,7 +34,7 @@ napi-derive = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 anyhow = "1"
 serde_json = "1"
-quinn = "0.11"
+quinn = { version = "0.11", default-features = false, features = ["bloom", "log", "platform-verifier", "runtime-tokio", "rustls-aws-lc-rs"] }
 rustls = "0.23"
 rustls-pemfile = "2"
 

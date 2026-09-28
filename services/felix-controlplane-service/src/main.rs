@@ -6,6 +6,10 @@ use felix_controlplane_service::{admin, config, migrate, server};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // aws-lc-rs is the only rustls provider linked in. Installing it as the
+    // process default means a library that asks for the default gets the same
+    // provider as the configs we build explicitly, instead of panicking.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     // The migration tool rides the same binary so an operator's image has
     // it wherever the control plane runs; everything else stays env-driven.
     let mut args: Vec<String> = std::env::args().skip(1).collect();

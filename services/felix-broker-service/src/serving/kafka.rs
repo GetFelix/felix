@@ -399,7 +399,7 @@ pub fn tls_config(
     key: rustls::pki_types::PrivateKeyDer<'static>,
 ) -> Result<Arc<rustls::ServerConfig>> {
     let config = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
+        rustls::crypto::aws_lc_rs::default_provider(),
     ))
     .with_protocol_versions(rustls::ALL_VERSIONS)
     .context("kafka TLS protocol versions")?

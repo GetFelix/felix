@@ -10,6 +10,10 @@ use felix_common::lifecycle;
 // and runs multiple background tasks concurrently.
 #[tokio::main]
 async fn main() -> Result<()> {
+    // aws-lc-rs is the only rustls provider linked in. Installing it as the
+    // process default means a library that asks for the default gets the same
+    // provider as the configs we build explicitly, instead of panicking.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     // `--print-config` before anything is bound, so it can be run against a
     // live deployment's environment without a port conflict.
     //

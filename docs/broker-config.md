@@ -234,7 +234,7 @@ writes over that port. See [internal-protocol.md](internal-protocol.md).
 ### Control-plane CA
 
 With an `https://` `FELIX_CONTROLPLANE_URL`, the broker verifies the control
-plane against the public roots plus `FELIX_CONTROLPLANE_CA` when set. Setting
+plane against the system trust store plus `FELIX_CONTROLPLANE_CA` when set. Setting
 the CA with an `http://` URL fails startup.
 
 ## Connection Limits and Tenant Quotas
