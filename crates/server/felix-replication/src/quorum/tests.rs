@@ -184,3 +184,102 @@ async fn retaining_the_live_shards_forgets_the_rest() {
         QuorumWait::NotLeading,
     );
 }
+
+/// A mark for a generation this broker leads but has not published one for
+/// yet is waited for, not read as a lost leadership.
+#[tokio::test]
+async fn a_wait_at_a_generation_with_no_mark_yet_waits_for_it() {
+    let marks = std::sync::Arc::new(QuorumMarks::new());
+    let waiting = {
+        let marks = std::sync::Arc::clone(&marks);
+        tokio::spawn(async move {
+            marks
+                .wait_while_leading(&key("orders"), || Some(5), 10, Duration::from_secs(5))
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        !waiting.is_finished(),
+        "the wait ended with no mark to end it"
+    );
+
+    marks.publish(&key("orders"), 5, 10);
+    assert_eq!(waiting.await.expect("join"), QuorumWait::Reached);
+}
+
+/// **A new generation under the same leader carries a wait over.** Staging a
+/// move's destination starts one, and a write taken just before is on the
+/// log the new replica set is shipped from, so the new mark covers it.
+#[tokio::test]
+async fn a_wait_follows_a_new_generation_under_the_same_leader() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let marks = std::sync::Arc::new(QuorumMarks::new());
+    let generation = std::sync::Arc::new(AtomicU64::new(4));
+    marks.publish(&key("orders"), 4, 0);
+    let waiting = {
+        let (marks, generation) = (
+            std::sync::Arc::clone(&marks),
+            std::sync::Arc::clone(&generation),
+        );
+        tokio::spawn(async move {
+            marks
+                .wait_while_leading(
+                    &key("orders"),
+                    || Some(generation.load(Ordering::SeqCst)),
+                    5,
+                    Duration::from_secs(5),
+                )
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    generation.store(5, Ordering::SeqCst);
+    marks.publish(&key("orders"), 5, 0);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        !waiting.is_finished(),
+        "the new generation's empty mark ended the wait"
+    );
+
+    marks.publish(&key("orders"), 5, 5);
+    assert_eq!(waiting.await.expect("join"), QuorumWait::Reached);
+}
+
+/// Losing the shard while no mark exists still ends the wait promptly rather
+/// than running out its timeout.
+#[tokio::test]
+async fn losing_the_shard_before_its_first_mark_ends_the_wait() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let marks = std::sync::Arc::new(QuorumMarks::new());
+    let leading = std::sync::Arc::new(AtomicBool::new(true));
+    let waiting = {
+        let (marks, leading) = (
+            std::sync::Arc::clone(&marks),
+            std::sync::Arc::clone(&leading),
+        );
+        tokio::spawn(async move {
+            marks
+                .wait_while_leading(
+                    &key("orders"),
+                    || leading.load(Ordering::SeqCst).then_some(5),
+                    10,
+                    Duration::from_secs(30),
+                )
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    leading.store(false, Ordering::SeqCst);
+
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("the wait should end when the shard is released")
+            .expect("join"),
+        QuorumWait::NotLeading,
+    );
+}

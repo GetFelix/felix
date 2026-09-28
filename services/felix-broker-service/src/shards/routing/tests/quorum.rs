@@ -1,6 +1,8 @@
 //! The quorum wait, answered by the ingress router this broker serves from.
 use std::time::Duration;
 
+use felix_replication::quorum::{QuorumMarks, await_quorum};
+
 use crate::shards::{ShardKey, ShardKind};
 
 const QUICK: Duration = Duration::from_millis(200);
@@ -15,11 +17,16 @@ fn key(stream: &str) -> ShardKey {
     }
 }
 
-/// A `Quorum` stream placed with one replica: the leader alone is the
-/// majority. Nothing ships for it, so no mark is ever published, and the wait
-/// must not read that silence as a lost leadership.
-#[tokio::test]
-async fn an_unreplicated_quorum_shard_is_acknowledged_by_its_leader() {
+/// A broker leading `orders` at `generation` with `replicas`, and a
+/// publish's outcome on it.
+struct Leading {
+    _dir: tempfile::TempDir,
+    handle: felix_broker::StreamHandle,
+    outcome: felix_broker::PublishOutcome,
+    ingress: crate::shards::routing::IngressRouter,
+}
+
+async fn leading(replicas: &[&str], successor: Option<&str>, generation: u64) -> Leading {
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -27,7 +34,6 @@ async fn an_unreplicated_quorum_shard_is_acknowledged_by_its_leader() {
 
     use crate::shards::routing::{IngressRouter, routing_table_from};
     use crate::shards::watch::ShardAssignment;
-    use felix_replication::quorum::{QuorumMarks, await_quorum};
 
     let dir = tempfile::tempdir().expect("tempdir");
     let storage = felix_broker::DurableStorage::open(
@@ -70,30 +76,34 @@ async fn an_unreplicated_quorum_shard_is_acknowledged_by_its_leader() {
         ShardAssignment {
             key: key("orders"),
             leader: "broker-a".to_string(),
-            replicas: Vec::new(),
-            generation: 4,
+            replicas: replicas.iter().map(|r| r.to_string()).collect(),
+            generation,
             state: "active".to_string(),
-            successor: None,
+            successor: successor.map(str::to_string),
         },
     )]
     .into_iter()
     .collect();
-    let nodes: HashMap<String, NodeRef> = [(
-        "broker-a".to_string(),
-        NodeRef {
-            node_id: "broker-a".to_string(),
-            advertise_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 7001)),
-            region: "us-west-2".to_string(),
-            live: true,
-        },
-    )]
-    .into_iter()
-    .collect();
+    let nodes: HashMap<String, NodeRef> = std::iter::once("broker-a")
+        .chain(replicas.iter().copied())
+        .enumerate()
+        .map(|(i, node)| {
+            (
+                node.to_string(),
+                NodeRef {
+                    node_id: node.to_string(),
+                    advertise_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 7001 + i as u16)),
+                    region: "us-west-2".to_string(),
+                    live: true,
+                },
+            )
+        })
+        .collect();
     let ingress = IngressRouter::new(Arc::clone(&router), Arc::default());
     ingress.publish(
         routing_table_from(&assignments, &nodes),
         &nodes,
-        [(key("orders"), 4)].into_iter().collect(),
+        [(key("orders"), generation)].into_iter().collect(),
     );
 
     let handle = broker
@@ -104,16 +114,63 @@ async fn an_unreplicated_quorum_shard_is_acknowledged_by_its_leader() {
         .publish_batch_with_outcome(&handle, &[bytes::Bytes::from_static(b"one")])
         .await
         .expect("publish");
+    Leading {
+        _dir: dir,
+        handle,
+        outcome,
+        ingress,
+    }
+}
+
+/// A `Quorum` stream placed with one replica: the leader alone is the
+/// majority. Nothing ships for it, so no mark is ever published, and the wait
+/// must not read that silence as a lost leadership.
+#[tokio::test]
+async fn an_unreplicated_quorum_shard_is_acknowledged_by_its_leader() {
+    let shard = leading(&[], None, 4).await;
     let marks = QuorumMarks::new();
 
     await_quorum(
-        &handle,
+        &shard.handle,
         Some(&key("orders")),
-        &outcome,
+        &shard.outcome,
         Some(&marks),
-        Some(&ingress),
+        Some(&shard.ingress),
         QUICK,
     )
     .await
     .expect("the leader is the whole replica set, and it has the record");
+}
+
+/// **A publish just after a move stages its destination is not refused.**
+/// Staging starts a generation under the same leader, and until the first
+/// replication pass at it reports there is no mark to wait on. That is not a
+/// leadership change; the publish waits for the mark.
+#[tokio::test]
+async fn a_quorum_publish_before_a_new_generations_first_mark_waits_for_it() {
+    let shard = leading(&["broker-b"], Some("broker-b"), 5).await;
+    let marks = std::sync::Arc::new(QuorumMarks::new());
+    let (_, last) = shard.outcome.offsets.expect("a durable stream has offsets");
+
+    let publisher = {
+        let marks = std::sync::Arc::clone(&marks);
+        tokio::spawn(async move {
+            await_quorum(
+                &shard.handle,
+                Some(&key("orders")),
+                &shard.outcome,
+                Some(&marks),
+                Some(&shard.ingress),
+                Duration::from_secs(5),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    marks.publish(&key("orders"), 5, last + 1);
+
+    publisher
+        .await
+        .expect("join")
+        .expect("the leader never stopped leading; the first mark acknowledges the publish");
 }
