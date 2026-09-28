@@ -45,6 +45,7 @@ pub mod driver;
 mod follower;
 pub mod halted;
 pub mod metrics;
+pub mod promotion;
 pub mod quorum;
 mod rebuild;
 pub mod replica;

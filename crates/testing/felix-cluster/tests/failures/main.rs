@@ -15,3 +15,4 @@ mod kafka_produce;
 mod links;
 mod membership;
 mod partition;
+mod promotion_fence;

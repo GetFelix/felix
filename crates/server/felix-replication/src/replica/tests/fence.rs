@@ -262,3 +262,122 @@ async fn a_fence_names_the_shards_own_log() {
         .await;
     assert_eq!(refusal(&answer).code, ErrorCode::Malformed);
 }
+
+fn fetch(generation: u64, from_offset: u64) -> felix_wire::internal::ReplicateFetch {
+    felix_wire::internal::ReplicateFetch {
+        correlation_id: 4,
+        shard: batch(generation, 0, &[]).shard,
+        log: ReplicaLog::Stream,
+        from_offset,
+        max_bytes: 1 << 20,
+    }
+}
+
+/// **Only the leader that fenced this replica may read its log**, and it
+/// gets the records as they were shipped, from where it asked.
+#[tokio::test]
+async fn only_the_leader_that_fenced_the_replica_reads_its_tail() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+    handler
+        .apply(batch(4, 0, &["a", "b", "c"]), felix_broker::LogKind::Stream)
+        .await;
+
+    assert_eq!(
+        refusal(&handler.fetch(fetch(5, 1)).await).code,
+        ErrorCode::StaleRoute,
+        "a leader that has not fenced this replica read its log",
+    );
+    taken(&handler.fence(fence(5)).await);
+    assert_eq!(
+        refusal(&handler.fetch(fetch(4, 1)).await).code,
+        ErrorCode::FencedEpoch
+    );
+
+    let InternalMessage::ReplicateRecords(records) = handler.fetch(fetch(5, 1)).await else {
+        panic!("expected the records");
+    };
+    assert_eq!(records.first_offset, 1);
+    assert_eq!(
+        records.payloads,
+        vec![Bytes::from_static(b"b"), Bytes::from_static(b"c")]
+    );
+    assert_eq!(records.checksum, batch_checksum(&records.payloads, &[]));
+}
+
+/// Answers the fence and the fetch over the real transport.
+struct OverTheWire(ReplicaHandler);
+
+#[async_trait::async_trait]
+impl crate::peer::PeerRequestHandler for OverTheWire {
+    async fn handle(&self, request: InternalMessage) -> InternalMessage {
+        match request {
+            InternalMessage::Fence(fence) => self.0.fence(fence).await,
+            InternalMessage::ReplicateFetch(fetch) => self.0.fetch(fetch).await,
+            other => panic!("unexpected {:?}", other.kind()),
+        }
+    }
+}
+
+/// A tail of hundreds of records comes back across the transport, as the
+/// promoted leader reads it.
+#[tokio::test]
+async fn a_long_tail_is_fetched_over_the_transport() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+    let values: Vec<String> = (0..600).map(|i| format!("record-{i}")).collect();
+    let refs: Vec<&str> = values.iter().map(String::as_str).collect();
+    // Half of them from an idempotent producer, as a real stream's are.
+    let mut marked = batch(4, 0, &refs);
+    marked.marks = (0..600u64)
+        .map(|i| {
+            if i % 2 == 0 {
+                felix_wire::internal::ProducerMark::Opens {
+                    producer_id: 7,
+                    sequence: i,
+                    len: 1,
+                }
+            } else {
+                felix_wire::internal::ProducerMark::None
+            }
+        })
+        .collect();
+    marked.checksum = batch_checksum(&marked.payloads, &marked.marks);
+    let answer = handler.apply(marked, felix_broker::LogKind::Stream).await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+
+    let config = crate::peer::PeerTransportConfig {
+        bind: "127.0.0.1:0".parse().expect("addr"),
+        ..Default::default()
+    };
+    let server =
+        crate::peer::PeerServer::bind(LOCAL.to_string(), &config, Arc::new(OverTheWire(handler)))
+            .expect("bind");
+    let addr = server.local_addr().expect("addr");
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    tokio::spawn(server.serve(shutdown.clone()));
+    let pool =
+        crate::peer::PeerPool::new("broker-a".to_string(), config, shutdown.clone()).expect("pool");
+
+    let answer = pool
+        .request(LOCAL, addr, InternalMessage::Fence(fence(5)))
+        .await
+        .expect("fence");
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    let answer = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        pool.request(LOCAL, addr, InternalMessage::ReplicateFetch(fetch(5, 11))),
+    )
+    .await
+    .expect("the fetch hung")
+    .expect("fetch");
+    let InternalMessage::ReplicateMarkedRecords(records) = answer else {
+        panic!("expected the records, got {:?}", answer.kind());
+    };
+    assert_eq!(records.first_offset, 11);
+    assert_eq!(records.payloads.len(), 589);
+    shutdown.cancel();
+}

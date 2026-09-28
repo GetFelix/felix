@@ -147,12 +147,10 @@ async fn two_current_brokers_learn_each_others_capabilities() {
         .await
         .expect("handshake");
 
-    assert_eq!(theirs, PeerCapabilities::FENCE);
-    assert_eq!(
-        pool.known_capabilities().get(PEER),
-        Some(PeerCapabilities::FENCE)
-    );
-    assert_eq!(noted.get("broker-a"), Some(PeerCapabilities::FENCE));
+    let offered = PeerCapabilities::FENCE.union(PeerCapabilities::TAIL_FETCH);
+    assert_eq!(theirs, offered);
+    assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
+    assert_eq!(noted.get("broker-a"), Some(offered));
 
     pool.shutdown().await;
     listener.stop().await;

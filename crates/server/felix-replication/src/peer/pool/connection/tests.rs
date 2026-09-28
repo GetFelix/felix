@@ -37,6 +37,7 @@ mod correlation {
             InternalMessage::ReplicateRebuild(m) => m.correlation_id,
             InternalMessage::Fence(m) => m.correlation_id,
             InternalMessage::FenceOk(m) => m.correlation_id,
+            InternalMessage::ReplicateFetch(m) => m.correlation_id,
         }
     }
 
@@ -126,6 +127,13 @@ mod correlation {
                 log_end: 1,
                 commit_offset: 1,
                 last_generation: 1,
+            }),
+            InternalMessage::ReplicateFetch(ReplicateFetch {
+                correlation_id: 7,
+                shard: shard(),
+                log: ReplicaLog::Stream,
+                from_offset: 3,
+                max_bytes: 64,
             }),
             InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
                 correlation_id: 7,

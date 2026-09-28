@@ -77,6 +77,7 @@ expectations=(
   "FelixShardAckWithoutLease pass"
   "FelixShardFencedAck pass"
   "FelixShardUnfencedAck violates AckedHeldByLeader"
+  "FelixShardFencedPromotion pass"
   "FelixShardNoCommitCheck violates NoStaleCommit"
   "FelixShardNoReportOrder violates AckedSurvive"
   "FelixShardReportAtTail violates QuorumReportNamesASuccessor"

@@ -455,6 +455,10 @@ pub(super) fn with_correlation(message: InternalMessage, correlation_id: u64) ->
             correlation_id,
             ..m
         }),
+        InternalMessage::ReplicateFetch(m) => InternalMessage::ReplicateFetch(ReplicateFetch {
+            correlation_id,
+            ..m
+        }),
     }
 }
 

@@ -130,6 +130,8 @@ pub enum Kind {
     Fence = 29,
     /// The replica took the fence.
     FenceOk = 30,
+    /// The leader that fenced a replica reads its log's tail.
+    ReplicateFetch = 31,
 }
 
 impl Kind {
@@ -167,6 +169,7 @@ impl Kind {
             28 => Ok(Kind::HelloCapableOk),
             29 => Ok(Kind::Fence),
             30 => Ok(Kind::FenceOk),
+            31 => Ok(Kind::ReplicateFetch),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

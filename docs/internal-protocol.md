@@ -101,9 +101,11 @@ never have dialled the one that shipped to it.
 | Bit | Name | The peer |
 | --- | --- | --- |
 | `1 << 0` | `FENCE` | answers `Fence`, and refuses every older leader of the shard once it has |
+| `1 << 1` | `TAIL_FETCH` | answers `ReplicateFetch` from the leader that fenced it |
 
-`FELIX_INTERNAL_FENCE=false` turns the bit off: the broker offers nothing and
-refuses `Fence` as an unknown kind, as an older build would.
+`FELIX_INTERNAL_FENCE=false` turns both bits off: the broker offers nothing
+and refuses `Fence` and `ReplicateFetch` as unknown kinds, as an older build
+would.
 
 ### Versioning
 
@@ -520,6 +522,33 @@ The fence comes with a promotion, usually before the replica's routing view
 has the new generation, so a replica that is behind takes it rather than
 answering `StaleRoute`.
 
+`ReplicateFetch` (kind 31) is how the leader takes a tail a fenced replica
+holds past its own. It names the shard, its own log, an offset and a byte
+budget, and is answered with the records as a leader ships them
+(`ReplicateRecords`, or `ReplicateMarkedRecords` when any record carries a
+producer mark), at most 4 MiB and none past the replica's end. Only a leader
+at exactly the generation the replica last accepted is answered: an older one
+gets `FencedEpoch`, and one that has not fenced it yet `StaleRoute`.
+
+```mermaid
+sequenceDiagram
+    participant B as Broker B (promoted at G+1)
+    participant C as Broker C (replica)
+    participant A as Broker A (deposed at G)
+
+    B->>C: Fence(shard, G+1)
+    Note over C: persist G+1, fsync
+    C-->>B: FenceOk(log_end, commit_offset, last_generation)
+    Note over B: majority fenced, B counted
+    opt C's log is ahead of B's
+        B->>C: ReplicateFetch(shard, G+1, from)
+        C-->>B: ReplicateRecords(...)
+    end
+    Note over B: opens for writes
+    A->>C: ReplicateRecords(shard, G, ...)
+    C-->>A: ReplicateError(FencedEpoch)
+```
+
 ## Errors
 
 Typed, because they need different responses:
@@ -542,7 +571,8 @@ Typed, because they need different responses:
 
 `ReplicateBootstrap` is kind 10, `ReplicateRebuild` kind 24,
 `ReplicateMarkedRecords` kind 25, `ReplicateCommittedRecords` kind 26,
-`HelloCapable` 27, `HelloCapableOk` 28, `Fence` 29 and `FenceOk` 30. A peer
+`HelloCapable` 27, `HelloCapableOk` 28, `Fence` 29, `FenceOk` 30 and
+`ReplicateFetch` 31. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol

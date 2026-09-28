@@ -290,6 +290,7 @@ async fn an_append_ships_without_waiting_for_the_tick() {
         Arc::clone(&broker),
         router,
         Arc::new(Unfenced),
+        Arc::new(crate::promotion::NoGate),
         Published {
             marks: Arc::clone(&marks),
             halted: Arc::new(crate::halted::HaltedReplicas::new()),
@@ -352,6 +353,7 @@ async fn a_route_change_ships_without_waiting_for_the_tick() {
         Arc::clone(&broker),
         Arc::clone(&router),
         Arc::new(Unfenced),
+        Arc::new(crate::promotion::NoGate),
         Published {
             marks: Arc::new(QuorumMarks::new()),
             halted: Arc::new(crate::halted::HaltedReplicas::new()),

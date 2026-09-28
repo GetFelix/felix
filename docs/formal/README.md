@@ -59,7 +59,9 @@ One shard, three brokers, one control plane, discrete time.
   leader. The new leader takes the log of any answer ahead of its own by (last
   generation, length), and opens for writes, and ships, only once a majority,
   itself included, has answered. Modelled on promotion only: the handoff and
-  cancel configurations do not turn it on.
+  cancel configurations do not turn it on. The broker has it without
+  `AckByFollowers`, acknowledging on the report and the lease as before;
+  `FelixShardFencedPromotion.cfg` is that configuration.
 - **Reports.** The leader tells the control plane which followers hold every
   record it does. The report travels on its own: it may arrive after the
   acknowledgements it describes, or never. With `ReportBeforeAck` a `Quorum`
@@ -152,6 +154,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardAckWithoutLease.cfg` | the same with the lease taken out of the acknowledgement: the report alone releases it | pass every invariant (2.38M distinct states, the same ones: the report is only sent on a valid lease) |
 | `FelixShardFencedAck.cfg` | acknowledged by follower acks at the leader's generation, no lease or report in it, and the promotion fence; no margin on either side of the lease, drifting clocks, no commit check, two writes | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (2.62M distinct states) |
 | `FelixShardUnfencedAck.cfg` | the same without the fence | violate `AckedHeldByLeader` |
+| `FelixShardFencedPromotion.cfg` | the broker as built: `FelixShardRealMargins.cfg` with the promotion fence and its catch-up, acknowledgements still on the report and the lease | pass every invariant and `AckedHeldByLeader` (8.15M distinct states, depth 30, 55 s on sixteen cores) |
 | `FelixShardNoCommitCheck.cfg` | commit-time lease check removed | violate `NoStaleCommit` |
 | `FelixShardNoReportOrder.cfg` | the design *before* #268: a `Quorum` ack released before the report describing it lands | violate `AckedSurvive` |
 | `FelixShard.cfg` | the design as implemented: report-before-mark, followers reported against the offset a majority holds, promotion from the leader's report, the leader acting on the answer its report got | pass every invariant (5.38M distinct states) |

@@ -21,6 +21,8 @@ impl PeerCapabilities {
     /// Answers [`Fence`], and refuses every older leader of the shard once it
     /// has.
     pub const FENCE: Self = Self(1 << 0);
+    /// Answers [`ReplicateFetch`] from the leader that fenced it.
+    pub const TAIL_FETCH: Self = Self(1 << 1);
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
     }
@@ -30,11 +32,11 @@ impl PeerCapabilities {
     }
 
     /// Whether every bit of `other` is set here.
-    pub fn contains(self, other: Self) -> bool {
+    pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
 
-    pub fn union(self, other: Self) -> Self {
+    pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 }
@@ -67,4 +69,22 @@ pub struct FenceOk {
     /// The generation its last record was written at, zero for an empty log.
     /// With `log_end` it orders two replicas' logs the way promotion does.
     pub last_generation: u64,
+}
+
+/// The leader that fenced a replica reads the replica's copy of the shard's
+/// log from `from_offset`, to take a tail it does not hold.
+///
+/// Answered with the records as a leader ships them (`ReplicateRecords`, or
+/// `ReplicateMarkedRecords` when any carries a producer mark), at most
+/// `max_bytes` of them, and none past the replica's end. Only a leader at the
+/// generation the replica last accepted is answered: a fenced replica's log
+/// is not for an older leader to read. Sent only to a peer that advertised
+/// [`PeerCapabilities::TAIL_FETCH`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicateFetch {
+    pub correlation_id: u64,
+    pub shard: ShardRef,
+    pub log: ReplicaLog,
+    pub from_offset: u64,
+    pub max_bytes: u32,
 }

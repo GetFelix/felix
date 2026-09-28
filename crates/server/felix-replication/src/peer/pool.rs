@@ -160,6 +160,13 @@ impl PeerPool {
         Ok(connection.capabilities())
     }
 
+    /// Whether this broker offers the promotion fence to its peers.
+    pub fn offers_fence(&self) -> bool {
+        self.config
+            .capabilities()
+            .contains(crate::promotion::REQUIRED)
+    }
+
     /// What each peer said in its latest handshake with this broker, in
     /// either direction. Hand it to the listener so inbound handshakes count.
     pub fn known_capabilities(&self) -> &KnownCapabilities {
@@ -464,6 +471,12 @@ pub trait PeerRequester {
     {
         async { Ok(PeerCapabilities::NONE) }
     }
+
+    /// What `node_id` said in its latest handshake with this broker, in
+    /// either direction, without reaching it.
+    fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+        None
+    }
 }
 
 impl<T: PeerRequester> PeerRequester for std::sync::Arc<T> {
@@ -485,6 +498,10 @@ impl<T: PeerRequester> PeerRequester for std::sync::Arc<T> {
     {
         T::capabilities(self, node_id, addr)
     }
+
+    fn recorded_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
+        T::recorded_capabilities(self, node_id)
+    }
 }
 
 impl PeerRequester for PeerPool {
@@ -504,12 +521,17 @@ impl PeerRequester for PeerPool {
     ) -> std::result::Result<PeerCapabilities, PeerError> {
         PeerPool::capabilities(self, node_id, addr).await
     }
+
+    fn recorded_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
+        self.known.get(node_id)
+    }
 }
 
 /// The capability a peer must have said it has before `message` goes to it.
 fn required_capability(message: &InternalMessage) -> Option<PeerCapabilities> {
     match message {
         InternalMessage::Fence(_) => Some(PeerCapabilities::FENCE),
+        InternalMessage::ReplicateFetch(_) => Some(PeerCapabilities::TAIL_FETCH),
         _ => None,
     }
 }

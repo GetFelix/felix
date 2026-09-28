@@ -108,6 +108,9 @@ pub(crate) fn spawn_broker(
         command.env("FELIX_NODE_ZONE", zone);
     }
     command.envs(config.broker_env.iter().map(|(key, value)| (key, value)));
+    if let Some(env) = config.node_env.get(index) {
+        command.envs(env.iter().map(|(key, value)| (key, value)));
+    }
 
     if config.inherit_output {
         command.stdout(Stdio::inherit()).stderr(Stdio::inherit());

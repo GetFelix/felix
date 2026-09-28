@@ -19,6 +19,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use super::halted::{HaltedReplica, HaltedReplicas};
+use super::promotion::{self, NoGate, Outcome, PromotionGate};
 use super::quorum::QuorumMarks;
 use super::reporter::Reporter;
 use super::reporter::ShardReport;
@@ -49,6 +50,11 @@ pub struct Published {
     pub marks: Arc<QuorumMarks>,
     pub halted: Arc<HaltedReplicas>,
 }
+
+/// How soon a pass follows one that left a promoted shard unfenced. The shard
+/// serves nothing meanwhile; each attempt already waits on the replicas it
+/// cannot reach, so this only spaces out the ones that answer and refuse.
+const FENCE_RETRY: Duration = Duration::from_millis(200);
 
 /// How soon a stopping broker asks for another pass when the last one left a
 /// shard's followers behind. Not at once: a follower that is unreachable would
@@ -117,6 +123,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
     broker: Arc<Broker>,
     router: Arc<ShardRouter>,
     fence: Arc<dyn WriteFence>,
+    gate: Arc<dyn PromotionGate>,
     published: Published,
     reporter: Option<Reporter>,
     interval: Duration,
@@ -151,6 +158,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
         let mut counter_cursors = HashMap::new();
         let mut copying = false;
         let mut drain_pending = false;
+        let mut fencing = false;
         loop {
             // An append during the previous pass left a permit, so this
             // returns at once rather than waiting for the tick — see
@@ -165,6 +173,8 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
                 let retry = async {
                     if drain_pending {
                         tokio::time::sleep(DRAIN_RETRY).await;
+                    } else if fencing {
+                        tokio::time::sleep(FENCE_RETRY).await;
                     } else {
                         std::future::pending::<()>().await;
                     }
@@ -182,6 +192,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
                 &broker,
                 &router,
                 &*fence,
+                &*gate,
                 &published.marks,
                 reporter.as_ref(),
                 &mut cursors,
@@ -198,6 +209,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
             published.halted.publish(pass.halted);
             copying = pass.copying;
             drain_pending = pass.drain_pending;
+            fencing = pass.fencing;
             seen.send_modify(|seen| {
                 seen.finished += 1;
                 seen.behind = pass.behind;
@@ -255,6 +267,7 @@ pub async fn replicate_once<R: PeerRequester>(
         broker,
         router,
         &Unfenced,
+        &NoGate,
         marks,
         reporter,
         cursors,
@@ -276,6 +289,7 @@ pub async fn replicate_once_with<R: PeerRequester>(
     broker: &Arc<Broker>,
     router: &ShardRouter,
     fence: &dyn WriteFence,
+    gate: &dyn PromotionGate,
     marks: &QuorumMarks,
     reporter: Option<&Reporter>,
     cursors: &mut HashMap<ShardKey, ShardCursors>,
@@ -309,6 +323,7 @@ pub async fn replicate_once_with<R: PeerRequester>(
     let mut halted: Vec<HaltedReplica> = Vec::new();
     let mut live_shards = Vec::new();
     let mut reports = Vec::new();
+    let mut promoted = Vec::new();
 
     // Every shard this broker leads, each with the cursors it owns for the
     // duration. Taken out of the maps rather than borrowed from them, which is
@@ -319,6 +334,12 @@ pub async fn replicate_once_with<R: PeerRequester>(
             continue;
         }
         live_shards.push(key.clone());
+        // Promoted and not yet fenced: nothing ships until it is, because it
+        // may yet take a tail from a follower that shipping would truncate.
+        if gate.awaiting(&watch_key(key)) == Some(route.generation) {
+            promoted.push((key.clone(), route.clone()));
+            continue;
+        }
 
         let previous = cursors.remove(key);
         let learner = shard::staged_learner(previous.as_ref(), route);
@@ -348,6 +369,8 @@ pub async fn replicate_once_with<R: PeerRequester>(
         };
         work.push((key.clone(), route.clone(), entry, aux));
     }
+
+    let fencing = open_promoted(requester, broker, router.local_node_id(), gate, promoted).await;
 
     // Shards at the same time, not one after another.
     //
@@ -408,7 +431,76 @@ pub async fn replicate_once_with<R: PeerRequester>(
         copying,
         drain_pending,
         behind,
+        fencing,
     }
+}
+
+async fn fence_one<R: PeerRequester>(
+    requester: &R,
+    broker: &Arc<Broker>,
+    local_node_id: &str,
+    key: ShardKey,
+    route: felix_router::Route,
+) -> (ShardKey, u64, Outcome) {
+    let outcome = promotion::fence_shard(requester, broker, local_node_id, &key, &route).await;
+    (key, route.generation, outcome)
+}
+
+/// Fence each shard this broker was just promoted to lead, and open the ones
+/// that are done. Returns whether any is still waiting.
+async fn open_promoted<R: PeerRequester>(
+    requester: &R,
+    broker: &Arc<Broker>,
+    local_node_id: &str,
+    gate: &dyn PromotionGate,
+    promoted: Vec<(ShardKey, felix_router::Route)>,
+) -> bool {
+    let outcomes: Vec<(ShardKey, u64, Outcome)> = futures::stream::iter(
+        promoted
+            .into_iter()
+            .map(|(key, route)| fence_one(requester, broker, local_node_id, key, route)),
+    )
+    .buffer_unordered(SHARD_CONCURRENCY)
+    .collect()
+    .await;
+    let mut pending = false;
+    for (key, generation, outcome) in outcomes {
+        match outcome {
+            Outcome::Fenced { caught_up_from } => {
+                tracing::info!(
+                    stream = %key.stream,
+                    shard = key.shard,
+                    generation,
+                    caught_up_from = ?caught_up_from,
+                    "a majority took the fence; opening the shard for writes",
+                );
+                metrics::record_promotion_opened(metrics::PATH_FENCED);
+                gate.open(&watch_key(&key), generation).await;
+            }
+            Outcome::Lease { lacking } => {
+                tracing::info!(
+                    stream = %key.stream,
+                    shard = key.shard,
+                    generation,
+                    lacking = %lacking,
+                    "a replica does not offer the fence; opening the shard on the lease",
+                );
+                metrics::record_promotion_opened(metrics::PATH_LEASE);
+                gate.open(&watch_key(&key), generation).await;
+            }
+            Outcome::Pending(why) => {
+                tracing::warn!(
+                    stream = %key.stream,
+                    shard = key.shard,
+                    generation,
+                    why = %why,
+                    "the promoted shard is not fenced yet; it does not serve until it is",
+                );
+                pending = true;
+            }
+        }
+    }
+    pending
 }
 
 /// What one replication pass established.
@@ -434,6 +526,9 @@ pub struct Pass {
     /// Some shard led here ended the pass with no follower holding all of its
     /// log, not counting halted followers, which waiting does not bring back.
     pub behind: bool,
+    /// A shard this broker was promoted to lead is still waiting for a
+    /// majority to take its fence. The next pass runs after [`FENCE_RETRY`].
+    pub fencing: bool,
 }
 
 fn rebuilding_count(maps: &[&HashMap<ShardKey, ShardCursors>]) -> usize {

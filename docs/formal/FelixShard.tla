@@ -110,7 +110,8 @@
 (* a promoted leader fences a majority and catches up before it serves.    *)
 (* Without the fence, TLC finds a deposed leader whose slow clock still    *)
 (* lets it write acknowledging on a follower the new one never fenced      *)
-(* (AckedHeldByLeader).                                                    *)
+(* (AckedHeldByLeader). The broker has the fence and not yet the acks:   *)
+(* `FenceOnPromote` alone, alongside the report and the lease.             *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -158,9 +159,10 @@ ASSUME Cancel \in BOOLEAN /\ CancelCas \in BOOLEAN
 ASSUME ReportBound \in {"acknowledged", "tail", "unpaired"}
 ASSUME AckChecksLease \in BOOLEAN /\ AckOnResponse \in BOOLEAN
 ASSUME AckByFollowers \in BOOLEAN /\ FenceOnPromote \in BOOLEAN
-\* The fence is modelled on promotion only. A planned move and a cancel name a
-\* leader without one, so neither is checked alongside follower acks.
-ASSUME FenceOnPromote => AckByFollowers
+\* The fence is modelled on promotion only, as the broker fences: a planned
+\* move and a cancel name a leader without one, so neither is checked
+\* alongside follower acks. The fence without follower acks is the broker as
+\* built: acknowledgements still come from the report and the lease.
 ASSUME AckByFollowers => ~Handoff /\ ~Cancel
 ASSUME Eps < L /\ Margin >= 0
 
@@ -206,6 +208,10 @@ handoffVars == << draining, successor, stopped, moves, ver, cpView, staged >>
 
 \* The promotion fence's state.
 fenceVars == << promised, fencing, answered >>
+
+\* Whether brokers keep and check `promised`: the fence needs it, and so do
+\* follower acks.
+Promises == AckByFollowers \/ FenceOnPromote
 
 NoReport == [holders |-> {}, len |-> 0, drained |-> FALSE, gen |-> 0]
 
@@ -429,16 +435,17 @@ Diverge(a, c) ==
         d == { i \in 1..n : a[i] /= c[i] }
     IN IF d = {} THEN n + 1 ELSE CHOOSE i \in d : \A j \in d : i <= j
 
-\* Under `AckByFollowers` the follower also refuses a leader older than the
-\* generation it persisted, and persists the leader's. A leader still fencing
+\* Under `AckByFollowers` or `FenceOnPromote` the follower also refuses a
+\* leader older than the generation it persisted, and persists the leader's:
+\* `accept_sender` in crates/server/felix-replication/src/replica.rs. A leader still fencing
 \* does not ship: it may yet take a tail from a follower it would truncate.
 Ship(b, f) ==
     /\ bgen[b] > 0 /\ f /= b /\ f \notin halted
     /\ bgen[f] = 0
     /\ bgen[b] >= LastGen(f)
     /\ ~fencing[b]
-    /\ AckByFollowers => promised[f] <= bgen[b]
-    /\ promised' = IF AckByFollowers THEN [promised EXCEPT ![f] = bgen[b]] ELSE promised
+    /\ Promises => promised[f] <= bgen[b]
+    /\ promised' = IF Promises THEN [promised EXCEPT ![f] = bgen[b]] ELSE promised
     /\ LET i == Diverge(log[b], log[f]) IN
        \/ /\ i > Len(log[f])
           /\ i <= Len(log[b])
@@ -670,7 +677,7 @@ Promote(v, f, views) ==
     /\ staged' = staged \ {f}
     \* The new leader persists its generation itself first; with
     \* `FenceOnPromote` it then fences the others before it serves.
-    /\ promised' = IF AckByFollowers THEN [promised EXCEPT ![f] = gen + 1] ELSE promised
+    /\ promised' = IF Promises THEN [promised EXCEPT ![f] = gen + 1] ELSE promised
     /\ fencing' = [fencing EXCEPT ![f] = FenceOnPromote]
     /\ answered' = [answered EXCEPT ![f] = {}]
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted, acked, writes,
@@ -708,6 +715,9 @@ AnswerFence(b, f) ==
                     fencing >>
     /\ UNCHANGED handoffVars
 
+\* `open_promoted` in crates/server/felix-replication/src/driver.rs, on the
+\* first majority `fence_shard` in promotion.rs gets; the tail that wins is
+\* the answer furthest ahead by `Ahead`, taken before this.
 OpenForWrites(b) ==
     /\ fencing[b]
     /\ Majority(answered[b] \cup {b})

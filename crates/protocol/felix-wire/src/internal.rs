@@ -21,7 +21,7 @@ mod message;
 mod replicate;
 
 pub use error_code::ErrorCode;
-pub use fence::{Fence, FenceOk, PeerCapabilities};
+pub use fence::{Fence, FenceOk, PeerCapabilities, ReplicateFetch};
 pub use forward::{
     AckMode, CacheOpKind, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardPublish,
     ForwardPublishError, ForwardPublishOk, NotLeader,

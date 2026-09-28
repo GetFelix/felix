@@ -223,6 +223,30 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                     sync_shutdown.clone(),
                 ));
             }
+            // A promoted shard waits for replication to fence its replicas,
+            // so only where replication runs: a peer transport to fence over,
+            // and durable logs to fence.
+            let gate: Arc<dyn replication::promotion::PromotionGate> = match (peers, storage) {
+                // A broker with the fence turned off is an older broker to its
+                // peers, and leads like one too.
+                (Some(pool), Some(storage)) if pool.offers_fence() => match lifecycle.try_lock() {
+                    Ok(mut guard) => {
+                        guard.fence_promotions();
+                        Arc::new(shard_lifecycle::promotion::LifecycleGate::new(
+                            Arc::clone(lifecycle),
+                            Arc::clone(ingress),
+                            Arc::new(storage.clone()),
+                        ))
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "shard lifecycle busy at startup; promotions open on the lease"
+                        );
+                        Arc::new(replication::promotion::NoGate)
+                    }
+                },
+                _ => Arc::new(replication::promotion::NoGate),
+            };
             let store: Arc<dyn shard_lifecycle::ShardStore> = match storage {
                 Some(storage) => Arc::new(
                     shard_lifecycle::DurableShardStore::new(Arc::new(storage.clone()))
@@ -275,6 +299,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                     Arc::clone(broker),
                     Arc::clone(router),
                     Arc::clone(ingress.fence()) as Arc<dyn replication::driver::WriteFence>,
+                    Arc::clone(&gate),
                     replication::driver::Published {
                         marks: Arc::clone(quorum_marks),
                         halted: Arc::clone(halted_replicas),

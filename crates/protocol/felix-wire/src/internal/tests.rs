@@ -99,6 +99,13 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: 100,
             last_generation: 6,
         }),
+        InternalMessage::ReplicateFetch(ReplicateFetch {
+            correlation_id: 42,
+            shard: shard(),
+            log: ReplicaLog::Stream,
+            from_offset: 100,
+            max_bytes: 1 << 20,
+        }),
         replicate(),
         InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 42,

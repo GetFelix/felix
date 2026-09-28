@@ -165,8 +165,10 @@ The lease still decides whether a deposed leader can write at all. The model
 has the design that takes the clock out of `Quorum` safety, which the broker
 does not implement yet: a promoted leader persists its generation on a
 majority and takes any tail ahead of its own before it serves, and a write is
-acknowledged once a majority holds it at the current generation. The replicas'
-half of the fence is built; see [Fencing a promotion](#fencing-a-promotion).
+acknowledged once a majority holds it at the current generation. The fence is
+built, and a promoted leader uses it whenever every replica offers it; the
+acknowledgement still waits on the report and the lease. See
+[Fencing a promotion](#fencing-a-promotion).
 `FelixShardFencedAck.cfg` keeps every acknowledged record with no margin on
 either side of the lease; `FelixShardUnfencedAck.cfg`, the same without the
 fence, loses one. See [`docs/formal/README.md`](formal/README.md).
@@ -273,8 +275,56 @@ peer handshake, and a peer that did not offer it is never sent `Fence`
 (`docs/internal-protocol.md`, "Capabilities"). `FELIX_INTERNAL_FENCE=false`
 withdraws the offer.
 
-**As built**, replicas answer the fence and keep its promise, and no leader
-sends it yet: promotion still relies on the lease alone.
+**The leader's side** is `OpenForWrites`. A broker promoted to lead a stream
+shard opens its log, persists its own generation, and then waits in a
+`fencing` phase: the shard is routed to it but not servable, so writes are
+refused retryably and nothing ships. Replication sends `Fence` to every
+replica at once and opens the shard on the first majority, the leader
+counted. Before it opens, the leader takes the log of the answer furthest
+ahead by (generation of the last record, length), when that is ahead of its
+own: it reads it with `ReplicateFetch` from where the two may disagree (the
+later of its commit offset and the start of its own last generation), drops
+its own records past the first disagreement, and appends the rest. Where this
+leadership begins is recorded only then, so the records it took keep their
+own generation. Answers that arrive after the majority are not waited for,
+as in the model.
+
+What makes the deposed leader harmless is the majority, not the clock. The
+follower it can still reach may never have heard of the promotion from the
+control plane, and its routing view would take the batch; the fence it took
+refuses it (`a_partitioned_leader_is_refused_by_the_majority_its_successor_fenced`,
+with the old leader cut off past its lease and its clock slowed a
+hundredfold, and the same frozen).
+
+When the fence applies:
+
+- Only on a promotion. A move's destination takes over from a leader that
+  drained into it, and a cancelled move hands the shard back to the leader
+  that had it; neither is fenced, and the model does not fence them either.
+- Only for stream shards. A cache shard's log opens lazily and is compacted
+  underneath, and keeps the lease.
+- Only when every replica in the new set offers both `FENCE` and
+  `TAIL_FETCH`, as its latest handshake with this broker in either direction
+  says, and this broker offers them too. Otherwise the shard opens at once
+  on the lease, exactly as before (`a_mixed_fleet_fails_over_on_the_lease`),
+  and a peer that did not offer them is never sent either message.
+  `felix_broker_promotions_opened_total{path}` says which path each promotion
+  took.
+
+The cost is availability. A promoted leader that cannot reach a majority of
+its replicas does not serve, where on the lease alone it would have opened;
+it retries every 200 ms. It could not have acknowledged a `Quorum` write
+without that majority anyway, but a `Leader` write it would have.
+
+**What this does not change yet.** Acknowledgements still come from the report
+and the lease (`AckByFollowers` is off), so a deposed leader's `Quorum` write
+is kept unacknowledged by the report gate as before; the fence adds the
+followers' refusal on top. A `Leader` stream acknowledges on the leader's own
+commit, which no follower sees, so its deposed leader is still kept out by the
+lease alone. Acknowledging on a majority at the leader's generation, and
+serving reads without a lease, are later changes.
+`FelixShardFencedPromotion.cfg` checks this configuration, the fence with the
+report and the lease, under the real margins.
 
 ### The clock assumption, stated precisely
 
