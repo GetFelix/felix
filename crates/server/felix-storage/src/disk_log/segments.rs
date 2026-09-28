@@ -12,6 +12,8 @@ mod truncation;
 mod test_support;
 
 pub(super) use rollover::RollOutcome;
+#[cfg(all(test, target_os = "linux"))]
+pub(super) use truncation::stop_after_unlinks;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

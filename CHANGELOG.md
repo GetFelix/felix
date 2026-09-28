@@ -562,6 +562,25 @@ for what the current release actually guarantees.
   stopped between the two renames opened empty. Opening a shard now settles
   the old swap first: it restores `<shard>.retired` when the shard directory
   is missing, and it deletes leftover siblings when the directory is there.
+  The cleanup assumes that a shard directory next to `<shard>.retired` is
+  complete, and deletes `.retired`. That holds for every release. It fails
+  only for someone who ran an unreleased main build from between #789 and
+  #797 on a half-swapped shard: that build opened the missing directory as a
+  new, empty shard, and `.retired` held the only copy of the data. If you did,
+  replace the shard directory with its `.retired` sibling by hand before
+  starting this build.
+
+- **A power loss during a replication truncation or reset no longer leaves a
+  log that refuses to open.** Truncation unlinked the segments past the cut
+  (sealed ones newest first, the active one last) and synced the directory once
+  at the end. A reset created its new segment before deleting the old ones.
+  So a power loss could leave segments that do not meet, and recovery
+  reported corruption. Both now delete newest first with a directory sync
+  after each unlink, and a reset creates its new segment only after the old
+  ones are gone. An interrupted pass leaves a longer log, which replication
+  cuts again. A head gap that an older build's retention left behind still
+  needs a manual fix; see "A gap at the head left by an older build" in
+  `docs/durable-storage.md`.
 
 - **A power loss during a retention sweep no longer leaves a log that refuses
   to open.** Retention unlinked a sweep's segments without syncing the

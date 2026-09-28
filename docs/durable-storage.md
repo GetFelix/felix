@@ -456,6 +456,21 @@ Four properties:
    is rebuilt from its segment, and a rebuilt index is byte-identical to one
    written during append.
 
+**Cutting a log back is crash-safe too.** Replication's truncation and
+`reset_to` delete whole segments newest first, and sync the directory after
+each unlink. A power loss partway through leaves a longer log that ends at a
+segment boundary. The records past the cut are the ones the truncation was
+discarding, and replication cuts them again, as it would after a crash before
+the truncation began. It never leaves a gap. A reset deletes every
+old segment before it creates the new one, so after a crash the directory
+holds either a prefix of the old log or the new empty one. Retention and
+compaction delete from the head, so they go oldest first under the same
+rule.
+
+> `a_power_loss_during_truncation_leaves_no_gap` and
+> `a_power_loss_during_a_reset_leaves_old_or_new` stop the pass after each
+> unlink and open crash images of every stop (Linux only).
+
 Idempotent producers' state is derived the same way, before the log takes its
 first append: each producer's place comes from the marks its records carry,
 replayed from the `producers` snapshot saved at the last rollover. The marks
@@ -480,6 +495,38 @@ default:
 
 Set `verify_all_on_open` to trade startup time for eager detection of bit rot in
 cold data.
+
+### A gap at the head left by an older build
+
+Up to 0.6.0-preview, retention unlinked segments without syncing the
+directory after each one. After a power loss, the device could keep a newer
+unlink and lose an older one. The shard then fails to open with an error like
+this:
+
+```text
+corruption detected: offset out of order (expected 6, found 12) (shard=t/ns/s/0, segment=4, position=0)
+```
+
+`segment=4` is the first segment after the gap, and `found` is its base
+offset. Recovery does not repair this itself. A gap left by a deletion looks
+the same on disk as a segment lost to damage, and dropping the segments below
+the gap would silently discard acknowledged records if the cause was damage.
+
+To repair a gap left by a deletion, by hand:
+
+1. Check that this is a gap at the head. The shard's broker must have
+   retention configured (`FELIX_DURABLE_RETENTION_BYTES` or
+   `FELIX_DURABLE_RETENTION_SECONDS`). The segments below the gap must be the
+   log's oldest, with no other gap among them. Anything else is damage: restore from
+   a replica or a backup point instead.
+2. Stop the broker and copy the shard directory somewhere safe.
+3. Delete `<id>.log` and `<id>.index` for every segment id below the one named
+   in the error. Names are zero-padded to 20 digits, for example
+   `00000000000000000003.log`.
+4. Start the broker. The log opens with its base at `found`, and a read below
+   that offset returns `Trimmed`, just as if retention had finished.
+
+The records you delete are ones the interrupted sweep was already removing.
 
 ## Configuration
 

@@ -28,42 +28,47 @@ impl SegmentSet {
         }
         self.generation += 1;
 
-        // Remove whole segments that begin at or after the cut.
-        while let Some(entry) = self.sealed.last() {
-            if entry.descriptor.base_offset >= offset {
-                let id = entry.descriptor.id;
-                if let Some(entry) = self.sealed.pop() {
-                    self.forget(&entry);
-                }
-                self.remove_segment_files(id)?;
-            } else {
-                break;
-            }
-        }
-
-        // The active segment either survives with a shorter tail or is replaced
-        // by whichever sealed segment now contains the cut.
+        // Whole segments at or after the cut go, the active one first. The
+        // newest survivor then becomes the active segment and is cut short.
         if self.active.base_offset() >= offset {
             let active_id = self.active.id();
-            let resume = match self.sealed.pop() {
-                Some(entry) => entry,
+            let mut doomed = vec![active_id];
+            while let Some(entry) = self
+                .sealed
+                .pop_if(|entry| entry.descriptor.base_offset >= offset)
+            {
+                self.forget(&entry);
+                doomed.push(entry.descriptor.id);
+            }
+            self.unlink_newest_first(&doomed)?;
+            match self.sealed.pop() {
+                Some(resume) => self.adopt_sealed_as_active(resume)?,
                 None => {
                     // Nothing left at all: restart the log at `offset`.
                     self.replace_active(active_id + 1, offset, SEGMENT_HEADER_LEN, offset, 0)?;
-                    self.remove_segment_files(active_id)?;
-                    sync_dir(&self.dir)?;
                     return Ok(());
                 }
-            };
-            self.adopt_sealed_as_active(resume)?;
-            self.remove_segment_files(active_id)?;
+            }
         }
-
-        // The unlinks must be durable before the surviving segment is cut
-        // short. Otherwise a crash can bring the later segments back next to a
-        // shortened predecessor, and recovery refuses the gap between them.
-        sync_dir(&self.dir)?;
         self.truncate_active_to(offset)
+    }
+
+    /// Unlink segments newest first, syncing the directory after each.
+    ///
+    /// Unsynced, a power loss can keep an older unlink and undo a newer one,
+    /// leaving a gap that recovery refuses. In this order it leaves a longer
+    /// log ending at a segment boundary. It also makes every unlink durable
+    /// before the survivor is cut short, so a crash cannot bring later
+    /// segments back next to a shortened predecessor.
+    fn unlink_newest_first(&self, ids: &[SegmentId]) -> Result<()> {
+        debug_assert!(ids.is_sorted_by(|a, b| a > b), "not newest first: {ids:?}");
+        for id in ids {
+            #[cfg(all(test, target_os = "linux"))]
+            stop_point(&self.dir)?;
+            self.remove_segment_files(*id)?;
+            sync_dir(&self.dir)?;
+        }
+        Ok(())
     }
 
     /// Discard every record and start again, empty, at `base_offset`.
@@ -75,11 +80,17 @@ impl SegmentSet {
     pub(crate) fn reset_to(&mut self, base_offset: Offset) -> Result<()> {
         self.check_open()?;
         self.generation += 1;
+        let active_id = self.active.id();
+        let mut doomed = vec![active_id];
         while let Some(entry) = self.sealed.pop() {
             self.forget(&entry);
-            self.remove_segment_files(entry.descriptor.id)?;
+            doomed.push(entry.descriptor.id);
         }
-        let active_id = self.active.id();
+        // All of them before the new segment exists. Its base need not follow
+        // the old chain, so an old segment a crash brought back beside it
+        // would be a gap. This way a crash leaves a prefix of the old log or
+        // the new empty one.
+        self.unlink_newest_first(&doomed)?;
         self.replace_active(
             active_id + 1,
             base_offset,
@@ -87,7 +98,6 @@ impl SegmentSet {
             base_offset,
             0,
         )?;
-        self.remove_segment_files(active_id)?;
         sync_dir(&self.dir)?;
         Ok(())
     }
@@ -194,6 +204,35 @@ impl SegmentSet {
         metrics::gauge!(metrics_names::SEGMENT_COUNT).set((self.sealed.len() + 1) as f64);
         Ok(())
     }
+}
+
+/// Logs whose next truncation stops after a number of unlinks.
+#[cfg(all(test, target_os = "linux"))]
+static STOPS: parking_lot::Mutex<Vec<(std::path::PathBuf, usize)>> =
+    parking_lot::Mutex::new(Vec::new());
+
+/// Make the next truncation or reset of the log in `dir` fail after
+/// `unlinks` unlinks, leaving the directory as a power loss at that moment
+/// would find it. Keyed by directory, so parallel tests are unaffected.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn stop_after_unlinks(dir: &std::path::Path, unlinks: usize) {
+    STOPS.lock().push((dir.to_path_buf(), unlinks));
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn stop_point(dir: &std::path::Path) -> Result<()> {
+    let mut stops = STOPS.lock();
+    let Some(at) = stops.iter().position(|(stop, _)| stop == dir) else {
+        return Ok(());
+    };
+    if stops[at].1 == 0 {
+        stops.remove(at);
+        return Err(crate::StorageError::Io(std::io::Error::other(
+            "stopped for a simulated power loss",
+        )));
+    }
+    stops[at].1 -= 1;
+    Ok(())
 }
 
 /// Drop index entries that point past `valid_bytes`.
