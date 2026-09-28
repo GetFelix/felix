@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790567336936,
+  "lastUpdate": 1790568714563,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -24222,6 +24222,72 @@ window.BENCHMARK_DATA = {
             "range": "568.17",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1002.00\nmean: 1115.20\nstdev: 568.17\ncv: 50.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e0b20a34e90603670581b4887b79ffcda02776c9",
+          "message": "fix(publish): yield between jobs so a backlog cannot starve subscriber feeders (#802)\n\nWith a backlog queued, a publish executor takes the next job and writes an\nephemeral publish without ever suspending, so it fanned out job after job\nwhile the subscriber feeders it had just woken waited for its thread. The\nper-subscriber queues then overflowed under drop_new for subscribers that\nwere reading fast enough, which is what the slow-consumer demo's isolation\ntest caught on loaded machines. The scheduler lets one tenant queue up to\nthree times more jobs than the old per-worker channel held, so the bursts\ngrew past a 64-deep subscriber queue.\n\nSpec-Unaffected: executors now yield between jobs; lane order, offset claims and the fence are unchanged.",
+          "timestamp": "2026-09-27T21:08:57-07:00",
+          "tree_id": "0c75908355bc8664744f35cf7526da6770fe4f7c",
+          "url": "https://github.com/gabloe/felix/commit/e0b20a34e90603670581b4887b79ffcda02776c9"
+        },
+        "date": 1790568711886,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 100,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 100.00\nmean: 100.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 137,
+            "range": "4.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 137.00\nmean: 137.60\nstdev: 4.34\ncv: 3.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 182,
+            "range": "42.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 196.60\nstdev: 42.52\ncv: 21.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "4.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 136.20\nstdev: 4.92\ncv: 3.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 270,
+            "range": "153.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 270.00\nmean: 336.80\nstdev: 153.87\ncv: 45.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 430,
+            "range": "631.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 430.00\nmean: 709.80\nstdev: 631.04\ncv: 88.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
