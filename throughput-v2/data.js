@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790569803827,
+  "lastUpdate": 1790586739988,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19240,6 +19240,58 @@ window.BENCHMARK_DATA = {
             "range": "119211.41",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1628438.12\nmean: 1592836.35\nstdev: 119211.41\ncv: 7.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1b47ead4eea4b09b8e5dcf690f3b231bdcb047b2",
+          "message": "feat(client): share one connection per broker in ClusterClient (#803)\n\nA ClusterClient built a full pooled Client (20 connections) for every role\na broker played: entry, shard owner, redirect target, producer leader. It\nnow holds one client per broker, shared by every role, and that client\nmultiplexes every stream on one QUIC connection. More open only when the\nstreams saturate it (stream budget or the broker's MAX_STREAMS credit), up\nto cluster_conn_pool. A dead connection fails only its own streams and is\nreplaced; a broker whose workers' connection died is rebuilt on next use.\n\nClient::connect keeps its three up-front pools, now on the same\nNodeConnections type. Loadgen reports subscriber_connections.\n\nSpec-Unaffected: client-side connection placement; no modelled protocol changed",
+          "timestamp": "2026-09-28T02:08:54-07:00",
+          "tree_id": "2d231442775428e086ee0fe2ca64d862e018da90",
+          "url": "https://github.com/gabloe/felix/commit/1b47ead4eea4b09b8e5dcf690f3b231bdcb047b2"
+        },
+        "date": 1790586739386,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 380616.4,
+            "range": "6878.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 380616.40\nmean: 382747.39\nstdev: 6878.05\ncv: 1.80%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 380616.4,
+            "range": "6878.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 380616.40\nmean: 382747.39\nstdev: 6878.05\ncv: 1.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 94321.66,
+            "range": "696.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 94321.66\nmean: 94536.99\nstdev: 696.75\ncv: 0.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 943216.65,
+            "range": "6967.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 943216.65\nmean: 945369.87\nstdev: 6967.49\ncv: 0.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
