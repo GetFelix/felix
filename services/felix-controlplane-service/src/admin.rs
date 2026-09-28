@@ -5,6 +5,9 @@
 //! A client rather than a direct store connection, so it works against any
 //! backend, goes through the same authorization as every other caller, and
 //! can run anywhere the API is reachable.
+
+pub mod backup_point;
+
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
@@ -23,12 +26,15 @@ commands:
                                            place the shard afresh
   pause                                    stop placement starting moves
   resume                                   let placement start moves again
+  backup-point <name> [--out FILE] [--broker NODE=URL]... [--metrics-port PORT]
+                                           record every shard's committed
+                                           offsets as a backup point
 
 --url defaults to $FELIX_CONTROLPLANE_URL, then http://127.0.0.1:8443.
 An https URL is verified against the public roots and, when set, the PEM
 bundle at $FELIX_CONTROLPLANE_CA.
---token defaults to $FELIX_TOKEN. Reading takes node.view:cluster:*;
-everything else takes node.manage:cluster:*.";
+--token defaults to $FELIX_TOKEN. Reading, backup-point included, takes
+node.view:cluster:*; everything else takes node.manage:cluster:*.";
 
 /// The API client, trusting `FELIX_CONTROLPLANE_CA` when it is set, as the
 /// brokers do.
@@ -64,6 +70,15 @@ pub async fn run(args: Vec<String>) -> Result<()> {
             "--token" => token = Some(args.next().context("--token needs a value")?),
             "--json" => json = true,
             "--cache" => cache = true,
+            // Takes options of its own, so the rest of the line is its.
+            "backup-point" => {
+                let admin = Admin {
+                    http: http_client()?,
+                    url: url.trim_end_matches('/').to_string(),
+                    token,
+                };
+                return backup_point::run(&admin, args.collect()).await;
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());

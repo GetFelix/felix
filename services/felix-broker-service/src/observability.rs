@@ -6,6 +6,7 @@
 //! Metrics serving is asynchronous and uses `axum` to handle requests.
 //! In tests, metrics recorder initialization is cached to avoid conflicts, and subscriber initialization is adapted accordingly.
 
+pub(crate) mod backup;
 pub(crate) mod tenants;
 pub mod timings;
 
@@ -73,6 +74,7 @@ pub(crate) fn init_observability(service_name: &str) -> PrometheusHandle {
 /// - `/live`: liveness probe returning "ok".
 /// - `/ready`: readiness probe, gated on `readiness`.
 /// - `/replication/halted`: replicas replication has stopped for.
+/// - `/backup/offsets`: the committed offsets a backup point records.
 ///
 /// Runs until `shutdown` resolves, then stops accepting new requests and lets
 /// in-flight ones finish. Returns an I/O error if binding or serving fails.
@@ -81,18 +83,18 @@ pub(crate) async fn serve_metrics<F>(
     addr: SocketAddr,
     readiness: Readiness,
     halted: std::sync::Arc<felix_replication::halted::HaltedReplicas>,
+    backup: backup::BackupOffsets,
     shutdown: F,
 ) -> std::io::Result<()>
 where
     F: Future<Output = ()> + Send + 'static,
 {
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(
-        listener,
-        health_router(handle, readiness, halted).into_make_service(),
-    )
-    .with_graceful_shutdown(shutdown)
-    .await
+    // Read-only for the same reason `/replication/halted` is.
+    let router = health_router(handle, readiness, halted).merge(backup::router(backup));
+    axum::serve(listener, router.into_make_service())
+        .with_graceful_shutdown(shutdown)
+        .await
 }
 
 /// Whether an OTLP endpoint was configured. Without one the exporter would

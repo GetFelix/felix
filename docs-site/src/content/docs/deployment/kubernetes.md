@@ -414,10 +414,12 @@ recovery beyond quorum loss (see [Metadata Raft](/felix/architecture/metadata-ra
 That state file holds every tenant's signing-key seeds in plaintext, so keep it
 as secret as the keys, and an export taken while metadata is being written is not
 a consistent point.
-Broker volumes hold the streams themselves; snapshot them at the storage
-layer, or rely on replication and retention. Nothing coordinates these
-snapshots with each other or with the metadata, so a restore from them is not a
-single consistent point across the cluster.
+Broker volumes hold the streams themselves. Volume snapshots are not a
+consistent backup: nothing coordinates them with each other or with the
+metadata, and a leader's copy can hold records no majority acknowledged. Take a
+backup point with `felix-controlplane admin backup-point`, copy each leader's
+shard directories against it, and cut them back with `felix-broker
+restore-point` on restore; see [Backup and restore](/felix/deployment/backup-and-restore/).
 
 ## Troubleshooting
 

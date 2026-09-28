@@ -15,7 +15,7 @@ use crate::config::{BrokerConfig, DurableStorageConfig};
 /// Open durable storage, the cache, consumer groups and counters, and build
 /// the broker over them. Without durable storage everything but the cache is
 /// left out and the cache lives in memory.
-pub(super) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStorage>)> {
+pub(crate) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStorage>)> {
     let durable_config = DurableStorageConfig::from_env()?;
     let durable_storage = match &durable_config {
         Some(durable) => {

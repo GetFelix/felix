@@ -53,6 +53,8 @@ felix-conformance = { version = "0.6.0-preview", path = "../felix-conformance" }
 libc = { workspace = true }
 
 [dev-dependencies]
+# The backup tests open a restored copy of a shard's logs directly.
+felix-storage = { path = "../../server/felix-storage", version = "0.6.0-preview" }
 # The Kafka produce test speaks the protocol itself, to re-send on purpose.
 kafka-protocol = { workspace = true, features = ["client"] }
 # These spawn several broker processes each. Run one cluster at a time: a CI

@@ -522,15 +522,12 @@ volumes:
 
 ### Backup Strategy
 
-```bash
-# Backup volume data
-docker run --rm -v felix-data:/data -v $(pwd):/backup \
-  alpine tar czf /backup/felix-data-backup.tar.gz -C /data .
-
-# Restore from backup
-docker run --rm -v felix-data:/data -v $(pwd):/backup \
-  alpine tar xzf /backup/felix-data-backup.tar.gz -C /data
-```
+A tar of a running broker's volume is not a consistent backup: it is taken at
+a different moment from every other broker's, and it can hold records no
+majority acknowledged. Take a backup point and copy the leaders' shard
+directories against it instead; see
+[Backup and restore](/felix/deployment/backup-and-restore/). A tar of a
+*stopped* single broker's volume is fine.
 
 ## Networking
 

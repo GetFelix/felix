@@ -6,6 +6,7 @@
 //! state; `publish` and `subscribe` are the data path; `shard_logs` is what
 //! replication needs.
 
+mod backup;
 mod keys;
 mod metadata;
 mod publish;
@@ -14,6 +15,7 @@ mod shard_logs;
 mod shards;
 mod subscribe;
 
+pub use backup::CommittedOffsets;
 pub use metadata::{CacheMetadata, ConsistencyLevel, StreamMetadata};
 pub use publish::{
     ClaimedPublish, IdempotentOutcome, PublishOutcome, RECORD_SEQUENCE_WRAP, SequenceReuse,

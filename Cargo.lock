@@ -1194,6 +1194,7 @@ dependencies = [
  "felix-common",
  "felix-conformance",
  "felix-controlplane-service",
+ "felix-storage",
  "felix-wire",
  "kafka-protocol",
  "libc",

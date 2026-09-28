@@ -113,8 +113,10 @@ placed, a broker that dies still has its shards failed over, and you can
 still move shards by hand.
 
 Pausing is how to hold the cluster still: during an incident, while moving a
-few shards by hand, or before draining a broker you want to empty in a
-particular order. A drained broker keeps its shards while placement is
+few shards by hand, while taking a backup point
+(`felix-controlplane admin backup-point`, see
+[Backup and restore](/felix/deployment/backup-and-restore/)), or before
+draining a broker you want to empty in a particular order. A drained broker keeps its shards while placement is
 paused, so resume before relying on a drain.
 
 ## A worked example

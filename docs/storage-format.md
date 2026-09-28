@@ -413,6 +413,11 @@ A truncation or rebuild that would discard a record held below the commit
 offset is refused with `StorageError::BelowCommit`; see
 `docs/replication-design.md`, "Divergence and truncation".
 
+The one thing that lowers the commit offset is a restore to a backup point
+(`DiskLog::restore_to`), run offline against a copy: it writes the lowered
+offset here first, then cuts the log to it. See `docs/durable-storage.md`,
+"Restoring to a backup point".
+
 ## `producers` — the producer snapshot
 
 Each idempotent producer's place in the log is derived from the marks: for

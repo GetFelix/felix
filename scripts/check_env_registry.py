@@ -70,6 +70,12 @@ def registered() -> set[str]:
     return set(re.findall(r'"(FELIX_[A-Z0-9_]+)"', listing))
 
 
+def stated_count() -> int | None:
+    """The count the registry's header gives, which drifted once already."""
+    match = re.search(r"Configuration is (\d+) environment variables", REGISTRY.read_text())
+    return int(match.group(1)) if match else None
+
+
 def main() -> int:
     # The registry's own entries are string literals in a .rs file, so
     # `read_by_code` finds them too. That is what makes the two sets directly
@@ -86,11 +92,18 @@ def main() -> int:
     for name in stale:
         print(f"in KNOWN_VARS and read by nothing: {name}")
 
+    stated = stated_count()
+    miscounted = stated != len(listed)
+    if stated is None:
+        print(f"{REGISTRY.name}: header no longer says how many variables KNOWN_VARS holds")
+    elif miscounted:
+        print(f"{REGISTRY.name}: header says {stated} variables, KNOWN_VARS holds {len(listed)}")
+
     print(
         f"{len(expected)} variable(s) checked, "
         f"{len(missing)} missing, {len(stale)} stale"
     )
-    return 1 if missing or stale else 0
+    return 1 if missing or stale or miscounted else 0
 
 
 if __name__ == "__main__":
