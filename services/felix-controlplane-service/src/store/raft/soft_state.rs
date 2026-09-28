@@ -261,15 +261,20 @@ impl SoftState {
                     )
                 })
                 .filter(|node| {
-                    let heard = view
+                    let beat = view
                         .beats
                         .get(&node.node_id)
-                        .filter(|beat| beat.incarnation >= node.status.incarnation)
-                        .map_or(view.since, |beat| beat.at);
-                    let last = node
-                        .status
-                        .last_heartbeat_at_millis
-                        .max(seen_at(now.saturating_duration_since(heard)));
+                        .filter(|beat| beat.incarnation >= node.status.incarnation);
+                    let last = match beat {
+                        // The log's stamp is at best a checkpoint of this beat,
+                        // and after a clock step back it lies in the future.
+                        // The monotonic age is the one a step cannot move.
+                        Some(beat) => seen_at(now.saturating_duration_since(beat.at)),
+                        None => node
+                            .status
+                            .last_heartbeat_at_millis
+                            .max(seen_at(now.saturating_duration_since(view.since))),
+                    };
                     last < expiry_before_millis
                 })
                 .map(|node| NodeIncarnation {

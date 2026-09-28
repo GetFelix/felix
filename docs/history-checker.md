@@ -127,10 +127,10 @@ A broker's clock is never stepped back: its lease runs on `CLOCK_BOOTTIME`,
 which cannot go backwards, and the harness refuses such a step. Healing a
 failed fsync restarts the broker because a failed fsync poisons the log until
 the process restarts; healing the disk alone would leave it refusing every
-write. Healing the control-plane step is a backward step, which delays
-expiring a broker that dies in the next 15s by up to that much (see
-`a_control_plane_clock_stepped_back_still_expires_a_dead_broker`, ignored
-until that is fixed). It costs availability, not safety.
+write. Healing the control-plane step is a backward step. That leaves
+every heartbeat stamp in the future, and the expiry sweep pulls them back to
+its clock, so a broker that dies right after it still goes down within one
+window (`a_control_plane_clock_stepped_back_still_expires_a_dead_broker`).
 
 `Campaign::cluster_config` takes the nemesis and starts the cluster for it:
 with proxied links when it may pick a link fault, and with

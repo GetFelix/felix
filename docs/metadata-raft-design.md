@@ -156,8 +156,10 @@ build without that route, the follower falls back to the old log command.
 The log carries only the consequences. `ExpireNodes` names the nodes the
 leader judged stale, each at an incarnation. `CheckpointHeartbeats`, written
 at most every 5 s for the whole fleet, keeps node listings on followers
-roughly current. A new leader starts knowing nothing and treats its own start
-as a heartbeat from every node. It expires nobody until a full window has
+roughly current. A node the leader has heard from this term is judged by that heartbeat's
+monotonic age alone: the log's stamp is a checkpoint of an earlier moment and,
+after a wall-clock step back, lies in the future. A new leader starts knowing
+nothing and treats its own start as a heartbeat from every node. It expires nobody until a full window has
 passed under it, and its view resets on every term change. The placement
 lease works the same way: renewals are soft state, only a change of holder is
 written, and a new leader counts the recorded holder as renewed when it took

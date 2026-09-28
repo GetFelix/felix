@@ -53,7 +53,7 @@ pub async fn expire_observed(
     watch: &mut SilenceWatch,
     at: tokio::time::Instant,
 ) -> usize {
-    let nodes = match store.list_nodes().await {
+    let nodes = match list_clamped(store, now_millis).await {
         Ok(nodes) => nodes,
         Err(err) => {
             tracing::warn!(error = %err, "skipping the expiry sweep: could not list nodes");
@@ -83,6 +83,36 @@ pub fn left_within_lease(node: &Node, liveness: &NodeLivenessConfig, now_millis:
     node.status.lifecycle == NodeLifecycle::Left
         && node.status.last_heartbeat_at_millis
             >= now_millis.saturating_sub(liveness.silence_before_down_ms())
+}
+
+/// Every node, with any heartbeat stamp ahead of `now_millis` first pulled
+/// back to it.
+///
+/// Such a stamp means the store's clock stepped back after it was taken, and
+/// a threshold on that clock would not reach it until real time caught up:
+/// a broker dying just after a step back of an hour would stay live for the
+/// hour. At now, it is a stamp the watch sees change, so the node gets one
+/// full window of silence from here like any other.
+async fn list_clamped(
+    store: &dyn ControlPlaneStore,
+    now_millis: u64,
+) -> crate::store::StoreResult<Vec<Node>> {
+    let nodes = store.list_nodes().await?;
+    if nodes
+        .iter()
+        .all(|node| node.status.last_heartbeat_at_millis <= now_millis)
+    {
+        return Ok(nodes);
+    }
+    let clamped = store.clamp_future_heartbeats(now_millis).await?;
+    if clamped > 0 {
+        tracing::warn!(
+            clamped,
+            now_millis,
+            "heartbeat stamps were ahead of the store clock, which must have stepped back",
+        );
+    }
+    store.list_nodes().await
 }
 
 async fn expire_before(store: &dyn ControlPlaneStore, expiry_before: u64) -> usize {
@@ -163,7 +193,7 @@ pub fn spawn_expiry_sweep(
                             if swept {
                                 expire_observed(store.as_ref(), &liveness, now, &mut watch, at)
                                     .await;
-                            } else if let Ok(nodes) = store.list_nodes().await {
+                            } else if let Ok(nodes) = list_clamped(store.as_ref(), now).await {
                                 watch.observe(&nodes, at);
                             }
                         }
