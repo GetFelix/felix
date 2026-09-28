@@ -162,7 +162,8 @@ to (present only on a broker running the Kafka listener; a hostname is
 allowed, an IPv6 host must be bracketed). Both are omitted when unset.
 It may also carry `zone`, the failure domain the broker registered from
 `FELIX_NODE_ZONE`; placement spreads each shard's copies across zones. A broker
-that sends none has no `zone` and is placed as if alone in its own.
+that sends none has no `zone` and is placed as if alone in its own. The zone
+is read at registration only, so changing it means restarting the broker.
 
 `cluster:*` sits outside the tenant hierarchy and no tenant scope contains it,
 so a tenant admin cannot grant themselves cluster access. The tenant comes from
@@ -225,6 +226,14 @@ Content-Type: application/json
                   "leader": "broker-1", "replicas": ["broker-3"], "generation": 12, "state": "active",
                   "successor": "broker-3", "move_started_at_millis": 1790000000000, "move_reason": "operator" } }
 ```
+
+With `"dry_run": true` in the request the move is decided and answered but
+not started, and the response carries `"dry_run": true`. When any broker the
+shard may use reports a zone, the response also carries `zones_before` and
+`zones_after`: the zones the shard's live copies span now and are expected to
+span once the move cuts over, counting a broker without a zone as one of its
+own. A move that narrows the spread is started anyway and logged as a
+warning; see [Zones](https://github.com/gabloe/felix/blob/main/docs/control-plane.md#zones).
 
 A start is refused where placement would not make the move: 404
 `unknown_shard` or `unknown_node`, or 409 `destination_not_live`,

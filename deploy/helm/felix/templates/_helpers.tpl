@@ -207,11 +207,24 @@ applies.
 {{- if and (not $cp.enabled) (not $b.controlplaneUrl) -}}
 {{- fail "controlplane.enabled=false needs broker.controlplaneUrl: brokers cannot advertise a control plane they have to guess" -}}
 {{- end -}}
-{{- if and $b.podDisruptionBudget.enabled (ge (int $b.podDisruptionBudget.maxUnavailable) (int $b.replicas)) -}}
-{{- fail (printf "broker.podDisruptionBudget.maxUnavailable (%d) is not below broker.replicas (%d): the budget would permit evicting every broker at once" (int $b.podDisruptionBudget.maxUnavailable) (int $b.replicas)) -}}
+{{- $brokers := mul (int $b.replicas) (max 1 (len $b.zones)) -}}
+{{- if and $b.podDisruptionBudget.enabled (ge (int $b.podDisruptionBudget.maxUnavailable) $brokers) -}}
+{{- fail (printf "broker.podDisruptionBudget.maxUnavailable (%d) is not below the broker count (%d): the budget would permit evicting every broker at once" (int $b.podDisruptionBudget.maxUnavailable) $brokers) -}}
 {{- end -}}
-{{- if and $b.podDisruptionBudget.enabled (ge (int $b.replicas) 3) (gt (int $b.podDisruptionBudget.maxUnavailable) 1) -}}
+{{- if and $b.podDisruptionBudget.enabled (ge $brokers 3) (gt (int $b.podDisruptionBudget.maxUnavailable) 1) -}}
 {{- fail (printf "broker.podDisruptionBudget.maxUnavailable (%d) is above one: a replication-factor-three shard loses its quorum when two of its replicas are evicted together" (int $b.podDisruptionBudget.maxUnavailable)) -}}
+{{- end -}}
+{{- if ne (len $b.zones) (len (uniq $b.zones)) -}}
+{{- fail "broker.zones lists a zone twice: each zone is one StatefulSet" -}}
+{{- end -}}
+{{- range $zone := $b.zones -}}
+{{- if gt (len (printf "%s-%s" (include "felix.broker.fullname" $) $zone)) 52 -}}
+{{- fail (printf "broker StatefulSet %s-%s is longer than 52 characters; Kubernetes cannot label its pods. Shorten the release name or the zone" (include "felix.broker.fullname" $) $zone) -}}
+{{- end -}}
+{{- end -}}
+{{- $pinned := get ($b.nodeSelector | default dict) "topology.kubernetes.io/zone" -}}
+{{- if and $b.zones $pinned -}}
+{{- fail "broker.zones pins each StatefulSet to its zone; remove topology.kubernetes.io/zone from broker.nodeSelector" -}}
 {{- end -}}
 {{- if not (or $b.peerTls.enabled $b.peerTls.allowUnauthenticated) -}}
 {{- fail "brokers refuse to start without peer mTLS: set broker.peerTls.enabled=true (needs cert-manager and its CSI driver), or broker.peerTls.allowUnauthenticated=true to rely on the NetworkPolicy alone" -}}

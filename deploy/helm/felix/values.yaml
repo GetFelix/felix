@@ -186,6 +186,17 @@ broker:
   replicas: 3
   # Reported to the control plane; placement keeps a shard's replicas within it.
   region: local
+  # Failure domains to spread brokers over, e.g. [us-east-1a, us-east-1b,
+  # us-east-1c]. Each gets its own StatefulSet of `replicas` brokers, named
+  # <fullname>-broker-<zone>, pinned to nodes labelled
+  # topology.kubernetes.io/zone=<zone> and reporting FELIX_NODE_ZONE=<zone>,
+  # so placement puts a shard's copies in different zones. A pod cannot read
+  # its node's labels, which is why the zone is set per StatefulSet rather
+  # than discovered. Empty: one StatefulSet, and brokers report no zone.
+  # Brokers report their zone when they register, so changing it takes a
+  # restart. Switching an existing release between empty and a list replaces
+  # every broker, names and volumes included, at once: choose at install.
+  zones: []
   ports:
     # Clients connect here (QUIC).
     client: 5000

@@ -7,9 +7,11 @@
 //! it or taking a slot that step took; the caller re-reads and decides again.
 //! That is how a request on any instance keeps to the same limits as the
 //! lease holder's placement.
-use super::moves::{AtGeneration, MovePolicy, Moves, start, undo_replacement, undo_staged};
+use super::moves::{
+    AtGeneration, MovePolicy, Moves, spread_if_led_by, start, undo_replacement, undo_staged,
+};
 use super::plan::{assignment_for, plan_abandoning};
-use super::{Blocked, CaughtUp, Decision, MoveStep, Unplaceable};
+use super::{Blocked, CaughtUp, Decision, MoveStep, Unplaceable, zones};
 use crate::model::{
     Cache, MoveReason, Node, NodeLifecycle, ShardAssignment, ShardKey, ShardKind, ShardState,
     Stream,
@@ -33,6 +35,25 @@ pub struct OperatorStep {
     /// The generation it was decided from, and the only one it may be
     /// written over.
     pub expected_generation: u64,
+    /// What a started move does to the shard's zone spread. `None` for a
+    /// cancel or an abandon, and when no eligible broker reports a zone.
+    pub zones: Option<ZoneImpact>,
+}
+
+/// How many failure domains a shard's live copies span now, and how many
+/// placement expects them to span once a move cuts over. A broker without a
+/// zone counts as a domain of its own, as it does in placement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZoneImpact {
+    pub before: usize,
+    pub after: usize,
+}
+
+impl ZoneImpact {
+    /// Whether the shard would span fewer zones after the move.
+    pub fn narrows(&self) -> bool {
+        self.after < self.before
+    }
 }
 
 /// An [`OperatorStep`] and the placement token read before the catalog it was
@@ -148,7 +169,8 @@ pub fn start_move(
     destination: &str,
 ) -> Result<OperatorStep, Refused> {
     let existing = assignment_of(catalog, key)?;
-    let (_, durable, home) = placeable_of(catalog, key).ok_or(Refused::UnknownShard)?;
+    let (replication_factor, durable, home) =
+        placeable_of(catalog, key).ok_or(Refused::UnknownShard)?;
     let node = catalog
         .nodes
         .iter()
@@ -202,10 +224,44 @@ pub fn start_move(
         catalog.caught_up.as_of_millis(),
         &moves,
     );
+    // Reported, never refused: an operator moving a shard by hand may have a
+    // reason to accept less spread, and placement repairs it when it can.
+    let zones = zone_impact(catalog, existing, destination, replication_factor, home);
     Ok(OperatorStep {
         step,
         assignment,
         expected_generation: existing.generation,
+        zones,
+    })
+}
+
+/// The shard's spread now and once `destination` leads it, over the live
+/// brokers the shard may use; `None` when none of them reports a zone.
+fn zone_impact(
+    catalog: &Catalog<'_>,
+    existing: &ShardAssignment,
+    destination: &str,
+    replication_factor: u32,
+    home: Option<&String>,
+) -> Option<ZoneImpact> {
+    let eligible: Vec<&Node> = catalog
+        .nodes
+        .iter()
+        .filter(|node| node.status.lifecycle == NodeLifecycle::Live)
+        .filter(|node| {
+            home.is_none_or(|home| catalog.policy.regions.can_route(home, &node.spec.region))
+        })
+        .collect();
+    if !eligible.iter().any(|node| node.spec.zone.is_some()) {
+        return None;
+    }
+    let live_copies = existing
+        .nodes()
+        .map(String::as_str)
+        .filter(|id| eligible.iter().any(|node| node.node_id == *id));
+    Some(ZoneImpact {
+        before: zones::spread(&eligible, live_copies),
+        after: spread_if_led_by(existing, destination, replication_factor, &eligible),
     })
 }
 
@@ -270,6 +326,7 @@ pub fn cancel_move(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep
         step,
         assignment,
         expected_generation: existing.generation,
+        zones: None,
     })
 }
 
@@ -318,6 +375,7 @@ pub fn abandon_log(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep
             },
             assignment: assignment_for(key, &leader, replicas),
             expected_generation: existing.generation,
+            zones: None,
         }),
         Some(Decision::Unplaceable(why)) => Err(Refused::Unplaceable(why)),
         _ => Err(Refused::NotStranded),
@@ -420,7 +478,7 @@ pub async fn run_operator(
     policy: MovePolicy,
     wakes: &super::PlacementWakes,
     decide: impl Fn(&Catalog<'_>) -> Result<OperatorStep, Refused>,
-) -> Result<(MoveStep, ShardAssignment), OperatorError> {
+) -> Result<OperatorStep, OperatorError> {
     for _ in 0..ATTEMPTS {
         let (fence, read) = super::PlacementRead::load_fenced(store, liveness)
             .await
@@ -436,13 +494,30 @@ pub async fn run_operator(
                 // The next step, a fence or the move this one freed a slot
                 // for, need not wait for the tick.
                 wakes.request_pass();
-                return Ok((decided.step.step, *written));
+                return Ok(OperatorStep {
+                    assignment: *written,
+                    ..decided.step
+                });
             }
             OperatorWrite::Stale => continue,
             OperatorWrite::Fenced => tokio::time::sleep(FENCED_BACKOFF).await,
         }
     }
     Err(OperatorError::Contended)
+}
+
+/// Decide an operator's request against a fresh read without writing it:
+/// what [`run_operator`] would write if nothing changed in between.
+pub async fn preview_operator(
+    store: &dyn crate::store::ControlPlaneStore,
+    liveness: &crate::config::NodeLivenessConfig,
+    policy: MovePolicy,
+    decide: impl Fn(&Catalog<'_>) -> Result<OperatorStep, Refused>,
+) -> Result<OperatorStep, OperatorError> {
+    let read = super::PlacementRead::load(store, liveness)
+        .await
+        .map_err(OperatorError::Store)?;
+    decide(&read.catalog(policy)).map_err(OperatorError::Refused)
 }
 
 /// What [`write_operator_step`] did.

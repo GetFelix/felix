@@ -49,6 +49,7 @@ cosign verify ghcr.io/gabloe/felix-broker:0.5.0 \
 | Shutdown | A preStop sleep, then the drain, inside a derived grace period | The endpoints controller gets a head start before SIGTERM; the drain budget fits before SIGKILL. An explicit grace period that is too short refuses to render. |
 | Disruption | PodDisruptionBudgets | At most one broker at a time, which is what keeps a replication-factor-three shard's quorum through node maintenance. A wider budget refuses to render. |
 | Placement | Anti-affinity by node, spread by zone | `soft` prefers, `hard` refuses to co-locate. |
+| Broker zones | With `broker.zones`, one StatefulSet per zone, pinned to it and setting `FELIX_NODE_ZONE` | A pod cannot read its node's labels, so the chart fixes the zone per StatefulSet. See [Zones](#zones). |
 | The internal port | On the headless Service only, and a NetworkPolicy admitting it from broker pods | Without peer mTLS, anything that reaches the port is a broker. With it, this is the second fence. |
 | Peer mTLS | A cert-manager CSI volume per pod, or an explicit opt-out | Each broker needs a certificate issued to its own name. Brokers refuse to start with neither. See [Peer mTLS](#peer-mtls). |
 | Client and API certificates | Secrets you provide, off by default | See [Clients](#clients) and [Control-plane TLS](#control-plane-tls). |
@@ -232,6 +233,35 @@ kubectl -n felix exec felix-broker-0 -- wget -qO- http://127.0.0.1:8080/ready
 # and the fleet as the control plane sees it, with an operator token:
 curl -sS -H "Authorization: Bearer $OPERATOR_TOKEN" http://felix-controlplane.felix.svc:8443/v1/nodes
 ```
+
+## Zones
+
+Placement spreads a shard's copies across the zones brokers report in
+`FELIX_NODE_ZONE`. Kubernetes knows each node's zone
+(`topology.kubernetes.io/zone`), but the downward API cannot hand a node label
+to a pod, so the chart does not discover it. List the zones instead:
+
+```yaml
+broker:
+  replicas: 1          # per zone
+  zones: [us-east-1a, us-east-1b, us-east-1c]
+```
+
+That renders one StatefulSet per zone, `<release>-felix-broker-<zone>`, each
+with `replicas` brokers, a `nodeSelector` on `topology.kubernetes.io/zone`, and
+`FELIX_NODE_ZONE` set to its zone. The headless Service, the client Service,
+the NetworkPolicy and the PodDisruptionBudget still cover every broker, so the
+budget of one broker at a time holds across zones: with each shard's copies in
+different zones, one budget per zone would let a node-pool upgrade take a copy
+from every zone at once.
+
+A zone is read when the broker registers, so a broker's zone changes only
+when it restarts. Adding a zone to the list adds a StatefulSet, whose brokers
+placement fills like any new ones; removing one deletes its StatefulSet, so
+drain its brokers first, as for [scaling in](#scaling-out). Switching an
+existing release between no zones and `zones` replaces every broker at once,
+names and volumes included, which is an outage: choose at install. With
+`zones` empty the chart renders what it always has and brokers report no zone.
 
 ## Clients
 

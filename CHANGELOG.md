@@ -52,6 +52,14 @@ for what the current release actually guarantees.
 
 ### Added
 
+- **Operator moves report their zone impact.** `POST /v1/shard-moves` answers
+  `zones_before` and `zones_after` when brokers report zones, takes
+  `"dry_run": true` to decide a move without starting it, and logs a move that
+  narrows a shard's spread as a warning instead of refusing it.
+  `felix-controlplane admin move` gains `--dry-run` and prints the zones.
+- **The Helm chart runs brokers per zone.** `broker.zones` renders one broker
+  StatefulSet per zone, pinned to its nodes and setting `FELIX_NODE_ZONE`, with
+  one disruption budget across all of them.
 - **Connection-fault conformance scenarios.** A catalogue scenario can carry a
   `step` that drops, resets or stalls the client's link mid-publish or
   mid-subscribe. `felix_conformance::link` is the UDP interposer that does it;

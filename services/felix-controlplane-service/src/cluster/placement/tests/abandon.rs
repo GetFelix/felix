@@ -177,7 +177,11 @@ async fn an_abandoned_shard_is_written_and_kept() {
         .await
         .expect("down");
 
-    let (step, written) = run_operator(
+    let OperatorStep {
+        step,
+        assignment: written,
+        ..
+    } = run_operator(
         &store,
         &liveness,
         MovePolicy::default(),

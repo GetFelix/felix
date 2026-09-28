@@ -160,6 +160,10 @@
         "image": { "$ref": "#/definitions/image" },
         "replicas": { "type": "integer", "minimum": 1 },
         "region": { "type": "string", "minLength": 1 },
+        "zones": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 40 }
+        },
         "ports": {
           "type": "object",
           "additionalProperties": false,

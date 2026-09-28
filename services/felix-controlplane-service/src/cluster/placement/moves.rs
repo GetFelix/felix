@@ -659,7 +659,7 @@ fn replicas_after_cut_over<'a>(
 /// How many zones the shard's copies would span if `target` led it: the copies
 /// [`replicas_after_cut_over`] would keep, plus the zones a top-up could still
 /// reach.
-fn spread_if_led_by(
+pub(super) fn spread_if_led_by(
     existing: &ShardAssignment,
     target: &str,
     replication_factor: u32,

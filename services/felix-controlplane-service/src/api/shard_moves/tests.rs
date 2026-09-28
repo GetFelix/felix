@@ -138,6 +138,8 @@ async fn an_operator_starts_lists_and_cancels_a_move() {
     assert_eq!(started["step"], "stage");
     assert_eq!(started["assignment"]["successor"], "broker-y");
     assert_eq!(started["assignment"]["move_reason"], "operator");
+    assert!(started.get("zones_before").is_none(), "no zones: {started}");
+    assert!(started.get("dry_run").is_none(), "{started}");
 
     let (_, listed) = fx.operator("GET", "/v1/shard-moves", Value::Null).await;
     assert_eq!(listed["paused"], false);
@@ -164,6 +166,59 @@ async fn an_operator_starts_lists_and_cancels_a_move() {
 
     let (_, listed) = fx.operator("GET", "/v1/shard-moves", Value::Null).await;
     assert_eq!(listed["items"], json!([]));
+}
+
+/// With zones reported, a move says how many the shard spans before and
+/// after, and a dry run says the same without writing anything.
+#[tokio::test]
+async fn a_move_reports_its_zone_impact_and_a_dry_run_writes_nothing() {
+    let fx = fixture().await;
+    for (port, id, zone) in [
+        (7100, "broker-x", "a"),
+        (7101, "broker-y", "a"),
+        (7102, "broker-z", "b"),
+    ] {
+        let mut node = fx.store.get_node("broker-x").await.expect("broker-x");
+        node.node_id = id.to_string();
+        node.spec.advertise_addr = format!("10.0.0.4:{port}");
+        node.spec.zone = Some(zone.to_string());
+        fx.store.register_node(node).await.expect("register");
+    }
+    fx.assign(ShardState::Active, None).await;
+
+    let mut body = start_body("broker-z");
+    body["dry_run"] = json!(true);
+    let (status, preview) = fx.operator("POST", "/v1/shard-moves", body).await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["step"], "stage");
+    assert_eq!(preview["assignment"]["successor"], "broker-z");
+    assert_eq!(
+        (
+            preview["zones_before"].clone(),
+            preview["zones_after"].clone()
+        ),
+        (json!(1), json!(2))
+    );
+    let untouched = fx
+        .store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_eq!(untouched.successor, None, "a dry run writes nothing");
+
+    let (status, started) = fx
+        .operator("POST", "/v1/shard-moves", start_body("broker-z"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    assert!(started.get("dry_run").is_none(), "{started}");
+    assert_eq!(
+        (
+            started["zones_before"].clone(),
+            started["zones_after"].clone()
+        ),
+        (json!(1), json!(2))
+    );
 }
 
 /// A fenced move is handed back to its leader at a new generation; with
