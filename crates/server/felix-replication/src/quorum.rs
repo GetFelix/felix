@@ -797,5 +797,44 @@ pub fn quorum_offset_without(
     held.get(needed - 1).copied().unwrap_or(0)
 }
 
+/// The most of the log a majority holds that this leader may count, given
+/// where its generation-start record sits (`own_start`, when it wrote one).
+///
+/// Only a majority holding a record of the leader's own generation counts,
+/// carrying everything before it along; `0`, nothing, until then. Counting a
+/// record it inherited is Raft's Figure 8: a later fence can prefer a log
+/// whose last generation is newer and overwrite it after it was
+/// acknowledged. A leader that wrote no start record counts as it always has.
+pub fn counted_offset(majority: u64, own_start: Option<u64>) -> u64 {
+    match own_start {
+        Some(start) if majority <= start => 0,
+        _ => majority,
+    }
+}
+
+/// Where `log`'s generation-start record for `generation` sits, if the log
+/// begins that generation with one.
+pub async fn generation_start(log: &felix_broker::StreamLog, generation: u64) -> Option<u64> {
+    let start = log
+        .generations()
+        .iter()
+        .rev()
+        .find(|epoch| epoch.generation == generation)?
+        .start_offset;
+    let first = log.read_log_from(start, 1).await.ok()?.into_iter().next()?;
+    starts_generation(&first, start, generation).then_some(start)
+}
+
+/// Whether `record` is `generation`'s start record, at `start`.
+pub(crate) fn starts_generation(
+    record: &felix_storage::log::LogRecord,
+    start: u64,
+    generation: u64,
+) -> bool {
+    record.offset == start
+        && record.mark.is_generation_start()
+        && record.payload.as_ref() == generation.to_be_bytes()
+}
+
 #[cfg(test)]
 mod tests;

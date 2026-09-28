@@ -298,6 +298,11 @@ impl CounterShard {
                 break;
             }
             for record in &records {
+                if record.mark.is_generation_start() {
+                    // Replication's, not a counter op; see the cache index.
+                    offset = record.offset + 1;
+                    continue;
+                }
                 index.log_bytes += record.payload.len() as u64;
                 let op = CounterOp::decode(&record.payload)
                     .map_err(|err| StorageError::Corruption(err.in_shard(&self.label)))?;

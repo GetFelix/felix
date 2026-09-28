@@ -295,7 +295,7 @@ pub struct Subscription {
 - Each subscriber has `subscriber_queue_capacity` buffer slots (default: 512)
 - When buffer fills, new events are **dropped for that subscriber only**
 - Other subscribers continue receiving events normally
-- A drop is not announced. For a durable stream a subscriber can *detect* one, because delivered records carry log offsets and a jump between consecutive offsets is exactly a drop.
+- A drop is not announced. For a durable stream a subscriber can *detect* one, because delivered records carry log offsets and a jump between consecutive offsets is a drop. The exception is a promoted leader's generation-start record, which takes an offset and is never delivered; the event after it reports it in `skipped_before`, so the jump is not mistaken for a drop.
 
 **Configuration**:
 

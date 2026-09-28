@@ -597,7 +597,7 @@ fn recover_existing(
             next_offset: outcome.next_offset,
             record_count: outcome.record_count,
             index: outcome.index,
-            holds_marks: outcome.header.holds_marks(),
+            version: outcome.header.version,
         },
         config.index_spacing_bytes,
     )?;

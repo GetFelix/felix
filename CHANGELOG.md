@@ -566,6 +566,21 @@ for what the current release actually guarantees.
   then fell back to heartbeats and expiry through the log for as long as the
   old leader stayed down. The member probing a peer's level now states its
   own, so every member knows the leader's.
+- **A record a promoted leader inherited is no longer lost after it was
+  acknowledged** (Raft's Figure 8). A promoted stream leader appends a
+  generation-start record after its fence and before it serves, and its
+  quorum mark counts a majority only once it reaches past that record, so an
+  inherited record is acknowledged only when a later fence cannot prefer a
+  log without it. Acknowledged inherited records are readable at the new
+  leader without waiting for a client write. Written only when every other
+  replica offers the new internal capability `GENERATION_START` (`1 << 3`);
+  a mixed fleet keeps the old counting. Readers skip the record's offset;
+  see `docs/protocol.md` for how a subscriber tells it from a drop.
+- **Storage format v4.** The generation-start record is flag bit 29 of a
+  record's `payload_len`, and every segment and index this build creates is
+  v4. v2 and v3 segments are still read; a v3 build refuses a v4 segment, so
+  once upgraded a broker's logs cannot be opened by an older build. No
+  migration is needed.
 
 - **A cache or counter shard that an older build left mid-compaction opens
   whole again.** Up to 0.6.0-preview, compaction swapped a shard directory

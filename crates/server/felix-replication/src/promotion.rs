@@ -40,7 +40,35 @@ pub trait PromotionGate: Send + Sync {
     /// The generation `key` is waiting at to be opened for writes, if it is.
     fn awaiting(&self, key: &crate::ShardKey) -> Option<u64>;
     /// Open `key` for writes at `generation`.
-    async fn open(&self, key: &crate::ShardKey, generation: u64);
+    ///
+    /// With `start_record`, the leader first writes its generation-start
+    /// record; see [`writes_start_record`].
+    async fn open(&self, key: &crate::ShardKey, generation: u64, start_record: bool);
+}
+
+/// Whether a leader promoted at `route` writes a generation-start record
+/// before it serves: a stream shard whose every other replica offered
+/// `GENERATION_START`. One that did not could not store the record, and
+/// without it the leader keeps counting inherited records toward its mark,
+/// as it always has.
+pub fn writes_start_record<R: PeerRequester>(
+    requester: &R,
+    local_node_id: &str,
+    key: &ShardKey,
+    route: &Route,
+) -> bool {
+    let mut replicas = route
+        .replicas
+        .iter()
+        .filter(|replica| replica.node_id != local_node_id)
+        .peekable();
+    key.kind == ShardKind::Stream
+        && replicas.peek().is_some()
+        && replicas.all(|replica| {
+            requester
+                .recorded_capabilities(&replica.node_id)
+                .is_some_and(|offered| offered.contains(PeerCapabilities::GENERATION_START))
+        })
 }
 
 /// A gate nothing waits at, for a broker that does not fence.
@@ -51,7 +79,7 @@ impl PromotionGate for NoGate {
     fn awaiting(&self, _key: &crate::ShardKey) -> Option<u64> {
         None
     }
-    async fn open(&self, _key: &crate::ShardKey, _generation: u64) {}
+    async fn open(&self, _key: &crate::ShardKey, _generation: u64, _start_record: bool) {}
 }
 
 /// How a promoted shard came to open, or why it has not yet.

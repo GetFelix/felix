@@ -236,6 +236,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                             Arc::clone(lifecycle),
                             Arc::clone(ingress),
                             Arc::new(storage.clone()),
+                            Arc::clone(broker),
                         ))
                     }
                     Err(_) => {

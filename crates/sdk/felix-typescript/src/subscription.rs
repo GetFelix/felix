@@ -71,6 +71,7 @@ impl SubscriptionHandle {
                 stream: event.stream.to_string(),
                 payload: event.payload.to_vec().into(),
                 offset: event.offset.map(BigInt::from),
+                skipped_before: BigInt::from(event.skipped_before),
             })),
             Some(Ok(None)) => Ok(None),
             Some(Err(err)) => Err(classify(err)),

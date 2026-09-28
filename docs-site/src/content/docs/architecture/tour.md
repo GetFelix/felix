@@ -166,7 +166,9 @@ slow subscriber.
 
 Because dropping is the default, a subscriber can silently miss records — which
 is why delivered events carry log offsets for a durable stream. A jump between
-consecutive offsets is exactly a drop, so the loss is at least *detectable*.
+consecutive offsets is a drop, so the loss is at least *detectable*. (A
+promoted leader's generation-start record also takes an offset; the event after
+it says so in `skipped_before`, so that jump is not mistaken for one.)
 
 ## The orderings that are the design
 

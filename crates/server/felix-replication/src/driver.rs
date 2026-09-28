@@ -449,9 +449,11 @@ async fn fence_one<R: PeerRequester>(
     local_node_id: &str,
     key: ShardKey,
     route: felix_router::Route,
-) -> (ShardKey, u64, Outcome) {
+) -> (ShardKey, u64, Outcome, bool) {
     let outcome = promotion::fence_shard(requester, broker, local_node_id, &key, &route).await;
-    (key, route.generation, outcome)
+    // After the fence, which records the replicas' capabilities.
+    let start_record = promotion::writes_start_record(requester, local_node_id, &key, &route);
+    (key, route.generation, outcome, start_record)
 }
 
 /// Fence each shard this broker was just promoted to lead, and open the ones
@@ -463,7 +465,7 @@ async fn open_promoted<R: PeerRequester>(
     gate: &dyn PromotionGate,
     promoted: Vec<(ShardKey, felix_router::Route)>,
 ) -> bool {
-    let outcomes: Vec<(ShardKey, u64, Outcome)> = futures::stream::iter(
+    let outcomes: Vec<(ShardKey, u64, Outcome, bool)> = futures::stream::iter(
         promoted
             .into_iter()
             .map(|(key, route)| fence_one(requester, broker, local_node_id, key, route)),
@@ -472,8 +474,8 @@ async fn open_promoted<R: PeerRequester>(
     .collect()
     .await;
     let mut pending = false;
-    for (key, generation, outcome) in outcomes {
-        pending |= !open_fenced(gate, &key, generation, outcome).await;
+    for (key, generation, outcome, start_record) in outcomes {
+        pending |= !open_fenced(gate, &key, generation, outcome, start_record).await;
     }
     pending
 }
@@ -484,6 +486,7 @@ async fn open_fenced(
     key: &ShardKey,
     generation: u64,
     outcome: Outcome,
+    start_record: bool,
 ) -> bool {
     match outcome {
         Outcome::Fenced { caught_up_from } => {
@@ -495,7 +498,7 @@ async fn open_fenced(
                 "a majority took the fence; opening the shard for writes",
             );
             metrics::record_promotion_opened(metrics::PATH_FENCED);
-            gate.open(&watch_key(key), generation).await;
+            gate.open(&watch_key(key), generation, start_record).await;
             true
         }
         Outcome::Lease { lacking } => {
@@ -507,7 +510,7 @@ async fn open_fenced(
                 "a replica does not offer the fence; opening the shard on the lease",
             );
             metrics::record_promotion_opened(metrics::PATH_LEASE);
-            gate.open(&watch_key(key), generation).await;
+            gate.open(&watch_key(key), generation, start_record).await;
             true
         }
         Outcome::Pending(why) => {

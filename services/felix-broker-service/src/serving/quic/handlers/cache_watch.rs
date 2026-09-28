@@ -538,6 +538,10 @@ async fn write_replayed_changes(
                 return Ok(());
             }
             at = record.offset + 1;
+            if record.mark.is_generation_start() {
+                // Replication's, not a change; see the cache index.
+                continue;
+            }
             let op = match felix_storage::cache::CacheOp::decode(&record.payload) {
                 Ok(op) => op,
                 Err(err) => return Err(anyhow::anyhow!("cache record did not decode: {err}")),

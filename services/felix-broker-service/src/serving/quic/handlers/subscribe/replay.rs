@@ -52,6 +52,15 @@ impl<S: EventSink + Send> EventSink for CountingSink<'_, S> {
     }
 }
 
+/// The event frame shape a subscriber negotiated.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EventFormat {
+    /// `FLAG_EVENT_BATCH_OFFSETS`.
+    pub(crate) offsets: bool,
+    /// `FLAG_EVENT_BATCH_SKIPPED`, only ever with `offsets`.
+    pub(crate) skips: bool,
+}
+
 /// Write a resumed subscription's stored history and ring backlog.
 ///
 /// Disk history is *paged*, never collected: `read_committed` returns at most
@@ -79,48 +88,52 @@ pub(super) async fn write_replay<S: EventSink>(
     subscription: &mut felix_broker::Subscription,
     max_events: usize,
     max_bytes: usize,
-    offsets_enabled: bool,
+    format: EventFormat,
 ) -> Result<()> {
-    /// One page of history per read. Bounds broker memory for a resume that
-    /// starts arbitrarily far back.
-    const HISTORY_PAGE_BYTES: usize = 1024 * 1024;
+    let mut replay = Replay {
+        sink: event_send,
+        broker,
+        tenant_id,
+        namespace,
+        stream,
+        shard,
+        subscription_id,
+        max_events,
+        max_bytes,
+        format,
+        // Where delivery begins: the history, else the backlog.
+        next: match (&history, backlog.first()) {
+            (Some(range), _) => range.from_offset,
+            (None, Some((offset, _))) => backlog_start.min(*offset),
+            (None, None) => backlog_start,
+        },
+        skipped: 0,
+    };
 
     if let Some(range) = history {
-        let mut at = range.from_offset;
-        while at < range.until_offset {
-            let records = broker
-                .read_committed(tenant_id, namespace, stream, shard, at, HISTORY_PAGE_BYTES)
-                .await?;
-            if records.is_empty() {
-                break;
-            }
-            let mut batch = ReplayBatch::new(max_events, max_bytes);
-            for record in records {
-                if record.offset >= range.until_offset {
-                    break;
-                }
-                at = record.offset + 1;
-                if let Some(ready) = batch.push(record.offset, record.payload.clone()) {
-                    write_replay_batch(event_send, subscription_id, &ready, offsets_enabled)
-                        .await?;
-                }
-            }
-            if let Some(ready) = batch.take() {
-                write_replay_batch(event_send, subscription_id, &ready, offsets_enabled).await?;
-            }
-        }
+        replay.history_until(range.until_offset).await?;
     }
 
     let mut batch = ReplayBatch::new(max_events, max_bytes);
-    let mut delivered_upto = backlog_start;
     for (offset, payload) in backlog {
-        delivered_upto = offset + 1;
-        if let Some(ready) = batch.push(offset, payload) {
-            write_replay_batch(event_send, subscription_id, &ready, offsets_enabled).await?;
+        // A hole in the ring is paged from disk like a hole in the queue
+        // below. It is usually a generation-start record, which the read
+        // turns into a skip for the record after it.
+        if offset > replay.next {
+            if let Some(ready) = batch.take() {
+                replay.write(&ready).await?;
+            }
+            replay.history_until(offset).await?;
+        }
+        if offset < replay.next {
+            continue;
+        }
+        if let Some(ready) = batch.push(offset, payload, replay.deliver(offset)) {
+            replay.write(&ready).await?;
         }
     }
     if let Some(ready) = batch.take() {
-        write_replay_batch(event_send, subscription_id, &ready, offsets_enabled).await?;
+        replay.write(&ready).await?;
     }
 
     // Catch-up. The live subscription was registered before any of this ran, so
@@ -141,25 +154,11 @@ pub(super) async fn write_replay<S: EventSink>(
         }
         for envelope in ready {
             if let Some(base) = envelope.base_offset() {
-                if base > delivered_upto {
+                if base > replay.next {
                     // The queue dropped records. Page the gap from disk.
-                    delivered_upto = write_history_range(
-                        event_send,
-                        broker,
-                        tenant_id,
-                        namespace,
-                        stream,
-                        shard,
-                        subscription_id,
-                        delivered_upto,
-                        base,
-                        max_events,
-                        max_bytes,
-                        offsets_enabled,
-                    )
-                    .await?;
+                    replay.history_until(base).await?;
                 }
-                if base + envelope.len() as u64 <= delivered_upto {
+                if base + envelope.len() as u64 <= replay.next {
                     // Entirely covered by history already written.
                     continue;
                 }
@@ -169,64 +168,101 @@ pub(super) async fn write_replay<S: EventSink>(
                 let offset = envelope
                     .base_offset()
                     .map(|base| base + index as u64)
-                    .unwrap_or(delivered_upto);
-                if offset < delivered_upto {
+                    .unwrap_or(replay.next);
+                if offset < replay.next {
                     continue;
                 }
-                delivered_upto = offset + 1;
-                if let Some(chunk) = batch.push(offset, payload.clone()) {
-                    write_replay_batch(event_send, subscription_id, &chunk, offsets_enabled)
-                        .await?;
+                if let Some(chunk) = batch.push(offset, payload.clone(), replay.deliver(offset)) {
+                    replay.write(&chunk).await?;
                 }
             }
             if let Some(chunk) = batch.take() {
-                write_replay_batch(event_send, subscription_id, &chunk, offsets_enabled).await?;
+                replay.write(&chunk).await?;
             }
         }
     }
     Ok(())
 }
 
-/// Write `[from, until)` from disk, returning the offset reached.
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn write_history_range<S: EventSink>(
-    event_send: &mut S,
-    broker: &Arc<Broker>,
-    tenant_id: &str,
-    namespace: &str,
-    stream: &str,
+/// One subscription's replay, and how far it has got.
+struct Replay<'a, S> {
+    sink: &'a mut S,
+    broker: &'a Arc<Broker>,
+    tenant_id: &'a str,
+    namespace: &'a str,
+    stream: &'a str,
     shard: u32,
     subscription_id: u64,
-    from: u64,
-    until: u64,
     max_events: usize,
     max_bytes: usize,
-    offsets_enabled: bool,
-) -> Result<u64> {
-    const HISTORY_PAGE_BYTES: usize = 1024 * 1024;
-    let mut at = from;
-    while at < until {
-        let records = broker
-            .read_committed(tenant_id, namespace, stream, shard, at, HISTORY_PAGE_BYTES)
-            .await?;
-        if records.is_empty() {
-            break;
-        }
-        let mut batch = ReplayBatch::new(max_events, max_bytes);
-        for record in records {
-            if record.offset >= until {
+    format: EventFormat,
+    /// Every offset below this was delivered or is known to hold no event.
+    next: u64,
+    /// How many offsets just below `next` hold no event, since the last one
+    /// delivered. Reported on the next record if it lands exactly at `next`.
+    skipped: u64,
+}
+
+impl<S: EventSink> Replay<'_, S> {
+    /// Account for delivering the record at `offset`, returning how many
+    /// offsets immediately before it are known to hold no event.
+    fn deliver(&mut self, offset: u64) -> u64 {
+        let skipped = if offset == self.next { self.skipped } else { 0 };
+        self.next = offset + 1;
+        self.skipped = 0;
+        skipped
+    }
+
+    /// Write `[next, until)` from disk.
+    ///
+    /// A disk read is contiguous apart from the generation-start records
+    /// `read_from` leaves out, so every offset it passes over without
+    /// returning a record is one of those, and becomes a skip.
+    async fn history_until(&mut self, until: u64) -> Result<()> {
+        /// One page of history per read. Bounds broker memory for a resume
+        /// that starts arbitrarily far back.
+        const HISTORY_PAGE_BYTES: usize = 1024 * 1024;
+        while self.next < until {
+            let records = self
+                .broker
+                .read_committed(
+                    self.tenant_id,
+                    self.namespace,
+                    self.stream,
+                    self.shard,
+                    self.next,
+                    HISTORY_PAGE_BYTES,
+                )
+                .await?;
+            if records.is_empty() {
                 break;
             }
-            at = record.offset + 1;
-            if let Some(ready) = batch.push(record.offset, record.payload.clone()) {
-                write_replay_batch(event_send, subscription_id, &ready, offsets_enabled).await?;
+            let mut batch = ReplayBatch::new(self.max_events, self.max_bytes);
+            for record in records {
+                if record.offset >= until {
+                    // Everything from `next` up to here held no event. Without
+                    // moving `next` the loop would read the same page forever.
+                    self.skipped += until - self.next;
+                    self.next = until;
+                    break;
+                }
+                self.skipped += record.offset - self.next;
+                self.next = record.offset;
+                let skipped = self.deliver(record.offset);
+                if let Some(ready) = batch.push(record.offset, record.payload, skipped) {
+                    self.write(&ready).await?;
+                }
+            }
+            if let Some(ready) = batch.take() {
+                self.write(&ready).await?;
             }
         }
-        if let Some(ready) = batch.take() {
-            write_replay_batch(event_send, subscription_id, &ready, offsets_enabled).await?;
-        }
+        Ok(())
     }
-    Ok(at.max(from))
+
+    async fn write(&mut self, ready: &ReadyBatch) -> Result<()> {
+        write_replay_batch(self.sink, self.subscription_id, ready, self.format).await
+    }
 }
 
 /// Accumulates replay records into frames that are safe to send.
@@ -240,9 +276,13 @@ pub(super) async fn write_history_range<S: EventSink>(
 ///   large payloads build a frame past the configured delivery and client frame
 ///   limits, which fails the write after allocating the whole thing.
 /// * **The record count**, matching live delivery's batching.
+///
+/// A record that follows skipped offsets starts a batch too, since the skip
+/// count describes the batch's first record.
 struct ReplayBatch {
     payloads: Vec<bytes::Bytes>,
     base_offset: u64,
+    skipped_before: u64,
     next_offset: u64,
     bytes: usize,
     max_events: usize,
@@ -254,6 +294,7 @@ impl ReplayBatch {
         Self {
             payloads: Vec::new(),
             base_offset: 0,
+            skipped_before: 0,
             next_offset: 0,
             bytes: 0,
             max_events: max_events.max(1),
@@ -262,9 +303,15 @@ impl ReplayBatch {
     }
 
     /// Add a record, returning a finished batch when this one had to be closed.
-    fn push(&mut self, offset: u64, payload: bytes::Bytes) -> Option<Vec<(u64, bytes::Bytes)>> {
+    fn push(
+        &mut self,
+        offset: u64,
+        payload: bytes::Bytes,
+        skipped_before: u64,
+    ) -> Option<ReadyBatch> {
         let len = payload.len();
-        let breaks_run = !self.payloads.is_empty() && offset != self.next_offset;
+        let breaks_run =
+            !self.payloads.is_empty() && (offset != self.next_offset || skipped_before > 0);
         let over_bytes = !self.payloads.is_empty() && self.bytes + len > self.max_bytes;
         let ready = if breaks_run || over_bytes {
             self.take()
@@ -273,6 +320,7 @@ impl ReplayBatch {
         };
         if self.payloads.is_empty() {
             self.base_offset = offset;
+            self.skipped_before = skipped_before;
         }
         self.payloads.push(payload);
         self.next_offset = offset + 1;
@@ -285,41 +333,60 @@ impl ReplayBatch {
         ready
     }
 
-    fn take(&mut self) -> Option<Vec<(u64, bytes::Bytes)>> {
+    fn take(&mut self) -> Option<ReadyBatch> {
         if self.payloads.is_empty() {
             return None;
         }
-        let base = self.base_offset;
-        let payloads = std::mem::take(&mut self.payloads);
         self.bytes = 0;
-        Some(
-            payloads
-                .into_iter()
-                .enumerate()
-                .map(|(index, payload)| (base + index as u64, payload))
-                .collect(),
-        )
+        Some(ReadyBatch {
+            base_offset: self.base_offset,
+            skipped_before: std::mem::take(&mut self.skipped_before),
+            payloads: std::mem::take(&mut self.payloads),
+        })
     }
 }
 
-/// Encode and write one replay batch, with or without offsets as negotiated.
+/// A closed replay batch: contiguous records from `base_offset`.
+#[derive(Debug)]
+pub(super) struct ReadyBatch {
+    pub(super) base_offset: u64,
+    /// Offsets just before `base_offset` that hold no event.
+    pub(super) skipped_before: u64,
+    pub(super) payloads: Vec<bytes::Bytes>,
+}
+
+impl ReadyBatch {
+    #[cfg(test)]
+    fn offsets(&self) -> Vec<u64> {
+        (0..self.payloads.len() as u64)
+            .map(|index| self.base_offset + index)
+            .collect()
+    }
+}
+
+/// Encode and write one replay batch in the shape the subscriber negotiated.
 pub(super) async fn write_replay_batch<S: EventSink>(
     event_send: &mut S,
     subscription_id: u64,
-    records: &[(u64, bytes::Bytes)],
-    offsets_enabled: bool,
+    batch: &ReadyBatch,
+    format: EventFormat,
 ) -> Result<()> {
-    let base_offset = match records.first() {
-        Some((offset, _)) => *offset,
-        None => return Ok(()),
-    };
-    let payloads: Vec<bytes::Bytes> = records.iter().map(|(_, payload)| payload.clone()).collect();
-    let payloads = payloads.as_slice();
-    let frame = if offsets_enabled {
+    if batch.payloads.is_empty() {
+        return Ok(());
+    }
+    let payloads = batch.payloads.as_slice();
+    let frame = if format.skips {
+        felix_wire::binary::encode_event_batch_bytes_with_skip(
+            subscription_id,
+            payloads,
+            batch.base_offset,
+            batch.skipped_before,
+        )?
+    } else if format.offsets {
         felix_wire::binary::encode_event_batch_bytes_with_offset(
             subscription_id,
             payloads,
-            base_offset,
+            batch.base_offset,
         )?
     } else {
         felix_wire::binary::encode_event_batch_bytes(subscription_id, payloads)?

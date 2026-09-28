@@ -45,6 +45,9 @@ pub struct ShardCursors {
     /// A move's destination this broker saw added to the replica set, still
     /// copying: left out of the quorum. See [`staged_learner`].
     pub(super) learner: Option<String>,
+    /// Where this generation's start record sits, once that is settled. See
+    /// [`own_start`].
+    pub(super) start_record: Option<Option<u64>>,
 }
 
 impl ShardCursors {
@@ -57,8 +60,39 @@ impl ShardCursors {
             base: 0,
             followers: Vec::new(),
             learner: None,
+            start_record: None,
         }
     }
+}
+
+/// Where the leader's generation-start record sits in a stream log, for
+/// [`quorum::counted_offset`]. `None` when it wrote none.
+///
+/// Settled once the generation has a record at its start, which either is
+/// the start record or means there will not be one. Until then it is looked
+/// up again each pass: the gate writes it just before the shard opens.
+async fn own_start(
+    log: &felix_broker::StreamLog,
+    generation: u64,
+    tail: u64,
+    settled: &mut Option<Option<u64>>,
+) -> Option<u64> {
+    if let Some(start) = *settled {
+        return start;
+    }
+    let start = log
+        .generations()
+        .iter()
+        .rev()
+        .find(|epoch| epoch.generation == generation)?
+        .start_offset;
+    if start >= tail {
+        return None;
+    }
+    let first = log.read_log_from(start, 1).await.ok()?.into_iter().next()?;
+    let found = crate::quorum::starts_generation(&first, start, generation).then_some(start);
+    *settled = Some(found);
+    found
 }
 
 /// What a pass does with exchanges still under way once its mark is out.
@@ -201,6 +235,12 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         entry.base = compare_from(&log.generations(), route.generation);
     }
     reconcile_followers(&mut entry, route);
+    let own_start = if key.kind == felix_router::ShardKind::Stream {
+        own_start(&log, route.generation, tail, &mut entry.start_record).await
+    } else {
+        None
+    };
+    let counted = |majority: u64| crate::quorum::counted_offset(majority, own_start);
 
     let shard = ShardRef {
         tenant_id: key.tenant_id.clone(),
@@ -256,7 +296,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         }
         // Never below a mark already published, even if a follower's
         // position went back since: that mark's records were promised.
-        quorum_offset_without(tail, followers, learner.as_deref())
+        counted(quorum_offset_without(tail, followers, learner.as_deref()))
             .max(marks.offset(&watch_key(key), route.generation).unwrap_or(0))
     };
     // Counters on a `Quorum` cache are acknowledged at their own mark, under
@@ -379,7 +419,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let mut copying = false;
     let mut majority = None;
     if waiting == 0 {
-        let offset = quorum_offset_without(tail, &positions, learner.as_deref());
+        let offset = counted(quorum_offset_without(tail, &positions, learner.as_deref()));
         if offset > 0 {
             majority = Some((
                 shard_report(
@@ -404,7 +444,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         answered.insert(cursor.node_id.clone());
         settle(&mut positions, cursor);
         let tail = log.tail_offset().await.unwrap_or(tail);
-        let offset = quorum_offset_without(tail, &positions, learner.as_deref());
+        let offset = counted(quorum_offset_without(tail, &positions, learner.as_deref()));
         if offset > 0 {
             majority = Some((
                 shard_report(
@@ -597,7 +637,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             key,
             route.generation,
             &settled,
-            quorum_offset_without(tail, &entry.followers, learner.as_deref()),
+            counted(quorum_offset_without(
+                tail,
+                &entry.followers,
+                learner.as_deref(),
+            )),
         )
         .await
             && let Some(counters) = &counters

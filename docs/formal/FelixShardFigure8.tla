@@ -8,8 +8,12 @@
 EXTENDS FelixShard
 CONSTANTS a, b, c
 \* Generation 1 (a) wrote x and shipped it nowhere; generation 2 (b) fenced
-\* c, wrote y and shipped it nowhere; b's lease has just lapsed and its last
-\* report names a and c as holding everything acknowledged (nothing).
+\* c, wrote y and shipped it nowhere; b's lease has lapsed and b has stepped
+\* down, and its last report names a and c as holding everything
+\* acknowledged (nothing). With `StartRecord` each leader wrote its start
+\* record first, and shipped that nowhere either. Starting b stepped down
+\* keeps it from shipping its log late, which Figure 8 does not need and
+\* which multiplies the states a pass has to cover.
 SeededInit ==
     /\ now = 0
     /\ clock = [m \in Brokers |-> 0]
@@ -18,11 +22,13 @@ SeededInit ==
     /\ cpExpiry = 0
     /\ report = [holders |-> {a, c}, len |-> 0, drained |-> FALSE, gen |-> 2]
     /\ inflight = <<>>
-    /\ bgen = [m \in Brokers |-> IF m = b THEN 2 ELSE 0]
+    /\ bgen = [m \in Brokers |-> 0]
     /\ bexpiry = [m \in Brokers |-> 0]
     /\ hbOut = [m \in Brokers |-> FALSE]
     /\ hbAt = [m \in Brokers |-> 0]
-    /\ log = (a :> <<Record(1, 1)>> @@ b :> <<Record(2, 2)>> @@ c :> <<>>)
+    /\ log = IF StartRecord
+             THEN a :> <<Start(1), Record(1, 1)>> @@ b :> <<Start(2), Record(2, 2)>> @@ c :> <<>>
+             ELSE a :> <<Record(1, 1)>> @@ b :> <<Record(2, 2)>> @@ c :> <<>>
     /\ hwm = [m \in Brokers |-> 0]
     /\ halted = {}
     /\ queued = [m \in Brokers |-> 0]

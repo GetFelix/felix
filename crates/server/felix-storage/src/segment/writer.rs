@@ -26,7 +26,9 @@ use std::sync::Arc;
 use crate::Result;
 use crate::io::{preallocate, sync_data, sync_dir};
 use crate::log::{AppendRecord, Offset, RecordMark, SegmentDescriptor, SegmentId};
-use crate::segment::format::{MAX_PAYLOAD_BYTES, SEGMENT_HEADER_LEN, SegmentHeader, encode_record};
+use crate::segment::format::{
+    FORMAT_VERSION, MAX_PAYLOAD_BYTES, SEGMENT_HEADER_LEN, SegmentHeader, encode_record,
+};
 use crate::segment::index::{IndexWriter, SparseIndex};
 use crate::segment::{index_file_name, segment_file_name};
 use crate::{StorageError, metrics_names};
@@ -65,10 +67,10 @@ pub struct SegmentWriter {
     /// Set when an index write has failed. Purely informational: the index is
     /// rebuilt from the segment on the next open, so the log stays correct.
     index_degraded: bool,
-    /// Written at a version that allows producer marks. A v2 segment reopened
-    /// by this build does not, and has to be rolled before a marked record
-    /// goes in: a v2 build reading it would take the mark for a bad length.
-    holds_marks: bool,
+    /// The layout version in the segment header. A segment reopened from an
+    /// older build is rolled before a record it cannot hold goes in: that
+    /// build reading it would take the new flag bit for a bad length.
+    version: u16,
 }
 
 impl SegmentWriter {
@@ -105,7 +107,7 @@ impl SegmentWriter {
             next_offset,
             record_count,
             index,
-            holds_marks,
+            version,
         } = resume;
         let path = dir.join(segment_file_name(id));
         let file = OpenOptions::new().write(true).open(&path)?;
@@ -138,7 +140,7 @@ impl SegmentWriter {
             #[cfg(test)]
             fail_next_sync: false,
             index_degraded: false,
-            holds_marks,
+            version,
         })
     }
 
@@ -164,7 +166,21 @@ impl SegmentWriter {
 
     /// Whether a record with a producer mark may be appended here.
     pub fn holds_marks(&self) -> bool {
-        self.holds_marks
+        self.version >= 3
+    }
+
+    /// Whether a generation-start record may be appended here.
+    pub fn holds_generation_starts(&self) -> bool {
+        self.version >= 4
+    }
+
+    /// Whether every record in `records` may be appended here.
+    pub fn holds(&self, records: &[AppendRecord]) -> bool {
+        records.iter().all(|record| match record.mark {
+            RecordMark::None => true,
+            RecordMark::Opens(_) | RecordMark::Continues => self.holds_marks(),
+            RecordMark::GenerationStart => self.holds_generation_starts(),
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -243,11 +259,11 @@ impl SegmentWriter {
                     "record payload exceeds the maximum supported size",
                 ));
             }
-            if record.mark != RecordMark::None && !self.holds_marks {
-                return Err(StorageError::Unsupported(
-                    "a producer mark cannot be written to a v2 segment; roll first",
-                ));
-            }
+        }
+        if !self.holds(records) {
+            return Err(StorageError::Unsupported(
+                "the record's mark is newer than the segment's version; roll first",
+            ));
         }
 
         self.staging.clear();
@@ -510,7 +526,7 @@ impl BlankSegment {
             #[cfg(test)]
             fail_next_sync: false,
             index_degraded: false,
-            holds_marks: true,
+            version: FORMAT_VERSION,
         })
     }
 
@@ -553,8 +569,8 @@ pub struct ResumeState {
     pub next_offset: Offset,
     pub record_count: u64,
     pub index: SparseIndex,
-    /// From the segment header: see [`SegmentWriter::holds_marks`].
-    pub holds_marks: bool,
+    /// From the segment header: see [`SegmentWriter::holds`].
+    pub version: u16,
 }
 
 #[cfg(test)]

@@ -329,6 +329,62 @@ serving reads without a lease, are later changes.
 `FelixShardFencedPromotion.cfg` checks this configuration, the fence with the
 report and the lease, under the real margins.
 
+### The generation-start record
+
+A leader must not count a record it inherited toward its quorum mark on the
+strength of a majority holding that record alone. This is Raft's Figure 8, and
+the fence's catch-up is how it reaches Felix (`FelixShardFigure8NoStartRecord.cfg`):
+
+1. a writes x at generation 1 and ships it nowhere. b, promoted at 2, writes y
+   and ships it nowhere.
+2. c is promoted at 3, fences a, takes x in the catch-up, and ships it back to
+   a. With x on a and c, c's mark covers it and a client is told x is stored.
+3. c dies and a is promoted at 4. Its fence compares a's log, whose last record
+   is from generation 1, with b's, whose last is from 2. b's is ahead, so a
+   takes y in place of the acknowledged x.
+
+Raft's answer is to count only a majority holding a record of the leader's own
+generation, which carries everything before it along, and to write a no-op at
+the start of each term so that happens without waiting for a client. Felix does
+the same:
+
+- **The record.** After its fence and catch-up, and after recording where its
+  generation begins, a promoted leader appends a generation-start record at
+  that offset, its first record at the generation, and only then opens for
+  writes. If the append fails the shard stays closed and the next pass fences
+  and tries again. The record ships like any other and is labelled with the
+  leader's generation, so a replica holding it answers a later fence with that
+  generation as its last. The format is in `docs/storage-format.md`.
+- **The mark.** Once a leader has written one, its mark counts a majority only
+  past the record (`quorum::counted_offset`, used for the mark and for the
+  report that releases it). Until then the mark is zero, as it is before any
+  generation's first mark. In step 2 above, x is acknowledged only once a holds
+  the record too, and a's log then ends at generation 3 and wins the fence.
+- **Liveness.** Records a leader inherited, including ones the previous leader
+  acknowledged, are readable at the new leader's mark as soon as its record is
+  on a majority, one replication pass after it opens, whether or not a client
+  writes. The same holds for an idempotent producer's re-send answered from an
+  inherited batch.
+- **Readers never see it.** It occupies a log offset, which subscriptions,
+  replay, Kafka fetch, consumer groups and backups skip. How a subscriber tells
+  that offset from a dropped record is in `docs/protocol.md`.
+
+When it is written: on a promotion through the fence gate (a majority took the
+fence, or a replica lacked the fence and the shard opened on the lease), for a
+stream shard with replicas, when every other replica's latest handshake offered
+`GENERATION_START` (`docs/internal-protocol.md`). A shard that is placed fresh,
+or that a move's destination takes over from a leader that drained into it, has
+nothing to catch up from a longer log and writes none; neither does a cache
+shard, whose log is compacted and never fenced.
+
+**Across versions.** A replica that did not offer the capability means no
+record: the leader counts inherited records as before, with the exposure
+above, until every replica is upgraded. A replica added to the set later that
+predates the record cannot decode a batch holding it
+(`UnknownInternalProducerMark`), so it stays behind, out of the majority, until
+it is upgraded. A broker that writes v4 segments cannot be downgraded in place:
+the previous build refuses them on open.
+
 ### The clock assumption, stated precisely
 
 Safety requires a bound on clock **drift rate**, not synchronized clocks. For any

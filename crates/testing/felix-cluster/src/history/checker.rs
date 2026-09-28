@@ -238,7 +238,9 @@ impl ListCheck<'_> {
     /// The final read starts at the base and has no holes, or nothing that
     /// relies on it being the whole log can be believed.
     fn final_read_is_whole(&mut self, final_read: &[Element]) {
-        for (expected, element) in (self.spec.base..).zip(final_read) {
+        let mut expected = self.spec.base;
+        for element in final_read {
+            expected += element.skipped_before;
             if element.offset != expected {
                 let explanation = if element.offset < expected {
                     format!(
@@ -255,6 +257,7 @@ impl ListCheck<'_> {
                 self.push(Rule::IncompleteFinalRead, vec![], explanation);
                 return;
             }
+            expected += 1;
         }
     }
 

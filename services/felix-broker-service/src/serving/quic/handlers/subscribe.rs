@@ -54,7 +54,7 @@ use crate::serving::quic::codec::write_message;
 use crate::serving::quic::telemetry::t_counter;
 use config::EventWriterConfig;
 use feeder::run_lane_feeder;
-use replay::{CountingSink, write_replay};
+use replay::{CountingSink, EventFormat, write_replay};
 
 /// Application code on an event stream reset because this broker stopped
 /// serving the shard before the subscription went live.
@@ -111,6 +111,9 @@ pub(crate) async fn handle_subscribe_message(
     // Offsets ride the event batch only for a client that negotiated the bit.
     // One that did not gets exactly the frames it got before this existed.
     let offsets_enabled = felix_wire::supports(peer_flags, felix_wire::FLAG_EVENT_BATCH_OFFSETS);
+    // A skip count describes offsets, so it is sent only with them.
+    let skip_enabled =
+        offsets_enabled && felix_wire::supports(peer_flags, felix_wire::FLAG_EVENT_BATCH_SKIPPED);
     // Subscribe is a control-plane request: acknowledgements/metadata stay on this bi stream.
     // Actual event delivery happens on a fresh uni stream (broker -> client).
     let span = tracing::trace_span!(
@@ -321,7 +324,10 @@ pub(crate) async fn handle_subscribe_message(
                 &mut subscription,
                 config.event_batch_max_events.max(1),
                 config.event_batch_max_bytes.max(1),
-                offsets_enabled,
+                EventFormat {
+                    offsets: offsets_enabled,
+                    skips: skip_enabled,
+                },
             )
             .await
         {
@@ -358,6 +364,7 @@ pub(crate) async fn handle_subscribe_message(
             flush_delay,
             single_event_mode: config.fanout_batch_size <= 1,
             offsets_enabled,
+            skip_enabled,
             shard_moved_enabled: felix_wire::supports_feature(
                 peer_features,
                 felix_wire::FEATURE_SHARD_MOVED,

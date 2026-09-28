@@ -1208,6 +1208,54 @@ pub async fn record_term_start(
     Ok(())
 }
 
+/// Write this leader's generation-start record, unless the log already starts
+/// the generation with one (an earlier attempt to open got that far).
+///
+/// It goes at the generation's recorded start, before any client write, so
+/// the quorum mark can cover records this leader inherited once a majority
+/// holds it. See `docs/replication-design.md`.
+pub async fn write_generation_start(
+    broker: &felix_broker::Broker,
+    log: &felix_broker::StreamLog,
+    key: &ShardKey,
+    generation: u64,
+) -> anyhow::Result<()> {
+    if felix_replication::quorum::generation_start(log, generation)
+        .await
+        .is_some()
+    {
+        return Ok(());
+    }
+    let tail = log
+        .tail_offset()
+        .await
+        .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
+    let started = log
+        .generations()
+        .iter()
+        .rev()
+        .find(|epoch| epoch.generation == generation)
+        .map(|epoch| epoch.start_offset);
+    // Anywhere else, the records before it would not be this generation's,
+    // and the mark would count them as if they were.
+    if started != Some(tail) {
+        anyhow::bail!("generation {generation} does not begin at the tail {tail}");
+    }
+    // Through the broker, so the stream's commit order and its subscribers
+    // move past the record's offset too.
+    broker
+        .append_generation_start(
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+            key.shard,
+            generation,
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!("append the generation-start record: {err}"))?;
+    Ok(())
+}
+
 /// End a shard's readers once the writes already inside its fence are done,
 /// so each reader is handed every record this broker committed for the shard.
 ///

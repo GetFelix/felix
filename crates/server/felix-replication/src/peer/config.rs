@@ -229,7 +229,7 @@ impl PeerTransportConfig {
     /// What this broker offers its peers in the handshake.
     pub fn capabilities(&self) -> felix_wire::internal::PeerCapabilities {
         use felix_wire::internal::PeerCapabilities;
-        let labels = PeerCapabilities::GENERATION_LABELS;
+        let labels = PeerCapabilities::GENERATION_LABELS.union(PeerCapabilities::GENERATION_START);
         if self.fence {
             labels
                 .union(PeerCapabilities::FENCE)

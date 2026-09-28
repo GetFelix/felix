@@ -149,7 +149,8 @@ async fn two_current_brokers_learn_each_others_capabilities() {
 
     let offered = PeerCapabilities::FENCE
         .union(PeerCapabilities::TAIL_FETCH)
-        .union(PeerCapabilities::GENERATION_LABELS);
+        .union(PeerCapabilities::GENERATION_LABELS)
+        .union(PeerCapabilities::GENERATION_START);
     assert_eq!(theirs, offered);
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
     assert_eq!(noted.get("broker-a"), Some(offered));
@@ -253,7 +254,7 @@ async fn a_broker_with_the_fence_off_neither_offers_nor_answers_it() {
         pool.capabilities(PEER, listener.addr)
             .await
             .expect("handshake"),
-        PeerCapabilities::GENERATION_LABELS
+        PeerCapabilities::GENERATION_LABELS.union(PeerCapabilities::GENERATION_START)
     );
     let err = pool
         .request(PEER, listener.addr, fence())

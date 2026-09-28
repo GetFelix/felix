@@ -389,3 +389,90 @@ async fn a_long_poll_at_the_commit_point_returns_once_it_moves() {
         .expect("task");
     assert_eq!(records(only(&response)), vec![(1, "r1".to_string())]);
 }
+
+/// A generation-start record holds an offset and is never returned. Each
+/// record around it keeps its own offset, and a fetch from the
+/// generation-start's offset gets the record after it.
+#[tokio::test]
+async fn fetch_skips_a_generation_start_record() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture.publish("orders", "created", 0, &["r0", "r1"]).await;
+    let marker = fixture.generation_start("orders", "created", 0).await;
+    assert_eq!(marker, 2);
+    fixture.publish("orders", "created", 0, &["r3", "r4"]).await;
+    let mut client = fixture.connect();
+
+    let response = client
+        .call(&request(&[("orders.created", 0, 0)], 1, 500), 11)
+        .await;
+    let partition = only(&response);
+    assert_eq!(partition.high_watermark, 5);
+    assert_eq!(
+        records(partition),
+        vec![
+            (0, "r0".to_string()),
+            (1, "r1".to_string()),
+            (3, "r3".to_string()),
+            (4, "r4".to_string())
+        ]
+    );
+
+    let response = client
+        .call(&request(&[("orders.created", 0, 2)], 1, 500), 11)
+        .await;
+    assert_eq!(
+        records(only(&response)),
+        vec![(3, "r3".to_string()), (4, "r4".to_string())]
+    );
+}
+
+/// With a generation-start record last, a consumer caught up to it is moved
+/// past it by an empty batch rather than left one behind the high watermark.
+#[tokio::test]
+async fn fetch_moves_a_consumer_past_a_trailing_generation_start() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture.publish("orders", "created", 0, &["r0"]).await;
+    let marker = fixture.generation_start("orders", "created", 0).await;
+    let mut client = fixture.connect();
+
+    let response = client
+        .call(
+            &request(&[("orders.created", 0, marker as i64)], 1, 500),
+            11,
+        )
+        .await;
+    let partition = only(&response);
+    assert_eq!(partition.error_code, 0);
+    assert_eq!(partition.high_watermark, 2);
+    assert!(records(partition).is_empty());
+    let bytes = partition.records.clone().expect("a batch");
+    let batches = RecordBatchDecoder::decode_batch_info(&mut bytes.clone()).expect("info");
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].record_count, 0);
+    assert_eq!(batches[0].min_offset, marker as i64);
+    // Where the consumer fetches next: past the generation start.
+    let next = batches[0].min_offset + i64::from(last_offset_delta(&bytes)) + 1;
+    assert_eq!(next, 2);
+
+    // From the start, the record comes back and the consumer still ends past
+    // the trailing marker.
+    let response = client
+        .call(&request(&[("orders.created", 0, 0)], 1, 500), 11)
+        .await;
+    assert_eq!(records(only(&response)), vec![(0, "r0".to_string())]);
+    let bytes = only(&response).records.clone().expect("batches");
+    let batches = RecordBatchDecoder::decode_batch_info(&mut bytes.clone()).expect("info");
+    assert_eq!(batches.len(), 2);
+    assert_eq!(batches[1].min_offset, marker as i64);
+    assert_eq!(batches[1].record_count, 0);
+}
+
+/// The last offset delta of the first batch in `bytes`, which the decoder's
+/// summary does not report.
+fn last_offset_delta(bytes: &Bytes) -> i32 {
+    // base offset, length, leader epoch, magic, crc, attributes.
+    let at = 8 + 4 + 4 + 1 + 4 + 2;
+    i32::from_be_bytes(bytes[at..at + 4].try_into().expect("four bytes"))
+}

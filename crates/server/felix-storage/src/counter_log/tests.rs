@@ -256,6 +256,37 @@ async fn the_fold_catches_up_with_records_appended_behind_it() {
     );
 }
 
+/// A generation-start record in a counter log is stepped over, not folded as
+/// a delta or reported as corruption.
+#[tokio::test]
+async fn the_fold_steps_over_a_generation_start_record() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = store(dir.path());
+    store.add(T, NS, C, 0, "k", 1).await.expect("add");
+
+    let log = store.shard_log(T, NS, C, 0).await.expect("log");
+    log.append(&[
+        crate::log::AppendRecord {
+            payload: bytes::Bytes::copy_from_slice(&4u64.to_be_bytes()),
+            timestamp_micros: 1,
+            mark: crate::log::RecordMark::GenerationStart,
+        },
+        crate::log::AppendRecord {
+            payload: CounterOp::Delta {
+                key: "k".to_string(),
+                delta: 9,
+            }
+            .encode(),
+            timestamp_micros: 1,
+            mark: Default::default(),
+        },
+    ])
+    .await
+    .expect("append behind the fold");
+
+    assert_eq!(store.get(T, NS, C, 0, "k").await.expect("get"), Some(10));
+}
+
 /// The forwarded-sum bytes round trip, and the wrong width is refused.
 #[test]
 fn a_forwarded_sum_round_trips() {

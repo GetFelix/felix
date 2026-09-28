@@ -220,3 +220,30 @@ fn a_labelled_fetch_is_its_own_kind() {
         fetch(true)
     );
 }
+
+/// A generation-start record's mark round-trips, and a peer that predates it
+/// refuses the batch rather than storing the record as a client's.
+#[test]
+fn a_generation_start_mark_round_trips_and_an_unknown_mark_is_refused() {
+    let batch = ReplicateRecords {
+        correlation_id: 42,
+        shard: shard(),
+        first_offset: 10,
+        checksum: 1,
+        payloads: vec![Bytes::from_static(b"x"), Bytes::from_static(b"y")],
+        marks: vec![ProducerMark::GenerationStart, ProducerMark::None],
+        commit_offset: None,
+        generations: None,
+    };
+    let message = InternalMessage::ReplicateMarkedRecords(batch);
+    let bytes = message.encode().expect("encode");
+    assert_eq!(InternalMessage::decode(bytes).expect("decode"), message);
+
+    let mut body = bytes::BytesMut::new();
+    crate::internal::replicate::put_marks(&mut body, &[ProducerMark::GenerationStart]);
+    body[0] = 4;
+    assert!(matches!(
+        crate::internal::replicate::take_marks(&mut body.freeze(), 1),
+        Err(Error::UnknownInternalProducerMark(4))
+    ));
+}

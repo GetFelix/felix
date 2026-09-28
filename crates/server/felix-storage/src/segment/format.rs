@@ -33,7 +33,10 @@ pub const INDEX_MAGIC: u32 = 0x464C_5349;
 /// v3 lets a record carry a producer mark (see [`RecordHeader`]). A v2 segment
 /// reads the same under v3, so both are accepted; a v2 build refuses a v3
 /// segment instead of reading a mark's flag bits as an impossible length.
-pub const FORMAT_VERSION: u16 = 3;
+///
+/// v4 adds the generation-start record, a third flag bit. A v3 build refuses a
+/// v4 segment for the same reason a v2 build refuses a v3 one.
+pub const FORMAT_VERSION: u16 = 4;
 
 /// The oldest segment and index version this build reads.
 pub const OLDEST_READABLE_VERSION: u16 = 2;
@@ -92,6 +95,11 @@ impl SegmentHeader {
     /// Whether records with producer marks may be written to this segment.
     pub fn holds_marks(&self) -> bool {
         self.version >= 3
+    }
+
+    /// Whether a generation-start record may be written to this segment.
+    pub fn holds_generation_starts(&self) -> bool {
+        self.version >= 4
     }
 
     pub fn encode(&self) -> [u8; SEGMENT_HEADER_LEN as usize] {
@@ -177,17 +185,20 @@ pub struct RecordHeader {
     pub opens_batch: bool,
     /// The record continues the producer batch before it.
     pub continues_batch: bool,
+    /// The record is a leader's generation-start record.
+    pub generation_start: bool,
 }
 
 const FLAG_OPENS_BATCH: u32 = 1 << 31;
 const FLAG_CONTINUES_BATCH: u32 = 1 << 30;
-const FLAG_MASK: u32 = FLAG_OPENS_BATCH | FLAG_CONTINUES_BATCH;
+const FLAG_GENERATION_START: u32 = 1 << 29;
+const FLAG_MASK: u32 = FLAG_OPENS_BATCH | FLAG_CONTINUES_BATCH | FLAG_GENERATION_START;
 
 /// Bytes a record with this payload and mark takes on disk.
 pub fn record_len(payload_len: usize, mark: &RecordMark) -> u64 {
     let tag = match mark {
         RecordMark::Opens(_) => PRODUCER_TAG_LEN,
-        RecordMark::None | RecordMark::Continues => 0,
+        RecordMark::None | RecordMark::Continues | RecordMark::GenerationStart => 0,
     };
     RECORD_HEADER_LEN + tag + payload_len as u64
 }
@@ -226,7 +237,8 @@ impl RecordHeader {
         }
         let len_and_flags = read_u32(buf, 0);
         let flags = len_and_flags & FLAG_MASK;
-        if flags == FLAG_MASK {
+        // At most one bit: a record is one kind.
+        if flags.count_ones() > 1 {
             return Err(Corruption::new(CorruptionKind::RecordFlags {
                 found: len_and_flags,
             }));
@@ -246,6 +258,7 @@ impl RecordHeader {
             checksum: read_u32(buf, 24),
             opens_batch: flags == FLAG_OPENS_BATCH,
             continues_batch: flags == FLAG_CONTINUES_BATCH,
+            generation_start: flags == FLAG_GENERATION_START,
         })
     }
 }
@@ -267,6 +280,7 @@ pub fn encode_record(
         RecordMark::None => 0,
         RecordMark::Opens(_) => FLAG_OPENS_BATCH,
         RecordMark::Continues => FLAG_CONTINUES_BATCH,
+        RecordMark::GenerationStart => FLAG_GENERATION_START,
     };
     out.extend_from_slice(&(payload.len() as u32 | flags).to_be_bytes());
     out.extend_from_slice(&offset.to_be_bytes());
@@ -283,7 +297,7 @@ pub fn encode_record(
             tag[16..20].copy_from_slice(&batch.len.to_be_bytes());
             &tag
         }
-        RecordMark::None | RecordMark::Continues => &[],
+        RecordMark::None | RecordMark::Continues | RecordMark::GenerationStart => &[],
     };
     let checksum = crc32(&[&out[start..start + 24], tag, payload]);
     out.extend_from_slice(&checksum.to_be_bytes());
@@ -329,6 +343,8 @@ pub fn decode_record(buf: &[u8]) -> DecodeResult<(DecodedRecord, u64)> {
         })
     } else if header.continues_batch {
         RecordMark::Continues
+    } else if header.generation_start {
+        RecordMark::GenerationStart
     } else {
         RecordMark::None
     };

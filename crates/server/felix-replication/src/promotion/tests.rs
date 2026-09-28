@@ -577,3 +577,91 @@ async fn a_follower_keeps_the_generation_a_record_was_written_at() {
     );
     assert_eq!(held(&leader).await, vec!["x1", "x2"]);
 }
+
+/// **Raft's Figure 8, replayed: an inherited record acknowledged on a majority
+/// survives the next fence**, because the majority that let it be
+/// acknowledged also holds the generation-start record written after it.
+/// `FelixShardFigure8.cfg` is the trace:
+///
+/// 1. This leader wrote x at generation 1 and shipped it nowhere.
+/// 2. broker-b, at generation 2, wrote y and shipped it nowhere.
+/// 3. broker-c is promoted at 3 holding x, writes its start record, and ships
+///    both here. Its mark covers x only now, with a majority holding the
+///    start record (`quorum::counted_offset`), and x is acknowledged.
+/// 4. broker-c dies, and this leader is promoted and fences broker-b.
+///
+/// Without the start record this leader's log is (1, one record) and
+/// broker-b's (2, one record) wins the fence: y replaces the acknowledged x.
+#[tokio::test]
+async fn an_inherited_record_acknowledged_on_a_majority_survives_the_next_fence() {
+    let mut replicas = Replicas::new();
+    let (leader, _dir) = leader_holding(1, &["x"]).await;
+    replicas
+        .get("broker-b")
+        .holds("broker-b", 2, 0, &["y"])
+        .await;
+    replicas
+        .get("broker-c")
+        .holds("broker-c", 1, 0, &["x"])
+        .await;
+
+    let promoted = &replicas.get("broker-c").broker;
+    let log = promoted
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    log.record_generation(3, 1).expect("term start");
+    assert_eq!(
+        log.append_generation_start(3).await.expect("start record"),
+        1
+    );
+    let follower = ReplicaHandler::new(Arc::clone(&leader), router_for(LEADER, 3));
+    let mut cursor =
+        crate::follower::FollowerCursor::new(LEADER, "10.0.0.1:7001".parse().expect("addr"), 0);
+    let progress = crate::ship::ship_once(
+        &ShipTo { handler: &follower },
+        &log,
+        &batch(3, 0, &[]).shard,
+        felix_broker::LogKind::Stream,
+        &mut cursor,
+        1 << 20,
+        &crate::rebuild::Rebuilds::disabled(),
+    )
+    .await;
+    assert!(matches!(progress, crate::ship::Progress::Stored { .. }));
+    replicas.get_mut("broker-c").reachable = false;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route()).await;
+
+    assert_eq!(
+        held(&leader).await,
+        vec!["x"],
+        "the acknowledged x was replaced"
+    );
+    assert_eq!(
+        outcome,
+        Outcome::Fenced {
+            caught_up_from: None
+        }
+    );
+}
+
+/// **A mixed fleet writes no start record.** One replica that did not offer
+/// `GENERATION_START` could not store it, so the leader keeps counting as an
+/// older build does.
+#[tokio::test]
+async fn a_start_record_is_written_only_when_every_replica_offers_it() {
+    let mut replicas = Replicas::new();
+    for id in ["broker-b", "broker-c"] {
+        replicas.get_mut(id).capabilities = REQUIRED.union(PeerCapabilities::GENERATION_START);
+    }
+    assert!(writes_start_record(&replicas, LEADER, &key(), &route()));
+
+    replicas.get_mut("broker-c").capabilities = REQUIRED;
+    assert!(!writes_start_record(&replicas, LEADER, &key(), &route()));
+
+    let mut cache = key();
+    cache.kind = ShardKind::Cache;
+    replicas.get_mut("broker-c").capabilities = REQUIRED.union(PeerCapabilities::GENERATION_START);
+    assert!(!writes_start_record(&replicas, LEADER, &cache, &route()));
+}

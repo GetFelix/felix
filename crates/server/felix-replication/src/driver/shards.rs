@@ -273,7 +273,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             let cx = self.cx;
             let (key, route) = (key.clone(), route.clone());
             self.fences.push(Box::pin(async move {
-                let (key, generation, outcome) = fence_one(
+                let (key, generation, outcome, start_record) = fence_one(
                     cx.requester,
                     cx.broker,
                     cx.router.local_node_id(),
@@ -281,7 +281,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                     route,
                 )
                 .await;
-                let opened = open_fenced(cx.gate, &key, generation, outcome).await;
+                let opened = open_fenced(cx.gate, &key, generation, outcome, start_record).await;
                 (key, generation, opened)
             }));
             return;

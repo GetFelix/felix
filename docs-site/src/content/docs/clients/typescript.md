@@ -187,15 +187,18 @@ async function next(timeoutMs) {
 
 Subscriber queues shed under the default policy rather than blocking the
 publisher, so a subscriber can silently miss records. On a durable stream every
-event carries its log offset, and **a jump in them is exactly a drop**:
+event carries its log offset, and **a jump in them is a drop** — except where a
+promoted leader's generation-start record took an offset, which the next event
+reports in `skippedBefore`:
 
 ```ts
 let expected = null;
 for (;;) {
   const event = await events.nextEvent();
   if (event === null) break;
-  if (expected !== null && event.offset !== expected) {
-    console.warn(`dropped ${event.offset - expected} records`);
+  const from = event.offset - event.skippedBefore;
+  if (expected !== null && from !== expected) {
+    console.warn(`dropped ${from - expected} records`);
   }
   expected = event.offset + 1n;
   handle(event.payload);

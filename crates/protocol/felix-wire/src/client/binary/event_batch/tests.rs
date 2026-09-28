@@ -161,3 +161,71 @@ fn peek_base_offset_matches_the_decoded_batch() {
     .expect("frame");
     assert_eq!(binary::peek_event_batch_base_offset(&short), None);
 }
+
+#[test]
+fn skip_count_round_trips_on_both_batch_kinds() {
+    let payloads = vec![Bytes::from_static(b"after")];
+
+    let frame = Frame::decode(
+        binary::encode_event_batch_bytes_with_skip(9, &payloads, 41, 2).expect("encode"),
+    )
+    .expect("frame");
+    assert_eq!(
+        frame.header.flags,
+        FLAG_BINARY_EVENT_BATCH | crate::FLAG_EVENT_BATCH_OFFSETS | crate::FLAG_EVENT_BATCH_SKIPPED
+    );
+    let batch = binary::decode_event_batch(&frame).expect("decode");
+    assert_eq!(
+        (
+            batch.subscription_id,
+            batch.base_offset,
+            batch.skipped_before
+        ),
+        (9, Some(41), 2)
+    );
+    assert_eq!(batch.payloads, payloads);
+    assert_eq!(binary::peek_event_batch_base_offset(&frame), Some(41));
+
+    let frame = Frame::decode(
+        binary::encode_shared_event_batch_bytes_with_skip(&payloads, 41, 2).expect("encode"),
+    )
+    .expect("frame");
+    let batch = binary::decode_shared_event_batch(&frame).expect("decode");
+    assert_eq!((batch.base_offset, batch.skipped_before), (Some(41), 2));
+    assert_eq!(batch.payloads, payloads);
+    assert_eq!(binary::peek_event_batch_base_offset(&frame), Some(41));
+}
+
+#[test]
+fn a_zero_skip_is_the_offsets_only_frame() {
+    // Every batch without a skip must stay byte-identical, so a subscriber
+    // that negotiated the bit costs nothing extra on ordinary batches.
+    let payloads = vec![Bytes::from_static(b"a"), Bytes::from_static(b"b")];
+    assert_eq!(
+        binary::encode_event_batch_bytes_with_skip(3, &payloads, 10, 0).expect("encode"),
+        binary::encode_event_batch_bytes_with_offset(3, &payloads, 10).expect("encode"),
+    );
+    assert_eq!(
+        binary::encode_shared_event_batch_bytes_with_skip(&payloads, 10, 0).expect("encode"),
+        binary::encode_shared_event_batch_bytes_with_offset(&payloads, 10).expect("encode"),
+    );
+    let frame = Frame::decode(
+        binary::encode_shared_event_batch_bytes_with_offset(&payloads, 10).expect("encode"),
+    )
+    .expect("frame");
+    let batch = binary::decode_shared_event_batch(&frame).expect("decode");
+    assert_eq!(batch.skipped_before, 0);
+}
+
+#[test]
+fn a_skip_count_without_offsets_is_rejected() {
+    let frame = Frame::new(
+        FLAG_BINARY_EVENT_BATCH_SHARED | crate::FLAG_EVENT_BATCH_SKIPPED,
+        Bytes::from_static(&[0; 32]),
+    )
+    .expect("frame");
+    assert!(matches!(
+        binary::decode_shared_event_batch(&frame),
+        Err(Error::UnknownFlags(_))
+    ));
+}

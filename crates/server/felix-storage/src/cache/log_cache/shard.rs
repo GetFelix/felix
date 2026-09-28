@@ -127,6 +127,12 @@ impl CacheShard {
                     // back staged records past the frontier.
                     break 'scan;
                 }
+                if record.mark.is_generation_start() {
+                    // Replication's, not a cache op. None is written to a
+                    // cache log today; decoding one would read as corruption.
+                    offset = record.offset + 1;
+                    continue;
+                }
                 let bytes = record.payload.len() as u64;
                 index.log_bytes += bytes;
                 let op = CacheOp::decode(&record.payload)

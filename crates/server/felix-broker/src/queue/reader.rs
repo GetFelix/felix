@@ -242,8 +242,16 @@ impl GroupReader {
                 }
                 break;
             }
-            match log.read_from(offset, 1).await {
-                Ok(records) => match records.into_iter().next() {
+            // The raw log: the filtered read would answer a generation-start
+            // offset with the record after it, delivering that record twice
+            // and the first time under the wrong offset.
+            match log.read_log_from(offset, 1).await {
+                Ok(records) => match records.into_iter().next().filter(|r| r.offset == offset) {
+                    // Not a client's record, so nothing to deliver. Settled like a
+                    // trimmed one; left owed it would stall the group here.
+                    Some(record) if record.mark.is_generation_start() => {
+                        self.settle(key, &tracker, offset).await?;
+                    }
                     Some(record) => {
                         let attempts = tracker.lock().await.attempts(offset);
                         bytes += record.payload.len();

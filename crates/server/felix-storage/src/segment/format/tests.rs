@@ -16,11 +16,11 @@ fn segment_header_is_a_stable_golden_vector() {
         bytes,
         [
             0x46, 0x4C, 0x53, 0x47, // magic "FLSG"
-            0x00, 0x03, // version
+            0x00, 0x04, // version
             0x00, 0x00, // flags
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // base_offset
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, // created_at_micros
-            0xAD, 0xEB, 0x65, 0xE9, // header crc32
+            0xE7, 0xD5, 0xEE, 0xA2, // header crc32
             0x00, 0x00, 0x00, 0x00, // reserved
         ]
     );
@@ -134,7 +134,7 @@ fn oversized_length_is_rejected_before_allocating() {
     // A header whose length is impossible but whose checksum is valid: the
     // shape that would reach an allocation if the bound were not checked.
     // The largest length the flag bits leave room for.
-    let impossible = (1u32 << 30) - 1;
+    let impossible = (1u32 << 29) - 1;
     let mut buf = vec![0u8; RECORD_HEADER_LEN as usize];
     buf[0..4].copy_from_slice(&impossible.to_be_bytes());
     let header_crc = crc32(&[&buf[0..20]]);
@@ -308,4 +308,43 @@ fn a_v2_segment_header_is_still_read() {
     let decoded = SegmentHeader::decode(&header.encode()).expect("v2 decodes");
     assert!(!decoded.holds_marks());
     assert!(SegmentHeader::new(5, 6).holds_marks());
+}
+
+#[test]
+fn a_generation_start_round_trips_and_is_one_kind_only() {
+    let mut buf = Vec::new();
+    let len = encode_record(
+        &mut buf,
+        4,
+        1,
+        &7u64.to_be_bytes(),
+        &RecordMark::GenerationStart,
+    );
+    assert_eq!(len, RECORD_HEADER_LEN + 8);
+    let (decoded, consumed) = decode_record(&buf).expect("decode");
+    assert_eq!(
+        (decoded.mark, decoded.payload.as_ref(), consumed),
+        (RecordMark::GenerationStart, &7u64.to_be_bytes()[..], len)
+    );
+
+    // Two kinds at once is not a record this build wrote.
+    let mut both = Vec::new();
+    encode_record(&mut both, 4, 1, b"x", &RecordMark::Continues);
+    both[0] |= 0x20;
+    let crc = crc32(&[&both[0..20]]);
+    both[20..24].copy_from_slice(&crc.to_be_bytes());
+    assert!(matches!(
+        decode_record(&both).expect_err("two kinds").kind,
+        CorruptionKind::RecordFlags { .. }
+    ));
+}
+
+#[test]
+fn only_a_v4_segment_holds_generation_starts() {
+    let mut header = SegmentHeader::new(5, 6);
+    assert!(header.holds_generation_starts());
+    header.version = 3;
+    let decoded = SegmentHeader::decode(&header.encode()).expect("v3 decodes");
+    assert!(decoded.holds_marks());
+    assert!(!decoded.holds_generation_starts());
 }

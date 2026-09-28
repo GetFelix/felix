@@ -21,6 +21,8 @@ fuzzing = []
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+# The CRC of a record batch built by hand; kafka-protocol uses the same crate.
+crc32c = "0.6"
 felix-authz = { path = "../felix-authz", version = "0.6.0-preview" }
 felix-broker = { path = "../felix-broker", version = "0.6.0-preview" }
 felix-storage = { path = "../felix-storage", version = "0.6.0-preview" }

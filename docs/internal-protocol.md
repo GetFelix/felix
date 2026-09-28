@@ -103,10 +103,12 @@ never have dialled the one that shipped to it.
 | `1 << 0` | `FENCE` | answers `Fence`, and refuses every older leader of the shard once it has |
 | `1 << 1` | `TAIL_FETCH` | answers `ReplicateFetch` from the leader that fenced it |
 | `1 << 2` | `GENERATION_LABELS` | reads `ReplicateLabelledRecords`, and answers `ReplicateLabelledFetch` |
+| `1 << 3` | `GENERATION_START` | stores a generation-start record (mark byte `3`) shipped to it |
 
 `FELIX_INTERNAL_FENCE=false` turns the first two bits off: the broker refuses
 `Fence` and `ReplicateFetch` as unknown kinds, as an older build would. It
-still offers `GENERATION_LABELS`, which is not the fence's.
+still offers `GENERATION_LABELS` and `GENERATION_START`, which are not the
+fence's.
 
 ### Versioning
 
@@ -414,6 +416,13 @@ when there are any, so an unmarked batch is byte for byte what it always was.
 A follower that predates the kind refuses it, and the leader stops shipping to
 it and says so, rather than the follower storing records without their marks.
 Two records with the same bytes and different marks are a `LogConflict`.
+
+A leader's **generation-start record** travels the same way, with mark byte
+`3` and no tag after it (`docs/replication-design.md`, "The generation-start
+record"). A leader writes one only once every other replica of the shard has
+offered `GENERATION_START`; a peer that predates the byte cannot decode the
+batch (`UnknownInternalProducerMark`) rather than storing the record as a
+client's.
 
 **The commit offset** rides with the records too. Under `Quorum` the leader
 sends its quorum mark, one past the last record a majority holds and the

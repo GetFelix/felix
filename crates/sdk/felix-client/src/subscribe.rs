@@ -104,7 +104,7 @@ impl Subscription {
             return Ok(None);
         };
         match queued {
-            QueuedEvent::Payload(payload, offset) => {
+            QueuedEvent::Payload(payload, offset, skipped_before) => {
                 record_e2e_latency(
                     &payload,
                     #[cfg(feature = "telemetry")]
@@ -116,6 +116,7 @@ impl Subscription {
                     stream: Arc::clone(&self.stream),
                     payload,
                     offset,
+                    skipped_before,
                 }))
             }
             QueuedEvent::Error(err) => Err(err),
@@ -163,10 +164,22 @@ pub struct Event {
     /// one and for any broker that did not negotiate offsets.
     ///
     /// Two uses. Record it to resume from `offset + 1` after a reconnect. And
-    /// because offsets are contiguous, a jump between consecutive events is a
-    /// gap -- the subscriber queue dropped something, which is otherwise
-    /// invisible.
+    /// to see drops: a durable stream's log also holds records that are not
+    /// events (a promoted leader's generation-start record), so a jump between
+    /// consecutive events is a drop exactly when it is larger than
+    /// [`Event::skipped_before`] explains --
+    /// `offset - previous - 1 - skipped_before` events were dropped. A broker
+    /// that predates the skip count reports none, and a generation start then
+    /// reads as a drop of one.
     pub offset: Option<u64>,
+    /// How many offsets immediately before [`Event::offset`] hold no event.
+    ///
+    /// Zero almost always. Non-zero on the first event after a leader change,
+    /// whose generation-start record took an offset. Only ever describes the
+    /// offsets just before this event, so if the event carrying it was itself
+    /// dropped, the next jump counts those offsets as dropped too: a drop is
+    /// still reported, only its size is overstated.
+    pub skipped_before: u64,
 }
 
 /// Where a subscription's shard went, sent by the broker as the last frame
@@ -188,8 +201,9 @@ pub struct ShardMoved {
 }
 
 enum QueuedEvent {
-    /// A payload and, for a durable stream, the log offset it sits at.
-    Payload(Bytes, Option<u64>),
+    /// A payload, for a durable stream the log offset it sits at, and how
+    /// many offsets just before it hold no event.
+    Payload(Bytes, Option<u64>, u64),
     Error(anyhow::Error),
 }
 

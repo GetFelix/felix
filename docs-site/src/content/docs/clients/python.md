@@ -160,15 +160,17 @@ tail.
 
 Subscriber queues shed under the default policy rather than blocking the
 publisher, so a subscriber can silently miss records. On a durable stream every
-delivered event carries its log offset, and **a jump in them is exactly a
-drop**:
+delivered event carries its log offset, and **a jump in them is a drop** —
+except where a promoted leader's generation-start record took an offset, which
+the next event reports in `skipped_before`:
 
 ```python
 expected = None
 with client.subscribe("t1", "default", "events") as events:
     for event in events:
-        if expected is not None and event.offset != expected:
-            log.warning("dropped %d records", event.offset - expected)
+        start = event.offset - event.skipped_before
+        if expected is not None and start != expected:
+            log.warning("dropped %d records", start - expected)
         expected = event.offset + 1
         handle(event.payload)
 ```

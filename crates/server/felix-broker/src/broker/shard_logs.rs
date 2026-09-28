@@ -164,6 +164,52 @@ impl Broker {
         Ok(())
     }
 
+    /// Append a generation-start record for `generation` to a durable
+    /// stream's log and move the stream past it. Returns its offset.
+    ///
+    /// For a promoted leader, before it serves. Writing through the
+    /// [`StreamLog`] alone leaves the stream's commit order waiting on the
+    /// record's offset, and the first publish after it would report a drop to
+    /// every subscriber reading offsets. This keeps both straight, counting any
+    /// generation-start records inherited just before this one into the skip.
+    pub async fn append_generation_start(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        generation: u64,
+    ) -> Result<u64> {
+        let handle = self
+            .resolve_stream_handle(tenant_id, namespace, stream, shard)
+            .await?;
+        let Some(log) = &handle.state.durable else {
+            return Err(crate::error::BrokerError::StreamNotDurable {
+                tenant_id: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                stream: stream.to_string(),
+            });
+        };
+        let offset = log.append_generation_start(generation).await?;
+        let mut run = 1;
+        let mut at = offset;
+        // Walks back one record at a time, but only over generation starts
+        // with nothing between them, so a handful at most.
+        while at > log.base_offset() {
+            at -= 1;
+            let before = log.read_log_from(at, 1).await?;
+            match before.first() {
+                Some(record) if record.offset == at && record.mark.is_generation_start() => {
+                    run += 1;
+                }
+                _ => break,
+            }
+        }
+        handle.state.skip_generation_start(offset, run);
+        self.appended.notify_one();
+        Ok(offset)
+    }
+
     /// The stream's log was rebuilt from `base_offset`; forget the tail the
     /// old copy had. The counterpart of [`Self::adopt_replicated`] for a
     /// follower that discarded its records rather than storing more.

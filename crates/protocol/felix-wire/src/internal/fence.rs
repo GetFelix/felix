@@ -29,6 +29,12 @@ impl PeerCapabilities {
     ///
     /// [`ReplicateRecords::generations`]: super::ReplicateRecords::generations
     pub const GENERATION_LABELS: Self = Self(1 << 2);
+    /// Stores a generation-start record
+    /// ([`ProducerMark::GenerationStart`]) shipped to it. A leader writes one
+    /// only once every replica of the shard offered this.
+    ///
+    /// [`ProducerMark::GenerationStart`]: super::ProducerMark::GenerationStart
+    pub const GENERATION_START: Self = Self(1 << 3);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

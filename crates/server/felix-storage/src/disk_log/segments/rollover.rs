@@ -14,7 +14,7 @@ use super::SegmentSet;
 use crate::Result;
 use crate::disk_log::now_micros;
 use crate::disk_log::sealed::{SealedEntry, SealedHandle};
-use crate::log::{AppendRecord, RecordMark, SegmentId};
+use crate::log::{AppendRecord, SegmentId};
 use crate::segment::writer::BlankSegment;
 use crate::segment::{SegmentReader, SegmentWriter, index_file_name};
 use crate::{StorageError, metrics_names};
@@ -42,13 +42,13 @@ impl SegmentSet {
     /// roll inline and take the latency hit, which is the correct trade when the
     /// alternative is an unboundedly large segment to re-scan after a crash.
     ///
-    /// A marked record also rolls a v2 active segment, left over from a build
-    /// that could not write marks, so marks only ever land in v3 segments.
+    /// A record the active segment's version cannot hold also rolls it: a
+    /// segment left over from an older build is never given a flag bit that
+    /// build would misread.
     pub(crate) fn would_roll_within(&self, records: &[AppendRecord], roll_pending: bool) -> bool {
         let full = self.active.projected_size(records) > self.size_ceiling(roll_pending)
             && self.active.record_count() > 0;
-        full || (!self.active.holds_marks()
-            && records.iter().any(|record| record.mark != RecordMark::None))
+        full || !self.active.holds(records)
     }
 
     /// Whether the active segment has crossed the point where a rollover should
