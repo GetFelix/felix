@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790553651007,
+  "lastUpdate": 1790554231876,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -23430,6 +23430,72 @@ window.BENCHMARK_DATA = {
             "range": "78.69",
             "unit": "us",
             "extra": "trials: 5\nmedian: 500.00\nmean: 508.00\nstdev: 78.69\ncv: 15.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "773282c7ef10cbe610ebbc7450c186641eb89969",
+          "message": "test(cluster): fault layer with link, clock and fsync faults, wired into the history nemesis (#781)\n\n* test(common,storage): clock and fsync fault seams for the cluster harness\n\nBrokers read their lease clock and the control plane its wall clock through\nfelix_common::clock. In debug builds, and with the new fault-injection\nfeature, both can be skewed, stepped or sped up from FELIX_CLOCK_FAULT_FILE.\nStorage flushes can likewise be delayed or failed with EIO (always, or once\nper generation) from FELIX_STORAGE_FAULT_FILE.\n\nA plain release build compiles both seams out and reads the real clocks and\nflushes directly. Both variables are registered as test-only.\n\nSpec-Unaffected: test harness only; the lease clock reads the same source through a shared seam, and nothing the model describes changes.\n\n* test(cluster): fault API with link, clock and fsync faults, wired into the history nemesis\n\nCluster::inject / heal / heal_all apply faults as values: one-way drops and\ndelays on broker-to-broker and broker-to-control-plane links (through UDP and\nTCP proxies the harness owns, with ClusterConfig::proxy_links), peer\nrefusals, SIGSTOP suspends, clock steps and rates, and slow or failing\nfsyncs. A broker's boottime lease clock is never stepped back.\n\nRandomNemesis::all_faults draws from every family, and Campaign::cluster_config\nstarts the cluster a nemesis needs (proxied links, on-commit flushes). The\nper-PR run keeps process_faults and adds a fixed-order campaign that injects\nand heals each family once. The nightly run uses every family.\n\na_control_plane_clock_stepped_back_still_expires_a_dead_broker is ignored:\na backward control-plane wall-clock step delays expiring a dead broker by the\nsize of the step.\n\nSpec-Unaffected: test harness only.",
+          "timestamp": "2026-09-27T17:00:55-07:00",
+          "tree_id": "ec51cb64c4d487e314c86526f1ca0cde3f73b9ec",
+          "url": "https://github.com/gabloe/felix/commit/773282c7ef10cbe610ebbc7450c186641eb89969"
+        },
+        "date": 1790554229013,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 70,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 70.00\nmean: 69.80\nstdev: 1.10\ncv: 1.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 101,
+            "range": "36.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 101.00\nmean: 115.20\nstdev: 36.14\ncv: 31.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 171,
+            "range": "133.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 171.00\nmean: 217.40\nstdev: 133.94\ncv: 61.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 87,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 87.00\nmean: 87.40\nstdev: 0.55\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 222,
+            "range": "12.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 222.00\nmean: 220.40\nstdev: 12.42\ncv: 5.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1658,
+            "range": "950.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1658.00\nmean: 1283.80\nstdev: 950.86\ncv: 74.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
