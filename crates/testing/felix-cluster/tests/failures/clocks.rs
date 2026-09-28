@@ -175,15 +175,11 @@ async fn a_control_plane_clock_stepped_forward_expires_no_live_broker() {
 /// Heartbeat stamps never move backwards, so after a step back of a minute
 /// every stamp is a minute in the future, and a broker that dies in that
 /// minute has a last heartbeat newer than any expiry threshold the clock
-/// can produce until real time catches up. The silence watch agrees it has
-/// gone quiet, but expiry is capped by the stamp, so the node stays `live`
-/// and placeable for the length of the step instead of the one-second
-/// window.
+/// can produce until real time catches up. The sweep pulls such stamps back
+/// to its clock, so the node goes down one window after it went silent
+/// rather than a minute later.
 #[serial]
 #[tokio::test]
-#[ignore = "control-plane bug: a backward wall-clock step delays expiry of a dead broker by the \
-            size of the step, because heartbeat stamps are max-merged and expiry compares them \
-            against the stepped-back clock"]
 async fn a_control_plane_clock_stepped_back_still_expires_a_dead_broker() {
     const STEP: Duration = Duration::from_secs(60);
     let mut cluster = Cluster::start(config()).await.expect("start");

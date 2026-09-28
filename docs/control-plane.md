@@ -72,6 +72,19 @@ one comes back every heartbeat stamp is as old as the outage, and sweeping at
 once would mark the whole fleet down. A broker that stays silent through the
 grace window is expired as usual.
 
+Expiry needs two clocks to agree. The last heartbeat stamp has to be older
+than the timeout on the store's wall clock, and the instance running the sweep
+has to have seen the stamp stay unchanged for as long on its own monotonic
+clock. A wall-clock step forward cannot move the second, so it expires no
+heartbeating broker. A step back leaves stamps in the future, since a heartbeat
+never moves one backwards; the sweep pulls any stamp ahead of the store's
+clock back to it (`clamp_future_heartbeats`) before judging, so a broker that
+dies after the step still goes down one window after it went silent. Lowering
+a stamp to now cannot expire anyone early: the broker was last heard no later
+than now, and the monotonic window still has to pass. Under Raft the leader
+judges a broker it has heard this term by the age of that heartbeat on its
+monotonic clock alone, so the log's stamp does not enter into it.
+
 ### `POST /v1/nodes/{node_id}/heartbeat`
 
 Request carries the reporting process's own `incarnation`, from its last

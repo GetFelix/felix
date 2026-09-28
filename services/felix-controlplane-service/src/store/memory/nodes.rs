@@ -165,6 +165,21 @@ pub(super) async fn record_node_heartbeat(
     Ok(node.clone())
 }
 
+pub(super) async fn clamp_future_heartbeats(
+    store: &InMemoryStore,
+    now_millis: u64,
+) -> StoreResult<u64> {
+    let mut state = store.nodes.write().await;
+    let mut clamped = 0;
+    for node in state.records.values_mut() {
+        if node.status.last_heartbeat_at_millis > now_millis {
+            node.status.last_heartbeat_at_millis = now_millis;
+            clamped += 1;
+        }
+    }
+    Ok(clamped)
+}
+
 pub(super) async fn expire_stale_nodes(
     store: &InMemoryStore,
     expiry_before_millis: u64,

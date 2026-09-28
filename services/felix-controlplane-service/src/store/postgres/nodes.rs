@@ -318,6 +318,20 @@ pub(super) async fn now_millis(store: &PostgresStore) -> StoreResult<u64> {
     Ok(millis.max(0) as u64)
 }
 
+pub(super) async fn clamp_future_heartbeats(
+    store: &PostgresStore,
+    now_millis: u64,
+) -> StoreResult<u64> {
+    let result = sqlx::query(
+        r#"UPDATE nodes SET last_heartbeat_at_millis = $1
+               WHERE last_heartbeat_at_millis > $1"#,
+    )
+    .bind(now_millis as i64)
+    .execute(&store.pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 pub(super) async fn expire_stale_nodes(
     store: &PostgresStore,
     expiry_before_millis: u64,

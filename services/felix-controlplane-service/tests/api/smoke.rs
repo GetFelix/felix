@@ -1068,6 +1068,10 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
+    async fn clamp_future_heartbeats(&self, _now_millis: u64) -> StoreResult<u64> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
     async fn set_node_lifecycle(
         &self,
         _node_id: &str,
