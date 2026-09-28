@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790565955685,
+  "lastUpdate": 1790566457198,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -24090,6 +24090,72 @@ window.BENCHMARK_DATA = {
             "range": "886.91",
             "unit": "us",
             "extra": "trials: 5\nmedian: 661.00\nmean: 1166.00\nstdev: 886.91\ncv: 76.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "44e581a9904911392dfdcc3d53da8f6ec22a199d",
+          "message": "chore(vendor): silence the vendored kafka-protocol's dead_code warnings (#801)\n\nUpstream's gap types are pub(crate) and mostly unused. crates.io builds\nnever show the warnings because cargo caps lints for registry\ndependencies, but as a path crate every build printed twenty of them.\nAllow the one lint in the vendored manifest and record it in\nVENDORED.toml.\n\nSpec-Unaffected: build configuration only.",
+          "timestamp": "2026-09-27T20:16:59-07:00",
+          "tree_id": "4dd94b8d43684aa938ac1c688e29be54a689f653",
+          "url": "https://github.com/gabloe/felix/commit/44e581a9904911392dfdcc3d53da8f6ec22a199d"
+        },
+        "date": 1790566453934,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 101,
+            "range": "5.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 101.00\nmean: 100.60\nstdev: 5.03\ncv: 5.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 147,
+            "range": "10.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 147.00\nmean: 146.80\nstdev: 10.03\ncv: 6.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 181,
+            "range": "20.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 189.40\nstdev: 20.55\ncv: 10.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 111,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 111.00\nmean: 110.60\nstdev: 1.14\ncv: 1.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 241,
+            "range": "9.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 241.00\nmean: 244.80\nstdev: 9.68\ncv: 3.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 350,
+            "range": "495.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 350.00\nmean: 643.00\nstdev: 495.10\ncv: 77.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
