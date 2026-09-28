@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790560507923,
+  "lastUpdate": 1790562523075,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18824,6 +18824,58 @@ window.BENCHMARK_DATA = {
             "range": "9981.33",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 922264.48\nmean: 924348.60\nstdev: 9981.33\ncv: 1.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f1cdc106f6d8a160415ed8f9f25fea38a51b3f00",
+          "message": "fix(controlplane): give the clock-step test's NodeSpec a zone (#795)\n\n#785 added tests/clock_step.rs and #790 added NodeSpec.zone; each passed\nCI alone, but together the test no longer compiles, so main is red.\n\nSpec-Unaffected: test fixture only.",
+          "timestamp": "2026-09-27T19:18:27-07:00",
+          "tree_id": "5b361ac574e89044d870e162ca5e74a8815c36e4",
+          "url": "https://github.com/gabloe/felix/commit/f1cdc106f6d8a160415ed8f9f25fea38a51b3f00"
+        },
+        "date": 1790562522409,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 629805.19,
+            "range": "18229.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 629805.19\nmean: 622308.42\nstdev: 18229.76\ncv: 2.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 629805.19,
+            "range": "18229.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 629805.19\nmean: 622308.42\nstdev: 18229.76\ncv: 2.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 150053.15,
+            "range": "3695.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 150053.15\nmean: 152082.73\nstdev: 3695.60\ncv: 2.43%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1500531.54,
+            "range": "36956.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1500531.54\nmean: 1520827.31\nstdev: 36956.04\ncv: 2.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
