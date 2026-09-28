@@ -204,6 +204,16 @@ changed from the old fixed worker pool is how work reaches them: see step 3.
    The lane is released by a guard, so a job that panics still frees it; the
    executor is replaced (`felix_broker_publish_worker_restarts_total`).
 
+   An executor yields to the runtime after every job. Taking a queued job and
+   writing an ephemeral publish never suspend, so an executor working
+   through a backlog would otherwise fan out job after job while the
+   subscriber feeders it woke waited for its thread, and a subscriber that
+   reads fast enough would still overflow its bounded queue.
+
+   > `subscribers_drain_between_an_executors_queued_publishes` -- with a
+   > backlog of 32 publishes queued and a subscriber queue of 4 on one
+   > thread, the subscriber receives all 32.
+
 ## Broker core: `Broker::publish_batch_to_handle`
 
 **File**: `crates/server/felix-broker/src/broker/publish.rs`

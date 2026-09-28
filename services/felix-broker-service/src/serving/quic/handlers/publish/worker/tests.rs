@@ -134,6 +134,71 @@ async fn an_executor_that_panics_is_replaced() -> Result<()> {
     Ok(())
 }
 
+/// An executor with a backlog lets the subscribers its fanout wakes run
+/// between jobs. The whole backlog is queued before the executor first runs,
+/// and on this single-threaded runtime nothing else runs until it suspends, so
+/// an executor that ran job after job would push every record into a queue
+/// smaller than the backlog before the subscriber drained any of it.
+#[tokio::test]
+async fn subscribers_drain_between_an_executors_queued_publishes() -> Result<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const JOBS: usize = 32;
+    const SUBSCRIBER_QUEUE: usize = 4;
+    let broker =
+        Arc::new(Broker::new(EphemeralCache::new().into()).with_topic_capacity(SUBSCRIBER_QUEUE)?);
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_stream("t1", "default", "demo", Default::default())
+        .await?;
+    let mut subscription = broker.subscribe("t1", "default", "demo", 0).await?;
+    let received = Arc::new(AtomicUsize::new(0));
+    let consumer = {
+        let received = Arc::clone(&received);
+        tokio::spawn(async move {
+            while subscription.recv().await.is_some() {
+                received.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+    };
+
+    let config = BrokerConfig {
+        pub_workers_per_conn: 1,
+        pub_queue_depth: JOBS,
+        ..BrokerConfig::default()
+    };
+    let publish_ctx = build_publish_context(broker, &config, ClusterContext::default());
+    let mut answers = Vec::with_capacity(JOBS);
+    for _ in 0..JOBS {
+        let (response_tx, response_rx) = oneshot::channel();
+        publish_ctx
+            .scheduler
+            .send(named_job("demo", Some(response_tx)))
+            .await;
+        answers.push(response_rx);
+    }
+    for answer in answers {
+        answer.await.expect("worker response")?;
+    }
+    // The last record is fanned out before its answer, and the subscriber
+    // needs one more turn to take it.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while received.load(Ordering::Relaxed) < JOBS {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .ok();
+    assert_eq!(
+        received.load(Ordering::Relaxed),
+        JOBS,
+        "a subscriber that keeps up lost records to the executor's backlog"
+    );
+    consumer.abort();
+    Ok(())
+}
+
 /// Closing the tracker and waiting on it waits for every queued publish to be
 /// durable and delivered, including the completions the worker spawns. This
 /// is what the shutdown drain relies on for publishes acknowledged on enqueue.
