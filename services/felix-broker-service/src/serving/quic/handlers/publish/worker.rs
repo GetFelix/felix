@@ -91,6 +91,12 @@ pub(crate) fn build_tracked_publish_context(
                 async move {
                     while let Some((job, lane)) = partition.next().await {
                         lanes.run(job, lane).await;
+                        // With a backlog queued, `next` and an in-memory
+                        // publish never suspend, so without this the executor
+                        // fans out job after job while the subscriber feeders
+                        // it just woke wait for its thread, and their bounded
+                        // queues overflow however fast the subscribers read.
+                        tokio::task::yield_now().await;
                     }
                 }
             };
