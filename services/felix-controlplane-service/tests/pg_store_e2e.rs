@@ -2039,6 +2039,7 @@ async fn pg_assignment_long_polls_do_not_hold_connections() -> Result<()> {
                 last_heartbeat_at_millis: 1,
                 registered_at_millis: 1,
                 incarnation: 0,
+                features: Default::default(),
             },
         })
         .await?;

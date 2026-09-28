@@ -390,6 +390,21 @@ release build compiles the clock and storage seams out and ignores their
 files; the partition file is honoured in any build, and a deployment that does
 not set it pays nothing for it.
 
+#### Older and newer brokers
+
+`Cluster::set_node_env` changes one broker's `ClusterConfig::node_env`
+before a `restart_node`. That is how a test runs a mixed fleet: in a debug build,
+`FELIX_TEST_FLEET_FEATURES` replaces the fleet features a broker reports
+(comma-separated; empty for a broker that predates them), so one broker can
+play an older build and then be restarted as an upgraded one. A release build
+ignores it and reports what it implements.
+
+> `a_fleet_feature_turns_on_only_when_finalized` -- every broker reports a
+> feature and the gate stays shut; one broker is rolled back, which works,
+> and finalizing is refused while it serves. Upgraded again, the feature is
+> finalized and every gate opens; after that the old build is refused, and
+> the upgraded one rejoins with the gate open.
+
 ## The failover demo
 
 ```bash

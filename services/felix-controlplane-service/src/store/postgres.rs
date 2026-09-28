@@ -298,6 +298,21 @@ impl ControlPlaneStore for PostgresStore {
         nodes::register_node(self, node).await
     }
 
+    async fn supported_fleet_features(&self) -> StoreResult<std::collections::BTreeSet<String>> {
+        nodes::supported_fleet_features(self).await
+    }
+
+    async fn enabled_fleet_features(&self) -> StoreResult<std::collections::BTreeSet<String>> {
+        nodes::enabled_fleet_features(self).await
+    }
+
+    async fn finalize_fleet_feature(
+        &self,
+        feature: &str,
+    ) -> StoreResult<std::collections::BTreeSet<String>> {
+        nodes::finalize_fleet_feature(self, feature).await
+    }
+
     async fn get_node(&self, node_id: &str) -> StoreResult<Node> {
         nodes::get_node(self, node_id).await
     }

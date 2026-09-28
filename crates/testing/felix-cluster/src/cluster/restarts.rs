@@ -63,6 +63,24 @@ impl Cluster {
         }
     }
 
+    /// Set one environment variable for `node_id`'s next start, over the
+    /// cluster-wide ones: restarting it under a different
+    /// `FELIX_TEST_FLEET_FEATURES` is how a test upgrades one broker.
+    pub fn set_node_env(&mut self, node_id: &str, key: &str, value: &str) -> Result<()> {
+        let index = self
+            .nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
+        if self.config.node_env.len() <= index {
+            self.config.node_env.resize(index + 1, Vec::new());
+        }
+        let env = &mut self.config.node_env[index];
+        env.retain(|(existing, _)| existing != key);
+        env.push((key.to_string(), value.to_string()));
+        Ok(())
+    }
+
     /// Start a stopped broker again under the same identity and data
     /// directory, and wait until the control plane can place on it.
     ///

@@ -1035,6 +1035,17 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
+    async fn enabled_fleet_features(&self) -> StoreResult<std::collections::BTreeSet<String>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn finalize_fleet_feature(
+        &self,
+        _feature: &str,
+    ) -> StoreResult<std::collections::BTreeSet<String>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
     async fn get_node(&self, _node_id: &str) -> StoreResult<Node> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }

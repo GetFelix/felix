@@ -41,6 +41,7 @@ fn node(node_id: &str) -> Node {
             last_heartbeat_at_millis: 1,
             registered_at_millis: 1,
             incarnation: 0,
+            features: Default::default(),
         },
     }
 }
@@ -247,4 +248,144 @@ async fn an_expired_broker_is_told_it_is_down() {
 
     let body: serde_json::Value = read_json(response).await;
     assert_eq!(body["lifecycle"], "down");
+}
+
+/// Fleet features over the API: support alone enables nothing, an old
+/// broker joins freely until an operator finalizes, finalizing is refused
+/// while a serving broker lacks the feature, and after it registration and
+/// heartbeats carry it and an old broker is refused.
+#[tokio::test]
+async fn a_fleet_feature_is_enabled_only_by_finalizing() {
+    let store = store();
+    let keys = felix_controlplane_service::auth::keys::generate_signing_keys().expect("keys");
+    store
+        .set_tenant_signing_keys("t1", keys.clone())
+        .await
+        .expect("keys");
+    let token = felix_controlplane_service::auth::felix_token::mint_token_for(
+        &keys,
+        "t1",
+        "p:operator",
+        vec![
+            "node.manage:cluster:*".to_string(),
+            "node.view:cluster:*".to_string(),
+        ],
+        Duration::from_secs(900),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
+    )
+    .expect("token");
+    let app = app_with(Arc::clone(&store)).await;
+    let register = |id: &str, port: u16, features: serde_json::Value| {
+        authed(
+            &token,
+            "POST",
+            "/v1/nodes",
+            serde_json::json!({
+                "node_id": id,
+                "advertise_addr": format!("10.0.0.4:{port}"),
+                "region": "local",
+                "features": features,
+            }),
+        )
+    };
+
+    let post = |path: &str| authed(&token, "POST", path, serde_json::json!({}));
+    let get = |path: &str| {
+        let mut get = authed(&token, "GET", path, serde_json::json!({}));
+        *get.body_mut() = Body::empty();
+        get
+    };
+    // An older broker sends no `features` at all.
+    let old = || {
+        authed(
+            &token,
+            "POST",
+            "/v1/nodes",
+            serde_json::json!({
+                "node_id": "broker-old",
+                "advertise_addr": "10.0.0.4:7003",
+                "region": "local",
+            }),
+        )
+    };
+
+    for (id, port) in [("broker-a", 7001), ("broker-b", 7002)] {
+        let response = app
+            .clone()
+            .oneshot(register(id, port, serde_json::json!(["x", "y"])))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            read_json(response).await["fleet_features"],
+            serde_json::json!([]),
+            "supported by every broker, and not enabled"
+        );
+    }
+    let response = app.clone().oneshot(old()).await.expect("request");
+    assert_eq!(response.status(), StatusCode::OK, "nothing is enabled yet");
+
+    let response = app
+        .clone()
+        .oneshot(post("/v1/fleet/features/x/finalize?dry_run=true"))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let preview = read_json(response).await;
+    assert_eq!(preview["would_enable"], false);
+    assert_eq!(preview["lacking"], serde_json::json!(["broker-old"]));
+    let response = app
+        .clone()
+        .oneshot(post("/v1/fleet/features/x/finalize"))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+
+    store
+        .set_node_lifecycle("broker-old", NodeLifecycle::Left)
+        .await
+        .expect("leave");
+    let response = app
+        .clone()
+        .oneshot(post("/v1/fleet/features/x/finalize?dry_run=true"))
+        .await
+        .expect("request");
+    let preview = read_json(response).await;
+    assert_eq!(preview["would_enable"], true);
+    assert_eq!(preview["enabled"], false, "a dry run enables nothing");
+    let response = app
+        .clone()
+        .oneshot(post("/v1/fleet/features/x/finalize"))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(read_json(response).await["enabled"], true);
+
+    let response = app
+        .clone()
+        .oneshot(authed(
+            &token,
+            "POST",
+            "/v1/nodes/broker-b/heartbeat",
+            serde_json::json!({ "incarnation": 0 }),
+        ))
+        .await
+        .expect("request");
+    assert_eq!(
+        read_json(response).await["fleet_features"],
+        serde_json::json!(["x"])
+    );
+
+    let response = app.clone().oneshot(old()).await.expect("request");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+
+    let response = app
+        .oneshot(get("/v1/fleet/features"))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = read_json(response).await;
+    assert_eq!(body["supported"], serde_json::json!(["x", "y"]));
+    assert_eq!(body["enabled"], serde_json::json!(["x"]));
+    assert_eq!(body["serving_nodes"], 2);
 }

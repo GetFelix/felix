@@ -3,18 +3,19 @@ title: Upgrades and compatibility
 description: What happens when two versions of Felix meet — on the client protocol, between brokers, against the control plane, and against a broker's own disk — and the upgrade order that follows.
 ---
 
-Felix has four places where two versions can meet, and they behave differently
+Felix has five places where two versions can meet, and they behave differently
 enough that "upgrade order" has no single answer without saying which one is
 meant. This page says what each one actually does on a mismatch — not what it
 is intended to do.
 
-## The four compatibility surfaces
+## The five compatibility surfaces
 
 | Surface | Between | On mismatch |
 |---|---|---|
 | Client protocol | client ↔ broker | Negotiated; old and new interoperate |
 | Internal protocol | broker ↔ broker | Version bump is a **hard cutover**; new *kinds* are additive |
 | Control-plane REST | broker ↔ control plane | Additive JSON; old and new interoperate |
+| Fleet features | broker ↔ every other broker | Off until an operator finalizes it, which needs every serving broker to have it; then an older broker is refused |
 | Storage format | broker ↔ its own disk | Unknown version **refuses to start**; no rollback |
 
 ### Client protocol — negotiated, so order does not matter
@@ -78,6 +79,61 @@ an old broker against a new control plane simply does not use what it cannot
 see. Neither direction fails, so the order is a preference rather than a
 requirement.
 
+### Fleet features — on only when an operator finalizes them
+
+A change to how brokers treat each other, such as how a key maps to a shard,
+cannot be negotiated per connection: two brokers can parse every frame and
+still route the same key differently. Those changes ship as **fleet
+features**. Each broker reports the ones it implements when it registers, and
+the control plane tracks which ones every live or draining broker
+*supports*. Support alone turns nothing on. A feature is *enabled* only when
+an operator finalizes it, and brokers act on the enabled set alone.
+
+**So a rolling upgrade is safe to stop or reverse at any point before the
+finalize.** Old and new brokers mix freely, and any broker can be rolled back
+on its own. Nothing changes behaviour until you finalize.
+
+**Finalizing is one-way.** The control plane refuses to finalize while any
+serving broker lacks the feature. After it, a broker without the feature is
+refused at registration with 409 naming the feature, and exits, rather than
+being let in to switch the fleet's routing back. That holds for a broker that
+was down during the finalize too.
+
+#### Runbook: rolling out a fleet feature
+
+1. **Roll every broker** to the new build, one at a time as in
+   [Upgrade order](#upgrade-order). Nothing turns on yet.
+2. **Verify.** Run the new build for as long as you would want the option to
+   roll back. Check that the feature shows as supported and that no broker is
+   missing it:
+
+   ```bash
+   felix-controlplane admin features
+   felix-controlplane admin features finalize jump_hash_routing --dry-run
+   ```
+
+   The dry run names any live or draining broker that lacks the feature. A
+   broker that is down is not counted, and will be refused if it comes back
+   on the old build, so replace or retire it first.
+3. **Finalize.** This is the point of no return for the feature:
+
+   ```bash
+   felix-controlplane admin features finalize jump_hash_routing
+   ```
+
+   Every broker turns it on within a heartbeat. Watch
+   `felix_broker_fleet_feature_enabled{feature="jump_hash_routing"}` go to 1
+   on each broker, or `GET /v1/fleet/features`.
+
+After step 3, rolling back means a build that still has the feature. There
+is no way to disable a finalized feature.
+
+A control plane older than fleet features sends none, so brokers keep them
+all off. Under the Raft backend a broker's features are kept, and a feature
+can be finalized, only once every control-plane member is at metadata
+version 2; a broker registered before that reports them again on its next
+restart. Upgrade the control plane first.
+
 ### Storage format — the one that does not roll back
 
 `FORMAT_VERSION` (currently 2) is in every segment header, and a version that
@@ -120,6 +176,9 @@ broker, upgrade, start every broker.
 
 If it changes `FORMAT_VERSION`, back up first and do not plan to roll back.
 
+If it adds a fleet feature, the feature stays off after step 2 until you
+finalize it; see the runbook above.
+
 ## Rollback
 
 | Changed | Rollback |
@@ -127,6 +186,8 @@ If it changes `FORMAT_VERSION`, back up first and do not plan to roll back.
 | Nothing versioned | Reverse the order above |
 | Client protocol capability | Safe; clients lose the feature |
 | Internal protocol *kind* | Safe once every broker is back on the old build; see the note on credentialed forwards below |
+| Fleet feature, not finalized | Safe; broker by broker |
+| Fleet feature, finalized | **Not possible** to a build without it; a broker on such a build is refused. Roll back to a build that still has the feature |
 | `INTERNAL_VERSION` | Cutover again, in both directions |
 | `FORMAT_VERSION` | **Not possible.** Restore from backup |
 

@@ -98,6 +98,7 @@ fn node(id: &str, port: u16) -> Node {
             last_heartbeat_at_millis: 1_000,
             registered_at_millis: 1_000,
             incarnation: 0,
+            features: Default::default(),
         },
     }
 }

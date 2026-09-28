@@ -22,7 +22,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::raft::AppStateMachine;
-use crate::store::memory::InMemoryStore;
+use crate::store::memory::{FleetRule, InMemoryStore};
 use crate::store::raft::command::{
     MetaCommand, MetaResponse, MetaResult, decode_command, encode_result,
 };
@@ -183,10 +183,24 @@ impl MetadataStateMachine {
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
             MetaCommand::RegisterNode { node } => {
-                let registered = store.register_node(node).await?;
+                let registered = store.apply_register_node(node, FleetRule::Ignore).await?;
                 self.node_reset(Some(&registered.node_id));
                 Ok(MetaResponse::Node { node: registered })
             }
+            MetaCommand::RegisterNodeInFleet { node } => {
+                let registered = store.apply_register_node(node, FleetRule::Enforce).await?;
+                self.node_reset(Some(&registered.node_id));
+                let fleet = store.enabled_fleet_features().await?;
+                Ok(MetaResponse::RegisteredNode {
+                    node: registered,
+                    fleet,
+                })
+            }
+            MetaCommand::FinalizeFleetFeature { feature } => store
+                .finalize_fleet_feature(&feature)
+                .await
+                .map(|enabled| MetaResponse::FleetFeatures { enabled })
+                .map_err(Into::into),
             MetaCommand::PatchNode { node_id, patch } => store
                 .patch_node(&node_id, patch)
                 .await

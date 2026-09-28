@@ -299,9 +299,62 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn register_node(&self, node: Node) -> StoreResult<Node> {
+        self.register_node_in_fleet(node)
+            .await
+            .map(|(node, _)| node)
+    }
+
+    /// Answered from the entry's own apply, so the enabled set is current
+    /// even when this member's copy lags.
+    ///
+    /// Until every member can apply `RegisterNodeInFleet` the node is
+    /// registered without its features, as an older member would store it.
+    /// Nothing can be enabled before then either, since finalizing is the
+    /// same level. It reports them again when it next registers.
+    async fn register_node_in_fleet(
+        &self,
+        mut node: Node,
+    ) -> StoreResult<(Node, std::collections::BTreeSet<String>)> {
+        let command = MetaCommand::RegisterNodeInFleet { node: node.clone() };
+        if self.handle.cluster_version().await >= command.version() {
+            return match self.propose(command).await? {
+                MetaResponse::RegisteredNode { node, fleet } => Ok((node, fleet)),
+                _ => Err(unexpected_shape("registered node")),
+            };
+        }
+        if !node.status.features.is_empty() {
+            tracing::info!(
+                node_id = %node.node_id,
+                "registering without fleet features until every control-plane member supports them",
+            );
+            node.status.features.clear();
+        }
         match self.propose(MetaCommand::RegisterNode { node }).await? {
-            MetaResponse::Node { node } => Ok(node),
+            MetaResponse::Node { node } => Ok((node, Default::default())),
             _ => Err(unexpected_shape("node")),
+        }
+    }
+
+    async fn enabled_fleet_features(&self) -> StoreResult<std::collections::BTreeSet<String>> {
+        self.local().enabled_fleet_features().await
+    }
+
+    async fn finalize_fleet_feature(
+        &self,
+        feature: &str,
+    ) -> StoreResult<std::collections::BTreeSet<String>> {
+        let command = MetaCommand::FinalizeFleetFeature {
+            feature: feature.to_string(),
+        };
+        if self.handle.cluster_version().await < command.version() {
+            return Err(StoreError::Conflict(
+                "cannot finalize a fleet feature until every control-plane member runs a release that supports it"
+                    .to_string(),
+            ));
+        }
+        match self.propose(command).await? {
+            MetaResponse::FleetFeatures { enabled } => Ok(enabled),
+            _ => Err(unexpected_shape("fleet features")),
         }
     }
 

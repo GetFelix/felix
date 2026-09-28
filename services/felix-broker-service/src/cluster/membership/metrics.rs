@@ -29,6 +29,10 @@ pub const MEMBERSHIP_LIVE: &str = "felix_broker_membership_live";
 /// Registration attempts, by `outcome`: `registered`, `rejected`, `unavailable`.
 pub const REGISTRATIONS_TOTAL: &str = "felix_broker_membership_registrations_total";
 
+/// 1 for each fleet feature (`feature` label) this broker has enabled, 0 for
+/// one it reported that no operator has finalized yet.
+pub const FLEET_FEATURE_ENABLED: &str = "felix_broker_fleet_feature_enabled";
+
 /// Node-credential refreshes, by `outcome`: `ok`, `unavailable`.
 ///
 /// Worth an alert on: a broker whose refreshes are failing is still serving
@@ -73,6 +77,15 @@ pub fn record_heartbeat_age(age: std::time::Duration) {
 
 pub fn record_credential_refresh(outcome: &'static str) {
     metrics::counter!(CREDENTIAL_REFRESHES_TOTAL, "outcome" => outcome).increment(1);
+}
+
+/// Bounded by the features this build implements, each a fixed name.
+pub fn record_fleet_feature(feature: &str, enabled: bool) {
+    metrics::gauge!(FLEET_FEATURE_ENABLED, "feature" => feature.to_string()).set(if enabled {
+        1.0
+    } else {
+        0.0
+    });
 }
 
 pub fn record_registration(outcome: &'static str) {

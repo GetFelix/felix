@@ -213,7 +213,8 @@ async fn reset_db(url: &str, schema: &str) -> Result<(), sqlx::Error> {
          {schema_ident}.rbac_policies, {schema_ident}.rbac_groupings, \
          {schema_ident}.tenant_signing_keys, {schema_ident}.nodes, \
          {schema_ident}.node_changes, {schema_ident}.shard_assignments, \
-         {schema_ident}.shard_assignment_changes, {schema_ident}.tenants RESTART IDENTITY CASCADE",
+         {schema_ident}.shard_assignment_changes, {schema_ident}.tenants, \
+         {schema_ident}.fleet_features RESTART IDENTITY CASCADE",
     );
     // Same as `ensure_schema`: the interpolated identifier is our own generated schema name,
     // which cannot be passed as a bind parameter.
@@ -544,7 +545,8 @@ async fn satisfies_the_node_store_contract() -> anyhow::Result<()> {
 
     let store = std::sync::Arc::new(store);
     crate::store::contract::nodes::run_node_contract(store.clone()).await;
-    crate::store::contract::nodes::run_node_concurrency_contract(store).await;
+    crate::store::contract::nodes::run_node_concurrency_contract(store.clone()).await;
+    crate::store::contract::nodes::run_fleet_contract(store).await;
     Ok(())
 }
 
@@ -734,5 +736,132 @@ async fn postgres_store_full_roundtrip() -> anyhow::Result<()> {
     )
     .await?;
 
+    Ok(())
+}
+
+/// A Postgres store in a freshly reset schema, and a pool on that schema for
+/// the test's own transactions.
+async fn fleet_store(url: &str) -> anyhow::Result<(std::sync::Arc<PostgresStore>, sqlx::PgPool)> {
+    let schema = ensure_schema(url).await?;
+    let url = url_with_schema(url, &schema);
+    run_migrations_once(&url).await?;
+    reset_db(&url, &schema).await?;
+    let store = PostgresStore::connect_without_migrations(
+        &config::PostgresConfig {
+            url: url.clone(),
+            max_connections: 5,
+            connect_timeout_ms: 10_000,
+            acquire_timeout_ms: 10_000,
+        },
+        StoreConfig {
+            changes_limit: config::DEFAULT_CHANGES_LIMIT,
+            change_retention_max_rows: None,
+        },
+    )
+    .await?;
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&url)
+        .await?;
+    Ok((std::sync::Arc::new(store), pool))
+}
+
+/// Hold `node_id`'s row, so a registration of it passes the fleet check and
+/// then waits, holding the registration lock, before it can commit.
+async fn hold_row(
+    pool: &sqlx::PgPool,
+    node_id: &str,
+) -> anyhow::Result<sqlx::Transaction<'static, sqlx::Postgres>> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT node_id FROM nodes WHERE node_id = $1 FOR UPDATE")
+        .bind(node_id)
+        .execute(&mut *tx)
+        .await?;
+    Ok(tx)
+}
+
+/// Spawn `step` and give it long enough to reach whatever it will block on.
+async fn started<T: Send + 'static>(
+    step: impl std::future::Future<Output = T> + Send + 'static,
+) -> tokio::task::JoinHandle<T> {
+    let handle = tokio::spawn(step);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    handle
+}
+
+/// A finalize that ran while a broker without the feature was registering
+/// would pass its check (that broker is down) and enable the feature under
+/// it. It has to wait for the registration and then see the broker serving.
+#[tokio::test]
+#[serial]
+async fn a_finalize_waits_for_a_registration_in_flight() -> anyhow::Result<()> {
+    use crate::model::NodeLifecycle;
+    use crate::store::contract::nodes::{node, with_features};
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let (store, pool) = fleet_store(&url).await?;
+    store
+        .register_node(with_features(node("broker-a", 7001), &["x"]))
+        .await?;
+    store.register_node(node("broker-old", 7002)).await?;
+    store
+        .set_node_lifecycle("broker-old", NodeLifecycle::Down)
+        .await?;
+
+    let held = hold_row(&pool, "broker-old").await?;
+    let old = {
+        let store = std::sync::Arc::clone(&store);
+        started(async move { store.register_node(node("broker-old", 7002)).await }).await
+    };
+    let finalize = {
+        let store = std::sync::Arc::clone(&store);
+        started(async move { store.finalize_fleet_feature("x").await }).await
+    };
+    held.rollback().await?;
+    old.await??;
+    let finalized = finalize.await?;
+    assert!(
+        finalized.is_err(),
+        "x was enabled while broker-old, which lacks it, was registering: {finalized:?}"
+    );
+    assert!(store.enabled_fleet_features().await?.is_empty());
+    Ok(())
+}
+
+/// The other order: a registration that ran while a finalize was between its
+/// check and its commit would see the feature still off and be admitted.
+#[tokio::test]
+#[serial]
+async fn a_registration_waits_for_a_finalize_in_flight() -> anyhow::Result<()> {
+    use crate::store::contract::nodes::{node, with_features};
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let (store, pool) = fleet_store(&url).await?;
+    store
+        .register_node(with_features(node("broker-a", 7001), &["x"]))
+        .await?;
+
+    // An uncommitted row for x makes the finalize's insert wait on it.
+    let mut held = pool.begin().await?;
+    sqlx::query("INSERT INTO fleet_features (feature) VALUES ('x')")
+        .execute(&mut *held)
+        .await?;
+    let finalize = {
+        let store = std::sync::Arc::clone(&store);
+        started(async move { store.finalize_fleet_feature("x").await }).await
+    };
+    let old = {
+        let store = std::sync::Arc::clone(&store);
+        started(async move { store.register_node(node("broker-old", 7002)).await }).await
+    };
+    held.rollback().await?;
+    finalize.await??;
+    let registered = old.await?;
+    assert!(
+        registered.is_err(),
+        "broker-old joined without x while x was being enabled: {registered:?}"
+    );
     Ok(())
 }

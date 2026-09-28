@@ -123,6 +123,17 @@ where
         .membership
         .as_ref()
         .map(|_| Arc::new(membership::initial_lease()));
+    // Which cross-broker features the whole fleet has. Created here, like the
+    // lease, so anything built below that changes how brokers treat each
+    // other can hold it; membership keeps it current. A broker outside a
+    // cluster has no fleet and enables nothing.
+    let fleet = Arc::new(felix_common::fleet::FleetGate::new(
+        config
+            .membership
+            .as_ref()
+            .map(|membership| membership.features.clone())
+            .unwrap_or_default(),
+    ));
     // Every write path enters the shard fence, so that is where the lease is
     // enforced; see `shards::lifecycle::fence`.
     if let (Some(ingress), Some(lease)) = (&ingress_router, &lease) {
@@ -283,6 +294,7 @@ where
         gate_readiness_on_sync,
         &seeded,
         &lease,
+        &fleet,
         &credential,
         &sync_shutdown,
     ) {

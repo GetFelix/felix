@@ -118,6 +118,15 @@ kind on an old peer is an unknown kind, which is already a typed error rather
 than a misparse. The version exists for the case additive change cannot cover —
 a change to the header or to an existing body layout.
 
+A third case is a change to what brokers *do* with frames they both
+understand: a different key-to-shard mapping, a check a follower now makes
+before accepting a replicated write. Neither a kind nor a version bump fits,
+because both peers parse every frame and still disagree. Such a change is a
+fleet feature: each broker reports the ones it implements when it registers
+with the control plane, and turns one on only once an operator finalizes it,
+which the control plane refuses until every serving broker has reported it. Nothing about it travels on this protocol; see
+[Fleet features](control-plane.md#fleet-features).
+
 ## Correlation
 
 Every request carries a `correlation_id`, unique per connection and chosen by the

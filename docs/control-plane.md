@@ -99,8 +99,12 @@ plus the cadence expected of it:
 ```json
 { "incarnation": 3 }
 { "node_id": "broker-1", "lifecycle": "live",
-  "heartbeat_interval_ms": 5000, "expiry_timeout_ms": 15000 }
+  "heartbeat_interval_ms": 5000, "expiry_timeout_ms": 15000,
+  "fleet_features": [] }
 ```
+
+`fleet_features` is the set of enabled features described in
+[Fleet features](#fleet-features).
 
 Four rules, each of which exists for a reason:
 
@@ -118,6 +122,95 @@ Four rules, each of which exists for a reason:
 
 Requires `node.manage` over the node being reported — see
 [Authorizing membership writes](#authorizing-membership-writes).
+
+### Fleet features
+
+Some changes alter what one broker expects of another: how a key maps to a
+shard, what a peer checks before it accepts a write. Such a change cannot be
+turned on while any serving broker predates it, and a rolling upgrade always
+has a stretch where some do. So each one is a *fleet feature*
+(`felix_common::fleet`). Brokers report which ones they support, and an
+operator turns one on for the whole fleet by **finalizing** it once every
+broker is upgraded, the way Kafka finalizes `metadata.version`.
+
+**Reporting.** `POST /v1/nodes` carries `features`, the names this build
+implements (`fleet::IMPLEMENTED`). The field is optional: a broker that
+predates it sends none, and none is what it is recorded as. The set lives on
+the node record (`status.features`) and is replaced at every registration,
+since a new build means a new process and a new registration.
+
+```json
+{ "node_id": "broker-1", "advertise_addr": "10.0.0.4:5001", "region": "local",
+  "features": ["jump_hash_routing"] }
+```
+
+**Supported.** The control plane intersects the `features` of every `live` or
+`draining` node; a node that is `down` or has `left` leaves the calculation.
+That is the *supported* set. It changes nothing on its own: a feature every
+broker supports is still off.
+
+**Enabled.** `POST /v1/fleet/features/{feature}/finalize` (`node.manage` on
+`cluster:*`) enables a feature. It is refused with 409 unless at least one
+broker is serving and every live or draining broker reported the feature;
+the message names the ones that did not. `?dry_run=true` changes nothing and
+answers whether a real finalize would be accepted:
+
+```json
+{ "feature": "jump_hash_routing", "dry_run": true, "enabled": false,
+  "would_enable": false, "lacking": ["broker-3"], "serving_nodes": 3 }
+```
+
+Finalizing an enabled feature again is a no-op. Registration and every
+heartbeat answer with the enabled set as `fleet_features`, and brokers act on
+that alone. `GET /v1/fleet/features` (`node.view` on `cluster:*`) shows both:
+
+```json
+{ "supported": ["jump_hash_routing"], "enabled": [], "serving_nodes": 3 }
+```
+
+The names are opaque to the control plane, so it can gate a feature it has
+never heard of. An older control plane sends no `fleet_features`, which
+leaves every broker with nothing enabled.
+
+**Finalizing is one-way.** From then on a broker that registers without the
+feature is **refused with 409**, naming what it lacks; it logs the reason and
+exits, as for any refused identity. That holds even with no broker serving:
+the enabled set is stored, not derived. Withdrawing a feature instead would
+switch routing back and forth whenever an old build reappeared, and letting
+the broker in would leave it serving without behaviour its peers rely on. A
+broker that is down when the feature is finalized is not counted, and is
+refused if it comes back on an old build.
+
+Before a finalize nothing is refused, so an old broker joins freely and a
+single broker can be rolled back mid-upgrade. That is why enabling is an
+explicit operator step rather than automatic once every broker reports the
+feature: an automatic switch would make the last broker's upgrade the point
+of no return, and a rollback after it would fail.
+
+**Atomicity.** Registration is the only way a node starts serving, so a
+finalize only has to be serialized with registrations. The memory store holds
+its node lock across the check and the write, Postgres takes the same
+advisory lock in both, and Raft applies both in the log (`finalize_fleet_feature`
+and `register_node_in_fleet`, metadata version 2; see
+`docs/metadata-raft-design.md`). On Postgres a test holds each one between its
+check and its commit and fails without the lock
+(`a_finalize_waits_for_a_registration_in_flight`,
+`a_registration_waits_for_a_finalize_in_flight`). The enabled set is stored in
+the `fleet_features` table on Postgres and in the snapshot on Raft.
+
+**On the broker.** A `FleetGate` holds what this broker reported and which of
+those are enabled, and `fleet.supports(FEATURE)` is one atomic load. It is
+true only once the feature is finalized, and only for a feature this broker
+reported. A heartbeat answer only ever adds to it, because a lower answer is a
+stale one: a Raft follower answers from its own copy, which may lag. A
+registration answer is exact, computed at the registration's own place in
+the log, so the gate starts over from it when the broker registers again.
+`felix_broker_fleet_feature_enabled` exports the gate per feature.
+
+**Adding one.** Define it as a `FleetFeature` constant, add it to `IMPLEMENTED`
+in the same change that makes the broker honour it, and have the code that
+changes behaviour check `fleet.supports(...)`. Never reuse a name for a
+different meaning: a broker that reported the old one would enable the new.
 
 ### Broker-side lifecycle
 
@@ -958,6 +1051,14 @@ felix-controlplane admin pause
 felix-controlplane admin resume
 ```
 
+Fleet features have their own two commands (see [Fleet features](#fleet-features)):
+
+```bash
+felix-controlplane admin features                              # supported and enabled
+felix-controlplane admin features finalize jump_hash_routing --dry-run
+felix-controlplane admin features finalize jump_hash_routing   # one-way
+```
+
 `--url` defaults to `FELIX_CONTROLPLANE_URL` and `--token` to `FELIX_TOKEN`.
 Output is a plain table; `--json` prints the API's response.
 
@@ -1208,6 +1309,7 @@ Broker:
 | `felix_broker_heartbeats_total` | heartbeats the control plane accepted |
 | `felix_broker_heartbeat_failures_total{kind}` | `rejected` or `unavailable` |
 | `felix_broker_membership_live` | 1 while the cluster considers this broker placeable |
+| `felix_broker_fleet_feature_enabled{feature}` | 1 once an operator has finalized the feature and this broker has enabled it; 0 for one it reported that is not finalized yet |
 | `felix_broker_membership_registrations_total{outcome}` | `registered`, `rejected`, or `unavailable` |
 
 The `rejected` / `unavailable` split is the one worth keeping. `rejected` means

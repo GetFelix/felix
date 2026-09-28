@@ -223,6 +223,7 @@ fn node_named(node_id: &str) -> Node {
             last_heartbeat_at_millis: 0,
             registered_at_millis: 1,
             incarnation: 0,
+            features: Default::default(),
         },
     }
 }

@@ -171,6 +171,7 @@ leases:
 felix_node_count                            # control plane: fleet size by lifecycle
 felix_broker_membership_live                # broker: does the cluster still count me
 felix_broker_heartbeat_age_seconds          # alert when this nears the expiry timeout
+felix_broker_fleet_feature_enabled{feature} # 1 once an operator has finalized it
 felix_broker_replication_lag_records
 felix_broker_replication_halted             # a count; GET /replication/halted says which
 felix_broker_replication_rebuilding         # halted followers the leader is rebuilding right now

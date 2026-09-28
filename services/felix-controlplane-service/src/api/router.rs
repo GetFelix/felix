@@ -146,6 +146,14 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::get(api::nodes::listing::list_nodes).post(api::nodes::register_node),
         )
         .route(
+            "/v1/fleet/features",
+            axum::routing::get(api::nodes::fleet::fleet_features),
+        )
+        .route(
+            "/v1/fleet/features/{feature}/finalize",
+            axum::routing::post(api::nodes::fleet::finalize_fleet_feature),
+        )
+        .route(
             "/v1/nodes/{node_id}",
             axum::routing::get(api::nodes::listing::get_node)
                 .patch(api::nodes::patch_node)

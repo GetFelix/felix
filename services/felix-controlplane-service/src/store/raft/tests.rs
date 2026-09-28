@@ -51,7 +51,8 @@ async fn satisfies_the_node_store_contract() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = single_node_store(dir.path()).await;
     crate::store::contract::nodes::run_node_contract(store.clone()).await;
-    crate::store::contract::nodes::run_node_concurrency_contract(store).await;
+    crate::store::contract::nodes::run_node_concurrency_contract(store.clone()).await;
+    crate::store::contract::nodes::run_fleet_contract(store).await;
 }
 
 #[tokio::test]
@@ -227,12 +228,6 @@ async fn nothing_newer_than_the_oldest_member_is_proposed() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = single_node_store(dir.path()).await;
     let applied = || store.handle.status().last_applied_index;
-    let mut quiet = crate::store::contract::nodes::node("broker-quiet", 7001);
-    // Stale by any cutoff under the log's rules; soft state would instead
-    // give it a full window from when the leader began judging.
-    quiet.status.last_heartbeat_at_millis = 1;
-    store.register_node(quiet).await.expect("register");
-
     let version = Arc::new(std::sync::atomic::AtomicU16::new(0));
     let addr = stub_member(Arc::clone(&version)).await;
     store
@@ -240,6 +235,20 @@ async fn nothing_newer_than_the_oldest_member_is_proposed() {
         .add_learner_without_waiting(2, addr)
         .await
         .expect("add old member");
+
+    let mut quiet = crate::store::contract::nodes::node("broker-quiet", 7001);
+    // Stale by any cutoff under the log's rules; soft state would instead
+    // give it a full window from when the leader began judging.
+    quiet.status.last_heartbeat_at_millis = 1;
+    // Registered the way the old member can apply: without its features.
+    quiet.status.features = ["x".to_string()].into();
+    let (registered, fleet) = store.register_node_in_fleet(quiet).await.expect("register");
+    assert!(registered.status.features.is_empty(), "{registered:?}");
+    assert!(fleet.is_empty());
+    assert!(
+        store.finalize_fleet_feature("x").await.is_err(),
+        "an old member cannot apply a finalize"
+    );
 
     let policy = PolicyRule {
         subject: "role:reader".to_string(),
@@ -283,4 +292,16 @@ async fn nothing_newer_than_the_oldest_member_is_proposed() {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+
+    // And now registration keeps them.
+    let mut again = crate::store::contract::nodes::node("broker-quiet", 7001);
+    again.status.features = ["x".to_string()].into();
+    let (registered, fleet) = store
+        .register_node_in_fleet(again)
+        .await
+        .expect("register again");
+    assert!(registered.status.features.contains("x"), "{registered:?}");
+    assert!(fleet.is_empty(), "supported, not yet enabled: {fleet:?}");
+    let enabled = store.finalize_fleet_feature("x").await.expect("finalize");
+    assert!(enabled.contains("x"), "{enabled:?}");
 }

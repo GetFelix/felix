@@ -21,12 +21,14 @@ pub(super) struct Joined {
 /// Spawn membership when this broker has an identity. Registration waits for
 /// `serving`, because advertising a node placement can route to before it can
 /// answer is worse than advertising it a moment late.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spawn(
     config: &BrokerConfig,
     membership_client: &reqwest::Client,
     gate_readiness_on_sync: bool,
     seeded: &CancellationToken,
     lease: &Option<Arc<LeaseState>>,
+    fleet: &Arc<felix_common::fleet::FleetGate>,
     credential: &Option<NodeCredential>,
     sync_shutdown: &CancellationToken,
 ) -> Option<Joined> {
@@ -97,6 +99,7 @@ pub(super) fn spawn(
                     serving,
                     sync_shutdown.clone(),
                     lease,
+                    Arc::clone(fleet),
                 ),
                 credential_refresh,
             })

@@ -14,6 +14,7 @@
 //! outright. Reads require
 //! `node.view:cluster:*`, since the listing exposes the cluster's network
 //! layout.
+pub(crate) mod fleet;
 pub(crate) mod listing;
 pub(crate) mod reports;
 
@@ -49,8 +50,9 @@ use crate::store::StoreError;
 /// incarnation. That is what lets a restart be told apart from a new node.
 ///
 /// # Errors
-/// - 409 when the identity or advertised address is invalid, or the address
-///   already belongs to another node.
+/// - 409 when the identity or advertised address is invalid, the address
+///   already belongs to another node, or the broker lacks a fleet feature
+///   every other serving broker reported.
 pub(crate) async fn register_node(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -79,12 +81,13 @@ pub(crate) async fn register_node(
             last_heartbeat_at_millis: now,
             registered_at_millis: now,
             incarnation: 0,
+            features: request.features,
         },
     };
 
-    let node = state
+    let (node, fleet_features) = state
         .store
-        .register_node(node)
+        .register_node_in_fleet(node)
         .await
         .map_err(|err| match err {
             StoreError::Conflict(ref message) => api_conflict("conflict", message),
@@ -95,6 +98,7 @@ pub(crate) async fn register_node(
         node,
         heartbeat_interval_ms: state.node_liveness.heartbeat_interval_ms,
         expiry_timeout_ms: state.node_liveness.expiry_timeout_ms,
+        fleet_features,
     }))
 }
 

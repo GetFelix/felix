@@ -467,6 +467,16 @@ Level 1 is rule removal and signing-key rotation (`remove_rbac_policy`,
   When the group reaches level 1 the leader starts a fresh soft-state
   window, so nothing is expired at the switch.
 
+Level 2 is fleet features (see [Fleet features](control-plane.md#fleet-features)):
+`register_node_in_fleet`, a registration that keeps the broker's features
+and refuses one lacking an enabled feature, and `finalize_fleet_feature`,
+which enables one if every serving broker supports it. An older member would
+apply the first as a plain registration and accept a broker this build
+refused, so until every member is at level 2 brokers register with
+`register_node` and their features dropped, and a finalize is refused. A
+broker reports its features again when it next registers. The enabled set is
+part of the snapshot (`fleet_enabled`, omitted while empty).
+
 A release that adds a variant gives it the next level and raises
 `METADATA_VERSION`. If `felix_meta_raft_unsupported_commands_total` still
 moves on a member (something proposed through the raw peer `propose`

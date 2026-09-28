@@ -21,6 +21,7 @@ fn node() -> Node {
             last_heartbeat_at_millis: 1_700_000_000_000,
             registered_at_millis: 1_699_000_000_000,
             incarnation: 3,
+            features: Default::default(),
         },
     }
 }

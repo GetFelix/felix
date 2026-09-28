@@ -64,6 +64,10 @@ pub struct ExportedState {
     /// `migrate` export, which has no store-wide way to list them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) refresh_tokens: Vec<crate::auth::refresh_token::RefreshToken>,
+    /// Fleet features an operator finalized. Absent from older snapshots and
+    /// left out while empty, as for `moves_paused`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub(super) fleet_enabled: std::collections::BTreeSet<String>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -278,5 +282,6 @@ pub async fn export_state_from(
         // The store traits cannot list them. Holders re-exchange after a
         // migration, as they would after any lost refresh chain.
         refresh_tokens: Vec::new(),
+        fleet_enabled: store.enabled_fleet_features().await?,
     })
 }

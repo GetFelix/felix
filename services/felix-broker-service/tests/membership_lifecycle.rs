@@ -157,6 +157,7 @@ fn config(node_id: &str, port: u16) -> MembershipConfig {
         region: "us-west-2".to_string(),
         zone: None,
         region_bridges: Vec::new(),
+        features: Default::default(),
     }
 }
 
@@ -316,6 +317,7 @@ async fn heartbeats_keep_a_broker_live_past_its_expiry_window() {
         std::sync::Arc::new(felix_broker_service::cluster::lease::LeaseState::new(
             Duration::from_secs(30),
         )),
+        std::sync::Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
     );
 
     // Wait for registration to land.

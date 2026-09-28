@@ -10,7 +10,8 @@ use crate::store::StoreError;
 async fn satisfies_the_node_store_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
     crate::store::contract::nodes::run_node_contract(store.clone()).await;
-    crate::store::contract::nodes::run_node_concurrency_contract(store).await;
+    crate::store::contract::nodes::run_node_concurrency_contract(store.clone()).await;
+    crate::store::contract::nodes::run_fleet_contract(store).await;
 }
 
 /// The contract allows a backend to leave a future stamp; this one must not,

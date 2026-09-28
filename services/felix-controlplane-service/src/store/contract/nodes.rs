@@ -25,8 +25,18 @@ pub(crate) fn node(node_id: &str, port: u16) -> Node {
             last_heartbeat_at_millis: 1_700_000_000_000,
             registered_at_millis: 1_699_000_000_000,
             incarnation: 0,
+            features: Default::default(),
         },
     }
+}
+
+pub(crate) fn with_features(mut node: Node, features: &[&str]) -> Node {
+    node.status.features = features.iter().map(|name| name.to_string()).collect();
+    node
+}
+
+fn names(features: &[&str]) -> std::collections::BTreeSet<String> {
+    features.iter().map(|name| name.to_string()).collect()
 }
 
 /// Run every node contract case against `store`.
@@ -55,6 +65,16 @@ pub(crate) async fn run_node_contract(store: Arc<dyn ControlPlaneStore>) {
     a_snapshot_and_the_changes_after_it_lose_nothing(store).await;
     changes_are_ordered_and_monotonic(store).await;
     a_heartbeat_and_the_sweep_read_one_clock(store).await;
+}
+
+/// Run the fleet feature cases. Last on a store, because a finalized feature
+/// stays enabled and refuses any later node that lacks it.
+pub(crate) async fn run_fleet_contract(store: Arc<dyn ControlPlaneStore>) {
+    let store: &dyn ControlPlaneStore = store.as_ref();
+    supported_counts_only_serving_nodes(store).await;
+    finalize_is_refused_while_a_serving_node_lacks_the_feature(store).await;
+    a_rollback_before_finalize_is_admitted(store).await;
+    after_finalize_a_node_without_the_feature_is_refused(store).await;
 }
 
 /// Run the cases that need to share the store across tasks.
@@ -809,5 +829,179 @@ async fn a_heartbeat_and_the_sweep_read_one_clock(store: &dyn ControlPlaneStore)
     assert!(
         !expired.iter().any(|node| node.node_id == "clock-node"),
         "a node was expired by the same clock that had just stamped its heartbeat",
+    );
+}
+
+/// Only live and draining nodes count: a node that is down or has left no
+/// longer holds a feature back. Support alone enables nothing.
+async fn supported_counts_only_serving_nodes(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    assert!(
+        store
+            .supported_fleet_features()
+            .await
+            .expect("supported")
+            .is_empty()
+    );
+
+    store
+        .register_node(with_features(node("broker-old", 7001), &["x"]))
+        .await
+        .expect("register old");
+    store
+        .register_node(with_features(node("broker-new", 7002), &["x", "y"]))
+        .await
+        .expect("register new");
+    assert_eq!(
+        store.supported_fleet_features().await.expect("supported"),
+        names(&["x"])
+    );
+
+    store
+        .set_node_lifecycle("broker-new", NodeLifecycle::Draining)
+        .await
+        .expect("drain");
+    assert_eq!(
+        store.supported_fleet_features().await.expect("supported"),
+        names(&["x"]),
+        "a draining node still serves, so it still counts"
+    );
+
+    store
+        .set_node_lifecycle("broker-old", NodeLifecycle::Left)
+        .await
+        .expect("leave");
+    assert_eq!(
+        store.supported_fleet_features().await.expect("supported"),
+        names(&["x", "y"]),
+        "the node that left no longer holds y back"
+    );
+    assert!(
+        store
+            .enabled_fleet_features()
+            .await
+            .expect("enabled")
+            .is_empty(),
+        "supported by every serving node, and still not enabled"
+    );
+
+    let listed = store.get_node("broker-new").await.expect("get");
+    assert_eq!(
+        listed.status.features,
+        names(&["x", "y"]),
+        "features are stored"
+    );
+}
+
+async fn finalize_is_refused_while_a_serving_node_lacks_the_feature(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    let refused = store.finalize_fleet_feature("x").await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("no broker")),
+        "finalized with nothing serving: {refused:?}"
+    );
+
+    store
+        .register_node(with_features(node("broker-a", 7001), &["x"]))
+        .await
+        .expect("register a");
+    store
+        .register_node(node("broker-old", 7002))
+        .await
+        .expect("register old");
+    let refused = store.finalize_fleet_feature("x").await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("broker-old")),
+        "finalized x while broker-old lacks it: {refused:?}"
+    );
+    assert!(
+        store
+            .enabled_fleet_features()
+            .await
+            .expect("enabled")
+            .is_empty()
+    );
+}
+
+/// Before a finalize, a broker that reported a feature may come back without
+/// it, which is what rolling one broker back looks like.
+async fn a_rollback_before_finalize_is_admitted(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    for (id, port) in [("broker-a", 7001), ("broker-b", 7002)] {
+        store
+            .register_node(with_features(node(id, port), &["x"]))
+            .await
+            .expect("register");
+    }
+    assert_eq!(
+        store.supported_fleet_features().await.expect("supported"),
+        names(&["x"])
+    );
+    let (rolled_back, enabled) = store
+        .register_node_in_fleet(node("broker-b", 7002))
+        .await
+        .expect("a rollback before finalize is admitted");
+    assert!(rolled_back.status.features.is_empty());
+    assert!(enabled.is_empty(), "{enabled:?}");
+    assert!(
+        store
+            .supported_fleet_features()
+            .await
+            .expect("supported")
+            .is_empty()
+    );
+}
+
+/// After a finalize, a node without the feature cannot join or come back,
+/// even once every node that has it is gone: enabling is one-way.
+async fn after_finalize_a_node_without_the_feature_is_refused(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    for (id, port) in [("broker-a", 7001), ("broker-b", 7002)] {
+        store
+            .register_node(with_features(node(id, port), &["x"]))
+            .await
+            .expect("register");
+    }
+    assert_eq!(
+        store.finalize_fleet_feature("x").await.expect("finalize"),
+        names(&["x"])
+    );
+    assert_eq!(
+        store.finalize_fleet_feature("x").await.expect("again"),
+        names(&["x"]),
+        "finalizing twice is a no-op"
+    );
+
+    let refused = store.register_node(node("broker-old", 7003)).await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("x")),
+        "an old broker joined a fleet that has x enabled: {refused:?}"
+    );
+    let rolled_back = store.register_node(node("broker-b", 7002)).await;
+    assert!(
+        matches!(rolled_back, Err(StoreError::Conflict(_))),
+        "{rolled_back:?}"
+    );
+
+    let (joined, enabled) = store
+        .register_node_in_fleet(with_features(node("broker-c", 7004), &["x", "z"]))
+        .await
+        .expect("more than the fleet has is fine");
+    assert_eq!(enabled, names(&["x"]), "registration answers with it");
+    assert_eq!(joined.status.features, names(&["x", "z"]));
+
+    for id in ["broker-a", "broker-b", "broker-c"] {
+        store
+            .set_node_lifecycle(id, NodeLifecycle::Down)
+            .await
+            .expect("down");
+    }
+    assert!(
+        store.register_node(node("broker-old", 7003)).await.is_err(),
+        "with nothing serving x is still enabled"
+    );
+    assert_eq!(
+        store.enabled_fleet_features().await.expect("enabled"),
+        names(&["x"])
     );
 }
