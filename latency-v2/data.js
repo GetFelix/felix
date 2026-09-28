@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790612166234,
+  "lastUpdate": 1790618599014,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -25014,6 +25014,72 @@ window.BENCHMARK_DATA = {
             "range": "374.82",
             "unit": "us",
             "extra": "trials: 5\nmedian: 598.00\nmean: 758.80\nstdev: 374.82\ncv: 49.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "255004229d6a2737f6909c5c8fadbf6c582aa773",
+          "message": "fix(cluster): a started cluster is ready only once every leader has reported (#827)\n\nrouting::one_shard_failing_over_does_not_stop_the_others failed about one\nrun in three under fsync load with \"reassignment: timed out\". The leader was\nnot stalling: the test killed it within a millisecond of its fence opening a\nshard, before that shard's first replica report. With no report naming a\ncaught-up replica, placement refuses to promote (NoCaughtUpReplica), which\nis intended. Start-up readiness only proved shard 0 served, so tests could\nrace a newly opened shard's first report.\n\nReadiness now also waits until every replicated shard has a report at its\ncurrent generation that names a caught-up replica. The failover test asserts\nthis right after start-up.\n\nDocs: the report expiry is twice the expiry timeout plus one heartbeat, not\nthe expiry plus one heartbeat; the failure table and the harness's waiting\nlist now cover a leader lost before its first report.\n\nSpec-Unaffected: harness readiness and docs only; no promotion or reporting rule changed",
+          "timestamp": "2026-09-28T10:59:52-07:00",
+          "tree_id": "2be713d3b7b3e9a95f85c5693c5ce113fb5815a2",
+          "url": "https://github.com/gabloe/felix/commit/255004229d6a2737f6909c5c8fadbf6c582aa773"
+        },
+        "date": 1790618596646,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 176,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 176.00\nmean: 176.40\nstdev: 1.14\ncv: 0.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 240,
+            "range": "4.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 240.00\nmean: 240.60\nstdev: 4.98\ncv: 2.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 296,
+            "range": "180.25",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 296.00\nmean: 373.00\nstdev: 180.25\ncv: 48.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 209,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 209.00\nmean: 209.60\nstdev: 0.89\ncv: 0.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 426,
+            "range": "18.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 426.00\nmean: 430.60\nstdev: 18.26\ncv: 4.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 737,
+            "range": "330.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 737.00\nmean: 888.20\nstdev: 330.83\ncv: 37.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
