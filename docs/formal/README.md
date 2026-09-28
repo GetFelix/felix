@@ -153,7 +153,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardRealMargins.cfg` | the same margins and drift with one `Quorum` write carried across a promotion, acknowledged on the report's answer and a valid lease, as the code does | pass every invariant (2.38M distinct states) |
 | `FelixShardAckWithoutLease.cfg` | the same with the lease taken out of the acknowledgement: the report alone releases it | pass every invariant (2.38M distinct states, the same ones: the report is only sent on a valid lease) |
 | `FelixShardFencedAck.cfg` | acknowledged by follower acks at the leader's generation, no lease or report in it, and the promotion fence; no margin on either side of the lease, drifting clocks, no commit check, two writes | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (2.62M distinct states) |
-| `FelixShardFencedAckTwoPromotions.cfg` | the same with two promotions (`L = 2`) and no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (14.3M distinct states, depth 35, 80 s on ten cores) |
+| `FelixShardFencedAckTwoPromotions.cfg` | the same with two promotions (`L = 2`) and no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (14.3M distinct states, depth 35, 80 s on ten cores; by hand only, see below) |
 | `FelixShardFollowerLabels.cfg` | the same with followers labelling a shipped record with the sender's generation rather than the one that wrote it (`LabelOnReceipt`) | violate `AckedOnMajority` |
 | `FelixShardUnfencedAck.cfg` | the same without the fence | violate `AckedHeldByLeader` |
 | `FelixShardFigure8.cfg` | the broker as built (`FelixShardFencedPromotion.cfg`), started from a history two leaderships in (`FelixShardFigure8.tla`) | violate `AckedOnMajority`: a pinned gap, see below |
@@ -362,7 +362,14 @@ majority acknowledged before the fence missing from the new leader.
 `FelixShardFencedAck.cfg` allows one promotion. `FelixShardFencedAckTwoPromotions.cfg`
 allows two (`L = 2`, without drift, which did not finish). Neither tells a
 leader that counts only records of its own generation from one that counts
-any it holds; that takes a third leadership (below).
+any it holds; that takes a third leadership (below). The two-promotion
+configuration takes eight and a half minutes on a CI runner, which would put
+the job near its hour, so it is run by hand:
+
+```bash
+java -jar target/tla/tla2tools-v1.7.4.jar -deadlock -workers auto \
+  -config docs/formal/FelixShardFencedAckTwoPromotions.cfg docs/formal/FelixShard.tla
+```
 
 The order a fence answer gives is only as good as the labels behind it. A
 record's `g` is the generation that wrote it and `lg` the one the broker
