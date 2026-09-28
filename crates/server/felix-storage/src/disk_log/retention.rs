@@ -134,9 +134,12 @@ impl LogInner {
             };
             // Out of the list first, so nothing new can reach these files; a
             // crash before the unlinks leaves them as a longer log, which the
-            // next pass trims again.
+            // next pass trims again. Oldest first, each unlink synced before
+            // the next: otherwise a power loss can keep a newer unlink and undo
+            // an older one, and recovery refuses the gap that leaves.
             for descriptor in &removed {
                 remove_segment_files(&inner.dir, descriptor.id)?;
+                crate::io::sync_dir(&inner.dir).map_err(StorageError::Io)?;
                 outcome.segments_deleted += 1;
                 outcome.bytes_reclaimed += descriptor.size_bytes;
             }

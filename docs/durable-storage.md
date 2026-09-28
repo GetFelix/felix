@@ -659,6 +659,11 @@ Four properties are worth knowing, because each rules out a class of surprise:
 - **It runs on its own timer, never on an append.** Retention is bulk file
   deletion; putting it on the publish path would trade a bounded disk for an
   unbounded p999.
+- **A power loss mid-sweep leaves a longer log, never a gap.** Segments are
+  unlinked oldest first, and the directory is synced after each unlink.
+  Without the syncs the device could keep a newer unlink and lose an older one.
+  The surviving segments would then have an offset gap, and recovery treats a
+  gap as corruption.
 
 What a reader sees after a trim is the point of the feature. `read_range` below
 `base_offset` returns `StorageError::Trimmed { requested, oldest }`, which the
@@ -671,6 +676,9 @@ a trimmed stream instead of becoming an error.
 
 An operator can force a pass with `StreamLog::enforce_retention_now` instead of
 waiting out the interval.
+
+> `a_power_loss_after_retention_leaves_no_gap` — every crash image built after a
+> sweep under `FsyncMode::None` recovers without a gap (Linux only).
 
 ## Cache and counter compaction
 
