@@ -22,6 +22,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
+use crate::connection::StreamLease;
 use crate::telemetry::record_e2e_latency;
 #[cfg(feature = "telemetry")]
 use crate::timings;
@@ -38,6 +39,7 @@ pub struct Subscription {
     pub(crate) namespace: Arc<str>,
     pub(crate) stream: Arc<str>,
     pub(crate) event_conn_index: usize,
+    _lease: StreamLease,
     pub(crate) event_conn_counts: Arc<Vec<AtomicUsize>>,
     #[cfg(feature = "telemetry")]
     bench_embed_ts: bool,

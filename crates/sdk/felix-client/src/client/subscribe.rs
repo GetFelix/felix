@@ -9,7 +9,7 @@ use felix_wire::{Message, StartPosition};
 use tokio::sync::oneshot;
 
 use super::Client;
-use crate::connection::EventRouterCommand;
+use crate::connection::{EventRouterCommand, OpenedStream};
 use crate::frame_io::{read_message_with_limit, write_message};
 use crate::subscribe::{Subscription, SubscriptionPipelineConfig};
 use crate::{NotLeaderError, SubscribeCursorError};
@@ -70,23 +70,19 @@ impl Client {
                 self.auth_tenant_id
             ));
         }
-        // Round-robin subscriptions across the event connection pool. This local
-        // counter picks the connection only -- it must NOT be used as the
-        // subscription id itself. It starts at 1 in every Client instance, so two
-        // independent clients against the same broker would both request id 1, 2,
-        // ... and collide: the broker keys its own subscription/lane bookkeeping on
-        // the id the client asks for, and the client silently discards any event
-        // batch whose subscription_id doesn't match (see `subscribe::pipeline`), so a
-        // collision manifests as events vanishing rather than any visible error.
-        // The broker assigns globally-unique ids from its own atomic counter when we
-        // send `subscription_id: None`, so let it do that and use what it returns.
-        let rr = self.subscription_counter.fetch_add(1, Ordering::Relaxed);
-        let connection_index = rr as usize % self.event_pool_size;
-        let connection = &self.event_connections[connection_index];
-        let (mut send, mut recv, negotiated) = self
-            .credentials
-            .open(connection, self.runtime_config.max_frame_bytes)
-            .await?;
+        // The subscription goes on whichever event connection has the most
+        // room, and holds its lease for as long as it lives. The id is left to
+        // the broker (`subscription_id: None`): two clients counting from 1
+        // would collide in the broker's bookkeeping, and the client discards
+        // event batches whose id does not match, so a collision would look
+        // like events vanishing.
+        let OpenedStream {
+            mut send,
+            mut recv,
+            negotiated,
+            lease,
+        } = self.open_event_stream().await?;
+        let connection_index = lease.slot();
         let server_flags = negotiated.server_flags;
 
         // A broker that predates resume ignores the unknown `start` field and
@@ -189,7 +185,8 @@ impl Client {
         let namespace = Arc::<str>::from(namespace);
         let stream = Arc::<str>::from(stream);
         let (stream_tx, stream_rx) = oneshot::channel();
-        self.event_stream_routers[connection_index]
+        lease
+            .router()
             .send(EventRouterCommand::Register {
                 subscription_id,
                 response: stream_tx,
@@ -210,7 +207,7 @@ impl Client {
         .increment(1);
         Ok(Subscription::spawn_pipeline(SubscriptionPipelineConfig {
             recv,
-            connection: connection.clone(),
+            connection: lease.connection().clone(),
             queue_capacity: self.runtime_config.client_sub_queue_capacity.max(1),
             queue_policy: self.runtime_config.client_sub_queue_policy,
             subscription_id,
@@ -218,6 +215,7 @@ impl Client {
             namespace,
             stream,
             event_conn_index: connection_index,
+            lease,
             event_conn_counts: Arc::clone(&self.event_conn_counts),
             max_frame_bytes: self.runtime_config.max_frame_bytes,
             live_offset,

@@ -35,6 +35,12 @@ impl ClientConfig {
         {
             config.event_conn_pool = value;
         }
+        if let Some(value) = read_usize_env("FELIX_CLUSTER_CONN_POOL") {
+            config.cluster_conn_pool = value;
+        }
+        if let Some(value) = read_usize_env("FELIX_CLUSTER_STREAMS_PER_CONN") {
+            config.cluster_streams_per_conn = value;
+        }
         if let Some(value) = read_u64_env("FELIX_EVENT_CONN_RECV_WINDOW") {
             config.event_conn_recv_window = value;
         }

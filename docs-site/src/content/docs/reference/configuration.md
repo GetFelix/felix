@@ -833,6 +833,14 @@ While this reference covers broker configuration, clients also have tunable para
 
 **Description**: Number of QUIC connections in the event pool.
 
+### Cluster Client Connections
+
+**Environment**: `FELIX_CLUSTER_CONN_POOL`, `FELIX_CLUSTER_STREAMS_PER_CONN`
+
+**Default**: `8`, `1024`
+
+**Description**: A `ClusterClient` holds one connection per broker and multiplexes every stream on it. The first is the most connections it will open to one broker; the second is how many streams a connection carries before another opens. The connection pool sizes here apply to a `Client` built with `Client::connect`.
+
 ### Cache Connection Pool
 
 **Environment**: `FELIX_CACHE_CONN_POOL`

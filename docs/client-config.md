@@ -93,6 +93,23 @@ All window values are raw bytes.
 - `max_frame_bytes` (env: `FELIX_MAX_FRAME_BYTES`)
   - Hard cap on any single frame length.
 
+### Cluster Client Connections
+
+A `ClusterClient` holds one connection per broker and multiplexes every kind of
+stream on it, so the `*_conn_pool` sizes above do not decide how many
+connections it opens. They still decide how many publish and cache *streams*
+it runs: `publish_conn_pool * publish_streams_per_conn` publish writers and
+`cache_conn_pool * cache_streams_per_conn` cache workers, all placed on the
+shared connection. See `docs/multi-node-client.md` ("Connections").
+
+- `cluster_conn_pool` (env: `FELIX_CLUSTER_CONN_POOL`)
+  - The most connections a cluster client opens to one broker. It starts with
+    one and adds another only when the existing ones are saturated. Default: `8`.
+- `cluster_streams_per_conn` (env: `FELIX_CLUSTER_STREAMS_PER_CONN`)
+  - Streams one of those connections carries before another is opened beside
+    it. The broker's QUIC stream credit is the other trigger, whichever comes
+    first. Default: `1024`.
+
 ### Bench / Telemetry
 
 - `bench_embed_ts` (env: `FELIX_BENCH_EMBED_TS`)
@@ -110,6 +127,8 @@ publish_sharding: "hash_stream"
 cache_conn_pool: 8
 cache_streams_per_conn: 4
 event_conn_pool: 8
+cluster_conn_pool: 8
+cluster_streams_per_conn: 1024
 client_sub_queue_capacity: 256
 client_sub_queue_policy: "drop_new"
 event_conn_recv_window: 268435456

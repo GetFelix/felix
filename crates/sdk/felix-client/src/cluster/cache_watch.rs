@@ -199,11 +199,10 @@ impl ClusterClient {
                 .parse()
                 .with_context(|| format!("the owner's address {addr:?} is not usable"))?;
             visited.push(redirect.node_id.clone());
-            client = Arc::new(
-                Client::connect(addr, &self.server_name, self.config.clone())
-                    .await
-                    .with_context(|| format!("connect to the cache shard owner at {addr}"))?,
-            );
+            client = self
+                .connect_to(addr)
+                .await
+                .with_context(|| format!("connect to the cache shard owner at {addr}"))?;
         }
 
         Err(anyhow::anyhow!(

@@ -68,6 +68,13 @@ pub(crate) async fn pubsub(common: &Common, stream: &str, binary: bool) -> Resul
             .context("subscribe")?;
         receivers.push(subscription);
     }
+    // What the subscribers cost in connections, summed across brokers.
+    let subscriber_connections: usize = subs_cluster
+        .connections_per_node()
+        .await
+        .iter()
+        .map(|(_, count)| count)
+        .sum();
 
     let expected_per_sub = (common.warmup + common.total) as u64;
     let delivered = Arc::new(AtomicU64::new(0));
@@ -301,6 +308,7 @@ pub(crate) async fn pubsub(common: &Common, stream: &str, binary: bool) -> Resul
         "warmup": common.warmup,
         "total": common.total,
         "received": received_total,
+        "subscriber_connections": subscriber_connections,
         "unaccounted": unaccounted,
         "publish_retries": publish_retries,
         "publish_throughput_msg_s": publish_throughput,

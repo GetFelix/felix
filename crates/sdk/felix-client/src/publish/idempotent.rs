@@ -331,7 +331,7 @@ impl<'a> IdempotentProducer<'a> {
         let addr: SocketAddr = addr
             .parse()
             .with_context(|| format!("the leader's address {addr:?} is not usable"))?;
-        let leader = Arc::new(match self.source {
+        let leader: Arc<Client> = match self.source {
             Source::Single(_) => {
                 return Err(err.context(format!(
                     "{node_id} at {addr} leads the shard; connect a client there, or use a \
@@ -342,7 +342,7 @@ impl<'a> IdempotentProducer<'a> {
                 .connect_to(addr)
                 .await
                 .with_context(|| format!("connect to the shard's leader {node_id} at {addr}"))?,
-        });
+        };
         let result = self
             .publish_on(&leader, tenant_id, namespace, stream, payloads, sequence)
             .await;

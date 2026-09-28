@@ -352,7 +352,7 @@ impl ClusterClient {
             let first = match (&hinted, hint) {
                 (Some(client), _) => Arc::clone(client),
                 (None, Some(addr)) => match self.connect_to(addr).await {
-                    Ok(client) => Arc::clone(hinted.insert(Arc::new(client))),
+                    Ok(client) => Arc::clone(hinted.insert(client)),
                     Err(err) => {
                         tracing::debug!(error = %err, %addr, "new owner unreachable; asking the entry broker");
                         hint = None;

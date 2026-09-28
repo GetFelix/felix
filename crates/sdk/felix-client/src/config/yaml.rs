@@ -20,6 +20,8 @@ pub(super) struct ClientConfigOverride {
     cache_conn_pool: Option<usize>,
     cache_streams_per_conn: Option<usize>,
     event_conn_pool: Option<usize>,
+    cluster_conn_pool: Option<usize>,
+    cluster_streams_per_conn: Option<usize>,
     event_conn_recv_window: Option<u64>,
     event_stream_recv_window: Option<u64>,
     event_send_window: Option<u64>,
@@ -85,6 +87,16 @@ impl ClientConfigOverride {
             && value > 0
         {
             config.event_conn_pool = value;
+        }
+        if let Some(value) = self.cluster_conn_pool
+            && value > 0
+        {
+            config.cluster_conn_pool = value;
+        }
+        if let Some(value) = self.cluster_streams_per_conn
+            && value > 0
+        {
+            config.cluster_streams_per_conn = value;
         }
         if let Some(value) = self.event_conn_recv_window
             && value > 0

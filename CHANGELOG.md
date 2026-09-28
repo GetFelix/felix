@@ -373,6 +373,16 @@ for what the current release actually guarantees.
   and still re-exported from `felix_broker_service::shards`. No behaviour
   change.
 
+- **`ClusterClient` holds one connection per broker.** Every role a broker
+  plays (entry, shard owner, redirect target, producer leader) shares one
+  client, and every stream to it is multiplexed on one QUIC connection, where
+  each role used to open a full `Client` of 20 connections. More open only
+  when the streams on it saturate, up to `cluster_conn_pool`
+  (`FELIX_CLUSTER_CONN_POOL`, default 8); `cluster_streams_per_conn`
+  (`FELIX_CLUSTER_STREAMS_PER_CONN`, default 1024) sets the stream budget.
+  `ClusterClient::connections_per_node` and `Client::connection_count` report
+  the counts. `Client::listeners_in_use` now returns a `Vec`.
+
 - **`felix-conformance` is AGPL-3.0-only.** It links the broker, storage and
   authz crates to run its suite, so a build of it was AGPL whatever its label
   said. It is not published; running `verify` over a client's results puts no

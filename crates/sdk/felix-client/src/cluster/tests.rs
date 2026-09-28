@@ -1,3 +1,4 @@
+mod connections;
 mod decisions;
 mod error_codes;
 mod stub_broker;

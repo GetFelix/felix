@@ -3,7 +3,7 @@ title: "Rust Client SDK"
 ---
 
 `felix-client` is the Rust SDK: publish, subscribe, cache, consumer groups,
-and the cluster client, over pooled QUIC connections. This page is the
+and the cluster client, over multiplexed QUIC connections. This page is the
 working reference — setup, configuration, and the patterns that matter in
 practice.
 
@@ -117,6 +117,10 @@ let config = ClientConfig {
     event_conn_pool: 8,              // Connections for pub/sub
     cache_conn_pool: 8,              // Connections for cache
     publish_conn_pool: 4,            // Connections for publishing
+    // A ClusterClient shares one connection per broker instead, and
+    // grows it to at most this many when its streams are saturated.
+    cluster_conn_pool: 8,
+    cluster_streams_per_conn: 1024,
     
     // Streams per connection
     publish_streams_per_conn: 2,     // Publish streams per conn
@@ -940,6 +944,14 @@ log at that offset, readable by an ordinary replay.
 `Client` talks to one broker. `ClusterClient` follows the cluster — it takes
 several addresses, learns the rest, reconnects when the broker it is using goes
 away, and follows a redirect to whichever broker owns a shard.
+
+It holds one connection per broker, shared by every role that broker plays --
+entry, shard owner, redirect target, producer leader -- with every stream
+multiplexed on it. A second connection opens only when the first is saturated
+(`cluster_streams_per_conn` streams, or the broker's QUIC stream credit), up to
+`cluster_conn_pool`. A connection that dies fails only its own streams and is
+replaced when a stream next needs the room; `connections_per_node()` reports
+the count per broker.
 
 A broker that is killed or cut off sends nothing to say so; the client notices
 when the QUIC connection has been silent for the idle timeout (6 s by default,

@@ -75,7 +75,7 @@ async fn a_fenced_owner_is_forgotten_and_the_publish_rerouted() -> Result<()> {
         Owner {
             node_id: "broker-old".into(),
             generation: 1,
-            client: Arc::new(owner_client),
+            client: owner_client,
         },
     );
 

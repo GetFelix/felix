@@ -21,6 +21,7 @@ use super::queue::enqueue_with_policy;
 use super::{QueuedEvent, ShardMoved, Subscription};
 use crate::SubscriptionLost;
 use crate::config::ClientSubQueuePolicy;
+use crate::connection::StreamLease;
 use crate::frame_io::read_frame_into_with_limit;
 #[cfg(feature = "telemetry")]
 use crate::telemetry::frame_counters;
@@ -40,6 +41,8 @@ pub(crate) struct SubscriptionPipelineConfig {
     pub(crate) namespace: Arc<str>,
     pub(crate) stream: Arc<str>,
     pub(crate) event_conn_index: usize,
+    /// Counts the subscription against its connection until it is dropped.
+    pub(crate) lease: StreamLease,
     pub(crate) event_conn_counts: Arc<Vec<AtomicUsize>>,
     pub(crate) max_frame_bytes: usize,
     /// The tail when the broker registered this subscription. Records below it
@@ -88,6 +91,7 @@ impl Subscription {
             namespace: config.namespace,
             stream: config.stream,
             event_conn_index: config.event_conn_index,
+            _lease: config.lease,
             event_conn_counts: config.event_conn_counts,
             #[cfg(feature = "telemetry")]
             bench_embed_ts: config.bench_embed_ts,
