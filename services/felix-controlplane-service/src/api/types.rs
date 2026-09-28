@@ -434,6 +434,9 @@ pub struct ShardMoveRequest {
     #[serde(flatten)]
     pub key: crate::model::ShardKey,
     pub destination: String,
+    /// Decide the move and answer what it would write, without writing it.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 /// The assignment an operator's request wrote, and which step it was.
@@ -443,6 +446,20 @@ pub struct ShardMoveResponse {
     /// `discard` for an abandoned log.
     pub step: String,
     pub assignment: crate::model::ShardAssignment,
+    /// Set when the request was a dry run: `assignment` is what it would
+    /// have written, and nothing was.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dry_run: bool,
+    /// Failure domains the shard's live copies span now, for a started move,
+    /// when any broker the shard may use reports a zone. A broker without a
+    /// zone counts as one of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zones_before: Option<usize>,
+    /// Failure domains placement expects them to span once the move cuts
+    /// over. Below `zones_before`, the move narrows the shard's spread: it is
+    /// still started, and logged as a warning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zones_after: Option<usize>,
 }
 
 /// One shard in a placement plan.

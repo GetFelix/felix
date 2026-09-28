@@ -73,7 +73,8 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 | `controlplane.bootstrap.existingSecret` | — | Secret holding the bootstrap token under `tokenKey`, and the previous one under `previousTokenKey` while rotating. |
 | `controlplane.shutdown.predrainMs` / `drainTimeoutMs` | `2000` / `10000` | Readiness fails, the instance keeps serving for the predrain, then drains. The grace period is derived. |
 | `controlplane.podDisruptionBudget.minAvailable` | `1` | Must be below `replicas`. |
-| `broker.replicas` | `3` | Brokers. |
+| `broker.replicas` | `3` | Brokers; per zone when `zones` is set. |
+| `broker.zones` | `[]` | One StatefulSet per zone, `<fullname>-broker-<zone>`, pinned by `nodeSelector` to `topology.kubernetes.io/zone=<zone>` and setting `FELIX_NODE_ZONE`, so placement spreads each shard's copies across zones. A pod cannot read its node's labels, so the zone is set per StatefulSet. One budget still covers every zone. Brokers read the zone when they register, so changing it takes a restart; switching an existing release to or from zones replaces every broker at once, so choose at install. |
 | `broker.credential.existingSecret` | — | Secret holding the Felix token the broker presents. Required while brokers are enabled. |
 | `broker.credential.perBroker` | `false` | One key per broker, named after the pod, so each carries `node.manage:node:<its id>` and nothing wider. |
 | `broker.credential.refreshTokenKey` | — | An IdP refresh token for re-minting before expiry. |
@@ -109,6 +110,7 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 - the client and internal ports are the same.
 - a budget would let every broker, or two replicas of one shard, go at once; or would never let a control-plane instance go.
 - an explicit grace period is shorter than the preStop sleep plus the drain.
+- `broker.zones` lists a zone twice, or is combined with a `broker.nodeSelector` on `topology.kubernetes.io/zone`, or a zone's StatefulSet name would be over 52 characters.
 - a key is not in the schema.
 
 `task chart:check` (`scripts/check_chart.py`) renders every value set under

@@ -718,9 +718,27 @@ is at `max_shards`, or while the move that would spread the shard waits for a
 slot.
 
 Zones sit inside regions: a stream with a home region is spread across the
-zones of the brokers it may use there. An operator's move
-(`POST /v1/shard-moves`) is not checked against zones; the cut-over still keeps
-the copies that hold the spread.
+zones of the brokers it may use there.
+
+An operator's move (`POST /v1/shard-moves`) is never refused on zone grounds:
+an operator may have a reason to put a shard somewhere placement would not,
+and refusing would leave no way to do it. When any broker the shard may use
+reports a zone, the response carries `zones_before` (the zones its live copies
+span now) and `zones_after` (the zones placement expects once the move cuts
+over), and `"dry_run": true` in the request answers the same without starting
+the move. A move with `zones_after` below `zones_before` is logged as a
+warning, and once cut over the shard counts in `felix_shards_zone_unspread`
+until placement replaces a follower to spread it again. In practice a move
+rarely narrows anything, because the cut-over keeps the copies in zones the
+shard would otherwise lose; it can when the shard holds more copies than its
+replication factor, which is the case after the factor is lowered.
+
+A broker's zone is read once, when it registers, like its region and
+addresses; heartbeats do not carry it and `PATCH /v1/nodes/{id}` cannot change
+it, since the broker's next registration would overwrite the patch. Changing
+a broker's zone is a restart with a new `FELIX_NODE_ZONE`. A zone describes
+where the broker runs, which does not change under a running process, so
+nothing is lost by not reading it more often.
 
 Reconciliation is idempotent: a pass over a settled cluster writes nothing, so
 running it on a timer does not churn rows or flood the changefeed.

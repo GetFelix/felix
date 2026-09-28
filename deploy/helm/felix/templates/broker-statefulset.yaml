@@ -16,18 +16,30 @@
 {{- end }}
 {{- $metricsPort := int $b.ports.metrics }}
 {{- /*
+With `zones` set, one StatefulSet per zone, each pinned to its zone's nodes
+and telling its brokers which zone they are in. A pod cannot read its node's
+labels, so the zone is known per StatefulSet instead. Without it, one
+StatefulSet with the selector it always had, so an upgrade does not trip over
+the selector being immutable.
+*/}}
+{{- $zones := $b.zones | default (list "") }}
+{{- /*
 A broker's pod name is its node id: the identity it registers with, the name
 its shards are assigned to, and under peer mTLS the DNS name its certificate
 must carry. Replacing the pod keeps all three, and the volume behind it, which
 is what makes a replacement a rejoin rather than a new member.
 */}}
+{{- range $i, $zone := $zones }}
+{{- if $i }}
+---
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ $name }}
-  namespace: {{ .Release.Namespace }}
+  name: {{ if $zone }}{{ printf "%s-%s" $name $zone }}{{ else }}{{ $name }}{{ end }}
+  namespace: {{ $.Release.Namespace }}
   labels:
-    {{- include "felix.labels" . | nindent 4 }}
+    {{- include "felix.labels" $ | nindent 4 }}
     app.kubernetes.io/component: broker
 spec:
   serviceName: {{ $headless }}
@@ -38,11 +50,17 @@ spec:
     type: RollingUpdate
   selector:
     matchLabels:
-      {{- include "felix.broker.selectorLabels" . | nindent 6 }}
+      {{- include "felix.broker.selectorLabels" $ | nindent 6 }}
+      {{- if $zone }}
+      felix/zone: {{ $zone | quote }}
+      {{- end }}
   template:
     metadata:
       labels:
-        {{- include "felix.broker.selectorLabels" . | nindent 8 }}
+        {{- include "felix.broker.selectorLabels" $ | nindent 8 }}
+        {{- if $zone }}
+        felix/zone: {{ $zone | quote }}
+        {{- end }}
         {{- with $b.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -51,27 +69,31 @@ spec:
         prometheus.io/port: {{ $metricsPort | quote }}
         prometheus.io/path: /metrics
         # A config change rolls the brokers.
-        checksum/config: {{ include (print $.Template.BasePath "/broker-configmap.yaml") . | sha256sum }}
+        checksum/config: {{ include (print $.Template.BasePath "/broker-configmap.yaml") $ | sha256sum }}
         {{- with $b.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      serviceAccountName: {{ include "felix.serviceAccountName" . }}
+      serviceAccountName: {{ include "felix.serviceAccountName" $ }}
       automountServiceAccountToken: false
-      {{- with .Values.image.pullSecrets }}
+      {{- with $.Values.image.pullSecrets }}
       imagePullSecrets:
         {{- range . }}
         - name: {{ . }}
         {{- end }}
       {{- end }}
       securityContext:
-        {{- include "felix.podSecurityContext" . | nindent 8 }}
-      terminationGracePeriodSeconds: {{ include "felix.broker.terminationGracePeriodSeconds" . }}
-      {{- include "felix.scheduling" (dict "workload" $b "selectorLabels" (include "felix.broker.selectorLabels" .)) | nindent 6 }}
+        {{- include "felix.podSecurityContext" $ | nindent 8 }}
+      terminationGracePeriodSeconds: {{ include "felix.broker.terminationGracePeriodSeconds" $ }}
+      {{- $workload := $b }}
+      {{- if $zone }}
+      {{- $workload = merge (dict "nodeSelector" (merge (dict "topology.kubernetes.io/zone" $zone) ($b.nodeSelector | default dict))) $b }}
+      {{- end }}
+      {{- include "felix.scheduling" (dict "workload" $workload "selectorLabels" (include "felix.broker.selectorLabels" $)) | nindent 6 }}
       containers:
         - name: broker
           image: {{ $image | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
           ports:
             {{- range $offset := until $listeners }}
             - name: {{ if eq $offset 0 }}quic{{ else }}quic-{{ $offset }}{{ end }}
@@ -101,6 +123,10 @@ spec:
               value: "$(POD_NAME)"
             - name: FELIX_REGION_ID
               value: {{ $b.region | quote }}
+            {{- if $zone }}
+            - name: FELIX_NODE_ZONE
+              value: {{ $zone | quote }}
+            {{- end }}
             - name: FELIX_QUIC_BIND
               value: "0.0.0.0:{{ $clientPort }}"
             - name: FELIX_QUIC_LISTENERS
@@ -113,11 +139,11 @@ spec:
               value: "$(POD_IP):{{ $internalPort }}"
             # Clients are told a name, which survives the pod being replaced.
             - name: FELIX_CLIENT_ADVERTISE_ADDR
-              value: {{ include "felix.broker.clientAdvertiseAddr" . | quote }}
+              value: {{ include "felix.broker.clientAdvertiseAddr" $ | quote }}
             - name: FELIX_BROKER_METRICS_BIND
               value: "0.0.0.0:{{ $metricsPort }}"
             - name: FELIX_CONTROLPLANE_URL
-              value: {{ include "felix.controlplane.url" . | quote }}
+              value: {{ include "felix.controlplane.url" $ | quote }}
             - name: FELIX_NODE_TOKEN_FILE
               value: {{ printf "/etc/felix/credential/%s" (ternary "$(POD_NAME)" $b.credential.tokenKey $b.credential.perBroker) | quote }}
             {{- if $b.credential.refreshTokenKey }}
@@ -145,7 +171,7 @@ spec:
             - name: FELIX_TLS_CERT_EXPORT
               value: /var/lib/felix/export/broker-cert.pem
             {{- end }}
-            {{- if and .Values.controlplane.tls.enabled .Values.controlplane.tls.caKey }}
+            {{- if and $.Values.controlplane.tls.enabled $.Values.controlplane.tls.caKey }}
             - name: FELIX_CONTROLPLANE_CA
               value: /etc/felix/controlplane-ca/ca.crt
             {{- end }}
@@ -203,7 +229,7 @@ spec:
           resources:
             {{- toYaml $b.resources | nindent 12 }}
           securityContext:
-            {{- include "felix.containerSecurityContext" . | nindent 12 }}
+            {{- include "felix.containerSecurityContext" $ | nindent 12 }}
           volumeMounts:
             - name: data
               mountPath: /var/lib/felix/data
@@ -224,7 +250,7 @@ spec:
               mountPath: /etc/felix/client-tls
               readOnly: true
             {{- end }}
-            {{- if and .Values.controlplane.tls.enabled .Values.controlplane.tls.caKey }}
+            {{- if and $.Values.controlplane.tls.enabled $.Values.controlplane.tls.caKey }}
             - name: controlplane-ca
               mountPath: /etc/felix/controlplane-ca
               readOnly: true
@@ -261,12 +287,12 @@ spec:
           secret:
             secretName: {{ $b.clientTls.existingSecret }}
         {{- end }}
-        {{- if and .Values.controlplane.tls.enabled .Values.controlplane.tls.caKey }}
+        {{- if and $.Values.controlplane.tls.enabled $.Values.controlplane.tls.caKey }}
         - name: controlplane-ca
           secret:
-            secretName: {{ .Values.controlplane.tls.existingSecret }}
+            secretName: {{ $.Values.controlplane.tls.existingSecret }}
             items:
-              - key: {{ .Values.controlplane.tls.caKey }}
+              - key: {{ $.Values.controlplane.tls.caKey }}
                 path: ca.crt
         {{- end }}
         {{- if $b.config }}
@@ -285,4 +311,5 @@ spec:
         resources:
           requests:
             storage: {{ $b.storage.size }}
+{{- end }}
 {{- end }}

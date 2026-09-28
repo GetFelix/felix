@@ -17,8 +17,9 @@ usage: felix-controlplane admin [--url URL] [--token TOKEN] [--json] <command>
 commands:
   moves                                    moves in progress
   plan                                     what placement would do next
-  move <tenant>/<namespace>/<name>/<shard> <node> [--cache]
-                                           move a shard's leadership to <node>
+  move <tenant>/<namespace>/<name>/<shard> <node> [--cache] [--dry-run]
+                                           move a shard's leadership to <node>;
+                                           --dry-run shows what it would do
   cancel <tenant>/<namespace>/<name>/<shard> [--cache]
                                            cancel a shard's move
   abandon <tenant>/<namespace>/<name>/<shard> [--cache]
@@ -111,6 +112,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
                 "shard": key.shard,
                 "kind": key.kind(),
                 "destination": destination,
+                "dry_run": dry_run,
             });
             (
                 admin
@@ -384,8 +386,13 @@ fn render_plan(response: &Value) -> String {
 
 fn render_step(response: &Value) -> String {
     let assignment = &response["assignment"];
-    format!(
-        "{}: {} leader {} generation {}{}\n",
+    let mut out = format!(
+        "{}{}: {} leader {} generation {}{}\n",
+        if response["dry_run"].as_bool() == Some(true) {
+            "dry run, nothing written: "
+        } else {
+            ""
+        },
         text(&response["step"]),
         shard_name(assignment),
         text(&assignment["leader"]),
@@ -394,7 +401,18 @@ fn render_step(response: &Value) -> String {
             .as_str()
             .map(|to| format!(", moving to {to}"))
             .unwrap_or_default(),
-    )
+    );
+    if let (Some(before), Some(after)) = (
+        response["zones_before"].as_u64(),
+        response["zones_after"].as_u64(),
+    ) {
+        out.push_str(&format!("zones: {before} -> {after}"));
+        if after < before {
+            out.push_str(" (the shard's copies will span fewer zones)");
+        }
+        out.push('\n');
+    }
+    out
 }
 
 fn render_paused(response: &Value) -> String {

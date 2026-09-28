@@ -29,7 +29,9 @@ Three things, and an operator (see
 Moves respect zones. A drain goes where the shard keeps the most zones, a
 rebalance only where it loses none, and the copies kept at the cut-over are
 the ones in zones the shard would otherwise lose. With no zones registered
-none of this changes anything.
+none of this changes anything. An operator's move is never refused on zone
+grounds; it reports the zones before and after instead (see
+[Moving shards](/felix/deployment/moving-shards/)).
 
 A shard is never simply reassigned while its leader is alive, because a
 broker that has not seen the log would serve it empty. It is **moved**:

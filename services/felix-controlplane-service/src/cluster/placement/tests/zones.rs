@@ -380,3 +380,80 @@ fn without_zones_nothing_is_reseated() {
 
     assert_eq!(only_decision(&plan), &Decision::Kept);
 }
+
+fn operator_move(
+    streams: &[Stream],
+    nodes: &[Node],
+    existing: &[ShardAssignment],
+    to: &str,
+) -> Result<OperatorStep, Refused> {
+    let catalog = Catalog {
+        streams,
+        caches: &[],
+        nodes,
+        existing,
+        caught_up: &NothingCaughtUp,
+        policy: MovePolicy::default(),
+    };
+    start_move(&catalog, &key_of("orders", 0), to)
+}
+
+/// An operator may move a shard where its copies span fewer zones: the move
+/// starts, and the response says what it costs. Three copies over three
+/// zones, the replication factor since lowered to two, led from a2 next.
+#[test]
+fn an_operator_move_that_narrows_the_spread_starts_and_says_so() {
+    let nodes = in_zones(&["a1", "a2", "b1", "c1"]);
+    let decided = operator_move(
+        &[replicated_stream("orders", 1, 2)],
+        &nodes,
+        &[assigned("orders", "a1", &["b1", "c1"])],
+        "a2",
+    )
+    .expect("a narrowing move is not refused");
+
+    assert_eq!(decided.assignment.successor.as_deref(), Some("a2"));
+    let zones = decided.zones.expect("brokers report zones");
+    assert_eq!((zones.before, zones.after), (3, 2));
+    assert!(zones.narrows());
+}
+
+/// A move to a zone the shard lacks reports the zone it gains.
+#[test]
+fn an_operator_move_reports_the_zone_it_adds() {
+    let nodes = in_zones(&["a1", "a2", "b1", "c1"]);
+    let decided = operator_move(
+        &[replicated_stream("orders", 1, 3)],
+        &nodes,
+        &[assigned("orders", "a1", &["a2", "b1"])],
+        "c1",
+    )
+    .expect("started");
+
+    assert_eq!(
+        decided.zones,
+        Some(ZoneImpact {
+            before: 2,
+            after: 3
+        })
+    );
+}
+
+/// With no zone reported there is nothing to say, and the response stays as
+/// it was before zones existed.
+#[test]
+fn without_zones_an_operator_move_reports_none() {
+    let nodes: Vec<Node> = ["a1", "a2", "b1"]
+        .iter()
+        .map(|id| zoned(id, None))
+        .collect();
+    let decided = operator_move(
+        &[replicated_stream("orders", 1, 2)],
+        &nodes,
+        &[assigned("orders", "a1", &["b1"])],
+        "a2",
+    )
+    .expect("started");
+
+    assert_eq!(decided.zones, None);
+}
