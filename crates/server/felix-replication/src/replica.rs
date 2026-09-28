@@ -684,6 +684,37 @@ impl ReplicaHandler {
                 "this broker has no log for that shard".to_string(),
             );
         };
+        // A cache's counter log takes its leader's generation on its own, so
+        // a newer leader that has only written counters has reached this
+        // replica there and nowhere else. Refused, or an older leader's read
+        // round would count this replica for a shard it no longer leads.
+        if log_kind == felix_broker::LogKind::Cache {
+            let counters = self
+                .broker
+                .shard_log(
+                    felix_broker::LogKind::Counters,
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                )
+                .await
+                .map_or(0, |log| log.accepted_generation());
+            if counters > generation {
+                metrics::record_replicated(metrics::OUTCOME_FENCED);
+                return refused(
+                    correlation_id,
+                    ErrorCode::FencedEpoch,
+                    0,
+                    format!(
+                        "this broker accepted generation {counters}, the sender is at {generation}"
+                    ),
+                );
+            }
+        }
+        // A fence at the generation already accepted changes nothing here: it
+        // is the leader confirming it still leads, once per read round.
+        let confirming = log.accepted_generation() == generation;
         if let Some(refusal) = accept_sender(&log, correlation_id, &key, generation).await {
             return refusal;
         }
@@ -697,14 +728,18 @@ impl ReplicaHandler {
                 return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
             }
         };
-        tracing::info!(
-            stream = %key.stream,
-            shard = key.shard,
-            generation,
-            log_end,
-            "fenced by a promoted leader; older leaders are refused from here on",
-        );
-        metrics::record_replicated(metrics::OUTCOME_FENCE_TAKEN);
+        if confirming {
+            metrics::record_replicated(metrics::OUTCOME_FENCE_CONFIRMED);
+        } else {
+            tracing::info!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                log_end,
+                "fenced by a promoted leader; older leaders are refused from here on",
+            );
+            metrics::record_replicated(metrics::OUTCOME_FENCE_TAKEN);
+        }
         InternalMessage::FenceOk(FenceOk {
             correlation_id,
             log_end,

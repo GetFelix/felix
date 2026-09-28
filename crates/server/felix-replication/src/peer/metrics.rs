@@ -92,6 +92,9 @@ pub const OUTCOME_TRUNCATED: &str = "truncated";
 pub const OUTCOME_CORRUPT: &str = "corrupt";
 /// This broker took a promoted leader's fence.
 pub const OUTCOME_FENCE_TAKEN: &str = "fence_taken";
+/// A fence at the generation this replica had already accepted: the leader
+/// confirming, for a read, that nobody newer has reached it.
+pub const OUTCOME_FENCE_CONFIRMED: &str = "fence_confirmed";
 /// This broker placed a shard log to begin where the leader's surviving log
 /// begins. Rare and deliberate: it happens once per replica per shard.
 pub const OUTCOME_BOOTSTRAPPED: &str = "bootstrapped";

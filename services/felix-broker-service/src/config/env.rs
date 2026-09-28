@@ -457,3 +457,22 @@ fn controlplane_token_from_env() -> std::io::Result<String> {
             .unwrap_or_default()),
     }
 }
+
+/// `FELIX_QUORUM_READS`: whether a `Quorum` read confirms this broker still
+/// leads by a round of fences to its replicas (`majority`, the default), or
+/// trusts the lease (`lease`), the faster path that is only as safe as the
+/// clocks. The round applies once the fleet has finalized `lease_free_reads`;
+/// before that every read is on the lease.
+pub(crate) fn quorum_reads_by_lease() -> Result<bool> {
+    match std::env::var("FELIX_QUORUM_READS")
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        None | Some("" | "majority") => Ok(false),
+        Some("lease") => Ok(true),
+        Some(other) => {
+            anyhow::bail!("FELIX_QUORUM_READS must be majority or lease, not {other:?}")
+        }
+    }
+}

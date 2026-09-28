@@ -230,9 +230,18 @@ impl ForwardingHandler {
         }
 
         // A read follows the lease as a write does: another broker may be
-        // leading the shard by now, with writes this one never saw.
+        // leading the shard by now, with writes this one never saw. A fleet
+        // that reads without the lease confirms by a round after the value
+        // instead.
         if matches!(op.op, CacheOpKind::Get | CacheOpKind::CounterGet)
             && !self.ingress.fence().lease_valid()
+            && !felix_replication::quorum::read_skips_lease(
+                &self.broker,
+                &key,
+                self.marks.as_deref(),
+                Some(self.ingress.as_ref()),
+            )
+            .await
         {
             crate::cluster::lease::metrics::record_refusal(
                 crate::cluster::lease::metrics::BOUNDARY_READ,
@@ -316,7 +325,11 @@ impl ForwardingHandler {
             self.marks.as_deref(),
             Some(self.ingress.as_ref()),
             self.quorum_timeout,
-            if writes { "write" } else { "read" },
+            if writes {
+                felix_replication::quorum::Access::Write
+            } else {
+                felix_replication::quorum::Access::Read
+            },
         )
         .await
         {

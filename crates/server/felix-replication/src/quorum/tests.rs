@@ -370,3 +370,39 @@ fn follower_acks_need_both_fleet_features() {
     fleet.observe([GENERATION_START.name()]);
     assert!(marks.acks_by_followers());
 }
+
+struct AlwaysConfirms;
+
+#[async_trait::async_trait]
+impl LeadershipCheck for AlwaysConfirms {
+    async fn confirm(&self, _key: &ShardKey, _generation: u64) -> Result<(), QuorumError> {
+        Ok(())
+    }
+}
+
+/// Reads leave the lease only once the fleet finalized `lease_free_reads`
+/// with what follower acks need, and never when the operator kept them on it.
+#[test]
+fn reads_by_round_need_the_fleet_and_no_lease_opt_in() {
+    use felix_common::fleet::{FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
+    let names = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        LEASE_FREE_READS.name(),
+    ];
+    let fleet = Arc::new(FleetGate::new(names));
+    let marks = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    marks.set_read_check(Arc::new(AlwaysConfirms), false);
+    fleet.observe([LEASE_FREE_READS.name()]);
+    assert!(marks.reads_by_round().is_none(), "follower acks are not on");
+    fleet.observe([GENERATION_START.name(), MAJORITY_ACK.name()]);
+    assert!(marks.reads_by_round().is_some());
+
+    let kept = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    kept.set_read_check(Arc::new(AlwaysConfirms), true);
+    assert!(kept.reads_by_round().is_none(), "the lease was opted into");
+    assert!(
+        QuorumMarks::with_fleet(fleet).reads_by_round().is_none(),
+        "no round to confirm with"
+    );
+}

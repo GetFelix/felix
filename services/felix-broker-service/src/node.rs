@@ -189,6 +189,21 @@ where
     // Start the Prometheus metrics HTTP server. This is separate from QUIC traffic and
     // intentionally lightweight so metrics remain available even under load.
     let broker = Arc::new(broker);
+    // A `Quorum` read confirms leadership by a round of fences, over the same
+    // transport and to the same replicas a promotion fences.
+    if let (Some((router, ..)), Some(pool)) = (&cluster, &peers)
+        && pool.offers_fence()
+    {
+        quorum_marks.set_read_check(
+            Arc::new(replication::leadership::ReadIndex::new(
+                Arc::clone(pool),
+                Arc::clone(&broker),
+                Arc::clone(router),
+                std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
+            )),
+            crate::config::quorum_reads_by_lease()?,
+        );
+    }
     let metrics_task = {
         let metrics_shutdown = metrics_shutdown.clone();
         tokio::spawn(crate::observability::serve_metrics(
