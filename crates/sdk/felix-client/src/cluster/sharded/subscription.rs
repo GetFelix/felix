@@ -177,7 +177,7 @@ pub(crate) async fn subscribe_sharded(
         let at = shard_start(shard, start, resume.as_ref());
         opening.push(tokio::spawn(async move {
             let opened = cluster
-                .subscribe_shard_following_redirects(&tenant_id, &namespace, &stream, shard, at)
+                .open_shard(&tenant_id, &namespace, &stream, shard, at)
                 .await;
             (shard, opened)
         }));

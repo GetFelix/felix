@@ -255,7 +255,11 @@ have to make yourself:
 - **An unreachable shard refuses the whole subscription.** Opening covers every
   shard or it fails, naming the shards it could not reach. A subscription
   quietly covering three shards of four looks exactly like a complete one to
-  everything downstream, which makes it the worst available answer.
+  everything downstream, which makes it the worst available answer. A shard
+  that is only briefly unservable does not count: an owner still opening it
+  (`not_ready`, which includes a promoted leader fencing a majority) or moving
+  it is asked again with the `ReconnectPolicy` backoff, and the call fails
+  only if it is still refused when the attempts run out.
 
 - **Losing one shard's owner does not tear down the others.** That shard is
   re-established on its own, resuming after the last offset it delivered, and
@@ -397,6 +401,9 @@ it (see "Error codes" in `docs/protocol.md`):
   client.
 - A subscribe, cache watch or group request whose redirect target answers
   `shard_unavailable` or `draining` goes back to the entry broker once.
+- Opening a subscription (`subscribe`, `subscribe_from`, `subscribe_sharded`)
+  retries a `retry` or `retry_after` refusal with the policy's attempts and
+  backoff, as a publish does. A `fatal` one is returned at once.
 
 A broker that predates error codes sends prose, and the client falls back to
 what it did before codes: only a credential failure (and a subscribe offset

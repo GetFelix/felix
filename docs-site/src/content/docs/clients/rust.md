@@ -983,6 +983,9 @@ while let Some(item) = subscription.next().await {
 
 This needs a broker advertising `FEATURE_STREAM_SHARDS`, because the shard count
 comes from asking one, and `FEATURE_REDIRECT` to follow each shard to its owner.
+A shard whose owner is still opening it (`not_ready`, as a promoted leader
+answers while it fences its replicas) is asked again with the `ReconnectPolicy`
+backoff; the call fails only if some shard is still refused after the last attempt.
 
 **Ordering is per shard and nothing more** — merging cannot restore an order
 that never existed. Resumption is a vector: `positions()` returns one offset per

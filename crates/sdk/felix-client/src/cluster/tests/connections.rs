@@ -104,9 +104,10 @@ async fn one_connection_per_broker_under_light_mixed_role_use() -> Result<()> {
         )
         .await?;
     assert_eq!(b.publishes(), 1, "the second publish went to the owner");
-    // Redirects: A names B, B names A, and A is not asked twice.
+    // Redirects: A names B, B names A, and A is not asked twice in one
+    // attempt. A cycle is a cluster that has not settled, so it is retried.
     assert!(cluster.subscribe("t1", "default", "orders").await.is_err());
-    assert_eq!(a.subscribes() + b.subscribes(), 3);
+    assert_eq!(a.subscribes() + b.subscribes(), 3 * policy().attempts);
     // Leader: what an idempotent producer reaches when refused.
     let leader = cluster.connect_to(b.addr).await?;
     assert!(leader.is_usable());

@@ -191,6 +191,57 @@ async fn a_subscribe_refusal_is_typed() -> Result<()> {
     let broker = err.downcast_ref::<BrokerError>().expect("typed");
     assert_eq!(broker.code, ErrorCode::ShardUnavailable);
     assert_eq!(broker.reason(), Some("not_ready"));
+    assert_eq!(
+        entry.subscribes(),
+        fast_policy().attempts,
+        "a shard that stays unready is asked once per attempt, then given up on"
+    );
+    Ok(())
+}
+
+/// **A shard still opening is waited for, not reported.** A promoted leader
+/// fences a majority before it serves, and a subscribe that lands in that
+/// window must not fail the whole call.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_subscribe_waits_out_a_shard_that_is_still_opening() -> Result<()> {
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (entry, cert) = StubBroker::start(move |_| {
+        if asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+            error(ErrorCode::ShardUnavailable, Some("not_ready"))
+        } else {
+            Message::Subscribed {
+                subscription_id: 0,
+                start_offset: None,
+                live_offset: None,
+            }
+        }
+    })?;
+    let cluster = Arc::new(cluster(&entry, build_client_config_with_overrides(cert, 1)?).await?);
+
+    cluster
+        .subscribe("t1", "default", "orders")
+        .await
+        .expect("opened once the shard was ready");
+
+    assert_eq!(entry.subscribes(), 3);
+    Ok(())
+}
+
+/// A fatal subscribe refusal is not retried.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_fatal_subscribe_refusal_is_not_retried() -> Result<()> {
+    let (entry, cert) = StubBroker::start(|_| error(ErrorCode::Forbidden, None))?;
+    let cluster = Arc::new(cluster(&entry, build_client_config_with_overrides(cert, 1)?).await?);
+
+    cluster
+        .subscribe("t1", "default", "orders")
+        .await
+        .err()
+        .expect("refused");
+
+    assert_eq!(entry.subscribes(), 1);
     Ok(())
 }
 
