@@ -2030,6 +2030,7 @@ async fn pg_assignment_long_polls_do_not_hold_connections() -> Result<()> {
                 client_addr: None,
                 kafka_addr: None,
                 region: "local".to_string(),
+                zone: None,
                 labels: Default::default(),
                 capacity: Default::default(),
             },

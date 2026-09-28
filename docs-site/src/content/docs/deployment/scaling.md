@@ -8,7 +8,7 @@ chart-specific commands.
 
 ## What moves a shard
 
-Two things, and an operator (see
+Three things, and an operator (see
 [Moving shards by hand](/felix/deployment/moving-shards/)):
 
 - **A broker over its share.** Placement counts the shards each live broker
@@ -21,6 +21,15 @@ Two things, and an operator (see
   and replaces it as a follower wherever it holds a copy for someone else.
   The broker keeps serving throughout; nothing stops until each shard's
   handoff completes.
+- **A follower sharing a zone.** When brokers register zones
+  (`FELIX_NODE_ZONE`), a follower in the same zone as another copy of its
+  shard is replaced by one in a zone the shard lacks, once a broker there has
+  room. This is what spreads shards placed before a zone had brokers.
+
+Moves respect zones. A drain goes where the shard keeps the most zones, a
+rebalance only where it loses none, and the copies kept at the cut-over are
+the ones in zones the shard would otherwise lose. With no zones registered
+none of this changes anything.
 
 A shard is never simply reassigned while its leader is alive, because a
 broker that has not seen the log would serve it empty. It is **moved**:
@@ -66,7 +75,7 @@ an ordinary failover.
 ## Adding a broker
 
 Start it with a new `FELIX_NODE_ID` and the same control-plane URL and
-credential the others use. Once it registers it is a placement target, and
+credential the others use, and `FELIX_NODE_ZONE` if the cluster uses zones. Once it registers it is a placement target, and
 the rebalance above starts on the next placement pass
 (`FELIX_SHARD_RECONCILE_INTERVAL_MS`, 5 s by default).
 

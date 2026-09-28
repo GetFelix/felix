@@ -3,12 +3,13 @@
 //! Each step is one assignment write, decided from the store and fresh
 //! reports alone, so any instance resumes a half-done move where the last
 //! pass left it.
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use felix_router::RegionRouter;
 
 use super::rendezvous::{choose_replicas, promote, score};
+use super::zones::{Domain, domain, domain_of, keep_spread};
 use super::{Blocked, CaughtUp, Decision, MoveStep};
 use crate::model::{MoveReason, Node, ShardAssignment, ShardKey, ShardState};
 
@@ -318,7 +319,15 @@ pub(super) fn move_step<'a>(
     }
 
     if let Some(joining) = existing.joining.as_deref() {
-        return replacement_step(existing, joining, is_live, is_draining, caught_up, moves);
+        return replacement_step(
+            existing,
+            joining,
+            eligible,
+            is_live,
+            is_draining,
+            caught_up,
+            moves,
+        );
     }
 
     // Nothing in progress. Should a move start?
@@ -328,12 +337,32 @@ pub(super) fn move_step<'a>(
         // copy already exists; otherwise the bounded choice, or any live node
         // with room.
         promote_under_share(key, existing, eligible, caught_up, leaders, leader_share).or_else(
-            || choose_destination(key, existing, eligible, leaders, load, leader_share, false),
+            || {
+                choose_destination(
+                    key,
+                    existing,
+                    replication_factor,
+                    eligible,
+                    leaders,
+                    load,
+                    leader_share,
+                    false,
+                )
+            },
         )
     } else if leader_live && over_share {
         // Only from over share to under share, so moves converge instead of
         // trading shards back and forth.
-        choose_destination(key, existing, eligible, leaders, load, leader_share, true)
+        choose_destination(
+            key,
+            existing,
+            replication_factor,
+            eligible,
+            leaders,
+            load,
+            leader_share,
+            true,
+        )
     } else {
         None
     };
@@ -439,7 +468,9 @@ pub(super) fn undo_replacement(existing: &ShardAssignment, joining: &str) -> Sha
     }
 }
 
-/// Start replacing a follower on a draining node with one that is staying.
+/// Start replacing a follower on a draining node with one that is staying,
+/// or, with none draining, a follower crowding a zone with one in a zone the
+/// shard has no copy in.
 ///
 /// Draining only, never merely down: a rolling restart takes every node down
 /// in turn, and reseating each would copy every shard once per restart.
@@ -447,6 +478,7 @@ pub(super) fn undo_replacement(existing: &ShardAssignment, joining: &str) -> Sha
 /// The replacement joins beside the follower it replaces, which leaves once
 /// it has caught up (`replacement_step`), so the shard keeps every copy it
 /// asked for while the new one fills.
+#[allow(clippy::too_many_arguments)]
 fn reseat<'a>(
     key: &ShardKey,
     existing: &ShardAssignment,
@@ -456,28 +488,44 @@ fn reseat<'a>(
     load: &mut HashMap<&'a str, u32>,
     moves: &mut Moves,
 ) -> Decision {
-    let Some(departing) = existing
+    let draining = existing
         .replicas
         .iter()
-        .find(|replica| is_draining(replica))
-    else {
+        .find(|replica| is_draining(replica));
+    let Some(departing) = draining.or_else(|| crowded(existing, eligible, None)) else {
         return Decision::Kept;
     };
     // Swapped only when someone can take its place; dropping it costs a copy.
     let taken: Vec<&str> = existing.nodes().map(String::as_str).collect();
-    let Some(replacement) = eligible
-        .iter()
-        .filter(|node| !taken.contains(&node.node_id.as_str()))
-        .filter(|node| match node.spec.capacity.max_shards {
-            Some(max) => load.get(node.node_id.as_str()).copied().unwrap_or(0) < max,
-            None => true,
-        })
-        .max_by(|a, b| {
+    let held: BTreeSet<Domain<'_>> = existing
+        .nodes()
+        .filter(|node| *node != departing)
+        .map(|node| domain(eligible, node))
+        .collect();
+    let candidates = || {
+        eligible
+            .iter()
+            .copied()
+            .filter(|node| !taken.contains(&node.node_id.as_str()))
+            .filter(|node| match node.spec.capacity.max_shards {
+                Some(max) => load.get(node.node_id.as_str()).copied().unwrap_or(0) < max,
+                None => true,
+            })
+    };
+    let best = |nodes: &mut dyn Iterator<Item = &'a Node>| {
+        nodes.max_by(|a, b| {
             score(key, &a.node_id)
                 .cmp(&score(key, &b.node_id))
                 .then_with(|| a.node_id.cmp(&b.node_id))
         })
-    else {
+    };
+    let widening = best(&mut candidates().filter(|node| !held.contains(&domain_of(node))));
+    // A crowded follower is only worth a copy if the shard gains a zone.
+    let replacement = match draining {
+        Some(_) => widening.or_else(|| best(&mut candidates())),
+        None => widening,
+    };
+    let Some(replacement) = replacement else {
         return Decision::Kept;
     };
     if let Err(blocked) = moves.begin(&existing.leader, &replacement.node_id) {
@@ -507,6 +555,7 @@ fn reseat<'a>(
 fn replacement_step(
     existing: &ShardAssignment,
     joining: &str,
+    eligible: &[&Node],
     is_live: &dyn Fn(&str) -> bool,
     is_draining: &dyn Fn(&str) -> bool,
     caught_up: &dyn CaughtUp,
@@ -515,7 +564,8 @@ fn replacement_step(
     let departing = existing
         .replicas
         .iter()
-        .find(|replica| replica.as_str() != joining && is_draining(replica));
+        .find(|replica| replica.as_str() != joining && is_draining(replica))
+        .or_else(|| crowded(existing, eligible, Some(joining)));
     let undo = |step: MoveStep, started| {
         Decision::Move(
             step,
@@ -568,7 +618,9 @@ fn replacement_step(
 
 /// The replica set once `target` leads: nodes that already hold a copy first
 /// (the old leader if it is staying, then live followers), topped up by
-/// score, and cut to the replication factor.
+/// score, and cut to the replication factor. The cut keeps copies in zones the
+/// set would otherwise lose, so a move never narrows a shard's spread by
+/// dropping the wrong copy.
 fn replicas_after_cut_over<'a>(
     key: &ShardKey,
     existing: &ShardAssignment,
@@ -579,27 +631,59 @@ fn replicas_after_cut_over<'a>(
     load: &mut HashMap<&'a str, u32>,
 ) -> Vec<String> {
     let wanted = replication_factor.saturating_sub(1) as usize;
-    let mut replicas: Vec<String> = existing
+    let staying: Vec<&str> = existing
         .nodes()
-        .filter(|node| node.as_str() != target && is_live(node))
-        .cloned()
+        .map(String::as_str)
+        .filter(|node| *node != target && is_live(node))
         .collect();
-    replicas.truncate(wanted);
+    let mut replicas: Vec<String> = keep_spread(eligible, &[target], &staying, wanted)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
     if replicas.len() < wanted {
-        let taken: Vec<String> = replicas.clone();
-        let mut chosen = choose_replicas(
+        let holding: Vec<&str> = std::iter::once(target)
+            .chain(replicas.iter().map(String::as_str))
+            .collect();
+        let chosen = choose_replicas(
             key,
             eligible,
             load,
-            target,
+            &holding,
             (wanted - replicas.len()) as u32,
         );
-        // `choose_replicas` does not know about the ones kept above.
-        chosen.retain(|node| !taken.contains(node));
         replicas.extend(chosen);
-        replicas.truncate(wanted);
     }
     replicas
+}
+
+/// How many zones the shard's copies would span if `target` led it: the copies
+/// [`replicas_after_cut_over`] would keep, plus the zones a top-up could still
+/// reach.
+fn spread_if_led_by(
+    existing: &ShardAssignment,
+    target: &str,
+    replication_factor: u32,
+    eligible: &[&Node],
+) -> usize {
+    let wanted = replication_factor.saturating_sub(1) as usize;
+    let staying: Vec<&str> = existing
+        .nodes()
+        .map(String::as_str)
+        .filter(|node| *node != target && eligible.iter().any(|e| e.node_id == *node))
+        .collect();
+    let kept = keep_spread(eligible, &[target], &staying, wanted);
+    let used: BTreeSet<Domain<'_>> = std::iter::once(target)
+        .chain(kept.iter().copied())
+        .map(|id| domain(eligible, id))
+        .collect();
+    let free = eligible
+        .iter()
+        .filter(|node| node.node_id != target && !kept.contains(&node.node_id.as_str()))
+        .map(|node| domain_of(node))
+        .filter(|zone| !used.contains(zone))
+        .collect::<BTreeSet<_>>()
+        .len();
+    used.len() + free.min(wanted - kept.len())
 }
 
 /// A caught-up live follower under its leadership share, furthest ahead first.
@@ -622,18 +706,25 @@ fn promote_under_share<'a>(
 /// The live node to move a shard to, by score, preferring nodes under their
 /// leadership share. `balanced_only` answers `None` rather than spill over.
 ///
+/// Zones come before balance: a drain goes where the shard keeps the most
+/// zones, and a rebalance, which is optional, only where it loses none.
+///
 /// `max_shards` caps roles, leaders and followers alike, so a node already
 /// holding a copy of this shard gains no role by leading it.
+#[allow(clippy::too_many_arguments)]
 fn choose_destination<'a>(
     key: &ShardKey,
     existing: &ShardAssignment,
+    replication_factor: u32,
     eligible: &[&'a Node],
     leaders: &HashMap<&str, u32>,
     load: &HashMap<&str, u32>,
     leader_share: u32,
     balanced_only: bool,
 ) -> Option<&'a str> {
-    let candidates: Vec<&'a Node> = eligible
+    let spread_of =
+        |node: &Node| spread_if_led_by(existing, &node.node_id, replication_factor, eligible);
+    let mut candidates: Vec<&'a Node> = eligible
         .iter()
         .copied()
         .filter(|node| node.node_id != existing.leader)
@@ -645,6 +736,16 @@ fn choose_destination<'a>(
             None => true,
         })
         .collect();
+    let floor = if balanced_only {
+        spread_if_led_by(existing, &existing.leader, replication_factor, eligible)
+    } else {
+        candidates
+            .iter()
+            .map(|node| spread_of(node))
+            .max()
+            .unwrap_or(0)
+    };
+    candidates.retain(|node| spread_of(node) >= floor);
     let under_share = candidates
         .iter()
         .copied()
@@ -654,8 +755,9 @@ fn choose_destination<'a>(
         from.iter()
             .copied()
             .max_by(|a, b| {
-                score(key, &a.node_id)
-                    .cmp(&score(key, &b.node_id))
+                spread_of(a)
+                    .cmp(&spread_of(b))
+                    .then_with(|| score(key, &a.node_id).cmp(&score(key, &b.node_id)))
                     .then_with(|| a.node_id.cmp(&b.node_id))
             })
             .map(|node| node.node_id.as_str())
@@ -665,6 +767,35 @@ fn choose_destination<'a>(
     } else {
         pick(&under_share).or_else(|| pick(&candidates))
     }
+}
+
+/// A live follower whose zone another copy of the shard is already in, if
+/// any: the one to give up for a copy in a zone the shard lacks. `joining` is
+/// left out on both sides, being the copy that would replace it.
+fn crowded<'a>(
+    existing: &'a ShardAssignment,
+    eligible: &[&'a Node],
+    joining: Option<&str>,
+) -> Option<&'a String> {
+    existing
+        .replicas
+        .iter()
+        .filter(|replica| Some(replica.as_str()) != joining)
+        .filter(|replica| eligible.iter().any(|node| node.node_id == **replica))
+        .filter(|replica| {
+            let mine = domain(eligible, replica);
+            existing
+                .nodes()
+                .filter(|other| other != replica && Some(other.as_str()) != joining)
+                .any(|other| domain(eligible, other) == mine)
+        })
+        // The worst-scoring one, so the copy that goes is the one placement
+        // would least have chosen.
+        .min_by(|a, b| {
+            score(&existing.key, a)
+                .cmp(&score(&existing.key, b))
+                .then_with(|| a.cmp(b))
+        })
 }
 
 /// `inner`, believed only where its report is from `generation`.

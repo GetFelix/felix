@@ -13,6 +13,7 @@ pub(crate) fn node(node_id: &str, port: u16) -> Node {
             client_addr: None,
             kafka_addr: None,
             region: "us-west-2".to_string(),
+            zone: None,
             labels: BTreeMap::from([("rack".to_string(), "a1".to_string())]),
             capacity: NodeCapacity {
                 max_shards: Some(64),
@@ -209,18 +210,20 @@ async fn register_is_readable(store: &dyn ControlPlaneStore) {
     assert_eq!(store.list_nodes().await.expect("list"), vec![stored]);
 }
 
-/// The optional listener addresses live in their own columns in Postgres, so
-/// every backend has to be shown to keep them.
+/// The optional listener addresses and zone live in their own columns in
+/// Postgres, so every backend has to be shown to keep them.
 async fn optional_addresses_survive_a_round_trip(store: &dyn ControlPlaneStore) {
     clear(store).await;
     let mut with_addrs = node("broker-a", 7001);
     with_addrs.spec.client_addr = Some("10.0.0.4:5001".to_string());
     with_addrs.spec.kafka_addr = Some("host.docker.internal:9092".to_string());
+    with_addrs.spec.zone = Some("us-west-2b".to_string());
     let stored = store.register_node(with_addrs).await.expect("register");
     assert_eq!(
         stored.spec.kafka_addr.as_deref(),
         Some("host.docker.internal:9092")
     );
+    assert_eq!(stored.spec.zone.as_deref(), Some("us-west-2b"));
     assert_eq!(store.get_node("broker-a").await.expect("get"), stored);
 
     // A restart without the Kafka listener has to clear the address, or Kafka
@@ -230,6 +233,8 @@ async fn optional_addresses_survive_a_round_trip(store: &dyn ControlPlaneStore) 
         .await
         .expect("re-register");
     assert_eq!(stored.spec.kafka_addr, None);
+    // Likewise a broker restarted without a zone is placed as having none.
+    assert_eq!(stored.spec.zone, None);
     assert_eq!(store.get_node("broker-a").await.expect("get"), stored);
 }
 

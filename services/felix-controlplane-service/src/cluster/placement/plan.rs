@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use super::moves::{MovePolicy, Moves, move_step};
 use super::rendezvous::{choose, choose_replicas, promote};
+use super::zones;
 use super::{Blocked, CaughtUp, Decision, MoveStep, Unplaceable};
 use crate::model::{
     Cache, Node, NodeLifecycle, ShardAssignment, ShardKey, ShardKind, ShardState, Stream,
@@ -13,6 +14,12 @@ use crate::model::{
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Plan {
     pub shards: Vec<ShardPlan>,
+    /// Shards whose copies, as this plan leaves them, share a zone although
+    /// the live brokers they may use span more zones than they do. Placement
+    /// spreads wherever it can, so this is the fallback: no broker with room
+    /// was in a missing zone, or the move that would spread it is waiting for
+    /// a slot.
+    pub unspread: Vec<ShardKey>,
 }
 
 impl Plan {
@@ -222,6 +229,7 @@ pub(super) fn plan_abandoning(
 
     let is_empty_cluster = eligible.is_empty();
     let mut shards = Vec::with_capacity(keys.len());
+    let mut unspread = Vec::new();
     for key in keys {
         let placeable = placeable_of.get(owner_of(&key).as_str()).copied();
         let replication_factor = placeable.map_or(1, |p| p.replication_factor);
@@ -266,6 +274,7 @@ pub(super) fn plan_abandoning(
                 &mut moves,
             );
             shards.push(ShardPlan { key, decision });
+            note_spread(&mut unspread, shards.last(), &current, &eligible);
             continue;
         }
 
@@ -288,13 +297,14 @@ pub(super) fn plan_abandoning(
                 &key,
                 &eligible,
                 &mut load,
-                promoted,
+                &[promoted],
                 replication_factor.saturating_sub(1),
             );
             shards.push(ShardPlan {
                 key,
                 decision: Decision::Place(promoted.to_string(), replicas),
             });
+            note_spread(&mut unspread, shards.last(), &current, &eligible);
             continue;
         }
 
@@ -319,6 +329,7 @@ pub(super) fn plan_abandoning(
                 key,
                 decision: Decision::Unplaceable(reason),
             });
+            note_spread(&mut unspread, shards.last(), &current, &eligible);
             continue;
         }
 
@@ -335,7 +346,7 @@ pub(super) fn plan_abandoning(
                     &key,
                     &eligible,
                     &mut load,
-                    leader,
+                    &[leader],
                     replication_factor.saturating_sub(1),
                 );
                 Decision::Place(leader.to_string(), replicas)
@@ -351,10 +362,39 @@ pub(super) fn plan_abandoning(
             None => Decision::Unplaceable(Unplaceable::AllNodesAtCapacity),
         };
         shards.push(ShardPlan { key, decision });
+        note_spread(&mut unspread, shards.last(), &current, &eligible);
     }
 
     shards.sort_by(|a, b| order(&a.key).cmp(&order(&b.key)));
-    Plan { shards }
+    unspread.sort_by(|a, b| order(a).cmp(&order(b)));
+    Plan { shards, unspread }
+}
+
+/// Record `planned` in `unspread` if the copies it leaves span fewer zones
+/// than the shard's eligible brokers offer.
+fn note_spread(
+    unspread: &mut Vec<ShardKey>,
+    planned: Option<&ShardPlan>,
+    current: &HashMap<&ShardKey, &ShardAssignment>,
+    eligible: &[&Node],
+) {
+    let Some(planned) = planned else {
+        return;
+    };
+    let set: Vec<&str> = match &planned.decision {
+        Decision::Place(leader, replicas) => std::iter::once(leader)
+            .chain(replicas)
+            .map(String::as_str)
+            .collect(),
+        Decision::Move(_, assignment) => assignment.nodes().map(String::as_str).collect(),
+        _ => match current.get(&planned.key) {
+            Some(existing) => existing.nodes().map(String::as_str).collect(),
+            None => return,
+        },
+    };
+    if zones::unspread(eligible, &set) {
+        unspread.push(planned.key.clone());
+    }
 }
 
 /// Build the assignment a `Place` decision calls for.

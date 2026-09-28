@@ -97,6 +97,7 @@ fn node(node_id: &str, port: u16, region: &str, rack: &str) -> Node {
             client_addr: None,
             kafka_addr: None,
             region: region.to_string(),
+            zone: None,
             labels: BTreeMap::from([("rack".to_string(), rack.to_string())]),
             capacity: NodeCapacity::default(),
         },

@@ -2,9 +2,10 @@
 //!
 //! Every choice here is a deterministic function of the shard key and the
 //! node ids, which is what lets two instances plan the same cluster alike.
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use super::CaughtUp;
+use super::zones::{Domain, domain, domain_of};
 use crate::model::{Node, ShardAssignment, ShardKey, ShardKind};
 
 /// Highest-scoring node that still keeps the cluster balanced.
@@ -76,7 +77,14 @@ pub(super) fn choose<'a>(
         .map(|n| n.node_id.as_str())
 }
 
-/// The next best-scoring nodes for a shard, after the leader.
+/// The next best-scoring nodes for a shard, after those already `holding` it
+/// (the leader first).
+///
+/// Each pick goes to a zone the set does not have yet when any node with room
+/// is in one, and falls back to the best-scoring node otherwise: a copy in a
+/// zone that already has one still survives a broker failure, where no copy
+/// survives nothing. The plan reports a set left short of zones
+/// (`Plan::unspread`).
 ///
 /// Fewer than `wanted` is normal and not an error: a three-node cluster cannot
 /// hold four copies. Placement records what it could achieve rather than
@@ -86,33 +94,48 @@ pub(super) fn choose_replicas<'a>(
     key: &ShardKey,
     eligible: &[&'a Node],
     load: &mut HashMap<&'a str, u32>,
-    leader: &str,
+    holding: &[&str],
     wanted: u32,
 ) -> Vec<String> {
-    let mut chosen = Vec::new();
+    let mut chosen: Vec<&'a Node> = Vec::new();
     for _ in 0..wanted {
-        let Some(node) = eligible
+        let used: BTreeSet<Domain<'_>> = holding
             .iter()
-            .filter(|node| node.node_id != leader)
-            .filter(|node| !chosen.iter().any(|taken: &String| taken == &node.node_id))
-            .filter(|node| match node.spec.capacity.max_shards {
-                // A replica holds a copy, so it counts against capacity just as
-                // leadership does.
-                Some(max) => load.get(node.node_id.as_str()).copied().unwrap_or(0) < max,
-                None => true,
-            })
-            .max_by(|a, b| {
+            .map(|id| domain(eligible, id))
+            .chain(chosen.iter().map(|node| domain_of(node)))
+            .collect();
+        let candidates = || {
+            eligible
+                .iter()
+                .copied()
+                .filter(|node| !holding.contains(&node.node_id.as_str()))
+                .filter(|node| !chosen.iter().any(|taken| taken.node_id == node.node_id))
+                .filter(|node| match node.spec.capacity.max_shards {
+                    // A replica holds a copy, so it counts against capacity just as
+                    // leadership does.
+                    Some(max) => load.get(node.node_id.as_str()).copied().unwrap_or(0) < max,
+                    None => true,
+                })
+        };
+        let best = |nodes: &mut dyn Iterator<Item = &'a Node>| {
+            nodes.max_by(|a, b| {
                 score(key, &a.node_id)
                     .cmp(&score(key, &b.node_id))
                     .then_with(|| a.node_id.cmp(&b.node_id))
             })
+        };
+        let Some(node) = best(&mut candidates().filter(|node| !used.contains(&domain_of(node))))
+            .or_else(|| best(&mut candidates()))
         else {
             break;
         };
         *load.entry(node.node_id.as_str()).or_default() += 1;
-        chosen.push(node.node_id.clone());
+        chosen.push(node);
     }
     chosen
+        .into_iter()
+        .map(|node| node.node_id.clone())
+        .collect()
 }
 
 /// The best eligible follower that is caught up, if any.
