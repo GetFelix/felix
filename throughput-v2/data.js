@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790569612303,
+  "lastUpdate": 1790569803827,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19188,6 +19188,58 @@ window.BENCHMARK_DATA = {
             "range": "12865.07",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1246659.08\nmean: 1246321.08\nstdev: 12865.07\ncv: 1.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1f44de7b4759e1b76f529b6c6bbb3456e24ba090",
+          "message": "fix(storage): sync each retention unlink so a power loss leaves no gap (#800)\n\nRetention unlinked a sweep's segments without syncing the directory. A\npower loss could then keep a newer unlink and undo an older one, and\nrecovery refused the resulting offset gap as corruption. Unlink oldest\nfirst with a directory sync after each, as compaction's head trim does,\nso an interrupted sweep leaves a longer log.\n\nAlso corrects the docs-site \"no retention\" limit: broker-wide retention\nexists; only per-stream policies are not acted on.",
+          "timestamp": "2026-09-27T21:23:24-07:00",
+          "tree_id": "c63234ba239943fc552f5f2f2e14a3223276f3b2",
+          "url": "https://github.com/gabloe/felix/commit/1f44de7b4759e1b76f529b6c6bbb3456e24ba090"
+        },
+        "date": 1790569802580,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 643106.77,
+            "range": "44368.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 643106.77\nmean: 642255.45\nstdev: 44368.00\ncv: 6.91%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 643106.77,
+            "range": "44368.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 643106.77\nmean: 642255.45\nstdev: 44368.00\ncv: 6.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 162843.81,
+            "range": "11921.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 162843.81\nmean: 159283.64\nstdev: 11921.14\ncv: 7.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1628438.12,
+            "range": "119211.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1628438.12\nmean: 1592836.35\nstdev: 119211.41\ncv: 7.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
