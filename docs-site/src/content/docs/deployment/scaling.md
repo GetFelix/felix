@@ -255,7 +255,9 @@ and TypeScript clients follow the redirect, while the single-broker Rust
 
 While the destination is still copying the log, it does not count toward the
 shard's quorum, so a `Quorum` publish waits for a majority of the replicas the
-stream asked for and not for the copy.
+stream asked for and not for the copy. Staging the destination does not fail
+a `Quorum` publish either: the leader waits for the first quorum mark of the
+new generation rather than reporting that leadership moved.
 
 Subscriptions and cache watches on the old leader are **ended** when it is
 fenced, and each is told where to resume. A write routed to the old leader before

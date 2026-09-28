@@ -79,12 +79,28 @@ impl QuorumMarks {
     ) -> QuorumWait {
         self.shards.wait_for(key, generation, offset, timeout).await
     }
+
+    /// See [`MarkTable::wait_while_leading`].
+    pub async fn wait_while_leading(
+        &self,
+        key: &ShardKey,
+        leading: impl Fn() -> Option<u64>,
+        offset: u64,
+        timeout: std::time::Duration,
+    ) -> QuorumWait {
+        self.shards
+            .wait_while_leading(key, leading, offset, timeout)
+            .await
+    }
 }
 
 /// One high-water mark per shard, for one of the logs a shard has.
 #[derive(Debug, Default)]
 pub struct MarkTable {
     shards: Mutex<HashMap<ShardKey, ShardMark>>,
+    /// Bumped whenever a shard gets a mark at a new generation, so a wait for
+    /// one that does not exist yet wakes when it does.
+    started: watch::Sender<u64>,
 }
 
 #[derive(Debug)]
@@ -122,6 +138,7 @@ impl MarkTable {
                         offset: watch::Sender::new(offset),
                     },
                 );
+                self.started.send_modify(|n| *n = n.wrapping_add(1));
             }
         }
     }
@@ -187,6 +204,70 @@ impl MarkTable {
             Ok(true) => QuorumWait::Reached,
             Ok(false) => QuorumWait::NotLeading,
             Err(_) => QuorumWait::TimedOut,
+        }
+    }
+
+    /// Wait until a majority holds every offset below `offset`, at whatever
+    /// generation this broker leads `key` at while it waits.
+    ///
+    /// `leading` is asked for that generation, and `None` from it ends the
+    /// wait as [`QuorumWait::NotLeading`]. Unlike [`MarkTable::wait_for`], a
+    /// generation this broker leads but has no mark for yet is waited out:
+    /// a new generation has none until its first replication pass reports,
+    /// and a move staging a destination starts one under the same leader.
+    /// Neither is leadership moving. A write taken at an older generation is
+    /// covered by the newer one's mark too, since that counts a majority of
+    /// the newer replica set holding the log up to it.
+    pub async fn wait_while_leading(
+        &self,
+        key: &ShardKey,
+        leading: impl Fn() -> Option<u64>,
+        offset: u64,
+        timeout: std::time::Duration,
+    ) -> QuorumWait {
+        /// How often a wait with no mark to watch looks again at whether this
+        /// broker still leads; nothing signals a leadership change here.
+        const RECHECK: std::time::Duration = std::time::Duration::from_millis(50);
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut started = self.started.subscribe();
+        loop {
+            // Marked seen before the table is read, so a mark that appears
+            // after the read still wakes the wait below.
+            started.borrow_and_update();
+            let Some(generation) = leading() else {
+                return QuorumWait::NotLeading;
+            };
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match self.watcher(key, generation) {
+                Some(mut watcher) => {
+                    if *watcher.borrow_and_update() >= offset {
+                        return QuorumWait::Reached;
+                    }
+                    let reached = tokio::time::timeout(left, async {
+                        while watcher.changed().await.is_ok() {
+                            if *watcher.borrow_and_update() >= offset {
+                                return true;
+                            }
+                        }
+                        false
+                    })
+                    .await;
+                    match reached {
+                        Ok(true) => return QuorumWait::Reached,
+                        // The mark was dropped: forgotten, or replaced at a
+                        // newer generation. `leading` says which.
+                        Ok(false) => {}
+                        Err(_) => return QuorumWait::TimedOut,
+                    }
+                }
+                None => {
+                    if left.is_zero() {
+                        return QuorumWait::TimedOut;
+                    }
+                    let _ = tokio::time::timeout(left.min(RECHECK), started.changed()).await;
+                }
+            }
         }
     }
 
@@ -280,13 +361,13 @@ pub async fn await_quorum<S: ShardServing + ?Sized>(
     let Some((_, last_offset)) = outcome.offsets else {
         return Ok(());
     };
-    let Some(generation) = ingress.generation(shard) else {
+    if ingress.generation(shard).is_none() {
         return Err(QuorumError::LeadershipLost {
             what: "batch",
             detail: "shard ownership changed",
         }
         .into());
-    };
+    }
 
     // Placed with no replica, the leader is the majority and already holds
     // the batch. Nothing ships for such a shard, so no mark will come.
@@ -296,7 +377,12 @@ pub async fn await_quorum<S: ShardServing + ?Sized>(
 
     // `last_offset` is inclusive, and the mark is one past what is held.
     match marks
-        .wait_for(shard, generation, last_offset + 1, timeout)
+        .wait_while_leading(
+            shard,
+            || ingress.generation(shard),
+            last_offset + 1,
+            timeout,
+        )
         .await
     {
         crate::quorum::QuorumWait::Reached => release(ingress, "batch"),
@@ -362,17 +448,20 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
         return Ok(());
     };
     let tail = log.tail_offset().await?;
-    let Some(generation) = ingress.generation(shard) else {
+    if ingress.generation(shard).is_none() {
         return Err(QuorumError::LeadershipLost {
             what,
             detail: "shard ownership changed",
         }
         .into());
-    };
+    }
     if !ingress.replicated(shard) {
         return Ok(());
     }
-    match marks.wait_for(shard, generation, tail, timeout).await {
+    match marks
+        .wait_while_leading(shard, || ingress.generation(shard), tail, timeout)
+        .await
+    {
         QuorumWait::Reached => release(ingress, what),
         QuorumWait::TimedOut => {
             crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
@@ -467,13 +556,13 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
             log.tail_offset().await?
         }
     };
-    let Some(generation) = ingress.generation(shard) else {
+    if ingress.generation(shard).is_none() {
         return Err(QuorumError::LeadershipLost {
             what,
             detail: "shard ownership changed",
         }
         .into());
-    };
+    }
     if !ingress.replicated(shard) {
         return Ok(());
     }
@@ -482,7 +571,7 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
     broker.appended().notify_one();
     match marks
         .counters()
-        .wait_for(shard, generation, end, timeout)
+        .wait_while_leading(shard, || ingress.generation(shard), end, timeout)
         .await
     {
         QuorumWait::Reached => release(ingress, what),

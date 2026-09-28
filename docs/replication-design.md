@@ -992,6 +992,14 @@ with its slowest follower and the next mark waits for the next pass.
 `FelixShardStagedMove` and `FelixShardStagedMoveSingle` that safety holds with
 it.
 
+Staging the destination starts a generation under the same leader, and a mark
+belongs to one generation, so the new one has none until its first pass
+reports. A `Quorum` publish that finds no mark for the generation its broker
+leads waits for one instead of reading the gap as lost leadership, and one
+already waiting when the generation changes carries over to the new mark,
+which counts a majority of the new replica set holding the log up to it. Only
+the broker ceasing to lead the shard ends the wait early.
+
 The window is kept short by waking each step rather than polling for it. The
 broker long-polls the assignment feed, so the fence and the cut-over reach it
 as they are written. Its assignment watch wakes the routing feed, and the feed
