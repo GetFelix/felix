@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790607583802,
+  "lastUpdate": 1790608176349,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -24816,6 +24816,72 @@ window.BENCHMARK_DATA = {
             "range": "545.98",
             "unit": "us",
             "extra": "trials: 5\nmedian: 404.00\nmean: 737.40\nstdev: 545.98\ncv: 74.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "12662a2998a13482f95612a8e694ba7f38fe6a47",
+          "message": "test(kafka): take the fetch-wait baseline after the last kcat disconnects (#823)\n\nkcat_reads_every_shard_and_follows_a_moved_one gates the shard move on the\nold leader's fetch-wait counter rising, as proof the follower kcat is parked\nthere. The consume-everything kcat that runs just before can exit with a\nfetch still parked on the old leader; the broker finishes that wait and\ncounts it after the baseline was read. Under load, when the follower's\ncontainer starts slowly, that late count opened the gate, the shard moved\nbefore the follower's first Metadata, and kcat went straight to the new\nleader, so the old leader never had a fetch to refuse.\n\nWait for the old leader's Kafka connection gauge to reach zero before\nreading the baseline. The connection loop serves one request at a time, so\nby then any parked fetch has returned and been counted.\n\nSpec-Unaffected: test-only change to a cluster harness test",
+          "timestamp": "2026-09-28T08:04:21-07:00",
+          "tree_id": "58afc6b65f470436377756e694272dda7d3dfc59",
+          "url": "https://github.com/gabloe/felix/commit/12662a2998a13482f95612a8e694ba7f38fe6a47"
+        },
+        "date": 1790608173335,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 93,
+            "range": "4.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 93.00\nmean: 94.80\nstdev: 4.44\ncv: 4.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 142,
+            "range": "9.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 142.00\nmean: 141.80\nstdev: 9.42\ncv: 6.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 177,
+            "range": "5.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 178.80\nstdev: 5.54\ncv: 3.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 111,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 111.00\nmean: 110.80\nstdev: 1.10\ncv: 0.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 241,
+            "range": "7.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 241.00\nmean: 245.00\nstdev: 7.78\ncv: 3.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 439,
+            "range": "183.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 439.00\nmean: 503.20\nstdev: 183.26\ncv: 36.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
