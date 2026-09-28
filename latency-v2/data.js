@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790569799631,
+  "lastUpdate": 1790586736412,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -24420,6 +24420,72 @@ window.BENCHMARK_DATA = {
             "range": "652.48",
             "unit": "us",
             "extra": "trials: 5\nmedian: 284.00\nmean: 664.00\nstdev: 652.48\ncv: 98.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1b47ead4eea4b09b8e5dcf690f3b231bdcb047b2",
+          "message": "feat(client): share one connection per broker in ClusterClient (#803)\n\nA ClusterClient built a full pooled Client (20 connections) for every role\na broker played: entry, shard owner, redirect target, producer leader. It\nnow holds one client per broker, shared by every role, and that client\nmultiplexes every stream on one QUIC connection. More open only when the\nstreams saturate it (stream budget or the broker's MAX_STREAMS credit), up\nto cluster_conn_pool. A dead connection fails only its own streams and is\nreplaced; a broker whose workers' connection died is rebuilt on next use.\n\nClient::connect keeps its three up-front pools, now on the same\nNodeConnections type. Loadgen reports subscriber_connections.\n\nSpec-Unaffected: client-side connection placement; no modelled protocol changed",
+          "timestamp": "2026-09-28T02:08:54-07:00",
+          "tree_id": "2d231442775428e086ee0fe2ca64d862e018da90",
+          "url": "https://github.com/gabloe/felix/commit/1b47ead4eea4b09b8e5dcf690f3b231bdcb047b2"
+        },
+        "date": 1790586733034,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 174,
+            "range": "1.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 174.00\nmean: 173.00\nstdev: 1.73\ncv: 1.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 237,
+            "range": "8.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 237.00\nmean: 241.80\nstdev: 8.64\ncv: 3.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 340,
+            "range": "65.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 340.00\nmean: 353.00\nstdev: 65.64\ncv: 18.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 208,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 208.00\nmean: 208.00\nstdev: 0.71\ncv: 0.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 432,
+            "range": "13.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 432.00\nmean: 432.00\nstdev: 13.73\ncv: 3.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 614,
+            "range": "282.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 614.00\nmean: 759.60\nstdev: 282.19\ncv: 37.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
