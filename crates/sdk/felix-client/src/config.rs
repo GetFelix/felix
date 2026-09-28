@@ -58,6 +58,17 @@ pub struct ClientConfig {
     pub cache_streams_per_conn: usize,
     /// Connections that carry subscriptions and cache watches.
     pub event_conn_pool: usize,
+    /// Most connections a [`crate::ClusterClient`] opens to one broker.
+    ///
+    /// It starts with one, shared by every kind of traffic and every role
+    /// that broker plays, and opens another only when the streams on the
+    /// existing ones are saturated. The `*_conn_pool` sizes above apply to a
+    /// [`crate::Client`] built with [`crate::Client::connect`].
+    pub cluster_conn_pool: usize,
+    /// Streams one of those connections carries before another is opened
+    /// beside it. The broker's stream credit (QUIC `MAX_STREAMS`) is the other
+    /// trigger, whichever comes first.
+    pub cluster_streams_per_conn: usize,
     /// QUIC receive window per event connection, in bytes.
     pub event_conn_recv_window: u64,
     /// QUIC receive window per event stream, in bytes.
@@ -109,6 +120,8 @@ impl ClientConfig {
             cache_conn_pool: DEFAULT_CACHE_CONN_POOL,
             cache_streams_per_conn: DEFAULT_CACHE_STREAMS_PER_CONN,
             event_conn_pool: DEFAULT_EVENT_CONN_POOL,
+            cluster_conn_pool: DEFAULT_CLUSTER_CONN_POOL,
+            cluster_streams_per_conn: DEFAULT_CLUSTER_STREAMS_PER_CONN,
             event_conn_recv_window: DEFAULT_EVENT_CONN_RECV_WINDOW,
             event_stream_recv_window: DEFAULT_EVENT_STREAM_RECV_WINDOW,
             event_send_window: DEFAULT_EVENT_SEND_WINDOW,
@@ -213,6 +226,27 @@ pub(crate) fn event_transport_config(
     base.receive_window = config.event_conn_recv_window;
     base.stream_receive_window = config.event_stream_recv_window;
     base.send_window = config.event_send_window;
+    base
+}
+
+/// One connection carrying every kind of traffic gets the largest of each
+/// window, so none of them is starved by sharing it.
+pub(crate) fn shared_transport_config(
+    mut base: TransportConfig,
+    config: &ClientConfig,
+) -> TransportConfig {
+    base.receive_window = base
+        .receive_window
+        .max(config.event_conn_recv_window)
+        .max(config.cache_conn_recv_window);
+    base.stream_receive_window = base
+        .stream_receive_window
+        .max(config.event_stream_recv_window)
+        .max(config.cache_stream_recv_window);
+    base.send_window = base
+        .send_window
+        .max(config.event_send_window)
+        .max(config.cache_send_window);
     base
 }
 

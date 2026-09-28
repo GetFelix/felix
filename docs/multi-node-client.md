@@ -17,8 +17,8 @@ single-node deployment and the wrong thing for a cluster: the broker it was
 given is exactly the one that may fail over, and when it does, that client stops
 working while every other broker sits there able to serve.
 
-`ClusterClient` owns a `Client` and rebuilds it from the other endpoints when
-the one in use fails.
+`ClusterClient` holds a `Client` for each broker it reaches and rebuilds the
+one in use from the other endpoints when it fails.
 
 ```rust,no_run
 use std::time::Duration;
@@ -58,6 +58,33 @@ client
 
 `ClusterClient::connect` uses the default policy, which is the same thing
 without the `deadline`.
+
+## Connections
+
+A `ClusterClient` holds **one** connection to each broker it talks to, and
+every stream to that broker is multiplexed on it: publish and cache workers,
+subscriptions, cache watches, group requests and discovery. It does not matter
+how many roles the broker plays. The entry broker, a shard owner learned from a
+publish ack, the target of a `NotLeader` redirect and an idempotent producer's
+leader all share the same client when they are the same broker.
+
+A second connection opens only when the first is saturated: when it carries
+`cluster_streams_per_conn` streams, or when the broker's QUIC stream credit
+(`MAX_STREAMS`) runs out before that. The count grows that way up to
+`cluster_conn_pool` (default 8) and stops. At the ceiling, a new stream waits
+for credit on whichever connection frees one first, which is what QUIC would do
+on a single connection. `ClusterClient::connections_per_node` reports the
+current count per broker.
+
+A connection that dies fails only the streams on it. The next stream that needs
+the room opens a replacement. If the dead connection carried the broker's
+publish and cache workers, the broker's client is rebuilt the next time any
+role asks for that broker. Other brokers' clients are not touched.
+
+`Client::connect` is different: it opens `publish_conn_pool`, `cache_conn_pool`
+and `event_conn_pool` connections up front, one pool per kind of traffic, each
+with its own transport tuning. A cluster client's shared connection takes the
+largest of those windows instead. See `docs/client-config.md`.
 
 ## Discovery
 

@@ -16,6 +16,7 @@ use felix_wire::Message;
 
 use super::Client;
 use crate::NotLeaderError;
+use crate::connection::OpenedStream;
 use crate::frame_io::{read_message_with_limit, write_message};
 
 impl Client {
@@ -193,11 +194,12 @@ impl Client {
         message: Message,
         request_id: u64,
     ) -> Result<Message> {
-        let connection = &self.event_connections[0];
-        let (mut send, mut recv, _) = self
-            .credentials
-            .open(connection, self.runtime_config.max_frame_bytes)
-            .await?;
+        let OpenedStream {
+            mut send,
+            mut recv,
+            lease: _lease,
+            ..
+        } = self.open_event_stream().await?;
         write_message(&mut send, message)
             .await
             .context("send group request")?;

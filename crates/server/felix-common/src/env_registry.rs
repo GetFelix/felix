@@ -1,7 +1,7 @@
 //! Every `FELIX_*` variable this workspace reads, and a check that a set one is
 //! actually read.
 //!
-//! Configuration is 244 environment variables (`KNOWN_VARS` below; the check
+//! Configuration is 247 environment variables (`KNOWN_VARS` below; the check
 //! script holds this count to the list). They are individually parsed, so a
 //! name nobody reads does not fail — it is simply absent, and the default
 //! takes effect. An operator who writes `FELIX_METRICS_BNID` gets a broker
@@ -66,6 +66,8 @@ pub const KNOWN_VARS: &[&str] = &[
     "FELIX_CLIENT_SUB_QUEUE_CAPACITY",
     "FELIX_CLIENT_SUB_QUEUE_POLICY",
     "FELIX_CLOCK_FAULT_FILE",
+    "FELIX_CLUSTER_CONN_POOL",
+    "FELIX_CLUSTER_STREAMS_PER_CONN",
     "FELIX_CLUSTER_VERBOSE",
     "FELIX_CONN_STATS_MS",
     "FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE",

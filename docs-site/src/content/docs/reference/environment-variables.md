@@ -804,6 +804,34 @@ export FELIX_CACHE_BENCH_CONCURRENCY="64"  # Stress test
 export FELIX_CACHE_BENCH_KEYS="1024"
 ```
 
+## Cluster Client Connections
+
+### `FELIX_CLUSTER_CONN_POOL`
+
+**Description**: The most QUIC connections a `ClusterClient` opens to one broker. It starts with one, shared by every kind of traffic and every role the broker plays, and opens more only when those are saturated.
+
+**Type**: Positive integer (count)
+
+**Default**: `8`
+
+**Example**:
+```bash
+export FELIX_CLUSTER_CONN_POOL="8"
+```
+
+### `FELIX_CLUSTER_STREAMS_PER_CONN`
+
+**Description**: Streams one of a `ClusterClient`'s connections carries before another is opened beside it. The broker's QUIC stream credit is the other trigger, whichever comes first.
+
+**Type**: Positive integer (count)
+
+**Default**: `1024`
+
+**Example**:
+```bash
+export FELIX_CLUSTER_STREAMS_PER_CONN="1024"
+```
+
 ## Event Connection Pool (Client)
 
 ### `FELIX_EVENT_CONN_POOL`

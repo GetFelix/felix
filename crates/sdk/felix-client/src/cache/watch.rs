@@ -9,6 +9,7 @@ use felix_wire::Message;
 use quinn::RecvStream;
 use tokio::sync::mpsc;
 
+use crate::connection::StreamLease;
 use crate::frame_io::read_message_with_limit;
 use crate::subscribe::ShardMoved;
 
@@ -23,8 +24,10 @@ pub struct CacheWatch {
 }
 
 impl CacheWatch {
+    /// The watch holds `lease` for as long as its pump runs.
     pub(crate) fn spawn_pump(
         recv: RecvStream,
+        lease: StreamLease,
         resume_offset: u64,
         resnapshot: bool,
         retained_count: Option<u64>,
@@ -32,7 +35,10 @@ impl CacheWatch {
         max_frame_bytes: usize,
     ) -> Self {
         let (tx, rx) = mpsc::channel(queue_capacity.max(1));
-        let task = tokio::spawn(run_watch_pump(recv, tx, max_frame_bytes));
+        let task = tokio::spawn(async move {
+            let _lease = lease;
+            run_watch_pump(recv, tx, max_frame_bytes).await
+        });
         Self {
             items: rx,
             resume_offset,

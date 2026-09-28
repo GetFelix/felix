@@ -7,6 +7,7 @@ use bytes::BytesMut;
 use felix_wire::Message;
 
 use super::Client;
+use crate::connection::OpenedStream;
 use crate::frame_io::{read_message_with_limit, write_message};
 
 impl Client {
@@ -43,11 +44,12 @@ impl Client {
         // A stream of its own rather than one of the publish pool's: those are
         // pipelined, and a request/response exchange in the middle of one would
         // have to be matched against acks it has nothing to do with.
-        let connection = &self.event_connections[0];
-        let (mut send, mut recv, _) = self
-            .credentials
-            .open(connection, self.runtime_config.max_frame_bytes)
-            .await?;
+        let OpenedStream {
+            mut send,
+            mut recv,
+            lease: _lease,
+            ..
+        } = self.open_event_stream().await?;
         write_message(&mut send, Message::Topology)
             .await
             .context("send topology request")?;
@@ -102,11 +104,12 @@ impl Client {
                 self.auth_tenant_id
             ));
         }
-        let connection = &self.event_connections[0];
-        let (mut send, mut recv, _) = self
-            .credentials
-            .open(connection, self.runtime_config.max_frame_bytes)
-            .await?;
+        let OpenedStream {
+            mut send,
+            mut recv,
+            lease: _lease,
+            ..
+        } = self.open_event_stream().await?;
         let request_id = self
             .cache_request_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -163,11 +166,12 @@ impl Client {
                 self.auth_tenant_id
             ));
         }
-        let connection = &self.event_connections[0];
-        let (mut send, mut recv, _) = self
-            .credentials
-            .open(connection, self.runtime_config.max_frame_bytes)
-            .await?;
+        let OpenedStream {
+            mut send,
+            mut recv,
+            lease: _lease,
+            ..
+        } = self.open_event_stream().await?;
         let request_id = self
             .cache_request_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

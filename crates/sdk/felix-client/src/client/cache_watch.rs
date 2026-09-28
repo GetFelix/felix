@@ -1,7 +1,5 @@
 //! Opening cache watches through a [`Client`].
 
-use std::sync::atomic::Ordering;
-
 use anyhow::{Context, Result};
 use bytes::BytesMut;
 use felix_wire::Message;
@@ -9,7 +7,7 @@ use tokio::sync::oneshot;
 
 use super::Client;
 use crate::cache::{CacheWatch, CacheWatchFilter, filter_fields};
-use crate::connection::EventRouterCommand;
+use crate::connection::{EventRouterCommand, OpenedStream};
 use crate::frame_io::{read_message_with_limit, write_message};
 use crate::{NotLeaderError, SubscribeCursorError};
 
@@ -142,15 +140,14 @@ impl Client {
                 self.auth_tenant_id
             ));
         }
-        // A watch is a long-lived read, so it lives on the event connection
-        // pool beside subscriptions, round-robined the same way.
-        let rr = self.subscription_counter.fetch_add(1, Ordering::Relaxed);
-        let connection_index = rr as usize % self.event_pool_size;
-        let connection = &self.event_connections[connection_index];
-        let (mut send, mut recv, _) = self
-            .credentials
-            .open(connection, self.runtime_config.max_frame_bytes)
-            .await?;
+        // A watch is a long-lived read, so it lives on the event connections
+        // beside subscriptions, placed the same way.
+        let OpenedStream {
+            mut send,
+            mut recv,
+            lease,
+            ..
+        } = self.open_event_stream().await?;
 
         let (key, prefix) = filter_fields(&filter);
         let mut frame_scratch = BytesMut::with_capacity(16 * 1024);
@@ -225,7 +222,8 @@ impl Client {
         };
 
         let (stream_tx, stream_rx) = oneshot::channel();
-        self.event_stream_routers[connection_index]
+        lease
+            .router()
             .send(EventRouterCommand::Register {
                 subscription_id,
                 response: stream_tx,
@@ -235,6 +233,7 @@ impl Client {
         let recv = stream_rx.await.context("event stream response dropped")??;
         Ok(CacheWatch::spawn_pump(
             recv,
+            lease,
             resume_offset,
             resnapshot,
             retained_count,

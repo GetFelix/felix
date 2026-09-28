@@ -1,4 +1,5 @@
-//! Building a [`Client`]: the pools, the streams on them, and where they go.
+//! Building a [`Client`]: the connections, the streams on them, and where
+//! they go.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -13,12 +14,9 @@ use super::Client;
 use crate::cache::{CacheWorker, run_cache_worker_with_limit};
 use crate::config::{
     CACHE_WORKER_QUEUE_DEPTH, ClientConfig, ClientRuntimeConfig, cache_transport_config,
-    event_transport_config,
+    event_transport_config, shared_transport_config,
 };
-use crate::connection::{
-    Credentials, Negotiated, listener_targets, pool_target, spawn_conn_stats_logger,
-    spawn_event_router_with_config,
-};
+use crate::connection::{Credentials, NodeConnections, NodeLimits, OpenedStream};
 use crate::publish::{PublishAdmission, PublishWorker, run_publisher_writer_with_limit};
 
 impl Client {
@@ -105,239 +103,346 @@ impl Client {
         client_config: ClientConfig,
         transport: TransportConfig,
     ) -> Result<Self> {
+        Self::build(addr, server_name, client_config, transport, Layout::Pooled).await
+    }
+
+    /// A client whose publish, cache and event streams all share one
+    /// connection, with more opened only when it is saturated, up to
+    /// `cluster_conn_pool`. What a [`crate::ClusterClient`] holds per broker.
+    pub(crate) async fn connect_shared(
+        addr: SocketAddr,
+        server_name: &str,
+        client_config: ClientConfig,
+    ) -> Result<Self> {
+        Self::build(
+            addr,
+            server_name,
+            client_config,
+            TransportConfig::default(),
+            Layout::Shared,
+        )
+        .await
+    }
+
+    async fn build(
+        addr: SocketAddr,
+        server_name: &str,
+        client_config: ClientConfig,
+        transport: TransportConfig,
+        layout: Layout,
+    ) -> Result<Self> {
         let runtime_config = client_config.runtime_config();
         let auth_tenant_id = client_config
             .auth_tenant_id
             .clone()
             .context("FELIX_AUTH_TENANT must be set")?;
-        let credentials = Credentials::new(auth_tenant_id.clone(), client_config.tokens()?);
-        let bind_addr: SocketAddr = "0.0.0.0:0".parse().expect("bind addr");
-        let publish_client =
-            QuicClient::bind(bind_addr, client_config.quinn.clone(), transport.clone())?;
+        let credentials = Arc::new(Credentials::new(
+            auth_tenant_id.clone(),
+            client_config.tokens()?,
+        ));
         let publish_pool_size = client_config.publish_conn_pool;
         let publish_streams_per_conn = client_config.publish_streams_per_conn;
         if publish_pool_size == 0 || publish_streams_per_conn == 0 {
             return Err(anyhow::anyhow!("publish pool misconfigured"));
         }
-        let publish_chunk_bytes = client_config.publish_chunk_bytes;
-        let publish_queue_depth = client_config.publish_queue_depth.max(1);
-        let publish_admission =
-            Arc::new(PublishAdmission::new(client_config.publish_inflight_bytes));
-        // Learn the broker's listener set while building the first connection's
-        // streams, rather than probing for it.
-        //
-        // A broker may bind several client-facing ports, each its own UDP
-        // socket and so its own endpoint driver -- the single task that reads
-        // every datagram for that socket. A pool that dials one port lands
-        // entirely on one driver, which is the per-broker ceiling this exists
-        // to lift.
-        //
-        // The answer rides the first stream's `AuthOk`, which has to be sent
-        // anyway, so a single-listener deployment pays nothing for this.
-        let mut publish_workers = Vec::with_capacity(publish_pool_size * publish_streams_per_conn);
-        let first = publish_client.connect(addr, server_name).await?;
-        debug!("client established publish connection");
-        spawn_conn_stats_logger(&first, "publish");
-        let negotiated = open_publish_streams(
-            &first,
-            publish_streams_per_conn,
-            &credentials,
-            &runtime_config,
-            publish_queue_depth,
-            publish_chunk_bytes,
-            &mut publish_workers,
-        )
-        .await?;
-        // Every publish stream negotiates with the same broker, so any stream's
-        // answer is the broker's answer.
-        let server_features = negotiated.server_features;
-        let targets = listener_targets(addr, &negotiated.listener_ports);
-        if targets.len() > 1 {
-            debug!(
-                listeners = targets.len(),
-                "spreading pools across listeners"
-            );
-        }
-
-        // Every distinct address the pools actually land on, for
-        // `listeners_in_use`.
-        let mut listeners: Vec<SocketAddr> = vec![addr];
-        let mut publish_connections = vec![first];
-        for index in 1..publish_pool_size {
-            let target = pool_target(&targets, index, &mut listeners);
-            let connection = publish_client.connect(target, server_name).await?;
-            debug!("client established publish connection");
-            spawn_conn_stats_logger(&connection, "publish");
-            open_publish_streams(
-                &connection,
-                publish_streams_per_conn,
-                &credentials,
-                &runtime_config,
-                publish_queue_depth,
-                publish_chunk_bytes,
-                &mut publish_workers,
-            )
-            .await?;
-            publish_connections.push(connection);
-        }
-        // Held so the streams above keep their connections open.
-        let _publish_connections = publish_connections;
-        let publish_sharding = client_config.publish_sharding;
-        // Cache connections are pooled to avoid head-of-line blocking.
-        // DESIGN NOTE:
-        // We pool *connections* and then open multiple *streams per connection*.
-        // This avoids (a) creating a new QUIC connection per cache op and
-        // (b) HOL blocking between independent cache ops on a single stream.
         let cache_pool_size = client_config.cache_conn_pool;
-        let cache_transport = cache_transport_config(transport.clone(), &client_config);
-        let cache_client =
-            QuicClient::bind(bind_addr, client_config.quinn.clone(), cache_transport)?;
-        let mut cache_connections = Vec::with_capacity(cache_pool_size);
-        for index in 0..cache_pool_size {
-            let target = pool_target(&targets, index, &mut listeners);
-            let connection = cache_client.connect(target, server_name).await?;
-            debug!("client established cache connection");
-            cache_connections.push(connection);
-        }
-        // Each cache connection runs multiple independent bi-directional streams.
         let cache_streams_per_conn = client_config.cache_streams_per_conn;
         if cache_pool_size == 0 || cache_streams_per_conn == 0 {
             return Err(anyhow::anyhow!("cache pool misconfigured"));
         }
-        let mut cache_workers = Vec::with_capacity(cache_pool_size * cache_streams_per_conn);
-        let mut cache_conn_counts = Vec::with_capacity(cache_pool_size);
-        for _ in 0..cache_pool_size {
-            cache_conn_counts.push(AtomicUsize::new(0));
-        }
-        let cache_conn_counts = Arc::new(cache_conn_counts);
-        for (conn_index, connection) in cache_connections.iter().enumerate() {
-            for _ in 0..cache_streams_per_conn {
-                let (send, recv, _) = credentials
-                    .open(connection, runtime_config.max_frame_bytes)
-                    .await?;
-                debug!(conn_index, "client cache stream authenticated");
-                let (tx, rx) = mpsc::channel(CACHE_WORKER_QUEUE_DEPTH);
-                tokio::spawn(run_cache_worker_with_limit(
-                    conn_index,
-                    send,
-                    recv,
-                    rx,
-                    Arc::clone(&cache_conn_counts),
-                    runtime_config.max_frame_bytes,
-                ));
-                cache_workers.push(CacheWorker { tx, conn_index });
+        let bind_addr: SocketAddr = "0.0.0.0:0".parse().expect("bind addr");
+        let limits = |role, ceiling, streams_per_conn| NodeLimits {
+            role,
+            ceiling,
+            streams_per_conn,
+            max_frame_bytes: runtime_config.max_frame_bytes,
+            event_router_max_pending: runtime_config.event_router_max_pending,
+        };
+        let node = |endpoint, limits| {
+            Arc::new(NodeConnections::new(
+                endpoint,
+                addr,
+                server_name,
+                Arc::clone(&credentials),
+                limits,
+            ))
+        };
+        let max_streams = usize::from(transport.max_streams);
+        let (publish_node, cache_node, event_node) = match layout {
+            Layout::Pooled => {
+                let publish =
+                    QuicClient::bind(bind_addr, client_config.quinn.clone(), transport.clone())?;
+                let cache = QuicClient::bind(
+                    bind_addr,
+                    client_config.quinn.clone(),
+                    cache_transport_config(transport.clone(), &client_config),
+                )?;
+                let event = QuicClient::bind(
+                    bind_addr,
+                    client_config.quinn.clone(),
+                    event_transport_config(transport, &client_config),
+                )?;
+                (
+                    node(publish, limits("publish", publish_pool_size, max_streams)),
+                    node(cache, limits("cache", cache_pool_size, max_streams)),
+                    node(
+                        event,
+                        limits("event", client_config.event_conn_pool, max_streams),
+                    ),
+                )
             }
+            Layout::Shared => {
+                let endpoint = QuicClient::bind(
+                    bind_addr,
+                    client_config.quinn.clone(),
+                    shared_transport_config(transport, &client_config),
+                )?;
+                let shared = node(
+                    endpoint,
+                    limits(
+                        "shared",
+                        client_config.cluster_conn_pool,
+                        client_config.cluster_streams_per_conn,
+                    ),
+                );
+                (Arc::clone(&shared), Arc::clone(&shared), shared)
+            }
+        };
+        let nodes = [&publish_node, &cache_node, &event_node];
+
+        let publish_chunk_bytes = client_config.publish_chunk_bytes;
+        let publish_queue_depth = client_config.publish_queue_depth.max(1);
+        let publish_admission =
+            Arc::new(PublishAdmission::new(client_config.publish_inflight_bytes));
+        let publish_stream_count = publish_pool_size * publish_streams_per_conn;
+        let mut publish_workers = Vec::with_capacity(publish_stream_count);
+        let mut worker_connections: Vec<QuicConnection> = Vec::new();
+
+        // The first stream's `AuthOk` names the broker's listener ports, so it
+        // is opened before any other connection is placed.
+        //
+        // A broker may bind several client-facing ports, each its own UDP
+        // socket and so its own endpoint driver -- the single task that reads
+        // every datagram for that socket. Connections that all dial one port
+        // land entirely on one driver, which is the per-broker ceiling this
+        // exists to lift.
+        let first = publish_node.open().await?;
+        debug!("client publish stream authenticated");
+        let negotiated = first.negotiated.clone();
+        // Every stream negotiates with the same broker, so any stream's answer
+        // is the broker's answer.
+        let server_features = negotiated.server_features;
+        for node in dedup(&nodes) {
+            node.learn_listeners(addr, &negotiated.listener_ports);
         }
-        // Event connections are reserved for subscription streams.
-        let event_pool_size = client_config.event_conn_pool;
-        let event_transport = event_transport_config(transport, &client_config);
-        let event_client = QuicClient::bind(bind_addr, client_config.quinn, event_transport)?;
-        let mut event_connections = Vec::with_capacity(event_pool_size);
-        for index in 0..event_pool_size {
-            let target = pool_target(&targets, index, &mut listeners);
-            let connection = event_client.connect(target, server_name).await?;
-            debug!("client established event connection");
-            // An event connection may sit idle until the first subscribe, and
-            // a broker closes a connection that has authenticated nothing
-            // within its auth timeout.
-            credentials.announce(&connection).await?;
-            event_connections.push(connection);
+        publish_workers.push(spawn_publish_worker(
+            first,
+            &runtime_config,
+            publish_queue_depth,
+            publish_chunk_bytes,
+            &mut worker_connections,
+        ));
+        if layout == Layout::Pooled {
+            publish_node.fill(publish_pool_size, false).await?;
         }
-        let mut event_stream_routers = Vec::with_capacity(event_pool_size);
-        for connection in &event_connections {
-            event_stream_routers.push(spawn_event_router_with_config(
-                connection.clone(),
-                runtime_config.event_router_max_pending,
-                runtime_config.max_frame_bytes,
+        for _ in 1..publish_stream_count {
+            let opened = publish_node.open().await?;
+            debug!("client publish stream authenticated");
+            publish_workers.push(spawn_publish_worker(
+                opened,
+                &runtime_config,
+                publish_queue_depth,
+                publish_chunk_bytes,
+                &mut worker_connections,
             ));
         }
-        let mut event_conn_counts = Vec::with_capacity(event_pool_size);
-        for _ in 0..event_pool_size {
-            event_conn_counts.push(AtomicUsize::new(0));
+
+        // Several streams per cache connection: a new connection per cache op
+        // would pay a handshake each time, and one stream would head-of-line
+        // block independent ops behind each other.
+        if layout == Layout::Pooled {
+            cache_node.fill(cache_pool_size, false).await?;
         }
+        let cache_slots = match layout {
+            Layout::Pooled => cache_pool_size,
+            Layout::Shared => client_config.cluster_conn_pool,
+        };
+        let cache_conn_counts: Arc<Vec<AtomicUsize>> = Arc::new(
+            (0..cache_slots.max(1))
+                .map(|_| AtomicUsize::new(0))
+                .collect(),
+        );
+        let mut cache_workers = Vec::with_capacity(cache_pool_size * cache_streams_per_conn);
+        for _ in 0..cache_pool_size * cache_streams_per_conn {
+            let OpenedStream {
+                send, recv, lease, ..
+            } = cache_node.open().await?;
+            let conn_index = lease.slot();
+            debug!(conn_index, "client cache stream authenticated");
+            note_connection(&mut worker_connections, lease.connection());
+            let (tx, rx) = mpsc::channel(CACHE_WORKER_QUEUE_DEPTH);
+            let counts = Arc::clone(&cache_conn_counts);
+            let max_frame_bytes = runtime_config.max_frame_bytes;
+            tokio::spawn(async move {
+                let _lease = lease;
+                run_cache_worker_with_limit(conn_index, send, recv, rx, counts, max_frame_bytes)
+                    .await
+            });
+            cache_workers.push(CacheWorker { tx, conn_index });
+        }
+
+        // Event connections may sit idle until the first subscribe, and a
+        // broker closes a connection that has authenticated nothing within its
+        // auth timeout, so they announce themselves.
+        let event_slots = match layout {
+            Layout::Pooled => {
+                event_node.fill(client_config.event_conn_pool, true).await?;
+                client_config.event_conn_pool
+            }
+            Layout::Shared => client_config.cluster_conn_pool,
+        };
+        let event_conn_counts = Arc::new(
+            (0..event_slots.max(1))
+                .map(|_| AtomicUsize::new(0))
+                .collect(),
+        );
         Ok(Self {
-            listeners,
+            dialled: addr,
+            publish_node,
+            cache_node,
+            event_node,
+            worker_connections,
             server_features,
-            _publish_client: publish_client,
-            _cache_client: cache_client,
-            _event_client: event_client,
             publish_workers: Arc::new(publish_workers),
             publish_stream_hasher: ahash::RandomState::new(),
-            publish_sharding,
+            publish_sharding: client_config.publish_sharding,
             publish_admission,
             cache_workers,
-            event_connections,
-            subscription_counter: AtomicU64::new(1),
             cache_request_counter: AtomicU64::new(1),
-            event_pool_size,
             cache_worker_rr: AtomicUsize::new(0),
             cache_conn_counts,
-            event_stream_routers,
-            event_conn_counts: Arc::new(event_conn_counts),
+            event_conn_counts,
             auth_tenant_id,
-            credentials,
             runtime_config,
         })
     }
 
-    /// The distinct broker addresses this client's pooled connections are on.
+    /// The distinct broker addresses this client's connections are on.
     ///
     /// More than one means the broker advertised several listeners and the
-    /// pools were spread across them, which is what keeps a client off a single
-    /// endpoint driver. One means a single-listener broker, an older one, or a
-    /// pool too small to spread.
+    /// connections were spread across them, which is what keeps a client off
+    /// a single endpoint driver. One means a single-listener broker, an older
+    /// one, or too few connections to spread.
     ///
-    /// In discovery order (the dialled address first, then each new target the
-    /// first pool spread reaches it), not sorted -- a caller wanting a set
-    /// rather than an order should sort it.
-    pub fn listeners_in_use(&self) -> &[SocketAddr] {
-        &self.listeners
+    /// In the order they were first dialled, not sorted -- a caller wanting a
+    /// set rather than an order should sort it.
+    pub fn listeners_in_use(&self) -> Vec<SocketAddr> {
+        let mut listeners = Vec::new();
+        for node in dedup(&[&self.publish_node, &self.cache_node, &self.event_node]) {
+            for listener in node.listeners() {
+                if !listeners.contains(&listener) {
+                    listeners.push(listener);
+                }
+            }
+        }
+        listeners
+    }
+
+    /// Live QUIC connections this client holds to its broker.
+    pub fn connection_count(&self) -> usize {
+        dedup(&[&self.publish_node, &self.cache_node, &self.event_node])
+            .iter()
+            .map(|node| node.connection_count())
+            .sum()
+    }
+
+    /// The address this client was built for.
+    pub(crate) fn dialled(&self) -> SocketAddr {
+        self.dialled
+    }
+
+    /// Whether this client can still publish and serve cache requests.
+    ///
+    /// Its worker streams are opened once, so a client that has lost the
+    /// connection under them, or every publish writer, is finished; the
+    /// event side would open new streams, but a caller wanting a broker needs
+    /// both.
+    pub(crate) fn is_usable(&self) -> bool {
+        self.worker_connections
+            .iter()
+            .all(|connection| connection.close_reason().is_none())
+            && self
+                .publish_workers
+                .iter()
+                .any(|worker| !worker.tx.is_closed())
+    }
+
+    /// Open an authenticated stream for a request of its own, or a
+    /// subscription, on the event connections.
+    pub(crate) async fn open_event_stream(&self) -> Result<OpenedStream> {
+        self.event_node.open().await
     }
 }
 
-/// Open and authenticate one connection's publish streams, pushing a worker for
-/// each, and return what the broker said during negotiation.
-///
-/// Every stream negotiates with the same broker, so the answer is the same for
-/// all of them; the caller keeps the first, which is what reports the listener
-/// set before the rest of the pool is placed.
-#[allow(clippy::too_many_arguments)]
-async fn open_publish_streams(
-    connection: &QuicConnection,
-    streams_per_conn: usize,
-    credentials: &Credentials,
+/// How a client lays its streams over connections.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    /// A pool per kind of traffic, every connection opened up front.
+    Pooled,
+    /// One set for everything, starting from a single connection.
+    Shared,
+}
+
+/// Start the writer for one publish stream. The writer holds the stream's
+/// lease, so the connection's count drops when the writer exits.
+fn spawn_publish_worker(
+    opened: OpenedStream,
     runtime_config: &ClientRuntimeConfig,
     publish_queue_depth: usize,
     publish_chunk_bytes: usize,
-    workers: &mut Vec<PublishWorker>,
-) -> Result<Negotiated> {
-    let mut last = None;
-    for _ in 0..streams_per_conn {
-        let (send, recv, negotiated) = credentials
-            .open(connection, runtime_config.max_frame_bytes)
-            .await?;
-        debug!("client opened publish stream");
-        let server_flags = negotiated.server_flags;
-        debug!(server_flags, "client publish stream authenticated");
-        let (tx, rx) = mpsc::channel(publish_queue_depth);
-        // Not colocated with the transport drivers (unlike the subscription
-        // read pump): publisher writers block in `write_all` against a full
-        // send window, and parking them on the I/O thread starves the drivers
-        // they wait on (measured 5x throughput loss).
-        let handle = tokio::spawn(run_publisher_writer_with_limit(
-            send,
-            recv,
-            rx,
-            publish_chunk_bytes,
-            runtime_config.max_frame_bytes,
-        ));
-        workers.push(PublishWorker {
-            tx,
-            handle: tokio::sync::Mutex::new(Some(handle)),
-            request_counter: AtomicU64::new(1),
-            server_flags,
-        });
-        last = Some(negotiated);
+    worker_connections: &mut Vec<QuicConnection>,
+) -> PublishWorker {
+    let OpenedStream {
+        send,
+        recv,
+        negotiated,
+        lease,
+    } = opened;
+    note_connection(worker_connections, lease.connection());
+    let (tx, rx) = mpsc::channel(publish_queue_depth);
+    let max_frame_bytes = runtime_config.max_frame_bytes;
+    // Not colocated with the transport drivers (unlike the subscription read
+    // pump): publisher writers block in `write_all` against a full send
+    // window, and parking them on the I/O thread starves the drivers they
+    // wait on (measured 5x throughput loss).
+    let handle = tokio::spawn(async move {
+        let _lease = lease;
+        run_publisher_writer_with_limit(send, recv, rx, publish_chunk_bytes, max_frame_bytes).await
+    });
+    PublishWorker {
+        tx,
+        handle: tokio::sync::Mutex::new(Some(handle)),
+        request_counter: AtomicU64::new(1),
+        server_flags: negotiated.server_flags,
     }
-    last.context("publish pool misconfigured: no streams per connection")
+}
+
+fn note_connection(connections: &mut Vec<QuicConnection>, connection: &QuicConnection) {
+    if !connections
+        .iter()
+        .any(|known| known.info().id == connection.info().id)
+    {
+        connections.push(connection.clone());
+    }
+}
+
+/// The distinct sets among `nodes`: a shared client has one set three times.
+fn dedup<'a>(nodes: &[&'a Arc<NodeConnections>]) -> Vec<&'a Arc<NodeConnections>> {
+    let mut distinct: Vec<&Arc<NodeConnections>> = Vec::new();
+    for node in nodes {
+        if !distinct.iter().any(|seen| Arc::ptr_eq(seen, node)) {
+            distinct.push(node);
+        }
+    }
+    distinct
 }

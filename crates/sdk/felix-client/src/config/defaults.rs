@@ -25,6 +25,12 @@ pub(crate) const DEFAULT_PUB_CONN_POOL: usize = 4;
 pub(crate) const DEFAULT_PUB_STREAMS_PER_CONN: usize = 2;
 pub(crate) const DEFAULT_EVENT_CONN_POOL: usize = 8;
 pub(crate) const DEFAULT_CACHE_CONN_POOL: usize = 8;
+/// A cluster client's ceiling per broker. It starts at one connection; this
+/// only bounds how far saturation can grow it.
+pub(crate) const DEFAULT_CLUSTER_CONN_POOL: usize = 8;
+/// Matches the transport's default stream limit, so by default the broker's
+/// stream credit is what triggers a second connection.
+pub(crate) const DEFAULT_CLUSTER_STREAMS_PER_CONN: usize = 1024;
 pub(crate) const DEFAULT_CACHE_STREAMS_PER_CONN: usize = 4;
 pub(crate) const DEFAULT_EVENT_CONN_RECV_WINDOW: u64 = 256 * 1024 * 1024;
 pub(crate) const DEFAULT_EVENT_STREAM_RECV_WINDOW: u64 = 64 * 1024 * 1024;

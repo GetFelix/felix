@@ -42,7 +42,7 @@ async fn a_client_spreads_its_pool_across_the_advertised_listeners() {
         "a four-listener broker should spread the pool, got {listeners:?}",
     );
     // Every one of them is this broker, on a port inside the advertised run.
-    for addr in listeners {
+    for addr in &listeners {
         assert_eq!(addr.ip(), base.ip(), "{addr} is not the broker dialled");
         assert!(
             (base.port()..base.port() + 4).contains(&addr.port()),

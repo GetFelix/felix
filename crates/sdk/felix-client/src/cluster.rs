@@ -1,12 +1,22 @@
 //! A client that outlives the broker it is talking to.
 //!
-//! [`Client`] holds connection pools built when it was created, so a broker
-//! going away takes that client with it. A cluster survives losing a broker;
-//! until now an application could not, and had to notice the failure and
-//! rebuild everything itself.
+//! [`Client`] holds connections built when it was created, so a broker going
+//! away takes that client with it. A cluster survives losing a broker; until
+//! now an application could not, and had to notice the failure and rebuild
+//! everything itself.
 //!
-//! This owns a [`Client`] and replaces it when the one it has stops working,
-//! from the same seed list it was created with.
+//! This holds one [`Client`] per broker it reaches (`nodes`), shared by every
+//! role that broker plays -- entry, shard owner, redirect target, producer
+//! leader -- and replaces a broker's client when it stops working. The one in
+//! use for requests that go anywhere is rebuilt from the same seed list it
+//! was created with.
+//!
+//! # Connections
+//!
+//! A broker's client starts with one QUIC connection and multiplexes every
+//! stream onto it: publish and cache workers, subscriptions, watches and
+//! one-off requests. It opens another only when those are saturated, up to
+//! [`ClientConfig::cluster_conn_pool`](crate::ClientConfig::cluster_conn_pool).
 //!
 //! # Reconnecting is not resending
 //!
@@ -36,6 +46,7 @@
 mod cache_watch;
 mod follow;
 mod groups;
+mod nodes;
 mod publish;
 mod retry;
 mod routing;
@@ -122,8 +133,6 @@ pub struct ClusterClient {
     seeds: Vec<SocketAddr>,
     /// Everywhere worth trying: the seeds, plus whatever discovery has added.
     endpoints: RwLock<Vec<SocketAddr>>,
-    server_name: String,
-    config: ClientConfig,
     policy: ReconnectPolicy,
     /// Replaced wholesale on reconnect. `RwLock` rather than a swap because a
     /// reconnect must exclude the publishes that would otherwise keep using the
@@ -157,6 +166,9 @@ pub struct ClusterClient {
     /// different answer, and a group redirect carries no fresher generation
     /// to arbitrate between the two.
     group_routes: RwLock<HashMap<ShardKey, Arc<Client>>>,
+    /// The one client per broker that every field above draws from, so a
+    /// broker costs one connection however many roles it plays.
+    nodes: nodes::Nodes,
 }
 
 impl ClusterClient {
@@ -176,17 +188,17 @@ impl ClusterClient {
         config: ClientConfig,
         policy: ReconnectPolicy,
     ) -> Result<Self> {
-        let client = Client::connect_any(seeds, server_name, config.clone()).await?;
+        let nodes = nodes::Nodes::new(server_name, config);
+        let client = nodes.connect_any(seeds).await?;
         let cluster = Self {
             seeds: seeds.to_vec(),
             endpoints: RwLock::new(seeds.to_vec()),
-            server_name: server_name.to_string(),
-            config,
             policy,
-            client: RwLock::new(Arc::new(client)),
+            client: RwLock::new(client),
             owners: RwLock::new(HashMap::new()),
             shards: RwLock::new(HashMap::new()),
             group_routes: RwLock::new(HashMap::new()),
+            nodes,
         };
         cluster.discover().await;
         Ok(cluster)
@@ -243,9 +255,19 @@ impl ClusterClient {
         Ok(reported.len())
     }
 
-    /// A client to one broker, with this cluster client's name and config.
-    pub(crate) async fn connect_to(&self, addr: SocketAddr) -> Result<Client> {
-        Client::connect(addr, &self.server_name, self.config.clone()).await
+    /// The client for one broker, shared with every other role that broker
+    /// plays for this cluster client.
+    pub(crate) async fn connect_to(&self, addr: SocketAddr) -> Result<Arc<Client>> {
+        self.nodes.connect_to(addr).await
+    }
+
+    /// Live connections to each broker this client holds one for.
+    ///
+    /// A broker starts at one, shared by every kind of traffic and every role
+    /// it plays, and gains more only when the streams on it are saturated,
+    /// up to [`ClientConfig::cluster_conn_pool`].
+    pub async fn connections_per_node(&self) -> Vec<(SocketAddr, usize)> {
+        self.nodes.connections_per_node().await
     }
 
     /// Replace the client with one connected to a seed that answers.
@@ -256,9 +278,10 @@ impl ClusterClient {
         let endpoints = self.endpoints.read().await.clone();
         {
             let mut slot = self.client.write().await;
-            let replacement =
-                Client::connect_any(&endpoints, &self.server_name, self.config.clone()).await?;
-            *slot = Arc::new(replacement);
+            // The broker in use just failed, so it is dialled afresh rather
+            // than handed back from the shared clients.
+            self.nodes.forget(&slot).await;
+            *slot = self.nodes.connect_any(&endpoints).await?;
         }
         // After the swap, and outside the write lock: the broker that answered
         // is the one that knows what the cluster looks like now, and a failover

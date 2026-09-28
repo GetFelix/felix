@@ -24,7 +24,8 @@ impl Credentials {
         Self { tenant_id, tokens }
     }
 
-    /// Open a stream and authenticate it with the current token.
+    /// Authenticate `first`, a stream just opened on `connection`, with the
+    /// current token.
     ///
     /// If the broker refuses the token and the provider has a different one,
     /// retry once on a new stream (the broker closes a stream after a failed
@@ -33,12 +34,17 @@ impl Credentials {
     pub(crate) async fn open(
         &self,
         connection: &QuicConnection,
+        first: (SendStream, RecvStream),
         max_frame_bytes: usize,
     ) -> Result<(SendStream, RecvStream, Negotiated)> {
         let mut token = self.tokens.token().await?;
         let mut retried = false;
+        let mut next = Some(first);
         loop {
-            let (mut send, mut recv) = connection.open_bi().await?;
+            let (mut send, mut recv) = match next.take() {
+                Some(pair) => pair,
+                None => connection.open_bi().await?,
+            };
             match authenticate_stream(
                 &mut send,
                 &mut recv,

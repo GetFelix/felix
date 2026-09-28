@@ -2,7 +2,6 @@
 //! from acks that say the publish was forwarded.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use super::{ClusterClient, Owner, ShardKey, StreamKey};
 
@@ -96,7 +95,7 @@ impl ClusterClient {
                     Owner {
                         node_id: owner.node_id,
                         generation: owner.generation,
-                        client: Arc::new(client),
+                        client,
                     },
                 );
             }

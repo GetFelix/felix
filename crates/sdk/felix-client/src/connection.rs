@@ -1,26 +1,24 @@
-//! Where a client's pooled connections go, and how streams on them open.
+//! The connections a client holds to a broker, and how streams on them open.
 //!
-//! Cache operations are latency-sensitive and a slow response head-of-line
-//! blocks whatever is queued behind it on the same stream, so a client pools
-//! *connections* and opens several streams on each, every stream with a
-//! single writer. Subscriptions are round-robined across the event
-//! connections, and each still gets a server-opened uni stream of its own.
-//!
-//! Every stream authenticates on open (`handshake`), and the event
-//! connections each run a router that hands those uni streams to the
-//! subscriptions waiting for them (`event_router`).
+//! Every stream authenticates on open (`handshake`). A `node` is the set of
+//! connections to one broker that streams are placed on: several streams
+//! share a connection, and a connection is added only when the ones there are
+//! saturated. Each connection runs a router that hands the broker's event
+//! streams to the subscriptions waiting for them (`event_router`).
 
 mod event_router;
 mod handshake;
+mod node;
 
 pub(crate) use event_router::{EventRouterCommand, spawn_event_router_with_config};
 pub(crate) use handshake::{Credentials, Negotiated};
+pub(crate) use node::{NodeConnections, NodeLimits, OpenedStream, StreamLease};
 
 use std::net::SocketAddr;
 
 use felix_transport::QuicConnection;
 
-/// Where this client's pooled connections should go, given what the broker
+/// Where a client's connections to a broker should go, given what the broker
 /// said about its listeners.
 ///
 /// `dialled` always comes first and is always present, even if the broker did
@@ -42,24 +40,6 @@ pub(crate) fn listener_targets(dialled: SocketAddr, ports: &[u16]) -> Vec<Socket
         }
     }
     targets
-}
-
-/// The listener one pool connection at `index` should dial, noting it in
-/// `listeners` the first time any pool lands on it.
-///
-/// Shared by the publish, cache and event pools: each spreads its
-/// connections across `targets` the same way and needs the same bookkeeping
-/// for `Client::listeners_in_use`.
-pub(crate) fn pool_target(
-    targets: &[SocketAddr],
-    index: usize,
-    listeners: &mut Vec<SocketAddr>,
-) -> SocketAddr {
-    let target = targets[index % targets.len()];
-    if !listeners.contains(&target) {
-        listeners.push(target);
-    }
-    target
 }
 
 /// Periodic path stats for client-side connections, mirroring the broker's
