@@ -427,6 +427,7 @@ impl LogCache {
                 let key = key();
                 let dir = layout::shard_dir(&self.root, &key);
                 let label = layout::shard_label(&key);
+                crate::legacy_swap::recover_legacy_swap(&dir)?;
                 let log = match base_offset {
                     Some(base) => {
                         DiskLog::open_at(dir.clone(), label.clone(), self.config.clone(), base)?

@@ -29,6 +29,8 @@
 //! - Projections of a log: [`cache`] ([`StorageApi`] and its two stores) and
 //!   [`counter_log`], which both compact in the background through `compaction`.
 //! - `shard_slots`: the per-shard open and close every store above shares.
+//!   `legacy_swap` settles, before that open, a compaction swap an older build
+//!   left half done.
 //! - Ordering and reporting: `commit_order` ([`CommitSequencer`]),
 //!   [`metrics_names`], and the errors every call returns ([`StorageError`],
 //!   [`Corruption`]).
@@ -48,6 +50,7 @@ pub mod fault;
 #[doc(hidden)]
 pub mod fuzzing;
 pub(crate) mod io;
+mod legacy_swap;
 pub mod log;
 pub mod metrics_names;
 pub mod segment;

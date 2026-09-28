@@ -289,3 +289,54 @@ async fn a_closed_shard_is_refused_then_reopens_with_its_sum() {
     assert_eq!(sum, 7);
     assert!(!store.shard_log(T, NS, C, 0).await.expect("log").is_closed());
 }
+
+/// A counter shard an older build left mid-swap opens with every sum.
+#[tokio::test]
+async fn a_shard_left_mid_swap_by_an_older_build_keeps_every_sum() {
+    use crate::legacy_swap::fixture::{Stop, assert_no_siblings, old_swap};
+
+    for stop in Stop::ALL {
+        let root = tempfile::tempdir().expect("tempdir");
+        let expected: Vec<(String, i64)> = (0..20).map(|i| (format!("k{i}"), 3 * i - 7)).collect();
+        {
+            let store = store(root.path());
+            for (key, sum) in &expected {
+                store.add(T, NS, C, 0, key, *sum + 1).await.expect("add");
+                store.add(T, NS, C, 0, key, -1).await.expect("add");
+            }
+            store.shutdown().await.expect("shutdown");
+        }
+        let dir = layout::shard_dir(
+            root.path(),
+            &ShardKey {
+                tenant: T.into(),
+                namespace: NS.into(),
+                stream: C.into(),
+                shard: 0,
+            },
+        );
+        let live = expected
+            .iter()
+            .map(|(key, sum)| {
+                CounterOp::Checkpoint {
+                    key: key.clone(),
+                    sum: *sum,
+                }
+                .encode()
+            })
+            .collect();
+        old_swap(&dir, config(), live, stop).await;
+
+        let when = format!("after an old swap stopped at {stop:?}");
+        let store = store(root.path());
+        for (key, sum) in &expected {
+            assert_eq!(
+                store.get(T, NS, C, 0, key).await.expect("get"),
+                Some(*sum),
+                "{key} {when}",
+            );
+        }
+        assert_no_siblings(&dir, &when);
+        store.shutdown().await.expect("shutdown");
+    }
+}
