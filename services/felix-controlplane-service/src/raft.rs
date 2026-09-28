@@ -43,6 +43,7 @@ mod version;
 pub use handle::RaftHandle;
 pub use leader::{AskLeaderError, LeaderService, NotLeader};
 pub use peer::{CLUSTER_ID_HEADER, PeerSecurity, PeerTls};
+pub use proposal::NoQuorum;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

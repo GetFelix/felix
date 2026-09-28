@@ -361,10 +361,16 @@ async fn losing_quorum_fails_writes_loudly_not_silently() {
             display_name: "After".to_string(),
         })
         .await;
-    assert!(
-        refused.is_err(),
-        "a write without quorum must fail, not hang or pretend"
-    );
+    // And fails as "no quorum", which the API answers with a retryable 503,
+    // not as an internal error.
+    match refused {
+        Err(felix_controlplane_service::store::StoreError::Unexpected(err)) => assert!(
+            err.chain()
+                .any(|cause| cause.is::<felix_controlplane_service::raft::NoQuorum>()),
+            "a write without quorum failed, but not as no-quorum: {err:#}"
+        ),
+        other => panic!("a write without quorum must fail, not hang or pretend: {other:?}"),
+    }
 
     // And readiness follows: the survivor still calls itself leader, but a
     // leader no quorum has acknowledged in the bound is a leader in name

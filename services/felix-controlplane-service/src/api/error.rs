@@ -61,7 +61,24 @@ pub fn api_conflict(code: &str, message: &str) -> ApiError {
 
 /// 500 from a store error: the error is logged here, the client gets only
 /// `message`.
+///
+/// Except a Raft write that ran out its budget: that is 503 `unavailable`,
+/// because the group is electing or has lost quorum, and a retry once it has
+/// a leader again is the right response. A write that timed out may still
+/// have committed, so a retried create can answer 409.
 pub fn api_internal(message: &str, err: &StoreError) -> ApiError {
+    if let StoreError::Unexpected(inner) = err
+        && inner
+            .chain()
+            .any(|cause| cause.is::<crate::raft::NoQuorum>())
+    {
+        tracing::warn!(error = ?err, "controlplane write not committed in time");
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "no raft leader or quorum committed the write in time; retry",
+        );
+    }
     tracing::error!(error = ?err, "controlplane storage error");
     ApiError {
         status: StatusCode::INTERNAL_SERVER_ERROR,

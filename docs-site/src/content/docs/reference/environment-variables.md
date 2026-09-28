@@ -1928,7 +1928,7 @@ absent; they are listed in that script rather than here.
 | `FELIX_RAFT_ELECTION_TIMEOUT_MAX_MS` | `1200` | Upper edge of the election window. Must exceed the minimum. |
 | `FELIX_RAFT_SNAPSHOT_LOGS_SINCE_LAST` | `500` | Snapshot after this many log entries; metadata state is small, so snapshots are cheap and the log stays short. |
 | `FELIX_RAFT_LOGS_KEPT_BEHIND_SNAPSHOT` | `100` | Entries kept behind the snapshot so a briefly-lagging member catches up from the log rather than a snapshot install. |
-| `FELIX_RAFT_WRITE_TIMEOUT_MS` | `10000` | Overall budget for one proposal, elections and forwarding included. "No quorum" becomes an error at this bound rather than a hang. |
+| `FELIX_RAFT_WRITE_TIMEOUT_MS` | `10000` | Overall budget for one proposal, elections and forwarding included. "No quorum" becomes an error at this bound rather than a hang; the API answers it `503 unavailable`. |
 | `FELIX_READINESS_TIMEOUT_MS` | `2000` | Longest a readiness check may take before it counts as a failure. Keep it below the prober's own timeout so the reason is reported rather than lost. |
 | `FELIX_READINESS_CACHE_TTL_MS` | `1000` | How long a readiness answer is reused. Bounds probe cost regardless of how many probers there are, and bounds how long recovery takes to become visible. |
 | `FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS` | `25000` | Budget for draining in-flight requests after SIGTERM before tasks are cancelled. |
