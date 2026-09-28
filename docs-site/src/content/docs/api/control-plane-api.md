@@ -164,6 +164,30 @@ It may also carry `zone`, the failure domain the broker registered from
 `FELIX_NODE_ZONE`; placement spreads each shard's copies across zones. A broker
 that sends none has no `zone` and is placed as if alone in its own.
 
+A node's `status` also carries `features`, the fleet features the broker
+reported when it registered (omitted when none). `GET /v1/fleet/features`,
+with the same permission, answers with the ones every live or draining broker
+supports and the ones an operator has enabled:
+
+```json
+{ "supported": ["jump_hash_routing"], "enabled": [], "serving_nodes": 3 }
+```
+
+Support turns nothing on. `POST /v1/fleet/features/{feature}/finalize`
+(`node.manage:cluster:*`) enables a feature, and is refused with 409 unless
+every live or draining broker supports it. With `?dry_run=true` it changes
+nothing and answers whether it would be accepted:
+
+```json
+{ "feature": "jump_hash_routing", "dry_run": true, "enabled": false,
+  "would_enable": false, "lacking": ["broker-3"], "serving_nodes": 3 }
+```
+
+Finalizing is one-way: after it, a broker that registers without the feature
+is refused with 409 naming it. `felix-controlplane admin features` and
+`admin features finalize <feature> [--dry-run]` drive the same routes. See
+[Upgrades and compatibility](/felix/deployment/upgrades/).
+
 `cluster:*` sits outside the tenant hierarchy and no tenant scope contains it,
 so a tenant admin cannot grant themselves cluster access. The tenant comes from
 the token's own `tid` claim rather than a path segment, and only selects which

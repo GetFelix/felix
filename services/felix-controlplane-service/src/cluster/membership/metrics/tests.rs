@@ -21,6 +21,7 @@ fn node(node_id: &str, region: &str, lifecycle: NodeLifecycle) -> Node {
             last_heartbeat_at_millis: 1,
             registered_at_millis: 1,
             incarnation: 0,
+            features: Default::default(),
         },
     }
 }

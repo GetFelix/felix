@@ -52,11 +52,12 @@ impl InMemoryStore {
             ))
         });
 
-        let (nodes, node_changes) = {
+        let (nodes, node_changes, fleet_enabled) = {
             let state = self.nodes.read().await;
             (
                 sorted_by_string_key(&state.records),
                 ExportedLog::from_log(&state.changes),
+                state.fleet_enabled.clone(),
             )
         };
 
@@ -116,6 +117,7 @@ impl InMemoryStore {
             rbac_groupings: sorted_by_string_key(&*self.rbac_groupings.read().await),
             auth_bootstrapped: sorted_by_string_key(&*self.auth_bootstrapped.read().await),
             moves_paused: *self.moves_paused.read().await,
+            fleet_enabled,
             placement_token,
             placement_holder,
             refresh_tokens,
@@ -145,6 +147,7 @@ impl InMemoryStore {
         *self.nodes.write().await = NodeState {
             records: state.nodes.into_iter().collect(),
             changes: state.node_changes.into_log(capacity),
+            fleet_enabled: state.fleet_enabled,
         };
         *self.shards.write().await = ShardState {
             records: state.shards.into_iter().collect(),

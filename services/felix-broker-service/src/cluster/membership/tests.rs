@@ -22,6 +22,8 @@ struct Calls {
     /// Answer heartbeats from this incarnation or older with `down`, the way
     /// the control plane answers a node its sweep has expired.
     down_through_incarnation: Option<u64>,
+    /// The enabled fleet features every answer carries.
+    fleet_features: Vec<String>,
 }
 
 type Shared = Arc<Mutex<Calls>>;
@@ -32,15 +34,19 @@ fn stub_control_plane(state: Shared) -> axum::Router {
             "/v1/nodes",
             post(
                 |State(state): State<Shared>, Json(body): Json<serde_json::Value>| async move {
-                    let incarnation = {
+                    let (incarnation, fleet) = {
                         let mut calls = state.lock().expect("lock");
                         calls.registrations.push(body);
-                        calls.registrations.len() as u64 - 1
+                        (
+                            calls.registrations.len() as u64 - 1,
+                            calls.fleet_features.clone(),
+                        )
                     };
                     Json(json!({
                         "node": { "status": { "incarnation": incarnation, "lifecycle": "live" } },
                         "heartbeat_interval_ms": 20,
                         "expiry_timeout_ms": 60,
+                        "fleet_features": fleet,
                     }))
                 },
             ),
@@ -62,9 +68,11 @@ fn stub_control_plane(state: Shared) -> axum::Router {
                         Some(down) if incarnation <= down => "down",
                         _ => "live",
                     };
-                    Ok(Json(
-                        json!({ "lifecycle": lifecycle, "heartbeat_interval_ms": 20 }),
-                    ))
+                    Ok(Json(json!({
+                        "lifecycle": lifecycle,
+                        "heartbeat_interval_ms": 20,
+                        "fleet_features": calls.fleet_features,
+                    })))
                 },
             ),
         )
@@ -116,6 +124,7 @@ fn config() -> MembershipConfig {
         region: "us-west-2".to_string(),
         zone: None,
         region_bridges: Vec::new(),
+        features: Default::default(),
     }
 }
 
@@ -262,6 +271,7 @@ async fn heartbeats_carry_the_registered_incarnation() {
         Arc::new(crate::cluster::lease::LeaseState::new(
             std::time::Duration::from_secs(30),
         )),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
     ));
 
     // Wait for a few beats rather than a fixed sleep.
@@ -316,6 +326,7 @@ async fn heartbeat_failures_are_counted_and_then_recovered_from() {
         Arc::new(crate::cluster::lease::LeaseState::new(
             std::time::Duration::from_secs(30),
         )),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
     ));
 
     for _ in 0..400 {
@@ -503,6 +514,7 @@ async fn a_broker_marked_down_registers_again_and_resumes_heartbeating() {
         serving,
         shutdown.clone(),
         Arc::clone(&lease),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
     );
 
     for _ in 0..300 {
@@ -562,6 +574,7 @@ async fn a_stalled_heartbeat_is_abandoned_within_the_lease() {
         token: crate::cluster::credential::NodeCredential::new("a-node-token"),
         incarnation: 0,
         heartbeat_interval_ms: 20,
+        fleet_features: Default::default(),
     };
     let shutdown = CancellationToken::new();
     let failures = Arc::new(AtomicU64::new(0));
@@ -576,6 +589,7 @@ async fn a_stalled_heartbeat_is_abandoned_within_the_lease() {
         shutdown.clone(),
         Arc::clone(&failures),
         lease,
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
     ));
 
     let started = std::time::Instant::now();
@@ -618,4 +632,93 @@ fn retries_stay_under_a_quarter_of_the_lease() {
     assert_eq!(retry_cap(Duration::from_secs(3_600)), MAX_RETRY_BACKOFF);
     // And a degenerate one does not spin.
     assert!(retry_cap(Duration::ZERO) > Duration::ZERO);
+}
+
+/// A build that implements no fleet features registers the body it always
+/// did; one that does sends them.
+#[tokio::test]
+async fn registration_reports_features_only_when_there_are_some() {
+    let calls: Shared = Arc::default();
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
+
+    register(&client, &base_url, &config(), &credential)
+        .await
+        .expect("register");
+    let with_features = MembershipConfig {
+        features: ["jump".to_string()].into(),
+        ..config()
+    };
+    register(&client, &base_url, &with_features, &credential)
+        .await
+        .expect("register");
+
+    let sent = calls.lock().expect("lock").registrations.clone();
+    assert!(sent[0].get("features").is_none(), "{}", sent[0]);
+    assert_eq!(sent[1]["features"], json!(["jump"]));
+
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// The heartbeat is what opens the gate once an operator finalizes, and a
+/// later answer without the feature does not close it again.
+#[tokio::test]
+async fn heartbeats_open_the_fleet_gate_and_never_close_it() {
+    let calls: Shared = Arc::default();
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let jump = felix_common::fleet::FleetFeature::new("jump");
+    let fleet = Arc::new(felix_common::fleet::FleetGate::new(["jump"]));
+
+    let registration = register(
+        &client,
+        &base_url,
+        &config(),
+        &crate::cluster::credential::NodeCredential::new("a-node-token"),
+    )
+    .await
+    .expect("register");
+    let shutdown = CancellationToken::new();
+    let beating = tokio::spawn(run_heartbeat(
+        client,
+        base_url,
+        registration,
+        shutdown.clone(),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(crate::cluster::lease::LeaseState::new(
+            std::time::Duration::from_secs(30),
+        )),
+        Arc::clone(&fleet),
+    ));
+
+    let beats = || calls.lock().expect("lock").heartbeats.len();
+    let wait_for_beats = |n: usize| async move {
+        for _ in 0..500 {
+            if beats() >= n {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("no heartbeats");
+    };
+    wait_for_beats(2).await;
+    assert!(!fleet.supports(jump), "enabled before a finalize");
+
+    calls.lock().expect("lock").fleet_features = vec!["jump".to_string()];
+    let seen = beats();
+    wait_for_beats(seen + 2).await;
+    assert!(fleet.supports(jump));
+
+    // A lagging control-plane instance answers with less.
+    calls.lock().expect("lock").fleet_features.clear();
+    let seen = beats();
+    wait_for_beats(seen + 2).await;
+    assert!(fleet.supports(jump), "a stale answer withdrew the feature");
+
+    shutdown.cancel();
+    beating.await.expect("heartbeat task");
+    let _ = stop.send(());
+    let _ = handle.await;
 }

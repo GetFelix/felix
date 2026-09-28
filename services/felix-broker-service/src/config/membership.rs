@@ -61,6 +61,9 @@ pub struct MembershipConfig {
     /// without `refresh_token_file`: a file is a seam something else can write,
     /// where a token passed by value is not.
     pub node_token_file: Option<std::path::PathBuf>,
+    /// The fleet features this broker reports: what this build implements
+    /// (`felix_common::fleet::IMPLEMENTED`).
+    pub features: std::collections::BTreeSet<String>,
 }
 
 /// Read the cluster identity, or `None` when this broker is not joining one.
@@ -171,7 +174,26 @@ pub(super) fn membership_from_env(
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
+        features: reported_features(),
     }))
+}
+
+/// What this build implements, unless a debug build's test harness has
+/// asked it to report something else to play an older or newer broker.
+fn reported_features() -> std::collections::BTreeSet<String> {
+    #[cfg(debug_assertions)]
+    if let Ok(names) = std::env::var("FELIX_TEST_FLEET_FEATURES") {
+        return names
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    felix_common::fleet::IMPLEMENTED
+        .iter()
+        .map(|feature| feature.name().to_string())
+        .collect()
 }
 
 /// The Kafka address to register, from `FELIX_KAFKA_ADVERTISE_ADDR` and

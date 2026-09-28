@@ -3,9 +3,30 @@ use super::InMemoryStore;
 use crate::model::{Node, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest};
 use crate::store::{ChangeSet, Snapshot, StoreError, StoreResult};
 
-pub(super) async fn register_node(store: &InMemoryStore, node: Node) -> StoreResult<Node> {
+/// Whether a registration is held to the enabled fleet features.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FleetRule {
+    /// Refuse a node lacking an enabled fleet feature.
+    Enforce,
+    /// Neither check nor store features: the Raft entry from before they
+    /// existed, which an older member applies exactly this way.
+    Ignore,
+}
+
+pub(super) async fn register_node(
+    store: &InMemoryStore,
+    mut node: Node,
+    rule: FleetRule,
+) -> StoreResult<Node> {
     node.validate().map_err(invalid_node)?;
     let mut state = store.nodes.write().await;
+
+    match rule {
+        // Under the write lock, so a finalize cannot land between the check
+        // and the insert.
+        FleetRule::Enforce => crate::cluster::fleet::admit(&state.fleet_enabled, &node)?,
+        FleetRule::Ignore => node.status.features.clear(),
+    }
 
     if let Some((holder, _)) = state.records.iter().find(|(id, existing)| {
         existing.spec.advertise_addr == node.spec.advertise_addr && *id != &node.node_id
@@ -56,6 +77,18 @@ pub(super) async fn register_node(store: &InMemoryStore, node: Node) -> StoreRes
     );
     metrics::counter!("felix_node_changes_total", "op" => "registered").increment(1);
     Ok(stored)
+}
+
+pub(super) async fn finalize_fleet_feature(
+    store: &InMemoryStore,
+    feature: &str,
+) -> StoreResult<std::collections::BTreeSet<String>> {
+    let mut state = store.nodes.write().await;
+    if !state.fleet_enabled.contains(feature) {
+        crate::cluster::fleet::check_finalize(state.records.values(), feature)?;
+        state.fleet_enabled.insert(feature.to_string());
+    }
+    Ok(state.fleet_enabled.clone())
 }
 
 pub(super) async fn get_node(store: &InMemoryStore, node_id: &str) -> StoreResult<Node> {

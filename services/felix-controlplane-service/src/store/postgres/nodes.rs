@@ -9,17 +9,21 @@ use crate::model::{
 };
 use crate::store::{ChangeSet, Page, PageRequest, Snapshot, StoreError, StoreResult};
 
-const NODE_SELECT_ALL: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes ORDER BY node_id"#;
+const NODE_SELECT_ALL: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features FROM nodes ORDER BY node_id"#;
 
-const NODE_SELECT_FIRST_PAGE: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes ORDER BY node_id LIMIT $1"#;
+const NODE_SELECT_FIRST_PAGE: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features FROM nodes ORDER BY node_id LIMIT $1"#;
 
-const NODE_SELECT_PAGE_AFTER: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes WHERE node_id > $1 ORDER BY node_id LIMIT $2"#;
+const NODE_SELECT_PAGE_AFTER: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features FROM nodes WHERE node_id > $1 ORDER BY node_id LIMIT $2"#;
 
-const NODE_SELECT_BY_ID: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes WHERE node_id = $1"#;
+const NODE_SELECT_BY_ID: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features FROM nodes WHERE node_id = $1"#;
 
 /// `FOR UPDATE` so a concurrent register or patch of the same node waits rather
 /// than reading the row this transaction is about to replace.
-const NODE_SELECT_BY_ID_FOR_UPDATE: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation FROM nodes WHERE node_id = $1 FOR UPDATE"#;
+const NODE_SELECT_BY_ID_FOR_UPDATE: &str = r#"SELECT node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features FROM nodes WHERE node_id = $1 FOR UPDATE"#;
+
+/// The advisory lock registrations and finalizes serialize on ("felixreg" in
+/// ASCII).
+const REGISTRATION_LOCK: i64 = 0x6665_6c69_7872_6567;
 
 /// Row shape for the `nodes` table.
 #[derive(Debug, Clone, FromRow)]
@@ -37,6 +41,7 @@ struct DbNode {
     last_heartbeat_at_millis: i64,
     registered_at_millis: i64,
     incarnation: i64,
+    features: serde_json::Value,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -50,6 +55,16 @@ struct NodeChangeRow {
 pub(super) async fn register_node(store: &PostgresStore, node: Node) -> StoreResult<Node> {
     node.validate().map_err(invalid_node)?;
     let mut tx = store.pool.begin().await?;
+
+    // Registration is the only way a node starts serving, so taking turns
+    // with finalize is enough to keep a node lacking a feature from
+    // registering while that feature is being enabled.
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(REGISTRATION_LOCK)
+        .execute(&mut *tx)
+        .await?;
+    let enabled = enabled_in(&mut tx).await?;
+    crate::cluster::fleet::admit(&enabled, &node)?;
 
     let existing = sqlx::query_as::<_, DbNode>(NODE_SELECT_BY_ID_FOR_UPDATE)
         .bind(&node.node_id)
@@ -91,8 +106,8 @@ pub(super) async fn register_node(store: &PostgresStore, node: Node) -> StoreRes
     };
 
     let upsert = sqlx::query(
-        r#"INSERT INTO nodes (node_id, advertise_addr, region, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, client_addr, kafka_addr, zone)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        r#"INSERT INTO nodes (node_id, advertise_addr, region, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, client_addr, kafka_addr, zone, features)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                ON CONFLICT (node_id) DO UPDATE SET
                  advertise_addr = EXCLUDED.advertise_addr,
                  client_addr = EXCLUDED.client_addr,
@@ -106,6 +121,7 @@ pub(super) async fn register_node(store: &PostgresStore, node: Node) -> StoreRes
                  last_heartbeat_at_millis = EXCLUDED.last_heartbeat_at_millis,
                  registered_at_millis = EXCLUDED.registered_at_millis,
                  incarnation = EXCLUDED.incarnation,
+                 features = EXCLUDED.features,
                  updated_at = now()"#,
     );
     let upsert = bind_node(upsert, &stored).execute(&mut *tx).await;
@@ -134,6 +150,69 @@ pub(super) async fn register_node(store: &PostgresStore, node: Node) -> StoreRes
     });
     metrics::counter!("felix_node_changes_total", "op" => "registered").increment(1);
     Ok(stored)
+}
+
+/// The supported set, computed in the database: each feature some serving
+/// node reported, kept when every serving node reported it.
+pub(super) async fn supported_fleet_features(
+    store: &PostgresStore,
+) -> StoreResult<std::collections::BTreeSet<String>> {
+    let names: Vec<String> = sqlx::query_scalar(
+        r#"SELECT feature FROM nodes, jsonb_array_elements_text(features) AS feature
+               WHERE lifecycle IN ('live', 'draining')
+               GROUP BY feature
+               HAVING count(DISTINCT node_id) =
+                   (SELECT count(*) FROM nodes WHERE lifecycle IN ('live', 'draining'))"#,
+    )
+    .fetch_all(&store.pool)
+    .await?;
+    Ok(names.into_iter().collect())
+}
+
+pub(super) async fn enabled_fleet_features(
+    store: &PostgresStore,
+) -> StoreResult<std::collections::BTreeSet<String>> {
+    let names: Vec<String> = sqlx::query_scalar("SELECT feature FROM fleet_features")
+        .fetch_all(&store.pool)
+        .await?;
+    Ok(names.into_iter().collect())
+}
+
+pub(super) async fn finalize_fleet_feature(
+    store: &PostgresStore,
+    feature: &str,
+) -> StoreResult<std::collections::BTreeSet<String>> {
+    let mut tx = store.pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(REGISTRATION_LOCK)
+        .execute(&mut *tx)
+        .await?;
+    let mut enabled = enabled_in(&mut tx).await?;
+    if !enabled.contains(feature) {
+        let nodes = sqlx::query_as::<_, DbNode>(NODE_SELECT_ALL)
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .map(node_from_db)
+            .collect::<StoreResult<Vec<_>>>()?;
+        crate::cluster::fleet::check_finalize(&nodes, feature)?;
+        sqlx::query("INSERT INTO fleet_features (feature) VALUES ($1) ON CONFLICT DO NOTHING")
+            .bind(feature)
+            .execute(&mut *tx)
+            .await?;
+        enabled.insert(feature.to_string());
+    }
+    tx.commit().await?;
+    Ok(enabled)
+}
+
+async fn enabled_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> StoreResult<std::collections::BTreeSet<String>> {
+    let names: Vec<String> = sqlx::query_scalar("SELECT feature FROM fleet_features")
+        .fetch_all(&mut **tx)
+        .await?;
+    Ok(names.into_iter().collect())
 }
 
 pub(super) async fn get_node(store: &PostgresStore, node_id: &str) -> StoreResult<Node> {
@@ -193,7 +272,7 @@ pub(super) async fn patch_node(
         r#"UPDATE nodes SET advertise_addr = $2, region = $3, labels = $4,
                  capacity_max_shards = $5, capacity_weight = $6, lifecycle = $7,
                  last_heartbeat_at_millis = $8, registered_at_millis = $9, incarnation = $10,
-                 client_addr = $11, kafka_addr = $12, zone = $13,
+                 client_addr = $11, kafka_addr = $12, zone = $13, features = $14,
                  updated_at = now()
                WHERE node_id = $1"#,
     );
@@ -346,7 +425,7 @@ pub(super) async fn expire_stale_nodes(
     let rows = sqlx::query_as::<_, DbNode>(
         r#"UPDATE nodes SET lifecycle = 'down', updated_at = now()
                WHERE lifecycle IN ('live', 'draining') AND last_heartbeat_at_millis < $1
-               RETURNING node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation"#,
+               RETURNING node_id, advertise_addr, client_addr, kafka_addr, region, zone, labels, capacity_max_shards, capacity_weight, lifecycle, last_heartbeat_at_millis, registered_at_millis, incarnation, features"#,
     )
     .bind(expiry_before_millis as i64)
     .fetch_all(&mut *tx)
@@ -487,6 +566,7 @@ fn node_from_db(row: DbNode) -> StoreResult<Node> {
             last_heartbeat_at_millis: row.last_heartbeat_at_millis as u64,
             registered_at_millis: row.registered_at_millis as u64,
             incarnation: row.incarnation as u64,
+            features: serde_json::from_value(row.features)?,
         },
     })
 }
@@ -507,10 +587,11 @@ fn bind_node<'q>(
         .bind(node.status.last_heartbeat_at_millis as i64)
         .bind(node.status.registered_at_millis as i64)
         .bind(node.status.incarnation as i64)
-        // Last, so both statements above can name them as $11 to $13.
+        // Last, so both statements above can name them as $11 to $14.
         .bind(node.spec.client_addr.as_deref())
         .bind(node.spec.kafka_addr.as_deref())
         .bind(node.spec.zone.as_deref())
+        .bind(serde_json::to_value(&node.status.features).unwrap_or_default())
 }
 
 /// Append a change, taking its `seq` from the locked counter.

@@ -106,6 +106,7 @@ fn node(node_id: &str, port: u16, region: &str, rack: &str) -> Node {
             last_heartbeat_at_millis: felix_controlplane_service::clock::now_millis(),
             registered_at_millis: 1,
             incarnation: 0,
+            features: Default::default(),
         },
     }
 }

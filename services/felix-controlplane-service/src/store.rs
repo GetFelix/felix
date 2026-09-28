@@ -88,8 +88,42 @@ pub trait ControlPlaneStore: Send + Sync {
     /// conflicting. `registered_at_millis` is preserved from the first
     /// registration; the caller's value is used only for a new node.
     ///
-    /// Conflicts only when `advertise_addr` belongs to a different node.
+    /// Conflicts when `advertise_addr` belongs to a different node, and when
+    /// the node lacks a fleet feature an operator has enabled
+    /// ([`crate::cluster::fleet::admit`]); the check is atomic with the write.
     async fn register_node(&self, node: Node) -> StoreResult<Node>;
+    /// [`Self::register_node`], answering with the enabled fleet features as
+    /// of that registration or later, never earlier.
+    ///
+    /// The default reads after the write, which is enough wherever a read
+    /// sees every committed write; Raft overrides it, because a follower's
+    /// copy may not have applied its own registration yet.
+    async fn register_node_in_fleet(
+        &self,
+        node: Node,
+    ) -> StoreResult<(Node, std::collections::BTreeSet<String>)> {
+        let node = self.register_node(node).await?;
+        let enabled = self.enabled_fleet_features().await?;
+        Ok((node, enabled))
+    }
+    /// The features every live or draining node reported
+    /// ([`crate::cluster::fleet::supported`]). Supported is not enabled.
+    async fn supported_fleet_features(&self) -> StoreResult<std::collections::BTreeSet<String>> {
+        Ok(crate::cluster::fleet::supported(&self.list_nodes().await?))
+    }
+    /// The fleet features an operator has finalized. Only ever grows.
+    async fn enabled_fleet_features(&self) -> StoreResult<std::collections::BTreeSet<String>>;
+    /// Enable `feature` for the whole fleet, answering with the enabled set
+    /// after it. Finalizing an enabled feature again is a no-op.
+    ///
+    /// Conflicts unless every serving node reported the feature
+    /// ([`crate::cluster::fleet::check_finalize`]). The check is serialized
+    /// with [`Self::register_node`], so no node lacking the feature registers
+    /// between the check and the write.
+    async fn finalize_fleet_feature(
+        &self,
+        feature: &str,
+    ) -> StoreResult<std::collections::BTreeSet<String>>;
     async fn get_node(&self, node_id: &str) -> StoreResult<Node>;
     async fn list_nodes(&self) -> StoreResult<Vec<Node>>;
     /// Nodes in `node_id` order, one page at a time.

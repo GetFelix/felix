@@ -7,7 +7,7 @@
 //!
 //! Shard placement reads this model but is not part of it: a node says where it
 //! is and how much it can hold, never what it currently holds.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
@@ -104,6 +104,12 @@ impl NodeLifecycle {
     pub fn operator_can_move_to(self, next: NodeLifecycle) -> bool {
         use NodeLifecycle::*;
         self == next || matches!((self, next), (Live, Draining) | (Draining, Live))
+    }
+
+    /// Live or draining: the node is serving, and counts toward the fleet
+    /// minimum ([`crate::cluster::fleet`]).
+    pub fn is_serving(self) -> bool {
+        matches!(self, NodeLifecycle::Live | NodeLifecycle::Draining)
     }
 }
 
@@ -231,6 +237,10 @@ pub struct NodeStatus {
     /// node that never went away.
     #[serde(default)]
     pub incarnation: u64,
+    /// The fleet features this incarnation reported at registration
+    /// (`felix_common::fleet`). Empty for a broker that predates them.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub features: BTreeSet<String>,
 }
 
 /// A broker process in the cluster.

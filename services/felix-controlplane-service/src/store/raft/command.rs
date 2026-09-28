@@ -52,7 +52,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// A release that adds a variant gives it the next level and raises this,
 /// so nothing proposes it until every member runs that release. Never lower
 /// it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 1;
+pub const METADATA_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -89,6 +89,8 @@ pub enum MetaCommand {
     DeleteCache {
         key: CacheKey,
     },
+    /// Registers without fleet features: the entry predates them, and an
+    /// older member applies it that way, so this build does too.
     RegisterNode {
         node: Node,
     },
@@ -295,6 +297,18 @@ pub enum MetaCommand {
     CheckpointHeartbeats {
         beats: Vec<HeartbeatSeen>,
     },
+    /// `RegisterNode` that keeps the node's fleet features and refuses one
+    /// lacking an enabled feature ([`crate::cluster::fleet::admit`]).
+    /// Level 2: an older member would apply it as a plain registration and
+    /// accept a node this one refused.
+    RegisterNodeInFleet {
+        node: Node,
+    },
+    /// Enable a fleet feature, refused unless every serving node reported it
+    /// ([`crate::cluster::fleet::check_finalize`]). Level 2.
+    FinalizeFleetFeature {
+        feature: String,
+    },
 }
 
 impl MetaCommand {
@@ -309,6 +323,7 @@ impl MetaCommand {
             | Self::RetireSigningKey { .. }
             | Self::ExpireNodes { .. }
             | Self::CheckpointHeartbeats { .. } => 1,
+            Self::RegisterNodeInFleet { .. } | Self::FinalizeFleetFeature { .. } => 2,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
@@ -386,6 +401,16 @@ pub enum MetaResponse {
     },
     Node {
         node: Node,
+    },
+    /// `RegisterNodeInFleet`'s answer: the node, and the enabled fleet
+    /// features as of its apply.
+    RegisteredNode {
+        node: Node,
+        fleet: std::collections::BTreeSet<String>,
+    },
+    /// `FinalizeFleetFeature`'s answer: the enabled set after it.
+    FleetFeatures {
+        enabled: std::collections::BTreeSet<String>,
     },
     Nodes {
         nodes: Vec<Node>,

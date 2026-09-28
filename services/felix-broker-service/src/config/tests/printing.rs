@@ -15,6 +15,7 @@ fn with_membership(token: &str) -> BrokerConfig {
             region: "us-west-2".to_string(),
             zone: None,
             region_bridges: Vec::new(),
+            features: Default::default(),
         }),
         ..BrokerConfig::default()
     }

@@ -14,11 +14,13 @@
 //! answer.
 pub mod metrics;
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
+use felix_common::fleet::FleetGate;
 use felix_common::membership::NodeLifecycle;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -69,12 +71,20 @@ struct RegistrationRequest<'a> {
     /// always did.
     #[serde(skip_serializing_if = "Option::is_none")]
     zone: Option<&'a str>,
+    /// Omitted when empty, so a build implementing no fleet features sends
+    /// the body it always did.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    features: &'a BTreeSet<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct RegistrationResponse {
     node: NodeView,
     heartbeat_interval_ms: u64,
+    /// Absent from a control plane that predates fleet features, which
+    /// enables none.
+    #[serde(default)]
+    fleet_features: BTreeSet<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,6 +120,8 @@ struct HeartbeatResponse {
     /// parse the response and losing membership entirely.
     #[serde(default)]
     expiry_timeout_ms: Option<u64>,
+    #[serde(default)]
+    fleet_features: BTreeSet<String>,
 }
 
 /// A registered identity, and what the control plane told us about it.
@@ -125,6 +137,8 @@ pub struct Registration {
     /// past a restart is rejected instead of counted for its successor.
     pub incarnation: u64,
     pub heartbeat_interval_ms: u64,
+    /// The fleet features enabled as of this registration.
+    pub fleet_features: BTreeSet<String>,
 }
 
 /// Why a membership call did not succeed.
@@ -193,6 +207,7 @@ pub async fn register(
             kafka_addr: config.kafka_advertise_addr.as_deref(),
             region: &config.region,
             zone: config.zone.as_deref(),
+            features: &config.features,
         })
         .send()
         .await
@@ -232,6 +247,7 @@ pub async fn register(
         token: credential.clone(),
         incarnation: registered.node.status.incarnation,
         heartbeat_interval_ms: registered.heartbeat_interval_ms,
+        fleet_features: registered.fleet_features,
     })
 }
 
@@ -261,6 +277,7 @@ pub async fn run_heartbeat(
     shutdown: CancellationToken,
     consecutive_failures: Arc<AtomicU64>,
     lease: Arc<crate::cluster::lease::LeaseState>,
+    fleet: Arc<FleetGate>,
 ) -> HeartbeatEnd {
     let base_url = base_url.trim_end_matches('/').to_string();
     let url = format!("{base_url}/v1/nodes/{}/heartbeat", registration.node_id);
@@ -306,6 +323,10 @@ pub async fn run_heartbeat(
                     lease.renew_at(sent);
                 }
                 mm::record_heartbeat_success();
+                for feature in fleet.observe(response.fleet_features.iter().map(String::as_str)) {
+                    tracing::info!(feature, "an operator finalized this fleet feature; enabled");
+                    mm::record_fleet_feature(feature, true);
+                }
                 // The control plane owns the cadence, so a change to it takes
                 // effect without touching broker configuration.
                 interval = Duration::from_millis(response.heartbeat_interval_ms.max(1));
@@ -383,6 +404,9 @@ pub struct MembershipTask {
     /// This broker's authority to serve the shards it leads. Renewed by the
     /// heartbeat below; read by the publish path.
     pub lease: Arc<crate::cluster::lease::LeaseState>,
+    /// Which fleet features an operator has enabled, kept current by
+    /// registration and heartbeats.
+    pub fleet: Arc<FleetGate>,
 }
 
 /// Register once the broker can serve, then report health until shutdown.
@@ -394,6 +418,7 @@ pub struct MembershipTask {
 /// A broker the control plane has marked down registers again, which is the
 /// only way back into placement. Without that, any outage longer than the
 /// expiry window would leave every broker running but out of the cluster.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     client: reqwest::Client,
     base_url: String,
@@ -402,6 +427,7 @@ pub fn spawn(
     serving: CancellationToken,
     shutdown: CancellationToken,
     lease: Arc<crate::cluster::lease::LeaseState>,
+    fleet: Arc<FleetGate>,
 ) -> MembershipTask {
     let fatal = CancellationToken::new();
     let consecutive_failures = Arc::new(AtomicU64::new(0));
@@ -409,6 +435,7 @@ pub fn spawn(
         let fatal = fatal.clone();
         let consecutive_failures = Arc::clone(&consecutive_failures);
         let lease = Arc::clone(&lease);
+        let fleet = Arc::clone(&fleet);
         async move {
             tokio::select! {
                 _ = shutdown.cancelled() => return,
@@ -450,6 +477,7 @@ pub fn spawn(
                     }
                 };
                 consecutive_failures.store(0, Ordering::Release);
+                adopt_fleet(&fleet, &registration.fleet_features);
 
                 match run_heartbeat(
                     client.clone(),
@@ -458,6 +486,7 @@ pub fn spawn(
                     shutdown.clone(),
                     Arc::clone(&consecutive_failures),
                     Arc::clone(&lease),
+                    Arc::clone(&fleet),
                 )
                 .await
                 {
@@ -478,6 +507,28 @@ pub fn spawn(
         fatal,
         consecutive_failures,
         lease,
+        fleet,
+    }
+}
+
+/// Start the gate over from a registration's answer.
+fn adopt_fleet(fleet: &FleetGate, answer: &BTreeSet<String>) {
+    for feature in fleet.restart(answer.iter().map(String::as_str)) {
+        // Only when the control plane lost its state: a finalize is never
+        // undone.
+        tracing::warn!(
+            feature,
+            "the fleet no longer has this feature enabled; disabled"
+        );
+        mm::record_fleet_feature(feature, false);
+    }
+    for feature in fleet.enabled() {
+        mm::record_fleet_feature(feature, true);
+    }
+    for feature in fleet.reported() {
+        if !fleet.supports_name(&feature) {
+            mm::record_fleet_feature(&feature, false);
+        }
     }
 }
 

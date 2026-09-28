@@ -355,9 +355,13 @@ impl Running {
 
         budget.report();
         if membership_rejected {
-            tracing::error!("broker stopped: the control plane refused this node identity");
+            tracing::error!("broker stopped: the control plane refused this node's registration");
+            // The refusal itself is logged where it arrived: a wrong identity
+            // or address, or a fleet feature this build lacks.
             return Err(anyhow::anyhow!(
-                "control plane refused this node identity; check FELIX_NODE_ID and FELIX_NODE_ADVERTISE_ADDR"
+                "control plane refused this node's registration (reason logged above); \
+                 check FELIX_NODE_ID and FELIX_NODE_ADVERTISE_ADDR, or whether this build \
+                 lacks a fleet feature an operator has enabled"
             ));
         }
         tracing::info!("broker stopped");

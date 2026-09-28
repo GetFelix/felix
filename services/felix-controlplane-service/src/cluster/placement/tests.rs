@@ -78,6 +78,7 @@ fn node(id: &str, lifecycle: NodeLifecycle, max_shards: Option<u32>) -> Node {
             last_heartbeat_at_millis: 1,
             registered_at_millis: 1,
             incarnation: 0,
+            features: Default::default(),
         },
     }
 }

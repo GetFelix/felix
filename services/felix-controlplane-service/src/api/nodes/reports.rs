@@ -61,11 +61,18 @@ pub(crate) async fn report_health(
             ref other => api_internal("record node heartbeat", other),
         })?;
 
+    let fleet_features = state
+        .store
+        .enabled_fleet_features()
+        .await
+        .map_err(|ref err| api_internal("read the enabled fleet features", err))?;
+
     Ok(Json(NodeHeartbeatResponse {
         node_id: node.node_id,
         lifecycle: node.status.lifecycle,
         heartbeat_interval_ms: state.node_liveness.heartbeat_interval_ms,
         expiry_timeout_ms: state.node_liveness.expiry_timeout_ms,
+        fleet_features,
     }))
 }
 

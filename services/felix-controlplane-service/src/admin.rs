@@ -1,6 +1,6 @@
-//! `felix-controlplane admin`: the operator's shard move controls from a
-//! shell, as a thin client of the HTTP API (`/v1/shard-moves`,
-//! `/v1/placement/*`).
+//! `felix-controlplane admin`: the operator's shard move and fleet feature
+//! controls from a shell, as a thin client of the HTTP API
+//! (`/v1/shard-moves`, `/v1/placement/*`, `/v1/fleet/features`).
 //!
 //! A client rather than a direct store connection, so it works against any
 //! backend, goes through the same authorization as every other caller, and
@@ -29,6 +29,10 @@ commands:
   backup-point <name> [--out FILE] [--broker NODE=URL]... [--metrics-port PORT]
                                            record every shard's committed
                                            offsets as a backup point
+  features                                 fleet features: supported by every
+                                           serving broker, and enabled
+  features finalize <feature> [--dry-run]  enable a feature fleet-wide; ONE-WAY:
+                                           brokers without it are refused after
 
 --url defaults to $FELIX_CONTROLPLANE_URL, then http://127.0.0.1:8443.
 An https URL is verified against the public roots and, when set, the PEM
@@ -62,6 +66,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     let mut token = std::env::var("FELIX_TOKEN").ok();
     let mut json = false;
     let mut cache = false;
+    let mut dry_run = false;
     let mut words = Vec::new();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -70,6 +75,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
             "--token" => token = Some(args.next().context("--token needs a value")?),
             "--json" => json = true,
             "--cache" => cache = true,
+            "--dry-run" => dry_run = true,
             // Takes options of its own, so the rest of the line is its.
             "backup-point" => {
                 let admin = Admin {
@@ -155,6 +161,14 @@ pub async fn run(args: Vec<String>) -> Result<()> {
                 .await?,
             render_paused,
         ),
+        ["features"] => (admin.get("/v1/fleet/features").await?, render_features),
+        ["features", "finalize", feature] => {
+            let path = format!("/v1/fleet/features/{feature}/finalize?dry_run={dry_run}");
+            (
+                admin.send(reqwest::Method::POST, &path, None).await?,
+                render_finalize,
+            )
+        }
         _ => bail!("{USAGE}"),
     };
     if json {
@@ -388,6 +402,50 @@ fn render_paused(response: &Value) -> String {
         "placement paused\n".to_string()
     } else {
         "placement resumed\n".to_string()
+    }
+}
+
+fn names(value: &Value) -> String {
+    let names: Vec<String> = value
+        .as_array()
+        .map(|items| items.iter().map(text).collect())
+        .unwrap_or_default();
+    if names.is_empty() {
+        "-".to_string()
+    } else {
+        names.join(", ")
+    }
+}
+
+fn render_features(response: &Value) -> String {
+    format!(
+        "serving brokers: {}\nsupported: {}\nenabled:   {}\n",
+        text(&response["serving_nodes"]),
+        names(&response["supported"]),
+        names(&response["enabled"]),
+    )
+}
+
+fn render_finalize(response: &Value) -> String {
+    let feature = text(&response["feature"]);
+    let enabled = response["enabled"].as_bool() == Some(true);
+    if response["dry_run"].as_bool() != Some(true) {
+        return format!("{feature} enabled; brokers without it will be refused from now on\n");
+    }
+    if enabled {
+        return format!("dry run: {feature} is already enabled\n");
+    }
+    if response["would_enable"].as_bool() == Some(true) {
+        return format!(
+            "dry run: {feature} can be finalized; all {} serving brokers support it\n",
+            text(&response["serving_nodes"]),
+        );
+    }
+    let lacking = names(&response["lacking"]);
+    if lacking == "-" {
+        format!("dry run: {feature} cannot be finalized: no broker is serving\n")
+    } else {
+        format!("dry run: {feature} cannot be finalized: {lacking} do not support it\n")
     }
 }
 

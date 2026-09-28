@@ -52,6 +52,23 @@ for what the current release actually guarantees.
 
 ### Added
 
+- **Fleet features: cross-broker behaviour turns on only when an operator
+  finalizes it.** A broker reports the features it implements at
+  registration (`features`, optional), and the control plane tracks the set
+  every live or draining broker supports. Support enables nothing:
+  `POST /v1/fleet/features/{feature}/finalize` (or `felix-controlplane admin
+  features finalize <feature> [--dry-run]`) enables one, refused until every
+  serving broker supports it. Registration and every heartbeat answer with
+  the enabled set as `fleet_features`; `GET /v1/fleet/features` and `admin
+  features` show supported and enabled. Brokers check it through
+  `felix_common::fleet::FleetGate` and export
+  `felix_broker_fleet_feature_enabled`. Before a finalize any broker can be
+  rolled back; after it, finalizing is one-way and a broker without the
+  feature is refused at registration (409). No feature uses the gate yet.
+  Postgres gains `nodes.features` and a `fleet_features` table; on Raft the
+  control plane keeps features and accepts a finalize only once every member
+  is at metadata version 2.
+
 - **Connection-fault conformance scenarios.** A catalogue scenario can carry a
   `step` that drops, resets or stalls the client's link mid-publish or
   mid-subscribe. `felix_conformance::link` is the UDP interposer that does it;

@@ -182,6 +182,7 @@ async fn seed(store: &(dyn ControlPlaneAuthStore + Send + Sync)) {
                 last_heartbeat_at_millis: 1_000,
                 registered_at_millis: 1_000,
                 incarnation: 0,
+                features: Default::default(),
             },
         })
         .await

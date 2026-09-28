@@ -117,6 +117,7 @@ pub(crate) async fn one_shard_cluster() -> (
                     last_heartbeat_at_millis: crate::clock::now_millis(),
                     registered_at_millis: 1,
                     incarnation: 0,
+                    features: Default::default(),
                 },
             })
             .await

@@ -11,6 +11,8 @@
 //!   process boundary as JSON, so a field renamed on one side and not the
 //!   other is a silent mismatch; sharing the types puts that back in the
 //!   compiler's hands.
+//! - [`fleet`] — the features a broker reports and the fleet-wide gate
+//!   built from what every serving broker has in common.
 //! - [`env_registry`] — every `FELIX_*` variable the workspace reads, so a
 //!   mistyped one is reported instead of silently taking a default.
 //! - [`lifecycle`] — start-up, readiness and bounded drain, shared by both
@@ -24,6 +26,7 @@
 pub mod clock;
 pub mod env_registry;
 mod error;
+pub mod fleet;
 pub mod ids;
 // Feature-gated so that library consumers which never run a process
 // (felix-router) do not pull in tokio.

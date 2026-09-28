@@ -228,6 +228,11 @@ pub struct NodeHeartbeatResponse {
     pub heartbeat_interval_ms: u64,
     /// Silence beyond this marks the node down.
     pub expiry_timeout_ms: u64,
+    /// The fleet features an operator has enabled ([`crate::cluster::fleet`]).
+    /// May lag a moment behind a finalize on a Raft follower, so a broker
+    /// only ever adds to what it has from this.
+    #[serde(default)]
+    pub fleet_features: std::collections::BTreeSet<String>,
 }
 
 /// A broker claiming its identity on boot.
@@ -259,6 +264,13 @@ pub struct NodeRegistrationRequest {
     pub labels: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub capacity: crate::model::NodeCapacity,
+    /// The fleet features this broker implements (`felix_common::fleet`).
+    /// Absent from a broker that predates them, which reads as none.
+    ///
+    /// A broker lacking a feature an operator has enabled is refused with
+    /// 409, so an enabled feature is never withdrawn by a late joiner.
+    #[serde(default)]
+    pub features: std::collections::BTreeSet<String>,
 }
 
 /// What a broker learns from registering.
@@ -268,6 +280,39 @@ pub struct NodeRegistrationResponse {
     /// The cadence expected of this broker, so it is configured in one place.
     pub heartbeat_interval_ms: u64,
     pub expiry_timeout_ms: u64,
+    /// The fleet features enabled as of this registration.
+    #[serde(default)]
+    pub fleet_features: std::collections::BTreeSet<String>,
+}
+
+/// Which fleet features the serving brokers support, and which are enabled.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct FleetFeaturesResponse {
+    /// Every live or draining broker reported it. Supported is not enabled:
+    /// nothing changes until an operator finalizes it.
+    pub supported: std::collections::BTreeSet<String>,
+    /// Finalized by an operator. Brokers act on these, and a broker lacking
+    /// one is refused at registration.
+    pub enabled: std::collections::BTreeSet<String>,
+    /// How many brokers are live or draining, and so counted.
+    pub serving_nodes: usize,
+}
+
+/// The outcome, or with `dry_run` the preview, of finalizing a feature.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct FleetFinalizeResponse {
+    pub feature: String,
+    pub dry_run: bool,
+    /// Whether the feature is enabled now. With `dry_run`, whether it
+    /// already was.
+    pub enabled: bool,
+    /// Whether a real finalize would be accepted now.
+    pub would_enable: bool,
+    /// Serving brokers that did not report the feature. Finalizing is
+    /// refused while any are listed.
+    pub lacking: Vec<String>,
+    /// How many brokers are live or draining.
+    pub serving_nodes: usize,
 }
 
 /// Why a node is or is not a placement candidate.

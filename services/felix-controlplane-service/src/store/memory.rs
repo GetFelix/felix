@@ -42,6 +42,8 @@ mod shards;
 mod streams;
 mod tenants;
 
+pub(crate) use nodes::FleetRule;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -157,6 +159,16 @@ impl InMemoryStore {
         shards::record_replica_report(self, report, leader).await
     }
 
+    /// [`ControlPlaneStore::register_node`], with the fleet check optional
+    /// for the Raft apply of entries that predate it.
+    pub(crate) async fn apply_register_node(
+        &self,
+        node: Node,
+        rule: FleetRule,
+    ) -> StoreResult<Node> {
+        nodes::register_node(self, node, rule).await
+    }
+
     pub fn new(config: StoreConfig) -> Self {
         let capacity = config.change_window();
         // The change window is a retention bound for incremental sync consumers.
@@ -170,6 +182,7 @@ impl InMemoryStore {
             nodes: Arc::new(RwLock::new(NodeState {
                 records: HashMap::new(),
                 changes: ChangeLog::new(capacity),
+                fleet_enabled: Default::default(),
             })),
             shards: Arc::new(RwLock::new(ShardState {
                 records: HashMap::new(),
@@ -364,7 +377,18 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn register_node(&self, node: Node) -> StoreResult<Node> {
-        nodes::register_node(self, node).await
+        nodes::register_node(self, node, nodes::FleetRule::Enforce).await
+    }
+
+    async fn enabled_fleet_features(&self) -> StoreResult<std::collections::BTreeSet<String>> {
+        Ok(self.nodes.read().await.fleet_enabled.clone())
+    }
+
+    async fn finalize_fleet_feature(
+        &self,
+        feature: &str,
+    ) -> StoreResult<std::collections::BTreeSet<String>> {
+        nodes::finalize_fleet_feature(self, feature).await
     }
 
     async fn get_node(&self, node_id: &str) -> StoreResult<Node> {
@@ -706,6 +730,9 @@ impl AuthStore for InMemoryStore {
 struct NodeState {
     records: HashMap<String, Node>,
     changes: ChangeLog<NodeChange>,
+    /// Enabled fleet features. Under the node lock so a finalize and a
+    /// registration cannot interleave.
+    fleet_enabled: std::collections::BTreeSet<String>,
 }
 
 impl NodeState {

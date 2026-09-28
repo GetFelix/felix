@@ -142,4 +142,41 @@ async fn each_command_drives_the_api() {
         .expect_err("an unknown node");
     assert!(refused.to_string().contains("unknown_node"), "{refused:#}");
     assert!(admin(&["bogus"]).await.is_err());
+
+    // The brokers here report no features, so a finalize is refused and a
+    // dry run changes nothing.
+    admin(&["features"]).await.expect("features");
+    admin(&["features", "finalize", "x", "--dry-run"])
+        .await
+        .expect("a dry run answers either way");
+    let refused = admin(&["features", "finalize", "x"])
+        .await
+        .expect_err("no broker supports x");
+    assert!(refused.to_string().contains("409"), "{refused:#}");
+    assert!(
+        store
+            .enabled_fleet_features()
+            .await
+            .expect("read")
+            .is_empty()
+    );
+}
+
+#[test]
+fn fleet_features_render_as_lines() {
+    let response = json!({
+        "supported": ["a", "b"], "enabled": [], "serving_nodes": 3,
+    });
+    assert_eq!(
+        render_features(&response),
+        "serving brokers: 3\nsupported: a, b\nenabled:   -\n"
+    );
+    let refused = json!({
+        "feature": "a", "dry_run": true, "enabled": false, "would_enable": false,
+        "lacking": ["broker-2"], "serving_nodes": 3,
+    });
+    assert_eq!(
+        render_finalize(&refused),
+        "dry run: a cannot be finalized: broker-2 do not support it\n"
+    );
 }
