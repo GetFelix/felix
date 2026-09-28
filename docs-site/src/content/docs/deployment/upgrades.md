@@ -149,6 +149,30 @@ count as before and keep that exposure.
   an older client that treats every offset jump as a drop reports a drop of
   one at each leadership change.
 
+#### `majority_ack`
+
+Once finalized, together with `generation_start`, a `Quorum` stream
+acknowledges a write as soon as a majority of its replicas has answered that
+it holds it at the leader's generation. Neither the control plane's replica
+report nor the leader's lease is on the write's path any more, so a leader
+that loses the control plane keeps acknowledging what its followers hold, and
+a promoted leader always fences a majority before it serves. `Leader`
+streams, caches and reads keep the lease.
+
+- **Finalize `generation_start` first, or in the same change window.**
+  `majority_ack` has no effect until both are finalized.
+- **Every broker must fence on promotion.** A broker running with
+  `FELIX_INTERNAL_FENCE=false` does not report `majority_ack`, so the dry run
+  names it and the finalize is refused until it runs with the fence. After
+  the finalize, such a broker is refused at registration.
+- **Nothing changes on the wire or on disk.** Rolling a broker back to a build
+  that has the feature is safe; rolling it back to one without it is refused,
+  as for any finalized feature.
+- **What clients see.** A publish to a leader that has been replaced but has
+  not heard yet now waits and times out as "unknown" instead of being refused
+  at once for its lapsed lease. The client retries it against the new leader,
+  and an idempotent producer keeps it from landing twice.
+
 A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature
 can be finalized, only once every control-plane member is at metadata

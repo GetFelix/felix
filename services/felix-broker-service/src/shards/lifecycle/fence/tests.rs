@@ -150,3 +150,30 @@ async fn a_held_place_is_rechecked_against_the_lease_at_the_claim() {
         Some(Fenced::LeaseLapsed)
     );
 }
+
+/// A shard whose followers decide its acknowledgements takes writes at that
+/// generation without the lease, and at no other. Group state still asks for
+/// the lease.
+#[tokio::test]
+async fn a_shard_acknowledging_by_its_followers_admits_without_the_lease() {
+    use felix_replication::driver::WriteFence;
+
+    let fence = ShardFence::default();
+    let stream = key(ShardKind::Stream);
+    fence.open(&stream, 1);
+    let lease = Arc::new(LeaseState::new(std::time::Duration::from_secs(60)));
+    fence.bind_lease(Arc::clone(&lease));
+    assert_eq!(fence.admit(&stream, 1).err(), Some(Fenced::LeaseLapsed));
+
+    fence.serve_without_lease(&stream, 1);
+    let inside = fence.admit(&stream, 1).expect("no lease needed");
+    assert_eq!(fence.recheck(&inside), Ok(()));
+    assert_eq!(fence.require_lease(), Err(Fenced::LeaseLapsed));
+
+    // A new generation starts back on the lease until the driver says so.
+    fence.open(&stream, 2);
+    assert_eq!(fence.admit(&stream, 2).err(), Some(Fenced::LeaseLapsed));
+    let cache = key(ShardKind::Cache);
+    fence.open(&cache, 1);
+    assert_eq!(fence.admit(&cache, 1).err(), Some(Fenced::LeaseLapsed));
+}

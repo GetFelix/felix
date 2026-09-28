@@ -74,12 +74,19 @@ pub enum Outcome {
 /// lead, and take the tail of any ahead of it.
 ///
 /// Does not open the shard; the caller does, on anything but `Pending`.
+///
+/// Without `lease_fallback` a stream shard never opens on the lease: a
+/// replica whose capabilities are unknown or lacking is one that has not
+/// answered, and the shard waits for a majority that has. That is the rule
+/// once the followers decide acknowledgements, since an older leader then no
+/// longer stops writing when its lease lapses.
 pub async fn fence_shard<R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
     local_node_id: &str,
     key: &ShardKey,
     route: &Route,
+    lease_fallback: bool,
 ) -> Outcome {
     let replicas: Vec<_> = route
         .replicas
@@ -97,7 +104,7 @@ pub async fn fence_shard<R: PeerRequester>(
     // Every replica, not just a majority. A fenced majority keeps an older
     // leader out whoever the rest are, but what the fence is for later --
     // acknowledging on the followers alone -- counts every follower's promise.
-    for replica in &replicas {
+    for replica in replicas.iter().filter(|_| lease_fallback) {
         let offered = match requester.recorded_capabilities(&replica.node_id) {
             Some(offered) => Some(offered),
             None => requester
@@ -160,11 +167,11 @@ pub async fn fence_shard<R: PeerRequester>(
                     err.detail
                 ));
             }
-            Err(PeerError::Unsupported { .. }) => {
+            Err(PeerError::Unsupported { .. }) if lease_fallback => {
                 return Outcome::Lease { lacking: node_id };
             }
             Ok(InternalMessage::ForwardPublishError(err))
-                if err.code == ErrorCode::UnsupportedKind =>
+                if lease_fallback && err.code == ErrorCode::UnsupportedKind =>
             {
                 return Outcome::Lease { lacking: node_id };
             }

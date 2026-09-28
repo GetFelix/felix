@@ -279,6 +279,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                     cx.router.local_node_id(),
                     key,
                     route,
+                    !cx.marks.acks_by_followers(),
                 )
                 .await;
                 let opened = open_fenced(cx.gate, &key, generation, outcome).await;

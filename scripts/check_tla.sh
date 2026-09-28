@@ -84,6 +84,8 @@ expectations=(
   "FelixShardFigure8NoStartRecord violates AckedOnMajority"
   "FelixShardFigure8CutOver pass"
   "FelixShardFigure8CutOverNoStartRecord violates AckedOnMajority"
+  "FelixShardFigure8FollowerAcks pass"
+  "FelixShardFigure8FollowerAcksNoStartRecord violates AckedOnMajority"
   "FelixShardUnfencedAck violates AckedHeldByLeader"
   "FelixShardFencedPromotion pass"
   "FelixShardNoCommitCheck violates NoStaleCommit"

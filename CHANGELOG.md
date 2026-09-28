@@ -52,6 +52,20 @@ for what the current release actually guarantees.
 
 ### Added
 
+- **`Quorum` streams acknowledge by their followers once the `majority_ack`
+  fleet feature is finalized.** A write is acknowledged when a majority of the
+  replica set, the leader included, has answered `ReplicateOk` for it at the
+  leader's generation; the control-plane report goes out behind the mark for
+  placement only, and the lease is off the write's path (admission, commit and
+  acknowledgement). A leader counts itself only while it has accepted no newer
+  generation, and a promoted leader never opens a stream shard on the lease.
+  Needs `generation_start` finalized too. A broker running with
+  `FELIX_INTERNAL_FENCE=false` does not report the feature. `Leader` streams,
+  caches, group state and reads keep the lease. TLA+: `HeldAtGen` counts
+  follower answers (`confirmed`), and `FelixShardFigure8FollowerAcks` /
+  `FelixShardFigure8FollowerAcksNoStartRecord` join `check_tla.sh`;
+  `FelixShardFencedAck` now includes the start record. See
+  `docs/replication-design.md`, "Acknowledging by the followers".
 - `scripts/check_tla.sh` takes configuration names to check only those.
 - **Fleet features: cross-broker behaviour turns on only when an operator
   finalizes it.** A broker reports the features it implements at

@@ -188,7 +188,10 @@ answered `accepted`. A report it refused (the broker no longer leads the shard,
 the report is from an older generation, or it is behind a report already held)
 holds the mark, so the publish waits or times out instead of being acknowledged
 on a report failover will never read. See `docs/replication-design.md`,
-"Replica reports".
+"Replica reports". Once the fleet finalizes `majority_ack`, a `Quorum` stream
+acknowledges on its followers' answers at the leader's generation instead,
+with neither the report nor the lease in the condition: see
+`docs/replication-design.md`, "Acknowledging by the followers".
 
 > `a_resumed_leader_does_not_acknowledge_writes_the_cluster_loses`.
 

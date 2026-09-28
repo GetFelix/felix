@@ -60,6 +60,7 @@ pub async fn ship_once_with<R: PeerRequester>(
             Rebuild::Accepted { base_offset } => {
                 cursor.halted = None;
                 cursor.next_offset = base_offset;
+                cursor.confirmed = 0;
                 cursor.rebuilding = true;
                 tracing::warn!(
                     node_id = %cursor.node_id,
@@ -234,6 +235,7 @@ pub async fn ship_once_with<R: PeerRequester>(
             // has compared nothing beyond that, so accepting a higher answer
             // means resuming past records neither side has checked.
             cursor.next_offset = durable_offset.min(batch_end);
+            cursor.confirmed = cursor.next_offset;
             cursor.shipped_bytes += batch_bytes as u64;
             metrics::record_shipped(metrics::OUTCOME_OK);
             // A rebuild is a full transfer, and the policy may say how fast.
@@ -248,6 +250,7 @@ pub async fn ship_once_with<R: PeerRequester>(
         }
         Progress::Resume { offset } => {
             cursor.next_offset = offset;
+            cursor.confirmed = cursor.confirmed.min(offset);
             metrics::record_shipped(metrics::OUTCOME_RESUMED);
         }
         Progress::Halted(halt) => {

@@ -45,8 +45,17 @@ async fn publish_before(cluster: &Cluster, via: &str, count: usize) -> Vec<Vec<u
 /// The records of `owed` that `node` has, in the order its log holds them,
 /// read from the start. Anything else in the log (the harness's own probe)
 /// is left out.
+///
+/// The replay is retried until `node` takes it: the control plane names a
+/// new owner before that broker hears of it through its watch and opens the
+/// shard, and until then it refuses the subscribe as another's.
 async fn stored_on(cluster: &Cluster, node: &str, owed: &[Vec<u8>]) -> Vec<Vec<u8>> {
-    let (_client, mut subscription) = cluster.replay_on(node, STREAM).await.expect("replay");
+    let (_client, mut subscription) =
+        felix_cluster::wait::until_some(Duration::from_secs(30), "the owner to serve", || async {
+            cluster.replay_on(node, STREAM).await.ok()
+        })
+        .await
+        .expect("replay");
     let mut got = Vec::new();
     while !owed.iter().all(|payload| got.contains(payload)) {
         match tokio::time::timeout(Duration::from_secs(10), subscription.next_event()).await {

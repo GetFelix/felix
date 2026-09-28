@@ -72,6 +72,13 @@ impl Reporter {
         }
         answer.await.unwrap_or(false)
     }
+
+    /// Submit `report` without waiting for it. Dropped if the queue is full:
+    /// the next pass sends a fresher one, and no mark waits on this.
+    pub(crate) fn submit(&self, report: ShardReport) {
+        let (landed, _) = oneshot::channel();
+        let _ = self.tx.try_send(Pending { report, landed });
+    }
 }
 
 /// Where a leader sends its replica reports.

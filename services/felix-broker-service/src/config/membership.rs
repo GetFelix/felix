@@ -190,8 +190,18 @@ fn reported_features() -> std::collections::BTreeSet<String> {
             .map(str::to_string)
             .collect();
     }
+    // Acknowledging by the followers is safe only if every broker fences
+    // what it is promoted to, and this one would not.
+    let fences = !matches!(
+        std::env::var("FELIX_INTERNAL_FENCE")
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("0" | "false" | "no")
+    );
     felix_common::fleet::IMPLEMENTED
         .iter()
+        .filter(|feature| fences || **feature != felix_common::fleet::MAJORITY_ACK)
         .map(|feature| feature.name().to_string())
         .collect()
 }

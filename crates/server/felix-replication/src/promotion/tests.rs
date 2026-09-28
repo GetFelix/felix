@@ -284,7 +284,7 @@ async fn a_promoted_leader_opens_once_a_majority_took_its_generation() {
     }
     let (leader, _dir) = leader_holding(4, &["a"]).await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route()).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true).await;
 
     assert_eq!(
         outcome,
@@ -325,9 +325,28 @@ async fn without_a_majority_the_shard_stays_closed() {
     replicas.get_mut("broker-c").reachable = false;
     let (leader, _dir) = leader_holding(4, &["a"]).await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route()).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true).await;
 
     assert!(matches!(outcome, Outcome::Pending(_)), "{outcome:?}");
+}
+
+/// **Once the followers decide acknowledgements, no shard opens on the
+/// lease.** A replica that does not offer the fence is one that has not
+/// answered it, and the rest are a majority here. Opening on the lease
+/// instead would trust an old leader to stop at its lease, which it no
+/// longer does.
+#[tokio::test]
+async fn without_the_lease_fallback_a_replica_lacking_the_fence_is_not_answered() {
+    let mut replicas = Replicas::new();
+    replicas.get_mut("broker-c").capabilities = PeerCapabilities::FENCE;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), false).await;
+
+    assert!(
+        matches!(outcome, Outcome::Fenced { .. }),
+        "opened some other way: {outcome:?}"
+    );
 }
 
 /// **A replica set with one broker that does not offer the fence keeps the
@@ -339,7 +358,7 @@ async fn a_replica_without_the_capability_keeps_the_lease() {
     replicas.get_mut("broker-c").capabilities = PeerCapabilities::FENCE;
     let (leader, _dir) = leader_holding(4, &["a"]).await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route()).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true).await;
 
     assert_eq!(
         outcome,
@@ -365,7 +384,7 @@ async fn a_tail_a_replica_holds_past_the_leader_is_taken() {
     replicas.get_mut("broker-c").reachable = false;
     let (leader, _dir) = leader_holding(4, &["a"]).await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route()).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true).await;
 
     assert_eq!(
         outcome,
@@ -388,7 +407,7 @@ async fn a_newer_generations_log_replaces_the_leaders_own_suffix() {
     }
     let (leader, _dir) = leader_holding(3, &["a", "stale-1", "stale-2"]).await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route()).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true).await;
 
     assert!(
         matches!(
@@ -412,7 +431,7 @@ async fn a_longer_log_from_an_older_generation_is_not_taken() {
     }
     let (leader, _dir) = leader_holding(4, &["a", "x"]).await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route()).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true).await;
 
     assert_eq!(
         outcome,
@@ -437,7 +456,7 @@ async fn a_suffix_past_the_winning_log_is_dropped() {
     }
     let (leader, _dir) = leader_holding(3, &["a", "y", "older"]).await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route()).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true).await;
 
     assert!(
         matches!(
@@ -465,7 +484,7 @@ async fn a_dropped_suffix_leaves_the_replicas_labels() {
     }
     let (leader, _dir) = leader_holding(3, &["a", "y", "older"]).await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route()).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true).await;
 
     assert!(
         matches!(
@@ -567,7 +586,7 @@ async fn a_follower_keeps_the_generation_a_record_was_written_at() {
     assert_eq!(held(&leader).await, vec!["x1"]);
     replicas.get_mut("broker-c").reachable = false;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route()).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true).await;
 
     assert_eq!(
         outcome,
@@ -631,7 +650,7 @@ async fn an_inherited_record_acknowledged_on_a_majority_survives_the_next_fence(
     assert!(matches!(progress, crate::ship::Progress::Stored { .. }));
     replicas.get_mut("broker-c").reachable = false;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route()).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true).await;
 
     assert_eq!(
         held(&leader).await,

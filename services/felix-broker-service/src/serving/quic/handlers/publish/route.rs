@@ -51,26 +51,6 @@ pub(crate) async fn resolve_route(
     // two loads. Either way there is no lock and no await.
     let Authority { ingress, lease } = authority;
 
-    // The admission fence. Cheap and possibly stale, so it only sheds early --
-    // the authoritative check happens again before the record is committed. See
-    // `crate::cluster::lease`.
-    if let Some(lease) = lease
-        && !lease.looks_valid()
-    {
-        crate::cluster::lease::metrics::record_refusal(
-            crate::cluster::lease::metrics::BOUNDARY_ADMISSION,
-        );
-        tracing::debug!(
-            tenant_id,
-            namespace,
-            stream,
-            "publish refused: this broker no longer holds a lease on the shards it led",
-        );
-        return PublishRoute::Refused(ClientError::fenced(
-            "this broker no longer holds a lease on the shards it led",
-        ));
-    }
-
     // Carried to the claim with the write's place in the fence, entered here
     // so a fence that closes after this point still counts the write.
     let mut generation = 0;
@@ -118,6 +98,28 @@ pub(crate) async fn resolve_route(
                 ));
             }
         }
+    }
+
+    // The admission fence. Cheap and possibly stale, so it only sheds early --
+    // the authoritative check happens again before the record is committed. See
+    // `crate::cluster::lease`. After dispatch, because a shard whose followers
+    // decide its acknowledgements takes writes without the lease.
+    if let Some(lease) = lease
+        && !lease.looks_valid()
+        && !fenced.as_ref().is_some_and(FenceGuard::lease_free)
+    {
+        crate::cluster::lease::metrics::record_refusal(
+            crate::cluster::lease::metrics::BOUNDARY_ADMISSION,
+        );
+        tracing::debug!(
+            tenant_id,
+            namespace,
+            stream,
+            "publish refused: this broker no longer holds a lease on the shards it led",
+        );
+        return PublishRoute::Refused(ClientError::fenced(
+            "this broker no longer holds a lease on the shards it led",
+        ));
     }
 
     // Short-lived cache to avoid repeated stream lookups on hot paths.

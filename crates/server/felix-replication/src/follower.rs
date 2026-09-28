@@ -22,6 +22,10 @@ pub struct FollowerCursor {
     pub addr: SocketAddr,
     /// The offset to send next. Moved only by the follower's own answers.
     pub next_offset: u64,
+    /// How far this follower has answered, at this generation, that its log
+    /// is this leader's. Unlike `next_offset`, never taken from where a
+    /// follower says it wants to resume, which nobody compared.
+    pub confirmed: u64,
     /// Set once this follower has answered something that does not resolve by
     /// retrying. Nothing more is shipped to it at this generation.
     pub halted: Option<Halt>,
@@ -50,6 +54,7 @@ impl FollowerCursor {
             node_id: node_id.into(),
             addr,
             next_offset,
+            confirmed: 0,
             halted: None,
             rebuilding: false,
             rebuild_refused: false,

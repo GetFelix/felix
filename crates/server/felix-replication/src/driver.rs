@@ -245,6 +245,10 @@ pub trait WriteFence: Send + Sync {
     /// Whether `key` is closed with no write still inside. A shard that was
     /// never fenced here has nothing in flight, so it counts as quiet.
     fn quiesced(&self, key: &crate::ShardKey) -> bool;
+
+    /// `key` acknowledges by its followers at `generation`, so its writes at
+    /// that generation no longer need the lease to get in.
+    fn serve_without_lease(&self, _key: &crate::ShardKey, _generation: u64) {}
 }
 
 /// A fence that holds nothing back: every shard is quiet.
@@ -366,7 +370,18 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
         }
     }
 
-    let fencing = open_promoted(requester, broker, router.local_node_id(), gate, promoted).await;
+    // Once the followers decide acknowledgements, a shard never opens on the
+    // lease alone: the old leader no longer stops writing when its lease does.
+    let lease_fallback = !marks.acks_by_followers();
+    let fencing = open_promoted(
+        requester,
+        broker,
+        router.local_node_id(),
+        gate,
+        promoted,
+        lease_fallback,
+    )
+    .await;
 
     // Shards at the same time, not one after another.
     //
@@ -449,8 +464,17 @@ async fn fence_one<R: PeerRequester>(
     local_node_id: &str,
     key: ShardKey,
     route: felix_router::Route,
+    lease_fallback: bool,
 ) -> (ShardKey, u64, Outcome) {
-    let outcome = promotion::fence_shard(requester, broker, local_node_id, &key, &route).await;
+    let outcome = promotion::fence_shard(
+        requester,
+        broker,
+        local_node_id,
+        &key,
+        &route,
+        lease_fallback,
+    )
+    .await;
     (key, route.generation, outcome)
 }
 
@@ -462,15 +486,15 @@ async fn open_promoted<R: PeerRequester>(
     local_node_id: &str,
     gate: &dyn PromotionGate,
     promoted: Vec<(ShardKey, felix_router::Route)>,
+    lease_fallback: bool,
 ) -> bool {
-    let outcomes: Vec<(ShardKey, u64, Outcome)> = futures::stream::iter(
-        promoted
-            .into_iter()
-            .map(|(key, route)| fence_one(requester, broker, local_node_id, key, route)),
-    )
-    .buffer_unordered(SHARD_CONCURRENCY)
-    .collect()
-    .await;
+    let outcomes: Vec<(ShardKey, u64, Outcome)> =
+        futures::stream::iter(promoted.into_iter().map(|(key, route)| {
+            fence_one(requester, broker, local_node_id, key, route, lease_fallback)
+        }))
+        .buffer_unordered(SHARD_CONCURRENCY)
+        .collect()
+        .await;
     let mut pending = false;
     for (key, generation, outcome) in outcomes {
         pending |= !open_fenced(gate, &key, generation, outcome).await;
