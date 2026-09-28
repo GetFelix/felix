@@ -42,6 +42,11 @@ pub struct ShardFence {
     /// The broker's lease, once membership has one. Unset only where there is
     /// no control plane to grant one (unit tests of the fence on its own).
     lease: OnceLock<Arc<LeaseState>>,
+    /// Promoted shards waiting for a majority to take their generation, and
+    /// the generation each waits at. Closed meanwhile, like any shard not
+    /// `Active`; kept here so replication, which runs the fence, can read it
+    /// without the lifecycle's lock.
+    promotions: RwLock<HashMap<ShardKey, u64>>,
 }
 
 impl ShardFence {
@@ -61,6 +66,21 @@ impl ShardFence {
     /// must re-check before acknowledging.
     pub fn lease_valid(&self) -> bool {
         self.lease.get().is_none_or(|lease| lease.is_valid_now())
+    }
+
+    /// Note that `key` waits for the promotion fence at `generation`.
+    pub fn await_promotion(&self, key: &ShardKey, generation: u64) {
+        self.promotions.write().insert(key.clone(), generation);
+    }
+
+    /// `key` no longer waits for a promotion fence.
+    pub fn promotion_settled(&self, key: &ShardKey) {
+        self.promotions.write().remove(key);
+    }
+
+    /// The generation `key` waits at for the promotion fence, if it does.
+    pub fn awaiting_promotion(&self, key: &ShardKey) -> Option<u64> {
+        self.promotions.read().get(key).copied()
     }
 
     /// Let writes to `key` in, if they were admitted at `generation`.

@@ -1,6 +1,8 @@
 //! Ownership transitions: what this broker serves, and when it stops.
 use super::*;
 
+mod promotion;
+
 fn key(shard: u32) -> ShardKey {
     ShardKey {
         tenant_id: "t1".to_string(),
@@ -40,6 +42,7 @@ fn an_assignment_does_not_serve_until_the_log_is_open() {
             key: key(0),
             generation: 3,
             new_term: true,
+            fence: false,
         }
     );
     assert_eq!(own.phase(&key(0)), Phase::Opening);
@@ -110,6 +113,7 @@ fn a_newer_generation_reopens() {
             key: key(0),
             generation: 4,
             new_term: false,
+            fence: false,
         }
     );
     assert_eq!(own.phase(&key(0)), Phase::Opening);
@@ -189,6 +193,7 @@ fn a_closed_shard_can_be_reacquired() {
             key: key(0),
             generation: 6,
             new_term: true,
+            fence: false,
         }
     );
     assert_eq!(own.opened(&key(0), 6), Opened::Activated);
@@ -225,6 +230,7 @@ fn a_new_generation_retries_a_failed_open() {
             key: key(0),
             generation: 2,
             new_term: true,
+            fence: false,
         }
     );
 }
@@ -340,7 +346,12 @@ mod driver {
 
     #[async_trait::async_trait]
     impl ShardStore for RecordingStore {
-        async fn open(&self, key: &ShardKey, _generation: u64) -> anyhow::Result<()> {
+        async fn open(
+            &self,
+            key: &ShardKey,
+            _generation: u64,
+            _begins_here: bool,
+        ) -> anyhow::Result<()> {
             if self.fail_open.load(Ordering::Acquire) {
                 return Err(anyhow::anyhow!("injected open failure"));
             }
@@ -695,7 +706,7 @@ mod recording_where_a_leadership_begins {
         let (storage, _dir) = storage(7).await;
         let store = DurableShardStore::new(std::sync::Arc::clone(&storage));
 
-        store.open(&key(0), 4).await.expect("open");
+        store.open(&key(0), 4, true).await.expect("open");
 
         let log = storage
             .open_stream(&key(0).tenant_id, &key(0).namespace, &key(0).stream, 0)
@@ -715,7 +726,7 @@ mod recording_where_a_leadership_begins {
     async fn retaking_the_same_generation_does_not_move_its_start() {
         let (storage, _dir) = storage(7).await;
         let store = DurableShardStore::new(std::sync::Arc::clone(&storage));
-        store.open(&key(0), 4).await.expect("open");
+        store.open(&key(0), 4, true).await.expect("open");
 
         let log = storage
             .open_stream(&key(0).tenant_id, &key(0).namespace, &key(0).stream, 0)
@@ -723,7 +734,7 @@ mod recording_where_a_leadership_begins {
         log.append(&[bytes::Bytes::from("led")])
             .await
             .expect("append");
-        store.open(&key(0), 4).await.expect("reopen");
+        store.open(&key(0), 4, true).await.expect("reopen");
 
         assert_eq!(
             log.generations().last().map(|epoch| epoch.start_offset),
@@ -741,7 +752,7 @@ mod recording_where_a_leadership_begins {
         let mut cache_key = key(0);
         cache_key.kind = crate::shards::ShardKind::Cache;
 
-        store.open(&cache_key, 4).await.expect("open");
+        store.open(&cache_key, 4, true).await.expect("open");
     }
 
     /// Against the real log: a shard moved off this broker is closed under
@@ -801,6 +812,7 @@ fn a_draining_assignment_stops_serving_and_stays_stopped() {
             key: key(0),
             generation: 4,
             new_term: false,
+            fence: false,
         },
         "the new generation is recovered so replication can ship from it",
     );
@@ -872,6 +884,7 @@ fn a_drained_shard_reassigned_here_serves_again() {
             key: key(0),
             generation: 5,
             new_term: true,
+            fence: false,
         }
     );
     assert_eq!(own.opened(&key(0), 5), Opened::Activated);
@@ -1017,6 +1030,7 @@ fn a_named_destination_prepares_once_and_serves_only_after_the_cut_over() {
             key: key(0),
             generation: 4,
             new_term: true,
+            fence: false,
         }
     );
     assert_eq!(own.opened(&key(0), 4), Opened::Activated);

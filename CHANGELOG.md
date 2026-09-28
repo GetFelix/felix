@@ -69,6 +69,16 @@ for what the current release actually guarantees.
   with a warning and `felix_shards_zone_unspread`. A broker without a zone
   shares one with nobody, so clusters that report none are placed as before.
   Postgres gains a nullable `nodes.zone` column.
+- **A promoted leader fences a majority before it serves.** A broker promoted
+  to lead a stream shard now waits in a `fencing` phase: it sends `Fence` to
+  every replica, opens once a majority (itself included) has persisted its
+  generation, and first takes the log of the replica furthest ahead by
+  (last generation, length) with the new `ReplicateFetch` (kind 31,
+  capability `TAIL_FETCH`). A deposed leader's ships are then refused by that
+  majority even where the control plane never reached the follower. Applies
+  only when every replica offers both capabilities; otherwise the shard opens
+  on the lease as before. `felix_broker_promotions_opened_total{path}` says
+  which. Acknowledgements are unchanged: still the report and the lease.
 - **Replicas answer a promoted leader's fence.** A new peer message, `Fence`,
   makes a replica persist the leader's generation before it answers with its
   log end, commit offset and last record's generation, and refuse every older

@@ -36,6 +36,7 @@ async fn drain_pass(
         broker,
         router,
         fence,
+        &crate::promotion::NoGate,
         &QuorumMarks::new(),
         None,
         cursors,
@@ -172,6 +173,7 @@ async fn aux_pass(
         broker,
         router,
         &Unfenced,
+        &crate::promotion::NoGate,
         &QuorumMarks::new(),
         None,
         &mut cursors.main,
@@ -438,6 +440,7 @@ async fn a_fenced_shard_retries_its_remainder_without_waiting_for_the_tick() {
         Arc::clone(&broker),
         router,
         Arc::new(Unfenced),
+        Arc::new(crate::promotion::NoGate),
         Published {
             marks: Arc::new(QuorumMarks::new()),
             halted: Arc::new(crate::halted::HaltedReplicas::new()),
@@ -488,6 +491,7 @@ async fn behind_driver(refusals: usize) -> (Arc<BehindFollower>, Replication, Te
         broker,
         router(LOCAL, &["broker-b"], 4),
         Arc::new(Unfenced),
+        Arc::new(crate::promotion::NoGate),
         Published {
             marks: Arc::new(QuorumMarks::new()),
             halted: Arc::new(crate::halted::HaltedReplicas::new()),

@@ -96,6 +96,24 @@ pub const QUORUM_TIMED_OUT: &str = "timed_out";
 /// Leadership moved before the batch reached a majority.
 pub const QUORUM_NOT_LEADING: &str = "not_leading";
 
+/// Promoted shards opened for writes, by `path`: `fenced` once a majority took
+/// the fence, `lease` when some replica did not offer it.
+pub const PROMOTIONS_TOTAL: &str = "felix_broker_promotions_opened_total";
+pub const PATH_FENCED: &str = "fenced";
+pub const PATH_LEASE: &str = "lease";
+
+/// A promoted leader dropped records of its own that a replica's newer log
+/// had superseded, while taking that log.
+pub const PROMOTION_TRUNCATED_TOTAL: &str = "felix_broker_promotion_truncated_total";
+
+pub fn record_promotion_opened(path: &'static str) {
+    metrics::counter!(PROMOTIONS_TOTAL, "path" => path).increment(1);
+}
+
+pub fn record_promotion_truncated() {
+    metrics::counter!(PROMOTION_TRUNCATED_TOTAL).increment(1);
+}
+
 pub fn record_move_throttled(bytes: u64) {
     metrics::counter!(MOVE_THROTTLED_BYTES_TOTAL).increment(bytes);
 }

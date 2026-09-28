@@ -43,6 +43,7 @@ async fn pass(
         broker,
         router,
         &Unfenced,
+        &crate::promotion::NoGate,
         &QuorumMarks::new(),
         None,
         cursors,

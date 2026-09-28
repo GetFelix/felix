@@ -421,12 +421,12 @@ async fn serve_connection(
                     // Refused as a build without the fence would refuse it, so
                     // a broker with the fence turned off is exactly an older one
                     // to whoever sends it.
-                    InternalMessage::Fence(fence)
+                    request @ (InternalMessage::Fence(_) | InternalMessage::ReplicateFetch(_))
                         if !offered.capabilities.contains(PeerCapabilities::FENCE) =>
                     {
                         metrics::record_served(metrics::OUTCOME_UNSUPPORTED);
                         let refusal = InternalMessage::ForwardPublishError(ForwardPublishError {
-                            correlation_id: fence.correlation_id,
+                            correlation_id: request.correlation_id(),
                             code: ErrorCode::UnsupportedKind,
                             detail: "this broker does not answer the fence".to_string(),
                         });

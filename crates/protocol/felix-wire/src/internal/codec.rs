@@ -9,7 +9,8 @@ use super::{
     ForwardCacheOp, ForwardPublish, ForwardPublishError, ForwardPublishOk, Hello, HelloOk,
     InternalHeader, InternalMessage, Kind, MAX_BATCH_PAYLOADS, MAX_BODY_BYTES,
     MAX_CREDENTIAL_BYTES, MAX_IDENT_BYTES, NotLeader, PeerCapabilities, ReplicaLog,
-    ReplicateBootstrap, ReplicateError, ReplicateOk, ReplicateRebuild, ReplicateRecords, ShardRef,
+    ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
+    ReplicateRecords, ShardRef,
 };
 use crate::error::{Error, Result};
 
@@ -82,6 +83,17 @@ impl InternalMessage {
                 body.put_u32(m.shard.shard);
                 body.put_u64(m.shard.generation);
                 body.put_u8(m.log as u8);
+            }
+            Self::ReplicateFetch(m) => {
+                body.put_u64(m.correlation_id);
+                put_str(&mut body, &m.shard.tenant_id)?;
+                put_str(&mut body, &m.shard.namespace)?;
+                put_str(&mut body, &m.shard.stream)?;
+                body.put_u32(m.shard.shard);
+                body.put_u64(m.shard.generation);
+                body.put_u8(m.log as u8);
+                body.put_u64(m.from_offset);
+                body.put_u32(m.max_bytes);
             }
             Self::FenceOk(m) => {
                 body.put_u64(m.correlation_id);
@@ -354,6 +366,23 @@ impl InternalMessage {
                 };
                 expect_empty(&body)?;
                 Ok(Self::Fence(message))
+            }
+            Kind::ReplicateFetch => {
+                let message = ReplicateFetch {
+                    correlation_id: take_u64(&mut body)?,
+                    shard: ShardRef {
+                        tenant_id: take_str(&mut body)?,
+                        namespace: take_str(&mut body)?,
+                        stream: take_str(&mut body)?,
+                        shard: take_u32(&mut body)?,
+                        generation: take_u64(&mut body)?,
+                    },
+                    log: ReplicaLog::from_u8(take_u8(&mut body)?)?,
+                    from_offset: take_u64(&mut body)?,
+                    max_bytes: take_u32(&mut body)?,
+                };
+                expect_empty(&body)?;
+                Ok(Self::ReplicateFetch(message))
             }
             Kind::FenceOk => {
                 let message = FenceOk {

@@ -156,7 +156,7 @@ fn unknown_enum_values_are_rejected() {
     assert!(Kind::from_u16(0).is_err());
     // One past the highest kind: an unknown kind must be rejected rather than
     // skipped, because the kind is what selects how to read the body.
-    assert!(Kind::from_u16(31).is_err());
+    assert!(Kind::from_u16(32).is_err());
     assert!(ReplicaLog::from_u8(0).is_err());
     assert!(ReplicaLog::from_u8(6).is_err());
     assert!(ErrorCode::from_u16(0).is_err());

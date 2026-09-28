@@ -3,7 +3,7 @@
 use super::{
     Fence, FenceOk, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardPublish,
     ForwardPublishError, ForwardPublishOk, Hello, HelloOk, Kind, NotLeader, ReplicateBootstrap,
-    ReplicateError, ReplicateOk, ReplicateRebuild, ReplicateRecords,
+    ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords,
 };
 
 /// A decoded internal message.
@@ -58,6 +58,7 @@ pub enum InternalMessage {
     ReplicateMarkedRecords(ReplicateRecords),
     Fence(Fence),
     FenceOk(FenceOk),
+    ReplicateFetch(ReplicateFetch),
 }
 
 /// The record kinds, whichever log they are for, send as
@@ -107,6 +108,7 @@ impl InternalMessage {
             Self::ReplicateMarkedRecords(m) => records_kind(m, Kind::ReplicateMarkedRecords),
             Self::Fence(_) => Kind::Fence,
             Self::FenceOk(_) => Kind::FenceOk,
+            Self::ReplicateFetch(_) => Kind::ReplicateFetch,
         }
     }
 
@@ -142,6 +144,7 @@ impl InternalMessage {
             Self::ReplicateMarkedRecords(m) => m.correlation_id,
             Self::Fence(m) => m.correlation_id,
             Self::FenceOk(m) => m.correlation_id,
+            Self::ReplicateFetch(m) => m.correlation_id,
         }
     }
 }

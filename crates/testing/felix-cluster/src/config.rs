@@ -33,6 +33,10 @@ pub struct ClusterConfig {
     /// Extra environment for every broker, set after the harness's own so a
     /// test can override any of them. Empty by default.
     pub broker_env: Vec<(String, String)>,
+    /// Extra environment for the broker at each index, set after
+    /// `broker_env`. A broker past the end of the list gets none: how a test
+    /// builds a fleet whose brokers are not all configured alike.
+    pub node_env: Vec<Vec<(String, String)>>,
     /// Give every broker a plaintext Kafka listener. Off by default. It binds
     /// every interface and advertises the address a kcat container reaches
     /// the host by, since the tests drive it from Docker.
@@ -59,6 +63,7 @@ impl Default for ClusterConfig {
             regions: Vec::new(),
             zones: Vec::new(),
             broker_env: Vec::new(),
+            node_env: Vec::new(),
             kafka: false,
             proxy_links: false,
         }

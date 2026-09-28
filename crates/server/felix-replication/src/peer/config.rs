@@ -230,6 +230,7 @@ impl PeerTransportConfig {
     pub fn capabilities(&self) -> felix_wire::internal::PeerCapabilities {
         if self.fence {
             felix_wire::internal::PeerCapabilities::FENCE
+                .union(felix_wire::internal::PeerCapabilities::TAIL_FETCH)
         } else {
             felix_wire::internal::PeerCapabilities::NONE
         }
