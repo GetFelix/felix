@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790566459943,
+  "lastUpdate": 1790567340533,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19032,6 +19032,58 @@ window.BENCHMARK_DATA = {
             "range": "14132.13",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1052479.70\nmean: 1048166.31\nstdev: 14132.13\ncv: 1.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "03581bb98a7d06567d88db15d2c8a5bcebc06cb5",
+          "message": "feat(ops): consistent cross-broker backup point; enforce the env registry count (#799)\n\nAn operator can now take a backup that corresponds to one cut across every\nbroker: per shard log, a committed offset read from the shard's leader after a\nsingle barrier instant, and restore each leader's copy back to exactly that cut.\n\n- Broker: read-only GET /backup/offsets on the metrics listener lists the\n  committed offset of every log of every shard this broker leads (records,\n  group cursors, dead letters, counters), skipping shards with no committed\n  answer yet. Quorum shards are bounded by the quorum mark and the leader's\n  own acknowledged tail; sidecar logs are read before the records.\n- felix-controlplane admin backup-point: records the barrier first, reads the\n  assignments, collects each leader's offsets, re-reads the assignments and\n  starts over if any leader or generation moved, then writes a JSON manifest.\n- felix-broker restore-point: offline, cuts each copied log back to the point\n  with the new DiskLog::restore_to, which lowers the commit offset durably\n  before truncating and refuses a copy that does not reach the point.\n- scripts/check_env_registry.py now enforces the variable count stated in the\n  env_registry.rs header (244).\n\nDocs: new deployment/backup-and-restore runbook, docker-compose and\nkubernetes backup sections point to it, durable-storage and storage-format\nnotes, broker API and observability route docs, status row.",
+          "timestamp": "2026-09-27T20:33:42-07:00",
+          "tree_id": "bb50f509161514f47bc6edc736b38cbbd92e405f",
+          "url": "https://github.com/gabloe/felix/commit/03581bb98a7d06567d88db15d2c8a5bcebc06cb5"
+        },
+        "date": 1790567339701,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 376623.42,
+            "range": "15733.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 376623.42\nmean: 374818.40\nstdev: 15733.89\ncv: 4.20%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 376623.42,
+            "range": "15733.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 376623.42\nmean: 374818.40\nstdev: 15733.89\ncv: 4.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 92479.27,
+            "range": "1231.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 92479.27\nmean: 92993.82\nstdev: 1231.27\ncv: 1.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 924792.71,
+            "range": "12312.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 924792.71\nmean: 929938.25\nstdev: 12312.74\ncv: 1.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
