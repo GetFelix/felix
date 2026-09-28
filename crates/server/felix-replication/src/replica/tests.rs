@@ -14,6 +14,8 @@ use tempfile::TempDir;
 
 use super::*;
 
+mod fence;
+
 const TENANT: &str = "t1";
 const NAMESPACE: &str = "ns";
 const STREAM: &str = "orders";

@@ -111,6 +111,7 @@ pub(super) struct Peers {
 /// Bind and serve the broker-internal listener, when this broker is in a
 /// cluster. This is the address `NodeSpec.advertise_addr` names, so it must be
 /// up for peers to reach this node at all.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn bind_peer_listener(
     config: &BrokerConfig,
     cluster: &Option<ShardState>,
@@ -118,6 +119,7 @@ pub(super) fn bind_peer_listener(
     quorum_marks: &Arc<QuorumMarks>,
     auth: &Arc<BrokerAuth>,
     peer_tls: &Option<Arc<PeerTls>>,
+    known_capabilities: Option<peer::KnownCapabilities>,
     peer_shutdown: &CancellationToken,
 ) -> Result<Option<JoinHandle<()>>> {
     Ok(
@@ -141,6 +143,12 @@ pub(super) fn bind_peer_listener(
                     peer_tls.clone(),
                 )
                 .context("bind broker-internal listener")?;
+                // Shared with the pool, so a leader knows what a replica that
+                // only ever dialled it can do.
+                let server = match known_capabilities {
+                    Some(known) => server.with_known_capabilities(known),
+                    None => server,
+                };
                 match &peer_config.tls {
                     Some(tls) => tracing::info!(
                         addr = %server.local_addr()?,

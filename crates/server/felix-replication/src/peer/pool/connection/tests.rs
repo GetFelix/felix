@@ -35,6 +35,8 @@ mod correlation {
             | InternalMessage::ReplicateDeadLetterBootstrap(m)
             | InternalMessage::ReplicateCounterBootstrap(m) => m.correlation_id,
             InternalMessage::ReplicateRebuild(m) => m.correlation_id,
+            InternalMessage::Fence(m) => m.correlation_id,
+            InternalMessage::FenceOk(m) => m.correlation_id,
         }
     }
 
@@ -77,10 +79,12 @@ mod correlation {
             InternalMessage::Hello(Hello {
                 correlation_id: 7,
                 node_id: "broker-a".to_string(),
+                capabilities: None,
             }),
             InternalMessage::HelloOk(HelloOk {
                 correlation_id: 7,
                 node_id: "broker-b".to_string(),
+                capabilities: None,
             }),
             InternalMessage::ReplicateRecords(ReplicateRecords {
                 correlation_id: 7,
@@ -111,6 +115,17 @@ mod correlation {
                 shard: shard(),
                 log: ReplicaLog::Stream,
                 base_offset: 5_000,
+            }),
+            InternalMessage::Fence(Fence {
+                correlation_id: 7,
+                shard: shard(),
+                log: ReplicaLog::Stream,
+            }),
+            InternalMessage::FenceOk(FenceOk {
+                correlation_id: 7,
+                log_end: 1,
+                commit_offset: 1,
+                last_generation: 1,
             }),
             InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
                 correlation_id: 7,

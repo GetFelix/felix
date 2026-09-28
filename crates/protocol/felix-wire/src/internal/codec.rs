@@ -5,11 +5,11 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use super::replicate::{ProducerMark, put_marks, take_marks};
 use super::{
-    AckMode, CacheOpKind, ErrorCode, ForwardCacheError, ForwardCacheOk, ForwardCacheOp,
-    ForwardPublish, ForwardPublishError, ForwardPublishOk, Hello, HelloOk, InternalHeader,
-    InternalMessage, Kind, MAX_BATCH_PAYLOADS, MAX_BODY_BYTES, MAX_CREDENTIAL_BYTES,
-    MAX_IDENT_BYTES, NotLeader, ReplicaLog, ReplicateBootstrap, ReplicateError, ReplicateOk,
-    ReplicateRebuild, ReplicateRecords, ShardRef,
+    AckMode, CacheOpKind, ErrorCode, Fence, FenceOk, ForwardCacheError, ForwardCacheOk,
+    ForwardCacheOp, ForwardPublish, ForwardPublishError, ForwardPublishOk, Hello, HelloOk,
+    InternalHeader, InternalMessage, Kind, MAX_BATCH_PAYLOADS, MAX_BODY_BYTES,
+    MAX_CREDENTIAL_BYTES, MAX_IDENT_BYTES, NotLeader, PeerCapabilities, ReplicaLog,
+    ReplicateBootstrap, ReplicateError, ReplicateOk, ReplicateRebuild, ReplicateRecords, ShardRef,
 };
 use crate::error::{Error, Result};
 
@@ -63,10 +63,31 @@ impl InternalMessage {
             Self::Hello(m) => {
                 body.put_u64(m.correlation_id);
                 put_str(&mut body, &m.node_id)?;
+                if let Some(capabilities) = m.capabilities {
+                    body.put_u64(capabilities.bits());
+                }
             }
             Self::HelloOk(m) => {
                 body.put_u64(m.correlation_id);
                 put_str(&mut body, &m.node_id)?;
+                if let Some(capabilities) = m.capabilities {
+                    body.put_u64(capabilities.bits());
+                }
+            }
+            Self::Fence(m) => {
+                body.put_u64(m.correlation_id);
+                put_str(&mut body, &m.shard.tenant_id)?;
+                put_str(&mut body, &m.shard.namespace)?;
+                put_str(&mut body, &m.shard.stream)?;
+                body.put_u32(m.shard.shard);
+                body.put_u64(m.shard.generation);
+                body.put_u8(m.log as u8);
+            }
+            Self::FenceOk(m) => {
+                body.put_u64(m.correlation_id);
+                body.put_u64(m.log_end);
+                body.put_u64(m.commit_offset);
+                body.put_u64(m.last_generation);
             }
             Self::ReplicateRecords(m)
             | Self::ReplicateCacheRecords(m)
@@ -291,21 +312,58 @@ impl InternalMessage {
                 expect_empty(&body)?;
                 Ok(Self::NotLeader(message))
             }
-            Kind::Hello => {
+            Kind::Hello | Kind::HelloCapable => {
                 let message = Hello {
                     correlation_id: take_u64(&mut body)?,
                     node_id: take_str(&mut body)?,
+                    capabilities: match header.kind {
+                        Kind::HelloCapable => {
+                            Some(PeerCapabilities::from_bits(take_u64(&mut body)?))
+                        }
+                        _ => None,
+                    },
                 };
                 expect_empty(&body)?;
                 Ok(Self::Hello(message))
             }
-            Kind::HelloOk => {
+            Kind::HelloOk | Kind::HelloCapableOk => {
                 let message = HelloOk {
                     correlation_id: take_u64(&mut body)?,
                     node_id: take_str(&mut body)?,
+                    capabilities: match header.kind {
+                        Kind::HelloCapableOk => {
+                            Some(PeerCapabilities::from_bits(take_u64(&mut body)?))
+                        }
+                        _ => None,
+                    },
                 };
                 expect_empty(&body)?;
                 Ok(Self::HelloOk(message))
+            }
+            Kind::Fence => {
+                let message = Fence {
+                    correlation_id: take_u64(&mut body)?,
+                    shard: ShardRef {
+                        tenant_id: take_str(&mut body)?,
+                        namespace: take_str(&mut body)?,
+                        stream: take_str(&mut body)?,
+                        shard: take_u32(&mut body)?,
+                        generation: take_u64(&mut body)?,
+                    },
+                    log: ReplicaLog::from_u8(take_u8(&mut body)?)?,
+                };
+                expect_empty(&body)?;
+                Ok(Self::Fence(message))
+            }
+            Kind::FenceOk => {
+                let message = FenceOk {
+                    correlation_id: take_u64(&mut body)?,
+                    log_end: take_u64(&mut body)?,
+                    commit_offset: take_u64(&mut body)?,
+                    last_generation: take_u64(&mut body)?,
+                };
+                expect_empty(&body)?;
+                Ok(Self::FenceOk(message))
             }
             Kind::ReplicateRecords
             | Kind::ReplicateCacheRecords

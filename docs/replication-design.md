@@ -165,7 +165,8 @@ The lease still decides whether a deposed leader can write at all. The model
 has the design that takes the clock out of `Quorum` safety, which the broker
 does not implement yet: a promoted leader persists its generation on a
 majority and takes any tail ahead of its own before it serves, and a write is
-acknowledged once a majority holds it at the current generation.
+acknowledged once a majority holds it at the current generation. The replicas'
+half of the fence is built; see [Fencing a promotion](#fencing-a-promotion).
 `FelixShardFencedAck.cfg` keeps every acknowledged record with no margin on
 either side of the lease; `FelixShardUnfencedAck.cfg`, the same without the
 fence, loses one. See [`docs/formal/README.md`](formal/README.md).
@@ -247,6 +248,33 @@ quarter, and passes; with the control plane's margin at zero it finds two
 brokers serving. `FelixShardRealMargins.cfg` adds a `Quorum` write carried
 across a promotion under the same margins and drift, and every acknowledged
 record survives.
+
+### Fencing a promotion
+
+The lease keeps a deposed leader out only while clocks drift within the bound
+the margins assume. The fence is the part of the modelled design that does not
+need that: a promoted leader asks each replica to take its generation before it
+opens for writes, and a replica that has taken it refuses every older leader.
+Any majority that could acknowledge a record overlaps the majority that took
+the fence, so the deposed leader cannot find one. `FelixShardFencedAck.cfg`
+checks the design with no margin on either side of the lease.
+
+The replica's side is `AnswerFence` in the model. It persists the generation,
+fsynced, in the same file that keeps the highest generation it accepted a
+leader at, before it answers. From then on it refuses the older leader's
+records, bootstraps, rebuilds, and gap answers, restarts included, whatever its
+routing view says. The shard's cursor, dead-letter and counter logs check the
+shard's own log as well as their own. It answers with how far its log reaches,
+its commit offset, and the generation its last record was written at, which is
+how the model orders logs (`Ahead`).
+
+It is negotiated, not assumed. A broker offers the `FENCE` capability in the
+peer handshake, and a peer that did not offer it is never sent `Fence`
+(`docs/internal-protocol.md`, "Capabilities"). `FELIX_INTERNAL_FENCE=false`
+withdraws the offer.
+
+**As built**, replicas answer the fence and keep its promise, and no leader
+sends it yet: promotion still relies on the lease alone.
 
 ### The clock assumption, stated precisely
 

@@ -252,6 +252,7 @@ fn an_internal_message_decodes_to_exactly_what_was_on_the_wire_or_not_at_all() {
         let hello = InternalMessage::Hello(felix_wire::internal::Hello {
             correlation_id: rng.next_u64(),
             node_id: "broker-a".to_string(),
+            capabilities: Some(felix_wire::internal::PeerCapabilities::FENCE),
         });
         let mut bytes = hello.encode().expect("encode").to_vec();
         if !bytes.is_empty() {

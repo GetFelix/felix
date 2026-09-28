@@ -293,6 +293,7 @@ where
         &quorum_marks,
         &auth,
         &peer_tls,
+        peers.as_ref().map(|pool| pool.known_capabilities().clone()),
         &peer_listener_shutdown,
     )?;
     let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {

@@ -43,10 +43,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use felix_transport::QuicClient;
-use felix_wire::internal::InternalMessage;
+use felix_wire::internal::{InternalMessage, PeerCapabilities};
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
+use super::KnownCapabilities;
 use super::config::PeerTransportConfig;
 use super::metrics;
 use super::tls;
@@ -66,6 +67,8 @@ pub struct PeerPool {
     /// Whether this broker presents a certificate and verifies each peer's
     /// against the node id it dials.
     authenticated: bool,
+    /// What each peer said it can do, shared with this broker's listener.
+    known: KnownCapabilities,
 }
 
 impl PeerPool {
@@ -109,6 +112,7 @@ impl PeerPool {
             peers: Mutex::new(HashMap::new()),
             shutdown,
             authenticated,
+            known: KnownCapabilities::default(),
         });
         pool.clone().spawn_reaper();
         Ok(pool)
@@ -133,6 +137,33 @@ impl PeerPool {
             Err(err) => metrics::record_request(err.outcome(), started.elapsed()),
         }
         result
+    }
+
+    /// What `node_id` can do, dialling it if there is no connection yet.
+    pub async fn capabilities(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> std::result::Result<PeerCapabilities, PeerError> {
+        if self.shutdown.is_cancelled() {
+            return Err(PeerError::ShuttingDown);
+        }
+        if let Some(partition) = &self.partition
+            && partition.blocks(node_id)
+        {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "partitioned from this broker (fault injection)".to_string(),
+            });
+        }
+        let connection = self.peer(node_id).connection(self, addr).await?;
+        Ok(connection.capabilities())
+    }
+
+    /// What each peer said in its latest handshake with this broker, in
+    /// either direction. Hand it to the listener so inbound handshakes count.
+    pub fn known_capabilities(&self) -> &KnownCapabilities {
+        &self.known
     }
 
     /// Live connections across all peers. Test and metrics surface.
@@ -196,6 +227,16 @@ impl PeerPool {
         };
 
         let connection = peer.connection(self, addr).await?;
+        // Checked here, where the handshake's answer is, so no caller can
+        // send a peer a request it never said it understands.
+        if let Some(needed) = required_capability(&message)
+            && !connection.capabilities().contains(needed)
+        {
+            return Err(PeerError::Unsupported {
+                node_id: node_id.to_string(),
+                kind: message.kind(),
+            });
+        }
         let response = tokio::time::timeout(
             self.config.request_timeout,
             connection.request(message, &self.shutdown),
@@ -321,6 +362,7 @@ impl PeerPool {
             connection,
             node_id.to_string(),
             self.local_node_id.clone(),
+            self.config.capabilities(),
             self.config.streams_per_conn,
             self.config.handshake_timeout,
         )
@@ -329,6 +371,7 @@ impl PeerPool {
         match established {
             Ok(connection) => {
                 metrics::record_connect_attempt(metrics::OUTCOME_CONNECTED);
+                self.known.record(node_id, connection.capabilities());
                 tracing::debug!(peer = %node_id, %addr, "peer connection established");
                 Ok(connection)
             }
@@ -366,6 +409,12 @@ pub enum PeerError {
     /// The pool is shutting down.
     #[error("peer transport is shutting down")]
     ShuttingDown,
+    /// The peer did not say it understands this request, so it was not sent.
+    #[error("peer {node_id} does not support {kind:?}")]
+    Unsupported {
+        node_id: String,
+        kind: felix_wire::internal::Kind,
+    },
 }
 
 impl PeerError {
@@ -385,6 +434,7 @@ impl PeerError {
             Self::Handshake { .. } => metrics::OUTCOME_HANDSHAKE,
             Self::Disconnected { .. } => metrics::OUTCOME_DISCONNECTED,
             Self::Timeout { .. } => metrics::OUTCOME_TIMEOUT,
+            Self::Unsupported { .. } => metrics::OUTCOME_UNSUPPORTED,
         }
     }
 }
@@ -402,6 +452,18 @@ pub trait PeerRequester {
         addr: SocketAddr,
         message: InternalMessage,
     ) -> impl std::future::Future<Output = std::result::Result<InternalMessage, PeerError>> + Send;
+
+    /// What `node_id` said it can do, reaching it if need be. A requester
+    /// that cannot tell says it can do nothing, which keeps every request
+    /// that needs a capability from being sent.
+    fn capabilities(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> impl std::future::Future<Output = std::result::Result<PeerCapabilities, PeerError>> + Send
+    {
+        async { Ok(PeerCapabilities::NONE) }
+    }
 }
 
 impl<T: PeerRequester> PeerRequester for std::sync::Arc<T> {
@@ -414,6 +476,15 @@ impl<T: PeerRequester> PeerRequester for std::sync::Arc<T> {
     {
         T::request(self, node_id, addr, message)
     }
+
+    fn capabilities(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> impl std::future::Future<Output = std::result::Result<PeerCapabilities, PeerError>> + Send
+    {
+        T::capabilities(self, node_id, addr)
+    }
 }
 
 impl PeerRequester for PeerPool {
@@ -424,6 +495,22 @@ impl PeerRequester for PeerPool {
         message: InternalMessage,
     ) -> std::result::Result<InternalMessage, PeerError> {
         PeerPool::request(self, node_id, addr, message).await
+    }
+
+    async fn capabilities(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> std::result::Result<PeerCapabilities, PeerError> {
+        PeerPool::capabilities(self, node_id, addr).await
+    }
+}
+
+/// The capability a peer must have said it has before `message` goes to it.
+fn required_capability(message: &InternalMessage) -> Option<PeerCapabilities> {
+    match message {
+        InternalMessage::Fence(_) => Some(PeerCapabilities::FENCE),
+        _ => None,
     }
 }
 

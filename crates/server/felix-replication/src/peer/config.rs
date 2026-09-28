@@ -134,6 +134,11 @@ pub struct PeerTransportConfig {
     /// cannot reach its followers -- is exactly where a replication design is
     /// most likely to be wrong, so it is worth a hook.
     pub partition_file: Option<std::path::PathBuf>,
+    /// `FELIX_INTERNAL_FENCE`: whether this broker offers the promotion fence
+    /// to its peers and answers it. On by default. Off, it is spoken to as a
+    /// broker that predates the fence, and every shard it replicates keeps the
+    /// lease alone.
+    pub fence: bool,
 }
 
 /// Where a broker's peer identity comes from. All three or none: a listener
@@ -167,6 +172,7 @@ impl Default for PeerTransportConfig {
             reconnect_max: Duration::from_millis(DEFAULT_RECONNECT_MAX_MS),
             handshake_timeout: Duration::from_millis(DEFAULT_HANDSHAKE_TIMEOUT_MS),
             partition_file: None,
+            fence: true,
         }
     }
 }
@@ -220,6 +226,15 @@ fn env_millis(name: &str) -> Option<Duration> {
 }
 
 impl PeerTransportConfig {
+    /// What this broker offers its peers in the handshake.
+    pub fn capabilities(&self) -> felix_wire::internal::PeerCapabilities {
+        if self.fence {
+            felix_wire::internal::PeerCapabilities::FENCE
+        } else {
+            felix_wire::internal::PeerCapabilities::NONE
+        }
+    }
+
     /// Read the internal transport settings, validated against the
     /// client-facing bind.
     pub fn from_env(client_bind: SocketAddr, client_listeners: usize) -> std::io::Result<Self> {
@@ -249,6 +264,20 @@ impl PeerTransportConfig {
                     format!(
                         "FELIX_INTERNAL_ALLOW_UNAUTHENTICATED must be true or false, not {other:?}"
                     ),
+                ));
+            }
+        };
+        config.fence = match std::env::var("FELIX_INTERNAL_FENCE")
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("" | "1" | "true" | "yes") => true,
+            Some("0" | "false" | "no") => false,
+            Some(other) => {
+                return Err(std::io::Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("FELIX_INTERNAL_FENCE must be true or false, not {other:?}"),
                 ));
             }
         };

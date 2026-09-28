@@ -47,6 +47,7 @@ fn an_unexpected_answer_is_retried() {
         read_answer(&InternalMessage::HelloOk(felix_wire::internal::HelloOk {
             correlation_id: 0,
             node_id: "broker-b".to_string(),
+            capabilities: None,
         })),
         Progress::Retry,
     );

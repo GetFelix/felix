@@ -13,6 +13,7 @@
 
 mod codec;
 mod error_code;
+mod fence;
 mod forward;
 mod handshake;
 mod header;
@@ -20,6 +21,7 @@ mod message;
 mod replicate;
 
 pub use error_code::ErrorCode;
+pub use fence::{Fence, FenceOk, PeerCapabilities};
 pub use forward::{
     AckMode, CacheOpKind, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardPublish,
     ForwardPublishError, ForwardPublishOk, NotLeader,

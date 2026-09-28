@@ -69,6 +69,13 @@ for what the current release actually guarantees.
   with a warning and `felix_shards_zone_unspread`. A broker without a zone
   shares one with nobody, so clusters that report none are placed as before.
   Postgres gains a nullable `nodes.zone` column.
+- **Replicas answer a promoted leader's fence.** A new peer message, `Fence`,
+  makes a replica persist the leader's generation before it answers with its
+  log end, commit offset and last record's generation, and refuse every older
+  leader from then on. It is negotiated: brokers offer capability bits in the
+  peer handshake (`HelloCapable`, kinds 27 and 28), and a peer that did not
+  offer `FENCE` is never sent one. `FELIX_INTERNAL_FENCE=false` withdraws the
+  offer. No leader sends the fence yet.
 - **Clients can offer the `felix/1` ALPN.** `felix_client::quic_client_config`
   builds the QUIC TLS config and offers `felix/1` when asked; the Python
   (`offer_alpn=True`) and TypeScript (`offerAlpn`) clients expose the same

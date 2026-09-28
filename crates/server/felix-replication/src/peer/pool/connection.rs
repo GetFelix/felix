@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use felix_transport::QuicConnection;
-use felix_wire::internal::{Hello, InternalMessage};
+use felix_wire::internal::{ErrorCode, Hello, InternalMessage, PeerCapabilities};
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -29,6 +29,9 @@ pub(super) struct PeerConnection {
     pub(super) next_correlation: AtomicU64,
     pub(super) last_used: Mutex<Instant>,
     pub(super) tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// What the peer said it can do in the handshake. `NONE` until then, and
+    /// for a peer that predates the bits.
+    pub(super) capabilities: Mutex<PeerCapabilities>,
 }
 
 /// Waiters for responses that have not arrived.
@@ -48,6 +51,7 @@ impl PeerConnection {
         connection: QuicConnection,
         node_id: String,
         local_node_id: String,
+        local_capabilities: PeerCapabilities,
         streams: usize,
         handshake_timeout: Duration,
     ) -> Result<Arc<Self>> {
@@ -116,6 +120,7 @@ impl PeerConnection {
             next_correlation: AtomicU64::new(1),
             last_used: Mutex::new(Instant::now()),
             tasks: Mutex::new(tasks),
+            capabilities: Mutex::new(PeerCapabilities::NONE),
         });
 
         // One watcher fails every waiter the moment the connection drops, which
@@ -137,24 +142,35 @@ impl PeerConnection {
         });
         peer.tasks.lock().push(watcher);
 
-        peer.handshake(local_node_id, handshake_timeout).await?;
+        peer.handshake(local_node_id, local_capabilities, handshake_timeout)
+            .await?;
         Ok(peer)
     }
 
     /// Exchange `Hello`, and check the peer is who the catalog said.
-    pub(super) async fn handshake(&self, local_node_id: String, timeout: Duration) -> Result<()> {
-        let hello = InternalMessage::Hello(Hello {
-            correlation_id: self.next_correlation.fetch_add(1, Ordering::Relaxed),
-            node_id: local_node_id,
-        });
-        let shutdown = CancellationToken::new();
-        let response = tokio::time::timeout(timeout, self.request(hello, &shutdown))
-            .await
-            .map_err(|_| anyhow!("no handshake response within {timeout:?}"))?
-            .map_err(|err| anyhow!("{err}"))?;
+    ///
+    /// Offers this build's capabilities first. A peer that predates them
+    /// refuses the kind, and is greeted again the way it always was: it then
+    /// has none, so nothing that needs one is ever sent to it.
+    pub(super) async fn handshake(
+        &self,
+        local_node_id: String,
+        local_capabilities: PeerCapabilities,
+        timeout: Duration,
+    ) -> Result<()> {
+        let offered = self.hello(local_node_id.clone(), Some(local_capabilities), timeout);
+        let response = match offered.await? {
+            InternalMessage::ForwardPublishError(err) if err.code == ErrorCode::UnsupportedKind => {
+                self.hello(local_node_id, None, timeout).await?
+            }
+            other => other,
+        };
 
         match response {
-            InternalMessage::HelloOk(ok) if ok.node_id == self.node_id => Ok(()),
+            InternalMessage::HelloOk(ok) if ok.node_id == self.node_id => {
+                *self.capabilities.lock() = ok.capabilities.unwrap_or(PeerCapabilities::NONE);
+                Ok(())
+            }
             InternalMessage::HelloOk(ok) => {
                 self.close("peer identity mismatch");
                 bail!(
@@ -168,6 +184,29 @@ impl PeerConnection {
                 bail!("expected HelloOk, got {:?}", other.kind())
             }
         }
+    }
+
+    async fn hello(
+        &self,
+        node_id: String,
+        capabilities: Option<PeerCapabilities>,
+        timeout: Duration,
+    ) -> Result<InternalMessage> {
+        let hello = InternalMessage::Hello(Hello {
+            correlation_id: self.next_correlation.fetch_add(1, Ordering::Relaxed),
+            node_id,
+            capabilities,
+        });
+        let shutdown = CancellationToken::new();
+        tokio::time::timeout(timeout, self.request(hello, &shutdown))
+            .await
+            .map_err(|_| anyhow!("no handshake response within {timeout:?}"))?
+            .map_err(|err| anyhow!("{err}"))
+    }
+
+    /// What the peer said it can do.
+    pub(super) fn capabilities(&self) -> PeerCapabilities {
+        *self.capabilities.lock()
     }
 
     /// Send one request and wait for its terminal response.
@@ -408,6 +447,14 @@ pub(super) fn with_correlation(message: InternalMessage, correlation_id: u64) ->
                 ..m
             })
         }
+        InternalMessage::Fence(m) => InternalMessage::Fence(Fence {
+            correlation_id,
+            ..m
+        }),
+        InternalMessage::FenceOk(m) => InternalMessage::FenceOk(FenceOk {
+            correlation_id,
+            ..m
+        }),
     }
 }
 

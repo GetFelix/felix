@@ -4,6 +4,7 @@
 //! two halves drift: the pool could send a frame the server never reads, or wait
 //! on a response shape the server never sends, and every test would still pass.
 
+mod capabilities;
 mod connections;
 mod listener;
 mod mtls;

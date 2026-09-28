@@ -80,6 +80,12 @@ fn the_existing_kind_discriminants_are_unchanged() {
         (22, Kind::AuthorizedForwardPublish),
         (23, Kind::AuthorizedForwardCacheOp),
         (24, Kind::ReplicateRebuild),
+        (25, Kind::ReplicateMarkedRecords),
+        (26, Kind::ReplicateCommittedRecords),
+        (27, Kind::HelloCapable),
+        (28, Kind::HelloCapableOk),
+        (29, Kind::Fence),
+        (30, Kind::FenceOk),
     ] {
         assert_eq!(Kind::from_u16(value).expect("known"), kind);
         assert_eq!(kind as u16, value);
@@ -107,10 +113,33 @@ fn every_body_begins_with_its_correlation_id() {
         InternalMessage::Hello(Hello {
             correlation_id: id,
             node_id: "broker-a".to_string(),
+            capabilities: None,
         }),
         InternalMessage::HelloOk(HelloOk {
             correlation_id: id,
             node_id: "broker-a".to_string(),
+            capabilities: None,
+        }),
+        InternalMessage::Hello(Hello {
+            correlation_id: id,
+            node_id: "broker-a".to_string(),
+            capabilities: Some(PeerCapabilities::FENCE),
+        }),
+        InternalMessage::HelloOk(HelloOk {
+            correlation_id: id,
+            node_id: "broker-a".to_string(),
+            capabilities: Some(PeerCapabilities::FENCE),
+        }),
+        InternalMessage::Fence(Fence {
+            correlation_id: id,
+            shard: shard.clone(),
+            log: ReplicaLog::Stream,
+        }),
+        InternalMessage::FenceOk(FenceOk {
+            correlation_id: id,
+            log_end: 1,
+            commit_offset: 1,
+            last_generation: 1,
         }),
         InternalMessage::ReplicateRecords(ReplicateRecords {
             correlation_id: id,
