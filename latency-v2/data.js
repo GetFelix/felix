@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790560504942,
+  "lastUpdate": 1790562520502,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -23892,6 +23892,72 @@ window.BENCHMARK_DATA = {
             "range": "221.96",
             "unit": "us",
             "extra": "trials: 5\nmedian: 585.00\nmean: 686.80\nstdev: 221.96\ncv: 32.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f1cdc106f6d8a160415ed8f9f25fea38a51b3f00",
+          "message": "fix(controlplane): give the clock-step test's NodeSpec a zone (#795)\n\n#785 added tests/clock_step.rs and #790 added NodeSpec.zone; each passed\nCI alone, but together the test no longer compiles, so main is red.\n\nSpec-Unaffected: test fixture only.",
+          "timestamp": "2026-09-27T19:18:27-07:00",
+          "tree_id": "5b361ac574e89044d870e162ca5e74a8815c36e4",
+          "url": "https://github.com/gabloe/felix/commit/f1cdc106f6d8a160415ed8f9f25fea38a51b3f00"
+        },
+        "date": 1790562517313,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 68,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 68.00\nmean: 67.40\nstdev: 0.89\ncv: 1.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 90,
+            "range": "41.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 108.80\nstdev: 41.58\ncv: 38.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 124,
+            "range": "92.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 124.00\nmean: 180.80\nstdev: 92.41\ncv: 51.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 83,
+            "range": "3.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 83.00\nmean: 84.40\nstdev: 3.13\ncv: 3.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 207,
+            "range": "61.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 207.00\nmean: 230.00\nstdev: 61.76\ncv: 26.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 416,
+            "range": "670.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 416.00\nmean: 814.00\nstdev: 670.06\ncv: 82.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
