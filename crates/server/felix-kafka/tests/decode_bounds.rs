@@ -39,3 +39,12 @@ fn a_record_count_past_the_batch_is_refused_without_reserving_it() {
     // Decoding may fail; it must not try to reserve memory for the claimed count.
     let _ = kafka_protocol::records::RecordBatchDecoder::decode(&mut bytes);
 }
+
+#[test]
+fn a_record_delta_that_overflows_its_batch_base_is_refused() {
+    // Found by the kafka_records fuzz target: a record's offset delta added to
+    // the batch's base offset overflows i64. A release build would wrap it
+    // into a bogus offset; the batch must be refused instead.
+    let mut body = Bytes::from_static(include_bytes!("fixtures/record_delta_overflow"));
+    assert!(kafka_protocol::records::RecordBatchDecoder::decode_all(&mut body).is_err());
+}
