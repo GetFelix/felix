@@ -31,7 +31,7 @@ commands:
                                            offsets as a backup point
 
 --url defaults to $FELIX_CONTROLPLANE_URL, then http://127.0.0.1:8443.
-An https URL is verified against the public roots and, when set, the PEM
+An https URL is verified against the system trust store and, when set, the PEM
 bundle at $FELIX_CONTROLPLANE_CA.
 --token defaults to $FELIX_TOKEN. Reading, backup-point included, takes
 node.view:cluster:*; everything else takes node.manage:cluster:*.";
@@ -46,11 +46,10 @@ fn http_client() -> Result<reqwest::Client> {
     {
         let pem =
             std::fs::read(&path).with_context(|| format!("read FELIX_CONTROLPLANE_CA {path}"))?;
-        for root in reqwest::Certificate::from_pem_bundle(&pem)
-            .with_context(|| format!("parse FELIX_CONTROLPLANE_CA {path}"))?
-        {
-            builder = builder.add_root_certificate(root);
-        }
+        builder = builder.tls_certs_merge(
+            reqwest::Certificate::from_pem_bundle(&pem)
+                .with_context(|| format!("parse FELIX_CONTROLPLANE_CA {path}"))?,
+        );
     }
     builder.build().context("build the HTTP client")
 }

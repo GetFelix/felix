@@ -38,7 +38,7 @@ async fn the_internal_listener_refuses_a_client_facing_connection() {
 
     // A client-shaped endpoint: no ALPN, exactly like the client-facing role.
     let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
+        rustls::crypto::aws_lc_rs::default_provider(),
     ))
     .with_protocol_versions(rustls::ALL_VERSIONS)
     .expect("protocol versions")
@@ -107,7 +107,7 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnything {
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::ring::default_provider()
+        rustls::crypto::aws_lc_rs::default_provider()
             .signature_verification_algorithms
             .supported_schemes()
     }

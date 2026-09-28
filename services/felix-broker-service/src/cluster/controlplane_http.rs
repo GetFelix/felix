@@ -11,9 +11,9 @@ use anyhow::{Context, Result};
 
 static EXTRA_ROOTS: RwLock<Vec<reqwest::Certificate>> = RwLock::new(Vec::new());
 
-/// Trust the PEM bundle at `path`, in addition to the public roots, for
-/// every control-plane client built after this. `None` trusts the public
-/// roots only.
+/// Trust the PEM bundle at `path`, in addition to the system trust store, for
+/// every control-plane client built after this. `None` trusts the system
+/// store only.
 ///
 /// Fails at startup on an unreadable or empty bundle rather than letting
 /// every later call fail verification.
@@ -39,12 +39,7 @@ pub(crate) fn trust_ca(path: Option<&str>) -> Result<()> {
 /// A client builder that trusts the configured control-plane CA.
 pub(crate) fn builder() -> reqwest::ClientBuilder {
     let roots = EXTRA_ROOTS.read().unwrap_or_else(|e| e.into_inner());
-    roots
-        .iter()
-        .cloned()
-        .fold(reqwest::Client::builder(), |builder, root| {
-            builder.add_root_certificate(root)
-        })
+    reqwest::Client::builder().tls_certs_merge(roots.iter().cloned())
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 
 pub(crate) fn client_config(tenant_id: &str, token: &str) -> Result<ClientConfig> {
     let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
+        rustls::crypto::aws_lc_rs::default_provider(),
     ))
     .with_protocol_versions(rustls::ALL_VERSIONS)
     .context("client protocol versions")?
@@ -95,7 +95,7 @@ impl ServerCertVerifier for AcceptAnyBroker {
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        rustls::crypto::ring::default_provider()
+        rustls::crypto::aws_lc_rs::default_provider()
             .signature_verification_algorithms
             .supported_schemes()
     }

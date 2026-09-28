@@ -33,7 +33,7 @@ bytes = "1"
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py39"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 anyhow = "1"
-quinn = "0.11"
+quinn = { version = "0.11", default-features = false, features = ["bloom", "log", "platform-verifier", "runtime-tokio", "rustls-aws-lc-rs"] }
 rustls = "0.23"
 rustls-pemfile = "2"
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
