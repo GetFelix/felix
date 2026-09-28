@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if command -v task >/dev/null 2>&1; then
-  task lint
-else
-  cargo fmt -- --check
-  cargo clippy --workspace --all-targets --all-features -- -D warnings
-fi
+# Formatting only: commits should stay instant. The full lint runs on push.
+cargo fmt -- --check

@@ -605,15 +605,14 @@ target/
 ### Git Hooks
 
 ```bash
-# Install pre-commit hook
-cp githooks/pre-commit .git/hooks/
-chmod +x .git/hooks/pre-commit
+# Point git at the repo's hooks
+bash scripts/setup-githooks.sh
 ```
 
-**Pre-commit hook**:
-- Format check
-- Clippy warnings
-- Run tests
+- **pre-commit**: `cargo fmt --check`, so a commit stays instant.
+- **pre-push**: `task lint`, which covers formatting, workspace clippy with `-D warnings`, and the per-crate feature checks.
+
+Tests are not run by either hook; CI runs them.
 
 ## Code Organization Principles
 
