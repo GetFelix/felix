@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790566457198,
+  "lastUpdate": 1790567336936,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -24156,6 +24156,72 @@ window.BENCHMARK_DATA = {
             "range": "495.10",
             "unit": "us",
             "extra": "trials: 5\nmedian: 350.00\nmean: 643.00\nstdev: 495.10\ncv: 77.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "03581bb98a7d06567d88db15d2c8a5bcebc06cb5",
+          "message": "feat(ops): consistent cross-broker backup point; enforce the env registry count (#799)\n\nAn operator can now take a backup that corresponds to one cut across every\nbroker: per shard log, a committed offset read from the shard's leader after a\nsingle barrier instant, and restore each leader's copy back to exactly that cut.\n\n- Broker: read-only GET /backup/offsets on the metrics listener lists the\n  committed offset of every log of every shard this broker leads (records,\n  group cursors, dead letters, counters), skipping shards with no committed\n  answer yet. Quorum shards are bounded by the quorum mark and the leader's\n  own acknowledged tail; sidecar logs are read before the records.\n- felix-controlplane admin backup-point: records the barrier first, reads the\n  assignments, collects each leader's offsets, re-reads the assignments and\n  starts over if any leader or generation moved, then writes a JSON manifest.\n- felix-broker restore-point: offline, cuts each copied log back to the point\n  with the new DiskLog::restore_to, which lowers the commit offset durably\n  before truncating and refuses a copy that does not reach the point.\n- scripts/check_env_registry.py now enforces the variable count stated in the\n  env_registry.rs header (244).\n\nDocs: new deployment/backup-and-restore runbook, docker-compose and\nkubernetes backup sections point to it, durable-storage and storage-format\nnotes, broker API and observability route docs, status row.",
+          "timestamp": "2026-09-27T20:33:42-07:00",
+          "tree_id": "bb50f509161514f47bc6edc736b38cbbd92e405f",
+          "url": "https://github.com/gabloe/felix/commit/03581bb98a7d06567d88db15d2c8a5bcebc06cb5"
+        },
+        "date": 1790567333129,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 176,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 176.00\nmean: 176.00\nstdev: 1.22\ncv: 0.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 225,
+            "range": "90.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 225.00\nmean: 264.60\nstdev: 90.82\ncv: 34.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 263,
+            "range": "143.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 263.00\nmean: 329.00\nstdev: 143.94\ncv: 43.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 209,
+            "range": "3.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 209.00\nmean: 210.60\nstdev: 3.21\ncv: 1.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 431,
+            "range": "43.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 431.00\nmean: 443.80\nstdev: 43.14\ncv: 9.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1002,
+            "range": "568.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1002.00\nmean: 1115.20\nstdev: 568.17\ncv: 50.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
