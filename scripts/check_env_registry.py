@@ -70,10 +70,14 @@ def registered() -> set[str]:
     return set(re.findall(r'"(FELIX_[A-Z0-9_]+)"', listing))
 
 
-def stated_count() -> int | None:
-    """The count the registry's header gives, which drifted once already."""
-    match = re.search(r"Configuration is (\d+) environment variables", REGISTRY.read_text())
-    return int(match.group(1)) if match else None
+def states_a_count() -> bool:
+    """Whether the registry's header gives a number of variables.
+
+    It did, and the number drifted: every PR that added a variable had to bump
+    it, and two such PRs in flight at once always collided. KNOWN_VARS is the
+    count.
+    """
+    return re.search(r"Configuration is \d+ environment variables", REGISTRY.read_text()) is not None
 
 
 def main() -> int:
@@ -92,18 +96,15 @@ def main() -> int:
     for name in stale:
         print(f"in KNOWN_VARS and read by nothing: {name}")
 
-    stated = stated_count()
-    miscounted = stated != len(listed)
-    if stated is None:
-        print(f"{REGISTRY.name}: header no longer says how many variables KNOWN_VARS holds")
-    elif miscounted:
-        print(f"{REGISTRY.name}: header says {stated} variables, KNOWN_VARS holds {len(listed)}")
+    counted = states_a_count()
+    if counted:
+        print(f"{REGISTRY.name}: header states a variable count; KNOWN_VARS is the count")
 
     print(
         f"{len(expected)} variable(s) checked, "
         f"{len(missing)} missing, {len(stale)} stale"
     )
-    return 1 if missing or stale or miscounted else 0
+    return 1 if missing or stale or counted else 0
 
 
 if __name__ == "__main__":

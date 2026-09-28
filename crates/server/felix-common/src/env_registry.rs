@@ -1,10 +1,10 @@
 //! Every `FELIX_*` variable this workspace reads, and a check that a set one is
 //! actually read.
 //!
-//! Configuration is 247 environment variables (`KNOWN_VARS` below; the check
-//! script holds this count to the list). They are individually parsed, so a
-//! name nobody reads does not fail — it is simply absent, and the default
-//! takes effect. An operator who writes `FELIX_METRICS_BNID` gets a broker
+//! Configuration is the environment variables listed in `KNOWN_VARS` below,
+//! which the check script holds to what the code reads. They are individually
+//! parsed, so a name nobody reads does not fail — it is simply absent, and
+//! the default takes effect. An operator who writes `FELIX_METRICS_BNID` gets a broker
 //! listening somewhere they did not ask for, with no error and nothing in the
 //! log to explain it.
 //!
