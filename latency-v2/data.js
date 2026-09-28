@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790551901594,
+  "lastUpdate": 1790553651007,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -23364,6 +23364,72 @@ window.BENCHMARK_DATA = {
             "range": "26.32",
             "unit": "us",
             "extra": "trials: 5\nmedian: 361.00\nmean: 366.00\nstdev: 26.32\ncv: 7.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "64eaac35c184e58a2d5e48a93aebe27069475248",
+          "message": "spec(replication): model the fence and majority ack; lease-free config passes, no-fence twin fails (#780)\n\nFelixShard.tla gains the design that takes the clock out of Quorum safety:\na promoted leader persists its generation on a majority and takes any tail\nahead of its own before it serves (FenceOnPromote), and a write is\nacknowledged once a majority holds it at the leader's generation\n(AckByFollowers), with no lease or report in the condition.\n\n- FelixShardFencedAck.cfg passes with no margin on either side of the lease,\n  drifting clocks and no commit-time lease check; FelixShardUnfencedAck.cfg,\n  the same without the fence, violates AckedHeldByLeader at depth 11.\n- FelixShardRealMarginsLease.cfg checks the code's margins with no writes;\n  FelixShardRealMargins.cfg now carries a Quorum write across a promotion\n  under the same margins and drift.\n- FelixShardAckWithoutLease.cfg drops the lease check at ack release and\n  keeps every acknowledged record: the report, not the lease, is what does.\n- TypeOK covers the fence variables, and a halted broker does not answer a\n  fence.\n- check_tla.sh prints each configuration's search depth.\n\nState counts in the formal README, the replication design and the docs-site\nare the ones measured on this spec.",
+          "timestamp": "2026-09-27T16:57:19-07:00",
+          "tree_id": "1f91c876f680667435cb4afab71bee13f65c264a",
+          "url": "https://github.com/gabloe/felix/commit/64eaac35c184e58a2d5e48a93aebe27069475248"
+        },
+        "date": 1790553647484,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 134.20\nstdev: 0.84\ncv: 0.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 206,
+            "range": "13.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 206.00\nmean: 198.80\nstdev: 13.63\ncv: 6.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 237,
+            "range": "90.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 237.00\nmean: 274.20\nstdev: 90.03\ncv: 32.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 177,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 177.40\nstdev: 0.55\ncv: 0.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 357,
+            "range": "9.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 357.00\nmean: 354.20\nstdev: 9.20\ncv: 2.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 500,
+            "range": "78.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 500.00\nmean: 508.00\nstdev: 78.69\ncv: 15.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
