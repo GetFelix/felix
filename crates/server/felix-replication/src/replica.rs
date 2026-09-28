@@ -23,8 +23,8 @@ use felix_broker::replication::{self, Divergence};
 use felix_router::{ReplicaRole, ShardRouter};
 use felix_storage::disk_log::GenerationCheck;
 use felix_wire::internal::{
-    ErrorCode, Fence, FenceOk, InternalMessage, ReplicaLog, ReplicateBootstrap, ReplicateError,
-    ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords,
+    ErrorCode, Fence, FenceOk, GenerationStart, InternalMessage, ReplicaLog, ReplicateBootstrap,
+    ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords,
 };
 
 /// The most one fetch answer carries, whatever the leader asked for.
@@ -416,8 +416,12 @@ impl ReplicaHandler {
         // established are safe to lose.
         if let Ok(Err(Divergence::Conflict { offset, .. })) = &outcome {
             let diverged_at = *offset;
+            // Below `verified` the records came from this sender already, and
+            // a leader disagreeing with its own records is not repairable.
             let repairable = previous_generation.filter(|previous| {
-                batch.shard.generation > previous.generation && diverged_at >= previous.start_offset
+                batch.shard.generation > previous.generation
+                    && diverged_at >= previous.start_offset
+                    && verified.is_none_or(|through| diverged_at >= through)
             });
             // A suffix that reaches below the commit offset is not a dead
             // leader's leftovers: a majority acknowledged part of it.
@@ -532,38 +536,45 @@ impl ReplicaHandler {
                         "could not write the commit offset through; it holds in memory",
                     );
                 }
-                // Still comparing older records: the older generation stays the
-                // last one recorded, so a conflict further on is still its
-                // suffix and repairable.
+                // Past the durable offset nothing has been compared, so what
+                // this follower holds there keeps its labels until it has.
                 let level = log
                     .tail_offset()
                     .await
                     .is_ok_and(|tail| applied.durable_offset >= tail);
-                if unverified.is_some() && !level {
+                if level
+                    && let Err(err) = label_appended(
+                        &log,
+                        applied.durable_offset - applied.appended as u64,
+                        applied.durable_offset,
+                        batch.shard.generation,
+                        batch.generations.as_deref(),
+                    )
+                {
+                    tracing::warn!(
+                        stream = %key.stream,
+                        error = %err,
+                        "stored a replicated batch but could not record its generation",
+                    );
+                }
+                // Until the sender's own generation is recorded here, the
+                // newest one recorded is older, and `unverified_from` would
+                // send the sender back over records it has just compared.
+                // Remembered in memory only: after a restart they are compared
+                // once more.
+                let caught_up = log
+                    .generations()
+                    .last()
+                    .is_some_and(|newest| newest.generation >= batch.shard.generation);
+                if caught_up {
+                    self.verified.lock().remove(&key);
+                } else {
                     self.verified.lock().insert(
                         key.clone(),
                         Verified {
                             generation: batch.shard.generation,
                             through: applied.durable_offset,
                         },
-                    );
-                } else {
-                    self.verified.lock().remove(&key);
-                }
-                // Now that the batch is stored, note where this generation
-                // began here — so a later divergence can be bounded the same
-                // way this one was. That is where its own records begin, not
-                // the batch's first offset, which may reach back over older
-                // records it only compared.
-                let generation_start = applied.durable_offset - applied.appended as u64;
-                if level
-                    && let Err(err) =
-                        log.record_generation(batch.shard.generation, generation_start)
-                {
-                    tracing::warn!(
-                        stream = %key.stream,
-                        error = %err,
-                        "stored a replicated batch but could not record its generation",
                     );
                 }
                 // The records went straight to the log, so the stream's own view
@@ -790,6 +801,7 @@ impl ReplicaHandler {
             .map_or(request.from_offset, |record| record.offset);
         let payloads: Vec<bytes::Bytes> =
             records.into_iter().map(|record| record.payload).collect();
+        let end = first_offset + payloads.len() as u64;
         let batch = ReplicateRecords {
             correlation_id,
             shard: request.shard,
@@ -798,6 +810,9 @@ impl ReplicaHandler {
             payloads,
             marks,
             commit_offset: None,
+            generations: request
+                .labelled
+                .then(|| generations_over(&log.generations(), first_offset, end)),
         };
         match log_kind {
             felix_broker::LogKind::Cache => InternalMessage::ReplicateCacheRecords(batch),
@@ -948,6 +963,58 @@ fn unverified_from(
     let previous = previous.filter(|previous| generation > previous.generation)?;
     let from = previous.start_offset.max(commit).max(verified.unwrap_or(0));
     (from < tail).then_some(from)
+}
+
+/// Label the records a batch appended, `from..durable`.
+///
+/// A labelled batch says which generation wrote each of them, and that is
+/// what they keep. A batch from a sender that predates labels says only who
+/// sent it, so its generation is taken to start where the batch appended: an
+/// overclaim when the sender inherited the records, which is why labels exist.
+pub(crate) fn label_appended(
+    log: &felix_broker::StreamLog,
+    from: u64,
+    durable: u64,
+    sender_generation: u64,
+    generations: Option<&[GenerationStart]>,
+) -> Result<(), felix_broker::BrokerError> {
+    match generations {
+        Some(generations) => {
+            let epochs: Vec<felix_storage::log::Epoch> = generations
+                .iter()
+                .filter(|start| start.start_offset <= durable)
+                .map(|start| felix_storage::log::Epoch {
+                    generation: start.generation,
+                    start_offset: start.start_offset,
+                })
+                .collect();
+            log.label_generations(from, &epochs)
+        }
+        None => log.record_generation(sender_generation, from).map(|_| ()),
+    }
+}
+
+/// The generations of `history` that wrote a record in `first..end`, as a
+/// batch of those records carries them: the one `first` belongs to, and each
+/// later one starting by `end`.
+pub(crate) fn generations_over(
+    history: &[felix_storage::log::Epoch],
+    first: u64,
+    end: u64,
+) -> Vec<GenerationStart> {
+    let covering = history
+        .iter()
+        .rposition(|epoch| epoch.start_offset <= first)
+        .unwrap_or(0);
+    history
+        .iter()
+        .skip(covering)
+        .filter(|epoch| epoch.start_offset <= end)
+        .map(|epoch| GenerationStart {
+            generation: epoch.generation,
+            start_offset: epoch.start_offset,
+        })
+        .collect()
 }
 
 /// The generation the record just below `log_end` was written at, from the

@@ -35,6 +35,7 @@ fn a_cache_replication_batch_is_not_a_stream_one() {
         payloads: vec![Bytes::from_static(b"a")],
         marks: Vec::new(),
         commit_offset: None,
+        generations: None,
     };
     let stream = InternalMessage::ReplicateRecords(body.clone());
     let cache = InternalMessage::ReplicateCacheRecords(body);
@@ -64,6 +65,7 @@ fn the_four_replication_kinds_are_distinguishable() {
         payloads: vec![Bytes::from_static(b"x")],
         marks: Vec::new(),
         commit_offset: None,
+        generations: None,
     };
     let encoded: Vec<_> = [
         InternalMessage::ReplicateRecords(body.clone()),
@@ -126,6 +128,7 @@ fn a_commit_offset_travels_as_the_committed_kind_for_every_log() {
         payloads: vec![Bytes::from_static(b"x")],
         marks: Vec::new(),
         commit_offset: Some(8),
+        generations: None,
     };
     for message in [
         InternalMessage::ReplicateRecords(body.clone()),
@@ -140,4 +143,80 @@ fn a_commit_offset_travels_as_the_committed_kind_for_every_log() {
         assert_eq!(header.kind, Kind::ReplicateCommittedRecords);
         assert_eq!(InternalMessage::decode(bytes).expect("decode"), message);
     }
+}
+
+/// Generations travel as their own kind for every log, with or without a
+/// commit offset or marks, and an older follower refuses the kind rather
+/// than labelling the records with the sender's generation.
+#[test]
+fn generations_travel_as_the_labelled_kind_for_every_log() {
+    let labelled = |commit_offset, marks: Vec<ProducerMark>| ReplicateRecords {
+        correlation_id: 42,
+        shard: shard(),
+        first_offset: 10,
+        checksum: 1,
+        payloads: vec![Bytes::from_static(b"x")],
+        marks,
+        commit_offset,
+        generations: Some(vec![
+            GenerationStart {
+                generation: 3,
+                start_offset: 4,
+            },
+            GenerationStart {
+                generation: 5,
+                start_offset: 11,
+            },
+        ]),
+    };
+    let opens = ProducerMark::Opens {
+        producer_id: 7,
+        sequence: 1,
+        len: 1,
+    };
+    for commit_offset in [None, Some(8)] {
+        let body = labelled(commit_offset, Vec::new());
+        for message in [
+            InternalMessage::ReplicateRecords(body.clone()),
+            InternalMessage::ReplicateMarkedRecords(labelled(commit_offset, vec![opens])),
+            InternalMessage::ReplicateCacheRecords(body.clone()),
+            InternalMessage::ReplicateGroupRecords(body.clone()),
+            InternalMessage::ReplicateDeadLetterRecords(body.clone()),
+            InternalMessage::ReplicateCounterRecords(body.clone()),
+        ] {
+            assert_eq!(message.kind(), Kind::ReplicateLabelledRecords);
+            let bytes = message.encode().expect("encode");
+            let header = InternalHeader::decode(&bytes).expect("header");
+            assert_eq!(header.kind, Kind::ReplicateLabelledRecords);
+            assert_eq!(InternalMessage::decode(bytes).expect("decode"), message);
+        }
+    }
+}
+
+/// A labelled fetch is its own kind with the plain fetch's body.
+#[test]
+fn a_labelled_fetch_is_its_own_kind() {
+    let fetch = |labelled| {
+        InternalMessage::ReplicateFetch(ReplicateFetch {
+            correlation_id: 42,
+            shard: shard(),
+            log: ReplicaLog::Stream,
+            from_offset: 100,
+            max_bytes: 1 << 20,
+            labelled,
+        })
+    };
+    assert_eq!(fetch(false).kind(), Kind::ReplicateFetch);
+    assert_eq!(fetch(true).kind(), Kind::ReplicateLabelledFetch);
+    let plain = fetch(false).encode().expect("encode");
+    let labelled = fetch(true).encode().expect("encode");
+    assert_eq!(
+        plain[InternalHeader::LEN..],
+        labelled[InternalHeader::LEN..],
+        "the kind is the only difference"
+    );
+    assert_eq!(
+        InternalMessage::decode(labelled).expect("decode"),
+        fetch(true)
+    );
 }

@@ -23,6 +23,7 @@ fn taken(answer: &InternalMessage) -> FenceOk {
 fn committed(generation: u64, first_offset: u64, values: &[&str], commit: u64) -> ReplicateRecords {
     ReplicateRecords {
         commit_offset: Some(commit),
+        generations: None,
         ..batch(generation, first_offset, values)
     }
 }
@@ -270,6 +271,7 @@ fn fetch(generation: u64, from_offset: u64) -> felix_wire::internal::ReplicateFe
         log: ReplicaLog::Stream,
         from_offset,
         max_bytes: 1 << 20,
+        labelled: false,
     }
 }
 

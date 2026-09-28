@@ -153,7 +153,10 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardRealMargins.cfg` | the same margins and drift with one `Quorum` write carried across a promotion, acknowledged on the report's answer and a valid lease, as the code does | pass every invariant (2.38M distinct states) |
 | `FelixShardAckWithoutLease.cfg` | the same with the lease taken out of the acknowledgement: the report alone releases it | pass every invariant (2.38M distinct states, the same ones: the report is only sent on a valid lease) |
 | `FelixShardFencedAck.cfg` | acknowledged by follower acks at the leader's generation, no lease or report in it, and the promotion fence; no margin on either side of the lease, drifting clocks, no commit check, two writes | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (2.62M distinct states) |
+| `FelixShardFencedAckTwoPromotions.cfg` | the same with two promotions (`L = 2`) and no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (14.3M distinct states, depth 35, 80 s on ten cores) |
+| `FelixShardFollowerLabels.cfg` | the same with followers labelling a shipped record with the sender's generation rather than the one that wrote it (`LabelOnReceipt`) | violate `AckedOnMajority` |
 | `FelixShardUnfencedAck.cfg` | the same without the fence | violate `AckedHeldByLeader` |
+| `FelixShardFigure8.cfg` | the broker as built (`FelixShardFencedPromotion.cfg`), started from a history two leaderships in (`FelixShardFigure8.tla`) | violate `AckedOnMajority`: a pinned gap, see below |
 | `FelixShardFencedPromotion.cfg` | the broker as built: `FelixShardRealMargins.cfg` with the promotion fence and its catch-up, acknowledgements still on the report and the lease | pass every invariant and `AckedHeldByLeader` (8.15M distinct states, depth 30, 55 s on sixteen cores) |
 | `FelixShardNoCommitCheck.cfg` | commit-time lease check removed | violate `NoStaleCommit` |
 | `FelixShardNoReportOrder.cfg` | the design *before* #268: a `Quorum` ack released before the report describing it lands | violate `AckedSurvive` |
@@ -356,10 +359,31 @@ The catch-up is load-bearing too. Checked by hand with the fence answering but
 the new leader not taking the log ahead of its own, TLC finds a record a
 majority acknowledged before the fence missing from the new leader.
 
-The CI bounds allow one promotion. Two (`L = 2`) with drift did not finish;
-with `Drift = 0` as well the configuration passes by hand in 14.3M distinct
-states, about six minutes on sixteen cores. That is kept out of CI: on a runner
-it would roughly double the job.
+`FelixShardFencedAck.cfg` allows one promotion. `FelixShardFencedAckTwoPromotions.cfg`
+allows two (`L = 2`, without drift, which did not finish). Neither tells a
+leader that counts only records of its own generation from one that counts
+any it holds; that takes a third leadership (below).
+
+The order a fence answer gives is only as good as the labels behind it. A
+record's `g` is the generation that wrote it and `lg` the one the broker
+holding it believes wrote it; `Ahead` and `LastGen` read `lg`. With
+`LabelOnReceipt` a follower labels what it is shipped with the sender's
+generation, as it still does with a batch from a sender that predates labels, and
+`FelixShardFollowerLabels.cfg` finds an acknowledged record lost: a follower's
+copy of an inherited record looks newer than a log that holds more.
+
+Two promotions do not reach Raft's Figure 8, which needs a third leadership
+after the two that disagree, and three from the start did not finish.
+`FelixShardFigure8.tla` starts from the history instead: a wrote x at 1, b
+wrote y at 2, neither shipped. With every label correct, the broker as built
+still loses x. c is promoted at 3, takes x in its fence and acknowledges it
+on a majority, because the report and the quorum mark count a record the
+leader inherited like its own; a is promoted at 4 and its fence takes b's log,
+which is ahead by generation. Counting only records of the leader's own
+generation closes it, as `HeldAtGen` does: with that check deleted, the same
+seeded history under `FelixShardFencedAckTwoPromotions.cfg`'s knobs fails in
+twelve steps. The configuration pins the gap until the acknowledgement stops
+counting inherited records.
 
 ### The check that is load-bearing
 

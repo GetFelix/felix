@@ -47,6 +47,7 @@ tlc() {
   local module="FelixShard"
   case "$cfg" in
     FelixPlacementPacing*) module="FelixPlacementPacing" ;;
+    FelixShardFigure8*) module="FelixShardFigure8" ;;
   esac
   local flags=(-deadlock -workers auto -checkpoint 0 -config "$cfg.cfg" "$module.tla")
   local status=0
@@ -76,6 +77,9 @@ expectations=(
   "FelixShardRealMargins pass"
   "FelixShardAckWithoutLease pass"
   "FelixShardFencedAck pass"
+  "FelixShardFencedAckTwoPromotions pass"
+  "FelixShardFollowerLabels violates AckedOnMajority"
+  "FelixShardFigure8 violates AckedOnMajority"
   "FelixShardUnfencedAck violates AckedHeldByLeader"
   "FelixShardFencedPromotion pass"
   "FelixShardNoCommitCheck violates NoStaleCommit"
