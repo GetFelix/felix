@@ -395,6 +395,9 @@ What it does not cover:
 Each record written by an idempotent producer carries its producer id and
 sequence in the log, which costs 20 bytes a record.
 
+Sequences wrap from 2^31 - 1 to 0 as Kafka's do, and a batch may straddle the
+wrap. Re-sends and gaps are recognised across it the same as anywhere else.
+
 ### acks and what they wait for
 
 | `acks` | The answer means | On a `Leader` stream | On a `Quorum` stream |

@@ -365,9 +365,16 @@ does for Felix producers applies unchanged
   than the log's window (the last 64 records per producer and shard) is
   `DUPLICATE_SEQUENCE_NUMBER`, which librdkafka and the Java client count as
   delivered.
-- **Wrapping.** Kafka sequences wrap to 0 after 2^31 - 1. The log counts in 64
-  bits, so a Kafka sequence is taken as the 64-bit count nearest to the one the
-  producer owes.
+- **Wrapping.** Kafka sequences wrap to 0 after 2^31 - 1: a batch with base
+  sequence 0 right after a record at `i32::MAX` is in order, and a batch's
+  record sequences are computed with wrapping arithmetic, so one batch can
+  carry `i32::MAX - 1`, `i32::MAX`, 0, 1. The log counts in 64 bits and never
+  wraps, so a Kafka sequence is taken as the 64-bit count nearest to the one
+  the producer owes (`lift` in `per_record.rs`). A re-send from either side of
+  the wrap is then a duplicate, and a batch past the next sequence is
+  `OUT_OF_ORDER_SEQUENCE_NUMBER`, exactly as away from the wrap. A sequence
+  more than 2^30 behind what the producer owes reads as ahead and is refused
+  as a gap; Kafka refuses it as out of order too.
 
 The epoch is always 0. A producer that would bump its epoch (KIP-360) asks
 `InitProducerId` again and gets a new id instead, which restarts its sequences
@@ -379,7 +386,9 @@ writes, where a Felix producer pays it once per batch.
 
 Tested in `crates/server/felix-broker/src/broker/publish/per_record/tests.rs`
 (re-sends to the same log, a restarted one and a replica shipped part of a
-batch) and end to end in `kafka_produce.rs` (above).
+batch), end to end in `kafka_produce.rs` (above), and at the wrap in
+`crates/server/felix-kafka/src/api/tests/produce.rs`
+(`a_sequence_wraps_to_zero_after_i32_max`, `a_batch_spans_the_sequence_wrap`).
 
 ## Transactions are refused
 

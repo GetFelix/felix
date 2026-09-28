@@ -42,6 +42,8 @@ zstd = "0.13"
 # `client` encodes requests and decodes responses; the codec features let a
 # test compress the batches a producer would.
 kafka-protocol = { workspace = true, features = ["broker", "client", "gzip", "snappy", "lz4", "zstd"] }
+# Replication's wire marks, to seed a log with a producer near the sequence wrap.
+felix-wire = { path = "../../protocol/felix-wire" }
 tempfile = { workspace = true }
 
 [lints]
