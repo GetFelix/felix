@@ -44,12 +44,12 @@ impl felix_replication::promotion::PromotionGate for LifecycleGate {
         self.ingress.fence().awaiting_promotion(key)
     }
 
-    async fn open(&self, key: &ShardKey, generation: u64) {
+    async fn open(&self, key: &ShardKey, generation: u64) -> bool {
         let mut lifecycle = self.lifecycle.lock().await;
         if lifecycle.phase(key) != super::Phase::Fencing
             || lifecycle.generation(key) != Some(generation)
         {
-            return;
+            return true;
         }
         let start_record = self.fleet.supports(felix_common::fleet::GENERATION_START);
         // Recorded now rather than at open: the fence may have taken a
@@ -67,7 +67,7 @@ impl felix_replication::promotion::PromotionGate for LifecycleGate {
                 if let Err(err) = record_term_start(&log, key, generation, start_record).await {
                     tracing::warn!(stream = %key.stream, shard = key.shard, error = %err,
                         "could not record where this leadership begins; not serving yet");
-                    return;
+                    return false;
                 }
                 if start_record
                     && let Err(err) =
@@ -75,14 +75,14 @@ impl felix_replication::promotion::PromotionGate for LifecycleGate {
                 {
                     tracing::warn!(stream = %key.stream, shard = key.shard, error = %err,
                         "could not write the generation-start record; not serving yet");
-                    return;
+                    return false;
                 }
             }
             Err(err) => {
                 tracing::warn!(stream = %key.stream, shard = key.shard, error = %err,
                     "could not open the shard's log to record where this leadership begins");
                 if start_record {
-                    return;
+                    return false;
                 }
             }
         }
@@ -95,5 +95,6 @@ impl felix_replication::promotion::PromotionGate for LifecycleGate {
                 "promoted shard now serving",
             );
         }
+        true
     }
 }

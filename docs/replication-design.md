@@ -351,8 +351,8 @@ the same:
 - **The record.** A leader appends a generation-start record at the offset
   where its generation begins, its first record at the generation, and only
   then serves. A promoted leader does it after its fence and catch-up; if the
-  append fails the shard stays closed and the next pass fences and tries
-  again. The record ships like any other and is labelled with the leader's
+  append fails the shard stays closed, and the driver fences and tries again
+  after a short back-off (`FENCE_RETRY`, 200 ms). The record ships like any other and is labelled with the leader's
   generation, so a replica holding it answers a later fence with that
   generation as its last. The format is in `docs/storage-format.md`.
 - **The mark.** A stream leader's mark counts a majority only once it reaches a
@@ -382,7 +382,13 @@ at a fresh placement over an existing log, at either end of a move, and on a
 hand-back. The control plane bumps the generation at each step of a move, so
 the leader that stays writes one at the staging and the fence too; they cost
 an offset each and nothing else. A reopen that finds the generation already
-has records writes none. A cache shard writes none and counts as before: its
+has records writes none, fenced or not: the leader led at this generation
+before and comes back to it after a restart or a lost lease, the mark already
+counts from the generation's recorded start, and every record past that start
+is the generation's own, so there is nothing inherited to cover. This is also
+how a shard whose generation began before the fleet finalized
+`generation_start` keeps serving: it has records at that generation and no
+start record, and it gets its first one at its next leadership change. A cache shard writes none and counts as before: its
 log is compacted and never fenced, so it never takes a longer log on
 promotion, which is what makes an inherited record unsafe to count.
 

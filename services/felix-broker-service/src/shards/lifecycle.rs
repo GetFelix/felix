@@ -1250,7 +1250,8 @@ pub async fn record_term_start(
 }
 
 /// Write this leader's generation-start record, unless the log already starts
-/// the generation with one (an earlier attempt to open got that far).
+/// the generation with one (an earlier attempt to open got that far) or the
+/// generation already has records of its own.
 ///
 /// It goes at the generation's recorded start, before any client write, so
 /// the quorum mark can cover records this leader inherited once a majority
@@ -1271,16 +1272,19 @@ pub async fn write_generation_start(
         .tail_offset()
         .await
         .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
-    let started = log
-        .generations()
-        .iter()
-        .rev()
-        .find(|epoch| epoch.generation == generation)
-        .map(|epoch| epoch.start_offset);
-    // Anywhere else, the records before it would not be this generation's,
-    // and the mark would count them as if they were.
-    if started != Some(tail) {
-        anyhow::bail!("generation {generation} does not begin at the tail {tail}");
+    match log.generations().last() {
+        Some(epoch) if epoch.generation == generation && epoch.start_offset == tail => {}
+        // This broker led at this generation before and reopens it after a
+        // restart or a lost lease, which is always the case for a generation
+        // that began before the fleet finalized `generation_start`. The mark
+        // already counts from the recorded start and every record past it is
+        // this generation's own, so there is nothing inherited to cover.
+        Some(epoch) if epoch.generation == generation && epoch.start_offset < tail => {
+            return Ok(());
+        }
+        // Anywhere else, the records before it would not be this
+        // generation's, and the mark would count them as if they were.
+        _ => anyhow::bail!("generation {generation} does not begin at the tail {tail}"),
     }
     // Through the broker, so the stream's commit order and its subscribers
     // move past the record's offset too.

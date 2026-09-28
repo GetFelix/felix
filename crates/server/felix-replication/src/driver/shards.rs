@@ -87,6 +87,10 @@ struct ShardState {
     held: Vec<Answered>,
     /// Promoted here, and a majority has not taken the fence yet.
     fence_pending: bool,
+    /// No fence before this. Every append wakes a scan, so without it a shard
+    /// the broker keeps closed after its fence is fenced again at the append
+    /// rate of every other shard.
+    fence_after: Option<tokio::time::Instant>,
     /// What its last pass left.
     last: Option<LastPass>,
 }
@@ -269,6 +273,12 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         // may yet take a tail from a follower that shipping would truncate,
         // and no mark moves for it either.
         if self.cx.gate.awaiting(&watch_key(key)) == Some(route.generation) {
+            if state
+                .fence_after
+                .is_some_and(|after| tokio::time::Instant::now() < after)
+            {
+                return;
+            }
             state.running = Some(Arc::new(tokio::sync::Notify::new()));
             let cx = self.cx;
             let (key, route) = (key.clone(), route.clone());
@@ -422,6 +432,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         };
         state.running = None;
         state.fence_pending = !opened;
+        state.fence_after = (!opened).then(|| tokio::time::Instant::now() + FENCE_RETRY);
         state.last = Some(LastPass::idle(scan));
         if opened || std::mem::take(&mut state.again) {
             self.start(&key);

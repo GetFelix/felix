@@ -242,8 +242,9 @@ impl crate::promotion::PromotionGate for Awaiting {
         *self.generation.lock().expect("lock")
     }
 
-    async fn open(&self, _key: &crate::ShardKey, _generation: u64) {
+    async fn open(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
         *self.generation.lock().expect("lock") = None;
+        true
     }
 }
 
