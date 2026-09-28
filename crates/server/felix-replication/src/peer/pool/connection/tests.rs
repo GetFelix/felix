@@ -95,6 +95,7 @@ mod correlation {
                 payloads: vec![Bytes::from_static(b"hello")],
                 marks: Vec::new(),
                 commit_offset: None,
+                generations: None,
             }),
             InternalMessage::ReplicateOk(ReplicateOk {
                 correlation_id: 7,
@@ -134,6 +135,7 @@ mod correlation {
                 log: ReplicaLog::Stream,
                 from_offset: 3,
                 max_bytes: 64,
+                labelled: false,
             }),
             InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
                 correlation_id: 7,
@@ -143,6 +145,7 @@ mod correlation {
                 payloads: vec![Bytes::from_static(b"hello")],
                 marks: vec![felix_wire::internal::ProducerMark::Continues],
                 commit_offset: None,
+                generations: None,
             }),
         ]
     }

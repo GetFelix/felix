@@ -122,6 +122,7 @@ fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecord
         payloads,
         marks: Vec::new(),
         commit_offset: None,
+        generations: None,
     }
 }
 
@@ -448,4 +449,131 @@ async fn a_suffix_past_the_winning_log_is_dropped() {
         "{outcome:?}"
     );
     assert_eq!(held(&leader).await, vec!["a", "y"]);
+}
+
+/// **The dropped suffix takes its labels with it, and the replica's labels
+/// cover what is kept.** The records the leader already held matched, so no
+/// batch appended and none labelled them as it arrived; after the suffix
+/// goes, the leader's history must be the replica's, not its own.
+#[tokio::test]
+async fn a_dropped_suffix_leaves_the_replicas_labels() {
+    let mut replicas = Replicas::new();
+    for id in ["broker-b", "broker-c"] {
+        replicas.get(id).holds(id, 3, 0, &["a"]).await;
+        replicas.get(id).holds(id, 4, 0, &["a", "y"]).await;
+        replicas.get_mut(id).capabilities = REQUIRED.union(PeerCapabilities::GENERATION_LABELS);
+    }
+    let (leader, _dir) = leader_holding(3, &["a", "y", "older"]).await;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route()).await;
+
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Fenced {
+                caught_up_from: Some(_)
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(held(&leader).await, vec!["a", "y"]);
+    let log = leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let history: Vec<(u64, u64)> = log
+        .generations()
+        .iter()
+        .map(|epoch| (epoch.generation, epoch.start_offset))
+        .collect();
+    assert_eq!(history, vec![(3, 0), (4, 1)]);
+    assert!(replicas.sent(Kind::ReplicateFetch).is_empty());
+    assert!(!replicas.sent(Kind::ReplicateLabelledFetch).is_empty());
+}
+
+/// Delivers a leader's batches to one replica's handler, as the pool would.
+struct ShipTo<'a> {
+    handler: &'a ReplicaHandler,
+}
+
+impl PeerRequester for ShipTo<'_> {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> Result<InternalMessage, PeerError> {
+        match message {
+            InternalMessage::ReplicateRecords(batch)
+            | InternalMessage::ReplicateMarkedRecords(batch) => Ok(self
+                .handler
+                .apply(batch, felix_broker::LogKind::Stream)
+                .await),
+            other => panic!("the leader sent {:?}", other.kind()),
+        }
+    }
+
+    fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+        Some(REQUIRED.union(PeerCapabilities::GENERATION_LABELS))
+    }
+}
+
+/// **A follower keeps the generation a record was written at**, not the one
+/// of the leader that shipped it, so its fence answer does not claim a newer
+/// last generation than it has. `FelixShardFollowerLabels.cfg` is the trace:
+///
+/// 1. At generation 1, x1 and x2 are acknowledged on broker-b and broker-c.
+/// 2. broker-c is promoted at 2, ships x1 to this leader, and dies.
+/// 3. This leader is promoted and fences broker-b.
+///
+/// Labelled with broker-c's generation, this leader's x1 looks like 2, ahead
+/// of broker-b's (1, two records), so it would open without x2.
+#[tokio::test]
+async fn a_follower_keeps_the_generation_a_record_was_written_at() {
+    let mut replicas = Replicas::new();
+    for id in ["broker-b", "broker-c"] {
+        replicas.get(id).holds(id, 1, 0, &["x1", "x2"]).await;
+    }
+
+    // broker-c leads at generation 2 from its tail, and ships this leader
+    // one record before it dies.
+    let (leader, _dir) = {
+        let dir = tempfile::tempdir().expect("tempdir");
+        (broker_on(dir.path()), dir)
+    };
+    let promoted = &replicas.get("broker-c").broker;
+    let log = promoted
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    log.record_generation(2, 2).expect("term start");
+    let follower = ReplicaHandler::new(Arc::clone(&leader), router_for(LEADER, 2));
+    let mut cursor =
+        crate::follower::FollowerCursor::new(LEADER, "10.0.0.1:7001".parse().expect("addr"), 0);
+    let progress = crate::ship::ship_once(
+        &ShipTo { handler: &follower },
+        &log,
+        &batch(2, 0, &[]).shard,
+        felix_broker::LogKind::Stream,
+        &mut cursor,
+        1,
+        &crate::rebuild::Rebuilds::disabled(),
+    )
+    .await;
+    assert_eq!(
+        progress,
+        crate::ship::Progress::Stored { durable_offset: 1 }
+    );
+    assert_eq!(held(&leader).await, vec!["x1"]);
+    replicas.get_mut("broker-c").reachable = false;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route()).await;
+
+    assert_eq!(
+        outcome,
+        Outcome::Fenced {
+            caught_up_from: Some("broker-b".to_string())
+        }
+    );
+    assert_eq!(held(&leader).await, vec!["x1", "x2"]);
 }

@@ -102,10 +102,11 @@ never have dialled the one that shipped to it.
 | --- | --- | --- |
 | `1 << 0` | `FENCE` | answers `Fence`, and refuses every older leader of the shard once it has |
 | `1 << 1` | `TAIL_FETCH` | answers `ReplicateFetch` from the leader that fenced it |
+| `1 << 2` | `GENERATION_LABELS` | reads `ReplicateLabelledRecords`, and answers `ReplicateLabelledFetch` |
 
-`FELIX_INTERNAL_FENCE=false` turns both bits off: the broker offers nothing
-and refuses `Fence` and `ReplicateFetch` as unknown kinds, as an older build
-would.
+`FELIX_INTERNAL_FENCE=false` turns the first two bits off: the broker refuses
+`Fence` and `ReplicateFetch` as unknown kinds, as an older build would. It
+still offers `GENERATION_LABELS`, which is not the fence's.
 
 ### Versioning
 
@@ -435,6 +436,18 @@ offset and ships that follower the old kinds from then on. The follower keeps
 the lower of the offset and the end of what the batch left level with the
 leader, and will not truncate or rebuild below it.
 
+**The generations that wrote the records** ride with a stream log's records
+to a follower that offered `GENERATION_LABELS`. Such a batch travels as
+`ReplicateLabelledRecords` (kind 32): the `ReplicateRecords` body, one mark
+per payload, the log (`u8`), then `has_commit u8` (`0` or `1`) and
+`commit_offset u64` (zero without one), then `count u32` and that many
+`generation u64, start_offset u64` pairs, oldest first: the generation the
+first record belongs to and every later one starting by the batch's end. The
+follower labels the records it appended with exactly those, rather than with
+the sender's generation, which would make a record the sender inherited look
+newer than it is. See `docs/replication-design.md`, "Each record keeps the
+generation it was written at".
+
 `LogConflict` does not converge by *retrying* — the same batch meets the same
 bytes. It can be repaired, and the follower does it without an exchange: a
 conflict from a **newer** generation than the one this follower last accepted,
@@ -538,6 +551,9 @@ budget, and is answered with the records as a leader ships them
 producer mark), at most 4 MiB and none past the replica's end. Only a leader
 at exactly the generation the replica last accepted is answered: an older one
 gets `FencedEpoch`, and one that has not fenced it yet `StaleRoute`.
+`ReplicateLabelledFetch` (kind 33) is the same body, sent to a replica that
+offered `GENERATION_LABELS` and answered with `ReplicateLabelledRecords`, so
+the tail the leader takes keeps its generations.
 
 ```mermaid
 sequenceDiagram
@@ -580,8 +596,9 @@ Typed, because they need different responses:
 
 `ReplicateBootstrap` is kind 10, `ReplicateRebuild` kind 24,
 `ReplicateMarkedRecords` kind 25, `ReplicateCommittedRecords` kind 26,
-`HelloCapable` 27, `HelloCapableOk` 28, `Fence` 29, `FenceOk` 30 and
-`ReplicateFetch` 31. A peer
+`HelloCapable` 27, `HelloCapableOk` 28, `Fence` 29, `FenceOk` 30,
+`ReplicateFetch` 31, `ReplicateLabelledRecords` 32 and
+`ReplicateLabelledFetch` 33. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol

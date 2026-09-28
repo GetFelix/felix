@@ -4,8 +4,8 @@ use bytes::Bytes;
 use felix_broker::StreamLog;
 use felix_storage::log::RecordMark;
 use felix_wire::internal::{
-    ErrorCode, InternalMessage, ProducerMark, ReplicaLog, ReplicateRecords, ShardRef,
-    batch_checksum,
+    ErrorCode, InternalMessage, PeerCapabilities, ProducerMark, ReplicaLog, ReplicateRecords,
+    ShardRef, batch_checksum,
 };
 
 use super::follower::{FollowerCursor, Halt};
@@ -164,6 +164,16 @@ pub async fn ship_once_with<R: PeerRequester>(
         marks,
         // A follower that refused the committed kind is sent what it reads.
         commit_offset: commit_offset.filter(|_| !cursor.legacy_frames),
+        // Without them the follower labels the records with this leader's
+        // generation, including any this leader inherited. Only a stream
+        // log's labels are compared by a fence; the other logs' histories are
+        // not recorded on the leader, so labels from it would say nothing.
+        generations: (!cursor.legacy_frames
+            && log_kind == felix_broker::LogKind::Stream
+            && requester
+                .recorded_capabilities(&cursor.node_id)
+                .is_some_and(|offered| offered.contains(PeerCapabilities::GENERATION_LABELS)))
+        .then(|| crate::replica::generations_over(&log.generations(), first_offset, batch_end)),
     };
     // Which log this is belongs in the message kind, not in the shard
     // reference: the bodies are identical, and a follower that guessed wrong
@@ -186,7 +196,11 @@ pub async fn ship_once_with<R: PeerRequester>(
         .await;
     if let Ok(InternalMessage::ForwardPublishError(refusal)) = &answer
         && refusal.code == ErrorCode::UnsupportedKind
-        && request.kind() == felix_wire::internal::Kind::ReplicateCommittedRecords
+        && matches!(
+            request.kind(),
+            felix_wire::internal::Kind::ReplicateCommittedRecords
+                | felix_wire::internal::Kind::ReplicateLabelledRecords
+        )
     {
         // A follower from before commit offsets. Nothing was stored; it gets
         // the frames it reads, and learns no commit offset from this leader.
@@ -305,6 +319,7 @@ pub fn read_answer(answer: &InternalMessage) -> Progress {
 fn without_commit(request: InternalMessage) -> InternalMessage {
     let strip = |mut batch: ReplicateRecords| {
         batch.commit_offset = None;
+        batch.generations = None;
         batch
     };
     match request {

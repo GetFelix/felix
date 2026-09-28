@@ -3,6 +3,7 @@
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
+use super::replicate::GenerationStart;
 use super::replicate::{ProducerMark, put_marks, take_marks};
 use super::{
     AckMode, CacheOpKind, ErrorCode, Fence, FenceOk, ForwardCacheError, ForwardCacheOk,
@@ -17,6 +18,10 @@ use crate::error::{Error, Result};
 /// Every payload is a 4-byte length prefix plus its bytes, so a body can never
 /// hold more payloads than it has 4-byte groups left.
 const LEN_PREFIX: usize = 4;
+
+/// The most generations one labelled batch names: as many as a log's history
+/// keeps.
+const MAX_GENERATIONS: usize = 512;
 
 impl InternalMessage {
     /// Encode a complete frame: header then body.
@@ -94,6 +99,7 @@ impl InternalMessage {
                 body.put_u8(m.log as u8);
                 body.put_u64(m.from_offset);
                 body.put_u32(m.max_bytes);
+                // `labelled` is the kind, not the body.
             }
             Self::FenceOk(m) => {
                 body.put_u64(m.correlation_id);
@@ -123,10 +129,15 @@ impl InternalMessage {
                     body.put_u32(u32::try_from(payload.len()).map_err(|_| Error::FrameTooLarge)?);
                     body.extend_from_slice(payload);
                 }
-                // Only the marked and committed kinds have the section, and it
-                // has one mark per record however many are unmarked; the other
-                // kinds' layout is frozen and cannot carry any.
-                if matches!(self, Self::ReplicateMarkedRecords(_)) || m.commit_offset.is_some() {
+                // Only the marked, committed and labelled kinds have the
+                // section, and it has one mark per record however many are
+                // unmarked; the other kinds' layout is frozen and cannot carry
+                // any.
+                let labelled = m.generations.as_deref();
+                if matches!(self, Self::ReplicateMarkedRecords(_))
+                    || m.commit_offset.is_some()
+                    || labelled.is_some()
+                {
                     let mut marks = m.marks.clone();
                     marks.resize(m.payloads.len(), ProducerMark::None);
                     put_marks(&mut body, &marks);
@@ -136,7 +147,7 @@ impl InternalMessage {
                         "producer marks travel only as ReplicateMarkedRecords",
                     );
                 }
-                if let Some(commit_offset) = m.commit_offset {
+                if m.commit_offset.is_some() || labelled.is_some() {
                     let log = match self {
                         Self::ReplicateCacheRecords(_) => ReplicaLog::Cache,
                         Self::ReplicateGroupRecords(_) => ReplicaLog::GroupCursors,
@@ -145,7 +156,21 @@ impl InternalMessage {
                         _ => ReplicaLog::Stream,
                     };
                     body.put_u8(log as u8);
-                    body.put_u64(commit_offset);
+                    match labelled {
+                        Some(generations) => {
+                            body.put_u8(u8::from(m.commit_offset.is_some()));
+                            body.put_u64(m.commit_offset.unwrap_or(0));
+                            if generations.len() > MAX_GENERATIONS {
+                                return Err(Error::FrameTooLarge);
+                            }
+                            body.put_u32(generations.len() as u32);
+                            for start in generations {
+                                body.put_u64(start.generation);
+                                body.put_u64(start.start_offset);
+                            }
+                        }
+                        None => body.put_u64(m.commit_offset.unwrap_or(0)),
+                    }
                 }
             }
             Self::ReplicateOk(m) => {
@@ -367,7 +392,7 @@ impl InternalMessage {
                 expect_empty(&body)?;
                 Ok(Self::Fence(message))
             }
-            Kind::ReplicateFetch => {
+            Kind::ReplicateFetch | Kind::ReplicateLabelledFetch => {
                 let message = ReplicateFetch {
                     correlation_id: take_u64(&mut body)?,
                     shard: ShardRef {
@@ -380,6 +405,7 @@ impl InternalMessage {
                     log: ReplicaLog::from_u8(take_u8(&mut body)?)?,
                     from_offset: take_u64(&mut body)?,
                     max_bytes: take_u32(&mut body)?,
+                    labelled: header.kind == Kind::ReplicateLabelledFetch,
                 };
                 expect_empty(&body)?;
                 Ok(Self::ReplicateFetch(message))
@@ -400,7 +426,8 @@ impl InternalMessage {
             | Kind::ReplicateDeadLetterRecords
             | Kind::ReplicateCounterRecords
             | Kind::ReplicateMarkedRecords
-            | Kind::ReplicateCommittedRecords => {
+            | Kind::ReplicateCommittedRecords
+            | Kind::ReplicateLabelledRecords => {
                 let correlation_id = take_u64(&mut body)?;
                 let tenant_id = take_str(&mut body)?;
                 let namespace = take_str(&mut body)?;
@@ -424,17 +451,44 @@ impl InternalMessage {
                     }
                     payloads.push(body.split_to(len));
                 }
-                let committed = header.kind == Kind::ReplicateCommittedRecords;
+                let labelled = header.kind == Kind::ReplicateLabelledRecords;
+                let committed = header.kind == Kind::ReplicateCommittedRecords || labelled;
                 let mut marks = if header.kind == Kind::ReplicateMarkedRecords || committed {
                     take_marks(&mut body, payloads.len())?
                 } else {
                     Vec::new()
                 };
-                let (log, commit_offset) = if committed {
+                let (log, commit_offset) = if labelled {
+                    let log = ReplicaLog::from_u8(take_u8(&mut body)?)?;
+                    let present = take_u8(&mut body)?;
+                    let commit = take_u64(&mut body)?;
+                    let commit = match present {
+                        0 => None,
+                        1 => Some(commit),
+                        _ => return Err(Error::Incomplete),
+                    };
+                    (Some(log), commit)
+                } else if committed {
                     let log = ReplicaLog::from_u8(take_u8(&mut body)?)?;
                     (Some(log), Some(take_u64(&mut body)?))
                 } else {
                     (None, None)
+                };
+                let generations = if labelled {
+                    let declared = take_u32(&mut body)? as usize;
+                    if declared > MAX_GENERATIONS || declared > body.remaining() / 16 {
+                        return Err(Error::Incomplete);
+                    }
+                    let mut generations = Vec::with_capacity(declared);
+                    for _ in 0..declared {
+                        generations.push(GenerationStart {
+                            generation: take_u64(&mut body)?,
+                            start_offset: take_u64(&mut body)?,
+                        });
+                    }
+                    Some(generations)
+                } else {
+                    None
                 };
                 expect_empty(&body)?;
                 // An unmarked batch has no marks, as the leader built it; the
@@ -457,6 +511,7 @@ impl InternalMessage {
                     payloads,
                     marks,
                     commit_offset,
+                    generations,
                 };
                 if let Some(log) = log {
                     return Ok(match log {
