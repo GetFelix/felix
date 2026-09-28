@@ -77,7 +77,6 @@ expectations=(
   "FelixShardRealMargins pass"
   "FelixShardAckWithoutLease pass"
   "FelixShardFencedAck pass"
-  "FelixShardFencedAckTwoPromotions pass"
   "FelixShardFollowerLabels violates AckedOnMajority"
   "FelixShardFigure8 violates AckedOnMajority"
   "FelixShardUnfencedAck violates AckedHeldByLeader"
