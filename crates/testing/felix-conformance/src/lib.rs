@@ -8,5 +8,7 @@
 //! here.
 //!
 //! See [`kit`] for the contract, and `felix-cluster client-fixture` for
-//! something to run it against.
+//! something to run it against. [`link`] is the interposer the
+//! connection-fault scenarios run through.
 pub mod kit;
+pub mod link;

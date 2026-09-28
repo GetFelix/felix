@@ -83,6 +83,7 @@ implements. A few, so the flavour is clear:
 | `retry.ambiguous_outcomes_are_not_silently_retried` | Re-sending a publish that may already have been applied duplicates it, and nothing downstream can tell the copies apart — the delivery guarantee changes without anyone choosing it. |
 | `retry.idempotent_producers_re_send_ambiguous_outcomes` | With a producer id and a sequence the broker can tell the copies apart, so the producer must re-send under the same sequence — and a client that advances the sequence on a failure, or re-sends after a refusal, turns the guarantee back into a guess. |
 | `error.unauthorized_is_typed` | An application that cannot tell "not permitted" from "unreachable" retries the one that will never succeed. |
+| `fault.subscription_through_a_dropped_link` | A subscription whose connection goes silent ends as though the stream had finished. The consumer loop exits cleanly, and the records published meanwhile are never read. |
 | `error.quorum_timeout_is_outcome_unknown` | A write that may have survived, reported as a plain failure, gets resent and duplicated; reported as success, it may be lost. |
 
 Each scenario has a stable id. A client's test suite tags its tests with those
@@ -94,6 +95,61 @@ because a misspelled tag would otherwise look like coverage.
 Optional scenarios may go unclaimed — a binding is allowed not to wrap a
 surface yet — but may not *fail*. Claiming a semantic and getting it wrong is
 worse than not claiming it.
+
+### Connection faults
+
+A handful of scenarios break the client's connection on purpose. Each carries a
+`step` in the catalogue saying what to break, when, and for how long:
+
+```toml
+step = { during = "subscribe", fault = "drop", after_records = 3, records = 10, hold_ms = 8000 }
+```
+
+The fixture puts a UDP interposer in front of the broker that owns one
+single-shard stream (`link_stream`) and serves it at `link_addr`. A suite
+connects a client with `link_addr` as its only seed, handles `after_records`
+records, and then asks the fixture's control endpoint to break the link:
+
+```mermaid
+flowchart LR
+    C[client under test] -->|QUIC over UDP| L[link interposer]
+    L -->|forwarded| B[owner of link_stream]
+    S[test suite] -->|"POST /link {fault, hold_ms}"| L
+    P[ordinary client] -->|publishes| B
+```
+
+| `fault` | What the interposer does | What the client sees |
+|---|---|---|
+| `drop` | discards every datagram, both ways, for `hold_ms` | silence, then its idle timeout (6 s by default); a new connection through the interposer fails until the hold ends |
+| `reset` | kills every connection open through it, for good | the same idle timeout, but a reconnect gets through at once |
+| `stall` | holds every datagram for `hold_ms`, then delivers them in order | a pause shorter than the idle timeout, and nothing lost |
+
+QUIC encrypts everything a middlebox could forge, so there is no RST to inject:
+a client learns of a drop or a reset from its own idle timeout, which is why the
+drop holds past it.
+
+What passes:
+
+- **Mid-publish**, every publish returns, with an acknowledgement or an error,
+  and none hangs. Once the fault is over the client publishes again, and every
+  record it acknowledged is in the stream.
+- **Mid-subscribe**, the subscription either resumes, delivering the rest at
+  contiguous offsets with no gap and no duplicate, or raises. **Ending as though
+  the broker had closed the stream fails**: that is a consumer loop exiting
+  quietly on a dead connection with nothing to tell it records were missed.
+- Through a **stall**, an error fails too. The connection never died.
+
+The fixture JSON carries the steps under `faults`, so a suite in a language
+without a TOML parser does not have to hard-code them. `cargo run -p
+felix-conformance` runs the same steps with the Rust client, through
+`ClusterClient` (which resumes) and through a plain `Client` (which reports the
+loss), each on its own interposer in front of the in-process broker.
+
+The suites poll a subscription with a short timeout, the way application code
+does. That drops the read in flight every 250 ms, and it is what found a
+`ClusterSubscription` that, cancelled while resubscribing, came back to its dead
+subscription and reported the end of the stream, and, once that was fixed,
+started a resubscribe that took longer than the timeout over on every call.
 
 **New languages are gated on this rather than on review.** "Looks correct" is
 exactly the standard that produces divergence.

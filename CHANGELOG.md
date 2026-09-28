@@ -52,6 +52,14 @@ for what the current release actually guarantees.
 
 ### Added
 
+- **Connection-fault conformance scenarios.** A catalogue scenario can carry a
+  `step` that drops, resets or stalls the client's link mid-publish or
+  mid-subscribe. `felix_conformance::link` is the UDP interposer that does it;
+  `felix-cluster client-fixture` serves one at `link_addr`, breaks it on
+  `POST /link`, and lists the steps under `faults`. The protocol suite runs
+  them with the Rust client, and the Python and TypeScript suites run them in
+  CI. A subscription must resume with no gap or raise; ending as if the stream
+  had finished fails.
 - **Placement spreads a shard's copies across zones.** A broker registers
   the failure domain it is in with `FELIX_NODE_ZONE` (the node's new optional
   `zone`). Followers go to zones the shard has no copy in, drains and
@@ -518,6 +526,19 @@ for what the current release actually guarantees.
 
 ### Fixed
 
+- **A `ClusterSubscription` read cancelled mid-resume no longer ends the
+  subscription.** After a lost connection, `next_event` cleared the loss
+  before resubscribing, so a caller that dropped the call partway (a read
+  under `tokio::time::timeout`, and every Python `next_event(timeout=...)`)
+  came back to the dead subscription and got `None`, as if the broker had
+  closed the stream. The loss is now kept until the resubscribe lands, and the
+  resubscribe (after a loss or a shard move) runs on a task of its own, so a
+  caller polling with a timeout shorter than a reconnect no longer restarts it
+  on every call and never finishes.
+- **Python's `closed` tells a timeout from the end of the stream.** It was
+  only set by `close()`, so after `next_event(timeout=...)` returned `None`
+  there was no way to tell the two apart, which its documentation said there
+  was. It is now also set once the broker ends the stream.
 - **A publish in flight when its shard's log is reset no longer reaches
   readers.** A publish waiting behind earlier ones when the broker became a
   follower (or its log was rebuilt) was woken by the reset and went on to put

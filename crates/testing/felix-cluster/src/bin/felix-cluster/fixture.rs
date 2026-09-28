@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use felix_cluster::{CacheSpec, Cluster, ClusterConfig, StreamSpec};
+use felix_conformance::link::Interposer;
 
 use crate::args::{flag_usize, flag_value};
 use crate::init_tracing;
@@ -55,6 +56,9 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     // mid-move, one whose writes need a majority.
     const MOVABLE_STREAM: &str = "conformance-movable";
     const QUORUM_STREAM: &str = "conformance-quorum";
+    // One shard, so its owner is one broker the link interposer can sit in
+    // front of.
+    const LINK_STREAM: &str = "conformance-link";
 
     eprintln!("starting a {node_count}-node cluster for a client conformance suite...");
     let cluster = Cluster::start(ClusterConfig {
@@ -72,6 +76,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
             StreamSpec::replicated(DURABLE_STREAM, 4, node_count as u32),
             StreamSpec::replicated(MOVABLE_STREAM, 1, node_count as u32),
             StreamSpec::quorum(QUORUM_STREAM, 1, node_count as u32),
+            StreamSpec::replicated(LINK_STREAM, 1, node_count as u32),
         ],
         caches: vec![
             CacheSpec::replicated(CACHE, 4, node_count as u32),
@@ -102,11 +107,19 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     std::fs::write(&ca_file, &bundle)
         .with_context(|| format!("write the certificate bundle to {ca_file}"))?;
 
+    let link_owner = cluster.owner(LINK_STREAM).await?;
+    let link_upstream = cluster
+        .node(&link_owner)
+        .with_context(|| format!("no node {link_owner}"))?
+        .client_addr;
+    let link = Arc::new(Interposer::start(link_upstream).await?);
+
     let cluster = Arc::new(cluster);
     let hold = Arc::new(AtomicBool::new(false));
     let (control_url, control_task) = control::Control::new(
         Arc::clone(&cluster),
         Arc::clone(&hold),
+        Arc::clone(&link),
         MOVABLE_STREAM,
         QUORUM_STREAM,
     )
@@ -131,6 +144,9 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         movable_stream: Some(MOVABLE_STREAM.to_string()),
         quorum_stream: Some(QUORUM_STREAM.to_string()),
         control_url: Some(control_url.clone()),
+        link_addr: Some(link.addr().to_string()),
+        link_stream: Some(LINK_STREAM.to_string()),
+        faults: felix_conformance::kit::catalogue()?.fault_scenarios(),
     };
     let body = serde_json::to_vec_pretty(&fixture).context("encode the fixture")?;
     std::fs::write(&out, body).with_context(|| format!("write the fixture to {out}"))?;
@@ -139,6 +155,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     println!("broker    {}", fixture.addrs.join(", "));
     println!("ca        {ca_file}");
     println!("control   {control_url}");
+    println!("link      {} -> {link_owner}", link.addr());
     eprintln!("\nholding the fixture. press Ctrl-C to tear it down.");
 
     // A placement pass on a timer, which is what makes the reconnect scenario

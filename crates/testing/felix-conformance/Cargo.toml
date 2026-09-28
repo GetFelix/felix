@@ -33,6 +33,7 @@ rustls = { workspace = true }
 tokio = { workspace = true }
 toml = "1.1.6"
 serde_json.workspace = true
+tempfile = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
 [lints]

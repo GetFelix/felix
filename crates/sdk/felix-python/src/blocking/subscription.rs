@@ -53,6 +53,11 @@ impl SubscriptionHandle {
                 }
                 None => subscription.next_event().await.map_err(to_py_err)?,
             };
+            // The broker ended the stream. Released here so `closed` reads
+            // true, which is how a caller tells this `None` from a timeout.
+            if next.is_none() {
+                guard.take();
+            }
             Ok(next)
         })?;
 

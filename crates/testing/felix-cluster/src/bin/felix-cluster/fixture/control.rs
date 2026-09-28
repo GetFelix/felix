@@ -9,10 +9,13 @@
 //!   its owner fenced, and answers once that owner refuses publishes.
 //! - `/partition` cuts the quorum stream's leader off from its followers, and
 //!   answers once a publish through it fails.
-//! - `/heal` undoes both.
+//! - `/link` breaks the connections through the link interposer, with a body
+//!   of `{"fault": "drop" | "reset" | "stall", "hold_ms": N}`. It answers at
+//!   once; a drop or a stall heals itself after `hold_ms`.
+//! - `/heal` undoes all of them.
 //!
-//! Each answers `{"node_id", "addr"}` for the broker to publish through
-//! directly. Going through another broker would add a forward, and what the
+//! `/fence`, `/partition` and `/heal` answer `{"node_id", "addr"}` for the
+//! broker to publish through directly. Going through another broker would add a forward, and what the
 //! forward says about a refusal is a different question.
 //!
 //! The faults are not scoped to one stream: fencing drains the owner, and a
@@ -29,7 +32,8 @@ use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
 use felix_cluster::Cluster;
-use serde::Serialize;
+use felix_conformance::link::{Interposer, LinkFault};
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 /// Long enough for an assignment to reach a broker, or for a quorum wait to
@@ -41,9 +45,17 @@ pub(crate) struct Control {
     /// Set while a fault is held. The fixture's placement timer skips its pass,
     /// because the next pass would finish the move this is holding open.
     hold: Arc<AtomicBool>,
+    link: Arc<Interposer>,
     movable_stream: String,
     quorum_stream: String,
     drained: Mutex<Option<String>>,
+}
+
+#[derive(Deserialize)]
+struct LinkRequest {
+    fault: LinkFault,
+    #[serde(default)]
+    hold_ms: u64,
 }
 
 #[derive(Serialize)]
@@ -58,12 +70,14 @@ impl Control {
     pub(crate) fn new(
         cluster: Arc<Cluster>,
         hold: Arc<AtomicBool>,
+        link: Arc<Interposer>,
         movable_stream: &str,
         quorum_stream: &str,
     ) -> Self {
         Self {
             cluster,
             hold,
+            link,
             movable_stream: movable_stream.to_string(),
             quorum_stream: quorum_stream.to_string(),
             drained: Mutex::new(None),
@@ -79,6 +93,7 @@ impl Control {
         let router = Router::new()
             .route("/fence", post(fence))
             .route("/partition", post(partition))
+            .route("/link", post(link))
             .route("/heal", post(heal))
             .with_state(Arc::new(self));
         let task = tokio::spawn(async move {
@@ -136,7 +151,18 @@ async fn partition(State(control): State<Arc<Control>>) -> Answer {
     Ok(Json(control.target(&leader)))
 }
 
+async fn link(
+    State(control): State<Arc<Control>>,
+    Json(request): Json<LinkRequest>,
+) -> Json<serde_json::Value> {
+    control
+        .link
+        .inject(request.fault, Duration::from_millis(request.hold_ms));
+    Json(serde_json::json!({ "fault": request.fault, "hold_ms": request.hold_ms }))
+}
+
 async fn heal(State(control): State<Arc<Control>>) -> Answer {
+    control.link.heal();
     tokio::task::block_in_place(|| control.cluster.heal_partitions()).map_err(failed)?;
     let drained = control.drained.lock().await.take();
     if let Some(node_id) = &drained {

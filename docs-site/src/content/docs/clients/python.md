@@ -144,6 +144,12 @@ with client.subscribe("t1", "default", "events") as events:
 first record you have not seen**, so a resuming consumer passes the offset it
 last handled *plus one*.
 
+`next_event(timeout=...)` returns `None` both when the timeout passes and when
+the broker has ended the stream; `closed` is `True` only after the second, so
+check it to tell them apart. A lost connection is neither: on a durable stream
+the subscription resubscribes from the offset after the last one it delivered,
+and where it cannot, it raises a `FelixError`.
+
 **A subscription follows its shard when a rebalance moves it.** The old owner
 ends it after delivering what it committed and says where to resume; the client
 resubscribes on the new owner and iteration carries on. On a durable stream

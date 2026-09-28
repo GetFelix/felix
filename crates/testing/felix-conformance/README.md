@@ -13,7 +13,16 @@ With no arguments it drives a broker over QUIC and checks publish, subscribe and
 cache behaviour against [`docs/protocol.md`](../../../docs/protocol.md). The
 catalogue and `verify` are how the Python and TypeScript clients, and any third
 party's, show they behave like the Rust client. `felix-cluster client-fixture`
-starts something to run a client against. Byte-level wire fixtures are separate:
+starts something to run a client against.
+
+Some scenarios carry a fault `step` (`during = "publish" | "subscribe"`,
+`fault = "drop" | "reset" | "stall"`, and when and for how long). They run
+through a UDP interposer in front of a broker, `felix_conformance::link`: the
+fixture serves one at `link_addr` and breaks it on `POST /link`, and the
+protocol suite puts one in front of its in-process broker. See the
+"Connection faults" section of `scenarios.toml` for what passes.
+
+Byte-level wire fixtures are separate:
 they live in [`felix-wire`'s `tests/vectors/`](../../protocol/felix-wire/tests/vectors).
 
 ## Licensing

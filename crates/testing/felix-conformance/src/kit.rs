@@ -25,6 +25,8 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::link::LinkFault;
+
 /// The catalogue, as parsed from `scenarios.toml`.
 #[derive(Debug, Deserialize)]
 pub struct Catalogue {
@@ -41,6 +43,43 @@ pub struct Scenario {
     pub title: String,
     #[serde(default)]
     pub detail: String,
+    /// A connection fault this scenario injects, for the scenarios that are
+    /// run through the fixture's link interposer.
+    #[serde(default)]
+    pub step: Option<FaultStep>,
+}
+
+/// A fault step: break the client's connection partway through a publish or a
+/// subscribe, and check what the client makes of it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FaultStep {
+    /// What the client is doing when the fault lands.
+    pub during: Phase,
+    /// What happens to the link.
+    pub fault: LinkFault,
+    /// The timing: how many records are handled before the fault lands.
+    pub after_records: u32,
+    /// How many records the scenario handles in all.
+    pub records: u32,
+    /// How long a drop or a stall holds before the link heals itself.
+    #[serde(default)]
+    pub hold_ms: u64,
+}
+
+/// The operation a [`FaultStep`] interrupts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Phase {
+    Publish,
+    Subscribe,
+}
+
+/// A fault scenario as the fixture hands it to a suite: its id and its step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FaultScenario {
+    pub id: String,
+    #[serde(flatten)]
+    pub step: FaultStep,
 }
 
 /// The catalogue that ships with this crate.
@@ -48,6 +87,21 @@ pub fn catalogue() -> Result<Catalogue> {
     let raw = include_str!("../scenarios.toml");
     let catalogue: Catalogue = toml::from_str(raw).context("parse scenarios.toml")?;
     Ok(catalogue)
+}
+
+impl Catalogue {
+    /// The scenarios that carry a fault step.
+    pub fn fault_scenarios(&self) -> Vec<FaultScenario> {
+        self.scenarios
+            .iter()
+            .filter_map(|scenario| {
+                Some(FaultScenario {
+                    id: scenario.id.clone(),
+                    step: scenario.step.clone()?,
+                })
+            })
+            .collect()
+    }
 }
 
 /// What a client-under-test reports back.
@@ -300,6 +354,19 @@ pub struct Fixture {
     /// need them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control_url: Option<String>,
+    /// An interposer in front of `link_stream`'s owner. A client connected
+    /// through it (and only it) is the one `POST /link` breaks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_addr: Option<String>,
+    /// A durable single-shard stream owned by the broker behind `link_addr`,
+    /// so a subscription to it is served on the interposed connection rather
+    /// than redirected around it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_stream: Option<String>,
+    /// The catalogue's fault scenarios, so a suite that cannot read TOML gets
+    /// the steps without hard-coding them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub faults: Vec<FaultScenario>,
 }
 
 #[cfg(test)]
