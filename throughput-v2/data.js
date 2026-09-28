@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790567340533,
+  "lastUpdate": 1790568717738,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19084,6 +19084,58 @@ window.BENCHMARK_DATA = {
             "range": "12312.74",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 924792.71\nmean: 929938.25\nstdev: 12312.74\ncv: 1.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e0b20a34e90603670581b4887b79ffcda02776c9",
+          "message": "fix(publish): yield between jobs so a backlog cannot starve subscriber feeders (#802)\n\nWith a backlog queued, a publish executor takes the next job and writes an\nephemeral publish without ever suspending, so it fanned out job after job\nwhile the subscriber feeders it had just woken waited for its thread. The\nper-subscriber queues then overflowed under drop_new for subscribers that\nwere reading fast enough, which is what the slow-consumer demo's isolation\ntest caught on loaded machines. The scheduler lets one tenant queue up to\nthree times more jobs than the old per-worker channel held, so the bursts\ngrew past a 64-deep subscriber queue.\n\nSpec-Unaffected: executors now yield between jobs; lane order, offset claims and the fence are unchanged.",
+          "timestamp": "2026-09-27T21:08:57-07:00",
+          "tree_id": "0c75908355bc8664744f35cf7526da6770fe4f7c",
+          "url": "https://github.com/gabloe/felix/commit/e0b20a34e90603670581b4887b79ffcda02776c9"
+        },
+        "date": 1790568716710,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 478367.75,
+            "range": "21674.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 478367.75\nmean: 482057.53\nstdev: 21674.93\ncv: 4.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 478367.75,
+            "range": "21674.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 478367.75\nmean: 482057.53\nstdev: 21674.93\ncv: 4.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124140.94,
+            "range": "1509.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124140.94\nmean: 123443.51\nstdev: 1509.73\ncv: 1.22%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1241409.41,
+            "range": "15097.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1241409.41\nmean: 1234435.09\nstdev: 15097.35\ncv: 1.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
