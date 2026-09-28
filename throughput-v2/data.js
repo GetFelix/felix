@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790606830680,
+  "lastUpdate": 1790607586926,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19500,6 +19500,58 @@ window.BENCHMARK_DATA = {
             "range": "45980.90",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 942077.91\nmean: 923514.25\nstdev: 45980.90\ncv: 4.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "186948f3a225aa4958dcc4d8bbc2e1f8d77d5317",
+          "message": "fix(client): wait out a shard that is still opening when a subscription opens (#825)\n\nClusterClient::subscribe, subscribe_from and subscribe_sharded failed at once\non shard_unavailable/not_ready. A leader answers that while it fences its\nreplicas after a promotion, which includes every shard at cluster start, so a\nsubscribe landing in that window failed the whole call while a publish at the\nsame instant would have retried. The routing test\none_shard_failing_over_does_not_stop_the_others hit exactly this.\n\nOpening a shard now retries retry-class refusals with the ReconnectPolicy's\nattempts and backoff, the way a publish does. A fatal refusal still returns at\nonce, and the reconnect loops of an open subscription are unchanged.\n\nSpec-Unaffected: client-side retry of a refused subscribe; no broker or control-plane state changes",
+          "timestamp": "2026-09-28T07:55:11-07:00",
+          "tree_id": "ece8c4ba769efa39e113cd96032414baba1e6f5f",
+          "url": "https://github.com/gabloe/felix/commit/186948f3a225aa4958dcc4d8bbc2e1f8d77d5317"
+        },
+        "date": 1790607586134,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 510887.88,
+            "range": "28060.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510887.88\nmean: 507674.23\nstdev: 28060.56\ncv: 5.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 510887.88,
+            "range": "28060.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510887.88\nmean: 507674.23\nstdev: 28060.56\ncv: 5.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125388.67,
+            "range": "1268.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125388.67\nmean: 124872.78\nstdev: 1268.41\ncv: 1.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1253886.75,
+            "range": "12684.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1253886.75\nmean: 1248727.82\nstdev: 12684.14\ncv: 1.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
