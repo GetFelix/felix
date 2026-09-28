@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790618599014,
+  "lastUpdate": 1790625430829,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -25080,6 +25080,72 @@ window.BENCHMARK_DATA = {
             "range": "330.83",
             "unit": "us",
             "extra": "trials: 5\nmedian: 737.00\nmean: 888.20\nstdev: 330.83\ncv: 37.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "646d4adf0b057e7f12dc74844d5c1aa0ae0df47d",
+          "message": "feat(replication): acknowledge Quorum writes by a majority at the leader's generation (#828)\n\nOnce the fleet finalizes `majority_ack` (with `generation_start`), a Quorum\nstream shard acknowledges a write when a majority of its replica set, the\nleader included, has answered ReplicateOk for it at the leader's generation.\nThe control-plane report goes out behind the mark for placement only, and\nthe lease is off the write's path: admission, commit and acknowledgement.\n\n- A follower counts up to its own ReplicateOk at this generation\n  (`FollowerCursor::confirmed`), never a resume point; a fenced follower is\n  halted and counts for nothing. The leader counts itself only while its log\n  has accepted no newer generation.\n- The shard's write fence admits without the lease for such a shard;\n  consumer-group state still requires it. The early lease shed on publish\n  moves after dispatch so it can tell.\n- A promoted leader never opens a stream shard on the lease once follower\n  acks are on: an unreachable or non-fencing replica is a non-answer.\n- A broker running with FELIX_INTERNAL_FENCE=false does not report\n  `majority_ack`, so it cannot be finalized while one serves.\n- Leader streams, caches, counters and reads keep the lease and report.\n\nTLA+: HeldAtGen counts follower answers (`confirmed`) and applies the\nown-generation rule under StartRecord; AckByFollowers takes the lease off\nServing and asserts no commit or ack lease check. FelixShardFencedAck (drift,\nno margin, start record) passes; FelixShardUnfencedAck and the new\nFelixShardFigure8FollowerAcksNoStartRecord violate.",
+          "timestamp": "2026-09-28T12:53:42-07:00",
+          "tree_id": "f1bb5754c4fbc34957a839c9e6070894b9c30943",
+          "url": "https://github.com/gabloe/felix/commit/646d4adf0b057e7f12dc74844d5c1aa0ae0df47d"
+        },
+        "date": 1790625427201,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 177,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 177.20\nstdev: 1.48\ncv: 0.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 244,
+            "range": "7.23",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 244.00\nmean: 245.60\nstdev: 7.23\ncv: 2.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 294,
+            "range": "14.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 294.00\nmean: 303.60\nstdev: 14.64\ncv: 4.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 212,
+            "range": "1.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 212.00\nmean: 212.00\nstdev: 1.87\ncv: 0.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 432,
+            "range": "7.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 432.00\nmean: 435.00\nstdev: 7.55\ncv: 1.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 584,
+            "range": "101.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 584.00\nmean: 615.40\nstdev: 101.97\ncv: 16.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
