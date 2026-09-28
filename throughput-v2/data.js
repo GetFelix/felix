@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790565958011,
+  "lastUpdate": 1790566459943,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18980,6 +18980,58 @@ window.BENCHMARK_DATA = {
             "range": "6856.50",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 939474.27\nmean: 937349.97\nstdev: 6856.50\ncv: 0.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "44e581a9904911392dfdcc3d53da8f6ec22a199d",
+          "message": "chore(vendor): silence the vendored kafka-protocol's dead_code warnings (#801)\n\nUpstream's gap types are pub(crate) and mostly unused. crates.io builds\nnever show the warnings because cargo caps lints for registry\ndependencies, but as a path crate every build printed twenty of them.\nAllow the one lint in the vendored manifest and record it in\nVENDORED.toml.\n\nSpec-Unaffected: build configuration only.",
+          "timestamp": "2026-09-27T20:16:59-07:00",
+          "tree_id": "4dd94b8d43684aa938ac1c688e29be54a689f653",
+          "url": "https://github.com/gabloe/felix/commit/44e581a9904911392dfdcc3d53da8f6ec22a199d"
+        },
+        "date": 1790566459115,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 486151.45,
+            "range": "20155.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 486151.45\nmean: 492468.21\nstdev: 20155.23\ncv: 4.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 486151.45,
+            "range": "20155.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 486151.45\nmean: 492468.21\nstdev: 20155.23\ncv: 4.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 105247.97,
+            "range": "1413.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 105247.97\nmean: 104816.63\nstdev: 1413.21\ncv: 1.35%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1052479.7,
+            "range": "14132.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1052479.70\nmean: 1048166.31\nstdev: 14132.13\ncv: 1.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
