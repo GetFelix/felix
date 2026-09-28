@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790565363879,
+  "lastUpdate": 1790565958011,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -18928,6 +18928,58 @@ window.BENCHMARK_DATA = {
             "range": "8483.86",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 933397.25\nmean: 935537.29\nstdev: 8483.86\ncv: 0.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ca3f008105ad9663b865adac7f9b40c51141033d",
+          "message": "fix(storage): settle a compaction swap an older build left mid-way (#797)\n\nUp to 0.6.0-preview, cache and counter compaction swapped the shard\ndirectory for a compacted copy through <shard>.compacting and\n<shard>.retired siblings. Background compaction removed that swap and its\nrecovery, so an upgraded broker opened a shard stopped between the two\nrenames as empty.\n\nOpening a cache or counter shard now settles the old swap first, as the\nold code did: a missing shard directory is restored from .retired, and\nleftover .retired/.compacting siblings are deleted when the shard is in\nplace. Tested against a port of the old swap stopped after every step.",
+          "timestamp": "2026-09-27T20:15:01-07:00",
+          "tree_id": "ef651bcb86ac5e522282e2200ad17b51773b7da7",
+          "url": "https://github.com/gabloe/felix/commit/ca3f008105ad9663b865adac7f9b40c51141033d"
+        },
+        "date": 1790565957509,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 390969.98,
+            "range": "5160.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 390969.98\nmean: 392477.11\nstdev: 5160.93\ncv: 1.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 390969.98,
+            "range": "5160.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 390969.98\nmean: 392477.11\nstdev: 5160.93\ncv: 1.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93947.43,
+            "range": "685.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93947.43\nmean: 93735.00\nstdev: 685.65\ncv: 0.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 939474.27,
+            "range": "6856.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 939474.27\nmean: 937349.97\nstdev: 6856.50\ncv: 0.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
