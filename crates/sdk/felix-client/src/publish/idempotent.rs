@@ -41,8 +41,9 @@ use crate::{PublishRefusalReason, PublishRefused};
 /// sent. See the module documentation.
 ///
 /// One sequence per stream, so a producer may publish to several streams;
-/// publishes to one stream are serialised, since the sequence has to be. A
-/// batch of any size takes one sequence.
+/// calls on one stream are serialised, since the sequence has to be. A batch
+/// of any size takes one sequence. [`Self::publish_batches`] keeps several
+/// batches of one call in flight at once.
 pub struct IdempotentProducer<'a> {
     source: Source<'a>,
     producer_id: u64,
@@ -122,6 +123,33 @@ impl<'a> IdempotentProducer<'a> {
         stream: &str,
         payloads: Vec<Vec<u8>>,
     ) -> Result<()> {
+        self.publish_batches(tenant_id, namespace, stream, vec![payloads])
+            .await
+    }
+
+    /// Publish several batches, once each, under consecutive sequences.
+    ///
+    /// Against a broker that pipelines publishes (`FEATURE_PUBLISH_PIPELINE`)
+    /// the batches go out without waiting for each other's answers, up to the
+    /// connection's window and never more than 64 at once; against any other
+    /// broker they go one at a time. Either way the result is the same as
+    /// calling [`Self::publish_batch`] for each in turn: every batch is
+    /// appended once, in order, or the call fails.
+    ///
+    /// On failure the batches that were acknowledged stay acknowledged, and
+    /// the rest are in doubt together. Making the same call again re-sends
+    /// only those; a call may also start with the batches in doubt, in the
+    /// same order, and carry more after them. A call that starts with
+    /// anything else is refused without sending. The other
+    /// rules of [`Self::publish_batch`] apply unchanged, including that
+    /// cancelling the call stops the producer.
+    pub async fn publish_batches(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        batches: Vec<Vec<Vec<u8>>>,
+    ) -> Result<()> {
         let key = (
             tenant_id.to_string(),
             namespace.to_string(),
@@ -140,14 +168,23 @@ impl<'a> IdempotentProducer<'a> {
         // Held for the whole publish: the sequence is only meaningful if the
         // batches carrying consecutive numbers are sent in that order.
         let mut cursors = self.cursors.lock().await;
-        let sequence = match cursors.get(&key) {
-            None => 0,
-            Some(Cursor::Next(sequence)) => *sequence,
+        let mut batches = batches;
+        let (first, doubted) = match cursors.get(&key) {
+            None => (0, Vec::new()),
+            Some(Cursor::Next(sequence)) => (*sequence, Vec::new()),
             Some(Cursor::InDoubt {
                 sequence,
-                payloads: pending,
+                batches: pending,
+                settled,
             }) => {
-                if *pending != payloads {
+                // The same call again: what it already landed is not sent.
+                if !settled.is_empty()
+                    && batches.starts_with(settled)
+                    && starts_alike(&batches[settled.len()..], pending)
+                {
+                    batches.drain(..settled.len());
+                }
+                if !starts_alike(&batches, pending) {
                     anyhow::bail!(
                         "the last batch on this stream failed without a definite answer, so \
                          sequence {sequence} may already hold it. A different batch under that \
@@ -156,23 +193,40 @@ impl<'a> IdempotentProducer<'a> {
                          producer.",
                     );
                 }
-                *sequence
+                let overlap = pending.len().min(batches.len());
+                (*sequence, pending[overlap..].to_vec())
             }
             Some(Cursor::Ended(refused)) => {
                 return Err(refused.clone()).context("this producer was ended on the stream");
             }
         };
+        if batches.is_empty() {
+            return Ok(());
+        }
         // Armed across the send and disarmed the instant it answers: between
         // those two points the caller's future may be dropped, and that is the
         // window where the cursor and the broker can disagree.
         let cancelled = InDoubtOnCancel::armed(&self.in_doubt);
-        let result = self
-            .send(tenant_id, namespace, stream, &payloads, sequence, &key)
+        let (acked, result) = self
+            .send(tenant_id, namespace, stream, &batches, first, &key)
             .await;
         cancelled.disarm();
+        let settled = first + acked as u64;
         match result {
+            Ok(()) if doubted.is_empty() => {
+                cursors.insert(key, Cursor::Next(settled));
+                Ok(())
+            }
+            // A shorter call than the run in doubt settles its prefix only.
             Ok(()) => {
-                cursors.insert(key, Cursor::Next(sequence + 1));
+                cursors.insert(
+                    key,
+                    Cursor::InDoubt {
+                        sequence: settled,
+                        batches: doubted,
+                        settled: Vec::new(),
+                    },
+                );
                 Ok(())
             }
             Err(err) => {
@@ -185,7 +239,15 @@ impl<'a> IdempotentProducer<'a> {
                     {
                         Cursor::Ended(refused.clone())
                     }
-                    _ => Cursor::InDoubt { sequence, payloads },
+                    _ => {
+                        let mut unsettled = batches.split_off(acked);
+                        unsettled.extend(doubted);
+                        Cursor::InDoubt {
+                            sequence: settled,
+                            batches: unsettled,
+                            settled: batches,
+                        }
+                    }
                 };
                 cursors.insert(key, cursor);
                 Err(err)
@@ -193,30 +255,30 @@ impl<'a> IdempotentProducer<'a> {
         }
     }
 
-    /// One batch under one sequence, re-sent until answered or the policy
-    /// runs out. Only ever the same number: a re-send is safe *because* the
-    /// number did not move.
+    /// Batches under consecutive sequences from `first`, re-sent from the
+    /// first unanswered one until all are answered or the policy runs out.
+    /// Returns how many, from the first, were acknowledged. Only ever the
+    /// same numbers: a re-send is safe *because* the numbers did not move.
     async fn send(
         &self,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
-        payloads: &[Vec<u8>],
-        sequence: u64,
+        batches: &[Vec<Vec<u8>>],
+        first: u64,
         key: &(String, String, String),
-    ) -> Result<()> {
+    ) -> (usize, Result<()>) {
         match self.source {
             Source::Single(client) => {
-                self.send_via(
-                    client, tenant_id, namespace, stream, payloads, sequence, key,
-                )
-                .await
+                self.send_via(client, tenant_id, namespace, stream, batches, first, key)
+                    .await
             }
             Source::Cluster(cluster) => {
                 let started = std::time::Instant::now();
                 let policy = cluster.policy();
                 let mut last: Option<anyhow::Error> = None;
                 let mut retrying = Retrying::default();
+                let mut acked = 0;
                 // What the last failure asked for: `None` goes again at once
                 // through the entry broker, `Some` backs off at least that long.
                 let mut wait: Option<std::time::Duration> = None;
@@ -241,13 +303,20 @@ impl<'a> IdempotentProducer<'a> {
                         }
                     }
                     let client = cluster.client().await;
-                    let err = match self
+                    let (settled, result) = self
                         .send_via(
-                            &client, tenant_id, namespace, stream, payloads, sequence, key,
+                            &client,
+                            tenant_id,
+                            namespace,
+                            stream,
+                            &batches[acked..],
+                            first + acked as u64,
+                            key,
                         )
-                        .await
-                    {
-                        Ok(()) => return Ok(()),
+                        .await;
+                    acked += settled;
+                    let err = match result {
+                        Ok(()) => return (acked, Ok(())),
                         Err(err) => err,
                     };
                     // A leader remembered now was either used for this attempt
@@ -263,7 +332,7 @@ impl<'a> IdempotentProducer<'a> {
                     match retrying.next(&err, attempt) {
                         // A typed refusal or a fatal code is the broker's
                         // answer, and no other broker answers it differently.
-                        Next::Fail => return Err(err),
+                        Next::Fail => return (acked, Err(err)),
                         Next::Reroute => {
                             self.leaders.lock().await.remove(key);
                             wait = None;
@@ -272,14 +341,18 @@ impl<'a> IdempotentProducer<'a> {
                     }
                     last = Some(err);
                 }
-                Err(last
-                    .unwrap_or_else(|| anyhow::anyhow!("publish failed"))
-                    .context(format!(
-                        "gave up after {:?} and at most {} attempts; sequence {sequence} \
-                         was not advanced; re-send the same batch under it",
-                        started.elapsed(),
-                        policy.attempts.max(1),
-                    )))
+                let sequence = first + acked as u64;
+                (
+                    acked,
+                    Err(last
+                        .unwrap_or_else(|| anyhow::anyhow!("publish failed"))
+                        .context(format!(
+                            "gave up after {:?} and at most {} attempts; sequence {sequence} \
+                             was not advanced; re-send the same batch under it",
+                            started.elapsed(),
+                            policy.attempts.max(1),
+                        ))),
+                )
             }
         }
     }
@@ -293,23 +366,17 @@ impl<'a> IdempotentProducer<'a> {
         tenant_id: &str,
         namespace: &str,
         stream: &str,
-        payloads: &[Vec<u8>],
-        sequence: u64,
+        batches: &[Vec<Vec<u8>>],
+        first: u64,
         key: &(String, String, String),
-    ) -> Result<()> {
+    ) -> (usize, Result<()>) {
         let remembered = self.leaders.lock().await.get(key).cloned();
-        let first = match &remembered {
-            Some(leader) => {
-                self.publish_on(leader, tenant_id, namespace, stream, payloads, sequence)
-                    .await
-            }
-            None => {
-                self.publish_on(client, tenant_id, namespace, stream, payloads, sequence)
-                    .await
-            }
-        };
-        let err = match first {
-            Ok(()) => return Ok(()),
+        let target = remembered.as_deref().unwrap_or(client);
+        let (acked, first_result) = self
+            .publish_on(target, tenant_id, namespace, stream, batches, first)
+            .await;
+        let err = match first_result {
+            Ok(()) => return (acked, Ok(())),
             Err(err) => err,
         };
         let (node_id, addr) = match err.downcast_ref::<PublishRefused>() {
@@ -317,39 +384,55 @@ impl<'a> IdempotentProducer<'a> {
                 reason: PublishRefusalReason::NotLeader { node_id, addr },
                 ..
             }) => (node_id.clone(), addr.clone()),
-            _ => return Err(err),
+            _ => return (acked, Err(err)),
         };
+        let rest = &batches[acked..];
+        let next = first + acked as u64;
         // Only the leader holds the sequences, so the batch goes to it
         // rather than through a forward. One hop: a correct cluster needs
         // one, and a second refusal means the answer is moving.
         let Some(addr) = addr else {
-            return Err(err.context(format!(
-                "{node_id} leads the shard but its client address is not published, \
-                 so there is nowhere to send the batch"
-            )));
+            return (
+                acked,
+                Err(err.context(format!(
+                    "{node_id} leads the shard but its client address is not published, \
+                     so there is nowhere to send the batch"
+                ))),
+            );
         };
-        let addr: SocketAddr = addr
+        let addr: SocketAddr = match addr
             .parse()
-            .with_context(|| format!("the leader's address {addr:?} is not usable"))?;
+            .with_context(|| format!("the leader's address {addr:?} is not usable"))
+        {
+            Ok(addr) => addr,
+            Err(err) => return (acked, Err(err)),
+        };
         let leader: Arc<Client> = match self.source {
             Source::Single(_) => {
-                return Err(err.context(format!(
-                    "{node_id} at {addr} leads the shard; connect a client there, or use a \
-                     ClusterClient, which follows the refusal itself"
-                )));
+                return (
+                    acked,
+                    Err(err.context(format!(
+                        "{node_id} at {addr} leads the shard; connect a client there, or use a \
+                         ClusterClient, which follows the refusal itself"
+                    ))),
+                );
             }
-            Source::Cluster(cluster) => cluster
+            Source::Cluster(cluster) => match cluster
                 .connect_to(addr)
                 .await
-                .with_context(|| format!("connect to the shard's leader {node_id} at {addr}"))?,
+                .with_context(|| format!("connect to the shard's leader {node_id} at {addr}"))
+            {
+                Ok(leader) => leader,
+                Err(err) => return (acked, Err(err)),
+            },
         };
-        let result = self
-            .publish_on(&leader, tenant_id, namespace, stream, payloads, sequence)
+        let (more, result) = self
+            .publish_on(&leader, tenant_id, namespace, stream, rest, next)
             .await;
         if result.is_ok() {
             self.leaders.lock().await.insert(key.clone(), leader);
         }
-        result
+        (acked + more, result)
     }
 
     async fn publish_on(
@@ -358,22 +441,30 @@ impl<'a> IdempotentProducer<'a> {
         tenant_id: &str,
         namespace: &str,
         stream: &str,
-        payloads: &[Vec<u8>],
-        sequence: u64,
-    ) -> Result<()> {
-        client
-            .publisher()
-            .await?
-            .publish_idempotent_batch(
+        batches: &[Vec<Vec<u8>>],
+        first: u64,
+    ) -> (usize, Result<()>) {
+        let publisher = match client.publisher().await {
+            Ok(publisher) => publisher,
+            Err(err) => return (0, Err(err)),
+        };
+        publisher
+            .publish_idempotent_pipelined(
                 tenant_id,
                 namespace,
                 stream,
-                payloads.to_vec(),
+                batches,
                 self.producer_id,
-                sequence,
+                first,
             )
             .await
     }
+}
+
+/// True when the shorter of `a` and `b` is a prefix of the other.
+fn starts_alike(a: &[Vec<Vec<u8>>], b: &[Vec<Vec<u8>>]) -> bool {
+    let overlap = a.len().min(b.len());
+    a[..overlap] == b[..overlap]
 }
 
 /// Where a producer's batches go: one broker, or whichever a cluster client
@@ -387,11 +478,15 @@ enum Source<'a> {
 #[derive(Debug, Clone)]
 enum Cursor {
     Next(u64),
-    /// A batch went out under `sequence` and no answer said whether it
-    /// landed. Only the same batch may go out under it again.
+    /// Batches went out from `sequence` on and no answer said whether they
+    /// landed. Only the same batches, in the same order, may go out under
+    /// those numbers again.
     InDoubt {
         sequence: u64,
-        payloads: Vec<Vec<u8>>,
+        batches: Vec<Vec<Vec<u8>>>,
+        /// The batches of the failing call that were acknowledged, so the
+        /// same call made again re-sends only the rest.
+        settled: Vec<Vec<Vec<u8>>>,
     },
     Ended(PublishRefused),
 }

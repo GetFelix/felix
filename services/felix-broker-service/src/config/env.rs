@@ -213,6 +213,10 @@ impl BrokerConfig {
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_PUB_CONN_INFLIGHT_BYTES);
+        let publish_window = std::env::var("FELIX_BROKER_PUBLISH_WINDOW")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(DEFAULT_PUBLISH_WINDOW);
         let pub_ingress_wait = std::env::var("FELIX_PUB_INGRESS_WAIT")
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
@@ -357,6 +361,7 @@ impl BrokerConfig {
             pub_queue_depth,
             pub_inflight_bytes,
             pub_conn_inflight_bytes,
+            publish_window,
             pub_ingress_wait,
             core_shards,
             subscriber_queue_capacity,

@@ -1077,6 +1077,18 @@ export FELIX_BROKER_PUBLISH_INFLIGHT_BYTES="67108864"
 export FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES="16777216"
 ```
 
+### `FELIX_BROKER_PUBLISH_WINDOW`
+
+**Description**: The most acknowledged publishes one connection may have unanswered when its client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker grants this number in `AuthOk.publish_window`, answers a pipelining stream's publishes in the order it sent them, and stops reading that connection's publishes while this many are outstanding. `0` turns pipelining off: no client is granted a window, and acks come back in completion order.
+
+**Type**: Non-negative integer
+
+**Default**: `256`
+
+```bash
+export FELIX_BROKER_PUBLISH_WINDOW="256"
+```
+
 ### `FELIX_PUB_INGRESS_WAIT`
 
 **Description**: When enabled, un-acked (fire-and-forget) publishes wait — bounded by `FELIX_PUBLISH_QUEUE_WAIT_MS` — for ingress capacity instead of being shed when the publish queue or byte budget is full. Backpressure then propagates through QUIC flow control to the publisher. Leave off in production for visible shedding under overload; turn on for lossless pipelines and sustainable-throughput benchmarking.

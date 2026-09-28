@@ -168,6 +168,23 @@ pub const FEATURE_UNSUPPORTED: u32 = 0x0000_2000;
 /// checked.
 pub const FEATURE_SEQUENCE_REUSED: u32 = 0x0000_4000;
 
+/// Acknowledged publishes on a stream are pipelined: the client may have
+/// several unanswered, and the broker answers them in the order the stream
+/// carried them.
+///
+/// Offered by a *client*; a broker that grants it answers `publish_window`
+/// in `AuthOk`, the most acknowledged publishes one connection may have
+/// unanswered across all its streams. The broker stops reading a
+/// connection's publishes while that many are outstanding, so a client that
+/// sends more is slowed by flow control rather than refused. Without the
+/// bit, answers come in completion order and the request id is the only
+/// correlation, as before.
+///
+/// The order is what an idempotent producer needs to keep several batches in
+/// flight: when one fails, every batch behind it on the stream is answered
+/// after it, so the producer learns about the failure before it acts on any
+/// later answer.
+pub const FEATURE_PUBLISH_PIPELINE: u32 = 0x0000_8000;
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -183,7 +200,8 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_ERROR_CODES
     | FEATURE_SHARD_MOVED
     | FEATURE_UNSUPPORTED
-    | FEATURE_SEQUENCE_REUSED;
+    | FEATURE_SEQUENCE_REUSED
+    | FEATURE_PUBLISH_PIPELINE;
 
 /// True if `features` advertises `feature`.
 pub fn supports_feature(features: u32, feature: u32) -> bool {

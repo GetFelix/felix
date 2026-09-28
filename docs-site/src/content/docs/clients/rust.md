@@ -393,6 +393,26 @@ producer
     .await?;
 ```
 
+One call at a time waits a round trip per batch. `publish_batches` sends several
+batches in one call and keeps up to a window of them unanswered at once, under
+consecutive sequences:
+
+```rust
+let batches: Vec<Vec<Vec<u8>>> = orders.iter().map(|order| vec![order.encode()]).collect();
+producer.publish_batches("acme", "prod", "orders", batches).await?;
+```
+
+The window is whatever the broker granted the connection
+(`FELIX_BROKER_PUBLISH_WINDOW`, 256 by default), capped at 64 because the leader
+remembers 64 sequences per producer. The broker answers a pipelining stream in
+the order it sent the batches, so when one fails the producer knows it is the
+earliest failure; it and every batch behind it are in doubt, and a
+`ClusterClient` producer re-sends them, in order, under the same sequences until
+they land. If the call still fails, make **the same call again**: the batches
+that were acknowledged are skipped and only the ones in doubt go out. Against a
+broker that grants no window the call sends one batch at a time, with the same
+result.
+
 The sequence is the mechanism, so the failures are about the sequence and are
 worth branching on:
 

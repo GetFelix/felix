@@ -411,19 +411,30 @@ fn spawn_publish_worker(
     note_connection(worker_connections, lease.connection());
     let (tx, rx) = mpsc::channel(publish_queue_depth);
     let max_frame_bytes = runtime_config.max_frame_bytes;
+    let window =
+        (negotiated.publish_window > 0).then(|| lease.publish_window(negotiated.publish_window));
     // Not colocated with the transport drivers (unlike the subscription read
     // pump): publisher writers block in `write_all` against a full send
     // window, and parking them on the I/O thread starves the drivers they
     // wait on (measured 5x throughput loss).
     let handle = tokio::spawn(async move {
         let _lease = lease;
-        run_publisher_writer_with_limit(send, recv, rx, publish_chunk_bytes, max_frame_bytes).await
+        run_publisher_writer_with_limit(
+            send,
+            recv,
+            rx,
+            publish_chunk_bytes,
+            max_frame_bytes,
+            window,
+        )
+        .await
     });
     PublishWorker {
         tx,
         handle: tokio::sync::Mutex::new(Some(handle)),
         request_counter: AtomicU64::new(1),
         server_flags: negotiated.server_flags,
+        publish_window: negotiated.publish_window,
     }
 }
 

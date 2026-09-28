@@ -67,6 +67,18 @@ pub(super) async fn authenticate(
             // frame the client cannot parse, and an undecodable
             // frame costs the connection.
             session.peer_features = client_features.unwrap_or(0);
+            // A window only for a client that asked and can read the answer:
+            // any other client keeps completion-order acks and its old frame.
+            let publish_window = (client_flags.is_some()
+                && felix_wire::supports_feature(
+                    session.peer_features,
+                    felix_wire::FEATURE_PUBLISH_PIPELINE,
+                )
+                && publish_ctx.publish_window.is_some())
+            .then_some(config.publish_window);
+            if publish_window.is_some() {
+                session.ack_order.enable();
+            }
             // Advertise our flag set only to a client that offered its
             // own. A client that sent no `client_flags` predates
             // negotiation and would not understand `AuthOk`, so it must
@@ -152,7 +164,11 @@ pub(super) async fn authenticate(
                             | felix_wire::FEATURE_UNSUPPORTED
                             // A reused sequence is refused, not answered as a
                             // duplicate, for a client that offered the bit.
-                            | felix_wire::FEATURE_SEQUENCE_REUSED,
+                            | felix_wire::FEATURE_SEQUENCE_REUSED
+                            | match publish_ctx.publish_window {
+                                Some(_) => felix_wire::FEATURE_PUBLISH_PIPELINE,
+                                None => 0,
+                            },
                     ),
                     // Only when there is more than one. A single
                     // listener is the default, and saying so
@@ -161,6 +177,7 @@ pub(super) async fn authenticate(
                     // nothing a client does not already know.
                     listener_ports: (config.quic_listeners > 1)
                         .then(|| config.quic_binds().iter().map(|a| a.port()).collect()),
+                    publish_window,
                 },
                 None => Message::Ok,
             };

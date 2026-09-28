@@ -152,6 +152,7 @@ async fn serve_stream(
                     server_flags: felix_wire::KNOWN_FLAGS,
                     server_features: Some(felix_wire::FEATURE_ERROR_CODES),
                     listener_ports: None,
+                    publish_window: None,
                 };
                 write_message(&mut send, answer).await?;
             }

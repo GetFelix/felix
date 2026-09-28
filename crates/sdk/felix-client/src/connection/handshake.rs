@@ -109,6 +109,9 @@ pub(crate) struct Negotiated {
     /// reported more than one. Empty otherwise, which is the same instruction:
     /// keep using the address already dialled.
     pub(crate) listener_ports: Vec<u16>,
+    /// How many acknowledged publishes the connection may have unanswered,
+    /// with answers in request order. `0` when the broker does not pipeline.
+    pub(crate) publish_window: u32,
 }
 
 /// The broker refused a stream's credentials.
@@ -151,6 +154,7 @@ async fn authenticate_stream(
             server_flags,
             server_features,
             listener_ports,
+            publish_window,
         }) => Ok(Negotiated {
             server_flags,
             // Absent means a broker that predates features. It implements none:
@@ -158,12 +162,23 @@ async fn authenticate_stream(
             // loop, so a client that guessed would cost itself the connection.
             server_features: server_features.unwrap_or(0),
             listener_ports: listener_ports.unwrap_or_default(),
+            // Only meaningful with the feature bit; a window without it would
+            // be a broker promising an order it never agreed to.
+            publish_window: publish_window
+                .filter(|_| {
+                    felix_wire::supports_feature(
+                        server_features.unwrap_or(0),
+                        felix_wire::FEATURE_PUBLISH_PIPELINE,
+                    )
+                })
+                .unwrap_or(0),
         }),
         // Legacy broker: no advertisement, so assume only the original bits.
         Some(Message::Ok) => Ok(Negotiated {
             server_flags: felix_wire::ORIGINAL_V1_FLAGS,
             server_features: 0,
             listener_ports: Vec::new(),
+            publish_window: 0,
         }),
         Some(Message::Error {
             message,

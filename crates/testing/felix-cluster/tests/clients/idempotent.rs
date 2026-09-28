@@ -553,3 +553,70 @@ async fn a_producer_publishing_through_its_leaders_death_loses_and_repeats_nothi
     cluster.shutdown().await;
     Ok(())
 }
+
+/// **A pipelining producer loses and repeats nothing through its leader's
+/// death.** Each call keeps a window of batches unanswered, so the kill lands
+/// with several in flight; the producer re-sends from the first unanswered
+/// one until the promoted leader answers, and every record is on the stream
+/// exactly once, in order.
+#[tokio::test]
+#[serial]
+async fn a_pipelining_producer_loses_and_repeats_nothing_through_its_leaders_death() -> Result<()> {
+    const CALLS: u32 = 300;
+    const BATCHES: u32 = 50;
+    let mut cluster = Cluster::start(config()).await?;
+    let owner = cluster.owner(STREAM).await?;
+    let cluster_client = client::connect_cluster(
+        &cluster.broker_addrs(),
+        &cluster.tenant_id,
+        &cluster.client_token,
+    )
+    .await?;
+    let producer = cluster_client.idempotent_producer().await?;
+    let tenant = cluster.tenant_id.clone();
+    let namespace = cluster.namespace.clone();
+    let calls_done = std::sync::atomic::AtomicU32::new(0);
+    let record = |call: u32, n: u32| format!("record-{call}-{n}").into_bytes();
+
+    let publishing = async {
+        for call in 0..CALLS {
+            let batches = (0..BATCHES).map(|n| vec![record(call, n)]).collect();
+            producer
+                .publish_batches(&tenant, &namespace, STREAM, batches)
+                .await
+                .with_context(|| format!("publish call {call}"))?;
+            calls_done.store(call + 1, std::sync::atomic::Ordering::Release);
+        }
+        anyhow::Ok(())
+    };
+    let failing_over = async {
+        felix_cluster::wait::until(Duration::from_secs(30), "some calls acked", || async {
+            calls_done.load(std::sync::atomic::Ordering::Acquire) >= 3
+        })
+        .await?;
+        cluster.kill_node(&owner)?;
+        felix_cluster::wait::until_some(Duration::from_secs(30), "a new leader", || async {
+            cluster.place_shards().await;
+            cluster
+                .owner(STREAM)
+                .await
+                .ok()
+                .filter(|leader| leader != &owner)
+        })
+        .await
+    };
+    let (published, new_owner) = tokio::join!(publishing, failing_over);
+    published?;
+    let new_owner = new_owner?;
+
+    let expected: Vec<Vec<u8>> = (0..CALLS)
+        .flat_map(|call| (0..BATCHES).map(move |n| record(call, n)))
+        .collect();
+    let records = replay(&cluster, &new_owner, expected.len()).await?;
+    assert_eq!(
+        records, expected,
+        "a record was lost, repeated, or reordered"
+    );
+    cluster.shutdown().await;
+    Ok(())
+}

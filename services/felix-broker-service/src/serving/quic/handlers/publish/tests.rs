@@ -82,6 +82,7 @@ pub(super) fn context_with(scheduler: Arc<PublishScheduler>) -> PublishContext {
             &crate::config::BrokerConfig::default(),
         )),
         tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
+        publish_window: None,
     }
 }
 

@@ -129,6 +129,7 @@ pub(crate) fn build_tracked_publish_context(
         preauth: Arc::new(PreAuthGate::new(config)),
         // The accept loop swaps in the broker-wide instance.
         tenant_rates: Arc::new(crate::serving::limits::TenantRates::new(&config.limits)),
+        publish_window: None,
     }
 }
 
@@ -174,9 +175,9 @@ impl LaneWork {
                 }
             }
             PublishTarget::Resolved { .. } => self.publish_in_memory(job, held, lane).await,
-            // Held for the whole write: the sequence check and the append are
-            // one ordered step, and that can include a flush, so it runs off
-            // the executor.
+            // Held for the sequence check and the append, which are one
+            // ordered step and can wait on a rollover, so it runs off the
+            // executor. The flush is not ordered and does not hold the lane.
             PublishTarget::Idempotent { .. } => {
                 let this = Arc::clone(self);
                 self.work
@@ -409,23 +410,28 @@ impl LaneWork {
             shard.as_ref(),
             *generation,
         ) {
-            Err(refused) => Err(refused.into()),
+            Err(refused) => {
+                drop(lane);
+                Err(refused.into())
+            }
             Ok(fenced) => {
-                let published = self
+                // Only the check and the claim are ordered. Once claimed the
+                // log answers the sequence as held, so the producer's next
+                // batch goes on without waiting for this one's flush, and
+                // group commit can take several of them at once.
+                let claimed = self
                     .broker
-                    .publish_batch_idempotent(
-                        handle,
-                        *producer_id,
-                        *sequence,
-                        &job.payloads,
-                        *reuse,
-                    )
+                    .claim_batch_idempotent(handle, *producer_id, *sequence, &job.payloads, *reuse)
                     .await;
+                drop(lane);
+                let published = match claimed {
+                    Ok(claimed) => self.broker.complete_idempotent(claimed).await,
+                    Err(err) => Err(err),
+                };
                 drop(fenced);
                 published.map_err(anyhow::Error::from)
             }
         };
-        drop(lane);
         let result = match published {
             // A duplicate waits on the same quorum the original did: its
             // offsets are the original's, and the answer must mean the same

@@ -170,6 +170,9 @@ impl BrokerConfig {
         {
             config.pub_conn_inflight_bytes = value;
         }
+        if let Some(value) = override_cfg.publish_window {
+            config.publish_window = value;
+        }
         if let Some(value) = override_cfg.pub_ingress_wait {
             config.pub_ingress_wait = value;
         }
@@ -279,6 +282,7 @@ pub(super) struct BrokerConfigOverride {
     pub_queue_depth: Option<usize>,
     pub_inflight_bytes: Option<usize>,
     pub_conn_inflight_bytes: Option<usize>,
+    publish_window: Option<u32>,
     pub_ingress_wait: Option<bool>,
     core_shards: Option<usize>,
     subscriber_queue_capacity: Option<usize>,

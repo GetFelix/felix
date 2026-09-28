@@ -179,7 +179,7 @@ changed from the old fixed worker pool is how work reaches them: see step 3.
    |---|---|---|
    | Durable publish | fence check, `claim_publish` (offsets taken) | device flush, fanout, quorum wait, the answer |
    | Ephemeral publish | fence check, `publish_batch_with_outcome` | quorum wait, the answer |
-   | Idempotent publish | the whole write (sequence check and append), off the executor | quorum wait, the answer |
+   | Idempotent publish | sequence check and append (offsets taken), off the executor | device flush, quorum wait, the answer |
    | Forward | the whole round trip, off the executor | — |
 
    A durable shard may have `pub_flush_concurrency` flushes outstanding;

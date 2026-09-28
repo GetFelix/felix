@@ -250,10 +250,32 @@ impl Broker {
         payloads: &[Bytes],
         reuse: SequenceReuse,
     ) -> Result<IdempotentOutcome> {
+        let claimed = self
+            .claim_batch_idempotent(handle, producer_id, sequence, payloads, reuse)
+            .await?;
+        self.complete_idempotent(claimed).await
+    }
+
+    /// The ordered half of [`Self::publish_batch_idempotent`]: the sequence
+    /// check and, when the batch is new, the append that takes its offsets.
+    ///
+    /// Once this returns, the log answers the batch's sequence as held, so the
+    /// producer's next batch can be checked and claimed without waiting for
+    /// this one's flush. [`Self::complete_idempotent`] does the rest, and the
+    /// commit sequencer keeps its answer behind every earlier claim's.
+    pub async fn claim_batch_idempotent(
+        &self,
+        handle: &StreamHandle,
+        producer_id: u64,
+        sequence: u64,
+        payloads: &[Bytes],
+        reuse: SequenceReuse,
+    ) -> Result<IdempotentClaim> {
         let Some(log) = &handle.state.durable else {
             return self
                 .publish_idempotent_in_memory(handle, producer_id, sequence, payloads, reuse)
-                .await;
+                .await
+                .map(IdempotentClaim::Done);
         };
         // The turn serialises this producer's batches, so two re-sends of one
         // sequence cannot both find it unwritten. Held across the append for
@@ -268,16 +290,10 @@ impl Broker {
                     digest,
                 } => {
                     reuse.check(sequence, digest, payloads)?;
-                    // Its writer may have been cancelled before waiting, or
-                    // be a leader that is gone: vouch for it only once it is
-                    // as durable here as a fresh append would be.
-                    log.wait_durable(last + 1).await?;
-                    return Ok(IdempotentOutcome {
-                        outcome: PublishOutcome {
-                            subscribers: 0,
-                            offsets: Some((first, last)),
-                        },
-                        duplicate: true,
+                    return Ok(IdempotentClaim::Held {
+                        handle: handle.clone(),
+                        first,
+                        last,
                     });
                 }
                 ProducerSequence::Unknown if sequence != 0 => {
@@ -290,10 +306,9 @@ impl Broker {
                         .claim(handle, payloads, Append::Marked(&marks))
                         .await?
                         .expect("a marked append always claims");
-                    let outcome = self.complete_publish(claimed).await?;
-                    return Ok(IdempotentOutcome {
-                        outcome,
-                        duplicate: false,
+                    return Ok(IdempotentClaim::Appended {
+                        claimed,
+                        offsets: None,
                     });
                 }
                 // The log holds the start of this batch and nothing after it:
@@ -323,13 +338,9 @@ impl Broker {
                         // so it can no longer be finished; ask again.
                         continue;
                     };
-                    let outcome = self.complete_publish(claimed).await?;
-                    return Ok(IdempotentOutcome {
-                        outcome: PublishOutcome {
-                            subscribers: outcome.subscribers,
-                            offsets: Some((first, first + u64::from(len) - 1)),
-                        },
-                        duplicate: false,
+                    return Ok(IdempotentClaim::Appended {
+                        claimed,
+                        offsets: Some((first, first + u64::from(len) - 1)),
                     });
                 }
                 ProducerSequence::Gap { expected } => {
@@ -338,6 +349,44 @@ impl Broker {
                 ProducerSequence::Expired => {
                     return Err(BrokerError::SequenceExpired { sequence });
                 }
+            }
+        }
+    }
+
+    /// Finish what [`Self::claim_batch_idempotent`] started: wait for the
+    /// batch to be as durable as a fresh append would be, and fan it out if
+    /// it is new.
+    pub async fn complete_idempotent(&self, claimed: IdempotentClaim) -> Result<IdempotentOutcome> {
+        match claimed {
+            IdempotentClaim::Done(outcome) => Ok(outcome),
+            IdempotentClaim::Held {
+                handle,
+                first,
+                last,
+            } => {
+                // Its writer may have been cancelled before waiting, or be a
+                // leader that is gone: vouch for it only once it is as
+                // durable here as a fresh append would be.
+                if let Some(log) = &handle.state.durable {
+                    log.wait_durable(last + 1).await?;
+                }
+                Ok(IdempotentOutcome {
+                    outcome: PublishOutcome {
+                        subscribers: 0,
+                        offsets: Some((first, last)),
+                    },
+                    duplicate: true,
+                })
+            }
+            IdempotentClaim::Appended { claimed, offsets } => {
+                let outcome = self.complete_publish(claimed).await?;
+                Ok(IdempotentOutcome {
+                    outcome: PublishOutcome {
+                        subscribers: outcome.subscribers,
+                        offsets: offsets.or(outcome.offsets),
+                    },
+                    duplicate: false,
+                })
             }
         }
     }
@@ -411,6 +460,25 @@ pub struct PublishOutcome {
 /// range so later publishes are not stranded, but the offsets it consumed are
 /// gone either way; once [`Broker::complete_publish`] has started, the batch
 /// finishes even if its caller goes away.
+/// An idempotent batch whose sequence has been checked and, if it was new,
+/// whose offsets are taken. See [`Broker::claim_batch_idempotent`].
+pub enum IdempotentClaim {
+    /// Answered already: a stream with no log decides in one step.
+    Done(IdempotentOutcome),
+    /// The log already holds it at these offsets.
+    Held {
+        handle: StreamHandle,
+        first: u64,
+        last: u64,
+    },
+    /// Appended here; `offsets` overrides the claim's own when the batch
+    /// finished one a stopped leader had started.
+    Appended {
+        claimed: ClaimedPublish,
+        offsets: Option<(u64, u64)>,
+    },
+}
+
 pub struct ClaimedPublish {
     handle: StreamHandle,
     payloads: Vec<Bytes>,

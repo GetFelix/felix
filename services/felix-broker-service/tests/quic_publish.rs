@@ -1233,3 +1233,6 @@ async fn a_reused_sequence_is_refused_over_json_only_when_negotiated() -> Result
     server_task.abort();
     Ok(())
 }
+
+#[path = "quic_publish/pipeline.rs"]
+mod pipeline;

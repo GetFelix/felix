@@ -24,6 +24,7 @@ mod end_to_end;
 mod error_codes;
 mod frame_source;
 mod idempotent_producer;
+mod pipeline;
 mod uni;
 mod writer;
 
@@ -237,6 +238,7 @@ async fn build_publish_context(broker: Arc<Broker>) -> PublishContext {
             &crate::config::BrokerConfig::default(),
         )),
         tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
+        publish_window: None,
     }
 }
 
@@ -328,6 +330,7 @@ async fn run_control_loop_with_codes(
         Duration::from_millis(10),
         &mut scratch,
         error_codes,
+        Default::default(),
     )
     .await?;
 

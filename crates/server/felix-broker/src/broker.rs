@@ -18,7 +18,8 @@ mod subscribe;
 pub use backup::CommittedOffsets;
 pub use metadata::{CacheMetadata, ConsistencyLevel, StreamMetadata};
 pub use publish::{
-    ClaimedPublish, IdempotentOutcome, PublishOutcome, RECORD_SEQUENCE_WRAP, SequenceReuse,
+    ClaimedPublish, IdempotentClaim, IdempotentOutcome, PublishOutcome, RECORD_SEQUENCE_WRAP,
+    SequenceReuse,
 };
 pub use shard_logs::LogKind;
 pub use shards::StreamHandle;

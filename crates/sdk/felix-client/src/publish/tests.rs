@@ -52,6 +52,7 @@ pub(super) fn make_publisher(sharding: PublishSharding, workers: usize) -> Publi
             handle: tokio::sync::Mutex::new(Some(handle)),
             request_counter: AtomicU64::new(1),
             server_flags: felix_wire::KNOWN_FLAGS,
+            publish_window: 0,
         });
     }
     Publisher {

@@ -5,8 +5,10 @@
 //! `ClusterClient`, which should resume, and once through a plain `Client`,
 //! which has nowhere to resume to and must report the loss. A publish step runs
 //! through `ClusterClient` only, since a plain `Client` cannot reconnect and
-//! "publishes again afterwards" is part of the bar. They all run at once, each
-//! on a stream and an interposer of its own.
+//! "publishes again afterwards" is part of the bar; it runs a second time with
+//! an idempotent producer pipelining its batches, which must land every record
+//! exactly once. They all run at once, each on a stream and an interposer of
+//! its own.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -38,7 +40,14 @@ const SETTLE: Duration = Duration::from_secs(45);
 enum Via {
     Cluster,
     Plain,
+    /// An idempotent producer on `ClusterClient`, with a window of batches in
+    /// flight when the fault lands.
+    Pipelined,
 }
+
+/// One-record batches per call in a pipelined publish case: enough that a
+/// window's worth is unanswered when the fault lands.
+const PIPELINED_BATCHES: usize = 32;
 
 pub(crate) async fn run_link_faults(
     broker: &Arc<Broker>,
@@ -54,7 +63,7 @@ pub(crate) async fn run_link_faults(
     let mut runs = JoinSet::new();
     for (index, case) in cases.into_iter().enumerate() {
         let vias: &[Via] = match case.step.during {
-            Phase::Publish => &[Via::Cluster],
+            Phase::Publish => &[Via::Cluster, Via::Pipelined],
             Phase::Subscribe => &[Via::Cluster, Via::Plain],
         };
         for (n, via) in vias.iter().enumerate() {
@@ -108,6 +117,9 @@ async fn run_case(
     let link = Interposer::start(broker_addr).await?;
     let direct = Client::connect(broker_addr, "localhost", config.clone()).await?;
     match case.step.during {
+        Phase::Publish if matches!(via, Via::Pipelined) => {
+            pipelined_case(case, &link, &direct, stream, config).await
+        }
         Phase::Publish => publish_case(case, &link, &direct, stream, config).await,
         Phase::Subscribe => subscribe_case(case, via, &link, &direct, stream, config).await,
     }
@@ -205,6 +217,79 @@ async fn publish_case(
     })
 }
 
+/// The publish step with pipelining on: an idempotent producer sends each
+/// step's records as a call of one-record batches, several unanswered at
+/// once, and re-makes a failed call until it lands. The bar is higher than
+/// for a plain publish: every record lands exactly once, in order.
+async fn pipelined_case(
+    case: &FaultScenario,
+    link: &Interposer,
+    direct: &Client,
+    stream: &str,
+    config: ClientConfig,
+) -> Result<&'static str> {
+    let step = &case.step;
+    let hold = Duration::from_millis(step.hold_ms);
+    let cluster = ClusterClient::connect(&[link.addr()], "localhost", config).await?;
+    let producer = cluster.idempotent_producer().await?;
+    let mut published = Vec::new();
+    let mut errors = 0;
+    for index in 0..step.records {
+        if index == step.after_records {
+            link.inject(step.fault, hold);
+        }
+        let batches: Vec<Vec<Vec<u8>>> = (0..PIPELINED_BATCHES)
+            .map(|n| vec![format!("{}-{index}-{n}", case.id).into_bytes()])
+            .collect();
+        let deadline = Instant::now() + hold + SETTLE;
+        loop {
+            let publish = producer.publish_batches(TENANT, NAMESPACE, stream, batches.clone());
+            match timeout(hold + SETTLE, publish).await {
+                Err(_) => bail!("pipelined call {index} neither returned nor failed"),
+                Ok(Ok(())) => break,
+                Ok(Err(err)) if step.fault == LinkFault::Stall => {
+                    bail!("pipelined call {index} failed during a stall: {err:#}")
+                }
+                Ok(Err(err)) if Instant::now() >= deadline => {
+                    bail!("pipelined call {index} never landed after the fault: {err:#}")
+                }
+                // The contract: the same call again re-sends what is in doubt.
+                Ok(Err(_)) => {
+                    errors += 1;
+                    tokio::time::sleep(POLL).await;
+                }
+            }
+        }
+        published.extend(batches.into_iter().flatten());
+    }
+
+    let mut check = direct
+        .subscribe_from(TENANT, NAMESPACE, stream, Some(StartPosition::Earliest))
+        .await?;
+    let mut stored = Vec::with_capacity(published.len());
+    while stored.len() < published.len() {
+        let event = timeout(SETTLE, check.next_event())
+            .await
+            .context("read-back stalled")??
+            .ok_or_else(|| anyhow!("read-back ended early"))?;
+        stored.push(event.payload.to_vec());
+    }
+    if let Ok(Ok(Some(extra))) = timeout(POLL, check.next_event()).await {
+        bail!(
+            "a record landed twice: {:?}",
+            String::from_utf8_lossy(&extra.payload)
+        );
+    }
+    if stored != published {
+        bail!("records were lost, repeated or reordered");
+    }
+    Ok(if errors == 0 {
+        "every pipelined batch landed once"
+    } else {
+        "re-sent what was in doubt; every batch landed once"
+    })
+}
+
 /// Either kind of subscription, read the same way.
 enum Reader {
     Cluster(ClusterSubscription),
@@ -238,7 +323,7 @@ async fn subscribe_case(
             let subscription = cluster.subscribe(TENANT, NAMESPACE, stream).await?;
             (Some(cluster), None, Reader::Cluster(subscription))
         }
-        Via::Plain => {
+        Via::Plain | Via::Pipelined => {
             let client = Client::connect(link.addr(), "localhost", config).await?;
             let subscription = client.subscribe(TENANT, NAMESPACE, stream).await?;
             (None, Some(client), Reader::Plain(subscription))

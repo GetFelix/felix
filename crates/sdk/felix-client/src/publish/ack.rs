@@ -1,10 +1,11 @@
 //! Reading the broker's answers to acked publishes.
 //!
 //! An acked publish (`AckMode` other than `None`) always carries a
-//! `request_id`. The broker answers each as it completes, so on a stream
-//! carrying several a `Quorum` or forwarded publish can be answered after one
-//! written behind it; the id, not the position, says which request an answer
-//! is for.
+//! `request_id`. A broker that granted a publish window answers a stream's
+//! publishes in the order it carried them; any other broker answers each as it
+//! completes, so a `Quorum` or forwarded publish can be answered after one
+//! written behind it. Either way the id, not the position, says which request
+//! an answer is for.
 
 use anyhow::{Context, Result};
 use bytes::BytesMut;

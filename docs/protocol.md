@@ -521,6 +521,10 @@ field of `detail` is optional. See [Error codes](#error-codes).
   [durable storage](durable-storage.md#resuming-a-subscription).
 - Publish returns `ok` when accepted by the broker unless `ack` is `none`.
 - PublishBatch returns `ok` once for the batch unless `ack` is `none`.
+- A stream may carry several acked publishes before any is answered. Answers
+  come back in completion order, matched by `request_id`, unless the client
+  negotiated [pipelining](#pipelined-publishes), in which case they come back
+  in the order the stream carried the publishes.
 - CachePut returns `ok` when stored (TTL is optional).
 - CacheGet returns `cache_value` with `null` when missing/expired.
 - CacheDelete returns `cache_value` carrying whatever was removed, and `null`
@@ -628,6 +632,57 @@ leader too.
 
 The id is 64 random bits, chosen by the broker, so producers from different
 brokers and across a restart cannot collide with each other's sequences.
+
+### Pipelined publishes
+
+A client that offers `FEATURE_PUBLISH_PIPELINE` in `auth` may be granted a
+publish window, answered in `auth_ok`:
+
+```json
+{"type":"auth_ok","server_flags":2047,"server_features":65060,"publish_window":256}
+```
+
+The grant is two promises about every acked publish on that connection —
+`publish` or `publish_batch` with a `request_id` and an ack, any binary frame
+with `FLAG_BINARY_PUBLISH_ACKED`, and every `publish_idempotent`:
+
+- **Answers keep request order per stream.** The broker holds an answer back
+  until every publish the stream carried before it has been answered. Nothing
+  else changes: each publish gets the answer it would have got, only later.
+  Other responses on the stream (`cache_value`, `subscribed`, and so on) are
+  not held back.
+- **At most `publish_window` are unanswered per connection**, across all its
+  streams. At that depth the broker stops reading the connection's publishes
+  until an answer is written. A client that sends more is slowed by QUIC flow
+  control, not refused; the frames wait in the transport rather than in the
+  tenant's share of the publish queue, which is what keeps a pipelining client
+  to its fair share.
+
+`publish_window` is present only when the client offered the bit and the broker
+grants it; a broker configured with `publish_window = 0`
+(`FELIX_BROKER_PUBLISH_WINDOW=0`) neither advertises the bit nor grants a
+window. A client that did not offer it, and one that predates negotiation, get
+exactly the frames they always got: completion-order answers and no window. A
+client reads a window without the bit as no window.
+
+It is a feature bit rather than a frame flag because no payload changes shape:
+the same frames go both ways, and only their timing and order differ.
+
+A broker that loses an answer it owes a pipelining stream would hold every
+answer behind it forever. Every publish is answered within its enqueue wait
+plus its ack wait, so a broker whose oldest held answer is overdue by twice
+that closes the stream instead; the client sees the stream fail and every
+unanswered publish on it as failed.
+
+**Why the order matters to an idempotent producer.** With answers in request
+order, the first failure a producer reads is the earliest one, never a
+consequence of it: a batch refused with `sequence_gap` because the batch before
+it failed is answered after that failure, not before. So a producer can keep
+several batches unanswered and, when one fails, treat it and everything behind
+it as in doubt and re-send them in order under the same sequences — the leader
+answers the ones it already holds from memory and appends the rest. The Rust
+client keeps at most 64 in flight, since the leader remembers 64 sequences per
+producer and a re-send has to find its batch remembered.
 
 ## Protocol Flows (v1)
 
@@ -958,6 +1013,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x1000` | `FEATURE_SHARD_MOVED` | The client reads `shard_moved` at the end of an event stream |
 | `0x2000` | `FEATURE_UNSUPPORTED` | The peer answers an unknown request with `unsupported` (see below) |
 | `0x4000` | `FEATURE_SEQUENCE_REUSED` | The client reads `publish_refused` with `sequence_reused`; see [idempotent producers](#idempotent-producers) |
+| `0x8000` | `FEATURE_PUBLISH_PIPELINE` | The client pipelines acked publishes; the broker grants a `publish_window` and answers each stream's publishes in request order. See [pipelined publishes](#pipelined-publishes) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:

@@ -85,6 +85,7 @@ async fn answer(mut send: quinn::SendStream, mut recv: quinn::RecvStream) -> Res
                 server_flags: felix_wire::KNOWN_FLAGS,
                 server_features: Some(0),
                 listener_ports: None,
+                publish_window: None,
             },
             _ => Message::Ok,
         };

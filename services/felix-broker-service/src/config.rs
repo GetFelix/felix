@@ -179,6 +179,11 @@ pub struct BrokerConfig {
     /// process-wide `pub_inflight_bytes` budget a single connection can occupy at once, so one
     /// connection can't starve every other connection's publishes under load.
     pub pub_conn_inflight_bytes: usize,
+    /// Most acknowledged publishes one connection may have unanswered when its
+    /// client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker stops
+    /// reading that connection's publishes at this depth. `0` refuses to
+    /// pipeline, and every client gets completion-order acks.
+    pub publish_window: u32,
     /// If true, un-acked publishes wait (bounded) for ingress capacity instead of shedding.
     /// Off by default: fire-and-forget load should shed visibly under overload.
     pub pub_ingress_wait: bool,
@@ -366,6 +371,7 @@ impl Default for BrokerConfig {
             pub_queue_depth: DEFAULT_PUB_QUEUE_DEPTH,
             pub_inflight_bytes: DEFAULT_PUB_INFLIGHT_BYTES,
             pub_conn_inflight_bytes: DEFAULT_PUB_CONN_INFLIGHT_BYTES,
+            publish_window: DEFAULT_PUBLISH_WINDOW,
             pub_ingress_wait: false,
             core_shards: 0,
             subscriber_queue_capacity: DEFAULT_SUBSCRIBER_QUEUE_CAPACITY,

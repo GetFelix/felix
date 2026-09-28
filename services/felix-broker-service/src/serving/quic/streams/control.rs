@@ -61,7 +61,7 @@ use crate::observability::timings;
 use crate::serving::auth::{AuthContext, BrokerAuth};
 use crate::serving::quic::client_error::{ClientError, ErrorCodeSupport};
 use crate::serving::quic::handlers::publish::{
-    AckTimeoutState, AckWaiterMessage, Outgoing, PublishContext, StreamHandleCache,
+    AckOrder, AckTimeoutState, AckWaiterMessage, Outgoing, PublishContext, StreamHandleCache,
     handle_ack_enqueue_result, handle_acked_binary_publish_batch_control,
     handle_binary_publish_batch_control, send_outgoing_critical,
 };
@@ -105,6 +105,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
     ack_wait_timeout: Duration,
     frame_scratch: &mut BytesMut,
     error_codes: Arc<ErrorCodeSupport>,
+    ack_order: Arc<AckOrder>,
 ) -> Result<bool> {
     // If we observe EOF from the peer (source returns None), we treat it as a graceful close.
     // Otherwise, we will cancel downstream tasks and tear down the connection cooperatively.
@@ -114,6 +115,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
         peer_flags: felix_wire::ORIGINAL_V1_FLAGS,
         peer_features: 0,
         error_codes,
+        ack_order,
         stream_cache,
         stream_cache_key,
     };
@@ -197,6 +199,20 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 .await?;
                 return Ok(false);
             }
+            if acked
+                && session.ack_order.is_enabled()
+                && let Ok((request_id, ack)) = felix_wire::binary::peek_acked_publish_prefix(&frame)
+                && ack != felix_wire::AckMode::None
+                && !admit_pipelined(
+                    &session.ack_order,
+                    publish_ctx.publish_window.as_ref(),
+                    &mut cancel_rx_read,
+                    request_id,
+                )
+                .await
+            {
+                break;
+            }
             if acked {
                 handle_acked_binary_publish_batch_control(
                     &broker,
@@ -255,6 +271,18 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
         if let Some(decode_ns) = decode_ns {
             timings::record_decode_ns(decode_ns);
             t_histogram!("felix_broker_decode_ns").record(decode_ns as f64);
+        }
+        if session.ack_order.is_enabled()
+            && let Some(request_id) = pipelined_request(&message)
+            && !admit_pipelined(
+                &session.ack_order,
+                publish_ctx.publish_window.as_ref(),
+                &mut cancel_rx_read,
+                request_id,
+            )
+            .await
+        {
+            break;
         }
         let cx = Ctx {
             broker: &broker,
@@ -752,8 +780,70 @@ struct Session {
     peer_features: u32,
     /// Shared with the writer, which shapes every error to what `Auth` offered.
     error_codes: Arc<ErrorCodeSupport>,
+    /// Shared with the writer, which holds answers back into request order
+    /// once `Auth` asks for pipelining.
+    ack_order: Arc<AckOrder>,
     stream_cache: StreamHandleCache,
     stream_cache_key: String,
+}
+
+/// The request a publish is answered under, if it is answered at all.
+fn pipelined_request(message: &Message) -> Option<u64> {
+    match message {
+        Message::Publish {
+            request_id: Some(request_id),
+            ack,
+            ..
+        }
+        | Message::PublishBatch {
+            request_id: Some(request_id),
+            ack,
+            ..
+        } if *ack != Some(felix_wire::AckMode::None) => Some(*request_id),
+        Message::PublishIdempotent { request_id, .. } => Some(*request_id),
+        _ => None,
+    }
+}
+
+/// Take a slot in the connection's publish window and register the publish
+/// for an in-order answer. False when the stream was cancelled while it
+/// waited.
+///
+/// Waiting here stops this stream's reads, which is the backpressure: the
+/// client's frames queue in QUIC flow control, not in the tenant's share of
+/// the publish queue.
+async fn admit_pipelined(
+    order: &AckOrder,
+    window: Option<&Arc<Semaphore>>,
+    cancel_rx: &mut watch::Receiver<bool>,
+    request_id: u64,
+) -> bool {
+    let permit = match window {
+        None => None,
+        Some(window) => match Arc::clone(window).try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                crate::serving::quic::telemetry::t_counter!(
+                    "felix_broker_publish_window_full_total"
+                )
+                .increment(1);
+                tokio::select! {
+                    permit = Arc::clone(window).acquire_owned() => permit.ok(),
+                    _ = cancelled(cancel_rx) => return false,
+                }
+            }
+        },
+    };
+    order.register(request_id, permit);
+    true
+}
+
+async fn cancelled(cancel_rx: &mut watch::Receiver<bool>) {
+    while !*cancel_rx.borrow_and_update() {
+        if cancel_rx.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 /// What every arm reads: the connection's shared handles and this frame's
