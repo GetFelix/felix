@@ -424,6 +424,14 @@ A follower that predates the kind refuses it, and the leader stops shipping to
 it and says so, rather than the follower storing records without their marks.
 Two records with the same bytes and different marks are a `LogConflict`.
 
+A leader's **generation-start record** travels the same way, with mark byte
+`3` and no tag after it (`docs/replication-design.md`, "The generation-start
+record"). It is not negotiated per peer: a leader writes one only once the
+fleet has finalized `generation_start`, which the control plane allows only
+when every serving broker supports it. A peer that predates the byte still
+cannot decode the batch (`UnknownInternalProducerMark`) rather than storing
+the record as a client's.
+
 **The commit offset** rides with the records too. Under `Quorum` the leader
 sends its quorum mark, one past the last record a majority holds and the
 control plane has been told about, as `ReplicateRecords.commit_offset`. A batch

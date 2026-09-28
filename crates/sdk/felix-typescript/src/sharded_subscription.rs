@@ -110,6 +110,7 @@ fn shard_event(item: felix_client::ShardEvent) -> Option<ShardEvent> {
                 stream: event.stream.to_string(),
                 payload: event.payload.to_vec().into(),
                 offset: event.offset.map(BigInt::from),
+                skipped_before: BigInt::from(event.skipped_before),
             }),
             lost_error: None,
             recovered: None,

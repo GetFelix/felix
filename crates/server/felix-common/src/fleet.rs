@@ -50,7 +50,14 @@ impl std::fmt::Display for FleetFeature {
 ///
 /// Add a feature here in the same change that makes the broker honour it,
 /// never before: the report is a promise that this build behaves that way.
-pub const IMPLEMENTED: &[FleetFeature] = &[];
+pub const IMPLEMENTED: &[FleetFeature] = &[GENERATION_START];
+
+/// A leader writes a generation-start record whenever it starts leading a
+/// stream shard at a new generation, and its quorum mark counts only records
+/// of its own generation. The record needs storage format v4, which an older
+/// build refuses, so it waits for the whole fleet. See
+/// `docs/replication-design.md` ("The generation-start record").
+pub const GENERATION_START: FleetFeature = FleetFeature::new("generation_start");
 
 /// The most features one gate tracks. A report longer than this is cut, which
 /// only ever leaves features off.

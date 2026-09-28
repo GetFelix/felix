@@ -329,6 +329,73 @@ serving reads without a lease, are later changes.
 `FelixShardFencedPromotion.cfg` checks this configuration, the fence with the
 report and the lease, under the real margins.
 
+### The generation-start record
+
+A leader must not count a record it inherited toward its quorum mark on the
+strength of a majority holding that record alone. This is Raft's Figure 8, and
+the fence's catch-up is how it reaches Felix (`FelixShardFigure8NoStartRecord.cfg`):
+
+1. a writes x at generation 1 and ships it nowhere. b, promoted at 2, writes y
+   and ships it nowhere.
+2. c is promoted at 3, fences a, takes x in the catch-up, and ships it back to
+   a. With x on a and c, c's mark covers it and a client is told x is stored.
+3. c dies and a is promoted at 4. Its fence compares a's log, whose last record
+   is from generation 1, with b's, whose last is from 2. b's is ahead, so a
+   takes y in place of the acknowledged x.
+
+Raft's answer is to count only a majority holding a record of the leader's own
+generation, which carries everything before it along, and to write a no-op at
+the start of each term so that happens without waiting for a client. Felix does
+the same:
+
+- **The record.** A leader appends a generation-start record at the offset
+  where its generation begins, its first record at the generation, and only
+  then serves. A promoted leader does it after its fence and catch-up; if the
+  append fails the shard stays closed and the next pass fences and tries
+  again. The record ships like any other and is labelled with the leader's
+  generation, so a replica holding it answers a later fence with that
+  generation as its last. The format is in `docs/storage-format.md`.
+- **The mark.** A stream leader's mark counts a majority only once it reaches a
+  record of the leader's own generation (`quorum::counted_offset`, used for
+  the mark and for the report that releases it); until then the mark is zero,
+  as it is before any generation's first mark. The start record is the first
+  such record. In step 2 above, x is acknowledged only once a holds the record
+  too, and a's log then ends at generation 3 and wins the fence.
+- **Liveness.** Records a leader inherited, including ones the previous leader
+  acknowledged, are readable at the new leader's mark as soon as its record is
+  on a majority, one replication pass after it opens, whether or not a client
+  writes. The same holds for an idempotent producer's re-send answered from an
+  inherited batch.
+- **Readers never see it.** It occupies a log offset, which subscriptions,
+  replay, Kafka fetch, consumer groups and backups skip. How a subscriber tells
+  that offset from a dropped record is in `docs/protocol.md`.
+
+**Every leadership change, not only a promotion.** A move's cut-over hands the
+destination a log whose tail it did not write, and a cancelled move hands the
+old leader back its own log at a new generation. Either can inherit a record a
+promoted leader took in its fence and never got acknowledged, and counting it
+is the same Figure 8 one step later (`FelixShardFigure8CutOverNoStartRecord.cfg`
+finds it; `FelixShardFigure8CutOver.cfg` checks the move and the hand-back
+with the record). So the record is written whenever a broker starts leading a
+stream shard at a new generation and its log is not empty: after a promotion,
+at a fresh placement over an existing log, at either end of a move, and on a
+hand-back. The control plane bumps the generation at each step of a move, so
+the leader that stays writes one at the staging and the fence too; they cost
+an offset each and nothing else. A reopen that finds the generation already
+has records writes none. A cache shard writes none and counts as before: its
+log is compacted and never fenced, so it never takes a longer log on
+promotion, which is what makes an inherited record unsafe to count.
+
+**Across versions: the `generation_start` fleet feature.** The record and the
+counting rule switch on together, when an operator finalizes
+`generation_start` (see the upgrades page in the docs site). Until then a
+leader writes no record and counts inherited records as before, with the
+exposure above, and segments stay at format v3, so any broker can still be
+rolled back. The control plane refuses the finalize while a serving broker
+lacks the feature and refuses such a broker after it, so every replica can
+decode the record before one is written. Finalizing is one-way: the first
+record rolls a log onto a v4 segment, which an older build refuses to open.
+
 ### The clock assumption, stated precisely
 
 Safety requires a bound on clock **drift rate**, not synchronized clocks. For any

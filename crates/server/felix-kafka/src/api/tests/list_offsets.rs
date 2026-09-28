@@ -111,3 +111,35 @@ async fn offsets_are_only_answered_by_the_leader() {
     let mut client = fixture.connect();
     assert_eq!(answer(&mut client, 0, -1, 5).await.0, 6);
 }
+
+/// A generation-start record is never a timestamp lookup's answer: the latest
+/// record is the client record before it, and a time lookup lands on client
+/// records only.
+#[tokio::test]
+async fn lookups_step_over_a_generation_start_record() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture.publish("orders", "created", 0, &["a", "b"]).await;
+    let marker = fixture.generation_start("orders", "created", 0).await;
+    assert_eq!(marker, 2);
+    let mut client = fixture.connect();
+
+    let (code, time, offset) = answer(&mut client, 0, -3, 7).await;
+    assert_eq!(
+        (code, offset),
+        (0, 1),
+        "the last client record, not the marker"
+    );
+    assert!(time > 0);
+    // Newer than every client record: no answer, rather than the marker.
+    assert_eq!(answer(&mut client, 0, time + 1, 7).await, (0, -1, -1));
+
+    // Timestamps are milliseconds; keep `c` clear of the others.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    fixture.publish("orders", "created", 0, &["c"]).await;
+    let (_, time_c, offset) = answer(&mut client, 0, -3, 7).await;
+    assert_eq!(offset, 3);
+    // The first record at or after `c`'s time is `c`, past the marker.
+    assert_eq!(answer(&mut client, 0, time_c, 7).await.2, 3);
+    assert_eq!(answer(&mut client, 0, -1, 7).await, (0, -1, 4));
+}

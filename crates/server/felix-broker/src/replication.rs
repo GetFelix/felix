@@ -210,7 +210,7 @@ async fn conflict_in(
     tail: u64,
 ) -> Result<Option<Divergence>> {
     let wanted: usize = overlapping.iter().map(|payload| payload.len() + 32).sum();
-    let stored = match log.read_from(first_offset, wanted.max(1)).await {
+    let stored = match log.read_log_from(first_offset, wanted.max(1)).await {
         Ok(stored) => stored,
         // Retention discarded the records this batch overlaps. There is nothing
         // left to compare against, and refusing on that basis would stall a
@@ -250,6 +250,7 @@ pub fn mark_to_wire(mark: RecordMark) -> ProducerMark {
             len: batch.len,
         },
         RecordMark::Continues => ProducerMark::Continues,
+        RecordMark::GenerationStart => ProducerMark::GenerationStart,
     }
 }
 
@@ -267,6 +268,7 @@ pub fn mark_from_wire(mark: ProducerMark) -> RecordMark {
             len,
         }),
         ProducerMark::Continues => RecordMark::Continues,
+        ProducerMark::GenerationStart => RecordMark::GenerationStart,
     }
 }
 

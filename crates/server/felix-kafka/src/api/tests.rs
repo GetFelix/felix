@@ -268,6 +268,33 @@ impl Fixture {
             .expect("publish");
     }
 
+    /// Append a generation-start record to a shard's log, as a promoted
+    /// leader does, and return its offset.
+    pub(super) async fn generation_start(&self, namespace: &str, stream: &str, shard: u32) -> u64 {
+        let log = self
+            .broker
+            .shard_log(
+                felix_broker::LogKind::Stream,
+                TENANT,
+                namespace,
+                stream,
+                shard,
+            )
+            .await
+            .expect("log");
+        let offset = log
+            .append_generation_start(7)
+            .await
+            .expect("generation start");
+        // The stream has to learn the offset is taken, or the next publish
+        // waits on a commit turn nothing will take.
+        self.broker
+            .adopt_replicated(TENANT, namespace, stream, shard, offset + 1)
+            .await
+            .expect("adopt");
+        offset
+    }
+
     pub(super) fn connect(&self) -> Client {
         self.connect_until(CancellationToken::new())
     }

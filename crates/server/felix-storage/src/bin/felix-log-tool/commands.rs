@@ -93,6 +93,7 @@ pub(crate) async fn verify(args: VerifyArgs) -> Result<(), Failure> {
     let mut cursor = base;
     let mut count = 0u64;
     let mut mismatches = Vec::new();
+    let mut generation_starts = Vec::new();
     while cursor < tail {
         let page = log
             .read_range(ReadRange {
@@ -107,6 +108,12 @@ pub(crate) async fn verify(args: VerifyArgs) -> Result<(), Failure> {
             ));
         }
         for record in &page {
+            if record.mark.is_generation_start() {
+                // A leader's marker, not a written record: shown for what it
+                // is and kept out of the payload check and the count.
+                generation_starts.push((record.offset, generation_of(&record.payload)));
+                continue;
+            }
             if let Some(payload_bytes) = args.payload_bytes
                 && !payload::matches(record.offset, payload_bytes, &record.payload)
             {
@@ -150,14 +157,30 @@ pub(crate) async fn verify(args: VerifyArgs) -> Result<(), Failure> {
     }
 
     let mut stdout = std::io::stdout().lock();
+    for (offset, generation) in &generation_starts {
+        let generation = generation.map_or("null".to_string(), |g| g.to_string());
+        emit(
+            &mut stdout,
+            &format!(
+                r#"{{"event":"generation_start","offset":{offset},"generation":{generation}}}"#
+            ),
+        );
+    }
     emit(
         &mut stdout,
         &format!(
-            r#"{{"event":"verified","base_offset":{base},"tail_offset":{tail},"records":{count},"segments":{},"recovery_seconds":{recovery_seconds:.6}}}"#,
+            r#"{{"event":"verified","base_offset":{base},"tail_offset":{tail},"records":{count},"generation_starts":{},"segments":{},"recovery_seconds":{recovery_seconds:.6}}}"#,
+            generation_starts.len(),
             log.segments().len()
         ),
     );
     Ok(())
+}
+
+/// The generation a generation-start record names, or `None` when its payload
+/// is not the eight bytes it should be.
+pub(crate) fn generation_of(payload: &[u8]) -> Option<u64> {
+    Some(u64::from_be_bytes(payload.try_into().ok()?))
 }
 
 /// Measure append latency and throughput under one durability policy.

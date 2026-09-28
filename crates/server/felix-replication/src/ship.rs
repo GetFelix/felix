@@ -85,7 +85,7 @@ pub async fn ship_once_with<R: PeerRequester>(
         }
     }
 
-    let records = match log.read_from(cursor.next_offset, max_batch_bytes).await {
+    let records = match log.read_log_from(cursor.next_offset, max_batch_bytes).await {
         Ok(records) => records,
         // The follower is asking for records this leader has already trimmed.
         // Shipping cannot bridge that: the records are not here to send, and

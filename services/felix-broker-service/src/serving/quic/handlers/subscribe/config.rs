@@ -38,6 +38,11 @@ pub(crate) struct EventWriterConfig {
     /// there are -- the encode-once fanout property still holds.
     pub(super) offsets_enabled: bool,
 
+    /// Whether this subscriber also negotiated `FLAG_EVENT_BATCH_SKIPPED`, and
+    /// so is told when offsets before a batch hold no event. Only with
+    /// `offsets_enabled`.
+    pub(super) skip_enabled: bool,
+
     /// Whether this subscriber offered `FEATURE_SHARD_MOVED`, and so gets a
     /// `shard_moved` frame when its shard moves away.
     pub(super) shard_moved_enabled: bool,

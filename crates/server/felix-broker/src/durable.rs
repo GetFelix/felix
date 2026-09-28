@@ -251,7 +251,29 @@ impl StreamLog {
     /// condition `subscribe_from` reports up front. Translating it here is what
     /// makes a trim landing *mid-replay* surface as well, rather than a short
     /// history that looks complete.
+    ///
+    /// Generation-start records are left out: they are the replication
+    /// protocol's, not a client's. A page is empty only at the tail, never
+    /// because every record it read was one of them.
     pub async fn read_from(&self, start: Offset, max_bytes: usize) -> Result<Vec<LogRecord>> {
+        let mut start = start;
+        loop {
+            let mut records = self.read_log_from(start, max_bytes).await?;
+            let Some(last) = records.last().map(|record| record.offset) else {
+                return Ok(records);
+            };
+            records.retain(|record| !record.mark.is_generation_start());
+            if !records.is_empty() {
+                return Ok(records);
+            }
+            start = last + 1;
+        }
+    }
+
+    /// [`Self::read_from`] with every record the log holds, generation-start
+    /// records included. For replication, which ships and compares the log
+    /// exactly as it is.
+    pub async fn read_log_from(&self, start: Offset, max_bytes: usize) -> Result<Vec<LogRecord>> {
         self.log
             .read_range(ReadRange { start, max_bytes })
             .await
@@ -261,6 +283,26 @@ impl StreamLog {
                 }
                 other => storage_error(other),
             })
+    }
+
+    /// Append the generation-start record for `generation` at the tail,
+    /// durably, and return its offset.
+    ///
+    /// A promoted leader writes it before it serves. Until a majority holds a
+    /// record of the leader's own generation, the quorum mark may not cover the
+    /// records it inherited; this one gets there without waiting for a client.
+    pub async fn append_generation_start(&self, generation: u64) -> Result<Offset> {
+        let record = AppendRecord {
+            payload: Bytes::copy_from_slice(&generation.to_be_bytes()),
+            timestamp_micros: now_micros(),
+            mark: RecordMark::GenerationStart,
+        };
+        let appended = self
+            .log
+            .append(std::slice::from_ref(&record))
+            .await
+            .map_err(storage_error)?;
+        Ok(appended.first_offset)
     }
 
     /// Offset the next published record will take.

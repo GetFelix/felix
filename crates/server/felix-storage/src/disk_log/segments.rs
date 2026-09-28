@@ -181,7 +181,7 @@ impl SegmentSet {
         // never be written at all. Such a record gets a segment to itself and
         // the next append rolls again.
         if self.would_roll_within(records, roll_pending) {
-            self.roll()?;
+            self.roll_for(records)?;
         }
         self.active.append(records)
     }

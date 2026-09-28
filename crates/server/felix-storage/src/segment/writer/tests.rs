@@ -179,7 +179,7 @@ fn reopen_resumes_appending_where_recovery_left_off() {
             next_offset: outcome.next_offset,
             record_count: outcome.record_count,
             index: outcome.index,
-            holds_marks: true,
+            version: crate::segment::format::FORMAT_VERSION,
         },
         4096,
     )
@@ -222,7 +222,7 @@ fn reopen_truncates_a_torn_tail_off_the_file() {
             next_offset: outcome.next_offset,
             record_count: outcome.record_count,
             index: outcome.index,
-            holds_marks: true,
+            version: crate::segment::format::FORMAT_VERSION,
         },
         4096,
     )

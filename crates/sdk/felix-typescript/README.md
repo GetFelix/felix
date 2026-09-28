@@ -87,9 +87,11 @@ shard.
 
 Subscriber queues shed under the default policy rather than blocking the
 publisher, so a subscriber can silently miss records. On a durable stream each
-delivered event carries its log offset, and a jump in them is exactly a drop —
+delivered event carries its log offset, and a jump in them is a drop —
 which is why `event.offset` is worth reading even when you do not resume from
-it.
+it. The one gap that is not a drop is a new leader's generation-start
+record, and the event after it says so: `offset - previous - 1n - skippedBefore`
+records were dropped.
 
 ### A sharded subscription surfaces shard trouble rather than hiding it
 

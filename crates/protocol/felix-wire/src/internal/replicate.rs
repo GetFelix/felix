@@ -74,6 +74,12 @@ pub enum ProducerMark {
     },
     /// A later record of the batch the record before it belongs to.
     Continues,
+    /// A leader's generation-start record. Belongs to no producer; it rides
+    /// the marks because the marks are how a record's kind travels. Written
+    /// only once the fleet finalized `generation_start`, so every peer reads
+    /// it; an older one would refuse the batch with
+    /// `UnknownInternalProducerMark`.
+    GenerationStart,
 }
 
 /// The follower stored the batch.
@@ -200,8 +206,9 @@ pub fn batch_checksum(payloads: &[Bytes], marks: &[ProducerMark]) -> u64 {
     u64::from(hasher.finalize())
 }
 
-/// Marks as they travel: one byte per record (0 none, 1 opens, 2 continues),
-/// an opening record's byte followed by its producer id, sequence and length.
+/// Marks as they travel: one byte per record (0 none, 1 opens, 2 continues,
+/// 3 generation start), an opening record's byte followed by its producer id,
+/// sequence and length.
 pub(super) fn put_marks(out: &mut bytes::BytesMut, marks: &[ProducerMark]) {
     use bytes::BufMut;
     for mark in marks {
@@ -218,6 +225,7 @@ pub(super) fn put_marks(out: &mut bytes::BytesMut, marks: &[ProducerMark]) {
                 out.put_u32(*len);
             }
             ProducerMark::Continues => out.put_u8(2),
+            ProducerMark::GenerationStart => out.put_u8(3),
         }
     }
 }
@@ -243,6 +251,7 @@ pub(super) fn take_marks(body: &mut Bytes, count: usize) -> Result<Vec<ProducerM
                 }
             }
             2 => ProducerMark::Continues,
+            3 => ProducerMark::GenerationStart,
             other => return Err(Error::UnknownInternalProducerMark(other)),
         };
         marks.push(mark);

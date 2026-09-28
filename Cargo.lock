@@ -1238,6 +1238,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "crc32c",
  "felix-authz",
  "felix-broker",
  "felix-storage",

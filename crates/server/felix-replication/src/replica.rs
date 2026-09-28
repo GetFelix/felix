@@ -779,7 +779,7 @@ impl ReplicaHandler {
             );
         }
         let max_bytes = (request.max_bytes as usize).clamp(1, MAX_FETCH_BYTES);
-        let records = match log.read_from(request.from_offset, max_bytes).await {
+        let records = match log.read_log_from(request.from_offset, max_bytes).await {
             Ok(records) => records,
             Err(err) => {
                 return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());

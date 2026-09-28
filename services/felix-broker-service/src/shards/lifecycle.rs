@@ -888,6 +888,22 @@ impl ShardReaders {
 pub struct DurableShardStore {
     storage: std::sync::Arc<felix_broker::DurableStorage>,
     readers: Option<ShardReaders>,
+    generation_starts: Option<GenerationStarts>,
+}
+
+/// What a leader needs to write its generation-start record: the broker it
+/// appends through and the fleet that decides whether it does.
+#[derive(Clone)]
+pub struct GenerationStarts {
+    pub broker: std::sync::Arc<felix_broker::Broker>,
+    pub fleet: std::sync::Arc<felix_common::fleet::FleetGate>,
+}
+
+impl GenerationStarts {
+    /// Whether the fleet finalized `generation_start`.
+    pub fn enabled(&self) -> bool {
+        self.fleet.supports(felix_common::fleet::GENERATION_START)
+    }
 }
 
 impl DurableShardStore {
@@ -895,7 +911,15 @@ impl DurableShardStore {
         Self {
             storage,
             readers: None,
+            generation_starts: None,
         }
+    }
+
+    /// Write a generation-start record whenever a stream leadership begins
+    /// here, once the fleet has finalized `generation_start`.
+    pub fn with_generation_starts(mut self, starts: GenerationStarts) -> Self {
+        self.generation_starts = Some(starts);
+        self
     }
 
     /// End the shard's readers on release, as [`ShardStore::end_readers`] says.
@@ -934,8 +958,14 @@ impl ShardStore for DurableShardStore {
         // Here and nowhere later: the tail stops being the generation's start
         // the instant this broker serves its first write, which is what the
         // `Opening` phase is still holding back.
+        // Once the fleet counts marks from a generation's start, where that
+        // start is has to be known, so failing to record it fails the open.
+        let starts = self
+            .generation_starts
+            .as_ref()
+            .filter(|starts| starts.enabled());
         if begins_here {
-            record_term_start(&log, key, generation).await?;
+            record_term_start(&log, key, generation, starts.is_some()).await?;
         }
         // Leading at a generation accepts it, as following does: once this
         // broker has led at it, a leader older than it is not taken as a
@@ -949,6 +979,10 @@ impl ShardStore for DurableShardStore {
             }
             Ok(_) => {}
             Err(err) => anyhow::bail!("persist the accepted generation: {err}"),
+        }
+        // A promotion's record is written when its fence opens the shard.
+        if begins_here && let Some(starts) = starts {
+            start_generation(&starts.broker, &log, key, generation).await?;
         }
         Ok(())
     }
@@ -1185,16 +1219,23 @@ async fn open(
 ///
 /// Here and nowhere later: the tail stops being the generation's start the
 /// instant this broker serves its first write.
+///
+/// With `required`, a failure is returned rather than logged: the quorum mark
+/// counts from this start once the fleet finalized `generation_start`.
 pub async fn record_term_start(
     log: &felix_broker::StreamLog,
     key: &ShardKey,
     generation: u64,
+    required: bool,
 ) -> anyhow::Result<()> {
     let tail = log
         .tail_offset()
         .await
         .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
     if let Err(err) = log.record_generation(generation, tail) {
+        if required {
+            anyhow::bail!("record where generation {generation} begins: {err}");
+        }
         // Not fatal. Replication falls back to comparing from the start of
         // the log, which is slow rather than wrong.
         tracing::warn!(
@@ -1206,6 +1247,86 @@ pub async fn record_term_start(
         );
     }
     Ok(())
+}
+
+/// Write this leader's generation-start record, unless the log already starts
+/// the generation with one (an earlier attempt to open got that far).
+///
+/// It goes at the generation's recorded start, before any client write, so
+/// the quorum mark can cover records this leader inherited once a majority
+/// holds it. See `docs/replication-design.md`.
+pub async fn write_generation_start(
+    broker: &felix_broker::Broker,
+    log: &felix_broker::StreamLog,
+    key: &ShardKey,
+    generation: u64,
+) -> anyhow::Result<()> {
+    if felix_replication::quorum::generation_start(log, generation)
+        .await
+        .is_some()
+    {
+        return Ok(());
+    }
+    let tail = log
+        .tail_offset()
+        .await
+        .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
+    let started = log
+        .generations()
+        .iter()
+        .rev()
+        .find(|epoch| epoch.generation == generation)
+        .map(|epoch| epoch.start_offset);
+    // Anywhere else, the records before it would not be this generation's,
+    // and the mark would count them as if they were.
+    if started != Some(tail) {
+        anyhow::bail!("generation {generation} does not begin at the tail {tail}");
+    }
+    // Through the broker, so the stream's commit order and its subscribers
+    // move past the record's offset too.
+    broker
+        .append_generation_start(
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+            key.shard,
+            generation,
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!("append the generation-start record: {err}"))?;
+    Ok(())
+}
+
+/// Write the generation-start record for a leadership that begins without a
+/// promotion's fence: a fresh placement, either end of a move, a cancelled
+/// move handing the shard back, or a promotion on a broker that does not
+/// fence.
+///
+/// Skipped when the log holds nothing (there is nothing to inherit) and when
+/// the generation already has records, which is a reopen after a restart or
+/// an earlier attempt that got this far. The mark stays safe either way: it
+/// never counts past the generation's start until a record of its own is on
+/// a majority, and this record only gets it there without a client write.
+async fn start_generation(
+    broker: &felix_broker::Broker,
+    log: &felix_broker::StreamLog,
+    key: &ShardKey,
+    generation: u64,
+) -> anyhow::Result<()> {
+    let tail = log
+        .tail_offset()
+        .await
+        .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
+    let begins = log
+        .generations()
+        .iter()
+        .rev()
+        .find(|epoch| epoch.generation == generation)
+        .map(|epoch| epoch.start_offset);
+    if tail == log.base_offset() || begins != Some(tail) {
+        return Ok(());
+    }
+    write_generation_start(broker, log, key, generation).await
 }
 
 /// End a shard's readers once the writes already inside its fence are done,

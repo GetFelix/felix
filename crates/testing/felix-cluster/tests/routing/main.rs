@@ -6,6 +6,7 @@
 //! `--test routing sharding::`.
 
 mod cross_broker;
+mod generation_start;
 mod kafka_leaders;
 mod moved_readers;
 mod operator_moves;

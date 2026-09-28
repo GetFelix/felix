@@ -122,7 +122,7 @@ impl SegmentSet {
                 next_offset: outcome.next_offset,
                 record_count: outcome.record_count,
                 index: outcome.index,
-                holds_marks: outcome.header.holds_marks(),
+                version: outcome.header.version,
             },
             self.config.index_spacing_bytes,
         )?;
@@ -181,7 +181,7 @@ impl SegmentSet {
                     // A truncation invalidates every index entry past the cut;
                     // rebuild from the surviving prefix rather than trusting it.
                     index: rebuild_index_prefix(index, valid_bytes),
-                    holds_marks: read_segment_header(&path, id, &self.label)?.holds_marks(),
+                    version: read_segment_header(&path, id, &self.label)?.version,
                 },
                 self.config.index_spacing_bytes,
             )?

@@ -82,6 +82,7 @@ Field definitions:
   | `0x0100` | `BINARY_PUBLISH_IDEMPOTENT` | Modifier on `0x0008`: the batch carries an idempotent producer's id and sequence |
   | `0x0200` | `BINARY_PUBLISH_ACK_CODE` | Modifier on `0x0010`: a failed ack carries an error code and retry class |
   | `0x0400` | `BINARY_PUBLISH_ACK_DETAIL` | Modifier on `0x0200`: the code is followed by the error's `detail` (reason, suggested wait) |
+  | `0x0800` | `EVENT_BATCH_SKIPPED` | Modifier on `0x0020`: the batch also carries a `skipped_before` count of offsets before it that hold no event |
 
   Because these bits change how the payload is parsed, a receiver MUST reject a
   frame carrying any bit it does not recognise rather than masking it off — see
@@ -564,8 +565,11 @@ field of `detail` is optional. See [Error codes](#error-codes).
   have to reach the same in-flight state — two brokers each keeping their own
   would hand out the same records.
 - Backpressure: v1 is best-effort; subscribers may miss events if they fall
-  behind. With event offsets negotiated a client can *detect* that loss, because
-  a gap between consecutive delivered offsets is exactly a drop.
+  behind. With event offsets negotiated a client can *detect* that loss: a gap
+  between consecutive delivered offsets is a drop unless the batch's
+  `skipped_before` (bit `0x0800`, see Event batch offsets) accounts for it. A
+  client that did not negotiate `0x0800` also sees a gap at every
+  generation-start record, which is not a drop.
 
 ### Idempotent producers
 
@@ -1303,7 +1307,47 @@ Two uses:
   that offset plus one after a reconnect.
 - **Detecting loss.** Subscriber queues drop under `DropNew`, so consecutive
   delivered batches can have a gap. Without offsets that loss is invisible; with
-  them it is a discontinuity the client can see and act on.
+  them it is a discontinuity the client can see and act on. Not every offset
+  holds an event, though (below), so the number of events dropped between an
+  event at `previous` and the next at `offset` is
+  `offset - previous - 1 - skipped_before`.
+
+### Offsets that hold no event
+
+A durable stream's log also holds records that are not events. Once the fleet
+has finalized `generation_start`, a leader appends a **generation-start**
+record whenever it starts serving a shard at a new generation, so its quorum
+mark can cover the records it inherited: after a promotion, at either end of a
+move, and when a cancelled move hands the shard back. Each step of a move is a
+new generation, so a move can leave several in a row. A record takes the next
+offset like any other and is never delivered — not to a subscription, a
+consumer group, or a Kafka fetch. A subscriber therefore sees `N-1` and then
+`N+1` across a generation start at `N`.
+
+When `flags & 0x0800 != 0` (only ever alongside `0x0020`), a `u64 skipped_before`
+follows `base_offset`:
+
+```
+u64 base_offset          # offset of the first payload
+u64 skipped_before       # offsets just below base_offset that hold no event
+u32 count
+...
+```
+
+The broker sets it only on the batch whose first event follows such offsets, so
+every other batch is byte-identical to the `0x0020` form. Like the offsets it is
+a property of the stream, so it rides the shared frame as one more rare
+variant. A client opts in by offering `0x0800` in `client_flags`; the broker
+sends the bit only to a client that offered it. A frame with `0x0800` and not
+`0x0020` is rejected.
+
+It counts only the offsets *immediately* before the batch. If the batch carrying
+it is itself dropped, the next gap includes those offsets and overstates the
+drop by them — a drop is still reported, only its size is off.
+
+A client that did not offer `0x0800` gets the frames it always got, and reads
+the gap at generation starts as a drop. That is a false drop signal, once per
+leader change or move, and only after `generation_start` is finalized.
 
 ## ALPN
 

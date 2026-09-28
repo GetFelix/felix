@@ -81,7 +81,7 @@ async fn offset_for(
             if tail == base {
                 return Ok((-1, -1));
             }
-            let last = record_at(log, tail - 1).await.map_err(storage)?;
+            let last = last_record_before(log, base, tail).await.map_err(storage)?;
             Ok(last.map_or((-1, -1), |(time, offset)| (time, offset as i64)))
         }
         at if at >= 0 => {
@@ -90,7 +90,7 @@ async fn offset_for(
             let (mut low, mut high) = (base, tail);
             while low < high {
                 let mid = low + (high - low) / 2;
-                match record_at(log, mid).await.map_err(storage)? {
+                match record_at(log, mid, tail).await.map_err(storage)? {
                     Some((time, _)) if time < at => low = mid + 1,
                     _ => high = mid,
                 }
@@ -99,19 +99,48 @@ async fn offset_for(
                 // Nothing that recent: Kafka answers "no offset".
                 return Ok((-1, -1));
             }
-            let found = record_at(log, low).await.map_err(storage)?;
+            let found = record_at(log, low, tail).await.map_err(storage)?;
             Ok(found.map_or((-1, -1), |(time, offset)| (time, offset as i64)))
         }
         _ => Err(ResponseError::InvalidRequest),
     }
 }
 
-/// The record at or just after `offset`: its time and its offset.
-async fn record_at(log: &StreamLog, offset: u64) -> felix_broker::Result<Option<(i64, u64)>> {
+/// The client record at or just after `offset` and below `until`: its time
+/// and its offset. Past a generation-start record the next one can sit above
+/// the high watermark, and that is not an answer a consumer may be given.
+async fn record_at(
+    log: &StreamLog,
+    offset: u64,
+    until: u64,
+) -> felix_broker::Result<Option<(i64, u64)>> {
     // One byte asks for a single record; the log returns the first whatever
     // its size.
     let records = log.read_from(offset, 1).await?;
     Ok(records
         .first()
+        .filter(|record| record.offset < until)
         .map(|record| (crate::records::timestamp_ms(record), record.offset)))
+}
+
+/// The last client record below `tail`, stepping back over any
+/// generation-start records at the end of the log.
+async fn last_record_before(
+    log: &StreamLog,
+    base: u64,
+    tail: u64,
+) -> felix_broker::Result<Option<(i64, u64)>> {
+    let mut at = tail;
+    while at > base {
+        at -= 1;
+        let records = log.read_log_from(at, 1).await?;
+        match records.first() {
+            Some(record) if record.offset == at && !record.mark.is_generation_start() => {
+                return Ok(Some((crate::records::timestamp_ms(record), record.offset)));
+            }
+            Some(record) if record.offset == at => {}
+            _ => return Ok(None),
+        }
+    }
+    Ok(None)
 }

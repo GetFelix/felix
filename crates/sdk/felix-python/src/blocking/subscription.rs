@@ -67,6 +67,7 @@ impl SubscriptionHandle {
             stream: event.stream.to_string(),
             payload: PyBytes::new(py, &event.payload).unbind(),
             offset: event.offset,
+            skipped_before: event.skipped_before,
         }))
     }
 

@@ -118,7 +118,8 @@ Bit field for optional features:
 | 8   | 0x0100 | Batch carries an idempotent producer's id and sequence (modifier on bit 3) |
 | 9   | 0x0200 | A failed ack carries an error code and retry class (modifier on bit 4) |
 | 10  | 0x0400 | A failed ack's code is followed by its `detail`: reason and suggested wait (modifier on bit 9) |
-| 11-15| -     | Reserved (must be 0) |
+| 11  | 0x0800 | Event batch also carries `skipped_before`: offsets just before it that hold no event (modifier on bit 5) |
+| 12-15| -     | Reserved (must be 0) |
 
 Receivers must **reject** a frame carrying a flag bit they do not recognise, rather
 than ignoring the bit. These bits select how the payload is parsed, so ignoring an
@@ -973,7 +974,7 @@ Felix uses different QUIC stream patterns for different workload characteristics
 
 **Backpressure / resource exhaustion**:
 - Apply QUIC flow control (stop granting credits)
-- A slow subscriber may drop events. Delivered records carry log offsets for a durable stream, so a jump between consecutive offsets is exactly a drop and the client can see it
+- A slow subscriber may drop events. Delivered records carry log offsets for a durable stream, so a jump between consecutive offsets is a drop and the client can see it. The one exception is a promoted leader's generation-start record, which takes an offset and is never delivered: a client that negotiated `0x0800` is told how many offsets before a batch hold no event, so `offset - previous - 1 - skipped_before` events were dropped; an older client reads that one-offset gap as a drop
 
 ## Conformance Testing
 

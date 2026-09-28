@@ -168,3 +168,188 @@ async fn a_quorum_mark_does_not_pass_a_record_the_follower_disagrees_with() {
          disagreement, so a record no majority holds was acknowledged",
     );
 }
+
+/// Followers that store a batch only if it ends by `held`, and are
+/// unreachable for any other.
+struct HoldUpTo {
+    held: std::sync::atomic::AtomicU64,
+}
+
+impl PeerRequester for HoldUpTo {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let (InternalMessage::ReplicateRecords(batch)
+        | InternalMessage::ReplicateMarkedRecords(batch)) = message
+        else {
+            panic!("the driver sent something other than a replication batch");
+        };
+        let end = batch.first_offset + batch.payloads.len() as u64;
+        if end > self.held.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "not yet".to_string(),
+            });
+        }
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: end,
+        }))
+    }
+}
+
+/// Marks under the counting rule a fleet uses once it finalized
+/// `generation_start`.
+fn finalized_marks() -> QuorumMarks {
+    let fleet = felix_common::fleet::FleetGate::new([felix_common::fleet::GENERATION_START.name()]);
+    fleet.observe([felix_common::fleet::GENERATION_START.name()]);
+    QuorumMarks::with_fleet(Arc::new(fleet))
+}
+
+/// **A promoted leader's mark covers what it inherited only once a majority
+/// holds its generation-start record.** Counting the inherited records on
+/// their own is Raft's Figure 8: a later fence may prefer a log whose last
+/// generation is newer and drop them after they were acknowledged.
+#[tokio::test]
+async fn inherited_records_count_only_once_the_start_record_is_on_a_majority() {
+    let (broker, _dir) = leader_led_from(3, 4, 3).await;
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(
+        log.append_generation_start(4).await.expect("start record"),
+        3
+    );
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let followers = HoldUpTo {
+        held: std::sync::atomic::AtomicU64::new(3),
+    };
+    let marks = finalized_marks();
+    let watched = watch_key(&key());
+    let (mut cursors, mut group, mut dead, mut counters) = (
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+
+    replicate_once(
+        &followers,
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    )
+    .await;
+    assert_eq!(
+        marks.offset(&watched, 4).unwrap_or(0),
+        0,
+        "the mark counted records the leader inherited before its own was on a majority",
+    );
+
+    followers.held.store(4, std::sync::atomic::Ordering::SeqCst);
+    replicate_once(
+        &followers,
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    )
+    .await;
+    assert_eq!(marks.offset(&watched, 4), Some(4));
+}
+
+/// **Once finalized, a leader with no start record still counts nothing it
+/// inherited.** Whatever path named it, the first record of its own
+/// generation on a majority is what moves the mark, here a client's.
+#[tokio::test]
+async fn a_finalized_leader_without_a_start_record_counts_only_its_own_records() {
+    let (broker, _dir) = leader_led_from(3, 4, 3).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let followers = HoldUpTo {
+        held: std::sync::atomic::AtomicU64::new(3),
+    };
+    let marks = finalized_marks();
+    let watched = watch_key(&key());
+    let (mut cursors, mut group, mut dead, mut counters) = (
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+
+    replicate_once(
+        &followers,
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    )
+    .await;
+    assert_eq!(marks.offset(&watched, 4).unwrap_or(0), 0);
+
+    broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .append(&[Bytes::from_static(b"own")])
+        .await
+        .expect("append");
+    followers.held.store(4, std::sync::atomic::Ordering::SeqCst);
+    replicate_once(
+        &followers,
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    )
+    .await;
+    assert_eq!(marks.offset(&watched, 4), Some(4));
+}
+
+/// Before the fleet finalizes `generation_start` the leader counts the
+/// records it inherited, as an older build does, so a rollback changes
+/// nothing.
+#[tokio::test]
+async fn before_finalize_inherited_records_count_as_before() {
+    let (broker, _dir) = leader_led_from(3, 4, 3).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let followers = HoldUpTo {
+        held: std::sync::atomic::AtomicU64::new(3),
+    };
+    let marks = QuorumMarks::new();
+
+    replicate_once(
+        &followers,
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+    )
+    .await;
+    assert_eq!(marks.offset(&watch_key(&key()), 4), Some(3));
+}

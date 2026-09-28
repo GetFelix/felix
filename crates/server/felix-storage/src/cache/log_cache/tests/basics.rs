@@ -186,3 +186,49 @@ async fn the_index_catches_up_with_records_appended_behind_it() {
         Some(Bytes::from_static(b"1")),
     );
 }
+
+/// A generation-start record in a cache log is stepped over, not decoded as a
+/// cache op and reported as corruption.
+#[tokio::test]
+async fn the_index_steps_over_a_generation_start_record() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = cache(dir.path()).await;
+    cache
+        .put_checked(T, NS, C, 0, "first", Bytes::from_static(b"1"), None)
+        .await
+        .expect("put");
+
+    let log = cache.shard_log(T, NS, C, 0).await.expect("shard log");
+    let shipped = CacheOp::Put {
+        key: "shipped".to_string(),
+        value: Bytes::from_static(b"2"),
+        expires_at_millis: 0,
+    }
+    .encode();
+    log.append(&[
+        AppendRecord {
+            payload: Bytes::copy_from_slice(&4u64.to_be_bytes()),
+            timestamp_micros: 0,
+            mark: crate::log::RecordMark::GenerationStart,
+        },
+        AppendRecord {
+            payload: shipped,
+            timestamp_micros: 0,
+            mark: Default::default(),
+        },
+    ])
+    .await
+    .expect("append");
+
+    assert_eq!(
+        cache
+            .get_checked(T, NS, C, 0, "shipped")
+            .await
+            .expect("get"),
+        Some(Bytes::from_static(b"2")),
+    );
+    assert_eq!(
+        cache.get_checked(T, NS, C, 0, "first").await.expect("get"),
+        Some(Bytes::from_static(b"1")),
+    );
+}

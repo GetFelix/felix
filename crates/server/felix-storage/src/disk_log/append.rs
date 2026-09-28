@@ -84,7 +84,7 @@ impl DiskLog {
                     if segments.would_roll_within(&batch, roller.roll_pending()) {
                         roller.before_inline_roll();
                         roller.sync_pending_seal()?;
-                        if let Err(err) = segments.roll() {
+                        if let Err(err) = segments.roll_for(&batch) {
                             roller.poison_after_writer_failure(&segments);
                             return Err(err);
                         }

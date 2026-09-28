@@ -43,7 +43,11 @@ broker that has not seen the log would serve it empty. It is **moved**:
    to stop serving the shard. It lets what it already accepted land, ships the
    last records, and reports that its log has stopped growing.
 3. **Cut over.** The destination is named leader at a new generation and
-   opens the shard.
+   opens the shard. Once `generation_start` is finalized (see
+   [Upgrades](/felix/deployment/upgrades/)), it first appends a
+   generation-start record, and its quorum mark counts nothing it inherited
+   until that record is on a majority. A cancelled move hands the shard back
+   the same way.
 
 ```mermaid
 sequenceDiagram

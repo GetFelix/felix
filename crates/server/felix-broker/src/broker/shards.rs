@@ -321,9 +321,13 @@ impl Broker {
         let mut cursor = tail.saturating_sub(capacity as u64);
         let mut window: VecDeque<felix_storage::log::LogRecord> = VecDeque::new();
         let mut bytes = 0usize;
+        // Generation-start records directly before `cursor`. They hold offsets
+        // but never go in the ring, so the window reaches the tail when the
+        // read does, not when its last client record does.
+        let mut run = 0u64;
 
         while cursor < tail {
-            let page = log.read_from(cursor, HYDRATE_MAX_BYTES).await?;
+            let page = log.read_log_from(cursor, HYDRATE_MAX_BYTES).await?;
             let Some(last) = page.last() else {
                 // The tail moved out from under the read, or the range was
                 // trimmed. Stop with what is in hand rather than spinning.
@@ -331,6 +335,11 @@ impl Broker {
             };
             cursor = last.offset + 1;
             for record in page {
+                if record.mark.is_generation_start() {
+                    run += 1;
+                    continue;
+                }
+                run = 0;
                 bytes += record.payload.len();
                 window.push_back(record);
                 // Keep the *newest* end of the window under both bounds.
@@ -344,13 +353,20 @@ impl Broker {
 
         // Only hand over a window that actually reaches the tail. Anything else
         // would reintroduce the hole this method exists to avoid.
-        let reaches_tail = window.back().is_some_and(|last| last.offset + 1 == tail);
+        let reaches_tail = cursor == tail
+            && window
+                .back()
+                .is_some_and(|last| last.offset + 1 + run == tail);
         let contiguous = if reaches_tail {
             window.into_iter().collect::<Vec<_>>()
         } else {
             Vec::new()
         };
         state.hydrate(contiguous, tail, capacity);
+        if run > 0 && cursor == tail {
+            // The first publish at `tail` follows offsets that hold no event.
+            state.set_generation_start_run(tail, run);
+        }
         Ok(())
     }
 }
@@ -414,3 +430,6 @@ impl StreamHandle {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

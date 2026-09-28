@@ -209,7 +209,7 @@ async fn run_subscription_dispatch_task(
         #[cfg(feature = "telemetry")]
         let decode_start = crate::telemetry::t_now_if(sample);
 
-        let (payloads, base_offset) =
+        let (payloads, base_offset, skipped_before) =
             if queued_frame.frame.header.flags & felix_wire::FLAG_BINARY_EVENT_BATCH_SHARED != 0 {
                 match felix_wire::binary::decode_shared_event_batch(&queued_frame.frame)
                     .context("decode shared binary event batch")
@@ -224,7 +224,7 @@ async fn run_subscription_dispatch_task(
                                 .sub_items_in_ok
                                 .fetch_add(batch.payloads.len() as u64, Ordering::Relaxed);
                         }
-                        (batch.payloads, batch.base_offset)
+                        (batch.payloads, batch.base_offset, batch.skipped_before)
                     }
                     Err(err) => {
                         #[cfg(feature = "telemetry")]
@@ -276,7 +276,7 @@ async fn run_subscription_dispatch_task(
                                 .sub_items_in_ok
                                 .fetch_add(batch.payloads.len() as u64, Ordering::Relaxed);
                         }
-                        (batch.payloads, batch.base_offset)
+                        (batch.payloads, batch.base_offset, batch.skipped_before)
                     }
                     Err(err) => {
                         #[cfg(feature = "telemetry")]
@@ -331,7 +331,7 @@ async fn run_subscription_dispatch_task(
                             counters.sub_batches_in_ok.fetch_add(1, Ordering::Relaxed);
                             counters.sub_items_in_ok.fetch_add(1, Ordering::Relaxed);
                         }
-                        (vec![Bytes::from(payload)], offset)
+                        (vec![Bytes::from(payload)], offset, 0)
                     }
                     Message::EventBatch {
                         payloads,
@@ -346,7 +346,11 @@ async fn run_subscription_dispatch_task(
                                 .sub_items_in_ok
                                 .fetch_add(payloads.len() as u64, Ordering::Relaxed);
                         }
-                        (payloads.into_iter().map(Bytes::from).collect(), base_offset)
+                        (
+                            payloads.into_iter().map(Bytes::from).collect(),
+                            base_offset,
+                            0,
+                        )
                     }
                     Message::ShardMoved {
                         resume_from,
@@ -401,7 +405,9 @@ async fn run_subscription_dispatch_task(
             };
             if !enqueue_event(
                 &event_tx,
-                QueuedEvent::Payload(payload, offset),
+                // The skip describes the offsets before the batch, so only its
+                // first event carries it.
+                QueuedEvent::Payload(payload, offset, if index == 0 { skipped_before } else { 0 }),
                 policy,
                 queue_capacity,
             )

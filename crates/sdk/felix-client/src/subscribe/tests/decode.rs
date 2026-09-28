@@ -681,3 +681,106 @@ async fn subscription_ends_with_shard_moved_after_its_events() -> Result<()> {
     server_task.abort();
     Ok(())
 }
+
+/// A batch that follows a generation start says how many offsets before it
+/// held no event, and only its first event carries the count.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_skip_count_reaches_the_first_event_of_its_batch() -> Result<()> {
+    let _env_guard = set_client_env();
+
+    let (server_config, cert) = build_server_config()?;
+    let server = QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?;
+    let addr = server.local_addr()?;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        async fn handle_connection(connection: felix_transport::QuicConnection) -> Result<()> {
+            let mut frame_scratch = BytesMut::with_capacity(64 * 1024);
+            let Ok((mut send, mut recv)) = connection.accept_bi().await else {
+                return Ok(());
+            };
+            let _ = read_message(&mut recv, &mut frame_scratch).await?;
+            write_message(&mut send, Message::Ok).await?;
+            while let Some(message) = read_message(&mut recv, &mut frame_scratch).await? {
+                let Message::Subscribe {
+                    subscription_id, ..
+                } = message
+                else {
+                    continue;
+                };
+                let sub_id = subscription_id.unwrap_or(9);
+                write_message(
+                    &mut send,
+                    Message::Subscribed {
+                        subscription_id: sub_id,
+                        start_offset: None,
+                        live_offset: None,
+                    },
+                )
+                .await?;
+                let mut uni = connection.open_uni().await?;
+                write_message(
+                    &mut uni,
+                    Message::EventStreamHello {
+                        subscription_id: sub_id,
+                    },
+                )
+                .await?;
+                let before = felix_wire::binary::encode_event_batch_bytes_with_offset(
+                    sub_id,
+                    &[Bytes::from_static(b"a")],
+                    7,
+                )?;
+                uni.write_all(&before).await?;
+                let after = felix_wire::binary::encode_shared_event_batch_bytes_with_skip(
+                    &[Bytes::from_static(b"b"), Bytes::from_static(b"c")],
+                    9,
+                    1,
+                )?;
+                uni.write_all(&after).await?;
+                let _ = uni.finish();
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                break;
+            }
+            Ok(())
+        }
+
+        let mut tasks = Vec::new();
+        let accept_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while let Ok(Ok(connection)) =
+            tokio::time::timeout_at(accept_deadline, server.accept()).await
+        {
+            tasks.push(tokio::spawn(handle_connection(connection)));
+        }
+        let _ = shutdown_rx.await;
+        drop(tasks);
+        Ok::<(), anyhow::Error>(())
+    });
+
+    let client = Client::connect_with_transport(
+        addr,
+        "localhost",
+        build_client_config_with_overrides(cert, 1)?,
+        TransportConfig::default(),
+    )
+    .await?;
+    let mut subscription = client.subscribe("t1", "default", "updates").await?;
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        let event = timeout(Duration::from_secs(5), subscription.next_event())
+            .await??
+            .expect("an event");
+        seen.push((event.offset, event.skipped_before));
+    }
+    // 7 then 9 with one skipped offset between: no drop.
+    assert_eq!(seen, vec![(Some(7), 0), (Some(9), 1), (Some(10), 0)]);
+
+    let _ = shutdown_tx.send(());
+    server_task.abort();
+    Ok(())
+}

@@ -13,6 +13,29 @@ use crate::serving::quic::handlers::subscribe::config::EventWriterConfig;
 use crate::serving::quic::handlers::subscribe::lane::{LaneCommand, WriterLaneManager};
 use crate::serving::quic::telemetry::{t_histogram, t_now_if, t_should_sample};
 
+/// A batch this feeder assembled itself, in the frame shape the subscriber
+/// negotiated.
+fn encode_batch(
+    config: &EventWriterConfig,
+    batch: &[Bytes],
+    base_offset: Option<u64>,
+    skipped_before: u64,
+) -> felix_wire::Result<Bytes> {
+    match (config.offsets_enabled, base_offset) {
+        (true, Some(base)) if config.skip_enabled => {
+            felix_wire::binary::encode_shared_event_batch_bytes_with_skip(
+                batch,
+                base,
+                skipped_before,
+            )
+        }
+        (true, Some(base)) => {
+            felix_wire::binary::encode_shared_event_batch_bytes_with_offset(batch, base)
+        }
+        _ => felix_wire::binary::encode_shared_event_batch_bytes(batch),
+    }
+}
+
 pub(super) async fn run_lane_feeder(
     mut event_rx: SubscriptionReceiver,
     manager: Weak<WriterLaneManager>,
@@ -49,7 +72,9 @@ pub(super) async fn run_lane_feeder(
             let payload_bytes: usize = payloads.iter().map(Bytes::len).sum();
             if payloads.len() <= max_events && payload_bytes <= max_bytes {
                 let prefix_start = t_now_if(t_should_sample());
-                let frame = match if config.offsets_enabled {
+                let frame = match if config.skip_enabled {
+                    envelope.shared_event_frame_with_skip()
+                } else if config.offsets_enabled {
                     envelope.shared_event_frame_with_offsets()
                 } else {
                     envelope.shared_event_frame()
@@ -96,16 +121,18 @@ pub(super) async fn run_lane_feeder(
                 let batch = &payloads[start..end];
                 // A split batch keeps its own base offset: the envelope's
                 // offsets are contiguous, so this sub-batch begins `start`
-                // records into the run.
-                let encoded = match (config.offsets_enabled, envelope.base_offset()) {
-                    (true, Some(base)) => {
-                        felix_wire::binary::encode_shared_event_batch_bytes_with_offset(
-                            batch,
-                            base + start as u64,
-                        )
-                    }
-                    _ => felix_wire::binary::encode_shared_event_batch_bytes(batch),
+                // records into the run. Only the first follows the skip.
+                let skipped = if start == 0 {
+                    envelope.skipped_before()
+                } else {
+                    0
                 };
+                let encoded = encode_batch(
+                    &config,
+                    batch,
+                    envelope.base_offset().map(|base| base + start as u64),
+                    skipped,
+                );
                 match encoded {
                     Ok(frame) => {
                         enqueue_lane_frame(
@@ -140,6 +167,7 @@ pub(super) async fn run_lane_feeder(
         // `base_offset` describes the frame only while that holds, so a break in
         // the run ends the batch exactly as a byte or count limit would.
         let batch_base = envelope.base_offset();
+        let batch_skipped = envelope.skipped_before();
         let mut expected_next = batch_base.map(|base| base + envelope.len() as u64);
 
         while batch.len() < max_events && batch_bytes < max_bytes {
@@ -176,12 +204,7 @@ pub(super) async fn run_lane_feeder(
         let sample = t_should_sample();
         let enqueue_start = t_now_if(sample);
         let prefix_start = t_now_if(sample);
-        let encoded = match (config.offsets_enabled, batch_base) {
-            (true, Some(base)) => {
-                felix_wire::binary::encode_shared_event_batch_bytes_with_offset(&batch, base)
-            }
-            _ => felix_wire::binary::encode_shared_event_batch_bytes(&batch),
-        };
+        let encoded = encode_batch(&config, &batch, batch_base, batch_skipped);
         let frame = match encoded {
             Ok(frame) => frame,
             Err(err) => {

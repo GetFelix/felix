@@ -60,6 +60,27 @@ impl Recorder {
     fn batches(&self) -> usize {
         self.frames.len()
     }
+
+    /// `(base_offset, skipped_before)` of every batch that reported a skip.
+    fn skips(&self) -> Vec<(u64, u64)> {
+        self.frames
+            .iter()
+            .map(|frame| {
+                let frame = felix_wire::Frame::decode(frame.clone()).expect("decode the frame");
+                felix_wire::binary::decode_event_batch(&frame).expect("decode the batch")
+            })
+            .filter(|batch| batch.skipped_before > 0)
+            .map(|batch| (batch.base_offset.expect("offsets"), batch.skipped_before))
+            .collect()
+    }
+
+    /// Whether any frame carries the skip flag.
+    fn any_skip_flag(&self) -> bool {
+        self.frames.iter().any(|frame| {
+            let frame = felix_wire::Frame::decode(frame.clone()).expect("decode the frame");
+            frame.header.flags & felix_wire::FLAG_EVENT_BATCH_SKIPPED != 0
+        })
+    }
 }
 
 /// A broker with a durable stream, so history can be paged from disk.
@@ -111,6 +132,19 @@ async fn publish(broker: &Broker, values: &[&str]) {
     }
 }
 
+/// A generation-start record at the tail, as a promoted leader writes it.
+async fn generation_start(broker: &Broker) -> u64 {
+    broker
+        .append_generation_start(TENANT, NAMESPACE, STREAM, 0, 2)
+        .await
+        .expect("generation start")
+}
+
+const SKIPS: EventFormat = EventFormat {
+    offsets: true,
+    skips: true,
+};
+
 #[allow(clippy::too_many_arguments)]
 async fn replay(
     sink: &mut Recorder,
@@ -120,6 +154,30 @@ async fn replay(
     backlog_start: u64,
     subscription: &mut felix_broker::Subscription,
     max_events: usize,
+) -> Result<()> {
+    replay_as(
+        sink,
+        broker,
+        history,
+        backlog,
+        backlog_start,
+        subscription,
+        max_events,
+        SKIPS,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn replay_as(
+    sink: &mut Recorder,
+    broker: &Arc<Broker>,
+    history: Option<HistoryRange>,
+    backlog: Vec<(u64, Bytes)>,
+    backlog_start: u64,
+    subscription: &mut felix_broker::Subscription,
+    max_events: usize,
+    format: EventFormat,
 ) -> Result<()> {
     write_replay(
         sink,
@@ -135,7 +193,7 @@ async fn replay(
         subscription,
         max_events,
         1024 * 1024,
-        true,
+        format,
     )
     .await
 }
@@ -202,6 +260,211 @@ async fn the_history_range_stops_before_its_end() {
     .expect("replay");
 
     assert_eq!(sink.offsets(), vec![1, 2]);
+}
+
+/// A generation-start record takes an offset but is never an event. History
+/// across one delivers every event at its own offset and says the offset it
+/// passed over held nothing, so the jump does not read as a drop.
+#[tokio::test]
+async fn history_across_a_generation_start_reports_the_skip() {
+    let (broker, _dir) = durable_broker().await;
+    publish(&broker, &["a", "b"]).await;
+    assert_eq!(generation_start(&broker).await, 2);
+    publish(&broker, &["c", "d"]).await;
+    let mut subscription = broker
+        .subscribe(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("subscribe");
+    let mut sink = Recorder::default();
+
+    replay(
+        &mut sink,
+        &broker,
+        Some(HistoryRange {
+            from_offset: 0,
+            until_offset: 5,
+        }),
+        Vec::new(),
+        5,
+        &mut subscription,
+        64,
+    )
+    .await
+    .expect("replay");
+
+    assert_eq!(sink.offsets(), vec![0, 1, 3, 4]);
+    assert_eq!(
+        sink.payloads(),
+        vec![payload("a"), payload("b"), payload("c"), payload("d")],
+    );
+    assert_eq!(sink.skips(), vec![(3, 1)]);
+}
+
+/// Resuming exactly at a generation start's offset starts at the next event.
+#[tokio::test]
+async fn a_resume_at_a_generation_start_begins_with_the_next_event() {
+    let (broker, _dir) = durable_broker().await;
+    publish(&broker, &["a", "b"]).await;
+    generation_start(&broker).await;
+    publish(&broker, &["c", "d"]).await;
+    let mut subscription = broker
+        .subscribe(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("subscribe");
+    let mut sink = Recorder::default();
+
+    replay(
+        &mut sink,
+        &broker,
+        Some(HistoryRange {
+            from_offset: 2,
+            until_offset: 5,
+        }),
+        Vec::new(),
+        5,
+        &mut subscription,
+        64,
+    )
+    .await
+    .expect("replay");
+
+    assert_eq!(sink.offsets(), vec![3, 4]);
+    assert_eq!(sink.skips(), vec![(3, 1)]);
+}
+
+/// A history range whose last offset is a generation start must end. Reading
+/// from it returns only the event after the range, and a replay that did not
+/// step past it would read the same page forever.
+#[tokio::test]
+async fn a_history_range_ending_on_a_generation_start_finishes() {
+    let (broker, _dir) = durable_broker().await;
+    publish(&broker, &["a", "b"]).await;
+    generation_start(&broker).await;
+    publish(&broker, &["c"]).await;
+    let mut subscription = broker
+        .subscribe(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("subscribe");
+    let mut sink = Recorder::default();
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        replay(
+            &mut sink,
+            &broker,
+            Some(HistoryRange {
+                from_offset: 0,
+                until_offset: 3,
+            }),
+            vec![(3, payload("c"))],
+            3,
+            &mut subscription,
+            64,
+        ),
+    )
+    .await
+    .expect("the replay finished")
+    .expect("replay");
+
+    assert_eq!(sink.offsets(), vec![0, 1, 3]);
+    // The skip carries over from history to the backlog record after it.
+    assert_eq!(sink.skips(), vec![(3, 1)]);
+}
+
+/// The ring never holds a generation start, so a backlog straddling one has a
+/// hole. The hole is read from disk and becomes a skip.
+#[tokio::test]
+async fn a_backlog_across_a_generation_start_reports_the_skip() {
+    let (broker, _dir) = durable_broker().await;
+    publish(&broker, &["a", "b"]).await;
+    generation_start(&broker).await;
+    publish(&broker, &["c"]).await;
+    let resumed = broker
+        .subscribe_from(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            0,
+            felix_wire::StartPosition::Offset(0),
+        )
+        .await
+        .expect("subscribe");
+    assert!(resumed.history.is_none(), "the ring holds all of it");
+    let mut subscription = resumed.subscription;
+    let mut sink = Recorder::default();
+
+    replay(
+        &mut sink,
+        &broker,
+        None,
+        resumed.backlog,
+        resumed.backlog_start,
+        &mut subscription,
+        64,
+    )
+    .await
+    .expect("replay");
+
+    assert_eq!(sink.offsets(), vec![0, 1, 3]);
+    assert_eq!(sink.skips(), vec![(3, 1)]);
+}
+
+/// A client that did not offer the skip bit gets exactly the frames it got
+/// before: offsets, and a jump where the generation start is.
+#[tokio::test]
+async fn a_client_without_the_skip_bit_gets_offsets_only() {
+    let (broker, _dir) = durable_broker().await;
+    publish(&broker, &["a", "b"]).await;
+    generation_start(&broker).await;
+    publish(&broker, &["c"]).await;
+    let mut subscription = broker
+        .subscribe(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("subscribe");
+    let mut sink = Recorder::default();
+
+    replay_as(
+        &mut sink,
+        &broker,
+        Some(HistoryRange {
+            from_offset: 0,
+            until_offset: 4,
+        }),
+        Vec::new(),
+        4,
+        &mut subscription,
+        64,
+        EventFormat {
+            offsets: true,
+            skips: false,
+        },
+    )
+    .await
+    .expect("replay");
+
+    assert_eq!(sink.offsets(), vec![0, 1, 3]);
+    assert!(!sink.any_skip_flag());
+}
+
+/// Live delivery after a generation start: the first publish after it carries
+/// the skip on its envelope, the one every subscriber shares.
+#[tokio::test]
+async fn the_first_publish_after_a_generation_start_carries_the_skip() {
+    let (broker, _dir) = durable_broker().await;
+    publish(&broker, &["a"]).await;
+    let mut subscription = broker
+        .subscribe(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("subscribe");
+    generation_start(&broker).await;
+    publish(&broker, &["b", "c"]).await;
+
+    let ready = subscription.drain_ready();
+    let envelopes: Vec<_> = ready
+        .iter()
+        .map(|envelope| (envelope.base_offset(), envelope.skipped_before()))
+        .collect();
+    assert_eq!(envelopes, vec![(Some(2), 1), (Some(3), 0)]);
 }
 
 /// History runs before the backlog, and the two are contiguous.
@@ -465,34 +728,25 @@ mod batching {
     #[test]
     fn a_break_in_the_offsets_closes_the_batch() {
         let mut batch = ReplayBatch::new(64, 1024);
-        assert!(batch.push(0, payload("a")).is_none());
-        assert!(batch.push(1, payload("b")).is_none());
+        assert!(batch.push(0, payload("a"), 0).is_none());
+        assert!(batch.push(1, payload("b"), 0).is_none());
 
-        let closed = batch.push(9, payload("c")).expect("the run broke");
+        let closed = batch.push(9, payload("c"), 0).expect("the run broke");
 
-        assert_eq!(
-            closed.iter().map(|(offset, _)| *offset).collect::<Vec<_>>(),
-            vec![0, 1],
-        );
-        assert_eq!(
-            batch
-                .take()
-                .expect("the new run")
-                .iter()
-                .map(|(offset, _)| *offset)
-                .collect::<Vec<_>>(),
-            vec![9],
-        );
+        assert_eq!(closed.offsets(), vec![0, 1]);
+        assert_eq!(batch.take().expect("the new run").offsets(), vec![9]);
     }
 
     #[test]
     fn the_byte_limit_closes_a_batch() {
         let mut batch = ReplayBatch::new(64, 4);
-        assert!(batch.push(0, payload("aaa")).is_none());
+        assert!(batch.push(0, payload("aaa"), 0).is_none());
 
-        let closed = batch.push(1, payload("bbb")).expect("over the byte limit");
+        let closed = batch
+            .push(1, payload("bbb"), 0)
+            .expect("over the byte limit");
 
-        assert_eq!(closed.len(), 1);
+        assert_eq!(closed.payloads.len(), 1);
     }
 
     /// A single record larger than the limit still goes: the alternative is a
@@ -500,8 +754,8 @@ mod batching {
     #[test]
     fn a_record_larger_than_the_limit_is_still_delivered() {
         let mut batch = ReplayBatch::new(64, 1);
-        assert!(batch.push(0, payload("a much larger payload")).is_none());
-        assert_eq!(batch.take().expect("the record").len(), 1);
+        assert!(batch.push(0, payload("a much larger payload"), 0).is_none());
+        assert_eq!(batch.take().expect("the record").payloads.len(), 1);
     }
 
     #[test]

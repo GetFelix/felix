@@ -326,6 +326,14 @@ Bounds that hold regardless of log size:
   offset returns `StorageError::Trimmed { requested, oldest }` — those offsets
   existed and are gone, which is a different fact from "nothing here yet".
 
+`read_range` returns every record, including a leader's generation-start
+records (`docs/storage-format.md`). Only replication reads that way
+(`StreamLog::read_log_from`), since it ships and compares the log exactly as
+stored. Every other reader goes through `StreamLog::read_from`, which leaves
+them out and reads on past them, so a page is empty only at the tail. Their
+offsets stay taken: a reader sees the offset after one follow the offset before
+it.
+
 ## Resuming a subscription
 
 Durability is only half of a resume: records surviving a restart is worthless if

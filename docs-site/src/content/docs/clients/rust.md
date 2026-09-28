@@ -500,22 +500,30 @@ pub struct Event {
     /// The log offset on a durable stream. `None` on an in-memory one, and
     /// against a broker that did not negotiate offsets.
     pub offset: Option<u64>,
+    /// Offsets just before `offset` that hold no event. Non-zero only on the
+    /// first event after a leader change.
+    pub skipped_before: u64,
 }
 ```
 
 ### Offsets are how you notice a drop
 
 Subscriber queues shed under the default policy rather than blocking the
-publisher, so a subscriber can silently miss records. Offsets are contiguous,
-so **a jump between consecutive events is exactly a drop**:
+publisher, so a subscriber can silently miss records. **A jump between
+consecutive offsets is a drop**, with one exception the broker tells you about:
+a new leader writes a generation-start record that takes an offset and is
+never delivered, and the event after it says so in `skipped_before`.
 
 ```rust
 let mut expected: Option<u64> = None;
 while let Some(event) = subscription.next_event().await? {
     if let (Some(want), Some(got)) = (expected, event.offset)
-        && got != want
+        && got - event.skipped_before != want
     {
-        tracing::warn!(dropped = got - want, "subscriber queue overflowed");
+        tracing::warn!(
+            dropped = got - event.skipped_before - want,
+            "subscriber queue overflowed"
+        );
     }
     expected = event.offset.map(|offset| offset + 1);
     handle(&event.payload);
@@ -523,7 +531,8 @@ while let Some(event) = subscription.next_event().await? {
 ```
 
 Worth writing even if you never resume from offsets. It is the only signal the
-queue overflowed.
+queue overflowed. A broker older than the skip count reports none, so against
+one a leader change reads as a drop of one.
 
 ### A consumer that survives a restart
 

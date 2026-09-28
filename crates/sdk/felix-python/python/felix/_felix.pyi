@@ -37,6 +37,7 @@ class Event:
     stream: str
     payload: bytes
     offset: int | None
+    skipped_before: int
 
 class SubscriptionHandle:
     closed: bool

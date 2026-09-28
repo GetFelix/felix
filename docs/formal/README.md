@@ -156,7 +156,10 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardFencedAckTwoPromotions.cfg` | the same with two promotions (`L = 2`) and no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (14.3M distinct states, depth 35, 80 s on ten cores; by hand only, see below) |
 | `FelixShardFollowerLabels.cfg` | the same with followers labelling a shipped record with the sender's generation rather than the one that wrote it (`LabelOnReceipt`) | violate `AckedOnMajority` |
 | `FelixShardUnfencedAck.cfg` | the same without the fence | violate `AckedHeldByLeader` |
-| `FelixShardFigure8.cfg` | the broker as built (`FelixShardFencedPromotion.cfg`), started from a history two leaderships in (`FelixShardFigure8.tla`) | violate `AckedOnMajority`: a pinned gap, see below |
+| `FelixShardFigure8.cfg` | the broker as built (`FelixShardFencedPromotion.cfg`) with the generation start record (`StartRecord`), started from a history two leaderships in (`FelixShardFigure8.tla`) | pass every invariant it checks (5.99M distinct states, depth 39, 35 s on sixteen cores) |
+| `FelixShardFigure8NoStartRecord.cfg` | the same without the start record: the mark counts records the leader inherited | violate `AckedOnMajority`: Raft's Figure 8, see below |
+| `FelixShardFigure8CutOver.cfg` | the start record, from a history one leadership further (`SeededCutOverInit`): the next leader comes from a move's cut-over or a cancelled move's hand-back | pass every invariant it checks (12.9M distinct states, depth 39, 90 s) |
+| `FelixShardFigure8CutOverNoStartRecord.cfg` | the same without the start record, and without the cancel, so the trace goes through the cut-over | violate `AckedOnMajority`: Figure 8 through a move, see below |
 | `FelixShardFencedPromotion.cfg` | the broker as built: `FelixShardRealMargins.cfg` with the promotion fence and its catch-up, acknowledgements still on the report and the lease | pass every invariant and `AckedHeldByLeader` (8.15M distinct states, depth 30, 55 s on sixteen cores) |
 | `FelixShardNoCommitCheck.cfg` | commit-time lease check removed | violate `NoStaleCommit` |
 | `FelixShardNoReportOrder.cfg` | the design *before* #268: a `Quorum` ack released before the report describing it lands | violate `AckedSurvive` |
@@ -382,15 +385,39 @@ copy of an inherited record looks newer than a log that holds more.
 Two promotions do not reach Raft's Figure 8, which needs a third leadership
 after the two that disagree, and three from the start did not finish.
 `FelixShardFigure8.tla` starts from the history instead: a wrote x at 1, b
-wrote y at 2, neither shipped. With every label correct, the broker as built
-still loses x. c is promoted at 3, takes x in its fence and acknowledges it
-on a majority, because the report and the quorum mark count a record the
-leader inherited like its own; a is promoted at 4 and its fence takes b's log,
-which is ahead by generation. Counting only records of the leader's own
-generation closes it, as `HeldAtGen` does: with that check deleted, the same
-seeded history under `FelixShardFencedAckTwoPromotions.cfg`'s knobs fails in
-twelve steps. The configuration pins the gap until the acknowledgement stops
-counting inherited records.
+wrote y at 2, neither shipped. Without the start record
+(`FelixShardFigure8NoStartRecord.cfg`), every label correct, x is lost. c is
+promoted at 3, takes x in its fence and acknowledges it on a majority,
+because the report and the quorum mark count a record the leader inherited
+like its own; a is promoted at 4 and its fence takes b's log, which is ahead
+by generation. Counting only records of the leader's own generation closes
+it, as `HeldAtGen` does: with that check deleted, the same seeded history
+under `FelixShardFencedAckTwoPromotions.cfg`'s knobs fails in twelve steps.
+
+The broker closes it the way Raft does, with a no-op at the start of each
+term. `StartRecord` models it: a leader, once it opens for writes (after its
+fence under `FenceOnPromote`, at the promotion, cut-over or cancel
+otherwise), appends a generation-start record at its own generation before
+any client write. It ships like any record but is no client's write, so it
+is never acknowledged and costs no write (`StartId`). The mark, and the
+length the report measures holders at, stop only at a record of the
+leader's own generation, so an inherited record is acknowledged once the
+start record behind it reaches a majority. c's start record then has to be
+on a or b before x counts, which gives a's log the newer last generation,
+and `FelixShardFigure8.cfg` passes. Every other configuration sets
+`StartRecord = FALSE` and explores the states it did before.
+
+A move reaches the same loss one leadership later, which is why the broker
+writes the record on every leadership change and not only on a promotion.
+`SeededCutOverInit` starts where c, promoted at 3 before the fleet finalized
+`generation_start`, holds x unacknowledged and is stopped for a move to a.
+Without the record (`FelixShardFigure8CutOverNoStartRecord.cfg`), a cuts over
+at 4, acknowledges x on a and c, and c, promoted at 5 from a's report, takes
+b's y in its fence, and AckedOnMajority fails. With it
+(`FelixShardFigure8CutOver.cfg`, the cancel on too, so c's hand-back is
+covered as well) the new leader's start record has to reach a majority before
+x counts, and every later fence prefers that log to b's. 12.9M distinct
+states, 90 s.
 
 ### The check that is load-bearing
 
