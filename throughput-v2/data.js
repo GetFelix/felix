@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790608469381,
+  "lastUpdate": 1790612171882,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19656,6 +19656,58 @@ window.BENCHMARK_DATA = {
             "range": "8353.35",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 845824.96\nmean: 846120.28\nstdev: 8353.35\ncv: 0.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d579ed00d1774b2da9f520b4b868e58edd84fa6d",
+          "message": "fix(replication): a new leader writes a generation-start record and counts only past it (#826)\n\nA promoted leader counted the records it inherited toward its quorum mark,\nso a record acknowledged on a majority could be replaced when a later fence\npreferred a log with a newer last generation (Raft's Figure 8, found by TLC\nfrom a seeded history). A move's cut-over or a cancelled move's hand-back\nreaches the same loss one leadership later.\n\nOnce the fleet finalizes the `generation_start` feature, a leader appends a\ngeneration-start record at its generation's start before it serves (after a\npromotion's fence, at either end of a move, on a hand-back), and a stream\nleader's mark counts a majority only once it reaches a record of its own\ngeneration. Inherited records become readable as soon as the record is on a\nmajority, with no client write needed. Before the finalize nothing changes.\n\n- Storage format v4: flag bit 29 of payload_len. Segments stay v3 until a\n  log's first record needs v4, so the upgrade stays reversible until the\n  finalize.\n- Readers skip the record: subscriptions, replay, Kafka, groups, cache and\n  counter projections, hydrate, cache watch, felix-log-tool.\n- Client flag FLAG_EVENT_BATCH_SKIPPED (0x0800) and Event::skipped_before\n  keep \"an offset jump is a drop\" truthful.\n- Model: StartRecord knob. FelixShardFigure8 and FelixShardFigure8CutOver\n  pass; their twins without the record violate AckedOnMajority.\n  check_tla.sh takes configuration names.\n- Cluster tests for a cut-over, a hand-back and the not-finalized path;\n  upgrade runbook for finalizing generation_start.",
+          "timestamp": "2026-09-28T09:12:23-07:00",
+          "tree_id": "0c0666bd6bb3bf1e56ce4352ad9b7219e84cf6b2",
+          "url": "https://github.com/gabloe/felix/commit/d579ed00d1774b2da9f520b4b868e58edd84fa6d"
+        },
+        "date": 1790612170801,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 329778.06,
+            "range": "9237.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 329778.06\nmean: 325166.42\nstdev: 9237.59\ncv: 2.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 329778.06,
+            "range": "9237.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 329778.06\nmean: 325166.42\nstdev: 9237.59\ncv: 2.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80951.82,
+            "range": "699.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80951.82\nmean: 80707.67\nstdev: 699.87\ncv: 0.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 809518.21,
+            "range": "6998.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 809518.21\nmean: 807076.70\nstdev: 6998.70\ncv: 0.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
