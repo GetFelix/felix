@@ -80,7 +80,7 @@ ones that would rather be refused.
 
 ## Its counterpart
 
-[`task cluster:failover`](/felix/development/testing/#the-cluster-harness) is the other half:
+[`task cluster:failover`](/felix/architecture/testing/#the-cluster-harness) is the other half:
 a quorum-acknowledged record **surviving** the loss of the broker that
 acknowledged it, read back from the replica promoted in its place. That one
 shows the guarantee working; this one shows what it costs and what happens

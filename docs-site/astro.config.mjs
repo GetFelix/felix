@@ -158,7 +158,6 @@ export default defineConfig({
           items: [
             { label: 'Contributing', slug: 'development/contributing' },
             { label: 'Building & Testing', slug: 'development/building' },
-            { label: 'Testing Distributed Behaviour', slug: 'development/testing' },
             { label: 'Fuzzing', slug: 'development/fuzzing' },
             { label: 'Project Structure', slug: 'development/project-structure' },
             { label: 'How Felix Works', slug: 'development/how-felix-works' },

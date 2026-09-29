@@ -6,8 +6,8 @@ description: "The history checker, fault injection on a real cluster, and the TL
 The replication rows on [What Felix Is For](/felix/getting-started/what-felix-is-for/)
 rest on three kinds of evidence. A history checker runs clients against a real
 three-broker cluster while it injects faults, then checks what the clients saw.
-The cluster harness injects those faults, and individual tests use it to pin
-one scenario at a time. TLA+ models cover the interleavings no injected fault
+The cluster harness runs those brokers and injects the faults, and individual
+tests use it to pin one scenario at a time. TLA+ models cover the interleavings no injected fault
 reliably reaches. This page says what each one does and where the detail lives.
 
 ## The history checker
@@ -51,8 +51,7 @@ pause (`SIGSTOP`) and partition. The nightly workflow
 adds link faults (dropped or delayed peer traffic, lost control-plane replies),
 clock faults (a broker's lease clock at 0.5x or 20x, the control plane's wall
 clock stepped 15 s forward) and disk faults (slow fsyncs, one failed fsync).
-It prints the seed first, so a failing night can be replayed with
-`FELIX_HISTORY_SEED`.
+
 
 `FELIX_HISTORY_MODE` picks the replication path. In `lease` mode the campaign
 tests the report and lease path every stream uses by default. In `lease-free`
@@ -61,33 +60,79 @@ after start-up and fails at once if any broker does not turn them on. The
 nightly run and the per-PR main campaign use `lease-free`; the per-PR
 every-family campaign uses `lease`, so each pull request covers both.
 
+```bash
+cargo build -p felix-broker-service --bin felix-broker
+cargo test -p felix-cluster --test history -- --nocapture
+```
+
+`FELIX_HISTORY_SEED` takes a number or `random`. Setting
+`FELIX_HISTORY_DURATION_SECS` changes how long the nemesis runs and also
+switches the main campaign to every fault family. The nightly job prints its
+seed and mode first, so a red night replays with:
+
+```bash
+FELIX_HISTORY_SEED=<seed> FELIX_HISTORY_MODE=lease-free FELIX_HISTORY_DURATION_SECS=1200 \
+    cargo test -p felix-cluster --test history -- --nocapture
+```
+
+The seed fixes the fault schedule and the clients' choices but not thread
+interleaving, so a failing seed makes the failure likely to recur, not certain.
+Run it a few times.
+
 Detail, including how to read a violation and how to add a fault:
 [`docs/history-checker.md`](https://github.com/gabloe/felix/blob/main/docs/history-checker.md).
 
-## Fault injection
+## The cluster harness
 
-`crates/testing/felix-cluster` starts a control plane and several real broker
-processes on one machine. Tests drive them through the client API and inject
-faults as values: `Cluster::inject` applies one and returns once it is in
-effect, and `Cluster::heal` undoes it. Faults from different families compose,
-so one scenario can cut a leader's links and speed up its clock at once.
+`crates/testing/felix-cluster` starts a cluster on one machine. Brokers are
+real `felix-broker` processes, each with its own ports, identity, credential
+and data directory. The control plane runs inside the harness process so it can
+mint node and client tokens.
 
-| Family | What the broker sees |
-| --- | --- |
-| Process | Killed, stopped gracefully, suspended with `SIGSTOP`, or partitioned from its peers while it keeps heartbeating |
-| Link | Traffic in one direction dropped or delayed, through proxies the harness owns |
-| Clock | A clock stepped or running fast or slow, through `FELIX_CLOCK_FAULT_FILE` |
-| Disk | Flushes slowed, failing with `EIO`, or failing once |
+```bash
+task cluster:up        # start three nodes and hold until Ctrl-C
+task cluster:status    # start, print membership and shard ownership, tear down
+task cluster:failover  # kill the leader and keep publishing
+task cluster:test      # cargo test -p felix-cluster
+```
 
-Clock and disk faults read files that only debug and fault-injection builds
-honour. A release build ignores them and reads the real clocks and disk.
-`crates/testing/felix-cluster/tests/failures/` has one module per family, and
-each test first checks that its fault took effect, so a fault that silently did
-nothing fails the test instead of passing it.
+The harness runs the prebuilt `target/<profile>/felix-broker` and never
+rebuilds it. `cluster:up` and `cluster:status` build it first, and so does
+`task test`. `cluster:failover` and `cluster:test` do not, so after a broker
+change run `cargo build -p felix-broker-service --bin felix-broker` or the
+tests exercise the old binary.
 
-The harness runs a prebuilt `target/<profile>/felix-broker`, so build it
-(`cargo build -p felix-broker-service --bin felix-broker`) before running the
-cluster tests on their own. `task test` builds it for you.
+Cluster tests are `#[serial]`, since each starts several brokers. Start-up
+returns only once every shard has a leader, a publish has succeeded and every
+leader has a caught-up replica, so a test can fail over straight away.
+`FELIX_TEST_TIMEOUT_SCALE` multiplies every harness deadline for slow machines;
+CI sets it to 3.
+
+### Faults
+
+Tests inject faults as values. `Cluster::inject` applies one and returns once
+it is in effect, `Cluster::heal` undoes it, and `Cluster::heal_all` undoes
+everything still injected. Faults from different families compose, so one
+scenario can cut a leader's links and speed up its clock at once.
+
+| Fault | Effect | Mechanism |
+| --- | --- | --- |
+| `Drop`, `Delay` | Traffic on one link, one direction, lost or late | Harness-owned proxies (`ClusterConfig::proxy_links`) |
+| `Refuse` | A broker's requests to chosen peers fail at once | `FELIX_PEER_PARTITION_FILE` |
+| `Suspend` | `SIGSTOP`: the broker stays alive, holds its lease and answers nothing | Signal (Unix only) |
+| `Clock` | Time stepped or running at a different rate | `FELIX_CLOCK_FAULT_FILE` |
+| `Fsync` | Flushes delayed, failing with `EIO`, or failing once | `FELIX_STORAGE_FAULT_FILE` |
+
+Process-level faults are methods: `stop_node`, `kill_node`, `pause_node`,
+`partition_node`, `restart_control_plane`, `drain_node` and `add_node`.
+
+The clock and storage seams exist only in debug builds and builds with the
+`fault-injection` feature; a release broker ignores those files. A broker's
+lease clock never goes backwards, so the harness refuses a backward step on a
+broker. `crates/testing/felix-cluster/tests/failures/` has one module per
+fault family plus failover, fencing, promotion and quorum scenarios, and each
+fault test first checks that its fault took effect, so a fault that silently
+did nothing fails the test instead of passing it.
 
 The same crate holds a conformance suite that runs one set of assertions
 against a single broker and a three-node cluster: a client must not be able to
@@ -120,10 +165,14 @@ start record or the read round, and exist to show that piece is load-bearing.
 If one of them stopped finding its violation, the check would fail.
 
 CI runs TLC over every configuration on each code change (`task tla:check`,
-about half an hour on a four-core runner). Model checking shows the spec is
-consistent, not that it still describes the code, so CI also runs
+about half an hour on a four-core runner; it needs Java or Docker). Model
+checking shows the spec is consistent, not that it still describes the code,
+so CI also runs
 `scripts/check_spec_pairing.py`: a change to code the model covers must change
-the spec too, or carry a `Spec-Unaffected:` trailer saying why not.
+the spec too, or carry a `Spec-Unaffected:` line in a commit message or the PR
+description saying why not. `task tla:pairing` runs that check locally, and
+`scripts/check_spec_evidence.py`, part of `task docs:evidence`, checks that
+every test the spec cites still exists.
 
 Detail, with every configuration and its state count:
 [`docs/formal/README.md`](https://github.com/gabloe/felix/blob/main/docs/formal/README.md).
