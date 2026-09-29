@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790630108463,
+  "lastUpdate": 1790641922711,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -25212,6 +25212,72 @@ window.BENCHMARK_DATA = {
             "range": "2089.72",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1807.00\nmean: 2417.80\nstdev: 2089.72\ncv: 86.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "60bbca69039472d2965f2011700d5996dcb6f2ea",
+          "message": "feat(routing): jump-hash stream routing behind the fleet gate (#831)\n\n* feat(routing): jump-hash stream routing behind the fleet gate\n\nA stream's key-to-shard mapping is now recorded with it and fixed at\ncreation. Streams created after the fleet finalizes jump_hash_routing\nuse jump consistent hashing; streams created before keep modulo, so no\nkey of a live stream ever moves.\n\n- Control plane: streams.routing (migration 0022), chosen at create\n  from the fleet gate, and stamped onto every shard-assignment feed.\n- Broker: the routing table keeps each stream's width and mapping from\n  the same assignments; keyed publishes resolve by it, and\n  stream_shards_view carries routing for jump-hash streams.\n- Client: ClusterClient caches the stream's routing with its width, so\n  its owner cache is keyed by the shard the broker picks.\n- The broker now reports jump_hash_routing in fleet::IMPLEMENTED.\n\nSpec-Unaffected: the TLA+ model does not cover key-to-shard routing; it models one shard's log and replication, which this does not change.\n\n* build(demos): re-lock the demos for felix-wire in the router's dependencies\n\nSpec-Unaffected: lockfiles only",
+          "timestamp": "2026-09-28T17:28:15-07:00",
+          "tree_id": "695ad6af9e0ebd195a2bf925578bfaff28bace2e",
+          "url": "https://github.com/gabloe/felix/commit/60bbca69039472d2965f2011700d5996dcb6f2ea"
+        },
+        "date": 1790641919013,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 178,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 178.00\nmean: 177.40\nstdev: 0.89\ncv: 0.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 240,
+            "range": "3.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 240.00\nmean: 240.80\nstdev: 3.70\ncv: 1.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 292,
+            "range": "12.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 292.00\nmean: 293.40\nstdev: 12.46\ncv: 4.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 213,
+            "range": "6.02",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 213.00\nmean: 214.80\nstdev: 6.02\ncv: 2.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 441,
+            "range": "71.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 441.00\nmean: 468.60\nstdev: 71.20\ncv: 15.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 653,
+            "range": "404.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 653.00\nmean: 812.20\nstdev: 404.70\ncv: 49.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
