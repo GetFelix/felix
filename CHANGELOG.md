@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Felix is pre-1.0: the wire protocol and broker semantics may change between
 minor versions. See [delivery semantics](docs-site/src/content/docs/architecture/semantics.md)
-for what the current release actually guarantees.
+for what the current release guarantees.
 
 ## [Unreleased]
 
@@ -353,8 +353,8 @@ for what the current release actually guarantees.
   nothing newer than `since`, the request waits up to that long (capped at
   25 s) and answers as soon as a change lands. It holds no store connection
   while waiting, and without `wait_ms` it behaves exactly as before. A replica
-  report that a move is waiting for — a drained leader, or a caught-up staged
-  successor — now wakes placement at once instead of at its next tick; wakes
+  report that a move is waiting for (a drained leader, or a caught-up staged
+  successor) now wakes placement at once instead of at its next tick; wakes
   coalesce and one pass runs at a time. New histograms
   `felix_shard_move_duration_seconds` and `felix_shard_move_fence_seconds`
   time moves from the steps each control-plane instance writes.
@@ -403,10 +403,10 @@ for what the current release actually guarantees.
   a localhost control endpoint (`POST /fence`, `/partition`, `/heal`).
 
 - **Online shard rebalancing** (#130). A shard whose leader is alive is now
-  moved rather than reassigned. The control plane stages the destination as a
-  replica and lets the leader catch it up, fences the leader once the copy is
-  level — the assignment goes `draining`, and a broker never serves a draining
-  assignment — waits for the leader to report that its log has stopped
+  moved instead of reassigned. The control plane stages the destination as a
+  replica and lets the leader catch it up. Once the copy is level it fences the
+  leader (the assignment goes `draining`, and a broker never serves a draining
+  assignment), waits for the leader to report that its log has stopped
   growing, and only then names the destination leader at a new generation.
   Each step is an assignment write, so any control-plane instance resumes a
   half-done move from the store.
@@ -415,7 +415,7 @@ for what the current release actually guarantees.
   everything it leads and is replaced as a follower wherever it holds a copy,
   so it can then be deleted. A broker leading more than its share of shards
   gives them to one under its share, which is what makes a broker that joins
-  a running cluster take work — the case where a control-plane restart left
+  a running cluster take work. A cluster where a control-plane restart left
   every shard on the first broker to register now corrects itself. Moves only
   go from over share to under share and count moves in flight as done, so
   placement converges instead of oscillating. `FELIX_SHARD_MOVES_MAX_CONCURRENT`
@@ -560,7 +560,7 @@ for what the current release actually guarantees.
 
 - Fresh placement bounds leaders as well as roles. With a replication factor
   equal to the node count every node holds a role for every shard, so the
-  role bound was satisfied with every leader on one node — and the new
+  role bound was satisfied with every leader on one node, and the new
   rebalancer would then move them apart again. A cluster placed from scratch
   now needs no move to be balanced.
 - A `draining` assignment is reachable from `assigning` as well as `active`,
@@ -1012,10 +1012,9 @@ Development towards 0.6.0. Not a release: published from this line only if and
 when something needs to be, and `pip` will not install it without `--pre`.
 
 **A note on the version string.** Cargo and npm carry `0.6.0-preview`
-verbatim. PEP 440 normalises it to `0.6.0rc0` — `preview` is one of its
-spellings of `rc` — so the wheel's version differs from the crate's and the
-npm package's by design rather than by mistake. It sorts before `0.6.0` on all
-three, which is what matters.
+verbatim. PEP 440 normalises it to `0.6.0rc0` (`preview` is one of its
+spellings of `rc`), so the wheel's version differs from the crate's and the
+npm package's on purpose. It sorts before `0.6.0` on all three.
 
 ### Fixed
 
@@ -1036,7 +1035,7 @@ three, which is what matters.
 - **The docs said the clients were not installable.** They are: `felix-client`
   is on crates.io, PyPI and npm, the same name on all three. The client pages
   still told readers to point `pip` at a release asset, to build the Node addon
-  from a checkout, and to depend on `felix-client = "0.1"` — a version that was
+  from a checkout, and to depend on `felix-client = "0.1"`, a version that was
   never published.
 
   Now `cargo add felix-client`, `pip install felix-client`, `npm install
@@ -1062,8 +1061,8 @@ three, which is what matters.
   requires the package to exist before a trusted publisher can be configured
   too ([npm/cli#8544](https://github.com/npm/cli/issues/8544) tracks lifting
   that), which leaves no way for CI to create a name at all: the remaining
-  option is a direct publish, needing either a token that bypasses 2FA —
-  restricted, and losing publish rights around January 2027 — or a person
+  option is a direct publish. That needs either a token that bypasses 2FA
+  (restricted, and losing publish rights around January 2027) or a person
   answering the prompt.
 
   `scripts/npm_first_publish.sh` is that person's script. It publishes the
@@ -1077,15 +1076,15 @@ three, which is what matters.
 
 - **A publish could have gone to a corporate mirror.** `npm publish` uses
   whatever registry is configured, and a mirror in `~/.npmrc` is a normal thing
-  for a machine to have — this one had one, and the publish went at it and
+  for a machine to have. This one had one, and the publish went to it and
   stopped only because it demanded credentials. Every npm command in the script
   now pins `--registry` explicitly, and `crates/felix-typescript` and each
   platform package carry an `.npmrc` naming the public registry, the way
   `docs-site` already did for resolution.
 
   It falls back to plain HTTPS when `gh` is absent, so it runs in Azure Cloud
-  Shell and other minimal environments — which is where publishing is likely to
-  happen, since a corporate network cannot reach npm at all. The release is
+  Shell and other minimal environments. Publishing is likely to happen there,
+  since a corporate network cannot reach npm at all. The release is
   public, so there is nothing to authenticate to.
 
   The script also checks, before it downloads or packs anything, that the
@@ -1095,26 +1094,26 @@ three, which is what matters.
 
 ### Changed
 
-- **npm publishes through trusted publishing rather than a token.** The job
+- **npm publishes through trusted publishing instead of a token.** The job
   exchanges the workflow's OIDC identity for a short-lived credential, the way
   the PyPI job already did, so there is no `NPM_TOKEN` to store, rotate or
   leak. npm's own guidance is to prefer this over an automation token, and the
-  alternative was a token configured to bypass 2FA — a standing credential with
-  publish rights, held in CI, exempted from the control protecting it.
+  alternative was a token configured to bypass 2FA: a standing credential with
+  publish rights, held in CI and exempt from the control meant to protect it.
 
   Two details the failure mode hides: the job needs `id-token: write`, and Node
   22 ships an npm too old to know about OIDC, so the job upgrades npm first.
   Without either, a publish falls back to looking for a token and fails as
   though none were configured.
 
-  Each package needs a trusted publisher configured on npm — this repository,
-  this workflow, the `npm` environment — for all six.
+  Each of the six packages needs a trusted publisher configured on npm that
+  names this repository, this workflow and the `npm` environment.
 
 - **`napi prepublish` is no longer how the packages are published.** What it
   still did for this repository was sync the platform versions, which are
   committed and asserted by `check_npm_packages.py`, and upload the binaries to
   the GitHub release, which the release-assets job already did. What it did
-  besides was swallow "this package has no binary" and exit 0 — which is how a
+  besides was swallow "this package has no binary" and exit 0. That is how a
   publish job went green having uploaded nothing.
 
   It is an explicit `npm publish` per package now, platform packages before the
@@ -1129,16 +1128,16 @@ three, which is what matters.
   published is not there to configure.
 
   A trusted publisher can only be configured on a package that already exists,
-  so the first release of a new name cannot use one — and direct publishing
+  so the first release of a new name cannot use one, and direct publishing
   with a token that bypasses 2FA is deprecated and removed in January 2027.
-  Staging is what is left, and it is the better shape anyway: a person with 2FA
+  That leaves staging, which is also the better design: a person with 2FA
   confirms the one irreversible act, claiming a permanent name. The token is
-  passed only in staging mode — trusted publishing is the normal path, and a
-  token sitting alongside it is a second way in that nobody meant to leave
-  open.
+  passed only in staging mode. Trusted publishing is the normal path, and a
+  token sitting alongside it would be a second way in that nobody meant to
+  leave open.
 
-  The workflow records the one-time sequence, because it is exactly the kind of
-  thing nobody remembers a release later: stage, promote, configure the
+  The workflow records the one-time sequence, since nobody will remember it
+  by the next release: stage, promote, configure the
   publishers now that the packages exist, delete the token.
 
   In staging mode the job prints what to promote and in what order, and does
@@ -1151,22 +1150,22 @@ three, which is what matters.
   publishes the platform packages, but it does not assemble them: the binaries
   were downloaded beside the manifest, so every `npm/<triple>/` directory was
   empty, and each one was skipped with `[...felix.darwin-arm64.node] doesn't
-  exist` — on stdout, not as a failure. The job went green having uploaded
+  exist` on stdout, which is not treated as a failure. The job went green having uploaded
   nothing.
 
   Three steps now, because it is three things: `napi artifacts` moves each
   binary into the platform package that carries it, `napi prepublish` publishes
   those, and `npm publish` sends the JavaScript package that declares them as
-  optional dependencies. The last was missing outright — `prepublish` never
-  publishes the main package.
+  optional dependencies. The last step was missing outright, because
+  `prepublish` never publishes the main package.
 
-  And the job now asks the registry whether each of the six is really there,
-  failing if any is not. A publish step that cannot fail is not a publish step,
-  and this one proved it twice.
+  The job now also asks the registry whether each of the six is really there,
+  and fails if any is not. Without that check this step reported success
+  twice after publishing nothing.
 
 - **The PyPI step no longer fails on a rerun.** PyPI refuses a duplicate file
-  rather than ignoring it, so once 0.5.0 was up, every later run failed on it —
-  and later runs are the norm here, because the three registries finish at
+  instead of ignoring it, so once 0.5.0 was up, every later run failed on it.
+  Later runs are the norm here, because the three registries finish at
   different rates and whichever run completes the slowest one will always find
   PyPI already done. `skip-existing` makes it idempotent.
 
@@ -1176,8 +1175,8 @@ three, which is what matters.
   `napi prepublish -t npm --access public` is a napi 3 spelling; the CLI is
   pinned to 2, to match the napi crate, and it refused the flag before
   uploading anything. The flag was never needed once the packages went
-  unscoped — npm publishes an unscoped package publicly by default, and a
-  scoped one takes `publishConfig.access` in its manifest rather than a flag
+  unscoped. npm publishes an unscoped package publicly by default, and a
+  scoped one takes `publishConfig.access` in its manifest instead of a flag
   on the command.
 
 - **The crates.io job now waits out the new-crate rate limit** instead of
@@ -1186,12 +1185,11 @@ three, which is what matters.
   time got five up and was refused on the sixth with a `429` naming the time it
   would accept the next.
 
-  That is a queue rather than an error, and it only applies to names that have
-  never been published — later versions of an existing crate are not bounded
-  this way. The job reads the time from the response, waits, and retries, and
+  That is a queue, and it only applies to names that have never been
+  published. Later versions of an existing crate are not limited this way. The job reads the time from the response, waits, and retries, and
   gives up immediately on any failure that is not a rate limit. The existing
   skip-what-is-already-published behaviour means a resumed run picks up where
-  the last one stopped rather than erroring on what already landed.
+  the last one stopped instead of erroring on what already landed.
 
 ### Fixed
 
@@ -1203,7 +1201,7 @@ three, which is what matters.
   in the file pins `1.97.1`. The action added the target to *stable*, and then
   `rust-toolchain.toml` switched cargo to the pinned toolchain, which did not
   have it. Four of the five legs passed anyway, because their target is the
-  runner's own and was already installed — only the leg that genuinely
+  runner's own and was already installed. Only the leg that really
   cross-compiles, x86-64 on an arm64 macOS runner, had anything to notice.
 
   `task ci:toolchains` now asserts every workflow's Rust setup asks for the
@@ -1220,8 +1218,8 @@ the Python binding wraps, passing every required scenario in the conformance
 catalogue with CI and the release pipeline both gated on it.
 
 **The data path is binary.** A routing key now rides in the binary publish
-frame, so a keyed publish stops falling back to JSON — it measured 645.8 MB/s
-against 917 for the same workload — and the JSON publish surface is deprecated
+frame, so a keyed publish no longer falls back to JSON (which measured 645.8
+MB/s against 917 for the same workload), and the JSON publish surface is deprecated
 for removal in 0.6.0. A forwarded publish now says so on its ack and names the
 shard's owner, which makes the cost of publishing to the wrong broker visible
 for the first time.
@@ -1229,7 +1227,7 @@ for the first time.
 **Two defaults changed on measurement.** MTU discovery is bounded below Linux's
 UDP GSO ceiling, where the old bound could stall delivery outright on a
 jumbo-frame network; and a broker joining a cluster refuses to start with a
-credential nothing can renew, rather than running fine until the token expires
+credential nothing can renew, instead of running fine until the token expires
 and the lease lapses under it.
 
 **Upgrade notes.** A deployment passing an expiring `FELIX_NODE_TOKEN` by value
@@ -1247,7 +1245,7 @@ same bytes they did before.
 - **A forwarded publish says so on its ack, and names the shard's owner**
   (#536). A publish for a shard the receiving broker does not own is forwarded
   to the owner and acknowledged once the owner has written it. That is correct,
-  and it was invisible — so a client kept publishing to the same entry broker
+  but it was invisible, so a client kept publishing to the same entry broker
   forever while every record was decrypted, re-encrypted and decrypted again on
   the way. A perf session put the cost at roughly half the throughput per core:
   **~250 MB/s per busy vCPU direct against ~140 forwarded**.
@@ -1257,29 +1255,28 @@ same bytes they did before.
   signal that forwarding happened; the payload carries the owner's `node_id`,
   the address it serves *clients* on, and the ownership generation.
 
-  A hint, not a refusal: the publish already succeeded, so a client that ignores
-  it is exactly as correct as before, only as slow. That is what makes it safe
-  to add — nothing depends on a client acting on it. Only ever set for a client
-  that advertised the bit, and an ack with no owner is byte-identical to one
+  It is only a hint. The publish already succeeded, so a client that ignores
+  it is exactly as correct as before, and just as slow. That makes it safe to
+  add, since nothing depends on a client acting on it. It is only set for a
+  client that advertised the bit, and an ack with no owner is byte-identical to one
   from before the bit existed.
 
   Clients count it as `felix_client_publish_forwarded_total`, labelled by owner,
   and `felix_client::publishes_forwarded()` exposes the same number without the
-  telemetry feature — the question "am I paying the forwarding tax" is worth
-  being able to ask of a build that was not compiled for measurement.
+  telemetry feature, so a build compiled without measurement can still tell
+  whether it is paying for forwarding.
 
   **Routing on the hint is not built yet.** Caching shard → owner and sending
   the next batch straight there needs a connection per owner and a client-side
-  `shard_for(key)`, neither of which exists; that is its own change, and this is
-  what makes it measurable.
+  `shard_for(key)`, neither of which exists. That is a separate change, and
+  this one makes its benefit measurable.
 
 
 - **A routing key rides in the binary publish frame** (#549). A keyed publish
-  used to force the JSON encoding — the binary layouts were fixed and had
-  nowhere to put a key — and that fallback measured **645.8 MB/s against 917
+  used to force the JSON encoding, because the binary layouts were fixed and had
+  nowhere to put a key. That fallback measured **645.8 MB/s against 917
   MB/s** unkeyed on the same rig, with user CPU up from 20% to 28%. Routing a
-  record cost roughly 30% of throughput, which made sharding something you paid
-  for rather than something you got.
+  record cost roughly 30% of throughput, so sharding carried a real cost.
 
   `0x0040` is a modifier on `0x0001`, the shape `FLAG_BINARY_PUBLISH_ACKED`
   already established: the body is prefixed with a `u16` key length and the key
@@ -1288,18 +1285,18 @@ same bytes they did before.
 
   A broker that predates the bit would read `key_len` as `tenant_len`, so the
   client sends the keyed binary frame only to a broker that advertised it and
-  uses JSON otherwise — costing throughput, not correctness.
+  uses JSON otherwise. The fallback costs throughput and never correctness.
 
 - **A Node.js / TypeScript client** (`crates/felix-typescript`), a napi-rs
-  addon over `felix-client` rather than a reimplementation of the protocol —
-  the same reasoning as the Python binding, and the same surface: publish
+  addon over `felix-client` instead of a reimplementation of the protocol.
+  The reasoning matches the Python binding, and so does the surface: publish
   (keyed, or at-least-once), subscribe, sharded subscribe with per-shard
   resume, cache get/put/delete, counters, cache watches and consumer groups.
   Every call returns a `Promise`, and every handle is disposable.
-  Errors arrive as typed classes — `ConnectionError`, `AuthError`,
-  `NotFoundError`, `CursorError`, `InvalidArgumentError` — mirroring the
-  Python binding's exceptions, so an application branches on identity rather
-  than on message text.
+  Errors arrive as typed classes (`ConnectionError`, `AuthError`,
+  `NotFoundError`, `CursorError`, `InvalidArgumentError`) that mirror the
+  Python binding's exceptions, so an application branches on the error class
+  instead of the message text.
 
   It passes the client conformance suite, and CI and the release pipeline are
   both gated on that: the suite drives a real three-node fixture cluster,
@@ -1320,8 +1317,8 @@ same bytes they did before.
   asserts they match the tag, before anything is published.
 
 - **`task lock:refresh`**, and CI fails when a build updates a lockfile the
-  commit did not include. Six crates declare their own `[workspace]` — the four
-  under `demos/`, plus the Python and TypeScript bindings — so the repository
+  commit did not include. Six crates declare their own `[workspace]` (the four
+  under `demos/`, plus the Python and TypeScript bindings), so the repository
   workspace never touches their `Cargo.lock`. All four demo locks had sat at
   `0.4.0-preview` through two releases and had never heard of `io-uring`,
   because CI regenerated them on every run and nothing looked at what changed.
@@ -1329,7 +1326,7 @@ same bytes they did before.
 - **`felix-loadgen --keys <n>`** spreads the ingest scenario's batches over `n`
   routing keys. The scenario published unkeyed, and an unkeyed record resolves
   to shard 0, so every "multi-shard" measurement taken with it was really a
-  single-shard one — a 12-shard and a 1-shard stream measured identically
+  single-shard one. A 12-shard and a 1-shard stream measured identically
   (920 vs 923 MB/s) because both exercised the same log. Default `0` keeps the
   old behaviour, so existing runs stay comparable.
 
@@ -1344,20 +1341,20 @@ same bytes they did before.
   job walks a topological sort of the workspace's internal edges and skips any
   version already on the registry, so a re-run after a partial failure
   completes rather than erroring on what already landed. `task publish:check`
-  asserts that list is every publishable crate and is genuinely topological,
+  asserts that list is every publishable crate and is really topological,
   because nothing about adding a crate to the workspace forces anyone to
   revisit a workflow file.
 
   `felix-broker` and `felix-storage` are published too, AGPL-3.0 and all:
   `felix-client`'s `in-process` feature declares them optional, and crates.io
-  resolves an optional dependency like any other — `cargo publish --dry-run`
+  resolves an optional dependency like any other: `cargo publish --dry-run`
   refuses `felix-client` without them. The licence split is unchanged; a
   default `felix-client` build still pulls no AGPL-3.0 code.
 
 
-- **The npm publish can actually run** (#575). napi ships one package per
-  platform — the main package declares them as optional dependencies and npm
-  installs the matching one — and none of that existed: no `npm/` directory, no
+- **The npm publish can run** (#575). napi ships one package per
+  platform (the main package declares them as optional dependencies and npm
+  installs the matching one), and none of that existed: no `npm/` directory, no
   `optionalDependencies`, and a loader that only looked for a file beside
   itself. `napi prepublish` had nothing to publish.
 
@@ -1374,7 +1371,7 @@ same bytes they did before.
   Registry metadata went with it: neither binding shipped a `LICENSE` despite
   both declaring Apache-2.0, the Python package had no `py.typed` so type
   checkers ignored the stubs beside it, and every crate inherited the workspace
-  readme — the repository README, roadmap and all, rendered on eight library
+  readme, so the repository README, roadmap and all, rendered on eight library
   pages. Each publishable crate has its own now.
 
 ### Fixed
@@ -1387,10 +1384,10 @@ same bytes they did before.
   0.0.0.0:5000` and that "the broker is now ready to accept connections", and
   printed that command three times.
 
-  `default-run = "felix-broker"` fixes the first half. The second half is not a
-  bug — a broker validates client tokens against keys it fetches from the
+  `default-run = "felix-broker"` fixes the first half. The second half is
+  intended. A broker validates client tokens against keys it fetches from the
   control plane and registers itself there for shard placement, so there is no
-  unauthenticated mode — but the docs had never said so.
+  unauthenticated mode. The docs had never said so.
 
   The Quickstart now opens with `felix-cluster up`, which starts a control
   plane, mints the credentials and brings up three brokers, then publishes
@@ -1414,7 +1411,7 @@ same bytes they did before.
   from group commit. A ratio cannot tell "the flushes coalesced" from "this
   machine could not put sixteen appends in flight for them to", which is how it
   read 0.70x on a two-core runner with nothing wrong. `DiskLog::flushes()` now
-  exposes the flush count — one relaxed increment against an `fsync` — and the
+  exposes the flush count (one relaxed increment against an `fsync`), and the
   test asserts the thing itself: 64 appends produce 64 flushes serially and 5
   concurrently. Counting does not measure the machine.
 
@@ -1431,14 +1428,14 @@ same bytes they did before.
   never noticing a hang on the machines fast enough to.
 
   Deliberately untouched: `losing_quorum_fails_writes_loudly_not_silently`
-  waits on a leader noticing it has lost quorum, and that wait *is* the subject
-  — widening it would only make the test slower at noticing nothing. It is
+  waits on a leader noticing it has lost quorum, and that wait *is* the subject.
+  Widening it would only make the test slower. It is
   serialised instead, which is what its module already says.
 
 - **A cancelled idempotent publish no longer loses records silently.**
   `IdempotentProducer::publish_batch` advanced its sequence only after the
-  broker answered. Dropping the future in between — a `timeout`, a losing
-  `select!` branch — left the cursor pointing at a sequence the batch may
+  broker answered. Dropping the future in between (a `timeout`, a losing
+  `select!` branch) left the cursor pointing at a sequence the batch may
   already have been appended under. The next batch then went out under that
   spent number, and the broker's contract is to answer a remembered sequence
   *from memory without appending it*: the caller was told `Ok` and its records
@@ -1456,7 +1453,7 @@ same bytes they did before.
 ### Changed
 
 - **The Node package is `felix-client`, unscoped.** `@felix` on npm was already
-  taken — there is an unscoped `felix` package, and the scope with it — so the
+  taken (there is an unscoped `felix` package, and the scope with it), so the
   six packages the release publishes are `felix-client` and one per platform,
   `felix-client-darwin-arm64` and friends. All six names were confirmed free.
 
@@ -1464,13 +1461,13 @@ same bytes they did before.
   has on crates.io and the wheel has on PyPI, so one string covers every
   install instruction, and an unscoped name is first-come rather than colliding
   with a namespace someone else may hold. `publishConfig.access` went with the
-  scope — only a scoped package defaults to restricted.
+  scope, since only a scoped package defaults to restricted.
 
   Nothing had been published, so this costs nothing but the rename.
 
 
 - **The loopback MTU guarantee's buffer gate no longer moves with the MTU
-  knobs.** It asks one question — was this host tuned? — as a proxy, because
+  knobs.** It checks whether the host was tuned, as a proxy, because
   Linux clamps `SO_RCVBUF` to a stock ~208 KB and an untuned host cannot absorb
   the bursts the pin exists to survive. It was measured against the size about
   to be pinned, so when the discovery bound's default dropped to 4096 below the
@@ -1486,7 +1483,7 @@ same bytes they did before.
 - **MTU discovery is bounded below Linux's UDP GSO ceiling by default**
   (`4096`, was `16384`; macOS keeps `16384`). Linux packs a whole `sendmsg`
   batch into one IP datagram, so `MTU × segments` must stay under 65,535, and
-  quinn batches up to 10 — putting the real ceiling at **6,553 bytes**. Above it
+  quinn batches up to 10, which puts the real ceiling at **6,553 bytes**. Above it
   the kernel rejects every batch with `EMSGSIZE`, which quinn does not recognise
   as a GSO failure (it falls back only on `EIO`/`EINVAL`), so the transmit is
   dropped *after* quinn has counted it as sent and delivery stalls permanently
@@ -1494,14 +1491,14 @@ same bytes they did before.
 
   Loopback was capped at 4096 when this was diagnosed; a **routed** path was
   not. That made the old default harmless on a 1500-byte network and fatal on a
-  jumbo-frame one — which is the network you buy for throughput. Every perf
+  jumbo-frame one, and jumbo frames are what you buy for throughput. Every perf
   session set `FELIX_MTU_UPPER_BOUND=4096` by hand; that is now the default.
 
   `4096` rather than the exact `6553`: quinn's `MAX_TRANSMIT_SEGMENTS` is
   private to it, so the ceiling cannot be derived through its API, and 6,553
   breaks the moment that number rises. Two tests pin the invariant, and they
-  check the non-macOS value from either host — a check that quietly passes on
-  the machine doing the editing is worth very little.
+  check the non-macOS value from either host, so the check cannot quietly pass
+  just because of the machine doing the editing.
 
 - **A broker says so when the OS clamps its UDP socket buffers.** Linux accepts
   an oversized `SO_RCVBUF`/`SO_SNDBUF` and silently clamps it to
@@ -1513,7 +1510,7 @@ same bytes they did before.
 
   **Deliberately unchanged: `publish_conn_pool` (4) and `publish_sharding`
   (`HashStream`).** Both were swept in an Azure session and both looked
-  promising, but those runs were void — the generator was ignoring client
+  promising, but those runs were void. The generator was ignoring client
   environment config (#553), so the overrides never applied and the runs
   measured the defaults. Re-tested on a fixed generator, round-robin landed at
   912.6 MB/s, inside the 842–926 band every valid configuration occupied, and
@@ -1526,7 +1523,7 @@ same bytes they did before.
   page and everything else shared one, where TypeScript got two paragraphs.
   **Two URLs moved:** `/api/client-sdk/` is now `/clients/rust/`, and
   `/api/clients/` is now `/clients/overview/`. The Rust page also lost an error
-  handling example that could never have compiled — it matched on
+  handling example that could never have compiled. It matched on
   `felix_common::Error` variants that do not exist, in a crate that is not one
   of `felix-client`'s dependencies.
 
@@ -1540,8 +1537,8 @@ same bytes they did before.
   installation pages now pull instead, and keep the build commands for running
   something unreleased.
 
-  Images are signed with cosign, keyless, **over the digest and never the tag**
-  — a tag can be moved and a signature over one would follow it. The Kubernetes
+  Images are signed with cosign, keyless, **over the digest and never the tag**,
+  because a tag can be moved and a signature over one would follow it. The Kubernetes
   page carries the `cosign verify` invocation. The chart's image tag defaults to
   its `appVersion`, so a default install resolves to a published image with
   nothing to configure.
@@ -1549,7 +1546,7 @@ same bytes they did before.
 
 - **The data path is binary; JSON is compatibility only** (#550). Now that
   #549 put the routing key in the binary publish frame, the JSON encoding has
-  no remaining reason to carry data-plane traffic — it measured **645.8 MB/s
+  no remaining reason to carry data-plane traffic. It measured **645.8 MB/s
   against 917** for the same keyed workload on the same rig, with user CPU up
   from 20% to 28%, and it buys nothing the binary frames do not now cover.
 
@@ -1564,16 +1561,16 @@ same bytes they did before.
   that no current Felix client emits one except as a fallback it chooses itself,
   against a broker that did not advertise the frame it wanted.
   `felix_broker_json_publishes_total{frame="publish"|"publish_batch"}` counts what
-  still arrives that way — the evidence a deployment would need before the arm
-  could ever be dropped.
+  still arrives that way, which is the evidence a deployment would need before
+  the arm could ever be dropped.
 
   `publish_idempotent` is unaffected. It is JSON because no binary layout carries
   a producer id and sequence yet, not for compatibility.
 - **A broker refuses to start when its credential will expire with nothing able
   to renew it.** The broker's control-plane calls all read one token, and the
-  heartbeat is among them — and the heartbeat *is* the lease renewal. So an
-  expired credential is not a degraded broker: it is one that stops serving the
-  shards it leads once the lease lapses. Correct, and an outage nobody chose.
+  heartbeat is among them, and the heartbeat *is* the lease renewal. A broker
+  with an expired credential stops serving the shards it leads once the lease
+  lapses. That is correct behaviour, and still an outage nobody chose.
 
   Joining a cluster (`FELIX_NODE_ID` set) with a token that carries an `exp` and
   neither `FELIX_NODE_REFRESH_TOKEN_FILE` nor `FELIX_NODE_TOKEN_FILE` now fails
@@ -1582,7 +1579,7 @@ same bytes they did before.
   `FELIX_NODE_TOKEN` by value must set one of the two files.
 
 - **`FELIX_NODE_TOKEN_FILE` is re-read**, so a credential rotated by something
-  outside the broker — a Vault agent, SPIRE, a sidecar — takes effect without a
+  outside the broker (a Vault agent, SPIRE, a sidecar) takes effect without a
   restart. It was read once at startup and never again, while the *refresh*
   token file was deliberately re-read every time; the asymmetry was the
   surprising half. A replacement that has already expired is declined rather
@@ -1595,7 +1592,8 @@ same bytes they did before.
   `spawn_blocking` hand-off rather than shrinking it, and unlike running the
   sync inline it keeps the `await` as a yield point, so background rollover and
   retention still get scheduled. A perf session measured **956.7 MB/s against
-  917.2** with it on — every run better, no overlap between the distributions.
+  917.2** with it on. Every run was better, with no overlap between the
+  distributions.
 
   The blocking pool stays as the fallback: a kernel too old for the opcode, or a
   container that forbids the syscall, falls back rather than failing. Durability
@@ -1610,17 +1608,18 @@ same bytes they did before.
   said no metadata rides the control plane's Raft group, which M13 closed;
   `how-felix-works.md` named Raft and mTLS as unbuilt; the threat model called
   peer connection exhaustion unmitigated after #504 capped it, and credited
-  #422 with closing forwarded-publish replay, which it does not —
+  #422 with closing forwarded-publish replay, which it does not:
   `ForwardPublish` carries no producer identity, so that case stands open.
-  A status marker that is wrong about a *security* control is worse than none.
+  A wrong status marker on a *security* control misleads readers about what
+  protects them.
 
 ## [0.4.1] - 2026-09-18
 
 A throughput fix. Durable publishes to one shard were processed strictly one at
-a time, so group commit -- the mechanism that lets one device flush serve many
-waiters -- never had more than one waiter and every publish paid a full flush
-alone. Nothing was lost or misordered; the broker simply used about half a
-machine and refused the rest.
+a time, so group commit (the mechanism that lets one device flush serve many
+waiters) never had more than one waiter and every publish paid a full flush
+alone. Nothing was lost or misordered, but the broker used only about half a
+machine.
 
 Also fixes the release job that shipped 0.4.0 with no Python wheels.
 
@@ -1631,7 +1630,7 @@ Also fixes the release job that shipped 0.4.0 with no Python wheels.
 
 - **Concurrent publishes share a device flush again** (#535). Publishes for a
   shard queued to a single worker, and that worker awaited each one to
-  completion -- including the `fsync` -- before taking the next. One publish was
+  completion, including the `fsync`, before taking the next. One publish was
   ever at the sync point, so the group-commit fan-in was **1 by construction**:
 
   ```
@@ -1640,7 +1639,7 @@ Also fixes the release job that shipped 0.4.0 with no Python wheels.
   ```
 
   which is the per-broker ceiling measured on Azure NVMe, at ~50% CPU with half
-  the cores idle -- waiting on the disk rather than computing. It got *worse*
+  the cores idle, waiting on the disk instead of computing. It got *worse*
   with more publishers, who queued behind each other.
 
   The publish is now two phases. `claim_publish` consumes the offsets and
@@ -1648,7 +1647,7 @@ Also fixes the release job that shipped 0.4.0 with no Python wheels.
   order**, so the order records land on disk is unchanged, and a client
   pipelining under `AckMode::None` keeps its send order.
   `complete_publish` awaits the flush and then appends and fans out under that
-  turn, and is spawned -- so several flushes overlap and group commit has
+  turn, and is spawned, so several flushes overlap and group commit has
   something to coalesce. Measured fan-in on the transport-level test:
   **1.000 -> 9.5**.
 
@@ -1663,7 +1662,7 @@ Also fixes the release job that shipped 0.4.0 with no Python wheels.
   failure took the wheel, sdist, attach and publish jobs with it, so 0.4.0
   shipped with no wheels and nothing on PyPI. Installation is now
   `pip install ./crates/felix-python`, which builds through maturin as the PEP
-  517 backend -- the same thing a user does.
+  517 backend. That is the same thing a user does.
 
   The job also ran *only* in `release.yml`. The Python client merged after
   v0.3.1 and every earlier release predates it, so its first execution in its
@@ -1672,8 +1671,8 @@ Also fixes the release job that shipped 0.4.0 with no Python wheels.
 
 ### Added
 
-- **`FELIX_BROKER_PUB_FLUSH_CONCURRENCY`** (default `32`) -- durable publishes
-  one publish worker may have awaiting their device flush at once. Offsets are
+- **`FELIX_BROKER_PUB_FLUSH_CONCURRENCY`** (default `32`): how many durable
+  publishes one publish worker may have awaiting their device flush at once. Offsets are
   still claimed serially, so this does not affect the order records land in; it
   decides how many flushes group commit gets to coalesce. `1` restores the
   0.4.0 behaviour of one flush at a time, which is also how the fix is tested:
@@ -1690,11 +1689,11 @@ Also fixes the release job that shipped 0.4.0 with no Python wheels.
 
 ### Performance notes
 
-The per-broker figures published for 0.4.0 -- **~977 MB/s at ~48% CPU**, and
+The per-broker figures published for 0.4.0 (**~977 MB/s at ~48% CPU**), and
 the conclusion drawn from them that *"durable throughput scales by adding
-brokers, not by adding cores per broker"* -- describe this defect rather than
-the design. The measurements were accurate; the architectural inference was
-not. Replacement numbers need a rig session against 0.4.1 and are deliberately
+brokers, not by adding cores per broker"*, describe this defect and not the
+design. The measurements were accurate but the architectural inference was
+wrong. Replacement numbers need a rig session against 0.4.1 and are deliberately
 not guessed at here.
 
 ## [0.4.0] - 2026-09-18
@@ -1712,7 +1711,7 @@ conformance catalogue that the next language will have to pass too.
 
 **No wire-protocol break.** `felix-wire` `VERSION` remains `1` and
 `INTERNAL_VERSION` remains `1`. The one new capability is a negotiated feature
-bit, `FEATURE_IDEMPOTENT_PRODUCER` — a 0.3.x client and a 0.4.0 broker
+bit, `FEATURE_IDEMPOTENT_PRODUCER`. A 0.3.x client and a 0.4.0 broker
 interoperate byte-for-byte on everything they both know.
 
 ### Added
@@ -1754,8 +1753,8 @@ interoperate byte-for-byte on everything they both know.
   paces the transfer. A fenced halt is never rebuilt, and a follower that
   predates the message stays halted until it is upgraded (#424).
 - Broker-to-broker mTLS (#125). With `FELIX_INTERNAL_TLS_CERT`,
-  `FELIX_INTERNAL_TLS_KEY` and `FELIX_INTERNAL_TLS_CA` set — all three or
-  none — every peer connection is mutually authenticated against the CA, and
+  `FELIX_INTERNAL_TLS_KEY` and `FELIX_INTERNAL_TLS_CA` set (all three or
+  none), every peer connection is mutually authenticated against the CA, and
   the certificate's DNS name is the broker's identity: a dialler verifies the
   listener's certificate against the node id it dials, and the listener checks
   the node id a peer claims in `Hello` against the certificate it presented. A
@@ -1788,17 +1787,16 @@ interoperate byte-for-byte on everything they both know.
   groups, cache watches and multi-shard subscriptions. It is gated by a
   conformance catalogue (`scenarios.toml`) that every future client must pass:
   Python claims every required scenario and leaves two optional ones
-  unclaimed rather than pretending — `at_least_once` does not carry a routing
-  key, and a prefix watch over a multi-shard cache needs one watch per shard.
+  unclaimed: `at_least_once` does not carry a routing key, and a prefix watch over a multi-shard cache needs one watch per shard.
   Release wheels are built in CI.
 - **Container images** for the broker and the control plane (#405), built and
   smoke-tested in CI, which is what the Helm chart above deploys.
 - **Refresh tokens and `POST /token/refresh`** (#402). 0.3.1 raised the
   exchanged-token TTL as a stopgap because a broker read its credential once
   and held it forever; this is the real fix. A refresh rotates within a family,
-  re-evaluates RBAC on every use — so a grant removed since the last exchange
-  stops working without waiting for a re-exchange — and a replayed token
-  revokes the whole chain. Brokers refresh their node credential rather than
+  re-evaluates RBAC on every use (so a grant removed since the last exchange
+  stops working without waiting for a re-exchange), and a replayed token
+  revokes the whole chain. Brokers refresh their node credential instead of
   holding it for their lifetime (#404).
 - **Configuration that refuses to be wrong quietly.** An unrecognised
   `FELIX_*` variable is reported as a typo instead of silently taking a default
@@ -1806,9 +1804,9 @@ interoperate byte-for-byte on everything they both know.
   at startup (#509). `--print-config` prints the effective configuration with
   every credential redacted, so it can be pasted into an issue (#500).
 - **Day-0 bootstrap is audited** (#506), with its scope containment pinned by
-  test — it logged nothing at all before.
+  test. It logged nothing at all before.
 - **A broker names the replicas replication has stopped for** (#485), so a
-  halted follower is visible rather than inferred from lag.
+  halted follower is visible instead of inferred from lag.
 - **Segments record where each leadership generation began** (#466), which is
   what lets a follower resume at a generation boundary and a leader drop a
   divergent suffix.
@@ -1836,8 +1834,8 @@ interoperate byte-for-byte on everything they both know.
 
 ### Fixed
 
-- Replica reports — what a shard's leader says about which replicas hold its
-  log — are now written to the control plane's store rather than kept in the
+- Replica reports (what a shard's leader says about which replicas hold its
+  log) are now written to the control plane's store instead of kept in the
   memory of the instance that received them. With several control-plane
   instances over one Postgres, promotion could run on an instance that had
   never seen the report, so a `Quorum` acknowledgement released on it could
@@ -1846,10 +1844,10 @@ interoperate byte-for-byte on everything they both know.
   the store's clock and judged against it, so freshness is no longer a
   subtraction between two hosts' clocks under Postgres; a deleted assignment
   now takes its report with it.
-- **A `Quorum` acknowledgement could outrun what the replicas actually held.**
+- **A `Quorum` acknowledgement could outrun what the replicas held.**
   A follower can no longer confirm past the batch it was sent (#427), the
   leader holds the quorum mark when a replica report did not land (#434), and
-  a broker may only report positions for shards it actually leads (#430).
+  a broker may only report positions for shards it leads (#430).
 - **Clocks are no longer compared across hosts.** The lease is anchored at the
   heartbeat's *send*, not its response (#426); liveness expiry is judged by one
   clock rather than one per instance (#439); the leader stamps a heartbeat
@@ -1872,7 +1870,7 @@ interoperate byte-for-byte on everything they both know.
 ### Security
 
 - A forwarded publish or cache operation now carries the client's own bearer
-  token, and the owning broker verifies it before writing — against the
+  token, and the owning broker verifies it before writing: against the
   tenant's keys, for `stream.publish` on that stream or `cache.read` /
   `cache.write` on that cache. The owner used to re-check ownership and
   generation only, so anything that could reach the internal port could
@@ -1881,11 +1879,11 @@ interoperate byte-for-byte on everything they both know.
   `AuthorizedForwardCacheOp` (23); the legacy kinds still decode and are
   refused `Unauthorized`. During a rolling upgrade, an upgraded broker falls
   back to the legacy kind toward an owner that predates it, while an old
-  broker's forwards to an upgraded owner fail until it is upgraded — see the
+  broker's forwards to an upgraded owner fail until it is upgraded. See the
   upgrade notes.
 - The control-plane resource API now requires a Felix bearer token on every
-  endpoint. Tenants were created, listed and deleted — and namespaces, streams
-  and caches managed — with no credential at all, while `/v1/nodes` next to
+  endpoint. Tenants were created, listed and deleted, and namespaces, streams
+  and caches managed, with no credential at all, while `/v1/nodes` next to
   them returned `401`. Namespaces, streams and caches take `ns.manage`,
   `stream.manage` or `cache.manage` over the object from a token minted for
   that tenant, with listings filtered to the caller's scope; the tenant catalog
@@ -1923,14 +1921,14 @@ interoperate byte-for-byte on everything they both know.
 - **Promotion can pick a replica missing an acknowledged `Quorum` record**
   (#527). Promotion reads the leader's last report, so a leader that
   acknowledges and then dies before its next report leaves a fresh report
-  naming a replica that never received it. Report expiry does not close it —
+  naming a replica that never received it. Report expiry does not close it:
   the report is recent, only older than the acknowledgement. The guarantee still
-  holds against every fault the suite injects — the TLA+ model added in this
+  holds against every fault the suite injects. The TLA+ model added in this
   release is what found the interleaving the suite does not reach. Promotion by greatest (last generation,
   length) closes it and is the rule to move to.
 - **Shard rebalancing is not implemented** (#130). A shard whose leader is
   alive is never moved, so adding a broker adds capacity for *new* placements
-  only — scaling a broker StatefulSet up will not migrate existing shards onto
+  only. Scaling a broker StatefulSet up will not migrate existing shards onto
   the new pods.
 - **A retried Raft proposal can answer `409` for a write that succeeded**
   (#529), so a provisioning script can be told a tenant it just created already
@@ -1955,7 +1953,7 @@ wire-protocol change; `felix-wire` `VERSION` remains `1`.
 
 - **The control plane rejected every Microsoft Entra ID token** (#371). Entra's
   JWKS keys omit the optional `alg` member (RFC 7517 §4.4), and the exchange
-  required it — so a valid RS256 token came back `401 invalid token`. The key's
+  required it, so a valid RS256 token came back `401 invalid token`. The key's
   algorithm is now checked only when the JWKS actually states one, still bounded
   by the key-type match; an alg-less key verifies against the algorithm the
   token itself declares. 0.3.0 cannot complete a token exchange against Entra;
@@ -1963,7 +1961,7 @@ wire-protocol change; `felix-wire` `VERSION` remains `1`.
 
 ### Added
 
-- **`FELIX_EXCHANGE_TOKEN_TTL_SECONDS`** (#371) — the lifetime of an exchanged
+- **`FELIX_EXCHANGE_TOKEN_TTL_SECONDS`** (#371): the lifetime of an exchanged
   Felix token, default `900`. A broker reads its node credential once and holds
   it for its whole lifetime without refreshing, so the fixed 15-minute TTL
   dropped every broker out of the cluster a quarter-hour in. Raising the TTL
@@ -1974,13 +1972,13 @@ wire-protocol change; `felix-wire` `VERSION` remains `1`.
 
 The composed-semantics release. A cache stopped being something you can only
 poll: you can subscribe to a key, join with current state already in hand, and
-fold deltas into durable sums — three semantics that compose because each one
-is a reading of the same log. And a consumer group now survives failover
-*whole*: the dead-letter list travels with the shard, not just the cursor.
+fold deltas into durable sums. These compose because each one is a reading of
+the same log. A consumer group now survives failover *whole*: the dead-letter
+list travels with the shard along with the cursor.
 
 **No wire-protocol break.** `felix-wire` `VERSION` remains `1`. Every new
 capability is a negotiated feature bit (`FEATURE_CACHE_WATCH`,
-`FEATURE_CACHE_WATCH_RETAINED`, `FEATURE_COUNTERS`) — a 0.2.0 client and a
+`FEATURE_CACHE_WATCH_RETAINED`, `FEATURE_COUNTERS`). A 0.2.0 client and a
 0.3.0 broker interoperate byte-for-byte on everything they both know, and a
 client never sends a request the broker did not advertise. The internal
 broker-to-broker protocol grew six message kinds (16–21), which is how that
@@ -1992,38 +1990,38 @@ rather than a misparse.
 - **Keyed cache watch** (#348). `cache_watch` subscribes to one key or key
   prefix; every applied write is delivered in the shard's write order with its
   log offset, deletes included as tombstoned changes. Resume by offset replays
-  from the cache's log and joins live delivery with no gap and no duplicate —
-  proven under concurrent writes at join time. An offset compaction has
+  from the cache's log and joins live delivery with no gap and no duplicate,
+  which is tested under concurrent writes at join time. An offset compaction has
   collapsed is answered with a marked snapshot of current values
   (`resnapshot`), never a silent gap. A watch that falls behind is **ended
-  loudly** with `cache_watch_lagged` naming the first missed offset — filtered
-  offsets are sparse, so a drop could never be read from an offset jump — and
+  loudly** with `cache_watch_lagged` naming the first missed offset (filtered
+  offsets are sparse, so a drop could never be read from an offset jump), and
   re-watching from that offset is gapless.
 - **Retained delivery on a watch** (#349). Ask for `retained` and receive each
-  matching key's current value first — at the offset of the write that
-  produced it — then live changes: join a presence roster and hold it
+  matching key's current value first, at the offset of the write that
+  produced it, then live changes: join a presence roster and hold it
   immediately, no polling. `retained_count` makes "your state is now complete"
-  an explicit moment, and joining an empty key a definite zero rather than a
+  an explicit moment, and joining an empty key a definite zero instead of a
   silence. Survives failover: a promoted replica serves the retained value
   from its rebuilt index, at the original offset.
 - **Counters** (#350). `counter_add` appends a signed delta and answers with
-  the sum *including it* — one round trip to increment and know where you
+  the sum *including it*, so one round trip increments and tells you where you
   stand. Scoped and routed exactly like cache keys, stored beside the cache
   (a counter and a cache value sharing a key are unrelated). The sum survives
-  restart, compaction — which collapses applied deltas into a checkpoint
-  without renumbering the log — and leader failover, where the promoted
+  restart, compaction (which collapses applied deltas into a checkpoint
+  without renumbering the log), and leader failover, where the promoted
   replica folds the true sum from its shipped log and keeps counting.
-  **At-least-once, stated honestly**: a retried add after a lost
+  **At-least-once**: a retried add after a lost
   acknowledgement double-counts; the decision and its failure mode are
   recorded in `docs/projections.md`.
 - **The dead-letter list replicates with its shard** (#362). Group state now
   fails over whole: a promoted leader resumes each group where it had reached
-  *and* lists what it had given up on, and an operator's redrive works there —
-  previously the promotion silently forgot exactly the records an operator had
+  *and* lists what it had given up on, and an operator's redrive works there.
+  Before this, promotion silently forgot exactly the records an operator had
   been told to look at. Entries recorded under the earlier on-disk layout are
   still listed and discardable.
 - **Client API**: `watch_cache` / `watch_cache_retained` (typed `Lagged` and
-  `resnapshot` surfaces), `counter_add` / `counter_get` — each feature-gated on
+  `resnapshot` surfaces), `counter_add` / `counter_get`, each feature-gated on
   the broker's advertisement before anything is sent.
 
 ### Fixed
@@ -2033,13 +2031,13 @@ rather than a misparse.
 - Control-plane readiness is proven against a database that can fail (#358),
   and the rolling-restart and Raft-chaos test harnesses retry a dead
   connection against a re-probed rotation instead of a stale snapshot
-  (#359, #364) — the load-balancer behaviour they model.
+  (#359, #364), which is the load-balancer behaviour they model.
 
 ### Known limitations
 
 - A prefix watch reads one shard; watching a whole multi-shard cache means one
   watch per shard, with no client helper yet.
-- Counters carry no dedupe identity — retried adds can double-count — and a
+- Counters carry no dedupe identity, so retried adds can double-count, and a
   cache watch does not see counter changes.
 - A cache still declares no consistency level: its writes carry the `Leader`
   guarantee, not `Quorum`.
@@ -2056,16 +2054,16 @@ subscriber resume from an exact offset.
 
 **No wire-protocol break.** `felix-wire` `VERSION` remains `1`. The new
 capabilities are negotiated flag bits, so a 0.1.1 client and a 0.2.0 broker
-still interoperate — they simply agree on the original flag set. That is the
-whole point of negotiating capabilities rather than bumping a version.
+still interoperate: they agree on the original flag set. Negotiating
+capabilities instead of bumping a version is what makes this work.
 
 **Durable storage is opt-in and off by default.** Nothing persists unless the
 broker is started with `FELIX_DURABLE_STORAGE_DIR` *and* the stream is
 registered durable. The on-disk format is version 2; there is no version 1 to
 migrate from, because durable storage did not exist in 0.1.1.
 
-**Clustering is not in this release.** It contains broker membership plumbing —
-brokers can register, heartbeat, and appear in a control-plane listing — but
+**Clustering is not in this release.** It contains broker membership plumbing
+(brokers can register, heartbeat, and appear in a control-plane listing), but
 nothing routes across brokers. A client still talks to one broker and gets
 exactly what it got in 0.1.1. See *Known limitations* below.
 
@@ -2078,8 +2076,8 @@ exactly what it got in 0.1.1. See *Known limitations* below.
   `FELIX_DURABLE_STORAGE_DIR`, `FELIX_DURABLE_SEGMENT_BYTES`, and the fsync
   policy (`none`, `periodic`, `on_commit`). (#173, #174)
 - **Resumable subscriptions over the wire.** `Subscribe` carries an optional
-  `start` — `latest` (the default, and what every older client sends),
-  `earliest`, or an exact offset — and every delivered event carries its offset.
+  `start`: `latest` (the default, and what every older client sends),
+  `earliest`, or an exact offset. Every delivered event carries its offset.
   History read from disk joins live delivery with no gap and no duplicate.
   Asking for an offset retention has discarded is a typed error, not a silent
   restart at the tail. (#197)
@@ -2116,7 +2114,7 @@ exactly what it got in 0.1.1. See *Known limitations* below.
 - **An inline rollover no longer parks every Tokio worker.** The segment set is
   behind a synchronous lock; held across a rollover's device flushes it stalled
   everything else on the runtime. It also stopped appends being rejected outright
-  under rollover contention — six runs in twenty became zero in twenty. (#217)
+  under rollover contention: six runs in twenty became zero in twenty. (#217)
 - **Record header checksums (format v2)**, plus cancellation, startup, and
   hydration defects found in review. (#178)
 - **MTU black-hole collapse on Linux**, where a path MTU below the probed size
@@ -2128,7 +2126,7 @@ exactly what it got in 0.1.1. See *Known limitations* below.
 
 ### Changed
 
-- **An fsync was cut from the rollover path** — a freshly created and therefore
+- **An fsync was cut from the rollover path.** A freshly created and therefore
   empty index file was being flushed. Median p999 on the default inline path
   improved from 5.12ms to 3.98ms (−22%), and max from 61.8ms to 47.0ms (−24%).
   Background rollover was added alongside it and ships **disabled**, because it
@@ -2161,8 +2159,8 @@ exactly what it got in 0.1.1. See *Known limitations* below.
   read endpoints require a token. Safe on a trusted network, not on an open one.
   Tracked in #126.
 - **At-most-once delivery.** Slow subscribers drop under the default policy.
-  Durable streams make the *record* recoverable — a subscriber can resume from
-  an offset — but nothing redelivers automatically.
+  Durable streams make the *record* recoverable (a subscriber can resume from
+  an offset), but nothing redelivers automatically.
 - Single-region, single control-plane instance.
 
 ### Upgrading from 0.1.1
@@ -2179,12 +2177,12 @@ addition above is opt-in.
   nothing acknowledged and costs milliseconds per publish.
 - `segment_size_bytes` is a latency knob as well as a recovery knob. Below a few
   MiB, tail latency is dominated by rollover flushes. Prefer the 256 MiB default
-  unless restart time is genuinely the binding constraint, and measure the tail
+  unless restart time is really the binding constraint, and measure the tail
   if you change it.
 
 ## [0.1.1] - 2026-08-09
 
-Maintenance release. No wire-protocol changes — `felix-wire` `VERSION` remains `1`,
+Maintenance release. No wire-protocol changes. `felix-wire` `VERSION` remains `1`,
 and 0.1.0 clients interoperate with 0.1.1 brokers.
 
 The headline items are two correctness fixes in the subscriber path and a set of
@@ -2200,7 +2198,7 @@ new per-connection resource limits that are enabled by default.
   backpressure and subscriber-queue overflow behavior. (#145)
 - SIGTERM-aware graceful shutdown for the broker, so in-flight work drains
   instead of being cut off at process exit. (#139, #153)
-- Resource sampling in the soak harness — CPU, memory, and queue-depth series
+- Resource sampling in the soak harness: CPU, memory, and queue-depth series
   captured across a run. (#156)
 - Benchmark regression gate on pull requests, plus historical benchmark
   dashboards published with the docs. (#147, #149, #152)
@@ -2215,7 +2213,7 @@ new per-connection resource limits that are enabled by default.
   now broker-assigned, and per-connection writers are created atomically, fixing
   events being routed to the wrong subscriber or dropped entirely under
   concurrent subscribe. (#148)
-- Removed two `unsafe impl Send` blocks that asserted nothing — both types were
+- Removed two `unsafe impl Send` blocks that asserted nothing, since both types were
   already `Send + Sync` by their fields. Replaced with `const _` assertions that
   fail the build at the definition if a future field breaks the property. (#140, #153)
 - Bounded attacker-declared payload counts in the wire decoder before
@@ -2229,7 +2227,7 @@ new per-connection resource limits that are enabled by default.
 
 ### Changed
 
-- Split the four largest modules into focused submodules — `felix-wire`
+- Split the four largest modules into focused submodules: `felix-wire`
   (1641 lines), `felix-broker` (1986), and the QUIC `publish` (4231) and
   `subscribe` (3346) handlers. No public paths changed; every item is
   re-exported from its original location. (#159)

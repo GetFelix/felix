@@ -1,6 +1,6 @@
 # Security Policy
 
-Felix is pre-1.0 and in early active development. It has **not** been through an
+Felix is pre-1.0 and in early active development. It has not been through an
 external security review. This document says how to report a vulnerability, what
 we consider one, and what we already know is missing so you don't spend time
 reporting it.
@@ -12,7 +12,7 @@ reporting it.
 
 Do not open a public issue, pull request, or discussion for a suspected
 vulnerability, and please don't push a public fix branch before the advisory is
-resolved — a fix commit is a disclosure.
+resolved. A fix commit is a disclosure.
 
 If GitHub Security Advisories is unavailable to you, contact the maintainer
 ([@gabloe](https://github.com/gabloe)) privately and ask for a reporting channel.
@@ -20,7 +20,7 @@ Don't include vulnerability details in that first message.
 
 ### What to include
 
-- Affected component and version — a released tag (`v0.3.1`), a commit SHA, or
+- Affected component and version: a released tag (`v0.3.1`), a commit SHA, or
   a container image digest.
 - Which piece: `felix-wire`, `felix-transport`, `felix-client`, `felix-broker`,
   `felix-storage`, `felix-authz`, `felix-router`, `services/felix-broker-service`, or
@@ -28,14 +28,14 @@ Don't include vulnerability details in that first message.
 - Impact: what an attacker gains, and what position they need to start from
   (unauthenticated network peer, holder of a valid token for another tenant,
   tenant admin, node operator, local disk access).
-- Reproduction — a minimal client, a raw frame, a `curl` against the control
+- Reproduction: a minimal client, a raw frame, a `curl` against the control
   plane, or a failing test is ideal.
 - Configuration that matters: bootstrap mode on/off, fsync mode, replication
   factor, whether the control plane is fronted by a load balancer.
 
 ### Response targets
 
-These are targets for a small project, not a contractual SLA.
+These are targets for a small project. They are not a contractual SLA.
 
 | Stage | Target |
 |---|---|
@@ -44,7 +44,7 @@ These are targets for a small project, not a contractual SLA.
 | Fix or documented mitigation for a confirmed high-severity issue | 90 days from acknowledgement |
 
 We'll keep you updated if a fix runs long, and we'll agree on disclosure timing
-with you rather than dropping the advisory unannounced. Reporters are credited
+with you before publishing the advisory. Reporters are credited
 in the advisory and the CHANGELOG unless you'd rather stay anonymous.
 
 ## Supported versions
@@ -56,7 +56,7 @@ minor versions, and there are no long-term support branches.
 |---|---|
 | Latest released minor line (currently `0.5.x`) | Security fixes |
 | `main` | Security fixes |
-| Older minor lines (`0.4.x`, `0.3.x`, `0.2.x`, `0.1.x`) | Not supported — upgrade |
+| Older minor lines (`0.4.x`, `0.3.x`, `0.2.x`, `0.1.x`) | Not supported, upgrade |
 | Pre-release / preview builds (`*-preview`) | Fixed on `main`, no separate patch release |
 
 Fixes land on `main` and ship in the next patch release of the current minor
@@ -72,11 +72,11 @@ Anything that breaks a property Felix claims to enforce:
   Felix token, accepting a token with an unverified or wrong-algorithm
   signature, JWKS handling flaws, or signature verification that can be skipped.
 - **Tenant isolation.** Any path where a credential scoped to one tenant reads,
-  writes, or observes another tenant's streams, caches, queues, or metadata —
+  writes, or observes another tenant's streams, caches, queues, or metadata,
   including through shard placement, replication, or projections.
 - **Authorization / RBAC.** Privilege escalation, scope-widening policy or
   assignment writes, wildcard grammar that resolves broader than intended, a
-  token exchange that widens rather than narrows granted permissions, or a
+  token exchange that widens granted permissions instead of narrowing them, or a
   tenant-scoped principal reaching `cluster:*` / `node:{id}` objects.
 - **Bootstrap mode.** Token comparison weaknesses, replay, races that produce a
   partially initialized tenant, or any way to reach the bootstrap endpoint
@@ -94,7 +94,7 @@ Anything that breaks a property Felix claims to enforce:
   acknowledged records, accepting interior segment corruption as valid, or a
   replication/lease flaw that lets two leaders acknowledge conflicting writes.
 - **Resource exhaustion by a single authenticated connection** that degrades
-  other tenants — subscriber queue, connection, or stream accounting that one
+  other tenants: subscriber queue, connection, or stream accounting that one
   peer can drive without bound.
 - **Secret handling.** Tokens, signing keys, bootstrap tokens, or database
   credentials leaking into logs, metrics, error responses, or crash output.
@@ -104,38 +104,38 @@ Anything that breaks a property Felix claims to enforce:
 ### Out of scope
 
 - **Anything on the "not built" list** in
-  [docs-site — Security](https://gabloe.github.io/felix/features/security/).
-  These are documented gaps, not vulnerabilities: no encryption at rest (log
+  [docs-site: Security](https://gabloe.github.io/felix/features/security/).
+  These are documented gaps: no encryption at rest (log
   segments are plaintext on disk), no end-to-end payload encryption, no peer
   authentication for a broker started with
   `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`, no audit logging, and no
   per-tenant quotas beyond the publish rate. A *new* concrete attack these enable in a deployment that
-  follows the deployment guidance is still worth reporting — a restatement of
+  follows the deployment guidance is still worth reporting. A restatement of
   the gap is not.
 - **Everything under `demos/`.** The demo crates exist to illustrate a failure
   mode or a feature; they are outside the workspace, deliberately
   under-hardened, and not for production.
 - **Test fixtures, benchmark harnesses, the cluster harness
-  (`crates/testing/felix-cluster`), and the load generator (`crates/testing/felix-loadgen`)** —
-  local development tooling that assumes a trusted operator.
-- **Defaults that are documented as development-only** — the broker's
+  (`crates/testing/felix-cluster`), and the load generator (`crates/testing/felix-loadgen`).**
+  These are local development tools that assume a trusted operator.
+- **Defaults that are documented as development-only:** the broker's
   generated self-signed certificate (set `FELIX_TLS_CERT`), a plain-HTTP
   control-plane API (set `FELIX_CONTROLPLANE_TLS_CERT`), permissive local
   configs, the compose/Kubernetes examples' sample secrets. Report it if the
-  docs actually recommend the insecure setting for production.
+  docs recommend the insecure setting for production.
 - **Known advisory exceptions** recorded with rationale in
   [`deny.toml`](deny.toml). They're re-reviewed when the upstream chain clears;
   a report that an exception is no longer necessary is welcome as a normal
   issue.
 - Missing hardening headers, TLS configuration, or authentication on endpoints
-  the deployer is expected to place behind their own perimeter — unless you can
+  the deployer is expected to place behind their own perimeter, unless you can
   show an actual crossing of a boundary Felix claims to enforce.
 - Reports generated purely by a scanner, with no analysis of exploitability
   against Felix.
 
 ## Testing guidance (safe harbor)
 
-Test against **your own** deployment — a local cluster or infrastructure you
+Test against **your own** deployment: a local cluster or infrastructure you
 own or have written permission to test. Do not test against infrastructure
 operated by the maintainers or by third parties, do not access or exfiltrate
 data that isn't yours, and do not run denial-of-service or resource-exhaustion
@@ -155,11 +155,11 @@ A confirmed vulnerability gets:
    cannot upgrade immediately.
 3. A patch release tag and a CHANGELOG entry that names the advisory.
 4. An update to the security documentation if the issue came from a claim the
-   code could not back — stale security claims are treated as defects here.
+   code could not back. We treat stale security claims as defects.
 
 ## Hardening a deployment
 
-Until the gaps above close, the deployment-side controls that matter most:
+Until the gaps above close, these are the deployment-side controls that matter most.
 
 - **Keep bootstrap mode off** except during initial tenant setup. When it is on,
   bind it to loopback or a management network, use a high-entropy
@@ -173,7 +173,7 @@ Until the gaps above close, the deployment-side controls that matter most:
   a broker joining a cluster (`FELIX_NODE_ID` set) refuses to start without
   it unless you explicitly opt out with `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`.
   Without peer mTLS the internal link is encrypted but not authenticated, so
-  anything that reaches it can act as a broker and rewrite replicas — in that
+  anything that reaches it can act as a broker and rewrite replicas. In that
   case, keep the internal port on a private network segment or overlay only
   brokers can reach.
 - **Scope tokens narrowly** at exchange time. The exchange request can only
@@ -197,7 +197,7 @@ Until the gaps above close, the deployment-side controls that matter most:
   `felix-broker` ones, and leave `FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE`
   unset once migrated, so a broker cannot replay a client's token against the
   API.
-- **Protect the control plane's database** — it holds tenant signing keys and
+- **Protect the control plane's database.** It holds tenant signing keys and
   RBAC policy. Under the Raft backend the members' volumes are that database,
   and `FELIX_RAFT_PEER_TOKEN` can replace it wholesale: keep the token in a
   Secret, and the Raft peer port (`FELIX_RAFT_BIND_ADDR`) reachable from the
@@ -207,5 +207,5 @@ Until the gaps above close, the deployment-side controls that matter most:
 
 Correctness bugs, crashes that need no hostile input, and feature requests go to
 the [issue tracker](https://github.com/gabloe/felix/issues) as normal. If you're
-unsure which a finding is, report it privately — we'd rather triage it down than
+unsure which a finding is, report it privately. We'd rather triage it down than
 have it filed in public.
