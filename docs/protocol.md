@@ -85,8 +85,8 @@ Field definitions:
   | `0x0800` | `EVENT_BATCH_SKIPPED` | Modifier on `0x0020`: the batch also carries a `skipped_before` count of offsets before it that hold no event |
 
   Because these bits change how the payload is parsed, a receiver MUST reject a
-  frame carrying any bit it does not recognise rather than masking it off — see
-  Future Compatibility.
+  frame carrying any bit it does not recognise rather than masking it off (see
+  Future Compatibility).
 - `length` (u32, big-endian): payload length in bytes
 
 Payload:
@@ -104,9 +104,9 @@ fields such as `payload` are base64 strings.
 { "type": "publish_batch", "tenant_id": "<string>", "namespace": "<string>", "stream": "<string>", "payloads": ["<base64>", ...], "ack": "<none|per_batch>" }
 ```
 
-**These are not the data path.** A publish travels as a binary frame — see
+**These are not the data path.** A publish travels as a binary frame (see
 [Binary PublishBatch](#binary-publishbatch) and
-[Binary keyed PublishBatch](#binary-keyed-publishbatch) — and a routing key has
+[Binary keyed PublishBatch](#binary-keyed-publishbatch)), and a routing key has
 ridden in that frame since `0x0040`. The JSON forms measured **645.8 MB/s
 against 917** for the same keyed workload on the same rig, with user CPU up from
 20% to 28%, and they now buy nothing the binary frames do not cover.
@@ -159,14 +159,14 @@ to a client that offered `FEATURE_SEQUENCE_REUSED`.
 ```
 
 `start` is optional. Omitting it means `latest`, which is what every client sent
-before the field existed — so an old client and a new broker exchange exactly the
+before the field existed, so an old client and a new broker exchange exactly the
 frames they always did.
 
-- `latest` — deliver only what is published from now on.
-- `earliest` — the oldest record still retained. Deliberately not "offset 0":
+- `latest`: deliver only what is published from now on.
+- `earliest`: the oldest record still retained. Deliberately not "offset 0":
   for a stream whose head has been trimmed, offset 0 is gone, and `earliest`
   means "as far back as you can" rather than an error.
-- `{"offset": n}` — resume at exactly offset `n`, the first record the client has
+- `{"offset": n}`: resume at exactly offset `n`, the first record the client has
   *not* seen. A client that checkpoints the offset it last handled resumes at
   that offset plus one.
 
@@ -253,7 +253,7 @@ Sent only to a broker that advertised `FEATURE_CONSUMER_GROUP`, and only to the
 broker that leads the shard.
 
 `wait_ms` is how long the broker may hold the request open waiting for work.
-Omitted or `0` answers immediately — which is what a broker that predates
+Omitted or `0` answers immediately, which is what a broker that predates
 long-polling does with the field, so an older peer degrades to a plain poll
 rather than misreading the request. The broker caps it at
 `FELIX_GROUP_MAX_WAIT_MS`, so a client cannot hold a stream open indefinitely.
@@ -274,7 +274,7 @@ hand-backs or lapsed claims free room.
 ```
 
 `attempts` counts deliveries including this one, so `1` is a first attempt and
-anything higher is a redelivery. Absent means the broker did not report it —
+anything higher is a redelivery. Absent means the broker did not report it,
 which is not the same as a first attempt, and a consumer should not treat it as
 one.
 
@@ -318,7 +318,7 @@ duplicate and answered `ok`.
 Sent only to a broker that advertised `FEATURE_CACHE_DELETE`.
 
 Answered with `cache_value` carrying the value that was removed, or a null value
-if the key was not there — so a caller can tell a delete that did something from
+if the key was not there, so a caller can tell a delete that did something from
 one that did not.
 
 ### CacheWatch
@@ -330,13 +330,13 @@ one that did not.
 ```
 
 Sent only to a broker that advertised `FEATURE_CACHE_WATCH`. Subscribes to
-changes for one cache key (`key`) or key prefix (`prefix`) — exactly one of the
+changes for one cache key (`key`) or key prefix (`prefix`). Exactly one of the
 two must be present; both or neither is refused rather than guessed at. An
 empty `prefix` is every key in the shard.
 
 A watch reads **one** shard, exactly as a stream subscription does. A `key`
-watch resolves its own shard by hashing — the same resolution a `cache_get`
-uses — and ignores `shard`. A `prefix` watch reads `shard`, because keys
+watch resolves its own shard by hashing (the same resolution a `cache_get`
+uses) and ignores `shard`. A `prefix` watch reads `shard`, because keys
 sharing a prefix hash to different shards; a whole multi-shard cache is one
 watch per shard. Absent means 0 on a single-shard cache and is refused with an
 `Error` on a multi-shard one: reading shard 0 there would cover only the keys
@@ -345,15 +345,15 @@ how many shards to watch.
 
 `from_offset` is where to resume: the first change the client has *not* seen,
 so a client checkpoints the offset it last handled plus one. Absent means from
-now — live changes only. An offset past the tail is refused with
+now: live changes only. An offset past the tail is refused with
 `subscribe_cursor_error` rather than silently reinterpreted. Watches are served
 by the shard's owner and redirected (`not_leader`) elsewhere, like subscribes.
 
-`retained` asks for current state first: each matching key's current value —
-MQTT's retained message — then live changes. Sent only to a broker that
+`retained` asks for current state first: each matching key's current value
+(MQTT's retained message), then live changes. Sent only to a broker that
 advertised `FEATURE_CACHE_WATCH_RETAINED`: an older watch-capable broker would
 ignore the unknown field and serve a live-only watch, the client silently
-missing exactly the state it joined for. Refused alongside `from_offset` —
+missing exactly the state it joined for. Refused alongside `from_offset`:
 the replay already reconstructs the state a retained start shortcuts, and
 serving both would hand over every value twice.
 
@@ -366,13 +366,13 @@ serving both would hand over every value twice.
 
 Confirms the watch. The same `subscription_id` arrives in the
 `event_stream_hello` that opens the unidirectional stream carrying the watch's
-changes — the binding is identical to a stream subscription's.
+changes. The binding is identical to a stream subscription's.
 
 `resume_offset` is the offset live delivery begins at: every change at or past
 it is delivered, and everything before it was covered by the replay or the
 snapshot. `resnapshot` (absent means false) is true when `from_offset` named
 history that compaction has already collapsed; the watch then begins with each
-matching key's **current value** instead of the collapsed history — the same
+matching key's **current value** instead of the collapsed history. This is the same
 snapshot-plus-changes contract the control plane's assignment watch uses, and
 never a silent gap.
 
@@ -392,11 +392,11 @@ the same state.
 ```
 
 One change on the watch's event stream. An absent `value` means the key was
-deleted. `offset` is the change's cache-log offset — the resume anchor.
+deleted. `offset` is the change's cache-log offset, the resume anchor.
 `expires_at_millis` is absolute Unix milliseconds, `0` or absent meaning never.
 
-Offsets on a filtered watch are naturally sparse — other keys' changes consume
-them — so a gap between consecutive offsets is **not** a drop signal here, the
+Offsets on a filtered watch are naturally sparse (other keys' changes consume
+them), so a gap between consecutive offsets is **not** a drop signal here, the
 way it is for a stream subscription. `cache_watch_lagged` is.
 
 ### CacheWatchLagged (server -> client)
@@ -417,13 +417,13 @@ sparse offsets would otherwise hide it.
 ```
 
 Sent only to a broker that advertised `FEATURE_COUNTERS`. Applies a signed
-delta — negative to subtract — and is answered with `counter_value` carrying
+delta (negative to subtract) and is answered with `counter_value` carrying
 the sum *including* this delta, so incrementing and learning where you stand
 is one round trip.
 
 A counter is scoped exactly as a cache key is: the same registered cache
 scope, the same key-to-shard hash, the same owner, the same forwarding from a
-non-owner. It lives beside the cache, not in it — a counter and a cache value
+non-owner. It lives beside the cache, not in it: a counter and a cache value
 may share a key and are unrelated, and a cache watch does not see counter
 changes.
 
@@ -445,7 +445,7 @@ Answered with `counter_value`.
 { "type": "counter_value", "value": <i64|absent>, "request_id": <u64> }
 ```
 
-An absent `value` means the counter has never been written — a different
+An absent `value` means the counter has never been written, a different
 answer from a sum of zero, exactly as a cache miss differs from a stored
 empty value.
 
@@ -459,7 +459,7 @@ Sent only to a broker that advertised `FEATURE_STREAM_SHARDS`.
 
 A subscription reads one shard, so a client consuming a whole stream needs to
 know how many there are; nothing else on the wire says. Scoped to the client's
-own tenant, and answered from the broker's routing snapshot — so it can be stale
+own tenant, and answered from the broker's routing snapshot, so it can be stale
 in exactly the way any routing answer can.
 
 ### StreamShardsView (server -> client)
@@ -528,7 +528,7 @@ field of `detail` is optional. See [Error codes](#error-codes).
 ## Semantics (v1)
 - Subscribe starts at the tail unless `start` asks otherwise; a durable stream
   can be replayed from any retained offset. History read from disk joins live
-  delivery with no gap and no duplicate — see
+  delivery with no gap and no duplicate; see
   [durable storage](durable-storage.md#resuming-a-subscription).
 - Publish returns `ok` when accepted by the broker unless `ack` is `none`.
 - PublishBatch returns `ok` once for the batch unless `ack` is `none`.
@@ -541,19 +541,19 @@ field of `detail` is optional. See [Error codes](#error-codes).
 - CacheDelete returns `cache_value` carrying whatever was removed, and `null`
   when the key was not there. Removing a key that does not exist is an answer,
   not an error.
-- CacheWatch delivers each applied write for its key or prefix — a put with its
-  value, a delete as a change with none — in the cache shard's write order,
+- CacheWatch delivers each applied write for its key or prefix (a put with its
+  value, a delete as a change with none) in the cache shard's write order,
   each carrying its log offset. Resume by offset replays `[from_offset, tail)`
   from the cache's log before live delivery, joined without a gap or a
   duplicate by the same register-before-read discipline a stream resume uses. A
   resume whose history compaction collapsed is answered with `resnapshot: true`
   and current values; a watch that falls behind is ended with
   `cache_watch_lagged` naming the offset to re-watch from. TTL expiry is not a
-  change: nothing is appended when an entry lapses, so no event is delivered —
+  change: nothing is appended when an entry lapses, so no event is delivered;
   a watcher that cares about expiry reads `expires_at_millis` off the put.
 - A `retained` CacheWatch delivers current state first: each matching key's
   current value at the offset of the write that produced it, then live changes
-  from `resume_offset` — so a client joins and immediately holds the state
+  from `resume_offset`, so a client joins and immediately holds the state
   without waiting for the next write. `retained_count` in the confirmation
   bounds the state phase, `0` meaning the key or prefix held nothing, which is
   an answer rather than a silence. The join is gapless and unambiguous: the
@@ -563,7 +563,7 @@ field of `detail` is optional. See [Error codes](#error-codes).
   the sum including it; CounterGet reads the current one, with never-written
   distinct from zero. The sum survives restart, compaction (which collapses
   applied deltas into a checkpoint without renumbering the log), and leader
-  failover — the counter log replicates beside its cache shard. At-least-once:
+  failover (the counter log replicates beside its cache shard). At-least-once:
   a retried add double-counts, stated where the semantics are.
 - GroupPoll returns `group_records`, which may be empty: nothing was available
   is an answer, not an error. Each record is claimed until the broker's
@@ -572,7 +572,7 @@ field of `detail` is optional. See [Error codes](#error-codes).
   hands it back for immediate redelivery rather than after the timeout.
 - **Only the broker leading a shard serves its groups.** Any other refuses with
   `error` rather than an empty batch, because the claim and the acknowledgement
-  have to reach the same in-flight state — two brokers each keeping their own
+  have to reach the same in-flight state; two brokers each keeping their own
   would hand out the same records.
 - Backpressure: v1 is best-effort; subscribers may miss events if they fall
   behind. With event offsets negotiated a client can *detect* that loss: a gap
@@ -593,7 +593,7 @@ sequence it expects and where the last 64 it appended landed:
 | The batch's sequence is | The leader |
 | --- | --- |
 | the next expected | appends it, remembers it, answers `publish_ok` |
-| one it remembers, with the same payloads | answers `publish_ok` and appends nothing — the same answer the first send got, including the `Quorum` wait on the same offsets |
+| one it remembers, with the same payloads | answers `publish_ok` and appends nothing: the same answer the first send got, including the `Quorum` wait on the same offsets |
 | one it remembers, with different payloads | refuses with `sequence_reused` and appends nothing, for a client that offered `FEATURE_SEQUENCE_REUSED`; any other client gets `publish_ok` as for a re-send, and the batch is not written |
 | past the next expected | refuses with `sequence_gap` naming the expected one; what was skipped is not here, and continuing would leave a hole the producer believes is filled |
 | older than it remembers | refuses with `sequence_expired`; whether it was appended cannot be told |
@@ -656,9 +656,9 @@ publish window, answered in `auth_ok`:
 {"type":"auth_ok","server_flags":2047,"server_features":65060,"publish_window":256}
 ```
 
-The grant is two promises about every acked publish on that connection —
-`publish` or `publish_batch` with a `request_id` and an ack, any binary frame
-with `FLAG_BINARY_PUBLISH_ACKED`, and every `publish_idempotent`:
+The grant is two promises about every acked publish on that connection
+(`publish` or `publish_batch` with a `request_id` and an ack, any binary frame
+with `FLAG_BINARY_PUBLISH_ACKED`, and every `publish_idempotent`):
 
 - **Answers keep request order per stream.** The broker holds an answer back
   until every publish the stream carried before it has been answered. Nothing
@@ -693,7 +693,7 @@ order, the first failure a producer reads is the earliest one, never a
 consequence of it: a batch refused with `sequence_gap` because the batch before
 it failed is answered after that failure, not before. So a producer can keep
 several batches unanswered and, when one fails, treat it and everything behind
-it as in doubt and re-send them in order under the same sequences — the leader
+it as in doubt and re-send them in order under the same sequences. The leader
 answers the ones it already holds from memory and appends the rest. The Rust
 client keeps at most 64 in flight, since the leader remembers 64 sequences per
 producer and a re-send has to find its batch remembered.
@@ -763,7 +763,7 @@ sequenceDiagram
     participant L as Cache log
     Note over C,B: Authenticated control stream with FEATURE_CACHE_WATCH negotiated
     C->>B: cache_watch (key or prefix, from_offset? or retained?)
-    Note over B: Register watcher first — pins the live edge
+    Note over B: Register watcher first, which pins the live edge
     B->>L: read tail
     B-->>C: event_stream_hello (uni stream)
     B-->>C: cache_watch_started (resume_offset = tail, resnapshot?, retained_count?)
@@ -777,7 +777,7 @@ sequenceDiagram
     B-->>C: cache_event (offset ≥ resume_offset)
     opt watch falls behind
         B-->>C: cache_watch_lagged (resume_from)
-        Note over C: Re-watch with from_offset = resume_from — gapless
+        Note over C: Re-watch with from_offset = resume_from (gapless)
     end
 ```
 
@@ -799,14 +799,14 @@ repeated count times:
 
 This is the encoding for client publishes. JSON is reached only as the
 compatibility fallback described under
-[Publish / PublishBatch](#publish--publishbatch-compatibility-only) — a client
-does not choose it, it falls back to it.
+[Publish / PublishBatch](#publish--publishbatch-compatibility-only). A client
+does not choose it; it falls back to it.
 
 ## Forwarded publish acks
 
 A publish for a shard the receiving broker does not own is **forwarded** to the
 owner and acknowledged once the owner has written it. That is correct, and it
-used to be invisible — so a client kept publishing to the same entry broker
+used to be invisible, so a client kept publishing to the same entry broker
 forever while every record was decrypted, re-encrypted and decrypted again on
 the way. A perf session put the cost at roughly half the throughput per core:
 ~250 MB/s per busy vCPU direct against ~140 forwarded (#536).
@@ -823,13 +823,13 @@ u64 generation
 ```
 
 The bit's **presence** is the signal that forwarding happened; the payload says
-where to send instead. It is a hint and not a refusal — the publish already
+where to send instead. It is a hint and not a refusal: the publish already
 succeeded, so a client that ignores it is exactly as correct as before, only as
 slow. That is what makes it safe to add: nothing depends on the client acting
 on it.
 
 An empty `addr` decodes as *absent*, not as an empty address. It means the
-cluster has not been told where clients reach that broker — the same gap
+cluster has not been told where clients reach that broker. It is the same gap
 `NotLeader` has, with the same consequence: the client learns who owns the shard
 but has nowhere to route to.
 
@@ -838,14 +838,14 @@ holding a cached owner can tell a newer answer from an older one rather than
 letting two brokers mid-rebalance overwrite each other.
 
 **Compatibility:** `0x0080` is only ever set for a client that advertised it in
-`Auth.client_flags`. A client that did not would reject the whole frame — an
-unknown flag bit is refused rather than masked off — and the frame it rejects
+`Auth.client_flags`. A client that did not would reject the whole frame (an
+unknown flag bit is refused rather than masked off), and the frame it rejects
 acknowledges a publish that *succeeded*. An ack with no owner is byte-identical
 to one from before the bit existed.
 
 The JSON `PublishOk` carries no owner. It has nowhere to put one without
 changing a message every client parses, and the JSON path is compatibility
-traffic that is not worth optimising — a client on it is already paying more
+traffic that is not worth optimising: a client on it is already paying more
 than forwarding costs.
 
 ## Binary keyed PublishBatch
@@ -871,7 +871,7 @@ follows it, so `request_id` stays readable at offset 0 whether or not a key foll
 **Compatibility:** `0x0040` was added after `0x0008`. A broker predating it matches
 on `0x0001`, knows nothing of the key prefix, and would misparse `key_len` as
 `tenant_len`. Clients therefore MUST NOT send `0x0040` unless the broker has
-advertised it — see Capability negotiation below. A client talking to such a broker
+advertised it (see Capability negotiation below). A client talking to such a broker
 sends a keyed publish with the JSON encoding instead.
 
 ## Binary acked PublishBatch
@@ -954,7 +954,7 @@ JSON encoding still receives those JSON messages instead.
 **Compatibility:** `0x0008` and `0x0010` were added after the initial v1 release. A
 broker predating them matches on `0x0001`, does not know about the prefix, and would
 misparse `request_id` as `tenant_len`. Clients therefore MUST NOT send `0x0008`
-unless the broker has advertised it — see Capability negotiation below.
+unless the broker has advertised it (see Capability negotiation below).
 
 ## Capability negotiation
 
@@ -988,7 +988,7 @@ unknown fields:
 | legacy | negotiating | no `client_flags` offered, so the broker replies with a plain `ok` and never sends a message the client cannot parse |
 | legacy | legacy | unchanged |
 
-`ORIGINAL_V1_FLAGS` is `0x0001 | 0x0002 | 0x0004` — the bits that existed before
+`ORIGINAL_V1_FLAGS` is `0x0001 | 0x0002 | 0x0004`, the bits that existed before
 negotiation. It is the only safe reading of an absent advertisement, and it is
 frozen: adding a bit to it would make clients assume support that older brokers
 do not have.
@@ -1043,23 +1043,23 @@ broker to client, so the broker sends it only to a client that offered
 
 `FEATURE_CACHE_DELETE` runs the other way, because `cache_delete` is a request:
 a client sends it only to a broker that advertised the bit. Getting that
-backwards is worse than a refused request — an unrecognised message type ends
+backwards is worse than a refused request: an unrecognised message type ends
 the broker's control loop, so probing costs the connection.
 
 Note which features depend on what. `FEATURE_TOPOLOGY` and `FEATURE_REDIRECT`
 describe a cluster, so a standalone broker advertises neither.
 `FEATURE_CACHE_DELETE` works the same on one node as on twenty, and is
-advertised by both, as are `FEATURE_STREAM_SHARDS` and `FEATURE_CACHE_SHARDS` —
+advertised by both, as are `FEATURE_STREAM_SHARDS` and `FEATURE_CACHE_SHARDS`;
 a standalone broker has one shard per stream and per cache and can say so. `FEATURE_CONSUMER_GROUP` and `FEATURE_GROUP_DEAD_LETTERS` depend on durable
 storage rather than on clustering: without it a group's position is lost on
 every restart, so a broker with none offers neither. `FEATURE_CACHE_WATCH`
 depends on the cache being log-backed, for the same shape of reason: a watch's
-contract — resume, duplicate detection, the lag signal — is built on log
+contract (resume, duplicate detection, the lag signal) is built on log
 offsets, and a broker whose cache is the in-memory fallback has none to offer.
 `FEATURE_CACHE_WATCH_RETAINED` travels with it, and is a bit of its own for
 the reason the dead-letter bit is not folded into the consumer-group bit: a
 broker built when the watch bit meant live-and-resume only would ignore the
-request's `retained` field and serve a live-only watch — silent misdelivery,
+request's `retained` field and serve a live-only watch. That is silent misdelivery,
 which is worse than the refused request a missing bit produces.
 `FEATURE_COUNTERS` depends on durable storage, like the group features: a
 counter is a fold over a log, and a sum that any restart resets is worse than
@@ -1067,13 +1067,13 @@ refusing to count at all.
 
 They are two bits rather than one because a bit says which requests exist, and
 widening what an existing bit promises is the one change that cannot be made
-safely — a broker built when `FEATURE_CONSUMER_GROUP` meant only poll, ack and
+safely: a broker built when `FEATURE_CONSUMER_GROUP` meant only poll, ack and
 nack would advertise it and then meet a request it has no arm for.
 
 An absent `server_features` or `client_features` means that peer implements
 none. This is not a
 formality. An unrecognised message `type` is a **fatal** protocol error to the
-broker's control loop — it closes the connection rather than answering — so a
+broker's control loop (it closes the connection rather than answering), so a
 client MUST NOT send a featured request speculatively to find out whether it is
 supported. Silence means no.
 
@@ -1164,9 +1164,9 @@ peer that sends no code, is in `docs/multi-node-client.md` under "Retries".
 ## Not-leader redirects
 
 A subscribe for a shard the broker does not own is answered with `not_leader`,
-naming the broker that does. So is every consumer-group request — `group_poll`,
+naming the broker that does. So is every consumer-group request (`group_poll`,
 `group_ack`, `group_nack`, `group_dead_letters`, `group_discard` and
-`group_redrive` — since only the shard's leader holds its groups. Each group
+`group_redrive`), since only the shard's leader holds its groups. Each group
 request has a stream of its own, so the answer needs no `request_id`: it answers
 the one request on that stream.
 
@@ -1179,7 +1179,7 @@ cluster has not been told one. It is given for a draining owner too: a broker
 being drained is left out of `topology`, which lists where new clients should
 connect, but it still leads the shards it has not handed off, and a redirect to
 one of those has to say where it is. The same holds for the owner hint on a
-forwarded publish's ack — a client is then given the owner's name alone,
+forwarded publish's ack: a client is then given the owner's name alone,
 which is still usable if it knows that broker from `topology`. Dialling the
 broker-internal listener instead would be refused, so no address is better than
 the wrong one.
@@ -1198,7 +1198,7 @@ follows redirects for subscribes, cache watches and every group request; the
 Python and TypeScript clients' group calls go through it. The single-broker Rust
 `Client` returns the redirect as `NotLeaderError` and does not follow it.
 
-**Publish is not redirected — it is forwarded.** The two paths made opposite
+**Publish is forwarded, not redirected.** The two paths made opposite
 choices deliberately: `docs/subscribe-routing.md` records the measurements
 behind redirecting subscribes, and `docs/internal-protocol.md` the forwarding
 of publishes. A client should not expect `not_leader` in answer to a publish.
@@ -1289,7 +1289,7 @@ frame across subscribers. The legacy `0x0002` format remains decodable.
 
 ## Event batch offsets
 
-When `flags & 0x0020 != 0`, a `u64 base_offset` precedes the `u32 count` — after
+When `flags & 0x0020 != 0`, a `u64 base_offset` precedes the `u32 count`, after
 the `u64 subscription_id` on the `0x0002` form, and at the very start of the
 payload on the shared `0x0004` form:
 
@@ -1303,7 +1303,7 @@ repeated count times:
 
 A batch's offsets are contiguous, so one `u64` per *batch* is enough: payload
 `i` sits at `base_offset + i`. That is what keeps offsets off the per-event cost
-model — 8 bytes per batch, not per event.
+model: 8 bytes per batch, not per event.
 
 Offsets belong to the **stream**, not to the subscriber, so the shared
 encode-once frame still serves every subscriber that negotiated the bit. A
@@ -1330,7 +1330,7 @@ record whenever it starts serving a shard at a new generation, so its quorum
 mark can cover the records it inherited: after a promotion, at either end of a
 move, and when a cancelled move hands the shard back. Each step of a move is a
 new generation, so a move can leave several in a row. A record takes the next
-offset like any other and is never delivered — not to a subscription, a
+offset like any other and is never delivered, not to a subscription, a
 consumer group, or a Kafka fetch. A subscriber therefore sees `N-1` and then
 `N+1` across a generation start at `N`.
 
@@ -1353,7 +1353,7 @@ sends the bit only to a client that offered it. A frame with `0x0800` and not
 
 It counts only the offsets *immediately* before the batch. If the batch carrying
 it is itself dropped, the next gap includes those offsets and overstates the
-drop by them — a drop is still reported, only its size is off.
+drop by them. A drop is still reported, only its size is off.
 
 A client that did not offer `0x0800` gets the frames it always got, and reads
 the gap at generation starts as a drop. That is a false drop signal, once per
@@ -1397,7 +1397,7 @@ omits it otherwise.
 - Undefined `flags` bits are reserved. Receivers MUST reject frames carrying an
   unrecognised bit instead of ignoring it: flag bits select the payload layout, so
   masking an unknown bit off means confidently misparsing the body rather than
-  failing. `0x0008` is the cautionary case — see Binary acked PublishBatch.
+  failing. `0x0008` is the cautionary case; see Binary acked PublishBatch.
 - Future message types must be version-gated.
 
 ## Test Vectors
