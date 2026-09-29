@@ -12,13 +12,13 @@ the reference for implementing a compatible client or server.
 The wire protocol is designed with the following priorities:
 
 1. **Language neutrality**: No Rust-specific types or semantics
-2. **Forward compatibility**: Version negotiation and feature flags
+2. **Forward compatibility**: Negotiated flag and feature bits, with the version fixed at 1
 3. **Debuggability**: Human-readable messages in v1 with binary fast paths
 4. **Explicit framing**: Clear message boundaries over stream transport
 5. **Performance escape hatches**: Binary encodings for high-throughput workloads
 
 :::note[Stability Guarantee]
-The wire protocol v1 is considered stable. All future changes will maintain backward compatibility through version negotiation or optional feature flags.
+The wire protocol v1 is considered stable. New capabilities arrive as negotiated flag and feature bits, so older peers keep working.
 :::
 ## Transport Layer
 
@@ -28,7 +28,6 @@ Felix uses **QUIC over TLS 1.3** (IETF QUIC) as its exclusive transport:
 - **Multiplexed streams**: Multiple independent streams per connection
 - **Flow control**: Built-in backpressure at connection and stream levels
 - **No head-of-line blocking**: Stream independence prevents HOL blocking
-- **0-RTT support**: Future optimization for repeat connections
 
 The protocol is transport-agnostic in design and could theoretically run over TCP+TLS, but QUIC is the only supported transport in the initial implementation.
 
@@ -135,17 +134,23 @@ This is the byte count of the payload following the header. The maximum practica
 
 ### Frame Payload
 
-Payloads are binary-encoded felix-wire frames. Flag bits indicate binary sub-formats such as batched event/publish payloads.
+Control messages are UTF-8 JSON. Flag bits select binary layouts for publish
+batches, publish acknowledgements and event batches, described further down.
 
 ## Message Types
 
-Message schemas below are shown in JSON-like notation for readability; on the wire, frames are binary-encoded.
+Each control message is a JSON object tagged by `type`, carried in a frame with
+`flags = 0`. Byte fields are base64 strings, and a field marked `absent` may be
+left out, in which case it means what it meant before the field existed. This
+page covers the messages most clients need. The full set, including consumer
+groups, idempotent producers and shard queries, is in
+[`docs/protocol.md`](https://github.com/gabloe/felix/blob/main/docs/protocol.md).
 
 ### Client → Server Messages
 
 #### Publish
 
-Single-message publish operation.
+Single-message publish.
 
 ```json
 {
@@ -153,28 +158,31 @@ Single-message publish operation.
   "tenant_id": "string",
   "namespace": "string",
   "stream": "string",
-  "payload": "base64-encoded-bytes",
-  "ack": "none" | "per_message"
+  "payload": "base64",
+  "key": "base64 | absent",
+  "request_id": "number | absent",
+  "ack": "none | per_message | per_batch | absent"
 }
 ```
 
 **Fields**:
-- `tenant_id`: Tenant identifier (must exist in broker registry)
-- `namespace`: Namespace identifier within tenant
-- `stream`: Stream name to publish to
-- `payload`: Message payload encoded as base64
-- `ack`: Acknowledgement mode
-  - `none`: Fire-and-forget, no ack sent
-  - `per_message`: Broker sends `ok` after accepting message
+- `tenant_id`, `namespace`, `stream`: the stream to publish to
+- `payload`: the message bytes
+- `key`: routing key that picks the shard. Absent means shard 0
+- `request_id`: u64 correlation id, required whenever `ack` is not `none`
+- `ack`: absent or `none` is fire-and-forget
 
 **Semantics**:
-- Message is enqueued to the broker's publish pipeline
-- If `ack` is `per_message`, broker responds with `ok` after enqueuing
-- No ordering guarantees across different publish operations
+- An acked publish is answered with `publish_ok` or `publish_error`, both
+  carrying its `request_id`
+- Answers can arrive out of order unless the connection negotiated
+  [pipelined publishes](#pipelined-publishes)
+- Current clients send publishes as [binary frames](#binary-publish-batch-encoding)
+  and use this JSON form only as a fallback
 
 #### PublishBatch
 
-Batch publish operation for improved throughput.
+Batch publish. Same fields as `publish`, with `payloads` in place of `payload`.
 
 ```json
 {
@@ -182,83 +190,94 @@ Batch publish operation for improved throughput.
   "tenant_id": "string",
   "namespace": "string",
   "stream": "string",
-  "payloads": ["base64-1", "base64-2", "base64-n"],
-  "ack": "none" | "per_batch"
+  "payloads": ["base64", "base64"],
+  "key": "base64 | absent",
+  "request_id": "number | absent",
+  "ack": "none | per_message | per_batch | absent"
 }
 ```
 
-**Fields**:
-- `tenant_id`, `namespace`, `stream`: Same as Publish
-- `payloads`: Array of base64-encoded message payloads
-- `ack`: Acknowledgement mode
-  - `none`: Fire-and-forget
-  - `per_batch`: Single `ok` after entire batch is accepted
-
 **Semantics**:
-- All messages in batch are enqueued atomically
-- Ordering is preserved within the batch
-- More efficient than individual publishes for high-throughput workloads
+- The batch is appended in order, and one `publish_ok` or `publish_error`
+  answers it
 
 #### Subscribe
 
-Initiate a subscription to a stream.
+Start a subscription to one shard of a stream.
 
 ```json
 {
   "type": "subscribe",
   "tenant_id": "string",
   "namespace": "string",
-  "stream": "string"
-}
-```
-
-**Semantics**:
-- Subscription starts at **tail** (current offset)
-- Replay from a retained offset for a durable stream; an ephemeral stream keeps no history to replay
-- Broker responds with `ok` on the control stream
-- Broker opens a new **unidirectional stream** for event delivery
-- First frame on event stream is `EventStreamHello` (see below)
-
-#### CachePut
-
-Store a key-value pair in the cache with optional TTL.
-
-```json
-{
-  "type": "cache_put",
-  "request_id": "string",
-  "key": "string",
-  "value": "base64-encoded-bytes",
-  "ttl_ms": number | null
+  "stream": "string",
+  "subscription_id": "number | absent",
+  "start": "\"latest\" | \"earliest\" | {\"offset\": number} | absent",
+  "shard": "number | absent"
 }
 ```
 
 **Fields**:
-- `request_id`: Client-provided identifier for request/response matching
-- `key`: Cache key (arbitrary string)
-- `value`: Value encoded as base64
-- `ttl_ms`: Time-to-live in milliseconds (null = no expiration)
+- `start`: absent means `latest`, the live tail. `earliest` is the oldest
+  retained record. `{"offset": n}` resumes at `n`, the first record not yet seen.
+  Replay needs a durable stream; an ephemeral stream keeps no history
+- `shard`: which shard to read, default 0. A subscription reads one shard, so a
+  multi-shard stream needs one subscription per shard
+- `subscription_id`: an explicit id for the subscription. Absent, the broker
+  assigns one
 
 **Semantics**:
-- Value is stored and expires after TTL if specified
-- Broker responds with `ok` containing the same `request_id`
+- Broker answers `subscribed` with the subscription's id, or
+  `subscribe_cursor_error` when it cannot serve `start` (`too_old` or
+  `in_future`)
+- Broker opens a new **unidirectional stream** for event delivery
+- First frame on the event stream is `event_stream_hello` (see below)
+
+#### CachePut
+
+Store a value in a cache, with an optional TTL.
+
+```json
+{
+  "type": "cache_put",
+  "tenant_id": "string",
+  "namespace": "string",
+  "cache": "string",
+  "key": "string",
+  "value": "base64",
+  "request_id": "number | absent",
+  "ttl_ms": "number | null"
+}
+```
+
+**Fields**:
+- `tenant_id`, `namespace`, `cache`: which cache the key belongs to
+- `request_id`: u64 the client picks to match the answer to the request
+- `ttl_ms`: time to live in milliseconds, `null` for no expiry
+
+**Semantics**:
+- Answered with `cache_ok` carrying the same `request_id`, or plain `ok` when
+  the request had none
 - Expiration is lazy (checked on access)
 
 #### CacheGet
 
-Retrieve a value from the cache.
+Read a value from a cache.
 
 ```json
 {
   "type": "cache_get",
-  "request_id": "string",
-  "key": "string"
+  "tenant_id": "string",
+  "namespace": "string",
+  "cache": "string",
+  "key": "string",
+  "request_id": "number | absent"
 }
 ```
 
 **Semantics**:
-- Broker responds with `cache_value` containing the same `request_id`
-- Value is `null` if key is missing or expired
+- Answered with `cache_value` carrying the same `request_id`
+- `value` is `null` if the key is missing or expired
 
 #### CacheWatch
 
@@ -322,12 +341,15 @@ Event delivery on a subscription stream.
   "tenant_id": "string",
   "namespace": "string",
   "stream": "string",
-  "payload": "base64-encoded-bytes"
+  "payload": "base64",
+  "offset": "number | absent"
 }
 ```
 
 **Semantics**:
 - Sent on unidirectional event streams
+- `offset` is the record's log offset on a durable stream, absent on an
+  in-memory one
 - One event per frame (unless batched)
 - No acknowledgement from a plain subscriber. A consumer group acknowledges each record explicitly, which is what makes it redeliverable
 
@@ -341,12 +363,15 @@ Batched event delivery (optimization).
   "tenant_id": "string",
   "namespace": "string",
   "stream": "string",
-  "payloads": ["base64-1", "base64-2", "base64-n"]
+  "payloads": ["base64", "base64"],
+  "base_offset": "number | absent"
 }
 ```
 
 **Semantics**:
 - Multiple events delivered in single frame
+- `base_offset` is the first event's log offset on a durable stream. Event `i`
+  is at `base_offset + i`
 - Reduces framing overhead for high-throughput streams
 - Configurable via broker batching parameters
 
@@ -357,7 +382,7 @@ First frame on a subscription event stream.
 ```json
 {
   "type": "event_stream_hello",
-  "subscription_id": "string"
+  "subscription_id": "number"
 }
 ```
 
@@ -373,16 +398,19 @@ Cache lookup response.
 ```json
 {
   "type": "cache_value",
-  "request_id": "string",
+  "tenant_id": "string",
+  "namespace": "string",
+  "cache": "string",
   "key": "string",
-  "value": "base64-encoded-bytes" | null
+  "value": "base64 | null",
+  "request_id": "number | absent"
 }
 ```
 
 **Fields**:
-- `request_id`: Matches the request
-- `key`: Requested key
-- `value`: Retrieved value or `null` if missing/expired
+- `tenant_id`, `namespace`, `cache`, `key`: echo the request
+- `value`: the stored value, or `null` if missing or expired
+- `request_id`: matches the request
 
 #### CacheWatchStarted
 
@@ -481,38 +509,51 @@ moved to another broker; the broker ends the stream after it.
 Absent `value` means the counter has never been written — distinct from a sum
 of zero.
 
-#### Ok
+#### Subscribed, PublishOk, CacheOk, Ok
 
-Generic success acknowledgement.
+Success answers. Each names the request it answers where there is one.
 
 ```json
-{
-  "type": "ok",
-  "request_id": "string"
-}
+{ "type": "subscribed", "subscription_id": "number",
+  "start_offset": "number | absent", "live_offset": "number | absent" }
+{ "type": "publish_ok", "request_id": "number" }
+{ "type": "cache_ok", "request_id": "number" }
+{ "type": "ok" }
 ```
 
-**Semantics**:
-- Sent in response to publish (if acked), subscribe, cache_put
-- `request_id` matches the request when applicable
+`subscribed` confirms a subscription, and its id matches the
+`event_stream_hello` on the event stream. `start_offset` and `live_offset` are
+sent only for a subscribe with a `start`, on a durable stream, to a client that
+negotiated event offsets. `publish_ok` answers an acked publish and `cache_ok` a
+cache write that carried a `request_id`. Plain `ok` answers `auth` from a client
+that offered no flags, and a cache write without a `request_id`.
 
 #### Error
 
-Error response.
+A request failed.
 
 ```json
 {
   "type": "error",
-  "request_id": "string",
-  "message": "human-readable-error-description"
+  "message": "string",
+  "code": "string | absent",
+  "retry": "retry | retry_after | redirect | outcome_unknown | fatal | absent",
+  "detail": { "reason": "string | absent", "retry_after_ms": "number | absent" }
 }
 ```
 
-**Common error conditions**:
-- Unknown tenant/namespace/stream
-- Malformed frame
-- Authorization failure (`forbidden`)
-- Resource exhaustion
+`message` is prose for people. `code`, `retry` and `detail` are sent only to a
+client that offered `FEATURE_ERROR_CODES`, and `detail` may be absent even then.
+`publish_error` carries the same fields next to its `request_id`.
+
+`code` is one of `unauthenticated`, `forbidden`, `not_found`,
+`invalid_request`, `shard_unavailable`, `not_leader`, `quorum_timeout`,
+`leadership_lost`, `unacknowledged`, `overloaded`, `limit_exceeded`,
+`draining`, `internal`, `storage` or `stale_claim`. A client must accept a code
+it does not know. `retry` says what the client may do next: send again, wait
+first, go to another broker, send again only if the request is idempotent, or
+give up. What each code means is in
+[Error codes](https://github.com/gabloe/felix/blob/main/docs/protocol.md#error-codes).
 
 ## Binary Publish Batch Encoding
 
@@ -531,9 +572,8 @@ the batch with a `request_id` and an ack mode, and the broker replies with a bin
 ack frame (bit 4) instead of a JSON `publish_ok`/`publish_error`.
 
 :::note[Negotiated, not assumed]
-Bits 3 and 4 were added after the initial v1 release. A client only uses them once
-the broker has advertised them on the auth handshake; against an older broker it
-falls back to the JSON encoding automatically. See
+A client uses bits 3 and 4 only once the broker advertises them on the auth
+handshake. Against a broker that does not, it falls back to the JSON encoding. See
 [Capability negotiation](#capability-negotiation).
 :::
 
@@ -731,9 +771,36 @@ advertised its bit.
 | `0x0400` | `FEATURE_CACHE_SHARDS` | The broker answers `cache_shards` |
 | `0x0800` | `FEATURE_ERROR_CODES` | The client reads `code`, `retry` and `detail` on errors |
 | `0x1000` | `FEATURE_SHARD_MOVED` | The client reads `shard_moved` at the end of an event stream |
+| `0x2000` | `FEATURE_UNSUPPORTED` | The broker answers an unknown request with `unsupported` and keeps the stream; the client can read that answer |
+| `0x4000` | `FEATURE_SEQUENCE_REUSED` | The client reads `publish_refused` with reason `sequence_reused` |
+| `0x8000` | `FEATURE_PUBLISH_PIPELINE` | Acked publishes are pipelined under a `publish_window` (below) |
 
 The full list, with what each depends on, is in
 [`docs/protocol.md`](https://github.com/gabloe/felix/blob/main/docs/protocol.md).
+
+### Pipelined publishes
+
+A client that offers `FEATURE_PUBLISH_PIPELINE` may be granted a window, sent
+as `publish_window` in `auth_ok`:
+
+```json
+{"type":"auth_ok","server_flags":2047,"server_features":65060,"publish_window":256}
+```
+
+The grant covers every acked publish on the connection, JSON or binary,
+including `publish_idempotent`. The broker answers publishes in the order each
+stream carried them, holding an answer back until everything before it on that
+stream is answered. At most `publish_window` publishes may be unanswered across
+the connection. At that depth the broker stops reading the connection's
+publishes, so a client that sends more is slowed by QUIC flow control rather
+than refused. A client that did not offer the bit gets answers in completion
+order, matched by `request_id`, and no window.
+
+The order matters to an idempotent producer with several batches in flight:
+when one fails, every batch behind it on the stream is answered after it, so the
+producer sees the failure before any answer that depends on it. The details are
+in
+[Pipelined publishes](https://github.com/gabloe/felix/blob/main/docs/protocol.md#pipelined-publishes).
 
 ## Shared Binary EventBatch Encoding
 
@@ -762,6 +829,23 @@ per-subscriber `subscription_id` entirely.
   </g>
  </g>
 </svg>
+
+With event offsets negotiated (`0x0020`), a `u64 base_offset` comes first, the
+offset of the batch's first event. With `0x0800` as well (`FLAG_EVENT_BATCH_SKIPPED`),
+a `u64 skipped_before` follows it on the one batch that comes right after
+offsets holding no event, such as a promoted leader's generation-start record:
+
+```
+u64 base_offset       # 0x0020: offset of the first payload
+u64 skipped_before    # 0x0800: offsets just below base_offset that hold no event
+u32 count
+repeated count times:
+  u32 payload_len
+  u8[payload_len] payload
+```
+
+Payload `i` is at `base_offset + i`. Every other batch omits `skipped_before`,
+and a frame with `0x0800` but not `0x0020` is rejected.
 
 **Why no subscription id in the frame**: the subscription is already bound to
 its uni-directional event stream by the `EventStreamHello` frame sent when
@@ -802,9 +886,9 @@ sequenceDiagram
     participant S as Server
     
     Note over C: Open bidirectional control stream
-    C->>S: publish_batch (ack: per_batch)
+    C->>S: publish_batch (request_id: 1, ack: per_batch)
     Note over S: Validate & enqueue
-    S->>C: ok
+    S->>C: publish_ok (request_id: 1)
 ```
 
 ### Subscribe and Receive Events
@@ -816,7 +900,7 @@ sequenceDiagram
     
     Note over C: Open bidirectional control stream
     C->>S: subscribe
-    S->>C: ok
+    S->>C: subscribed
     Note over S: Open unidirectional event stream
     S->>C: event_stream_hello
     loop Event delivery
@@ -835,7 +919,7 @@ sequenceDiagram
     
     Note over C: Open bidirectional cache stream
     C->>S: cache_put (request_id: 1)
-    S->>C: ok (request_id: 1)
+    S->>C: cache_ok (request_id: 1)
     C->>S: cache_get (request_id: 2)
     S->>C: cache_value (request_id: 2)
     C->>S: cache_get (request_id: 3)
@@ -913,7 +997,6 @@ Felix uses different QUIC stream patterns for different workload characteristics
 **Characteristics**:
 - Long-lived or short-lived depending on usage
 - Multiplexed on single connection
-- Flow control prevents backpressure
 
 ### Event Streams (Unidirectional, Server-opened)
 
@@ -959,8 +1042,10 @@ Felix uses different QUIC stream patterns for different workload characteristics
 - Close stream if error is unrecoverable
 
 **Unknown message type**:
-- Send `error` message. A peer should not be sending one: a request that a
-  feature bit gates is only sent to a peer that advertised the bit
+- If the client offered `FEATURE_UNSUPPORTED`, the broker answers `unsupported`
+  naming the request type and keeps serving the stream
+- Otherwise the broker closes the stream. A client should send a request that a
+  feature bit gates only to a broker that advertised the bit
 
 ### Application Errors
 
@@ -968,8 +1053,9 @@ Felix uses different QUIC stream patterns for different workload characteristics
 - Send `error` with descriptive message
 - Client should not retry without fixing configuration
 
-**Authorization failure**:
-- Send `error` with "unauthorized" message
+**Authentication or authorization failure**:
+- Send `error` with code `unauthenticated` (no valid credentials) or `forbidden`
+  (credentials lack the permission)
 - Client should refresh credentials or permissions
 
 **Backpressure / resource exhaustion**:
@@ -982,13 +1068,15 @@ All Felix client and server implementations must pass the shared conformance tes
 
 ### Test Vectors
 
-Test vectors are located in `crates/protocol/felix-wire/tests/vectors/`:
+Test vectors are located in `crates/protocol/felix-wire/tests/vectors/`. Each
+case is a pair: a `.json` file describing the frame and a `.hex` file with its
+exact bytes.
 
-- `frame_valid.json`: Valid frame encodings
-- `frame_invalid.json`: Invalid frames that must be rejected
-- `message_valid.json`: Valid message payloads
-- `message_invalid.json`: Invalid messages
-- `binary_batch_valid.bin`: Binary batch test cases
+- JSON control messages: `auth_ok`, `auth_with_capabilities`, `publish`,
+  `subscribe`, `event`, `cache_put`, `cache_get`, `cache_value`, `ok`, `error`
+- Binary publish batches: `binary_publish_keyed`, `binary_publish_acked`,
+  `binary_publish_acked_keyed`
+- Binary publish acks: `binary_publish_ack_ok`, `binary_publish_ack_error`
 
 ### Conformance Runner
 
@@ -1042,28 +1130,6 @@ request. Anything stronger would need a policy that does not exist today.
 
 ## Implementation Guidance
 
-### Client Implementation Checklist
-
-- [ ] Implement frame header encoding/decoding
-- [ ] Implement binary frame encoding
-- [ ] Handle all standard message types
-- [ ] Implement proper error handling
-- [ ] Pass conformance test suite
-- [ ] Support connection pooling
-- [ ] Implement proper QUIC stream lifecycle
-- [ ] Handle backpressure gracefully
-
-### Server Implementation Checklist
-
-- [ ] Implement frame header decoding/encoding
-- [ ] Implement binary batch decoding
-- [ ] Route messages to appropriate handlers
-- [ ] Implement proper error responses
-- [ ] Pass conformance test suite
-- [ ] Enforce stream type invariants
-- [ ] Apply backpressure when needed
-- [ ] Log protocol violations
-
 ### Performance Optimization Tips
 
 1. **Avoid per-message allocation**: Pre-allocate buffers for frame headers
@@ -1081,11 +1147,11 @@ Planned protocol enhancements (not in v1):
 - **Encryption metadata**: End-to-end encryption with key IDs in envelope
 - **Stream filtering**: Server-side filtering to reduce client bandwidth
 - **Replay by timestamp**: `Subscribe` takes an offset today, not a time
-- **Quotas**: per-tenant and per-namespace limits
+- **Quotas**: per-namespace limits
 
 Since delivered, and no longer on this list: consumer acknowledgements for
 at-least-once delivery (consumer groups), historical replay from an offset,
-tenant isolation, and — for the cache — server-side filtering, which is what a
+tenant isolation, a per-tenant publish rate limit, and — for the cache — server-side filtering, which is what a
 keyed watch is (`cache_watch` delivers one key or prefix, filtered at the
 broker's fanout boundary). Stream filtering above refers to streams, where it
 remains future. Sequence numbers for exactly-once are **not** on this list —

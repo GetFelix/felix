@@ -43,8 +43,9 @@ decides where data lives.
 QUIC and peers over a second QUIC endpoint with its own protocol. It leads some
 shards, forwards what it does not lead, and replicates what it leads.
 
-**The control plane** (`services/felix-controlplane-service`) is a stateless REST service over
-Postgres. It owns tenants, namespaces, streams, caches, the node catalog, and
+**The control plane** (`services/felix-controlplane-service`) is a REST service whose
+metadata lives in an embedded Raft group, in Postgres, or in memory for
+development. It owns tenants, namespaces, streams, caches, the node catalog, and
 **shard assignments**, and it runs placement on a timer.
 
 The division that matters: **the control plane decides ownership, and is never
@@ -66,9 +67,10 @@ misparsing the body.
 Separately there are **feature bits**, exchanged in `Auth` and `AuthOk`. Those
 say a *request exists* — "this broker serves `cache_delete`" — and never appear
 on a frame. They are a different number space for that reason. A client must not
-send a featured request to a peer that did not advertise the bit: an
-unrecognised message type is fatal to a broker's control loop, so probing costs
-the connection rather than returning an error.
+send a featured request to a peer that did not advertise the bit. An
+unrecognised message type closes the control stream, unless the client offered
+`FEATURE_UNSUPPORTED`, in which case the broker answers `unsupported` and keeps
+serving.
 
 > `crates/protocol/felix-wire/src/client/` — `frame.rs`, `flags.rs`, `features.rs`, `message.rs`.
 
@@ -83,7 +85,7 @@ dispatches every `Message` variant. `handlers/publish.rs` and
 
 A routing key hashes to a shard. That shard has exactly one owner.
 
-`resolve_route` in `handlers/publish/control.rs` is the single chokepoint every
+`resolve_route` in `handlers/publish/route.rs` is the single chokepoint every
 publish passes through, which is why the ownership gate lives there: nothing
 reaches storage without it.
 
@@ -111,7 +113,8 @@ This is the ordering most likely to be "fixed" into a bug.
 
 `crates/server/felix-broker/src/broker/publish.rs` calls `begin_append` and *then* `commit`.
 The batch claims its place in the stream's order the instant its offsets are
-consumed, before anyone waits on the disk. `commit_order.rs` then makes later
+consumed, before anyone waits on the disk. `CommitSequencer` in
+`crates/server/felix-storage/src/commit_order.rs` then makes later
 publishes wait behind earlier ones — **whether those succeed, fail, or are
 cancelled**, because a cancelled publish that released its successors would let
 a later record land at an earlier offset.
@@ -144,7 +147,11 @@ The leader ships records at their offsets; a follower checks each batch begins
 at its tail, and answers a gap or a divergence explicitly rather than accepting
 it. A leader serves only while it holds a **lease** on the shards it leads, so a
 broker that has been superseded stops acknowledging rather than finding out
-later.
+later. Once the fleet has finalized `majority_ack`, a `Quorum` shard acknowledges
+when a majority answers that it holds the write at the leader's generation, and
+neither the lease nor the control-plane report is on the write's path. A
+superseded leader cannot collect that majority, because its successor fenced the
+followers first. `Leader` streams and caches keep the lease.
 
 On failover, only a replica that **actually holds the log** is promoted. A shard
 whose leader is gone and whose replicas are behind is left unavailable rather
@@ -178,7 +185,7 @@ Several past bugs were "the natural order":
 | --- | --- | --- |
 | Register the subscriber, then read history | Read history, then register | A publish landing in between is lost |
 | Take offsets, then wait for durability | Wait, then take offsets | Order would depend on disk timing |
-| Report the replica set, then release the quorum publish | Release, then report | A leader dying in the gap is replaced by a replica that may not hold the record |
+| Report the replica set, then release the quorum publish (without `majority_ack`) | Release, then report | A leader dying in the gap is replaced by a replica that may not hold the record |
 | Record the dead letter, then advance the cursor | Advance, then record | A crash between leaves the record skipped with nothing saying it was tried |
 
 If you find yourself reordering one of these, it is almost certainly a bug.
@@ -212,7 +219,8 @@ If you find yourself reordering one of these, it is almost certainly a bug.
 | `felix-broker` | Streams, delivery, commit ordering, consumer groups |
 | `felix-client` | The client library and its connection pools |
 | `felix-authz` | Tokens, RBAC, and the actions they gate |
-| `services/felix-broker-service` | The broker binary: QUIC handlers, routing, replication, peers |
+| `felix-replication` | Shipping a shard's log from leader to followers, the peer transport, and when a `Quorum` write is on a majority |
+| `services/felix-broker-service` | The broker binary: QUIC handlers, routing, wiring replication into the node |
 | `services/felix-controlplane-service` | Metadata, placement, and the REST API |
 | `felix-cluster` | A local multi-broker cluster, for integration and failure tests. It injects process, link, clock and fsync faults ([the fault API](https://github.com/gabloe/felix/blob/main/docs/cluster-harness.md#the-fault-api)) and checks histories under them ([the history checker](https://github.com/gabloe/felix/blob/main/docs/history-checker.md)) |
 
