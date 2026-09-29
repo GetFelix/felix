@@ -1,4 +1,4 @@
-# Felix Durable Segment Format (v3)
+# Felix Durable Segment Format (v4)
 
 This document defines the on-disk representation of a durable Felix stream. It is
 the source of truth for anyone reading, writing, repairing, or replicating
@@ -108,7 +108,7 @@ segment, so damage here is never a torn write — it is always an error.
 ### Record
 
 <p align="center">
-  <img src="assets/storage/record.svg" alt="Record byte layout: payload_len, offset, timestamp_micros, checksum, then the payload. The checksum covers bytes 0 to 20 and the payload" width="882">
+  <img src="assets/storage/record.svg" alt="Record byte layout: payload_len, offset, timestamp_micros, header_crc over bytes 0 to 20, checksum over bytes 0 to 24 and the payload, then the payload" width="882">
 </p>
 
 | Offset | Size | Field | Notes |
@@ -155,7 +155,7 @@ once its last record is, and one whose next record does not continue it was
 abandoned. The step to the next record is `28 + (20 if bit 31) + payload_len`,
 still from the header alone.
 
-Only a v3 segment may hold marks. A v2 build reading a mark's bits would see a
+Only a v3 or later segment may hold marks. A v2 build reading a mark's bits would see a
 length past the limit, and recovery could take that for a torn tail and cut it
 off; a v3 header makes the v2 build refuse the segment instead. So a v3 build
 that reopens a v2 active segment rolls it before writing the first marked
@@ -319,11 +319,15 @@ migration path.
 
 ```text
 SegmentHeader::new(base_offset = 1, created_at_micros = 2):
-  46 4C 53 47  00 04  00 00
+  46 4C 53 47  00 03  00 00
   00 00 00 00 00 00 00 01
   00 00 00 00 00 00 00 02
-  E7 D5 EE A2
+  AD EB 65 E9
   00 00 00 00
+
+SegmentHeader::at_version(1, 2, version = 4), for a segment holding a
+generation-start record, differs only in the version and the CRC:
+  version 00 04, header crc E7 D5 EE A2
 
 encode_record(offset = 7, timestamp = 9, payload = "hi"):
   00 00 00 02

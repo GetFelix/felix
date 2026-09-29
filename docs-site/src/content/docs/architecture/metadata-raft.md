@@ -54,9 +54,8 @@ flowchart LR
   because there is one leader.
 - **Leases keep their arithmetic.** The Raft leader is the lease grantor; a
   new leader learns every outstanding grant from the log and waits out the
-  same safety margin before granting again. Data-plane fencing gains a
-  second epoch (the Raft term) under the one it already has (assignment
-  generation).
+  same safety margin before granting again. Data-plane fencing is
+  unchanged: it still rests on the assignment generation.
 - **Why the per-shard-Raft rejection doesn't apply here**: the
   [replication design](https://github.com/gabloe/felix/blob/main/docs/replication-design.md)
   rejected Raft for stream payloads because Raft truncates divergent log
@@ -69,7 +68,7 @@ flowchart LR
 | Event | Behaviour |
 | --- | --- |
 | One instance of three dies | Writes pause for one election timeout; reads keep serving; no broker call fails |
-| An instance loses its volume | Rejoins empty, is caught up by snapshot install; no data surgery |
+| An instance loses its volume | Rejoins empty and does not vote or stand for election until it has caught up with the group, so an empty log cannot elect a member missing acknowledged writes. Caught up by snapshot install; no data surgery |
 | Quorum lost | Survivors fail readiness rather than serve writes that cannot commit; brokers keep serving on their catalogs and leases, as during any control-plane outage |
 | Migration from Postgres | A minutes-long metadata write freeze: import a consistent snapshot as the group's first state, repoint, verify, retire the database. Brokers tolerate the freeze by design |
 
@@ -77,10 +76,12 @@ Library: [openraft](https://github.com/databendlabs/openraft), pinned to the
 stable 0.9 line, wrapped behind a seam so its pre-1.0 API churn stays
 contained.
 
-## Trying it (experimental)
+## Configuring it
 
 Three environment variables select the backend, the same way a Postgres URL
-selects Postgres, and four more are required with them:
+selects Postgres, and three more are required with them: the peer listener,
+the cluster id and the peer token. `FELIX_RAFT_INITIAL_CLUSTER_STATE` is
+optional and defaults to `existing`.
 
 ```
 FELIX_RAFT_NODE_ID=1
@@ -154,7 +155,13 @@ Consensus position ships as metrics: `felix_meta_raft_term`,
 `_snapshot_index` (gauges), plus `felix_meta_raft_forwarded_proposals_total`
 (informational — the LB is handing writes to followers) and
 `felix_meta_raft_write_timeouts_total` — the counter to alert on, because it
-means no leader or no quorum.
+means no leader or no quorum. `felix_meta_raft_peer_rejected_total{reason}`
+counts peer requests refused for the wrong cluster id or token.
+`felix_meta_raft_deduplicated_proposals_total` counts retried writes answered
+from the first attempt's result. `felix_meta_raft_unsupported_commands_total`
+counts committed commands this build could not apply, which in a mixed-version
+group means this member has fallen behind the leader; the upgrade runbook
+watches it.
 
 ### Known fact: leader deploys pause writes for one election (pre-0.10 openraft)
 
@@ -276,9 +283,8 @@ one API-shaped command per mutation — heartbeat and expiry carry their
 timestamps, bootstrap carries its candidate signing keys, so nothing inside
 apply reads a clock or generates a value. The determinism harness applies a
 full-coverage command script to two machines and requires **byte-identical
-snapshots** — which promptly caught two real leaks (multi-node expiry and
-cascade deletes publishing change events in HashMap order) before any
-replica could disagree in production. On a real three-node group, eight
+snapshots**, so change events published in HashMap order, or anything else
+that differs between members, fails the test. On a real three-node group, eight
 concurrent tenant bootstraps come out with exactly one winner and three
 byte-identical replicas, settled by nothing but the order the log assigned.
 

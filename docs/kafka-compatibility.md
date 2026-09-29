@@ -87,7 +87,7 @@ destination.
 
 Two things work but differ from Kafka: `acks=all` on a `Leader` stream waits
 for the leader only (see [acks](#acks)), and an idempotent re-send older than
-the last 64 records per producer and partition is answered
+the last 64 batches per producer and partition is answered
 `DUPLICATE_SEQUENCE_NUMBER` without an offset (see [Idempotent
 producers](#idempotent-producers)).
 
@@ -362,7 +362,7 @@ does for Felix producers applies unchanged
 - **Refusals.** A base sequence past what the producer owes is
   `OUT_OF_ORDER_SEQUENCE_NUMBER`. A producer the log holds nothing from,
   sending anything but sequence 0, is `UNKNOWN_PRODUCER_ID`. A re-send older
-  than the log's window (the last 64 records per producer and shard) is
+  than the log's window (the last 64 batches per producer and shard) is
   `DUPLICATE_SEQUENCE_NUMBER`, which librdkafka and the Java client count as
   delivered.
 - **Wrapping.** Kafka sequences wrap to 0 after 2^31 - 1: a batch with base

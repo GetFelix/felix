@@ -94,7 +94,6 @@ assert_eq!(
 
 - **Countdown starts**: When `cache_put` completes
 - **Expiration checking**: Lazy (on access)
-- **Precision**: Best-effort, typically < 100 ms variance
 - **Updates**: Each `cache_put` resets TTL
 
 **Common TTL patterns**:
@@ -135,18 +134,11 @@ Cache entries are scoped to prevent collisions:
 
 ```rust
 // These are completely independent entries
-client.cache_put_scoped("acme", "prod", "sessions", "user-123", data1, ttl).await?;
-client.cache_put_scoped("acme", "staging", "sessions", "user-123", data2, ttl).await?;
-client.cache_put_scoped("acme", "prod", "profiles", "user-123", data3, ttl).await?;
-client.cache_put_scoped("other-tenant", "prod", "sessions", "user-123", data4, ttl).await?;
+client.cache_put("acme", "prod", "sessions", "user-123", data1, ttl).await?;
+client.cache_put("acme", "staging", "sessions", "user-123", data2, ttl).await?;
+client.cache_put("acme", "prod", "profiles", "user-123", data3, ttl).await?;
+client.cache_put("other-tenant", "prod", "sessions", "user-123", data4, ttl).await?;
 ```
-
-**Benefits**:
-
-1. **Isolation**: Tenants can't access each other's data
-2. **Organization**: Group related entries by cache name
-3. **Flexibility**: Different TTLs/eviction per cache
-4. **Multi-tenancy**: Safe shared infrastructure
 
 ### 4. Request Pipelining
 
@@ -162,7 +154,7 @@ let futures = (0..10).map(|i| {
 });
 
 // Await all responses
-let results: Vec<Option<Vec<u8>>> = join_all(futures).await
+let results: Vec<Option<Bytes>> = join_all(futures).await
     .into_iter()
     .collect::<Result<Vec<_>>>()?;
 ```
@@ -195,50 +187,52 @@ so concurrency scales until the transport or broker saturates — not a fixed
 multiplier. Measure your own workload's shape; the concurrency sweep in
 [Benchmarks](/felix/features/benchmarks/) is the reference point.
 
-### 6. Consistency Model
+### 6. Consistency Levels
 
-Felix cache provides **read-your-writes** consistency:
+A cache key hashes to one shard, and each shard has one owner. Any broker
+forwards an operation to the key's owner, so a value written through one
+broker is readable through every other and there is never a second copy to
+diverge. Concurrent writes to one key land in the order the owner applies
+them: last write wins.
 
 ```rust
-// Put value
 use bytes::Bytes;
 client
     .cache_put("acme", "prod", "data", "key", Bytes::from_static(b"value-1"), None)
     .await?;
 
-// Immediately read (same client)
+// A get through any broker reaches the owner.
 assert_eq!(
     client.cache_get("acme", "prod", "data", "key").await?,
-    Some(b"value-1".to_vec())
+    Some(Bytes::from_static(b"value-1"))
 );
 ```
 
-**Consistency guarantees**:
+A cache declares `Leader` (the default) or `Quorum` when it is created, as a
+stream does ([Control plane API](/felix/api/control-plane-api/)). The level
+covers puts, deletes and counter adds.
 
-1. **Read-your-writes**: Client sees its own writes immediately
-2. **Monotonic reads**: Never see older value after newer one (same session)
-3. **Eventual consistency**: All clients eventually see latest value
-4. **No torn writes**: Writes are atomic
+- **`Leader`**: the owner applies the change and answers. Replicas catch up
+  afterwards.
+- **`Quorum`**: a write is acknowledged once a majority of the shard's replicas
+  holds it. A get or counter get answers only once a majority holds everything
+  its value reflects and the owner has confirmed it still leads, so a failover
+  cannot take the value back.
 
-**No linearizability**: Concurrent writes from different clients may see inconsistent ordering.
+A `Quorum` operation that cannot reach a majority in time fails with
+`quorum_timeout`, and one whose owner loses the shard mid-operation fails with
+`leadership_lost`. Neither means the write failed, only that the broker cannot
+vouch for it, so retry. An owner whose lease has lapsed refuses operations with
+`shard_unavailable`.
 
-```mermaid
-sequenceDiagram
-    participant C1 as Client 1
-    participant C2 as Client 2
-    participant B as Broker
-    
-    par Concurrent writes
-        C1->>B: put(key=X, value=A)
-    and
-        C2->>B: put(key=X, value=B)
-    end
-    
-    Note over B: Last write wins (order undefined)
-    
-    C1->>B: get(key=X)
-    B-->>C1: value=A or B (undefined)
-```
+By default a `Quorum` read confirms leadership by the owner's lease, which
+trusts the clocks. Once an operator finalizes the `lease_free_reads` fleet
+feature, it confirms with a round of fences answered by a majority instead,
+which makes the read linearizable without clocks. `FELIX_QUORUM_READS=lease`
+keeps a broker's reads on the lease. Writes and watches use the lease in every
+mode. [Upgrades](/felix/deployment/upgrades/) has the finalize runbook, and
+[Delivery Semantics](/felix/architecture/semantics/#consistency-model) the full
+contract.
 
 ### 7. Keyed Watch
 
@@ -383,11 +377,9 @@ counting). Negotiated as `FEATURE_COUNTERS`, durable brokers only.
 
 :::caution[At-least-once, honestly]
 A retried `counter_add` after a lost acknowledgement counts twice — deltas
-carry no dedupe identity. This replaces the earlier best-effort
-read-modify-write rate limiting shown below with something durable and
-atomic per shard, but it does not make increments exactly-once; an
-application that cannot tolerate a double-count keeps its own idempotency
-key.
+carry no dedupe identity. A counter is durable and atomic per shard, but
+increments are not exactly-once. An application that cannot tolerate a
+double-count keeps its own idempotency key.
 :::
 
 ### 9. Composed semantics: which flow for which problem
@@ -471,7 +463,7 @@ async fn cache_get(
     namespace: &str,
     cache: &str,
     key: &str
-) -> Result<Option<Vec<u8>>>
+) -> Result<Option<Bytes>>
 ```
 
 **Parameters**:
@@ -682,57 +674,29 @@ impl ConfigCache {
 
 ### 3. Rate Limiting
 
-Simple rate limiting with TTL:
+A fixed-window limit with a counter. `counter_add` is atomic on the key's
+owner, so concurrent requests cannot both read the same count:
 
 ```rust
 struct RateLimiter {
     client: Arc<Client>,
-    limit: u32,
+    limit: i64,
     window_ms: u64,
 }
 
 impl RateLimiter {
-    async fn check_rate_limit(&self, user_id: &str) -> Result<bool> {
-        let key = format!("rate-limit:{}", user_id);
-        
-        // Try to get current count
-        let count = match self
+    async fn check_rate_limit(&self, user_id: &str, now_ms: u64) -> Result<bool> {
+        // One counter per user per window.
+        let key = format!("rate-limit:{}:{}", user_id, now_ms / self.window_ms);
+        let count = self
             .client
-            .cache_get("acme", "prod", "rate-limits", &key)
-            .await?
-        {
-            Some(data) => u32::from_be_bytes(data.try_into().unwrap()),
-            None => 0,
-        };
-        
-        if count >= self.limit {
-            return Ok(false);  // Rate limit exceeded
-        }
-        
-        // Increment count
-        let new_count = count + 1;
-        use bytes::Bytes;
-        self.client
-            .cache_put(
-                "acme",
-                "prod",
-                "rate-limits",
-                &key,
-                Bytes::from(new_count.to_be_bytes()),
-                Some(self.window_ms),
-            )
+            .counter_add("acme", "prod", "rate-limits", &key, 1)
             .await?;
-        
-        Ok(true)  // Allow request
+        Ok(count <= self.limit)
     }
 }
 ```
 
-:::note[Better Rate Limiting]
-Shipped: [counters](#8-counters) are the atomic increment this note used to
-promise — `counter_add` is one durable, routed round trip and replaces the
-read-modify-write above.
-:::
 ## Performance Tuning
 
 ### Client Configuration
@@ -777,13 +741,6 @@ cache_send_window: 268435456         # Send window
 2. **No multi-key operations**: no transactions
 3. **Best-effort eviction** in the in-memory backend: no guaranteed LRU or LFU. The log-backed cache does not evict at all — it compacts.
 4. **A prefix watch reads one shard**: keys sharing a prefix hash to different shards, so `Client` needs one `watch_cache_shard` per shard. `ClusterClient::watch_cache_sharded` opens and merges them for you, as `subscribe_sharded` does for streams
-5. **Counter adds are acknowledged by the leader alone**: a cache declares `Leader` or `Quorum` like a stream, and puts and deletes honour it, but a counter add does not wait for a majority whatever the cache declares
-
-What used to be listed here and no longer applies: the cache persists across a
-restart when the broker has durable storage, it is routed to a single owner per
-key so two brokers cannot hold different values, its shards are replicated,
-`cache_delete` is on the wire, and "no cache invalidation broadcast" — a keyed
-watch is exactly that notification, with offsets instead of best effort.
 
 ### Planned Features
 
@@ -799,9 +756,9 @@ client.cache_cas(
 ).await?;
 ```
 
-Increment shipped as [counters](#8-counters) — a fold over the log rather
-than an operation on a cache value, which is why it survives failover.
-Compare-and-swap remains future.
+Compare-and-swap is not built. Atomic increment is [counters](#8-counters),
+a fold over the log rather than an operation on a cache value, which is why it
+survives failover.
 
 **Multi-key operations**:
 
@@ -817,9 +774,6 @@ client.cache_transaction()
     .commit()
     .await?;
 ```
-
-Watch-and-notify and explicit delete used to be listed here; both shipped —
-see [Keyed Watch](#7-keyed-watch) and [cache_delete](#cache_delete).
 
 ## One design rule worth keeping
 

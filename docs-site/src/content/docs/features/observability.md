@@ -24,9 +24,6 @@ if your aggregation pipeline needs JSON, wrap the process output.
 The lines worth knowing on sight:
 
 - Startup: the QUIC listen address, and whether control-plane sync is on.
-- `subscriber falling behind` / `events dropped for subscriber` — a
-  subscription hit its bounded queue. This is the log-side view of
-  `felix_sub_queue_dropped_total`.
 - Drain lines during shutdown, saying which subsystems finished in time.
 
 ## Metrics
@@ -53,7 +50,7 @@ felix_publish_requests_total                # by result; a batch is one request
 felix_publish_bytes_total                   # payload bytes of ok/accepted requests
 felix_publish_latency_ms                    # histogram (telemetry)
 felix_broker_ingress_queue_depth            # publish jobs waiting (telemetry)
-felix_broker_ingress_dropped_total          # overflow, by policy (telemetry)
+felix_broker_ingress_dropped_total          # fire-and-forget publishes dropped: connection byte budget full (telemetry)
 felix_broker_ingress_rejected_total         # (telemetry)
 felix_broker_acked_publishes_dropped_total  # by reason: acked on enqueue, then not written
 felix_broker_publish_worker_restarts_total  # publish executors replaced after a panic; should stay 0
@@ -241,7 +238,7 @@ so a brief non-zero is a rebuild queue. When it stays above zero, ask the broker
 which:
 
 ```bash
-curl -s http://broker:9090/replication/halted | jq
+curl -s http://broker:8080/replication/halted | jq
 ```
 
 ```json
@@ -386,10 +383,11 @@ counters, and `felix_client::timings::take_samples()` drains the recorded
 per-stage samples. The benchmarks and the `latency-demo` binary are the
 worked examples of reading them.
 
-On the broker, `FELIX_CONN_STATS_MS` logs QUIC path statistics (MTU, cwnd,
-RTT, loss, flow-control blocking) for healthy connections on an interval —
-the data that says whether a throughput problem is transport-side or above
-it. Off unless set.
+`FELIX_CONN_STATS_MS` logs QUIC path statistics (MTU, cwnd, RTT, loss,
+flow-control blocking) for healthy connections on an interval. The broker and
+the Rust client both read it; the client's view matters on the publish path,
+where it is the sender. This is the data that says whether a throughput problem
+is transport-side or above it. Off unless set.
 
 ## Debugging quick answers
 

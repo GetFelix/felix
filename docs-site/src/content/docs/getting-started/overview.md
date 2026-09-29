@@ -34,7 +34,7 @@ the first.
 Predictable latency under load, more than peak batch throughput. The choices
 that follow from that:
 
-- **QUIC as the only transport.** Streams multiplex over one connection
+- **QUIC for Felix clients.** Streams multiplex over one connection
   without head-of-line blocking, and every connection is TLS 1.3.
 - **Backpressure everywhere.** Queues are bounded and overflow policy is
   explicit, so one slow path degrades locally instead of cascading.
@@ -50,8 +50,8 @@ one place, so they can't drift page to page.
 
 ## The pieces
 
-Five crates, and the boundaries between them are the design. Everything below
-the dotted line is transport-independent: the broker core has no idea QUIC
+These are the main pieces, and the boundaries between them are the design.
+Everything below the dotted line is transport-independent: the broker core has no idea QUIC
 exists, which is what makes it testable in-process.
 
 ```mermaid
@@ -104,6 +104,10 @@ flowchart TB
   application tasks.
 - **`felix-broker`** is the data plane with no networking in it: the log,
   subscriber registry, fanout, cache index, consumer groups.
+- **`felix-storage`** writes the durable log to disk as append-only segments.
+  See [Durable Storage](/felix/architecture/durable-storage/).
+- **`felix-replication`** ships each shard's log from its leader to its
+  followers and counts the majority a `Quorum` write waits for.
 - **`felix-client`** is the Rust SDK: publisher, subscription, and cache APIs
   over pooled connections, with reconnection and redirect-following in the
   cluster client. Python (`crates/sdk/felix-python`) and TypeScript
@@ -122,15 +126,18 @@ Configured per stream:
   fans out from memory, and a subscriber that falls behind misses records.
   This is the low-latency mode, and the right one when stale data is worthless
   anyway.
-- **Durable streams** are at-least-once: a record is persisted before it is
-  acknowledged, and can be replayed from any retained offset. With
+- **Durable streams** persist every record and replay from any retained
+  offset. By default a `Leader` stream acknowledges a publish when it is
+  queued, before the write, so a crash can still lose an acknowledged record.
+  Set `ack_on_commit` to acknowledge only after the write. With
   `consistency: quorum`, the acknowledgement additionally waits until a
   majority of the replica set holds the record — so a failover cannot lose an
   acknowledged write.
 - **Consumer groups** redeliver anything unacknowledged, count attempts, and
   park repeat failures as dead letters you can list, discard, or redrive.
-- **Exactly-once is not implemented** and is not close. If duplicates are
-  unacceptable, deduplicate in the application.
+- **Idempotent producers** make a re-sent publish land once, but delivery is
+  not exactly-once: a consumer can still see a record twice on redelivery, so
+  deduplicate there if duplicates matter.
 
 A lost leader is replaced by a replica that provably holds the log — about a
 second on a local three-node cluster. This is tested against process kill,
@@ -186,8 +193,8 @@ partition-assigning consumers: Felix serves the Kafka protocol for those (see
 A bad fit: petabyte-scale batch pipelines, complex stream processing
 (joins, windowing — use Flink or Kafka Streams), or anything that needs a
 mature connector ecosystem today. Kafka Connect and Kafka Streams need
-consumer groups, which Felix's Kafka listener does not offer. Felix is young and its ecosystem is one
-language deep.
+consumer groups, which Felix's Kafka listener does not offer. Felix is young
+and its ecosystem is small.
 
 The honest version of this list, kept current per capability, is
 [What Felix Is For](/felix/getting-started/what-felix-is-for/).

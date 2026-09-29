@@ -46,6 +46,9 @@ reimplements any of it:
 - **Replication.** The leader ships records at their offsets; a follower checks
   each batch begins at its tail.
 
+A new leader writes a generation-start record before it serves. It takes an
+offset, and every reading below skips it. Only replication ships it.
+
 > `a_cache_value_survives_the_loss_of_its_owner` — a cache shard is replicated
 > by the machinery that replicates a stream, because it is the same log.
 
@@ -156,16 +159,8 @@ here has to be read as covering them:
 - **Retention outranks a group.** A record trimmed before a group reached it is
   skipped, and the group moves past. A retention window shorter than a group is
   allowed to fall behind loses work.
-- **A counter update is acknowledged by its leader.** A cache chooses `Leader`
-  or `Quorum` for its puts and deletes, as a stream does for publishes, but the
-  counter log beside it feeds no quorum mark: on a `Quorum` cache a counter
-  update is still acknowledged once durable on the leader, so losing that
-  leader between the acknowledgement and the ship loses the update.
-- **Dead letters recorded under the old layout do not travel.** Shipping them
-  became possible when the list moved to one log per stream shard, which is the
-  unit the replication driver already walks; the earlier layout kept one log per
-  `(stream, group)`, a set it cannot enumerate, because a group appears whenever
-  a consumer names one. Entries written under that earlier layout are still read
-  and still discardable, but they were never shipped — so on a shard carrying
-  them, a failover keeps the cursor and forgets those particular set-aside
-  records.
+- **Dead letters in a per-group log do not travel.** Dead letters ship in one
+  log per stream shard, which the replication driver walks. A per-`(stream,
+  group)` dead-letter log is still read and still discardable, but the driver
+  cannot enumerate those logs, so it never ships them. On a shard carrying one,
+  a failover keeps the group's cursor and loses those set-aside records.

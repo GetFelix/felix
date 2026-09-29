@@ -2,7 +2,9 @@
 title: "QUIC Transport"
 ---
 
-Felix speaks QUIC and nothing else. Every connection is encrypted (TLS 1.3 is
+Felix clients speak QUIC to the broker. The optional
+[Kafka listener](/felix/features/kafka/) is TCP, and so is the control plane's
+REST API. Every QUIC connection is encrypted (TLS 1.3 is
 part of the protocol, not a layer bolted on top), and many independent streams
 multiplex over one connection without blocking each other. This page explains
 what that buys Felix, how Felix uses QUIC's streams, and which knobs matter.
@@ -68,35 +70,13 @@ sequenceDiagram
 
 ## Measured behavior
 
-All measured figures live on one page — [Benchmarks](/felix/features/benchmarks/)
-— so they cannot drift page to page. Two summaries worth repeating here:
-
-**Single message round trip** (publish + ack, macOS loopback, median of 5–10
-trials):
-
-| Workload | p50 | p99 |
-|----------|-----|-----|
-| Empty payload | 119 µs | 165 µs |
-| 256 B | 109 µs | 138 µs |
-| 1 KiB | 111 µs | 140 µs |
-| 4 KiB | 136 µs | 176 µs |
-
-**Sustained pub/sub at fanout 1**:
-
-| Payload | Delivered | Payload rate |
-|---|---:|---:|
-| 1 KiB | ~450 K msg/s | ~461 MB/s |
-| 4 KiB | ~124 K msg/s | ~508 MB/s |
-| 16 KiB | ~31 K msg/s | ~503 MB/s |
+All measured figures live on one page, [Benchmarks](/felix/features/benchmarks/),
+so they cannot drift page to page.
 
 :::caution[Connection count is not a throughput multiplier]
-An earlier version of this page claimed throughput scales "nearly linearly"
-with connection count, up to millions of msg/s at 16 connections. That is not
-what the transport does, and measurement contradicts it in both directions:
-before the I/O-runtime work, publisher concurrency was flat from 1 to 16
-connections (78.3 → 73.8 MB/s); after it, additional connections help only
-until the I/O runtime saturates, because each endpoint's driver is a single
-task on a single runtime.
+Throughput does not scale linearly with connection count. Additional
+connections help only until the I/O runtime saturates, because each endpoint's
+driver is a single task on a single runtime.
 
 Add connections to isolate workloads and avoid head-of-line blocking, not to
 multiply throughput. Measure your own shape with `latency-demo` before sizing.
@@ -162,8 +142,9 @@ throughput ceiling. See
 
 ### Per-connection path stats
 
-Set `FELIX_CONN_STATS_MS` on the broker to log path statistics (MTU, cwnd,
-RTT, loss, flow-control blocking) for healthy connections on an interval.
+Set `FELIX_CONN_STATS_MS` on the broker or in a Rust client's environment to
+log path statistics (MTU, cwnd, RTT, loss, flow-control blocking) for healthy
+connections on an interval.
 This is the data that says whether a throughput problem is transport-side or
 above it; it is off by default and costs nothing when unset.
 

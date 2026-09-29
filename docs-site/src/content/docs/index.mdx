@@ -86,8 +86,9 @@ the territory.
 
 ## See it behave
 
-The demos are not simulations — each one runs a real broker and real clients, and
-each asserts the property it demonstrates as a test.
+The demos are not simulations. Each one runs a real broker and real clients, and
+the slow-consumer, state-divergence and queue demos also assert the property
+they show as a test.
 
 <CardGrid>
   <LinkCard
@@ -176,7 +177,7 @@ boundaries — including what Felix is deliberately *not*.
   <Card title="Working today" icon="approve-check">
     - Multi-broker clusters with rendezvous-hashed shard placement
     - Durable log-structured storage, with retention and torn-tail repair
-    - Replication with leader leases, quorum acknowledgement and failover
+    - Replication with quorum acknowledgement and fenced failover
     - Online rebalancing: live shard moves, broker drain and join, with no
       refused publish or lost record
     - A log-backed cache: routed to one owner, replicated, put/get/delete
