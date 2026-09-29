@@ -1,5 +1,6 @@
 ---
 title: "Docker Compose Deployment"
+description: "Run the control plane and a broker under Docker Compose, with the credential, storage and metrics a broker needs."
 ---
 
 Running Felix under Docker Compose, for local development and testing.
@@ -11,243 +12,180 @@ docker pull ghcr.io/gabloe/felix-broker:0.5.0
 docker pull ghcr.io/gabloe/felix-controlplane:0.5.0
 ```
 
-Each release publishes three tags — the full version (`0.5.0`), the minor
-series (`0.4`), and `latest` on non-prereleases. Prefer a version tag in
-anything you deploy: `latest` moves.
+Each release publishes three tags: the full version (`0.5.0`), the minor
+series (`0.5`), and `latest` on releases without a pre-release suffix. Use a
+version tag in anything you deploy, because `latest` moves.
 
-To build them yourself instead — a change you have not released, or an
+To build them yourself instead, for a change you have not released or an
 architecture the release does not build:
 
 ```bash
-docker build -f docker/broker.Dockerfile -t ghcr.io/gabloe/felix-broker:latest .
-docker build -f docker/controlplane.Dockerfile -t ghcr.io/gabloe/felix-controlplane:latest .
+docker build -f docker/broker.Dockerfile -t felix-broker:dev .
+docker build -f docker/controlplane.Dockerfile -t felix-controlplane:dev .
 ```
 
-Both build from the repository root — the binaries are workspace members, so
-cargo needs the workspace to resolve them.
-
-## Overview
-
-Docker Compose provides an easy way to run Felix with multiple components:
-
-- **Felix broker**: Main data plane service
-- **Prometheus** (optional): Metrics collection
-- **OpenTelemetry Collector** (optional): Distributed tracing
-- **Control plane**: Metadata and coordination
+Both build from the repository root. The binaries are workspace members, so
+cargo needs the whole workspace to resolve them. Each Dockerfile takes one
+build argument, `BIN`, naming the binary to build. Docker warns about any
+other `--build-arg` and ignores it.
 
 :::note[Compose vs Kubernetes]
-Use Docker Compose for local development and testing. For production deployments with high availability, see the [Kubernetes guide](/felix/deployment/kubernetes/).
+Use Docker Compose for local development and testing. For production, see the [Kubernetes guide](/felix/deployment/kubernetes/).
 :::
-## Prerequisites
 
-- **Docker**: 20.10 or later
-- **Docker Compose**: v2.0 or later (or `docker compose` plugin)
-- **4GB RAM minimum**: Recommended 8GB for comfortable operation
-- **Git**: To clone the repository
+## What a broker needs
 
-Install Docker Compose:
+A broker cannot run on its own. Before writing a compose file, know what it
+expects:
 
-```bash
-# Check if already installed
-docker compose version
+- **`FELIX_CONTROLPLANE_URL`.** Required. The broker fetches the keys that
+  verify client tokens from the control plane, and it exits at startup
+  without the URL:
 
-# If not, install Docker Desktop (includes Compose)
-# Or install standalone: https://docs.docker.com/compose/install/
-```
+  ```
+  Error: FELIX_CONTROLPLANE_URL must be set for auth
+  ```
 
-## Quick Start
+- **A node credential**, as `FELIX_NODE_TOKEN_FILE` (or `FELIX_NODE_TOKEN`).
+  The control plane's metadata feeds (tenants, namespaces, streams, caches)
+  answer only a Felix token carrying `node.view:cluster:*`. Without one the
+  broker starts but never learns that any stream exists. See
+  [Broker credential](#broker-credential).
+- **A storage directory**, if you want durable streams. With
+  `FELIX_DURABLE_STORAGE_DIR` unset the broker keeps nothing on disk. The image
+  declares `/var/lib/felix` as a volume for this. Point the variable at it.
 
-### Basic Broker Deployment
+The images run as uid and gid `65532`. A named volume inherits the right
+ownership from the image. A bind mount must be writable by that uid.
 
-Create a minimal `docker-compose.yml`:
+## Broker and control plane
 
-```yaml
-version: '3.8'
-
-services:
-  felix-broker:
-    image: ghcr.io/gabloe/felix-broker:latest
-    build:
-      context: .
-      dockerfile: docker/broker.Dockerfile
-    ports:
-      - "5000:5000/udp"  # QUIC data plane
-      - "8080:8080"      # Metrics HTTP
-    environment:
-      - FELIX_QUIC_BIND=0.0.0.0:5000
-      - FELIX_BROKER_METRICS_BIND=0.0.0.0:8080
-      # Required, even for a single broker with no cluster to join: this is
-      # where the broker fetches the keys that verify client tokens, so it
-      # refuses to start without it. An unreachable one is tolerated — the
-      # broker warns on each poll and carries on — but an absent one is not.
-      - FELIX_CONTROLPLANE_URL=http://felix-controlplane:8443
-      # What the broker reads the metadata feeds with; see "Broker credential"
-      # below. Without it the broker starts, but learns no streams.
-      - FELIX_NODE_TOKEN_FILE=/run/secrets/felix-node-token
-      - RUST_LOG=info
-    secrets:
-      - felix-node-token
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/ready"]
-      interval: 10s
-      timeout: 2s
-      retries: 3
-      start_period: 10s
-
-secrets:
-  felix-node-token:
-    file: ./felix-node-token
-```
-
-**Start the broker:**
-
-```bash
-docker compose up -d
-```
-
-**Check status:**
-
-```bash
-docker compose ps
-docker compose logs -f felix-broker
-```
-
-**Test connectivity:**
-
-```bash
-curl http://localhost:8080/ready
-```
-
-### Broker + Control Plane (Local)
-
-Minimal broker + control plane stack with Postgres:
+A control plane over Postgres and one durable broker:
 
 ```yaml
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "55432:5432"
+      POSTGRES_USER: felix
+      POSTGRES_PASSWORD: felix
+      POSTGRES_DB: felix
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U felix -d felix"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   felix-controlplane:
-    image: ghcr.io/gabloe/felix-controlplane:latest
-    build:
-      context: .
-      dockerfile: docker/controlplane.Dockerfile
+    image: ghcr.io/gabloe/felix-controlplane:0.5.0
     environment:
-      - FELIX_CONTROLPLANE_POSTGRES_URL=postgres://postgres:postgres@postgres:5432/postgres
+      - FELIX_CONTROLPLANE_POSTGRES_URL=postgres://felix:felix@postgres:5432/felix
+      # Day 0 only: the bootstrap API is how the broker credential is made.
+      # Remove these three once it exists.
+      - FELIX_BOOTSTRAP_ENABLED=true
+      - FELIX_BOOTSTRAP_BIND_ADDR=0.0.0.0:9095
+      - FELIX_BOOTSTRAP_TOKEN=change-me
       - RUST_LOG=info
     ports:
-      - "8443:8443"
+      - "8443:8443"            # REST API
+      - "127.0.0.1:9095:9095"  # bootstrap, loopback only
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
 
   felix-broker:
-    image: ghcr.io/gabloe/felix-broker:latest
-    build:
-      context: .
-      dockerfile: docker/broker.Dockerfile
-    ports:
-      - "5000:5000/udp"  # QUIC data plane
-      - "8080:8080"      # Metrics HTTP
+    image: ghcr.io/gabloe/felix-broker:0.5.0
     environment:
-      - FELIX_QUIC_BIND=0.0.0.0:5000
-      - FELIX_BROKER_METRICS_BIND=0.0.0.0:8080
       - FELIX_CONTROLPLANE_URL=http://felix-controlplane:8443
       - FELIX_NODE_TOKEN_FILE=/run/secrets/felix-node-token
+      - FELIX_DURABLE_STORAGE_DIR=/var/lib/felix
       - RUST_LOG=info
+    ports:
+      - "5000:5000/udp"  # client QUIC
+      - "8080:8080"      # metrics, /live, /ready
+    volumes:
+      - felix-data:/var/lib/felix
     secrets:
       - felix-node-token
     depends_on:
-      - felix-controlplane
+      felix-controlplane:
+        condition: service_healthy
+    restart: unless-stopped
 
 secrets:
   felix-node-token:
     file: ./felix-node-token
+
+volumes:
+  felix-data:
 ```
 
-Start the stack:
+To run your own build, replace an `image:` line with
+`build: { context: ., dockerfile: docker/broker.Dockerfile }` (or the
+control-plane Dockerfile).
+
+Both images carry a `HEALTHCHECK` against `/ready` on port 8080, so
+`service_healthy` works without declaring one. A durable broker's `/ready`
+answers 503 until it has synced its catalog from the control plane, so a
+broker whose credential is missing or wrong stays unhealthy.
+
+Start it and watch the broker come up:
 
 ```bash
 docker compose up -d
+docker compose logs -f felix-broker
+curl http://localhost:8080/ready
 ```
 
 ### Broker credential
 
-The control plane's metadata feeds — the tenants, namespaces, streams and
-caches a broker seeds from — require a Felix token carrying
-`node.view:cluster:*`, and the broker presents it as `FELIX_NODE_TOKEN` or
-`FELIX_NODE_TOKEN_FILE`. That holds for a single broker as much as for a
-cluster member: without one the broker starts, warns once, and never learns a
-stream exists.
+The credential is a Felix token carrying `node.view:cluster:*`. Cluster scope
+cannot be granted by a tenant admin, so it comes out of bootstrap: initialize a
+tenant with a broker role, assign the broker's principal to it, then exchange
+an IdP token for that principal.
 
-Cluster scope cannot be granted by a tenant admin, so the credential comes out
-of bootstrap. Initialize the tenant with a broker role and assign the broker's
-principal to it, then exchange an IdP token for that principal:
-
-```json
-{
-  "display_name": "Tenant One",
-  "idp_issuers": [ ... ],
-  "initial_admin_principals": ["p:admin"],
-  "policies": [
-    { "subject": "role:broker", "object": "cluster:*", "action": "node.view" }
-  ],
-  "groupings": [
-    { "user": "p:broker", "role": "role:broker" }
-  ]
-}
+```bash
+curl -sS -X POST http://127.0.0.1:9095/internal/bootstrap/tenants/ops/initialize \
+  -H 'X-Felix-Bootstrap-Token: change-me' \
+  -H 'Content-Type: application/json' -d '{
+    "display_name": "Operations",
+    "idp_issuers": [ ... ],
+    "initial_admin_principals": ["p:admin"],
+    "policies": [
+      { "subject": "role:broker", "object": "cluster:*", "action": "node.view" }
+    ],
+    "groupings": [
+      { "user": "p:broker", "role": "role:broker" }
+    ]
+  }'
 ```
 
-The exchanged token goes in `./felix-node-token`. It expires like any Felix
-token; give the broker `FELIX_NODE_REFRESH_TOKEN_FILE` for it to re-mint, or
-rotate the file. A refresh keeps the audience its exchange chose, so exchange
-with `"audience": "felix-controlplane"` for the node credential. The [bootstrap flow](/felix/features/security/#bootstrap-mode-day-0)
-covers the rest of that request.
+The token exchange needs an identity provider that the tenant trusts
+(`idp_issuers`). Felix has no built-in development login. Exchange with
+`"audience": "felix-controlplane"` and write the Felix token to
+`./felix-node-token`. The
+[bootstrap flow](/felix/features/security/#bootstrap-mode-day-0) and
+[token exchange](/felix/features/security/#token-exchange-oidc--felix) cover
+the request bodies.
 
-### Full Stack with Observability
+The token expires like any Felix token. A broker without `FELIX_NODE_ID`, like
+this one, reads it once at startup, so a new token takes effect on the next
+restart. Brokers that join a cluster re-read `FELIX_NODE_TOKEN_FILE` every 30
+seconds and can also refresh their own token; see
+[Kubernetes](/felix/deployment/kubernetes/).
 
-Complete setup with monitoring:
+To try Felix without any of this, `task cluster:up` starts a control plane and
+brokers on your machine and mints the credentials itself. See
+[Local development](/felix/deployment/local/).
 
-**`docker-compose.yml`:**
+## Adding Prometheus
+
+The repository's `docker/prometheus/prometheus.yml` scrapes `felix-broker:8080`
+and `felix-controlplane:8080`, the service names used above. Add a service
+that mounts it:
 
 ```yaml
-version: '3.8'
-
 services:
-  felix-broker:
-    image: ghcr.io/gabloe/felix-broker:latest
-    build:
-      context: .
-      dockerfile: docker/broker.Dockerfile
-    ports:
-      - "5000:5000/udp"
-      - "8080:8080"
-    environment:
-      - FELIX_QUIC_BIND=0.0.0.0:5000
-      - FELIX_BROKER_METRICS_BIND=0.0.0.0:8080
-      - FELIX_EVENT_BATCH_MAX_EVENTS=64
-      - FELIX_EVENT_BATCH_MAX_DELAY_US=250
-      - FELIX_CACHE_CONN_POOL=8
-      - FELIX_CACHE_STREAMS_PER_CONN=4
-      - RUST_LOG=info
-    volumes:
-      - felix-data:/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/ready"]
-      interval: 10s
-      timeout: 2s
-      retries: 3
-      start_period: 10s
-    networks:
-      - felix-net
-
   prometheus:
     image: prom/prometheus:latest
     ports:
@@ -255,81 +193,37 @@ services:
     volumes:
       - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
-    restart: unless-stopped
-    networks:
-      - felix-net
     depends_on:
       - felix-broker
 
-  otel-collector:
-    image: otel/opentelemetry-collector:latest
-    ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
-      - "8888:8888"   # Prometheus metrics
-    volumes:
-      - ./docker/otel-collector/config.yml:/etc/otel-collector-config.yml:ro
-    command: ["--config=/etc/otel-collector-config.yml"]
-    restart: unless-stopped
-    networks:
-      - felix-net
-
 volumes:
-  felix-data:
-    driver: local
   prometheus-data:
-    driver: local
-
-networks:
-  felix-net:
-    driver: bridge
 ```
 
-**Prometheus configuration** (`docker/prometheus/prometheus.yml`):
+The file also lists an `otel-collector:8889` target, which stays down unless
+you run a collector. The broker exports traces over OTLP when
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set; see
+[Observability](/felix/features/observability/).
 
-```yaml
-global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+Some queries to start from, at `http://localhost:9090`:
 
-scrape_configs:
-  - job_name: 'felix-broker'
-    static_configs:
-      - targets: ['felix-broker:8080']
-        labels:
-          service: 'felix'
-          component: 'broker'
+```promql
+# Publish rate
+rate(felix_publish_requests_total[1m])
 
-  - job_name: 'otel-collector'
-    static_configs:
-      - targets: ['otel-collector:8888']
+# Publish failures, by what went wrong: `error`, `not_owner`, `unroutable`,
+# `dropped`. The same counter carries the successes, under `ok` and
+# `accepted`; `forwarded` is counted as well when a broker relays a publish.
+rate(felix_publish_requests_total{result=~"error|not_owner|unroutable|dropped"}[1m])
 ```
 
-**Start the full stack:**
+`felix_publish_latency_ms` exists only in a broker built with
+`--features telemetry`. The release images are built without it.
+[Observability](/felix/features/observability/) lists the rest of the metrics.
 
-```bash
-docker compose up -d
+## Configuration
 
-# View logs
-docker compose logs -f
-
-# Check services
-docker compose ps
-
-# Access Prometheus UI
-open http://localhost:9090
-```
-
-## Configuration Options
-
-### Environment Variables
-
-Pass configuration via environment variables in `docker-compose.yml`:
+### Environment variables
 
 ```yaml
 services:
@@ -338,51 +232,47 @@ services:
       # Network
       - FELIX_QUIC_BIND=0.0.0.0:5000
       - FELIX_BROKER_METRICS_BIND=0.0.0.0:8080
-      
+
       # Control plane
-      - FELIX_CONTROLPLANE_URL=http://controlplane:8443
+      - FELIX_CONTROLPLANE_URL=http://felix-controlplane:8443
       - FELIX_CONTROLPLANE_SYNC_INTERVAL_MS=2000
       - FELIX_NODE_TOKEN_FILE=/run/secrets/felix-node-token
-      
+
       # Publishing
       - FELIX_ACK_ON_COMMIT=false
       - FELIX_MAX_FRAME_BYTES=16777216
       - FELIX_PUBLISH_QUEUE_WAIT_MS=2000
-      
+
       # Event batching
       - FELIX_EVENT_BATCH_MAX_EVENTS=64
       - FELIX_EVENT_BATCH_MAX_BYTES=262144
       - FELIX_EVENT_BATCH_MAX_DELAY_US=250
       - FELIX_FANOUT_BATCH=64
-      
-      # Cache
-      - FELIX_CACHE_CONN_POOL=8
-      - FELIX_CACHE_STREAMS_PER_CONN=4
+
+      # Cache flow control
       - FELIX_CACHE_CONN_RECV_WINDOW=268435456
       - FELIX_CACHE_STREAM_RECV_WINDOW=67108864
-      
-      # Performance
-      - FELIX_DISABLE_TIMINGS=false
-      
-      # Logging
+
       - RUST_LOG=info
 ```
 
-### Config File Mount
+The broker warns at startup about any `FELIX_*` variable it does not read, so a
+typo shows up in the logs. The
+[environment reference](/felix/reference/environment-variables/) lists them
+all.
 
-Use a YAML config file instead:
+### Config file
 
-**`config/broker.yml`:**
+The same kind of settings as YAML:
 
 ```yaml
+# config/broker.yml
 quic_bind: "0.0.0.0:5000"
 metrics_bind: "0.0.0.0:8080"
 event_batch_max_events: 64
 event_batch_max_delay_us: 250
 cache_conn_recv_window: 268435456
 ```
-
-**Mount in Compose:**
 
 ```yaml
 services:
@@ -393,134 +283,49 @@ services:
       - FELIX_BROKER_CONFIG=/etc/felix/broker.yml
 ```
 
-## Multi-Broker Setup
+The file is applied over the environment. An unknown key fails startup.
 
-Deploy multiple broker instances for testing clustering behavior:
+## More than one broker
 
-```yaml
-version: '3.8'
+A broker that joins a cluster needs more than the single broker above:
 
-services:
-  felix-broker-1:
-    image: ghcr.io/gabloe/felix-broker:latest
-    build:
-      context: .
-      dockerfile: docker/broker.Dockerfile
-    ports:
-      - "5001:5000/udp"
-      - "8081:8080"
-    environment:
-      - FELIX_QUIC_BIND=0.0.0.0:5000
-      - FELIX_BROKER_METRICS_BIND=0.0.0.0:8080
-      - RUST_LOG=info
-    hostname: broker-1
-    networks:
-      - felix-net
+- `FELIX_NODE_ID`, unique per broker.
+- `FELIX_NODE_ADVERTISE_ADDR`, the internal address other brokers dial, as
+  `IP:port`. A hostname is refused, so under Compose each broker needs a
+  fixed IP on the network.
+- `FELIX_INTERNAL_BIND` for the broker-to-broker listener (default
+  `0.0.0.0:5001`).
+- Peer mTLS (`FELIX_INTERNAL_TLS_CERT`, `FELIX_INTERNAL_TLS_KEY`,
+  `FELIX_INTERNAL_TLS_CA`), or `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`
+  when only brokers can reach the internal port. A broker with a node id
+  refuses to start with neither.
+- A credential that may also register the node (`node.manage`).
+- `FELIX_CLIENT_ADVERTISE_ADDR`, the address clients are sent to, when that
+  differs from the bind address.
 
-  felix-broker-2:
-    image: ghcr.io/gabloe/felix-broker:latest
-    ports:
-      - "5002:5000/udp"
-      - "8082:8080"
-    environment:
-      - FELIX_QUIC_BIND=0.0.0.0:5000
-      - FELIX_BROKER_METRICS_BIND=0.0.0.0:8080
-      - RUST_LOG=info
-    hostname: broker-2
-    networks:
-      - felix-net
+That is a lot to write by hand in Compose. For a local cluster, `task
+cluster:up` starts a control plane and three brokers wired this way (see
+[Local development](/felix/deployment/local/)). For a real one, the
+[Helm chart](/felix/deployment/kubernetes/) renders all of it.
 
-  felix-broker-3:
-    image: ghcr.io/gabloe/felix-broker:latest
-    ports:
-      - "5003:5000/udp"
-      - "8083:8080"
-    environment:
-      - FELIX_QUIC_BIND=0.0.0.0:5000
-      - FELIX_BROKER_METRICS_BIND=0.0.0.0:8080
-      - RUST_LOG=info
-    hostname: broker-3
-    networks:
-      - felix-net
+## Persistence
 
-networks:
-  felix-net:
-    driver: bridge
-```
-
-**Access each broker:**
+`FELIX_DURABLE_STORAGE_DIR=/var/lib/felix` with a volume at that path, as in
+the example above, is all persistence needs. Logs go to stdout. To use a host
+directory instead of a named volume, make it writable by uid 65532 first:
 
 ```bash
-# Broker 1
-curl http://localhost:8081/ready
-
-# Broker 2
-curl http://localhost:8082/ready
-
-# Broker 3
-curl http://localhost:8083/ready
+sudo chown 65532:65532 /path/to/host/data
 ```
-
-## Building Images
-
-### Building Locally
-
-Build the broker image from source:
-
-```bash
-docker compose build
-```
-
-`docker/broker.Dockerfile` and `docker/controlplane.Dockerfile` declare exactly
-one build argument between them, `BIN`, which selects the binary to build:
-
-```bash
-docker compose build --build-arg BIN=felix-broker
-```
-
-Anything else is ignored. Docker warns about an unrecognised `--build-arg` and
-builds anyway, so a flag that looks like it enabled something produces an image
-that did not — pass build settings through the Dockerfile rather than inventing
-an argument for them.
-
-### Using Pre-built Images
-
-When official images are available:
-
-```yaml
-services:
-  felix-broker:
-    image: ghcr.io/gabloe/felix-broker:latest
-    # Or specific version
-    # image: ghcr.io/gabloe/felix-broker:v0.1.0
-```
-
-## Persistence and Volumes
-
-### Data Persistence
-
-Store broker data on persistent volumes:
 
 ```yaml
 services:
   felix-broker:
     volumes:
-      - felix-data:/data
-      - felix-logs:/var/log/felix
-
-volumes:
-  felix-data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /path/to/host/data
-  
-  felix-logs:
-    driver: local
+      - /path/to/host/data:/var/lib/felix
 ```
 
-### Backup Strategy
+### Backups
 
 A tar of a running broker's volume is not a consistent backup: it is taken at
 a different moment from every other broker's, and it can hold records no
@@ -531,22 +336,11 @@ directories against it instead; see
 
 ## Networking
 
-### Bridge Network (Default)
+Compose puts every service on one bridge network, where services reach each
+other by service name. Clients outside Docker reach the broker on the
+published UDP port.
 
-Services communicate via internal network:
-
-```yaml
-networks:
-  felix-net:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.28.0.0/16
-```
-
-### Host Network
-
-Use host networking for better performance:
+Host networking avoids Docker's port forwarding:
 
 ```yaml
 services:
@@ -556,12 +350,11 @@ services:
       - FELIX_QUIC_BIND=0.0.0.0:5000
 ```
 
-:::caution[Host Networking Limitations]
-Host networking doesn't work on Docker Desktop for Mac/Windows. Use bridge networking or run on Linux.
+:::caution[Host networking]
+Host networking doesn't work on Docker Desktop for Mac or Windows. Use bridge networking there, or run on Linux.
 :::
-## Resource Limits
 
-Constrain resource usage:
+## Resource limits
 
 ```yaml
 services:
@@ -571,233 +364,72 @@ services:
         limits:
           cpus: '4'
           memory: 4G
-        reservations:
-          cpus: '2'
-          memory: 2G
     ulimits:
       nofile:
         soft: 65536
         hard: 65536
 ```
 
-## Health Checks
+## Health checks
 
-Configure health checks for automatic restart:
+The images already probe `/ready`. To change the timing:
 
 ```yaml
 services:
   felix-broker:
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/ready"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/ready"]
       interval: 10s
       timeout: 2s
-      retries: 3
+      retries: 6
       start_period: 10s
 ```
 
-## Common Operations
-
-### Starting Services
-
-```bash
-# Start all services
-docker compose up -d
-
-# Start specific service
-docker compose up -d felix-broker
-
-# Start with rebuild
-docker compose up -d --build
-```
-
-### Stopping Services
-
-```bash
-# Stop all services
-docker compose stop
-
-# Stop specific service
-docker compose stop felix-broker
-
-# Stop and remove containers
-docker compose down
-
-# Stop and remove volumes
-docker compose down -v
-```
-
-### Viewing Logs
-
-```bash
-# All services
-docker compose logs -f
-
-# Specific service
-docker compose logs -f felix-broker
-
-# Last 100 lines
-docker compose logs --tail=100 felix-broker
-```
-
-### Scaling Services
-
-```bash
-# Run 3 broker instances
-docker compose up -d --scale felix-broker=3
-
-# Note: You'll need to configure dynamic ports
-```
-
-### Executing Commands
-
-```bash
-# Shell into container
-docker compose exec felix-broker /bin/sh
-
-# Run one-off command
-docker compose exec felix-broker ls -la /data
-```
-
-## Development Workflow
-
-### Live Reloading Setup
-
-For development with live code updates:
-
-```yaml
-services:
-  felix-broker:
-    build:
-      context: .
-      dockerfile: docker/broker.Dockerfile
-      target: builder  # Stop at build stage
-    volumes:
-      - .:/src
-      - cargo-cache:/usr/local/cargo/registry
-    command: cargo watch -x 'run --release -p felix-broker-service'
-    
-volumes:
-  cargo-cache:
-```
-
-### Running Tests in Docker
-
-```bash
-# Run tests
-docker compose run --rm felix-broker cargo test --workspace
-
-# Run specific test
-docker compose run --rm felix-broker cargo test test_name
-
-# Run with output
-docker compose run --rm felix-broker cargo test -- --nocapture
-```
-
-## Monitoring and Debugging
-
-### Prometheus Queries
-
-Access Prometheus UI at `http://localhost:9090`:
-
-```promql
-# Publish rate
-rate(felix_publish_requests_total[1m])
-
-# Publish failures, by what went wrong — `error`, `not_owner`, `unroutable`,
-# `dropped`. The same counter carries the successes, under `ok` and
-# `accepted`; `forwarded` is counted as well when a broker relays a publish.
-rate(felix_publish_requests_total{result=~"error|not_owner|unroutable|dropped"}[1m])
-
-# Publish latency p99. Milliseconds, so the bucket name says `_ms`.
-histogram_quantile(0.99, rate(felix_publish_latency_ms_bucket[5m]))
-```
-
-[Observability](/felix/features/observability/) lists the rest, grouped by the
-question each one answers.
-
-### Container Metrics
-
-```bash
-# Container stats
-docker compose stats
-
-# Inspect container
-docker compose inspect felix-broker
-
-# View container processes
-docker compose top felix-broker
-```
+Use `/ready`, not `/live`. `/ready` turns 503 when the broker starts draining,
+while `/live` keeps answering until the process exits.
 
 ## Troubleshooting
 
-### Container Won't Start
+### The broker exits at startup
 
 ```bash
-# Check logs
 docker compose logs felix-broker
-
-# Check exit code
-docker compose ps felix-broker
-
-# Run interactively
-docker compose run --rm felix-broker /bin/sh
 ```
 
-### Port Conflicts
+The last line says why. `FELIX_CONTROLPLANE_URL must be set for auth` means
+the variable is missing. With a bind mount, check that uid 65532 can write it.
 
-**Error:** `port is already allocated`
+### The broker never turns healthy
 
-**Solution:**
+It has not synced its catalog. Check that the control plane is reachable from
+the broker's container and that the credential file holds a valid token:
+
+```bash
+docker compose exec felix-broker wget -qO- http://felix-controlplane:8443/v1/system/live
+docker compose logs felix-broker | grep -i -e warn -e error
+```
+
+### Port conflicts
+
+`port is already allocated` means another process holds a host port. Change
+the host side of the mapping:
 
 ```yaml
 ports:
-  - "5001:5000/udp"  # Change host port
+  - "5001:5000/udp"
   - "8081:8080"
 ```
 
-### Build Failures
+### Inspecting a container
 
 ```bash
-# Clean build cache
-docker compose build --no-cache
-
-# Remove old images
-docker image prune -a
-
-# Check Dockerfile
-docker compose config
+docker compose exec felix-broker /bin/sh
+docker compose top felix-broker
+docker stats
+docker inspect "$(docker compose ps -q felix-broker)"
 ```
 
-### Connection Issues
-
-```bash
-# Check network
-docker network inspect felix_felix-net
-
-# Test connectivity between services
-docker compose exec felix-broker ping prometheus
-
-# Check DNS resolution
-docker compose exec felix-broker nslookup felix-broker
-```
-
-### Performance Issues
-
-```bash
-# Check resource usage
-docker compose stats
-
-# Increase resources in docker-compose.yml
-deploy:
-  resources:
-    limits:
-      memory: 8G
-
-# Use host networking
-network_mode: host
-```
-
-## Next Steps
+## Next steps
 
 - **Production deployment**: [Kubernetes Guide](/felix/deployment/kubernetes/)
 - **Performance tuning**: [Performance Guide](/felix/features/performance/)

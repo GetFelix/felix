@@ -10,20 +10,29 @@ assumes: StatefulSets for stable broker identity, a volume per broker, the
 probes and drain behaviour the binaries already ship, and the budgets and
 policies that keep a rolling operation from taking a shard's replicas with it.
 Every environment variable it wires is real and in the
-[environment reference](/felix/reference/environment-variables/); the chart
+[environment reference](/felix/reference/environment-variables/). The chart
 invents none.
 
 The chart names `ghcr.io/gabloe/felix-broker` and
 `ghcr.io/gabloe/felix-controlplane`, which releases publish and which pull
-without credentials. The image tag defaults to the chart's `appVersion`, so a
-default install resolves to a published image with nothing to configure —
-`0.5.0` renders `ghcr.io/gabloe/felix-broker:0.5.0`. To run something you have not released, build from
-`docker/` and push to a registry your cluster can reach (the
-[Docker Compose page](/felix/deployment/docker-compose/) has the build
-commands), then point `image.registry` at it.
+without credentials. The image tag defaults to the chart's `appVersion`.
+
+On `main` that is `0.6.0-preview`, which no release carries, so a default
+install from `main` asks for an image that does not exist. The chart on `main`
+also sets variables that the `0.5.0` binaries do not read (the zone and peer
+opt-out settings among them), so pinning `image.tag=0.5.0` under it is not a
+match either. Use one of these:
+
+- **A release.** Check out the release tag and install the chart from there.
+  Its `appVersion` is that release's image tag (`v0.5.0` renders
+  `ghcr.io/gabloe/felix-broker:0.5.0`), and its templates match those binaries.
+- **`main`.** Build both images from the same commit as the chart (the
+  [Docker Compose page](/felix/deployment/docker-compose/) has the build
+  commands), push them to a registry your cluster can reach, and point
+  `image.registry` at it.
 
 **Pin by digest.** `broker.image.digest` and `controlplane.image.digest` take
-precedence over the tag, and the digest is what the signature covers — the
+precedence over the tag, and the digest is what the signature covers. The
 release signs `image@digest` and never `image:tag`, because a tag can be moved
 to point at something else and a signature over a tag would follow it.
 
@@ -43,10 +52,10 @@ cosign verify ghcr.io/gabloe/felix-broker:0.5.0 \
 | --- | --- | --- |
 | Broker identity | A StatefulSet whose pod name is `FELIX_NODE_ID` | The name is what the broker registers as, what shards are assigned to, and under peer mTLS the DNS name its certificate must carry. A replaced pod keeps all three and the volume behind them, so a replacement is a rejoin. |
 | Addresses | Peers get `$(POD_IP):5001`; clients get `<pod>.<headless>.<ns>.svc:5000` | The broker requires an IP for `FELIX_NODE_ADVERTISE_ADDR` and re-registers a new one on its first heartbeat. Clients are told a name, which survives the pod being replaced. |
-| Control plane over Postgres | A Deployment rolling with `maxUnavailable: 0` | Instances are stateless; a new one is ready before an old one goes, and readiness is what the Service routes on. Migrations are additive and run under an advisory lock, so mixed versions serve during the roll. |
+| Control plane over Postgres | A Deployment rolling with `maxUnavailable: 0` | Instances are stateless. A new one is ready before an old one goes, and readiness is what the Service routes on. Migrations are additive and run under an advisory lock, so mixed versions serve during the roll. |
 | Control plane under Raft | A StatefulSet with a volume per member | Each member's id is its pod ordinal plus one, and every member is handed the same peers map, derived from the replica count. Odd, and at least three. |
 | Credentials | Secret references only | The Postgres URL, the bootstrap token and the broker credential are read from Secrets you create. The chart never renders one, and never puts one in a ConfigMap. |
-| Shutdown | A preStop sleep, then the drain, inside a derived grace period | The endpoints controller gets a head start before SIGTERM; the drain budget fits before SIGKILL. An explicit grace period that is too short refuses to render. |
+| Shutdown | A preStop sleep, then the drain, inside a derived grace period | The endpoints controller gets a head start before SIGTERM, and the drain budget fits before SIGKILL. An explicit grace period that is too short refuses to render. |
 | Disruption | PodDisruptionBudgets | At most one broker at a time, which is what keeps a replication-factor-three shard's quorum through node maintenance. A wider budget refuses to render. |
 | Placement | Anti-affinity by node, spread by zone | `soft` prefers, `hard` refuses to co-locate. |
 | Broker zones | With `broker.zones`, one StatefulSet per zone, pinned to it and setting `FELIX_NODE_ZONE` | A pod cannot read its node's labels, so the chart fixes the zone per StatefulSet. See [Zones](#zones). |
@@ -65,7 +74,7 @@ cosign verify ghcr.io/gabloe/felix-broker:0.5.0 \
 What depends on what, in the order it matters during an incident:
 
 - **Brokers depend on the control plane to start**, not to keep serving. A
-  broker seeds its catalog before it reports ready; once running, it serves
+  broker seeds its catalog before it reports ready. Once running, it serves
   from the catalog it has and retries heartbeats while the control plane is
   away. A lease that cannot be renewed does lapse, so a long control-plane
   outage does end in shards stopping.
@@ -73,26 +82,26 @@ What depends on what, in the order it matters during an incident:
   Raft fewer than a majority of members, means no writes: no placement, no
   moves, no failover.
 - **Brokers depend on each other** for forwarding and replication. Nothing
-  but brokers should reach `5001`; the NetworkPolicy and peer mTLS are what
+  but brokers should reach `5001`. The NetworkPolicy and peer mTLS are what
   enforce that.
 - **Storage is per broker.** A broker's volume holds the logs of every shard
   it leads or follows. Losing it is recoverable from replicas when the
   replication factor is above one, and is data loss when it is not.
 
 Certificates: clients verify brokers with `broker.clientTls`, or else each
-broker's self-generated certificate (see [Clients](#clients)); brokers verify
-each other with peer mTLS (see [Peer mTLS](#peer-mtls)); the control plane's
+broker's self-generated certificate (see [Clients](#clients)). Brokers verify
+each other with peer mTLS (see [Peer mTLS](#peer-mtls)). The control plane's
 API is plain HTTP unless `controlplane.tls` is on (see
 [Control-plane TLS](#control-plane-tls)). Load balancing:
-the client Service must balance **UDP**, and only for the first connection —
-clients then connect to the broker that owns a shard by that broker's own
+the client Service must balance UDP, and only for the first connection.
+Clients then connect to the broker that owns a shard by that broker's own
 address, so every broker must be individually reachable by whoever the
 clients are.
 
 ## Prerequisites
 
 - Kubernetes 1.25 or later and Helm 3.8 or later.
-- A StorageClass for broker volumes. Brokers fsync; a network disk with
+- A StorageClass for broker volumes. Brokers fsync, and a network disk with
   provisioned IOPS is the usual choice (`gp3`, `pd-ssd`, `Premium_LRS`).
 - **A Postgres** with one writable endpoint and synchronous replication, or
   the Raft backend. What the database must provide, and what a failover looks
@@ -142,7 +151,7 @@ once: a post-install hook Job waits for the API to be ready, then creates the
 after that runs with `FELIX_RAFT_INITIAL_CLUSTER_STATE=existing`. Members that
 lose their volumes, even before the first upgrade, wait for the group rather
 than start an empty one. The hook gives up after
-`controlplane.storage.raft.bootstrapTimeoutSeconds` (270); keep `helm
+`controlplane.storage.raft.bootstrapTimeoutSeconds` (270). Keep `helm
 --timeout` above it.
 
 The Raft peer port (`8444`) is admitted only from control-plane pods by the
@@ -152,7 +161,7 @@ crosses the pod network in cleartext. To encrypt and authenticate it, create a
 Secret with a certificate for `*.<release>-felix-controlplane-headless`
 (server and client usages), its key and the CA, and pass
 `--set controlplane.storage.raft.tls.enabled=true
---set controlplane.storage.raft.tls.existingSecret=<secret>`; the chart mounts
+--set controlplane.storage.raft.tls.existingSecret=<secret>`. The chart mounts
 it and sets `FELIX_RAFT_TLS_CERT`, `FELIX_RAFT_TLS_KEY` and `FELIX_RAFT_TLS_CA`.
 
 The bootstrap listener is on its own ClusterIP Service, never behind the API's,
@@ -201,11 +210,20 @@ One token shared by every broker, carrying `node.manage:cluster:*`, is the
 simple form. The stricter one is a token per broker carrying
 `node.manage:node:felix-broker-0` and so on, so no broker can register, drain
 or report for another: put each under a key named after its pod and set
-`broker.credential.perBroker=true`. Either way, a Felix token expires. A broker reads
-its token once, at start, so a rotated Secret reaches it only through a
-restart (`kubectl rollout restart statefulset/felix-broker`, one pod at a time
-under the budget). Give the brokers an IdP refresh token under
-`broker.credential.refreshTokenKey` and they re-mint before expiry instead.
+`broker.credential.perBroker=true`.
+
+Either way, a Felix token expires. The broker re-reads its token file every 30
+seconds, and the kubelet rewrites a mounted Secret when the Secret changes, so
+rotating the token means updating the Secret before the old token expires. No
+restart is needed. Anything that can mint the token and write the Secret on a
+schedule works: a CronJob, an external-secrets controller, a Vault agent.
+
+`broker.credential.refreshTokenKey` does not work with the chart as shipped.
+It points `FELIX_NODE_REFRESH_TOKEN_FILE` at a Felix refresh token in the same
+Secret volume, but refreshing spends that token and the broker has to write
+its replacement back to the file. The volume is read-only, so the write fails
+and the broker never adopts the new access token. Leave `refreshTokenKey`
+empty and rotate the access token in the Secret instead.
 
 ### 3. Brokers on, bootstrap off
 
@@ -220,7 +238,7 @@ kubectl -n felix rollout status statefulset/felix-broker
 
 `broker.peerTls.enabled=true` needs the peer Issuer from
 [Peer mTLS](#peer-mtls). Without cert-manager, pass
-`broker.peerTls.allowUnauthenticated=true` instead; brokers refuse to start
+`broker.peerTls.allowUnauthenticated=true` instead. Brokers refuse to start
 with neither, and the chart refuses to render.
 
 Each broker comes up, registers under its pod name, seeds the catalog from the
@@ -257,7 +275,7 @@ from every zone at once.
 
 A zone is read when the broker registers, so a broker's zone changes only
 when it restarts. Adding a zone to the list adds a StatefulSet, whose brokers
-placement fills like any new ones; removing one deletes its StatefulSet, so
+placement fills like any new ones. Removing one deletes its StatefulSet, so
 drain its brokers first, as for [scaling in](#scaling-out). Switching an
 existing release between no zones and `zones` replaces every broker at once,
 names and volumes included, which is an outage: choose at install. With
@@ -267,12 +285,12 @@ names and volumes included, which is an outage: choose at install. With
 
 Clients connect to any broker first and follow discovery to the broker that
 owns a shard. The `felix-broker` Service (ClusterIP by default) is that first
-hop; discovery then hands out each broker's own name,
+hop. Discovery then hands out each broker's own name,
 `felix-broker-N.felix-broker-headless.felix.svc.cluster.local:5000`.
 
 Clients from outside the cluster need two things: a way in, and an address
 that resolves for them. Set `broker.clientService.type=LoadBalancer` on a
-provider that balances **UDP**, and `broker.clientAdvertiseAddr` to what
+provider that balances UDP, and `broker.clientAdvertiseAddr` to what
 each broker is reachable as from outside, with `$(POD_NAME)` expanded per pod
 (`"$(POD_NAME).brokers.example.com:5000"`, say, with one record per broker).
 
@@ -303,7 +321,7 @@ picked up without a restart. `broker.clientTls.clientCaKey` names a key in the
 Secret holding a CA that clients must present a certificate from.
 
 Without it, a broker generates its own self-signed certificate at every start
-and exports it to `/var/lib/felix/export/broker-cert.pem`; clients verify
+and exports it to `/var/lib/felix/export/broker-cert.pem`. Clients verify
 against it. Copy it out with `kubectl exec felix-broker-0 -- cat ...`. Each
 broker's is different and changes on restart, so this is for trying the chart
 out.
@@ -313,7 +331,7 @@ out.
 Brokers send their node credential, and clients exchange tokens, over the
 control-plane API. `controlplane.tls` serves it over TLS from a
 `kubernetes.io/tls` Secret whose certificate names the API Service
-(`felix-controlplane.felix.svc.cluster.local`); brokers then use `https://` and
+(`felix-controlplane.felix.svc.cluster.local`). Brokers then use `https://` and
 trust the Secret's `ca.crt` (`controlplane.tls.caKey`). It does not cover
 the Raft members' peer port, which is separate and authenticated by the peer
 token.
@@ -391,7 +409,7 @@ curl -s -H "Authorization: Bearer $OPERATOR_TOKEN" \
   jq '[.items[] | select(.successor)] | length'
 ```
 
-Scaling **in** removes the highest ordinals. Drain each first (`POST
+Scaling in removes the highest ordinals. Drain each first (`POST
 /v1/nodes/{id}/drain` with an operator token), wait until no assignment names
 it as leader or replica, then lower `replicas`. Lowering `replicas` without
 draining is a failover per shard it leads, and a follower slot that stays
@@ -404,7 +422,7 @@ wait check and what to watch are on
 
 A broker whose volume is lost comes back empty under the same name and the
 same assignments. For every shard it follows, the leader offers a log placed
-at its oldest surviving offset; a replica holding nothing takes it and
+at its oldest surviving offset. A replica holding nothing takes it and
 replication resumes.
 
 ```bash
@@ -424,12 +442,12 @@ done
 
 Replace one volume at a time. A shard whose only copies were on volumes lost
 together is lost, and with a replication factor of one that is every shard
-the broker held — take a volume snapshot first in that case.
+the broker held. Take a volume snapshot first in that case.
 
 ### Control-plane instance loss and database failover
 
-Nothing to do. Survivors serve; readiness takes a failing instance out of
-rotation; brokers keep their last-known catalog and retry heartbeats. Keep
+Nothing to do. Survivors serve, readiness takes a failing instance out of
+rotation, and brokers keep their last-known catalog and retry heartbeats. Keep
 `controlplane.liveness.nodeExpiryTimeoutMs` above a database failover plus
 one heartbeat interval, so a failover alone never expires brokers that were
 serving fine.
@@ -449,7 +467,7 @@ consistent backup: nothing coordinates them with each other or with the
 metadata, and a leader's copy can hold records no majority acknowledged. Take a
 backup point with `felix-controlplane admin backup-point`, copy each leader's
 shard directories against it, and cut them back with `felix-broker
-restore-point` on restore; see [Backup and restore](/felix/deployment/backup-and-restore/).
+restore-point` on restore. See [Backup and restore](/felix/deployment/backup-and-restore/).
 
 ## Troubleshooting
 
