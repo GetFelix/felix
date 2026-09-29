@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790658307782,
+  "lastUpdate": 1790658863380,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -20228,6 +20228,58 @@ window.BENCHMARK_DATA = {
             "range": "5864.71",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 821278.83\nmean: 820801.14\nstdev: 5864.71\ncv: 0.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "466980b8aebe128277cead3b3854e4209ef6b2b9",
+          "message": "test(history): move shards and drain brokers in the campaign, and dump state on failure (#848)\n\nThe nemesis gains an assignment family. MoveShard starts an operator move\nof one of the workload's stream or cache shards to another replica through\nPOST /v1/shard-moves; Drain drains a broker and puts it back. Both heal by\nwaiting for every move in flight to finish, so a move that never finishes\nfails the campaign as a stall. all_faults picks them, and the every-family\ncampaign runs a move fourth and a drain sixth, so both run on every PR.\n\nWhen the checker finds a violation, or the campaign cannot finish, the run\nprints each workload shard's assignment (leader, replicas, generation,\nstate, any move in flight), its last replica report (leader log end, each\nreplica's position, the offset a majority had reached) and a few metrics\nper broker. A campaign error now carries the fault timeline too.\n\nSpec-Unaffected: test harness and docs only; no modelled broker or control-plane code changes",
+          "timestamp": "2026-09-28T22:00:25-07:00",
+          "tree_id": "7613f6419228e2ae1d020834552566ccdb761813",
+          "url": "https://github.com/gabloe/felix/commit/466980b8aebe128277cead3b3854e4209ef6b2b9"
+        },
+        "date": 1790658862870,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 330760.59,
+            "range": "10818.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 330760.59\nmean: 329977.02\nstdev: 10818.09\ncv: 3.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 330760.59,
+            "range": "10818.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 330760.59\nmean: 329977.02\nstdev: 10818.09\ncv: 3.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82231.73,
+            "range": "373.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82231.73\nmean: 82094.33\nstdev: 373.46\ncv: 0.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 822317.26,
+            "range": "3734.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 822317.26\nmean: 820943.30\nstdev: 3734.66\ncv: 0.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
