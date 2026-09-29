@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790658863380,
+  "lastUpdate": 1790659210886,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -20280,6 +20280,58 @@ window.BENCHMARK_DATA = {
             "range": "3734.66",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 822317.26\nmean: 820943.30\nstdev: 3734.66\ncv: 0.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c0d2e4be23ceec488b637b7eade3b7daeb427df4",
+          "message": "fix(broker): stop readers at the durable offset once a log is poisoned (#851)\n\nAfter a failed flush poisons a Leader-consistency log, the refused batch is\nstill written past the durable bound, and subscribers, Kafka Fetch and group\npolls read up to the tail and saw it. Readers of a poisoned log now stop at\nits durable offset: the stream's read bound becomes Committed(durable) for\nsubscriptions, a Kafka high watermark is capped at it, and a group poll\nclaims nothing past it.\n\nSpec-Unaffected: bounds local reads of a poisoned log; the modelled replication and lease logic is unchanged",
+          "timestamp": "2026-09-28T22:14:08-07:00",
+          "tree_id": "cd23a16bf4126d4a92a614a50f274e4a94baa5ac",
+          "url": "https://github.com/gabloe/felix/commit/c0d2e4be23ceec488b637b7eade3b7daeb427df4"
+        },
+        "date": 1790659210139,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 329737.95,
+            "range": "6511.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 329737.95\nmean: 332734.51\nstdev: 6511.78\ncv: 1.96%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 329737.95,
+            "range": "6511.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 329737.95\nmean: 332734.51\nstdev: 6511.78\ncv: 1.96%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81935.69,
+            "range": "640.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81935.69\nmean: 82213.76\nstdev: 640.57\ncv: 0.78%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819356.92,
+            "range": "6405.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819356.92\nmean: 822137.57\nstdev: 6405.73\ncv: 0.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
