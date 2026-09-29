@@ -103,11 +103,11 @@ jobs:
           docker logs smoke
           docker rm -f smoke
 
-  # Heavy, so it runs on the self-hosted Azure runners for pushes and
-  # same-repo PRs. Fork PRs stay on GitHub-hosted: code from a fork must never
-  # run on a persistent machine. See docs-site development/building.md.
+  # Heavy, so pushes to main run it on the self-hosted Azure runners. Every PR
+  # runs on GitHub-hosted: that keeps PRs out of the Azure queue, and fork code
+  # never reaches a persistent machine. See docs-site development/building.md.
   test:
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
+    runs-on: ${{ github.event_name != 'pull_request' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
     timeout-minutes: 120
     env:
       CARGO_TERM_COLOR: always

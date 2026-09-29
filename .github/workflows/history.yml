@@ -53,7 +53,7 @@ jobs:
   campaign:
     # Only schedule and dispatch trigger this, so it always lands on the
     # self-hosted runners; the expression is the same as ci.yml's for one rule.
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
+    runs-on: ${{ github.event_name != 'pull_request' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
     # 20 minutes of faults, plus a build that may be cold and the start-up.
     timeout-minutes: 75
     steps:
