@@ -151,7 +151,7 @@ for entry in "${expectations[@]}"; do
   echo "$summary"
   case "$expect" in
     pass)
-      if [ "$status" -ne 0 ] || echo "$output" | grep -q "is violated"; then
+      if [ "$status" -ne 0 ] || grep -q "is violated" <<<"$output"; then
         echo "   FAIL: expected no violation"
         echo "$output" | tail -80
         failed=1
@@ -159,7 +159,7 @@ for entry in "${expectations[@]}"; do
       ;;
     "violates "*)
       invariant="${expect#violates }"
-      if ! echo "$output" | grep -q "Invariant $invariant is violated"; then
+      if ! grep -q "Invariant $invariant is violated" <<<"$output"; then
         echo "   FAIL: expected TLC to violate $invariant"
         echo "$output" | tail -40
         failed=1
