@@ -185,3 +185,9 @@ The decoders that parse input from outside the process are fuzzed; see
 [Fuzzing](/felix/development/fuzzing/). The wire-protocol conformance runner
 (`task conformance`) holds a catalogue of required scenarios, and CI checks the
 Python and TypeScript clients' results against it.
+
+The storage power-loss suite rebuilds the directory a reboot could find after
+each flush and checks that recovery keeps every acknowledged record. Pull
+requests run eight workload seeds per scenario plus pinned ones that once caught
+a bug the eight missed; `power-loss-nightly.yml` runs 110 per scenario from a
+random base. See [Durable storage](https://github.com/gabloe/felix/blob/main/docs/durable-storage.md).

@@ -495,6 +495,25 @@ rule.
 > `a_power_loss_during_a_reset_leaves_old_or_new` stop the pass after each
 > unlink and open crash images of every stop (Linux only).
 
+**The power-loss suite checks all of this against simulated reboots.** A
+workload runs against a real log while a test layer records what each flush made
+durable, then builds the directory a reboot could find (unsynced pages dropped,
+torn or zeroed, unsynced directory changes undone) and opens a log on it. Every
+record acknowledged as durable must come back, and what recovery keeps must be a
+gap-free prefix. The workload races a background roll against appends, so one
+seed does not replay one interleaving, and a missing sync can hide behind a
+handful of lucky seeds. Every pull request runs eight workload seeds per
+scenario, from `0x5eed0001`, plus pinned seeds that caught a bug the range
+missed: `0x5eed0009` is the first to fail with the directory sync after writing
+`durable.mark` removed. The nightly `power-loss-nightly.yml` workflow runs 110
+seeds per scenario from a random base, printed in the job summary; replay one
+with `FELIX_POWER_LOSS_SEED=<seed> FELIX_POWER_LOSS_SEEDS=1`.
+
+> `on_commit_survives_any_writeback`,
+> `periodic_with_background_roll_survives_any_writeback` and
+> `no_fsync_keeps_what_explicit_syncs_covered` in
+> `crates/server/felix-storage/src/disk_log/tests/power_loss.rs` (Linux only).
+
 Idempotent producers' state is derived the same way, before the log takes its
 first append: each producer's place comes from the marks its records carry,
 replayed from the `producers` snapshot saved at the last rollover. The marks
