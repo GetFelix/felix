@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790661439571,
+  "lastUpdate": 1790662019757,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -26070,6 +26070,72 @@ window.BENCHMARK_DATA = {
             "range": "820.38",
             "unit": "us",
             "extra": "trials: 5\nmedian: 613.00\nmean: 1078.00\nstdev: 820.38\ncv: 76.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9c021350a838b3f681f65b907691f83bdbca91a8",
+          "message": "fix(controlplane): gate new replicated fields on the metadata version (#857)\n\nThe metadata version gate covered new command variants but not new\nfields. An older member decodes a newer entry or snapshot with serde and\ndrops any field it does not know, so a mixed or rolled-back control plane\ncould store a jump-hash stream as modulo and move keys between shards,\nor apply a replica report without its leader check.\n\nEvery key path a command or the snapshot can serialize is now listed with\nits level in store/raft/command/fields.txt, and a command's level is the\nhigher of its variant's and that of the newest field it carries. Below a\nfield's level the proposer drops it on every member alike (report leader,\nnode zone) or refuses the command (refresh-token narrowing, jump-hash\nrouting, and finalizing jump_hash_routing). METADATA_VERSION is 3.\n\nA member also refuses an entry carrying a non-empty field it would drop,\nas Unsupported, and stops at restore on such a snapshot, so a future\nrollback past a level in use is loud instead of silent.\n\nA test builds every replicated type from full struct literals and checks\nthe paths they serialize against fields.txt, so a new field does not\ncompile without a sample and fails until it has a level.\n\nCloses #842\n\nSpec-Unaffected: control-plane metadata versioning; no TLA+ model covers the metadata Raft command set",
+          "timestamp": "2026-09-28T23:03:14-07:00",
+          "tree_id": "c2a143b66d90ada347b98fa8039b73a975738dd3",
+          "url": "https://github.com/gabloe/felix/commit/9c021350a838b3f681f65b907691f83bdbca91a8"
+        },
+        "date": 1790662016343,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 177,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 177.20\nstdev: 1.92\ncv: 1.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 241,
+            "range": "4.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 241.00\nmean: 239.00\nstdev: 4.95\ncv: 2.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 295,
+            "range": "12.08",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 295.00\nmean: 298.00\nstdev: 12.08\ncv: 4.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 212,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 212.00\nmean: 212.00\nstdev: 1.22\ncv: 0.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 428,
+            "range": "6.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 428.00\nmean: 425.20\nstdev: 6.98\ncv: 1.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 581,
+            "range": "24.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 581.00\nmean: 578.80\nstdev: 24.94\ncv: 4.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
