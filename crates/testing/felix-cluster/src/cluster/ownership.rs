@@ -54,6 +54,19 @@ impl Cluster {
         self.control_plane().unreported_shards().await
     }
 
+    /// The last replica report the control plane holds for shard `shard` of
+    /// `stream`: the leader's tail and how far each replica had got. Failover
+    /// promotes the replica furthest ahead in it.
+    pub async fn replica_report(
+        &self,
+        stream: &str,
+        shard: u32,
+    ) -> Result<Option<felix_controlplane_service::model::ReplicaReport>> {
+        self.control_plane()
+            .replica_report(&self.tenant_id, &self.namespace, stream, shard)
+            .await
+    }
+
     /// Who owns each shard of `stream`, by shard index.
     ///
     /// The point of a multi-shard test: a stream placed across brokers has
