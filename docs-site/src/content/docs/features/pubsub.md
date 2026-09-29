@@ -44,17 +44,10 @@ graph LR
 
 A publish is encoded **once** and the encoded frame is shared by every
 subscriber, so adding subscribers adds delivery work but not re-encoding
-work. Measured latency at fanout 1 and 10 (macOS loopback, per-message ack,
-median of 5–10 trials):
-
-| Fanout | p50 | p99 |
-|--------|-----|-----|
-| 1 | 109–136 µs | 138–176 µs |
-| 10 | 236–269 µs | 278–399 µs |
-
-Fanout above 10 has not been benchmarked; see
-[Benchmarks](/felix/features/benchmarks/) for methodology and the full tables.
-Treat behaviour at hundreds or thousands of subscribers as unmeasured.
+work. Latency at fanout 1 and 10 is measured on
+[Benchmarks](/felix/features/benchmarks/), with the methodology. Fanout above
+10 has not been benchmarked, so treat behaviour at hundreds or thousands of
+subscribers as unmeasured.
 
 ## Batching
 
@@ -93,6 +86,11 @@ data is bounded by the publisher's byte budget (`publish_inflight_bytes`,
 4 MiB by default): a request holds its budget until the broker's ack, not
 merely until the frame is written.
 
+A client that negotiates `FEATURE_PUBLISH_PIPELINE` also gets a publish window
+from the broker (`FELIX_BROKER_PUBLISH_WINDOW`, 256 by default): up to that many
+acked publishes may be unanswered on a connection, and their acks come back in
+the order the stream sent them.
+
 A single caller that awaits each publish before issuing the next still
 experiences one round trip per publish, by construction — batch, or publish
 concurrently, to amortize it.
@@ -117,9 +115,10 @@ floor batching adds. Delivery uses binary `EventBatch` framing by default.
 Within one stream (strictly: one shard of one stream), subscribers see
 records in publish order. Across streams there is no ordering relationship at
 all — two publishes to different streams may be observed in either order.
-On a multi-shard stream, ordering is per routing key; see
-[Benchmarks](/felix/features/benchmarks/) and the wire protocol page for how
-keys map to shards.
+On a multi-shard stream, ordering is per routing key. A stream maps a key to a
+shard by `hash(key) % shards`, or, for streams created with jump-hash routing,
+by jump consistent hashing of the same hash; an unkeyed publish goes to shard
+0. See the [wire protocol](/felix/architecture/wire-protocol/) page.
 
 ## Isolation and backpressure
 
@@ -214,12 +213,13 @@ consumer can treat a retry differently from a first attempt.
 See [Queues](/felix/features/queues/) for dead letters, redrive, and the
 ordering rules that make the cursor safe.
 
-### Exactly-once is not planned
+### Exactly-once delivery is not offered
 
-At-most-once and at-least-once are the two guarantees Felix intends to offer.
-Deduplicating on receive has to happen in the application in any case — it is
-the only layer that knows what makes two records the same — so deduplicate
-there, keyed on something the record carries.
+Writes can be idempotent: an idempotent producer's re-send is recognised and not
+written twice. Delivery is at-most-once or at-least-once. Deduplicating on
+receive has to happen in the application, the only layer that knows what makes
+two records the same, so deduplicate there, keyed on something the record
+carries.
 
 ## Tuning
 

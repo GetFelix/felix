@@ -87,6 +87,7 @@ export default defineConfig({
             { label: 'Durable Segment Format', slug: 'architecture/storage-format' },
             { label: 'Semantics', slug: 'architecture/semantics' },
             { label: 'Projections', slug: 'architecture/projections' },
+            { label: 'How Felix Is Tested', slug: 'architecture/testing' },
             { label: 'Metadata Raft', slug: 'architecture/metadata-raft' },
           ],
         },

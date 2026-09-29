@@ -382,7 +382,7 @@ What it does not cover:
   counting again, so anything it re-sends from its own buffer is new to the
   broker. That is the same in Kafka.
 - **Very old re-sends.** Where each batch landed is remembered for the last 64
-  records per producer and shard. A re-send older than that is answered with
+  batches per producer and shard. A re-send older than that is answered with
   `DUPLICATE_SEQUENCE_NUMBER`, which librdkafka and the Java client treat as
   delivered; the record is not written again, but the answer has no offset.
 - **Producers that go quiet.** A shard remembers its 4096 most recently active
@@ -438,9 +438,12 @@ there for.
 is shard N.
 
 **Offsets are Felix's.** The offset kcat prints is the offset in the shard's
-log, the same one a Felix subscriber sees on `Event.offset`. They start at 0 and
-have no gaps. The earliest offset is the oldest record retention has kept, and
-the latest is the log's tail. Asking for an offset outside that range gets
+log, the same one a Felix subscriber sees on `Event.offset`. They start at 0.
+A consumer can see a gap of one where a new leader wrote its generation-start
+record, which takes an offset but is never returned. Kafka allows such gaps, as
+it does for its own control records. The earliest offset is the oldest record
+retention has kept. The latest is the log's tail, or on a `Quorum` shard the
+commit point if that is lower. Asking for an offset outside that range gets
 `OFFSET_OUT_OF_RANGE`, and the client falls back to its `auto.offset.reset`.
 
 **Records.** The value is the Felix payload. The timestamp is when the broker
@@ -495,6 +498,8 @@ leader has no Kafka listener is reported as having no leader.
 | `FELIX_KAFKA_ANONYMOUS_TENANT` | unset | Development only: unauthenticated connections read and write every stream of this tenant. |
 | `FELIX_KAFKA_DEFAULT_NAMESPACE` | unset | Namespace used for a topic name without a dot, so `created` can mean `orders.created`. |
 | `FELIX_KAFKA_MAX_CONNECTIONS` | `1024` | Connections served at once. Extra ones are closed as they arrive. |
+| `FELIX_KAFKA_MAX_CONNECTIONS_PER_IP` | `128` | Connections one source IP may hold, checked before the total. `0` is unlimited. |
+| `FELIX_KAFKA_AUTH_TIMEOUT_MS` | `10000` | How long a connection has to finish SASL before it is closed. Until then each request is capped at 64 KiB. |
 
 The listener's metrics are on the [Observability](/felix/features/observability/)
 page, under `felix_kafka_*`.
@@ -586,9 +591,12 @@ certificate to the principal its token is for.
 
 **Connection closed right after connecting.** The client and broker disagree
 about TLS: a `SASL_SSL` client against a broker with `FELIX_KAFKA_TLS=false`, or
-a `SASL_PLAINTEXT` client against the default TLS listener. It can also be the
-connection limit, which shows up as
-`felix_kafka_refused_total{reason="connection_limit"}`.
+a `SASL_PLAINTEXT` client against the default TLS listener. It can also be a
+limit, and `felix_kafka_refused_total` says which: `reason="connection_limit"`
+for `FELIX_KAFKA_MAX_CONNECTIONS`, `per_ip_limit` for
+`FELIX_KAFKA_MAX_CONNECTIONS_PER_IP`, `auth_timeout` for a connection that did
+not finish SASL within `FELIX_KAFKA_AUTH_TIMEOUT_MS`, and
+`unauthenticated_frame_size` for a request over 64 KiB before authentication.
 
 ## Limits
 
@@ -638,16 +646,20 @@ you can see whether a producer relies on them.
   all a `Leader` stream promises. Use a `Quorum` stream when a write has to
   survive losing the leader. See [acks and what they wait
   for](#acks-and-what-they-wait-for).
-- An idempotent re-send older than the last 64 records a producer sent to a
+- An idempotent re-send older than the last 64 batches a producer sent to a
   partition is answered `DUPLICATE_SEQUENCE_NUMBER` without an offset. It is not
   written twice, but the client does not learn where it landed.
+- Produces count against the tenant's publish quota (`FELIX_TENANT_PUBLISH_*`).
+  Over quota, the produce is still written, and the response carries
+  `throttle_time_ms` instead of an error.
 - A connection's produces are answered one at a time. For more throughput,
   spread across partitions, whose leaders are often different brokers.
 
 **Size and time caps**
 
 - A batch may decompress to at most 16 MiB.
-- A request larger than 8 MiB closes the connection.
+- A request larger than 8 MiB closes the connection, and so does one larger
+  than 64 KiB before the connection authenticates.
 - A fetch waits at most 30 seconds, whatever `fetch.wait.max.ms` asks for.
 
 **Tested clients**

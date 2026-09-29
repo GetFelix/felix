@@ -29,7 +29,7 @@ Felix prioritizes predictable low latency over maximum batch throughput:
 
 ### 3. Kubernetes-Native
 
-Felix assumes Kubernetes for process lifecycle, identity (ServiceAccounts), networking and service discovery, and failure detection. Felix does **not** attempt to reimplement scheduling or node membership logic that Kubernetes already provides.
+Felix assumes Kubernetes for process lifecycle, identity (ServiceAccounts), networking and service discovery. Felix does **not** reimplement scheduling. Broker membership is Felix's own: brokers register with the control plane and heartbeat, and a broker unheard for `FELIX_NODE_EXPIRY_TIMEOUT_MS` (15 s by default) is marked down and its shards are placed elsewhere.
 
 ## System Architecture
 
@@ -41,7 +41,7 @@ Three things carry most of the design.
 
 **Ownership comes from the control plane, and only from there.** Every shard of every stream and cache has exactly one leader, chosen by rendezvous hashing over the live nodes, and its followers are spread across the zones brokers register (`FELIX_NODE_ZONE`) wherever a broker in a missing zone has room. Brokers watch the assignment feed — a snapshot, then a change stream — and never negotiate ownership among themselves. When a shard has to move — its broker is draining, or leads more than its share — the control plane stages the destination as a replica, fences the leader once the copy is level, and only then names the destination, so a shard is never served by a broker that has not seen its log (see [Adding, draining and removing brokers](/felix/deployment/scaling/)).
 
-**No consensus protocol runs between brokers.** Placement is deterministic over the rows it reads, and control-plane instances do not coordinate a shared snapshot: every assignment write is conditional on the generation and placement token it was planned from, so a write planned from stale reads is refused. Durability across a leader change comes from log shipping and leader leases: per-shard Raft was considered and rejected, for reasons set out in [`docs/replication-design.md`](https://github.com/gabloe/felix/blob/main/docs/replication-design.md).
+**No consensus protocol runs between brokers.** Placement is deterministic over the rows it reads, and control-plane instances do not coordinate a shared snapshot: every assignment write is conditional on the generation and placement token it was planned from, so a write planned from stale reads is refused. Durability across a leader change comes from log shipping, leader leases, and the fence a promoted stream leader takes on a majority of its replicas before it serves. Per-shard Raft was considered and rejected, for reasons set out in [`docs/replication-design.md`](https://github.com/gabloe/felix/blob/main/docs/replication-design.md).
 
 That rejection is specific to *replicating records*. Making the control plane's own metadata highly available is a separate problem, and Raft is the answer there: the instances embed a Raft group and hold the metadata themselves, with no external database. See [Metadata Raft](/felix/architecture/metadata-raft/); Postgres remains fully supported for deployments that prefer it.
 
@@ -160,6 +160,10 @@ owner is an atomic load of a routing snapshot the broker already holds — no lo
 no network call — because this is the hottest question the broker is asked. The
 snapshot is refreshed in the background from the assignment feed.
 
+Streams created once the fleet has finalized `jump_hash_routing` map keys to
+shards with jump consistent hashing. Older streams keep the modulo mapping they
+were created with.
+
 The `generation` the ingress broker resolved against travels with the request.
 The owner compares it against its own and answers a mismatch explicitly in either
 direction, so a stale view is a typed answer rather than a write to a shard
@@ -268,7 +272,8 @@ at all: admission, commit and acknowledgement go by the followers' answers,
 and only `Leader` streams, caches and reads still stop when the lease lapses.
 With `lease_free_reads` finalized as well, `Quorum` cache reads confirm
 leadership read-index style instead: one round of fences at the leader's own
-generation, answered by a majority after the read took its value.
+generation, answered by a majority after the read took its value. A broker
+started with `FELIX_QUORUM_READS=lease` keeps its reads on the lease.
 
 **Delivery guarantees:**
 

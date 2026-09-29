@@ -2,14 +2,14 @@
 title: "Component Architecture"
 ---
 
-Six components, and the boundaries between them are the design: the broker
+Seven components, and the boundaries between them are the design: the broker
 core has no networking in it, the protocol has no transport in it, and the
 storage layer knows nothing about either. This page walks each component and
 what it owns.
 
 ## Overview
 
-The Felix system is composed of six core components that work together to serve
+The Felix system is composed of seven core components that work together to serve
 **streams, caches and queues** — three readings of one append-only log rather
 than three subsystems, as [Projections](/felix/architecture/projections/)
 explains.
@@ -21,12 +21,15 @@ graph TB
     Transport[felix-transport]
     Broker[felix-broker]
     Storage[felix-storage]
+    Replication[felix-replication]
     CONTROLPLANE[Control Plane]
     
     Client -->|uses| Wire
     Client -->|uses| Transport
     Transport -->|QUIC| Broker
     Broker -->|stores| Storage
+    Broker -->|ships to followers| Replication
+    Replication -->|reads and appends| Storage
     Broker -->|syncs| CONTROLPLANE
     
     style Client fill:#e1f5fe,stroke:#334155,color:#111827
@@ -42,9 +45,9 @@ The `felix-wire` crate defines the language-neutral wire protocol that all Felix
 ### Responsibilities
 
 - **Frame encoding/decoding**: Fixed header format with magic number, version, flags, and length
-- **Message serialization**: Binary message payloads with typed variants
-- **Binary optimizations**: Binary batch encoding for high-throughput publish operations
-- **Protocol versioning**: Version negotiation and forward compatibility
+- **Message serialization**: JSON control messages with typed variants
+- **Binary optimizations**: Binary layouts, selected by flag bits, for publish batches, publish acks and event batches
+- **Capability negotiation**: Flag and feature bits exchanged on `auth`, with the version fixed at 1
 - **Conformance testing**: Test vectors for validating implementations
 
 ### Frame Structure
@@ -96,7 +99,9 @@ Every Felix message is wrapped in a fixed 12-byte header:
 
 ### Design Decisions
 
-The wire protocol uses binary framing for performance and consistency across publish and subscribe paths.
+Every frame has the same binary header. Control messages are JSON so they stay
+easy to debug, and the hot paths (publish batches, acks and event batches) use
+binary layouts that a peer only sends once the other side has advertised them.
 
 :::note[Binary Mode Performance]
 Binary publish batches reduce parsing overhead and can achieve 30-40% higher throughput for large batches.
@@ -243,7 +248,6 @@ The publish pipeline is optimized for both latency and throughput:
 pub_workers_per_conn: 4      # Publish executors (per core shard when core_shards > 0)
 pub_queue_depth: 64           # Queue slots guaranteed per tenant (queue holds this x executors)
 pub_inflight_bytes: 67108864  # Bounded queue size (bytes, independent budget)
-publish_chunk_bytes: 16384    # Chunking for large payloads
 ```
 
 :::tip[Executor Sizing]
@@ -383,8 +387,9 @@ They travel on the **control stream**, like publish and subscribe setup.
   than forwarded. Relaying would put the claim and the acknowledgement on
   different brokers, and a queue's whole promise is that one consumer holds a
   record at a time
-- The cursor is replicated with its shard, so a promoted replica resumes where
-  the group had reached. The dead-letter list is **not** replicated yet
+- The cursor and the dead-letter list are replicated with their shard, so a
+  promoted replica resumes where the group had reached and still lists what the
+  group gave up on
 
 See [Queues](/felix/features/queues/) for the API and
 [the demo](/felix/demos/queue-semantics/) for it running.
@@ -446,6 +451,18 @@ declares. This is the same shape as `DeliveryGuarantee`: declared in metadata,
 not wired to behaviour. Do not rely on it.
 :::
 
+## felix-replication: Broker-to-Broker Replication
+
+`crates/server/felix-replication/` ships a shard's log from its leader to its
+followers over a broker-internal QUIC transport. The leader keeps one cursor
+per follower, reads that range from its own log and ships it, one batch in
+flight per follower. Only the follower's answer moves the cursor, so a follower
+that lost records or was rebuilt names the offset it wants and the leader
+resumes there. For a `Quorum` stream it also decides when a write is on a
+majority. It does not depend on the broker service: the service passes in its
+serving state, write fence and node credential through small traits. The design is in
+[`docs/replication-design.md`](https://github.com/gabloe/felix/blob/main/docs/replication-design.md).
+
 ## Control Plane: Metadata Management
 
 The control plane is a separate service that manages cluster metadata, placement, and configuration.
@@ -462,9 +479,18 @@ The control plane stores authoritative information about:
 
 ### Consistency Model
 
-Metadata is **strongly consistent because it is in one Postgres**, not because
-the control plane runs a consensus protocol. Instances are stateless and do not
-know about each other; every write and every read goes to the database.
+The control plane has three storage backends: Postgres, an embedded Raft group,
+and memory for tests and single-node development. Either production backend
+gives one order to every metadata write.
+
+- **Postgres**: instances are stateless and do not know about each other. Every
+  write and every read goes to the database.
+- **Raft**: every instance holds the metadata. Writes are proposed to the Raft
+  leader (a follower forwards them) and apply in log order on every member.
+  Reads, including broker watches, are served from the member's local state.
+  See [Metadata Raft](/felix/architecture/metadata-raft/).
+
+Under Postgres:
 
 - Writes are transactions, so a shard has one current assignment
 - Change feeds are sequenced from a locked row rather than a sequence, because a
@@ -474,10 +500,9 @@ know about each other; every write and every read goes to the database.
   separately, and each assignment write is refused if the generation or placement
   token it was planned from has moved, so instances need not agree on one
 
-A Raft backend moves this off Postgres entirely, with the instances holding
-the metadata between them — see [Metadata Raft](/felix/architecture/metadata-raft/).
-Postgres remains supported; the properties above hold either way, because
-placement's writes stay conditional.
+Under Raft the log gives the same guarantees: a write applies once, in one
+order, and placement's writes are still conditional on the generation they
+were planned from.
 
 ### Broker Synchronization
 
@@ -489,26 +514,32 @@ sequenceDiagram
     participant B as Broker
     participant CONTROLPLANE as Control Plane
     
-    B->>CONTROLPLANE: WatchUpdates(from_version)
-    CONTROLPLANE-->>B: Stream of incremental updates
+    B->>CONTROLPLANE: GET /v1/streams/snapshot
+    CONTROLPLANE-->>B: Full state and its sequence
+    
+    B->>CONTROLPLANE: GET /v1/streams/changes?since=seq
+    CONTROLPLANE-->>B: Changes after seq
     
     Note over B: Apply updates locally
     Note over B: Update routing tables
     Note over B: Start/stop shard ownership
     
-    B->>CONTROLPLANE: WatchUpdates(new_version)
-    CONTROLPLANE-->>B: Stream continues...
+    B->>CONTROLPLANE: POST /v1/nodes/:id/heartbeat
 ```
 
-**API operations**:
+**Routes**, all REST over HTTP:
 
-- `GetSnapshot()`: Full metadata snapshot with version
-- `WatchUpdates(from_version)`: Long-poll stream of changes
-- `ReportHealth(node_id, status)`: Liveness signaling
+- `/v1/{tenants,namespaces,streams,caches,shard-assignments}/snapshot`: the
+  full state of one kind, with the sequence it was taken at
+- `/v1/{kind}/changes?since=<seq>`: changes after that sequence. The
+  shard-assignment feed also takes `wait_ms` (at most 25000) to wait for the
+  next change instead of answering empty
+- `/v1/nodes/{node_id}/heartbeat`: liveness, which also renews the broker's
+  leases
 
 ### Failure Handling
 
-When the control plane leader fails:
+When a control-plane instance fails:
 
 1. A load balancer removes the instance, because `/v1/system/ready` stops
    answering for it
@@ -602,7 +633,8 @@ Each component exposes its own configuration surface:
 | **felix-transport** | Connection pools, window sizes, TLS settings |
 | **felix-broker** | Queue depths, worker counts, batching parameters |
 | **felix-storage** | Retention policies, cache sizes, durability modes |
-| **Control Plane** | Postgres pool sizing, readiness probe timings, reconcile interval |
+| **felix-replication** | Peer transport, quorum publish timeout, replica rebuild concurrency and rate |
+| **Control Plane** | Storage backend (Postgres pool or Raft group), readiness probe timings, reconcile interval |
 
 See the [Performance Tuning](/felix/features/performance/) guide for detailed configuration examples.
 

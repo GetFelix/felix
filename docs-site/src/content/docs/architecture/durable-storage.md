@@ -148,6 +148,14 @@ ever a starting position for a scan that re-validates what it finds, so a
 missing, short, or stale index costs a rebuild rather than a wrong answer — and
 it is why a freshly written index can safely skip its fsync.
 
+A new replication leader also writes a generation-start record into the log
+(see the [format specification](/felix/architecture/storage-format/)). It takes
+an offset like any other record. `read_range` returns it, but only replication
+reads the log that way (`StreamLog::read_log_from`), because it ships and
+compares the log exactly as stored. Subscribers and every other reader go
+through `StreamLog::read_from`, which skips these records, so they see a gap
+of one offset where each one sits.
+
 ### Sealing, rolling, and retention
 
 ![A shard's log over time. The active segment fills until it reaches the segment size limit, then is sealed: data and index synced, the preallocated tail trimmed away, and a new active segment opened at the next offset. Later the retention timer deletes the oldest sealed segment whole, base_offset advances to the start of the next surviving segment, and a read below that offset is answered with a Trimmed error naming the oldest surviving offset.](/felix/diagrams/log-lifecycle.svg)
@@ -177,11 +185,10 @@ No record is rewritten, a crash anywhere in the pass replays to the same state,
 and no write waits for it: the pass is paced by its own I/O budget,
 `FELIX_STORAGE_COMPACTION_BYTES_PER_SEC`.
 
-Builds up to 0.6.0-preview compacted by swapping the shard directory for a
-compacted copy instead, through `<shard>.compacting` and `<shard>.retired`
-siblings. A shard found stopped partway through that swap is settled on open,
-as the old code did: a missing shard directory is restored from
-`<shard>.retired`, and leftover siblings are deleted.
+A shard with `<shard>.compacting` or `<shard>.retired` siblings, left by a
+directory-swap compaction that stopped partway, is settled on open: a missing
+shard directory is restored from `<shard>.retired`, and leftover siblings are
+deleted.
 
 The full byte layout, versioning rules, and corruption verdicts are in the
 [Durable Segment Format specification](/felix/architecture/storage-format/).
@@ -249,10 +256,9 @@ Anything that deletes segments does it one synced unlink at a time, in an
 order that keeps the chain whole. Retention and compaction go oldest first.
 Replication's truncation and reset go newest first, and a reset creates its
 new segment only once the old ones are gone. A power loss partway through
-leaves a longer log, never a gap. Older builds could leave a gap at the head
-after a power loss during retention. Recovery refuses to guess about that case,
-and the manual fix is in `docs/durable-storage.md`, under "A gap at the head
-left by an older build".
+leaves a longer log, never a gap. Recovery refuses to open a log with a gap at
+the head; the manual fix is in `docs/durable-storage.md`, under "A gap at the
+head left by an older build".
 
 Idempotent producers' sequences are part of what an open rebuilds. Each record
 a producer writes carries its producer id and sequence, and a broker derives
