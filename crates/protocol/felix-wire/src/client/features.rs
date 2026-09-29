@@ -185,6 +185,14 @@ pub const FEATURE_SEQUENCE_REUSED: u32 = 0x0000_4000;
 /// after it, so the producer learns about the failure before it acts on any
 /// later answer.
 pub const FEATURE_PUBLISH_PIPELINE: u32 = 0x0000_8000;
+
+/// The broker serves `commit` and `state_get`: an event and state updates
+/// written to one stream shard as one record, and reads of that state.
+///
+/// Advertised by a *broker*, like `FEATURE_CACHE_DELETE`. Advertised by a
+/// broker that implements it even before its fleet enables `atomic_commit`;
+/// until then a commit is refused with an error that says so.
+pub const FEATURE_ATOMIC_COMMIT: u32 = 0x0001_0000;
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -201,7 +209,8 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_SHARD_MOVED
     | FEATURE_UNSUPPORTED
     | FEATURE_SEQUENCE_REUSED
-    | FEATURE_PUBLISH_PIPELINE;
+    | FEATURE_PUBLISH_PIPELINE
+    | FEATURE_ATOMIC_COMMIT;
 
 /// True if `features` advertises `feature`.
 pub fn supports_feature(features: u32, feature: u32) -> bool {

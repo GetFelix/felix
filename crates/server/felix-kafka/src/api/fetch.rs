@@ -206,6 +206,11 @@ async fn read_partition(
         Err(err) => return answer.with_error_code(crate::errors::from_broker(&err).code()),
     };
     records.retain(|record| record.offset < high_watermark);
+    // A commit record is fetched as its event.
+    let records: Vec<_> = records
+        .into_iter()
+        .map(felix_broker::client_record)
+        .collect();
     match crate::records::encode_page(&records) {
         Ok((batch, visible)) => {
             pass.bytes += batch.len();

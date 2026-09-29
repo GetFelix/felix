@@ -44,6 +44,7 @@
 //! answer at all.
 
 mod cache_watch;
+mod commit;
 mod follow;
 mod groups;
 mod nodes;

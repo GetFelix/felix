@@ -121,7 +121,7 @@ impl Broker {
 
     /// [`Broker::claim_publish`], writing the records as `append` says. `None`
     /// only for [`Append::Continuing`] whose batch is no longer open.
-    async fn claim(
+    pub(super) async fn claim(
         &self,
         handle: &StreamHandle,
         payloads: &[Bytes],
@@ -135,6 +135,7 @@ impl Broker {
         let mut claimed = ClaimedPublish {
             handle: handle.clone(),
             payloads: payloads.to_vec(),
+            commit: None,
             durable: None,
             sample,
         };
@@ -154,6 +155,11 @@ impl Broker {
             let pending = match append {
                 Append::Plain => durable.begin_append(payloads).await?,
                 Append::Marked(marks) => durable.begin_append_marked(payloads, marks).await?,
+                Append::Commit(record) => {
+                    durable
+                        .begin_append_marked(std::slice::from_ref(record), &[RecordMark::Commit])
+                        .await?
+                }
                 Append::Continuing {
                     producer_id,
                     sequence,
@@ -426,10 +432,12 @@ impl Broker {
 }
 
 /// How [`Broker::claim`] writes a batch to a durable log.
-enum Append<'a> {
+pub(super) enum Append<'a> {
     Plain,
     /// With a producer mark per record.
     Marked(&'a [RecordMark]),
+    /// One commit record holding the batch's single event.
+    Commit(&'a Bytes),
     /// The rest of a producer batch the log holds the start of.
     Continuing {
         producer_id: u64,
@@ -482,11 +490,18 @@ pub enum IdempotentClaim {
 pub struct ClaimedPublish {
     handle: StreamHandle,
     payloads: Vec<Bytes>,
+    /// A commit's state updates; `payloads` is then its one event.
+    commit: Option<Arc<[crate::commit::StateOp]>>,
     durable: Option<ClaimedDurable>,
     sample: bool,
 }
 
 impl ClaimedPublish {
+    /// Carry a commit's state updates to where its event reaches readers.
+    pub(super) fn set_commit(&mut self, ops: Arc<[crate::commit::StateOp]>) {
+        self.commit = Some(ops);
+    }
+
     /// The first offset this batch consumed, on a durable stream.
     pub fn first_offset(&self) -> Option<u64> {
         self.durable.as_ref().map(|d| d.pending.first_offset())

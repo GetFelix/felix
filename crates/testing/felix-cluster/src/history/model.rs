@@ -5,9 +5,10 @@
 //! log offsets. Times are nanoseconds on one monotonic clock shared by every
 //! client, which is what makes "A finished before B started" meaningful.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use super::commit::CommitRead;
 use super::register::{RegisterAction, RegisterOp};
 
 /// The value a read reports for a payload no append could have written.
@@ -28,6 +29,11 @@ pub struct History {
     pub final_reads: BTreeMap<String, Vec<Element>>,
     /// Puts and gets on `Quorum` cache keys, in completion order.
     pub registers: Vec<RegisterOp>,
+    /// The values atomic commits wrote, each both an append and its list's
+    /// state.
+    pub commit_values: BTreeSet<u64>,
+    /// Reads of a list and its state together, in completion order.
+    pub commit_reads: Vec<CommitRead>,
     /// The nemesis's timeline, so a violation can be read against it.
     pub faults: Vec<FaultEvent>,
 }

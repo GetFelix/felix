@@ -7,6 +7,7 @@
 //! replication needs.
 
 mod backup;
+mod commit;
 mod keys;
 mod metadata;
 mod publish;
@@ -16,6 +17,7 @@ mod shards;
 mod subscribe;
 
 pub use backup::CommittedOffsets;
+pub use commit::StateRead;
 pub use metadata::{CacheMetadata, ConsistencyLevel, StreamMetadata};
 pub use publish::{
     ClaimedPublish, IdempotentClaim, IdempotentOutcome, PublishOutcome, RECORD_SEQUENCE_WRAP,

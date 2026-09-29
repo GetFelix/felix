@@ -117,3 +117,17 @@ pub struct GroupRecord {
     #[serde(default)]
     pub attempts: u32,
 }
+
+/// One change to a stream shard's keyed state, as a `commit` carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum StateChange {
+    Put {
+        key: String,
+        #[serde(with = "crate::client::message::base64_serde::base64_bytes_bytes")]
+        value: Bytes,
+    },
+    Delete {
+        key: String,
+    },
+}

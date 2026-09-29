@@ -55,6 +55,7 @@ mod auth;
 mod cache;
 mod client;
 mod cluster;
+mod commit;
 mod config;
 mod connection;
 mod error;
@@ -75,6 +76,7 @@ pub use cluster::{
     ShardOffsets, ShardedCacheWatch, ShardedCacheWatchItem, ShardedGroup, ShardedGroupRecord,
     ShardedSubscription,
 };
+pub use commit::{CommitError, CommitOp, CommitReceipt, StateValue};
 pub use config::{ClientConfig, ClientSubQueuePolicy};
 pub use error::{
     BrokerError, NotLeaderError, PublishRefused, SubscribeCursorError, SubscriptionLost,

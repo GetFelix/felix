@@ -52,6 +52,17 @@ for what the current release guarantees.
 
 ### Added
 
+- **Atomic commits on one shard.** `Client::commit(tenant, namespace,
+  entity_key, [publish | enqueue, put, delete])` writes an event and state
+  updates as one record on the stream shard `entity_key` routes to, and
+  `state_get` reads that state with the commit's offset as its version. No
+  reader sees part of a commit, across failover and promotion. Operations on
+  another stream are refused with `CommitError::NotOnOwningShard`, never
+  split. New wire requests `commit`/`state_get` behind
+  `FEATURE_ATOMIC_COMMIT`; storage format v5 (a segment is written at v5
+  only to hold a commit record); replication mark byte `4`; fleet feature
+  `atomic_commit`, which a cluster must finalize before commits are accepted.
+  See `docs/atomic-commit.md`.
 - **Jump-hash stream routing once the `jump_hash_routing` fleet feature is
   finalized.** A stream's key-to-shard mapping (`routing`: `modulo` or
   `jump_hash`) is fixed at creation; streams created after the finalize get

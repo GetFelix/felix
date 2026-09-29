@@ -80,6 +80,9 @@ pub enum ProducerMark {
     /// it; an older one would refuse the batch with
     /// `UnknownInternalProducerMark`.
     GenerationStart,
+    /// An atomic commit record. Written only once the fleet finalized
+    /// `atomic_commit`, for the same reason as `GenerationStart`.
+    Commit,
 }
 
 /// The follower stored the batch.
@@ -226,6 +229,7 @@ pub(super) fn put_marks(out: &mut bytes::BytesMut, marks: &[ProducerMark]) {
             }
             ProducerMark::Continues => out.put_u8(2),
             ProducerMark::GenerationStart => out.put_u8(3),
+            ProducerMark::Commit => out.put_u8(4),
         }
     }
 }
@@ -252,6 +256,7 @@ pub(super) fn take_marks(body: &mut Bytes, count: usize) -> Result<Vec<ProducerM
             }
             2 => ProducerMark::Continues,
             3 => ProducerMark::GenerationStart,
+            4 => ProducerMark::Commit,
             other => return Err(Error::UnknownInternalProducerMark(other)),
         };
         marks.push(mark);

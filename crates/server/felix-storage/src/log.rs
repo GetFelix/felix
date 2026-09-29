@@ -84,6 +84,11 @@ pub enum RecordMark {
     /// no reader outside replication ever sees it. The payload is the
     /// generation, a big-endian `u64`.
     GenerationStart,
+    /// An atomic commit: one record whose payload holds an event and the
+    /// state updates that go with it, so replication, truncation and the
+    /// commit mark take all of it or none. The payload layout is the
+    /// broker's; see `docs/atomic-commit.md`.
+    Commit,
 }
 
 /// An idempotent producer's batch, as its first record describes it.
@@ -100,6 +105,11 @@ impl RecordMark {
     /// client's.
     pub fn is_generation_start(&self) -> bool {
         matches!(self, Self::GenerationStart)
+    }
+
+    /// Whether the record is an atomic commit.
+    pub fn is_commit(&self) -> bool {
+        matches!(self, Self::Commit)
     }
 
     /// The marks for a batch of `len` records: the first opens it, the rest

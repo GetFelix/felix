@@ -9,6 +9,7 @@ mod fields;
 
 pub use fields::{
     AckMode, BrokerEndpoint, CursorErrorReason, GroupRecord, PublishRefusalReason, StartPosition,
+    StateChange,
 };
 
 use bytes::Bytes;
@@ -648,6 +649,51 @@ pub enum Message {
     CounterValue {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         value: Option<i64>,
+        request_id: u64,
+    },
+
+    // Atomic commits and the state they write.
+    /// Append `event` and apply `changes` to one shard of `stream` as one
+    /// record: every reader sees all of it or none of it. `entity_key` picks
+    /// the shard the way a publish's routing key does. Answered with
+    /// `commit_ok`, or `error`. Sent only to a broker that advertised
+    /// `FEATURE_ATOMIC_COMMIT`.
+    Commit {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        #[serde(with = "crate::client::message::base64_serde::base64_bytes_bytes")]
+        entity_key: Bytes,
+        #[serde(with = "crate::client::message::base64_serde::base64_bytes_bytes")]
+        event: Bytes,
+        #[serde(default)]
+        changes: Vec<StateChange>,
+        request_id: u64,
+    },
+    /// The commit is durable (on a `Quorum` stream, on a majority) at
+    /// `offset`, which is also the version of every key it wrote.
+    CommitOk { request_id: u64, offset: u64 },
+    /// Read `key` in the state of the shard `entity_key` routes to. Answered
+    /// with `state_value`. Sent only to a broker that advertised
+    /// `FEATURE_ATOMIC_COMMIT`.
+    StateGet {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        #[serde(with = "crate::client::message::base64_serde::base64_bytes_bytes")]
+        entity_key: Bytes,
+        key: String,
+        request_id: u64,
+    },
+    /// A key's value and the offset of the commit that wrote it, as of
+    /// `as_of`: every commit at or below it and no later one.
+    StateValue {
+        #[serde(with = "crate::client::message::base64_serde::base64_option_bytes")]
+        value: Option<Bytes>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
         request_id: u64,
     },
 

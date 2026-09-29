@@ -61,6 +61,9 @@ pub enum Rule {
     /// 7. A cache get returned a value already overwritten, or missed a key
     ///    already written, before it began.
     StaleRead,
+    /// 8. A reader saw an atomic commit's event without its state, or its
+    ///    state without its event.
+    PartialCommit,
     /// The final read has a hole, so the lost-write rule cannot be trusted.
     IncompleteFinalRead,
     /// The history itself is malformed: the recorder is wrong, not the broker.
@@ -135,6 +138,7 @@ impl Rule {
             Rule::Phantom => "5 phantom",
             Rule::FailedWriteVisible => "6 failed-write-visible",
             Rule::StaleRead => "7 stale-read",
+            Rule::PartialCommit => "8 partial-commit",
             Rule::IncompleteFinalRead => "incomplete-final-read",
             Rule::MalformedHistory => "malformed-history",
         }
@@ -170,6 +174,11 @@ pub fn check(history: &History) -> Report {
         checker.run();
     }
     super::register::check(&history.registers, &mut violations);
+    super::commit::check(
+        &history.commit_reads,
+        &history.commit_values,
+        &mut violations,
+    );
     Report {
         violations,
         faults: history.faults.clone(),

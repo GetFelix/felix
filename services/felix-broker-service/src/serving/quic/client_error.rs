@@ -240,7 +240,10 @@ impl ClientError {
             | E::UnknownProducer { .. }
             | E::SequenceExpired { .. }
             | E::SequenceReused { .. }
-            | E::GroupOffsetNotHandedOut { .. } => Self::invalid(message),
+            | E::GroupOffsetNotHandedOut { .. }
+            | E::CommitNeedsDurableStream => Self::invalid(message),
+            E::MalformedCommit(_) => Self::internal(message),
+            E::StateViewBusy => Self::overloaded(message),
             // A broker configured without the storage the stream needs will
             // answer the same way until someone changes its configuration.
             E::DurableStorageNotConfigured { .. } => {
@@ -251,7 +254,7 @@ impl ClientError {
             E::PublishSuperseded { .. } => Self::new(ErrorCode::Unacknowledged, message),
             // Nothing was read; the shard is served again here once a mark or
             // a lease comes back, or by its new owner.
-            E::NotReadable { reason, .. } => {
+            E::NotReadable { reason, .. } | E::StateNotReadable(reason) => {
                 use felix_wire::shard_unavailable_reason as wire;
                 let why = match reason {
                     felix_broker::NotReadable::Settling => wire::NOT_READY,

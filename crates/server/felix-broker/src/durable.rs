@@ -255,6 +255,7 @@ impl StreamLog {
     /// Generation-start records are left out: they are the replication
     /// protocol's, not a client's. A page is empty only at the tail, never
     /// because every record it read was one of them.
+    /// A commit record is returned as its event.
     pub async fn read_from(&self, start: Offset, max_bytes: usize) -> Result<Vec<LogRecord>> {
         let mut start = start;
         loop {
@@ -264,7 +265,10 @@ impl StreamLog {
             };
             records.retain(|record| !record.mark.is_generation_start());
             if !records.is_empty() {
-                return Ok(records);
+                return Ok(records
+                    .into_iter()
+                    .map(crate::commit::client_record)
+                    .collect());
             }
             start = last + 1;
         }

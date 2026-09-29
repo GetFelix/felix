@@ -44,7 +44,11 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         // server fault rather than guessed at.
         BrokerError::CapacityTooLarge
         | BrokerError::DurabilityChangeRequiresRecreate { .. }
-        | BrokerError::GroupOffsetNotHandedOut { .. } => ResponseError::UnknownServerError,
+        | BrokerError::GroupOffsetNotHandedOut { .. }
+        | BrokerError::MalformedCommit(_)
+        | BrokerError::CommitNeedsDurableStream
+        | BrokerError::StateViewBusy
+        | BrokerError::StateNotReadable(_) => ResponseError::UnknownServerError,
     }
 }
 

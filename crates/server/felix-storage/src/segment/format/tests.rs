@@ -138,7 +138,7 @@ fn oversized_length_is_rejected_before_allocating() {
     // A header whose length is impossible but whose checksum is valid: the
     // shape that would reach an allocation if the bound were not checked.
     // The largest length the flag bits leave room for.
-    let impossible = (1u32 << 29) - 1;
+    let impossible = (1u32 << 28) - 1;
     let mut buf = vec![0u8; RECORD_HEADER_LEN as usize];
     buf[0..4].copy_from_slice(&impossible.to_be_bytes());
     let header_crc = crc32(&[&buf[0..20]]);
@@ -341,6 +341,37 @@ fn a_generation_start_round_trips_and_is_one_kind_only() {
         decode_record(&both).expect_err("two kinds").kind,
         CorruptionKind::RecordFlags { .. }
     ));
+}
+
+#[test]
+fn a_commit_record_round_trips_and_is_one_kind_only() {
+    let mut buf = Vec::new();
+    let len = encode_record(&mut buf, 9, 1, b"commit", &RecordMark::Commit);
+    assert_eq!(len, RECORD_HEADER_LEN + 6);
+    let (decoded, consumed) = decode_record(&buf).expect("decode");
+    assert_eq!(
+        (decoded.mark, decoded.payload.as_ref(), consumed),
+        (RecordMark::Commit, &b"commit"[..], len)
+    );
+
+    let mut both = buf.clone();
+    both[0] |= 0x20;
+    let crc = crc32(&[&both[0..20]]);
+    both[20..24].copy_from_slice(&crc.to_be_bytes());
+    assert!(matches!(
+        decode_record(&both).expect_err("two kinds").kind,
+        CorruptionKind::RecordFlags { .. }
+    ));
+}
+
+/// A v4 build refuses a v5 segment outright, rather than reading the commit
+/// flag as part of an impossible length. Only a segment that holds a commit
+/// is written at v5.
+#[test]
+fn only_a_v5_segment_holds_commits() {
+    assert!(SegmentHeader::at_version(5, 6, 5).holds_commits());
+    assert!(!SegmentHeader::at_version(5, 6, 4).holds_commits());
+    assert!(SegmentHeader::decode(&SegmentHeader::at_version(5, 6, 5).encode()).is_ok());
 }
 
 #[test]

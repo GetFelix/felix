@@ -256,6 +256,7 @@ impl GroupReader {
                         self.settle(key, &tracker, offset).await?;
                     }
                     Some(record) => {
+                        let record = crate::commit::client_record(record);
                         let attempts = tracker.lock().await.attempts(offset);
                         bytes += record.payload.len();
                         claimed.push(Claimed {

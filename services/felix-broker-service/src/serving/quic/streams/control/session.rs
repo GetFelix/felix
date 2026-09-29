@@ -113,6 +113,7 @@ pub(super) async fn authenticate(
                                 }
                                 None => 0,
                             }
+                            | felix_wire::FEATURE_ATOMIC_COMMIT
                             | match publish_ctx.client_endpoints {
                                 Some(_) => {
                                     felix_wire::FEATURE_TOPOLOGY

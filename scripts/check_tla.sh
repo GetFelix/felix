@@ -54,6 +54,7 @@ tlc() {
     FelixPlacementPacing*) module="FelixPlacementPacing" ;;
     FelixShardFigure8*) module="FelixShardFigure8" ;;
     FelixShardReads*) module="FelixShardReads" ;;
+    FelixAtomicCommit*) module="FelixAtomicCommit" ;;
   esac
   local flags=(-deadlock -workers "${TLC_WORKERS:-auto}" -checkpoint 0 -config "$cfg.cfg" "$module.tla")
   local status=0
@@ -130,6 +131,9 @@ expectations=(
   "FelixShardIdempotentFailoverMemory violates NoDuplicate"
   "FelixShardIdempotentHandoff pass"
   "FelixShardIdempotentHandoffMemory violates NoDuplicate"
+  "FelixAtomicCommit pass"
+  "FelixAtomicCommitSplitRecords violates NoPartialCommit"
+  "FelixAtomicCommitPartialApply violates NoPartialCommit"
 )
 
 shard_index=0

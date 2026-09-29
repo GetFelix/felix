@@ -196,7 +196,7 @@ impl ProducerState {
                     self.open = Some(open);
                 }
             }
-            RecordMark::None | RecordMark::GenerationStart => self.open = None,
+            RecordMark::None | RecordMark::GenerationStart | RecordMark::Commit => self.open = None,
         }
     }
 
@@ -491,7 +491,7 @@ pub(super) fn rebuild(
 /// no batch.
 pub(crate) fn marked_digest(mark: RecordMark, payload: &[u8]) -> u64 {
     match mark {
-        RecordMark::None | RecordMark::GenerationStart => 0,
+        RecordMark::None | RecordMark::GenerationStart | RecordMark::Commit => 0,
         RecordMark::Opens(_) | RecordMark::Continues => crate::log::record_digest(payload),
     }
 }

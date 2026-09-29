@@ -444,6 +444,71 @@ async fn a_consumer_group_position_survives_a_restart() -> Result<()> {
     Ok(())
 }
 
+/// **An atomic commit, end to end.** The event reaches the queue's consumer
+/// group at the commit's offset, the state carries that offset as its
+/// version, and both survive a restart. An operation on another stream is
+/// refused on the client, before anything is sent.
+#[tokio::test]
+async fn a_commit_is_seen_by_the_queue_and_the_state_together() -> Result<()> {
+    use felix_client::{CommitError, CommitOp};
+
+    let dir = tempfile::tempdir()?;
+    let running = start(dir.path()).await?;
+    let client = running.client().await?;
+
+    let receipt = client
+        .commit(
+            "t1",
+            "default",
+            b"job-1",
+            vec![
+                CommitOp::enqueue(QUEUE, "run job-1"),
+                CommitOp::put(QUEUE, "job-1", "queued"),
+            ],
+        )
+        .await?;
+    let claimed = client
+        .group_poll("t1", "default", QUEUE, 0, "workers", 10)
+        .await?;
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].offset, receipt.offset);
+    assert_eq!(claimed[0].payload, "run job-1");
+    let state = client
+        .state_get("t1", "default", QUEUE, b"job-1", "job-1")
+        .await?;
+    assert_eq!(state.value.as_deref(), Some(&b"queued"[..]));
+    assert_eq!(state.version, Some(receipt.offset));
+
+    let split = client
+        .commit(
+            "t1",
+            "default",
+            b"job-2",
+            vec![
+                CommitOp::enqueue(QUEUE, "run job-2"),
+                CommitOp::put("elsewhere", "job-2", "queued"),
+            ],
+        )
+        .await
+        .expect_err("a second stream is a second log");
+    assert!(matches!(
+        split.downcast_ref::<CommitError>(),
+        Some(CommitError::NotOnOwningShard { index: 1, .. })
+    ));
+    running.stop().await;
+
+    let restarted = start(dir.path()).await?;
+    let state = restarted
+        .client()
+        .await?
+        .state_get("t1", "default", QUEUE, b"job-1", "job-1")
+        .await?;
+    assert_eq!(state.value.as_deref(), Some(&b"queued"[..]));
+    assert_eq!(state.version, Some(receipt.offset));
+    restarted.stop().await;
+    Ok(())
+}
+
 /// **A client consuming a queue, end to end.** Until the wire carried group
 /// operations this could not be written at all: the machinery was reachable
 /// only from inside the broker.

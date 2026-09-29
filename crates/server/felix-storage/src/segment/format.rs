@@ -37,7 +37,10 @@ pub const INDEX_MAGIC: u32 = 0x464C_5349;
 /// v4 adds the generation-start record, a third flag bit. A v3 build refuses a
 /// v4 segment for the same reason a v2 build refuses a v3 one, so a segment is
 /// written at v4 only to hold that record ([`BASELINE_VERSION`]).
-pub const FORMAT_VERSION: u16 = 4;
+///
+/// v5 adds the commit record (bit 28), for the same reason and under the same
+/// rule: a segment is written at v5 only to hold one.
+pub const FORMAT_VERSION: u16 = 5;
 
 /// The version a new segment and every index is written at.
 ///
@@ -117,6 +120,11 @@ impl SegmentHeader {
         self.version >= 4
     }
 
+    /// Whether a commit record may be written to this segment.
+    pub fn holds_commits(&self) -> bool {
+        self.version >= 5
+    }
+
     pub fn encode(&self) -> [u8; SEGMENT_HEADER_LEN as usize] {
         let mut buf = [0u8; SEGMENT_HEADER_LEN as usize];
         buf[0..4].copy_from_slice(&SEGMENT_MAGIC.to_be_bytes());
@@ -183,7 +191,8 @@ impl SegmentHeader {
 ///
 /// Bit 31 of `len_and_flags` says the record opens an idempotent producer's
 /// batch and the tag follows; bit 30 says it continues the batch the record
-/// before it belongs to. Payloads are capped well below 2^30, so the length
+/// before it belongs to. Bit 29 marks a generation-start record and
+/// bit 28 a commit record (see `RecordMark::Commit`). Payloads are capped well below 2^28, so the length
 /// never reaches them. The length word is covered by the header checksum, so
 /// a reader can walk to the next record from the header alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,18 +211,25 @@ pub struct RecordHeader {
     pub continues_batch: bool,
     /// The record is a leader's generation-start record.
     pub generation_start: bool,
+    /// The record is an atomic commit.
+    pub commit: bool,
 }
 
 const FLAG_OPENS_BATCH: u32 = 1 << 31;
 const FLAG_CONTINUES_BATCH: u32 = 1 << 30;
 const FLAG_GENERATION_START: u32 = 1 << 29;
-const FLAG_MASK: u32 = FLAG_OPENS_BATCH | FLAG_CONTINUES_BATCH | FLAG_GENERATION_START;
+const FLAG_COMMIT: u32 = 1 << 28;
+const FLAG_MASK: u32 =
+    FLAG_OPENS_BATCH | FLAG_CONTINUES_BATCH | FLAG_GENERATION_START | FLAG_COMMIT;
 
 /// Bytes a record with this payload and mark takes on disk.
 pub fn record_len(payload_len: usize, mark: &RecordMark) -> u64 {
     let tag = match mark {
         RecordMark::Opens(_) => PRODUCER_TAG_LEN,
-        RecordMark::None | RecordMark::Continues | RecordMark::GenerationStart => 0,
+        RecordMark::None
+        | RecordMark::Continues
+        | RecordMark::GenerationStart
+        | RecordMark::Commit => 0,
     };
     RECORD_HEADER_LEN + tag + payload_len as u64
 }
@@ -274,6 +290,7 @@ impl RecordHeader {
             opens_batch: flags == FLAG_OPENS_BATCH,
             continues_batch: flags == FLAG_CONTINUES_BATCH,
             generation_start: flags == FLAG_GENERATION_START,
+            commit: flags == FLAG_COMMIT,
         })
     }
 }
@@ -296,6 +313,7 @@ pub fn encode_record(
         RecordMark::Opens(_) => FLAG_OPENS_BATCH,
         RecordMark::Continues => FLAG_CONTINUES_BATCH,
         RecordMark::GenerationStart => FLAG_GENERATION_START,
+        RecordMark::Commit => FLAG_COMMIT,
     };
     out.extend_from_slice(&(payload.len() as u32 | flags).to_be_bytes());
     out.extend_from_slice(&offset.to_be_bytes());
@@ -312,7 +330,10 @@ pub fn encode_record(
             tag[16..20].copy_from_slice(&batch.len.to_be_bytes());
             &tag
         }
-        RecordMark::None | RecordMark::Continues | RecordMark::GenerationStart => &[],
+        RecordMark::None
+        | RecordMark::Continues
+        | RecordMark::GenerationStart
+        | RecordMark::Commit => &[],
     };
     let checksum = crc32(&[&out[start..start + 24], tag, payload]);
     out.extend_from_slice(&checksum.to_be_bytes());
@@ -360,6 +381,8 @@ pub fn decode_record(buf: &[u8]) -> DecodeResult<(DecodedRecord, u64)> {
         RecordMark::Continues
     } else if header.generation_start {
         RecordMark::GenerationStart
+    } else if header.commit {
+        RecordMark::Commit
     } else {
         RecordMark::None
     };
