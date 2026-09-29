@@ -3,10 +3,9 @@ title: "Choosing a Client"
 description: "Why Felix has one client implementation with bindings over it, what the conformance suite checks, and which client to reach for."
 ---
 
-Felix has three clients today: Rust, Python, and TypeScript. This page is about
-how they relate to each other — which is the part that usually goes wrong, and
-the part worth understanding before you depend on one. Each client's own page
-covers using it.
+Felix has three clients today: Rust, Python, and TypeScript. This page covers
+how they relate to each other, which is worth understanding before you depend
+on one. Each client's own page covers using it.
 
 ## One implementation, several bindings
 
@@ -16,8 +15,7 @@ wants, follows a subscription's shard when a rebalance moves it, decides which f
 track of offsets precisely enough that a resuming subscriber neither skips a
 record nor sees one twice.
 
-None of that is easy, and all of it is easy to get *nearly* right. So Felix
-does not write it more than once. The Rust client (`felix-client`) holds the
+All of it is easy to get *nearly* right, so Felix writes it once. The Rust client (`felix-client`) holds the
 behaviour; every other language binds to it through a thin wrapper:
 
 ```mermaid
@@ -45,16 +43,16 @@ flowchart TB
     class CORE,WIRE core
 ```
 
-The alternative — a native client per language, each speaking the wire protocol
-directly — is what most systems do, and it is why most systems have clients
-that behave subtly differently from one another. The differences never show up
+Most systems write a native client per language, each speaking the wire
+protocol directly, and end up with clients that behave subtly differently from
+one another. The differences never show up
 in a demo. They show up when a broker dies at an inconvenient moment and one
 language's client loses records the other would have kept.
 
-**What this costs:** a binding needs a Rust toolchain to build (though not to
-*install* — wheels and their equivalents ship compiled), and a language whose
-FFI story is poor is harder to serve. **What it buys:** when reconnection is
-improved, every language gets the improvement, and no language can drift.
+The cost is that a binding needs a Rust toolchain to build (though not to
+*install*, since wheels and their equivalents ship compiled), and a language
+with poor FFI support is harder to serve. In return, when reconnection is
+improved every language gets the improvement, and no language can drift.
 
 ## The conformance suite
 
@@ -73,27 +71,27 @@ task conformance:verify -- results.json
 ```
 
 The catalogue (`crates/testing/felix-conformance/scenarios.toml`) is deliberately
-weighted toward the semantics a second client approximates rather than
-implements. A few, so the flavour is clear:
+weighted toward the semantics a second client tends to approximate rather than
+implement. Some examples:
 
 | Scenario | What goes wrong without it |
 |---|---|
 | `redirect.carries_the_start_offset_through_every_hop` | A client that rebuilds the subscribe request when redirected drops the start offset and begins at the live tail. The call succeeds. Every record between the requested offset and now is simply absent, and nothing anywhere reports an error. |
 | `reconnect.subscription_resumes_at_the_next_offset` | Off by one in one direction loses records silently; off by one in the other duplicates them. |
-| `retry.ambiguous_outcomes_are_not_silently_retried` | Re-sending a publish that may already have been applied duplicates it, and nothing downstream can tell the copies apart — the delivery guarantee changes without anyone choosing it. |
-| `retry.idempotent_producers_re_send_ambiguous_outcomes` | With a producer id and a sequence the broker can tell the copies apart, so the producer must re-send under the same sequence — and a client that advances the sequence on a failure, or re-sends after a refusal, turns the guarantee back into a guess. |
+| `retry.ambiguous_outcomes_are_not_silently_retried` | Re-sending a publish that may already have been applied duplicates it, and nothing downstream can tell the copies apart, so the delivery guarantee changes without anyone choosing it. |
+| `retry.idempotent_producers_re_send_ambiguous_outcomes` | With a producer id and a sequence the broker can tell the copies apart, so the producer must re-send under the same sequence. A client that advances the sequence on a failure, or re-sends after a refusal, turns the guarantee back into a guess. |
 | `error.unauthorized_is_typed` | An application that cannot tell "not permitted" from "unreachable" retries the one that will never succeed. |
 | `fault.subscription_through_a_dropped_link` | A subscription whose connection goes silent ends as though the stream had finished. The consumer loop exits cleanly, and the records published meanwhile are never read. |
 | `error.quorum_timeout_is_outcome_unknown` | A write that may have survived, reported as a plain failure, gets resent and duplicated; reported as success, it may be lost. |
 
 Each scenario has a stable id. A client's test suite tags its tests with those
 ids, emits a results document, and `verify` reports any **required** scenario
-without a passing result — by name. A skip does not satisfy a requirement, and
+without a passing result, by name. A skip does not satisfy a requirement, and
 a result naming a scenario that does not exist is reported rather than ignored,
 because a misspelled tag would otherwise look like coverage.
 
-Optional scenarios may go unclaimed — a binding is allowed not to wrap a
-surface yet — but may not *fail*. Claiming a semantic and getting it wrong is
+Optional scenarios may go unclaimed (a binding is allowed not to wrap a
+surface yet), but may not *fail*. Claiming a semantic and getting it wrong is
 worse than not claiming it.
 
 ### Connection faults
@@ -151,8 +149,8 @@ does. That drops the read in flight every 250 ms, and it is what found a
 subscription and reported the end of the stream, and, once that was fixed,
 started a resubscribe that took longer than the timeout over on every call.
 
-**New languages are gated on this rather than on review.** "Looks correct" is
-exactly the standard that produces divergence.
+New languages are gated on this suite, not on review, because "looks correct"
+is the standard that produces divergence.
 
 ### Licensing of the kit
 
@@ -179,11 +177,11 @@ rather than passing over them in silence; their pages say which.
 
 ## Planned
 
-Go, then C# — in that order, because it follows where Felix's intended
-workloads actually live. Each is gated on passing the conformance suite.
+Go, then C#, in that order, because that is where Felix's intended workloads
+live. Each is gated on passing the conformance suite.
 
 If you want to write one sooner, the things you need are all public: the
 [wire protocol](/felix/architecture/wire-protocol/) if you are implementing
 natively, the conformance catalogue either way, and `crates/sdk/felix-python` or
-`crates/sdk/felix-typescript` as worked examples of the binding approach — a few
+`crates/sdk/felix-typescript` as worked examples of the binding approach: a few
 hundred lines of Rust over a client that already works.

@@ -3,10 +3,10 @@ title: "Python Client"
 description: "Installing and using the Felix Python client: both surfaces, streams, queues, cache watches, multi-shard consumption, and the failure modes worth writing code for."
 ---
 
-`felix` is a binding over the Rust client, not a reimplementation. Reconnection,
+`felix` is a binding over the Rust client. Reconnection,
 redirect-following, retry classification and offset bookkeeping live in
-`felix-client` and are shared; Python gets the same failover behaviour Rust
-does rather than its own approximation. See
+`felix-client` and are shared, so Python gets the same failover behaviour as
+Rust. See
 [Choosing a Client](/felix/clients/overview/) for why that choice was made and
 what the conformance suite does about it.
 
@@ -16,7 +16,7 @@ what the conformance suite does about it.
 pip install felix-client
 ```
 
-Wheels ship compiled, one per platform, for every Python from 3.9 up — so
+Wheels ship compiled, one per platform, for every Python from 3.9 up, so
 installing needs no Rust toolchain. Linux (x86-64 and arm64), macOS (Intel and
 Apple silicon) and Windows x86-64 are covered; anything else builds from the
 sdist and does need one.
@@ -30,7 +30,7 @@ pip install ./crates/sdk/felix-python
 ## Two surfaces
 
 Both wrap the same Rust client and fail over identically. Pick by how your
-application is already written, not by expected performance.
+application is already written; performance is the same.
 
 | | `Client` | `AsyncClient` |
 | --- | --- | --- |
@@ -53,9 +53,9 @@ async with client:
     await client.publish("t1", "default", "events", b"hello")
 ```
 
-The synchronous surface releases the GIL while it blocks, so threads genuinely
-run in parallel — that is what makes `concurrent.futures.ThreadPoolExecutor`
-over one shared client a reasonable design rather than a queue behind a lock.
+The synchronous surface releases the GIL while it blocks, so threads run in
+parallel. A `concurrent.futures.ThreadPoolExecutor` over one shared client is a
+reasonable design, not a queue behind a lock.
 
 ## Connecting
 
@@ -70,16 +70,15 @@ felix.Client(
 )
 ```
 
-One reachable address is enough — the client discovers the rest of the cluster
+One reachable address is enough. The client discovers the rest of the cluster
 and will use brokers it was never told about. Passing several only helps the
 *first* connection, for the case where the one you named is the one that is
 down.
 
-**TLS is not optional.** QUIC has no unencrypted mode, so there are two trust
-choices and no third: the platform trust store, or an explicit `ca_file` for a
-self-signed development broker. There is deliberately no "skip verification"
-switch — it is the one setting that silently turns a secure deployment
-insecure, and a CA file covers development without it.
+TLS is always on. QUIC has no unencrypted mode, so there are two trust
+choices: the platform trust store, or an explicit `ca_file` for a self-signed
+development broker. There is no "skip verification" switch. It would silently
+turn a secure deployment insecure, and a CA file covers development without it.
 
 `offer_alpn=True` makes the client offer the `felix/1` ALPN, which a broker
 running with `FELIX_TLS_REQUIRE_ALPN=true` insists on. It is off by default
@@ -116,10 +115,10 @@ Records sharing a key share a shard and stay ordered with respect to each
 other. Records with different keys do not, once a stream has more than one
 shard. A consumer needing total order wants a single-shard stream.
 
-### At-least-once duplicates, and says so
+### At-least-once may duplicate
 
-By default a publish whose outcome was ambiguous — the broker may or may not
-have written it before the connection went — is **reported, not re-sent**,
+By default a publish whose outcome was ambiguous (the broker may or may not
+have written it before the connection went) is **reported, not re-sent**,
 because nothing downstream can tell two copies apart.
 
 ```python
@@ -140,7 +139,7 @@ with client.subscribe("t1", "default", "events") as events:
         handle(event.payload)
 ```
 
-`start` is `"latest"` (the default), `"earliest"`, or an integer offset — **the
+`start` is `"latest"` (the default), `"earliest"`, or an integer offset: **the
 first record you have not seen**, so a resuming consumer passes the offset it
 last handled *plus one*.
 
@@ -160,9 +159,9 @@ tail.
 
 Subscriber queues shed under the default policy rather than blocking the
 publisher, so a subscriber can silently miss records. On a durable stream every
-delivered event carries its log offset, and **a jump in them is a drop** —
-except where a new leader's generation-start record took an offset, which
-the next event reports in `skipped_before`:
+delivered event carries its log offset, and **a jump in them is a drop**. The
+exception is a new leader's generation-start record, which takes an offset; the
+next event reports it in `skipped_before`:
 
 ```python
 expected = None
@@ -201,14 +200,14 @@ def run(client, checkpoint):
             time.sleep(1)
         except felix.CursorError:
             # Retention discarded the offset. The only recovery is to accept
-            # the gap and say so — silently restarting at the tail would lose
+            # the gap and say so. Silently restarting at the tail would lose
             # records without telling anyone.
             log.error("checkpoint %s is past retention; restarting at earliest", start)
             start = "earliest"
 ```
 
-Note the two `except` clauses do different things. That is the point of typed
-errors: the recovery differs, so the identity has to.
+The two `except` clauses do different things. The recovery differs, so the
+error types differ.
 
 ## Errors you can act on
 
@@ -235,7 +234,7 @@ except felix.NotFoundError:
 | `OutcomeUnknownError` | the write may or may not have happened (`quorum_timeout`, `leadership_lost`, `unacknowledged`, or any error sent as `outcome_unknown`) | only if idempotent |
 | `AuthError` | token rejected, or missing the permission (`unauthenticated`, `forbidden`) | no |
 | `NotFoundError` | no such tenant, namespace, stream or cache (`not_found`) | see `retry` |
-| `CursorError` | the start offset is gone; retention discarded it | no — restart at `earliest` |
+| `CursorError` | the start offset is gone; retention discarded it | no; restart at `earliest` |
 | `FelixError` | the base, and anything else (`invalid_request`, `limit_exceeded`, a code this client does not know) | see `retry` |
 
 Every exception carries three attributes from the broker:
@@ -256,12 +255,12 @@ All three are `None` when the broker predates error codes, or when the failure
 happened in the client (a lost connection, say). Then the class is chosen from
 the message.
 
-Never match on the message. It is prose and it will be reworded; that is
-exactly what the exception types and `code` exist to spare you.
+Never match on the message. It is prose and it will be reworded; match on the
+exception type or `code` instead.
 
 ## Queues
 
-A queue is not a subscription with extra steps. Records are **pulled**, because
+A queue works differently from a subscription. Records are **pulled**, because
 only the consumer knows when it has capacity; each is claimed by one member
 until settled; and an unsettled record comes back.
 
@@ -283,7 +282,7 @@ while True:
 
 `record.attempts` counts deliveries **including this one**, so `1` is a first
 attempt and anything higher is a redelivery. It is how a consumer tells a retry
-from a first try — worth branching on before doing anything expensive or
+from a first try, which is worth branching on before doing anything expensive or
 side-effecting:
 
 ```python
@@ -295,7 +294,7 @@ else:
 ```
 
 **A group is bound to one shard.** Consuming a multi-shard stream means polling
-each shard's group — `stream_shards` says how many there are. Only the shard's leader
+each shard's group; `stream_shards` says how many there are. Only the shard's leader
 serves its group; the client follows the broker's redirect there, including
 after a rebalance moves the shard, so any broker address works.
 
@@ -341,8 +340,8 @@ need a durable broker that advertises `FEATURE_COUNTERS`.
 
 ## Cache watches
 
-What makes the cache a state-synchronisation primitive rather than a
-notification: resume by offset, and loss that is loud.
+Watches can resume by offset and report loss explicitly, which makes the cache
+usable for state synchronisation.
 
 ```python
 roster = {}
@@ -382,7 +381,7 @@ while True:
         break                                  # the broker ended the watch
 ```
 
-Three things in that example are load-bearing:
+Three things in that example matter:
 
 - **`retained_count`** tells you the moment your state is complete. Without it
   you are guessing when to start trusting the map.
@@ -432,7 +431,7 @@ A single offset carried across shards would replay on every shard but one.
 
 :::caution[A shard that delivered nothing has no position]
 `positions()` only lists shards that handed something over. On resume, a shard
-not in the map starts wherever `start` says — which is the live tail by
+not in the map starts wherever `start` says. That is the live tail by
 default, so records published to it while you were away are missed. If that
 matters, pass `start="earliest"` alongside `resume`, or make sure every shard
 has reported before you checkpoint.
@@ -441,7 +440,7 @@ has reported before you checkpoint.
 ## Concurrency
 
 One client is meant to be shared. The synchronous surface blocks with the GIL
-released, so a thread pool over one client is genuine parallelism:
+released, so a thread pool over one client runs in parallel:
 
 ```python
 with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
@@ -453,18 +452,18 @@ with its own connection pool, and they do not share discovery.
 
 ## What is not wrapped
 
-- **`at_least_once` with a routing key** — the re-send path does not carry one,
+- **`at_least_once` with a routing key.** The re-send path does not carry one,
   and the client refuses the combination rather than silently dropping the key.
 - **Idempotent producers.** The Rust client's `IdempotentProducer` is not
   wrapped yet.
 
 Both are marked in the conformance catalogue, so the binding reports them as
-unclaimed rather than passing over them in silence.
+unclaimed.
 
 ## Conformance
 
 Python passes every required scenario in the
 [client conformance catalogue](/felix/clients/overview/#the-conformance-suite),
 and CI is gated on it. The suite runs against a real three-node cluster rather
-than a mock, because what it is checking — reconnection, redirect-following,
-offset accounting — only exists in a cluster.
+than a mock, because what it checks (reconnection, redirect-following, offset
+accounting) only exists in a cluster.

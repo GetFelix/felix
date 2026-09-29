@@ -21,9 +21,9 @@ In publish → delivery order:
 
 | # | Checkpoint | Bounds | Policy knob | Default |
 |---|---|---|---|---|
-| 1 | Client `PublishAdmission` | in-flight publish **bytes**, shared across all client workers | — (always waits) | `publish_inflight_bytes` = 4 MiB |
-| 2 | Client worker mpsc channel | queued publish **items** per stream-worker | — (backpressure via channel) | `publish_queue_depth` = 64 |
-| 3 | Broker `PublishAdmission` | in-flight publish **bytes**, process-wide | — (always waits, within `EnqueuePolicy::Wait`'s timeout) | `pub_inflight_bytes` = 64 MiB |
+| 1 | Client `PublishAdmission` | in-flight publish **bytes**, shared across all client workers | none, always waits | `publish_inflight_bytes` = 4 MiB |
+| 2 | Client worker mpsc channel | queued publish **items** per stream-worker | none, the channel backpressures | `publish_queue_depth` = 64 |
+| 3 | Broker `PublishAdmission` | in-flight publish **bytes**, process-wide | none, always waits (within `EnqueuePolicy::Wait`'s timeout) | `pub_inflight_bytes` = 64 MiB |
 | 4 | Broker publish scheduler queue | queued publish **items**, process-wide (or per core shard), shared between tenants by deficit round robin | `EnqueuePolicy`: `Drop` / `Fail` / `Wait` / `Backpressure`; an acked publish that finds no room is answered `overloaded` (`publish_queue_full`) | `pub_queue_depth` × `pub_workers_per_conn` in all, `pub_queue_depth` guaranteed per tenant; `Drop` unless `pub_ingress_wait` (then `Backpressure`) |
 | 5 | Broker-core subscriber channel | queued `DeliveryEnvelope`s per subscriber | `subscriber_queue_policy`: `Block` / `DropNew` / `DropOld` | `subscriber_queue_capacity` = 512, `drop_new` |
 | 6 | Writer lane channel | queued `LaneCommand`s per lane | `subscriber_lane_queue_policy`: same three | `subscriber_lane_queue_depth` = 64, `drop_new` |
@@ -98,9 +98,9 @@ counted, bounded-latency event (`felix_subscribe_dropped_total`,
 unbounded tail latency. The [Benchmarks](/felix/features/benchmarks/) harness
 flips both to `Block` (plus `pub_ingress_wait: true` upstream, so the
 publisher itself slows down rather than getting shed at checkpoint 4) to
-measure *lossless sustainable throughput*, a deliberately different mode
-from the production default, not a "more correct" one. Which mode you want
-is a product decision, not a performance one: `Block` guarantees delivery
+measure *lossless sustainable throughput*. That is a different mode from the
+production default, and no more correct. Which one you want depends on what
+your application can tolerate: `Block` guarantees delivery
 at the cost of publishers slowing down for one bad subscriber. `DropNew`
 guarantees publishers never slow down at the cost of that subscriber
 missing events.

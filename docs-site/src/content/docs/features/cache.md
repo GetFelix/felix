@@ -4,7 +4,7 @@ title: "Cache Features"
 
 The Felix cache is a key-value store served over the same QUIC transport and
 wire protocol as everything else. It exists for the workloads a sidecar Redis
-usually gets deployed for — sessions, configuration, hot lookups — without
+usually gets deployed for (sessions, configuration, hot lookups) without
 running a second system.
 
 ## Overview
@@ -14,7 +14,7 @@ The Felix cache is:
 - **Key-value store** with optional TTL (time-to-live)
 - **Scoped** to `(tenant_id, namespace, cache_name, key)`
 - **In-memory** for lowest latency, when the broker has no durable storage configured. With `FELIX_DURABLE_STORAGE_DIR` the cache is backed by a log and survives a restart.
-- **Watchable** when log-backed: subscribe to changes for one key or key prefix, resume by offset, with loss made loud rather than silent
+- **Watchable** when log-backed: subscribe to changes for one key or key prefix, resume by offset, and falling behind is reported explicitly
 - **Multiplexed** over pooled QUIC streams
 - **Highly concurrent** with request pipelining
 
@@ -161,8 +161,7 @@ let results: Vec<Option<Bytes>> = join_all(futures).await
 
 Ten sequential gets cost ten round trips; ten pipelined gets cost roughly
 one. It works because each request carries a `request_id`, the broker may
-answer out of order, and the client correlates replies — so nothing waits on
-anything it doesn't have to.
+answer out of order, and the client correlates the replies.
 
 ### 5. Stream Pooling
 
@@ -183,7 +182,7 @@ Without pooling (single stream):
 - Limited throughput
 
 With pooling, requests spread across streams with independent flow control,
-so concurrency scales until the transport or broker saturates — not a fixed
+so concurrency scales until the transport or broker saturates. It is not a fixed
 multiplier. Measure your own workload's shape; the concurrency sweep in
 [Benchmarks](/felix/features/benchmarks/) is the reference point.
 
@@ -236,7 +235,7 @@ contract.
 
 ### 7. Keyed Watch
 
-A log-backed cache is not just readable — it is *subscribable*. `watch_cache`
+A log-backed cache can also be watched. `watch_cache`
 delivers every applied write for one key or key prefix, in the shard's write
 order, each change carrying the cache-log offset that makes it resumable:
 
@@ -256,7 +255,7 @@ while let Some(item) = watch.recv().await {
         },
         CacheWatchItem::Lagged { resume_from } => {
             // The watch fell behind and was ended. Re-watching from
-            // `resume_from` replays everything missed — gapless.
+            // `resume_from` replays everything missed, with no gap.
             break;
         }
         CacheWatchItem::ShardMoved(moved) => {
@@ -269,25 +268,25 @@ while let Some(item) = watch.recv().await {
 }
 ```
 
-A prefix watch works the same way — `CacheWatchFilter::Prefix("user:".into())`
-sees every key under `user:` — and an empty prefix is every key in the shard.
+A prefix watch works the same way. `CacheWatchFilter::Prefix("user:".into())`
+sees every key under `user:`, and an empty prefix is every key in the shard.
 
-![An animated walkthrough of a keyed cache watch. Writes for several keys are applied to one cache shard's log in order, each taking the next offset. A watch on the prefix user: receives a copy of each matching change the moment it is applied — puts with their values, a delete as a tombstone — while writes to other keys pass it by. The delivered copies keep their log offsets, so the watch's offsets are sparse by construction, which is why a gap between them is not a drop signal and falling behind is reported explicitly instead.](/felix/diagrams/cache-watch.svg)
+![An animated walkthrough of a keyed cache watch. Writes for several keys are applied to one cache shard's log in order, each taking the next offset. A watch on the prefix user: receives a copy of each matching change the moment it is applied (puts with their values, a delete as a tombstone), while writes to other keys pass it by. The delivered copies keep their log offsets, so the watch's offsets are sparse by construction, which is why a gap between them is not a drop signal and falling behind is reported explicitly instead.](/felix/diagrams/cache-watch.svg)
 
 **Resume by offset.** Pass `Some(offset)` to resume at the first change not yet
 seen; the broker replays `[offset, tail)` from the cache's log before live
 delivery, joined with no gap and no duplicate. An application checkpoints
 `change.offset + 1` exactly as a stream subscriber does.
 
-**Compaction is never a silent gap.** The cache's log compacts, so a
+**Resume after compaction.** The cache's log compacts, so a
 long-disconnected watcher can name an offset that no longer exists. The broker
 answers with `resnapshot() == true` and each matching key's *current* value,
-then live changes — the same snapshot-plus-changes contract etcd answers a
-compacted watch revision with.
+then live changes. This is the same snapshot-plus-changes contract etcd uses for a
+compacted watch revision.
 
-**Loss is loud.** A filtered watch cannot detect a drop from an offset jump
+**Falling behind.** A filtered watch cannot detect a drop from an offset jump
 (other keys' writes make offsets sparse), so a watch that falls behind is ended
-with `Lagged { resume_from }` rather than quietly thinned. Re-watching from
+with `Lagged { resume_from }` instead of silently dropping changes. Re-watching from
 `resume_from` is gapless.
 
 ```mermaid
@@ -303,9 +302,9 @@ sequenceDiagram
     Note over App: checkpoint offset + 1 after each change
 ```
 
-**Retained delivery: current state first.** A watch can start from the state
-instead of from now — MQTT's retained message, and the primitive presence and
-state-sync applications are built on. `watch_cache_retained` delivers each
+**Retained delivery.** A watch can start from the current state instead of from
+now. This is MQTT's retained message, and it is what presence and state-sync
+applications are built on. `watch_cache_retained` delivers each
 matching key's current value (at the offset of the write that produced it),
 then live changes; a client joins and immediately holds the roster:
 
@@ -314,8 +313,8 @@ let mut watch = client
     .watch_cache_retained("acme", "prod", "presence", CacheWatchFilter::Prefix("room:7:".into()))
     .await?;
 
-// Exactly this many values are the current state — 0 means the room is
-// empty, which is an answer, not a silence.
+// Exactly this many values are the current state. 0 means the room is
+// empty.
 let joining = watch.retained_count().expect("a retained watch reports its count");
 
 let mut roster = std::collections::HashMap::new();
@@ -331,14 +330,14 @@ while let Some(item) = watch.recv().await {
 }
 ```
 
-Retained and `from_offset` are mutually exclusive — a resume already replays
-the state a retained start shortcuts. And the two compose with everything
-above: a retained watch that later falls behind still lags loudly, and a key
+Retained and `from_offset` are mutually exclusive, because a resume already
+replays the state a retained start skips to. Retained delivery works with
+everything above: a retained watch that later falls behind still lags loudly, and a key
 whose newest write races past the join arrives as the first live change
 instead of in the state, folding to the same result.
 
-TTL expiry delivers no event — expiry is lazy and appends nothing to the log —
-but every put carries its `expires_at_millis`, so a watcher that mirrors the
+TTL expiry delivers no event, since expiry is lazy and appends nothing to the
+log. Every put carries its `expires_at_millis`, so a watcher that mirrors the
 cache can expire entries itself.
 
 The features are negotiated (`FEATURE_CACHE_WATCH`, with retained delivery as
@@ -349,9 +348,9 @@ duplicate detection, or the lag signal to. See the
 
 ### 8. Counters
 
-A counter as a log semantic: `counter_add` appends a signed delta, the broker
-folds the running sum, and the answer is the sum *including* your delta — so
-incrementing and learning where you stand is one round trip:
+`counter_add` appends a signed delta to a log, the broker folds the running
+sum, and the answer is the sum *including* your delta. Incrementing and
+learning the new value is one round trip:
 
 ```rust
 // One round trip: apply the delta and learn the result.
@@ -364,9 +363,9 @@ if hits > LIMIT {
 let views = client.counter_get("acme", "prod", "metrics", "page:home").await?;
 ```
 
-Counters are scoped and routed exactly like cache keys — same cache scope,
-same key-to-shard hash, same owner — but live beside the cache, not in it: a
-counter and a cache value may share a key and are unrelated, and a cache
+Counters are scoped and routed exactly like cache keys (same cache scope,
+same key-to-shard hash, same owner), but they are stored separately from cache
+values. A counter and a cache value may share a key and are unrelated, and a cache
 watch does not see counter changes.
 
 The sum is durable and replicated: it survives a restart (rebuilt by folding
@@ -375,33 +374,32 @@ sum or the offsets moving), and leader failover (the counter log ships with
 its cache shard, so the promoted replica folds the true sum and keeps
 counting). Negotiated as `FEATURE_COUNTERS`, durable brokers only.
 
-:::caution[At-least-once, honestly]
-A retried `counter_add` after a lost acknowledgement counts twice — deltas
-carry no dedupe identity. A counter is durable and atomic per shard, but
+:::caution[Counters are at-least-once]
+A retried `counter_add` after a lost acknowledgement counts twice, because
+deltas carry no dedupe identity. A counter is durable and atomic per shard, but
 increments are not exactly-once. An application that cannot tolerate a
 double-count keeps its own idempotency key.
 :::
 
-### 9. Composed semantics: which flow for which problem
+### 9. Choosing a feature
 
-The cache's semantics are readings of one log, so they compose — and each
-composition is the primitive a class of application is usually hand-built
-from:
+Watches, retained delivery and counters all read the same log, so they can be
+combined. This table maps common applications to the feature that fits:
 
 | You are building | Reach for | Why this shape |
 |---|---|---|
-| Config push, feature flags, cache invalidation | **Keyed watch** on the config key or prefix | Every instance learns of the change the moment it lands; the offset makes reconnects gapless instead of "poll and hope" |
+| Config push, feature flags, cache invalidation | **Keyed watch** on the config key or prefix | Every instance learns of the change the moment it lands; the offset makes reconnects gapless |
 | Presence, lobbies, collaborative state | **Retained watch** on a prefix | Join and immediately hold the roster, then stay current; `retained_count` tells you the exact moment your state is complete, and an empty room is a definite zero |
-| A read-heavy dashboard over changing state | **Retained watch**, materialized locally | Current values first, then only the changes — no re-fetch loop, and a lag is signalled loudly rather than shown as stale data |
-| Rate limiting, quotas, usage metering | **Counter** per principal | Increment-and-read in one round trip against the shard's owner, durable across restart and failover — not a racy get-modify-put |
+| A read-heavy dashboard over changing state | **Retained watch**, materialized locally | Current values first, then only the changes. No re-fetch loop, and a lag is reported instead of shown as stale data |
+| Rate limiting, quotas, usage metering | **Counter** per principal | Increment-and-read in one round trip against the shard's owner, durable across restart and failover, with no racy get-modify-put |
 | Live tallies (votes, likes, inventory deltas) | **Counter**, read by pollers or fronted by a put | Deltas fold server-side; publish the folded sum into a watched cache key when watchers need push instead of poll |
 
 ### 10. Eviction (in-memory only: best-effort)
 
-The in-memory backend evicts opportunistically under memory pressure — no
+The in-memory backend evicts opportunistically under memory pressure. There is no
 guaranteed LRU or LFU, so don't rely on a specific eviction order. The
 log-backed cache does not evict at all; it compacts. Configurable eviction
-policies are a possible future, not a present.
+policies are not implemented.
 
 ## API Reference
 
@@ -512,7 +510,7 @@ async fn cache_delete(
 **Returns**:
 
 - `Ok(Some(value))`: The key was there; this is what was removed
-- `Ok(None)`: The key was not there — an answer, not an error
+- `Ok(None)`: The key was not there (this is not an error)
 - `Err(e)`: Operation failed, or the broker predates `FEATURE_CACHE_DELETE`
 
 ### watch_cache
@@ -654,7 +652,7 @@ impl ConfigCache {
         self.save_to_db(key, config).await?;
 
         // Write through to the cache. Every watcher of this key is notified
-        // with the new value — no separate invalidation channel needed.
+        // with the new value, so no separate invalidation channel is needed.
         use bytes::Bytes;
         self.client
             .cache_put(
@@ -739,7 +737,7 @@ cache_send_window: 268435456         # Send window
 
 1. **No compare-and-swap**: the one atomic update is a counter's `counter_add`
 2. **No multi-key operations**: no transactions
-3. **Best-effort eviction** in the in-memory backend: no guaranteed LRU or LFU. The log-backed cache does not evict at all — it compacts.
+3. **Best-effort eviction** in the in-memory backend: no guaranteed LRU or LFU. The log-backed cache does not evict at all; it compacts.
 4. **A prefix watch reads one shard**: keys sharing a prefix hash to different shards, so `Client` needs one `watch_cache_shard` per shard. `ClusterClient::watch_cache_sharded` opens and merges them for you, as `subscribe_sharded` does for streams
 
 ### Planned Features
@@ -775,12 +773,10 @@ client.cache_transaction()
     .await?;
 ```
 
-## One design rule worth keeping
+## Designing around the cache
 
-Treat the cache as acceleration, not as the source of truth: design the read
-path to fall back to wherever the data really lives. That keeps a miss, an
-eviction, or a broker restart a performance event instead of a correctness
-event — and it is why the in-memory cache's best-effort nature is acceptable
-at all. (For state the cache *is* the truth of — presence, rosters, counters
-— use the log-backed cache with watches and counters, which is built for
-exactly that.)
+For ordinary caching, design the read path to fall back to wherever the data
+really lives. Then a miss, an eviction or a broker restart costs performance
+but not correctness, and that is why the in-memory cache's best-effort nature is acceptable
+at all. For state that lives only in the cache, such as presence, rosters and
+counters, use the log-backed cache with watches and counters.

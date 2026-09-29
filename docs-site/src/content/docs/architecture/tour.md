@@ -1,6 +1,6 @@
 ---
 title: "An Architecture Tour"
-description: "One publish, followed from the client API to bytes on three machines — and the reading order for everything else."
+description: "One publish, followed from the client API to bytes on three machines, plus a reading order for everything else."
 ---
 
 This page is for someone who wants to understand Felix well enough to change it.
@@ -8,10 +8,10 @@ It follows a single publish from the client's API call to bytes on disk on three
 machines, stopping wherever a decision was made that would be surprising if you
 met it in the code first.
 
-Read it once end to end. It links out at each step, but the links are for
-afterwards — the point here is the shape.
+Read it once end to end. It links out at each step, but save the links for
+afterwards. The goal here is the overall shape.
 
-## The one idea
+## One log, read three ways
 
 Felix stores everything in **an append-only log, split into shards**. A shard is
 owned by one broker and replicated to others. Streams, caches and queues are
@@ -19,11 +19,11 @@ three ways of *reading* that log, not three subsystems.
 
 ![One append-only log per shard, read three ways: as a stream by offset, as a cache through a key index, and as a queue through a cursor shared by a consumer group.](/felix/diagrams/one-log.svg)
 
-[Projections](/felix/architecture/projections/) animates that same picture —
-the three readings advancing over one log at once — and cites the test behind
-each claim.
+[Projections](/felix/architecture/projections/) animates that same picture,
+with the three readings advancing over one log at once, and cites the test
+behind each claim.
 
-Everything that follows is a consequence. There is one durability path, one
+Everything else follows from this. There is one durability path, one
 recovery path, one placement rule and one replication path, and each semantic is
 a small amount of code on top. When you are deciding where a change belongs, the
 question is usually "is this about the log, or about one way of reading it?"
@@ -48,8 +48,8 @@ metadata lives in an embedded Raft group, in Postgres, or in memory for
 development. It owns tenants, namespaces, streams, caches, the node catalog, and
 **shard assignments**, and it runs placement on a timer.
 
-The division that matters: **the control plane decides ownership, and is never
-on the data path.** A publish does not call it. Brokers read its assignment feed
+**The control plane decides ownership but is never on the data path.** A
+publish does not call it. Brokers read its assignment feed
 in the background and answer from a routing snapshot they already hold.
 
 ## Following one publish
@@ -65,14 +65,14 @@ rejected rather than masked off, because masking one means confidently
 misparsing the body.
 
 Separately there are **feature bits**, exchanged in `Auth` and `AuthOk`. Those
-say a *request exists* — "this broker serves `cache_delete`" — and never appear
+say a *request exists* ("this broker serves `cache_delete`") and never appear
 on a frame. They are a different number space for that reason. A client must not
 send a featured request to a peer that did not advertise the bit. An
 unrecognised message type closes the control stream, unless the client offered
 `FEATURE_UNSUPPORTED`, in which case the broker answers `unsupported` and keeps
 serving.
 
-> `crates/protocol/felix-wire/src/client/` — `frame.rs`, `flags.rs`, `features.rs`, `message.rs`.
+> `crates/protocol/felix-wire/src/client/`: `frame.rs`, `flags.rs`, `features.rs`, `message.rs`.
 
 ### 2. The broker decodes and routes it to a handler
 
@@ -81,7 +81,7 @@ serving.
 dispatches every `Message` variant. `handlers/publish.rs` and
 `handlers/subscribe.rs` do the per-message work.
 
-### 3. Ownership is resolved — locally
+### 3. Ownership is resolved locally
 
 A routing key hashes to a shard. That shard has exactly one owner.
 
@@ -89,40 +89,41 @@ A routing key hashes to a shard. That shard has exactly one owner.
 publish passes through, which is why the ownership gate lives there: nothing
 reaches storage without it.
 
-**Resolving an owner is an atomic load, not a network call.** The routing table
-is an immutable snapshot swapped in whole (`arc-swap`), so a reader takes a
-cheap atomic load and reads a table nobody can mutate underneath it. This is the
-hottest question the broker is asked, and it never touches the control plane.
+Resolving an owner is an atomic load rather than a network call. The routing
+table is an immutable snapshot swapped in whole (`arc-swap`), so a reader takes
+a cheap atomic load and reads a table nobody can mutate underneath it. The
+broker answers this question more often than any other, and it never touches
+the control plane.
 
-Three outcomes, and no fourth:
+There are exactly three outcomes:
 
-- **Local** — this broker leads the shard *and* has opened it. Both are
-  required: the cluster saying it is ours is not the same as the log being
-  recovered.
-- **Forward** — another broker leads it. The publish is sent over the peer
+- **Local**: this broker leads the shard *and* has opened it. Both are
+  required, because the cluster saying the shard is ours does not mean the log
+  has been recovered.
+- **Forward**: another broker leads it. The publish is sent over the peer
   protocol and the answer relayed back.
-- **Refused** — nobody can serve it right now, and the reason says which kind of
-  nobody. There is deliberately no "not sure, handle it locally": a broker that
-  treats an unknown route as its own is a broker writing a shard it does not own.
+- **Refused**: nobody can serve it right now, and the reason says why. There is
+  deliberately no "not sure, handle it locally" case, since a broker that
+  treats an unknown route as its own ends up writing a shard it does not own.
 
 > `crates/server/felix-router/src/shard/router.rs`, `services/felix-broker-service/src/shards/routing.rs`.
 
 ### 4. Offsets are taken before durability is waited on
 
-This is the ordering most likely to be "fixed" into a bug.
+This ordering is the one most likely to be "fixed" into a bug.
 
 `crates/server/felix-broker/src/broker/publish.rs` calls `begin_append` and *then* `commit`.
 The batch claims its place in the stream's order the instant its offsets are
 consumed, before anyone waits on the disk. `CommitSequencer` in
 `crates/server/felix-storage/src/commit_order.rs` then makes later
-publishes wait behind earlier ones — **whether those succeed, fail, or are
+publishes wait behind earlier ones, **whether those succeed, fail, or are
 cancelled**, because a cancelled publish that released its successors would let
 a later record land at an earlier offset.
 
 ### 5. Storage appends it
 
-`crates/server/felix-storage/src/disk_log/` — a log-structured segment store, not a
-write-ahead log. Four properties carry it, and all four are load-bearing:
+`crates/server/felix-storage/src/disk_log/` is a log-structured segment store
+rather than a write-ahead log. It depends on four properties:
 
 - **Records are never rewritten.** Recovery can therefore trust "valid bytes end
   at EOF". Preallocation reserves blocks *without* changing `st_size` for
@@ -130,7 +131,7 @@ write-ahead log. Four properties carry it, and all four are load-bearing:
 - **A torn tail is repaired; interior corruption is fatal.** Refusing to start
   beats silently losing acknowledged records.
 - **Indexes are derived, never trusted.** A missing, short or stale index is
-  rebuilt from the segment it describes — which is why it is safe not to fsync a
+  rebuilt from the segment it describes, which is why it is safe not to fsync a
   freshly written one.
 - **Group commit** is the biggest throughput lever under `FsyncMode::OnCommit`:
   one blocking flush serves many waiters.
@@ -141,7 +142,7 @@ write-ahead log. Four properties carry it, and all four are load-bearing:
 ### 6. Replication ships it, if the stream asked
 
 For a `Quorum` stream the publish is not acknowledged until a majority of the
-shard's replicas — **counting the leader** — hold the record.
+shard's replicas (**counting the leader**) hold the record.
 
 The leader ships records at their offsets; a follower checks each batch begins
 at its tail, and answers a gap or a divergence explicitly rather than accepting
@@ -155,8 +156,8 @@ followers first. `Leader` streams and caches keep the lease.
 
 On failover, only a replica that **actually holds the log** is promoted. A shard
 whose leader is gone and whose replicas are behind is left unavailable rather
-than reopened empty — a silently empty shard *is* the data loss, and nothing
-downstream would report it as one.
+than reopened empty. A silently empty shard *is* data loss, and nothing
+downstream would report it.
 
 > `docs/replication-design.md` argues this in full, including why per-shard Raft
 > was rejected.
@@ -167,19 +168,19 @@ downstream would report it as one.
 subscriber and caches its encoded frame, so a publish is encoded once regardless
 of fanout.
 
-Subscribers are isolated **by construction**: each has a bounded queue with an
+Subscribers are isolated: each has a bounded queue with an
 explicit overflow policy, `DropNew` by default. A publisher never blocks on a
 slow subscriber.
 
-Because dropping is the default, a subscriber can silently miss records — which
+Because dropping is the default, a subscriber can silently miss records. That
 is why delivered events carry log offsets for a durable stream. A jump between
 consecutive offsets is a drop, so the loss is at least *detectable*. (A
 new leader's generation-start record also takes an offset; the event after
 it says so in `skipped_before`, so that jump is not mistaken for one.)
 
-## The orderings that are the design
+## Orderings that matter
 
-Several past bugs were "the natural order":
+Several past bugs came from doing things in the order that seemed natural:
 
 | Do this | Not this | Because |
 | --- | --- | --- |
@@ -193,19 +194,20 @@ If you find yourself reordering one of these, it is almost certainly a bug.
 ## Reading order
 
 1. **This page**, for the shape.
-2. [What Felix Is For](/felix/getting-started/what-felix-is-for/) — the status
-   table. It is kept current per capability and is the page to trust when
+2. [What Felix Is For](/felix/getting-started/what-felix-is-for/), for the
+   status table. It is kept current per capability and is the page to trust when
    another disagrees.
-3. [Projections](/felix/architecture/projections/) — the three readings, with
+3. [Projections](/felix/architecture/projections/): the three readings, with
    the test behind each claim.
-4. [Delivery Semantics](/felix/architecture/semantics/) — what is guaranteed,
+4. [Delivery Semantics](/felix/architecture/semantics/): what is guaranteed,
    and what is not.
-5. [Wire Protocol](/felix/architecture/wire-protocol/) — then
+5. [Wire Protocol](/felix/architecture/wire-protocol/), then
    `docs/internal-protocol.md` for the broker-to-broker one.
 6. [Durable Storage](/felix/architecture/durable-storage/) and
    [the segment format](/felix/architecture/storage-format/).
-7. `docs/replication-design.md` — the argument, not just the mechanism.
-8. [How Felix Works](/felix/development/how-felix-works/) — function-by-function
+7. `docs/replication-design.md`, which explains the reasoning as well as the
+   mechanism.
+8. [How Felix Works](/felix/development/how-felix-works/): function-by-function
    internals, once the shape above is familiar.
 
 ## Where the code is
@@ -226,7 +228,7 @@ If you find yourself reordering one of these, it is almost certainly a bug.
 
 ## Before you change something
 
-Three conventions that will otherwise surprise you, all in `CLAUDE.md`:
+Three things in `CLAUDE.md` that will otherwise surprise you:
 
 - **The demo crates are not workspace members.** `task lint` and `task test`
   cannot see them, so "this is unused, delete it" is unreliable. Run

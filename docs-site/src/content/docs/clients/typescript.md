@@ -3,11 +3,10 @@ title: "TypeScript Client"
 description: "Installing and using the Felix Node.js client: promises, typed errors, disposal, streams, queues, cache watches, multi-shard consumption, and the failure modes worth writing code for."
 ---
 
-`felix-client` on npm is a napi-rs addon over the Rust crate of the same name,
-not a reimplementation. Reconnection, redirect-following, retry classification
-and offset bookkeeping live in the crate and are shared; Node gets the same
-failover behaviour Rust does rather than its own approximation. The name is
-deliberately identical on crates.io, PyPI and npm. See
+`felix-client` on npm is a napi-rs addon over the Rust crate of the same name.
+Reconnection, redirect-following, retry classification and offset bookkeeping
+live in the crate and are shared, so Node gets the same failover behaviour as
+Rust. The name is identical on crates.io, PyPI and npm. See
 [Choosing a Client](/felix/clients/overview/) for why that choice was made.
 
 ## Installing
@@ -17,7 +16,7 @@ npm install felix-client
 ```
 
 The binary ships as one package per platform, declared as optional
-dependencies, so npm fetches only the one your machine needs — nothing is
+dependencies, so npm fetches only the one your machine needs. Nothing is
 compiled at install time and no Rust toolchain is required. Linux (x86-64 and
 arm64, glibc), macOS (Intel and Apple silicon) and Windows x86-64 are covered.
 
@@ -28,7 +27,7 @@ cd crates/sdk/felix-typescript
 napi build --platform --release      # needs: npm i -g @napi-rs/cli@2
 ```
 
-Without the napi CLI, `napi build` is mostly a rename — a plain `cargo build`
+Without the napi CLI, `napi build` is mostly a rename: a plain `cargo build`
 produces a loadable addon and the package finds it:
 
 ```bash
@@ -37,11 +36,11 @@ cargo build --release
 
 Requires Node 18 or newer.
 
-## One surface, and it is asynchronous
+## One asynchronous surface
 
 Python offers two surfaces because its synchronous one is the older idiom. Node
-has no such split: blocking the event loop is not something a library may do,
-so **every call returns a `Promise`**. napi-rs runs the future on its own Tokio
+has one: a library must not block the event loop, so **every call returns a
+`Promise`**. napi-rs runs the future on its own Tokio
 runtime and settles the promise from there, which keeps the event loop free
 while a publish is in flight.
 
@@ -66,14 +65,13 @@ Client.connect(
 )
 ```
 
-One reachable address is enough — the client discovers the rest of the cluster
+One reachable address is enough. The client discovers the rest of the cluster
 and will use brokers it was never told about. Passing several only helps the
 *first* connection.
 
-**TLS is not optional.** QUIC has no unencrypted mode, so there are two trust
-choices and no third: the platform trust store, or an explicit `caFile` for a
-self-signed development broker. There is deliberately no "skip verification"
-switch.
+TLS is always on. QUIC has no unencrypted mode, so there are two trust
+choices: the platform trust store, or an explicit `caFile` for a self-signed
+development broker. There is no "skip verification" switch.
 
 Passing `true` as `offerAlpn` makes the client offer the `felix/1` ALPN, which
 a broker running with `FELIX_TLS_REQUIRE_ALPN=true` insists on. It is off by
@@ -93,13 +91,13 @@ so on Node 24 and newer a `throw` releases it on the way out:
 await using events = await client.subscribe("t1", "default", "events");
 ```
 
-The package itself asks only for Node 18 — `await using` is the syntax that
-needs the newer runtime, not the disposal. On older Node, call `close()` in a
+The package itself asks only for Node 18. The `await using` syntax is what
+needs the newer runtime. On older Node, call `close()` in a
 `finally`.
 
 **`close()` cancels a read in flight rather than waiting for it.** A consumer
 shutting down is almost always parked on `nextEvent`, and waiting for the read
-it is cancelling would hang exactly the path that needs to make progress.
+it is cancelling would hang the path that needs to make progress.
 
 ## Publishing
 
@@ -132,10 +130,10 @@ Records sharing a key share a shard and stay ordered with respect to each
 other; records with different keys do not, once a stream has more than one
 shard.
 
-### At-least-once duplicates, and says so
+### At-least-once may duplicate
 
-By default a publish whose outcome was ambiguous is **reported, not re-sent** —
-nothing downstream can tell two copies apart.
+By default a publish whose outcome was ambiguous is **reported, not re-sent**,
+because nothing downstream can tell two copies apart.
 
 ```ts
 await client.publish("t1", "default", "orders", payload, undefined, "per_message", true);
@@ -143,7 +141,7 @@ await client.publish("t1", "default", "orders", payload, undefined, "per_message
 
 The record is then certain to land and **may land twice**. It cannot be
 combined with a key: the re-send path does not carry one, so the combination is
-refused rather than silently resolved.
+refused.
 
 ## Subscribing
 
@@ -160,7 +158,7 @@ try {
 }
 ```
 
-`start` is `"latest"` (the default), `"earliest"`, or a `bigint` offset — **the
+`start` is `"latest"` (the default), `"earliest"`, or a `bigint` offset: **the
 first record you have not seen**, so a resuming consumer passes the offset it
 last handled *plus one*. Offsets are `bigint`, so the arithmetic is `+ 1n`.
 
@@ -173,7 +171,7 @@ tail.
 :::caution[Do not abandon a `nextEvent` you raced against a timer]
 There is no timeout argument, because a caller who wants one can race the
 promise. But the losing `nextEvent` **stays in flight and will resolve with the
-next record** — so keep the promise and await it again rather than calling
+next record**, so keep the promise and await it again rather than calling
 `nextEvent` afresh, or you will drop the record it was about to hand you.
 
 ```ts
@@ -192,9 +190,9 @@ async function next(timeoutMs) {
 
 Subscriber queues shed under the default policy rather than blocking the
 publisher, so a subscriber can silently miss records. On a durable stream every
-event carries its log offset, and **a jump in them is a drop** — except where a
-new leader's generation-start record took an offset, which the next event
-reports in `skippedBefore`:
+event carries its log offset, and **a jump in them is a drop**. The exception is
+a new leader's generation-start record, which takes an offset; the next event
+reports it in `skippedBefore`:
 
 ```ts
 let expected = null;
@@ -231,7 +229,7 @@ async function run(client, checkpoint) {
       if (err instanceof ConnectionError) {
         await sleep(1000);                       // retryable; resume from `start`
       } else if (err instanceof CursorError) {
-        // Retention discarded the offset. Accept the gap and say so — silently
+        // Retention discarded the offset. Accept the gap and say so. Silently
         // restarting at the tail would lose records without telling anyone.
         console.error(`checkpoint ${start} is past retention; restarting at earliest`);
         start = "earliest";
@@ -300,7 +298,8 @@ happened in the client. Then the class is chosen from the message.
 
 `err.kind` is this client's own name for the class (`FELIX_CONNECTION`,
 `FELIX_SHARD_UNAVAILABLE`, …), set whether or not the broker sent a code, for
-code that would rather switch than test `instanceof`. Never match on the message — it is prose and will be reworded.
+code that would rather switch than test `instanceof`. Never match on the message;
+it is prose and will be reworded.
 
 ## Queues
 
@@ -312,7 +311,7 @@ for (;;) {
   const records = await client.groupPoll(
     "t1", "default", "orders", shard, "billing",
     32,        // maxRecords
-    5000,      // waitMs — a long poll; an empty array is an answer, not an error
+    5000,      // waitMs: a long poll; an empty array is an answer, not an error
   );
 
   for (const record of records) {
@@ -328,7 +327,7 @@ for (;;) {
 ```
 
 `record.attempts` counts deliveries **including this one**, so `1` is a first
-attempt and anything higher is a redelivery — worth branching on before doing
+attempt and anything higher is a redelivery. It is worth branching on before doing
 anything expensive or side-effecting:
 
 ```ts
@@ -339,7 +338,7 @@ if (record.attempts > 3) {
 ```
 
 **A group is bound to one shard.** Consuming a multi-shard stream means polling
-each shard's group — `streamShards` says how many there are. Only the shard's leader
+each shard's group; `streamShards` says how many there are. Only the shard's leader
 serves its group; the client follows the broker's redirect there, including
 after a rebalance moves the shard, so any broker address works.
 
@@ -384,13 +383,13 @@ need a durable broker that advertises `FEATURE_COUNTERS`.
 
 ## Cache watches
 
-What makes the cache a state-synchronisation primitive rather than a
-notification: resume by offset, and loss that is loud.
+Watches can resume by offset and report loss explicitly, which makes the cache
+usable for state synchronisation.
 
 ```ts
 const watch = await client.watchCache(
   "t1", "default", "sessions",
-  undefined,        // key — or a prefix, below
+  undefined,        // key, or a prefix (below)
   "room:42:",       // prefix
   undefined,        // start offset
   true,             // retained
@@ -399,7 +398,7 @@ const watch = await client.watchCache(
 const roster = new Map();
 try {
   // Retained values arrive first, and the count says exactly how many. 0n is a
-  // definite answer — the prefix is empty — not a silence to wait through.
+  // definite answer (the prefix is empty), not a silence to wait through.
   for (let i = 0n; i < watch.retainedCount; i++) {
     const { change } = await watch.recv();
     roster.set(change.key, change.value);
@@ -412,7 +411,7 @@ try {
     if (item.laggedResumeFrom !== null) {
       // Not an error: the watch did its job by saying so. Offsets on a filtered
       // watch are sparse, so loss cannot be inferred the way a stream
-      // subscriber infers it — this is the only signal.
+      // subscriber infers it. This is the only signal.
       return resumeFrom(item.laggedResumeFrom);
     }
     if (item.shardMoved !== null) {
@@ -430,7 +429,7 @@ try {
 }
 ```
 
-Three things there are load-bearing:
+Three things there matter:
 
 - **`retainedCount`** tells you the moment your state is complete.
 - **`value === null` means removed**, deliberately distinguishable from an empty
@@ -439,9 +438,8 @@ Three things there are load-bearing:
   gapless. `shardMoved` is only a notice: the watch follows its shard to the
   new owner and carries on, with no change repeated or skipped.
 
-`start` and `retained` are mutually exclusive — a resume already replays the
-state a retained start shortcuts, so asking for both is refused rather than
-resolved. A prefix watch reads **one shard**.
+`start` and `retained` are mutually exclusive. A resume already replays the
+state a retained start shortcuts, so asking for both is refused. A prefix watch reads **one shard**.
 
 ## Multi-shard streams
 
@@ -485,7 +483,7 @@ A single offset carried across shards would replay on every shard but one.
 
 :::caution[A shard that delivered nothing has no position]
 `positions()` only lists shards that handed something over. On resume, a shard
-not in the map starts wherever `start` says — the live tail by default — so
+not in the map starts wherever `start` says (the live tail by default), so
 records published to it while you were away are missed. Pass `"earliest"` as
 `start` alongside `resume` if that matters, or make sure every shard has
 reported before you checkpoint:
@@ -514,15 +512,15 @@ values are plain `number`s, exact up to `Number.MAX_SAFE_INTEGER`.
   ambiguous publish into one the broker recognises as a re-send and refuses to
   append twice. This binding does not wrap it yet.
 
-Marked in the conformance catalogue, so the binding reports it as unclaimed
-rather than passing over it in silence.
+It is marked in the conformance catalogue, so the binding reports it as
+unclaimed.
 
 ## Conformance
 
 TypeScript passes every required scenario in the
 [client conformance catalogue](/felix/clients/overview/#the-conformance-suite),
 and CI and the release pipeline are both gated on it. The suite runs against a
-real three-node cluster — a redirect needs a broker that does not own the
+real three-node cluster: a redirect needs a broker that does not own the
 shard, and one scenario kills the broker its client is connected to.
 
 ```bash

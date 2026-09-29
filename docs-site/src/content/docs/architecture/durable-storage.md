@@ -56,8 +56,8 @@ flowchart LR
 ```
 
 Nothing downstream of the log observes a record before it is durable: fanout
-and the acknowledgement both hang off the flush, not off the append. Ordering
-is the whole design, so the same path is worth spelling out step by step:
+and the acknowledgement both wait for the flush, not the append. The same path,
+step by step:
 
 ```mermaid
 sequenceDiagram
@@ -76,7 +76,7 @@ sequenceDiagram
         L->>D: fsync (shared with concurrent appends)
         D-->>L: durable
     else None / Periodic
-        Note over L: returns immediately —<br/>a background timer flushes later
+        Note over L: returns immediately;<br/>a background timer flushes later
     end
 
     L-->>B: offsets assigned
@@ -84,11 +84,11 @@ sequenceDiagram
     B-->>C: ack
 ```
 
-The append comes **first**, on purpose. A record delivered to subscribers and
+The append comes first on purpose. A record delivered to subscribers and
 acknowledged to the publisher but lost in a crash is a silent hole in a log that
 consumers believe they have read. Writing first turns a storage failure into a
-failed publish, which the publisher can retry — and it means a storage error can
-never produce a success acknowledgement.
+failed publish, which the publisher can retry. A storage error can never produce
+a success acknowledgement.
 
 ## Durability policies
 
@@ -110,11 +110,11 @@ append path while still bounding loss.
 graph TB
     subgraph shard["one directory per stream shard"]
         direction TB
-        S0["00…000.log — sealed<br/><small>offsets 0–999</small>"]
+        S0["00…000.log (sealed)<br/><small>offsets 0–999</small>"]
         I0["00…000.index"]
-        S1["00…001.log — sealed<br/><small>offsets 1000–1999</small>"]
+        S1["00…001.log (sealed)<br/><small>offsets 1000–1999</small>"]
         I1["00…001.index"]
-        S2["00…002.log — <b>active</b><br/><small>offsets 2000–…</small>"]
+        S2["00…002.log (<b>active</b>)<br/><small>offsets 2000–…</small>"]
         I2["00…002.index"]
     end
     S0 -.-> I0
@@ -135,8 +135,8 @@ graph TB
 
 Each record carries its own length, logical offset, timestamp and a CRC-32 over
 its header and payload. The length comes first and is covered by the checksum, so
-a reader can step to the next record without decoding the current one's payload —
-which is what makes index rebuilds and recovery scans cheap.
+a reader can step to the next record without decoding the current one's payload.
+That keeps index rebuilds and recovery scans cheap.
 
 Index files are pure accelerators. An entry is emitted for a segment's first
 record and thereafter every `index_spacing_bytes` (4 KiB by default), so the
@@ -145,8 +145,8 @@ real records is what actually answers the read.
 
 That is also why they carry no checksums and are never trusted. An entry is only
 ever a starting position for a scan that re-validates what it finds, so a
-missing, short, or stale index costs a rebuild rather than a wrong answer — and
-it is why a freshly written index can safely skip its fsync.
+missing, short, or stale index costs a rebuild rather than a wrong answer. It is
+also why a freshly written index can safely skip its fsync.
 
 A new replication leader also writes a generation-start record into the log
 (see the [format specification](/felix/architecture/storage-format/)). It takes
@@ -166,12 +166,12 @@ always one `write` call and a batch never spans two segments. Sealing syncs the
 data and the index, then trims the preallocated tail so the file on disk is
 exactly its contents.
 
-Retention deletes **whole sealed segments, from the head only** — never a
-partial segment and never the active one, so a log always retains at least what
+Retention deletes whole sealed segments from the head only. It never deletes a
+partial segment or the active one, so a log always retains at least what
 was written since its last roll. `base_offset` then advances, and a read below
-it is `Trimmed { requested, oldest }` rather than an empty answer. That
-distinction is the point of the feature: it lets a resuming subscriber tell
-"those records existed and are gone" from "nothing here yet".
+it is `Trimmed { requested, oldest }` rather than an empty answer, so a
+resuming subscriber can tell "those records existed and are gone" from
+"nothing here yet".
 
 The segments go oldest first, with a directory sync after each unlink, so a
 power loss partway through a sweep leaves a longer log rather than a gap that
@@ -195,19 +195,18 @@ The full byte layout, versioning rules, and corruption verdicts are in the
 
 ## Resuming a subscription
 
-Durability is only half of a resume: records surviving a restart is worthless if
-a reconnecting client cannot say where it got to. A subscriber asks for a start
-position — `latest`, `earliest`, or an exact offset — and every delivered event
+Records that survive a restart are only useful if a reconnecting client can say
+where it got to. A subscriber asks for a start position (`latest`, `earliest`,
+or an exact offset), and every delivered event
 carries its offset, so the client has something to checkpoint.
 
-The hard part is not reading history. It is **joining history to live delivery
-without losing a record in between**, and the ordering that achieves it is not
-the obvious one.
+The hard part is joining history to live delivery without losing a record in
+between, and the ordering that does it is not the obvious one.
 
 ![Two orderings for joining stored history to live delivery. Reading history first and registering the live subscription afterwards leaves a window with no subscriber in it, so a publish landing there is never delivered. Registering first, clamped to the oldest offset the replay ring holds, captures that publish; the older range is only then read from disk, and it is closed because nothing can grow it.](/felix/diagrams/subscribe-join.svg)
 
-Registering first pins the live edge. Everything below it is a **closed range** —
-nothing can grow it — so the disk read that follows cannot race a publish. Do it
+Registering first pins the live edge. Everything below it is a closed range that
+nothing can grow, so the disk read that follows cannot race a publish. Do it
 the other way around and the window between the two steps has nobody listening
 in it.
 
@@ -248,8 +247,8 @@ Four properties hold:
 
 Startup cost is bounded: the active segment is always scanned in full, sealed
 segments only past their last index entry. Every read verifies the checksum of
-every record it returns, so bit rot in cold data is still caught — when it is
-read rather than at boot. Set `FELIX_DURABLE_VERIFY_ALL_ON_OPEN=true` to trade
+every record it returns, so bit rot in cold data is still caught, though when it
+is read rather than at boot. Set `FELIX_DURABLE_VERIFY_ALL_ON_OPEN=true` to trade
 startup time for eager detection.
 
 Anything that deletes segments does it one synced unlink at a time, in an
@@ -265,7 +264,7 @@ a producer writes carries its producer id and sequence, and a broker derives
 every producer's place from its own log before the shard takes a write: from
 the snapshot saved at the last rollover, plus the active segment the scan above
 already read. That is also why a promoted replica or a move's destination
-answers a producer's re-send — it derives the same state from the records it
+answers a producer's re-send: it derives the same state from the records it
 was shipped.
 
 ## What durability costs
@@ -282,21 +281,19 @@ Measured on an Apple Mac Studio (M4 Max, 16 CPUs), APFS on internal NVMe,
 | `on_commit` | 1 | 64 | 14,387 | 4.07ms | 9.2ms |
 | `on_commit` | 16 | 64 | 185,905 | 4.96ms | 9.2ms |
 
-Two things to read out of this:
-
-**`on_commit` latency is a hardware constant.** p50 is ~4ms in every row — one
-APFS device flush. No software makes a single durable commit faster than the
+`on_commit` latency is a hardware constant. p50 is ~4ms in every row, which is
+one APFS device flush. No software makes a single durable commit faster than the
 device.
 
-**Throughput scales with concurrency anyway, because of group commit.** An
+Throughput still scales with concurrency because of group commit. An
 `fsync` flushes the whole file, so one flush can satisfy every append waiting on
 it. 253 → 14,387 records/second from concurrency 1 → 64 is a 57× gain from the
 same code path, and batching on top reaches 185,905.
 
 ![Group commit: four concurrent appends queue in the page cache, a single fsync runs, and all four are acknowledged together](/felix/diagrams/group-commit.svg)
 
-The lock protocol behind that picture — who flushes, and what the others find
-when they wake:
+The lock protocol behind that picture (who flushes, and what the others find
+when they wake):
 
 ```mermaid
 sequenceDiagram
@@ -354,8 +351,8 @@ FELIX_DURABLE_FSYNC_MODE=on_commit \
 | `felix_storage_recovery_truncated_bytes` | bytes discarded from a torn tail |
 | `felix_storage_producer_state_rebuilt_total` | opens or truncations that read sealed segments to rebuild idempotent producers' state, because the snapshot was missing or out of date |
 
-The first two together answer the question that actually comes up: *is durability
-the bottleneck?* If sync dominates append, the fsync policy is the cost.
+The first two together tell you whether durability is the bottleneck. If sync
+dominates append, the fsync policy is the cost.
 
 ## See it work
 
@@ -365,8 +362,8 @@ cargo run --release -p felix-broker-service --bin durable-restart-demo
 
 Publishes to one durable and one non-durable stream, drops the broker with no
 graceful shutdown, boots a second broker over the same directory, and reads both
-back. It verifies its own claims rather than narrating them, so a regression
-makes it fail rather than print the wrong numbers.
+back. It checks its own results, so a regression makes it fail instead of
+printing wrong numbers.
 
 ## Limits today
 
@@ -377,8 +374,8 @@ makes it fail rather than print the wrong numbers.
 - **No tiered storage.** `TieredStore` and its companions are declared traits
   with no implementation. There is no hot/cold split and no cold-tier read path;
   every read comes from local segments. Sealed segments are immutable and carry
-  a whole-file checksum, and reads already route per segment — so a cold tier
-  slots in at that seam when it is built.
+  a whole-file checksum, and reads already route per segment, so a cold tier
+  can slot in at that seam when it is built.
 - **Single node.** This page describes one broker's storage; replication
   across brokers is layered on top of it, and `seal`'s checksum and
   `read_range`'s bounded paging exist to serve that.

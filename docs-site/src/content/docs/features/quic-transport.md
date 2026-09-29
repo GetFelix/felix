@@ -14,7 +14,7 @@ what that buys Felix, how Felix uses QUIC's streams, and which knobs matter.
 Two properties do most of the work.
 
 **No head-of-line blocking between streams.** TCP delivers one ordered byte
-stream, so when a packet is lost, everything behind it waits — even bytes that
+stream, so when a packet is lost, everything behind it waits, even bytes that
 belong to unrelated traffic and have already arrived. QUIC orders each stream
 independently: a lost packet stalls only the stream whose data it carried.
 
@@ -22,15 +22,15 @@ independently: a lost packet stalls only the stream whose data it carried.
 
 Nothing was lost for streams 1 and 3 in either case. Under TCP their bytes had
 already arrived and simply could not be handed over, because the transport has
-no way to say which bytes belong to which stream. That is the difference the
-whole comparison rests on — and it is why one Felix connection can carry many
+no way to say which bytes belong to which stream. This is why one Felix
+connection can carry many
 subscriptions without a retransmission on one delaying the others.
 
-**Encryption and the handshake are one thing.** A new QUIC connection is ready
+**Encryption and the handshake are combined.** A new QUIC connection is ready
 in one round trip, versus two or three for TCP plus TLS, and there is no
-unencrypted mode to misconfigure. In practice this matters less than it
-sounds for Felix, because clients pool and reuse connections — the hot path
-never pays connection setup at all.
+unencrypted mode to misconfigure. This matters less for Felix than it
+sounds, because clients pool and reuse connections, so the hot path never pays
+connection setup.
 
 QUIC also gives Felix per-stream *and* per-connection flow control (the
 backpressure story below), and connection IDs that survive an IP change.
@@ -44,11 +44,11 @@ Felix does not currently do anything special with connection migration.
   authenticates once on the stream, then multiplexes requests down it.
 - *Cache streams*: `cache_get`/`cache_put` requests tagged with a
   `request_id`, several in flight per stream, answered on the same stream.
-  Reusing streams this way is what keeps cache tail latency flat under
-  concurrency — no per-request stream setup.
+  Reusing streams avoids per-request stream setup, which keeps cache tail
+  latency flat under concurrency.
 
 **Unidirectional streams** carry one-way event delivery. After a subscribe,
-the broker opens a fresh uni stream to the client and sends events down it —
+the broker opens a fresh uni stream to the client and sends events down it,
 one stream per subscription, so each subscription gets its own flow-control
 window and its own backpressure. A slow subscription fills its own window; it
 cannot touch another subscription's.
@@ -108,7 +108,7 @@ for isolation.
 Windows bound how much data may be in flight, per connection and per stream.
 Bigger windows favor throughput (more in flight); smaller ones bound memory
 and keep latency predictable. They are set as client config fields or
-environment variables — `FELIX_EVENT_CONN_RECV_WINDOW`,
+environment variables: `FELIX_EVENT_CONN_RECV_WINDOW`,
 `FELIX_EVENT_STREAM_RECV_WINDOW`, `FELIX_EVENT_SEND_WINDOW`, and the
 `FELIX_CACHE_*` equivalents. The full list, with defaults, is in the
 [environment variable reference](/felix/reference/environment-variables/).
@@ -122,10 +122,10 @@ memory you are willing to spend on in-flight data.
 Felix uses quinn's default congestion controller, **CUBIC** (RFC 8312),
 loss-based and safe on shared networks. Two Felix-level knobs sit on top:
 
-- `FELIX_INITIAL_CWND` — optional initial-window override for trusted
+- `FELIX_INITIAL_CWND`: optional initial-window override for trusted
   low-loss paths (skips the slow-start ramp). Measured workloads did not
   benefit, so the RFC default stands.
-- **ACK frequency** — between quinn peers Felix negotiates the QUIC
+- ACK frequency: between quinn peers Felix negotiates the QUIC
   ACK-frequency extension: 2 ms max ACK delay (instead of 25 ms) and an ACK
   at most every 20 ack-eliciting packets (instead of every other). Delayed
   ACKs stall window-limited senders, and every reverse-path ACK costs a
@@ -133,10 +133,10 @@ loss-based and safe on shared networks. Two Felix-level knobs sit on top:
   throughput. Override with `FELIX_ACK_ELICITING_THRESHOLD`, or disable the
   extension with `FELIX_ACK_FREQ_DISABLE=1`.
 
-Just as important as the algorithm is *where the transport runs*: quinn's
+Where the transport runs matters as much as the algorithm: quinn's
 driver tasks execute on dedicated single-threaded I/O runtimes
 (`FELIX_IO_RUNTIME_THREADS`), isolated from application tasks, because their
-scheduler re-poll latency — not congestion control — was the measured
+scheduler re-poll latency, not congestion control, was the measured
 throughput ceiling. See
 [Concurrency internals](/felix/development/internals-concurrency/#the-quic-io-runtime).
 
@@ -157,7 +157,7 @@ is open and the broker is bound where you think it is.
 **Certificate validation failure** (`UnknownIssuer`). The client verifies the
 broker's certificate against the platform trust store by default
 (`quinn::ClientConfig::with_platform_verifier()`). A self-signed development
-certificate needs its CA added to the client's root store — the demos and the
+certificate needs its CA added to the client's root store; the demos and the
 cluster harness show how.
 
 **A stream blocked on flow control.** The receiver is not draining. For a
@@ -170,5 +170,4 @@ flow control is the constraint, and zero rules it out.
 
 Felix does not use QUIC's unreliable datagrams, multipath, or 0-RTT
 resumption today, and does not act on connection migration. Nothing in the
-design forecloses them; they are simply not built, and this page only
-describes what is.
+design rules them out; they are not built yet.

@@ -2,11 +2,7 @@
 title: "Delivery Semantics and Consistency Model"
 ---
 
-The behavioral contract: exactly what Felix promises about delivery, ordering, durability, and consistency — and, just as deliberately, what it does not. Applications should rely on what is written here and nothing stronger.
-
-## Philosophy: Explicit Over Implicit
-
-Felix makes trade-offs explicit rather than hiding them behind ambiguous guarantees. Every semantic choice has observable behavior that can be tested and reasoned about.
+What Felix promises about delivery, ordering, durability, and consistency, and what it does not. Applications should rely on what is written here and nothing stronger.
 
 :::note[What is built and what is not]
 This page describes behaviour that exists and behaviour that is planned. Where
@@ -48,7 +44,7 @@ Messages can be lost when:
 - Subscriber falls behind buffer capacity
 - Network partition between broker and subscriber
 - Subscriber disconnects without draining buffer
-- Broker restarts — for **ephemeral** streams. A stream registered with
+- Broker restarts, for **ephemeral** streams. A stream registered with
   `durable: true` persists each record before acknowledging it, and replays it
   after a restart; see [Durable Storage](/felix/architecture/durable-storage/).
 :::
@@ -67,7 +63,7 @@ while let Some(event) = subscription.next_event().await? {
 
 ### At-least-once, and why there is no third guarantee
 
-At-least-once is implemented, two ways, and both are described above: replay a
+At-least-once is implemented in two ways, both described above: replay a
 durable stream from a checkpointed offset, or consume through a **consumer
 group**, which requires an acknowledgement per record, redelivers anything
 unanswered once its visibility timeout lapses, and dead-letters a record that has
@@ -84,9 +80,9 @@ re-send is answered the same way after a failover, a planned move or a restart;
 on an in-memory stream they last as long as the leader. It does not make delivery
 exactly-once: a consumer can still see a record twice on redelivery, and
 end-to-end exactly-once would also need transactional coordination across the
-log and the consumer's own state, and deduplication on receive — which has to
-live in the application regardless, because the application is the only thing
-that knows what makes two records the same. Deduplicate there, keyed on
+log and the consumer's own state, and deduplication on receive. Deduplication
+has to live in the application regardless, because only the application knows
+what makes two records the same. Deduplicate there, keyed on
 something the record carries.
 
 :::caution[Three fields on a stream are declared and not enforced]
@@ -101,13 +97,13 @@ or a consumer group.
 
 ### Consistency: how many brokers must hold it
 
-A durable stream is replicated to a set of brokers — one leader and its
+A durable stream is replicated to a set of brokers: one leader and its
 replicas. `consistency` on the stream decides **how many of them must hold a
 record before the publisher is told it is safe.**
 
 ![The same publish under two consistency levels. Under Leader, the shard's leader writes the record durably and acknowledges immediately; the replicas receive their copies afterwards, and the acknowledgement did not wait for them. Under Quorum, the leader writes durably, ships the record to both replicas, and acknowledges only once a majority of the replica set holds it, so the acknowledgement arrives later. A bar beneath each row shows the time until the client is told, and the Quorum bar is more than twice as long.](/felix/diagrams/quorum-ack.svg)
 
-**`Leader`** — the default. The leader writes the record to its own log,
+**`Leader`** is the default. The leader writes the record to its own log,
 durably, and answers. Replication still happens; the acknowledgement simply
 does not wait for it. One round trip.
 
@@ -120,12 +116,12 @@ comes back as `shard_unavailable`, and a loss after an ack is counted in
 `felix_broker_acked_publishes_dropped_total`. For an acknowledgement that
 means the record is on disk, set `ack_on_commit: true` or use `Quorum`.
 
-**`Quorum`** — the leader writes durably, ships the record to its replicas
+Under **`Quorum`**, the leader writes durably, ships the record to its replicas
 concurrently, and answers once a **majority of the replica set, counting
 itself**, holds it. On a set of three that is two, so one unreachable replica
-costs nothing — the leader is not waiting for all of them, only for enough.
+costs nothing. The leader waits for enough of them, not all.
 
-Note what `Quorum` does *not* change. The record is written the same way, to the
+`Quorum` does *not* change how the record is stored. The record is written the same way, to the
 same log, with the same fsync policy. What changes is what the acknowledgement
 **means**:
 
@@ -168,7 +164,7 @@ was told succeeded.
 that cannot reach a majority **stops accepting writes** rather than accepting
 ones it might not keep. A publish with no reachable majority is refused, and a
 refusal means *"this cannot be vouched for"* rather than *"this did not
-happen"* — the record may well have landed on the leader. Retry through an
+happen"*: the record may well have landed on the leader. Retry through an
 idempotent producer, which re-sends under the same sequence and cannot land
 it twice.
 
@@ -184,14 +180,14 @@ promote a replica, because promoting one would open the shard **without** that
 record and no reader could tell. The shard is left unavailable until the old
 leader returns with its disk.
 
-So the trade is not really safety against latency. Both refuse to lose a
+So the trade is mostly about timing, not safety. Both refuse to lose a
 record acknowledged after it was written (for `Leader`, with `ack_on_commit`
-on); they differ in **when you learn there is a problem** —
+on); they differ in **when you learn there is a problem**:
 `Quorum` at publish time, while you still hold the record, or `Leader` at
 failover time, when the only copy is on a broker that is gone.
 
-[`task cluster:consistency`](/felix/demos/cluster-consistency/) runs exactly
-that: the same fault put to both, on a real three-node cluster.
+[`task cluster:consistency`](/felix/demos/cluster-consistency/) runs
+this: the same fault put to both, on a real three-node cluster.
 
 **What a reader sees of a `Quorum` stream.** A consumer group and a Kafka
 consumer read only up to the shard's quorum mark, the committed high-water
@@ -504,7 +500,7 @@ client.cache_put("tenant2", "prod", "sessions", "user123", data, None).await?;
 
 ### Eviction Policy
 
-**Today**: the in-memory cache evicts best-effort under pressure. The log-backed cache does not evict — it compacts, reclaiming superseded and expired records.
+**Today**: the in-memory cache evicts best-effort under pressure. The log-backed cache does not evict; it compacts, reclaiming superseded and expired records.
 
 - No guaranteed LRU or LFU policy
 - Eviction is opportunistic
@@ -582,8 +578,8 @@ sequenceDiagram
 Enforced. Tenant-scoped tokens are verified at the broker, and publish,
 subscribe and cache operations each check a permission before doing any work.
 
-A **forwarded** publish is authorized twice — at the broker the client reached
-and again at the shard's owner — so routing a request through the cluster does
+A **forwarded** publish is authorized twice, at the broker the client reached
+and again at the shard's owner, so routing a request through the cluster does
 not launder the credential it arrived with.
 
 **Enforcement points**:
@@ -768,11 +764,11 @@ assert!(fast_count >= expected_count);
 | **Pub/Sub delivery** | At-most-once ephemeral, at-least-once durable; idempotent producers land a re-sent publish once | Exactly-once delivery |
 | **Consumer groups** | At-least-once, bounded redelivery, dead letters | Shard assignment across a group's consumers |
 | **Message ordering** | Per shard | Configurable cross-shard |
-| **Subscriber isolation** | Yes | — |
+| **Subscriber isolation** | Yes | None |
 | **Cache** | Routed to one owner, replicated; `Leader` or `Quorum` per cache, covering puts, deletes and counter adds; linearizable `Quorum` reads with `lease_free_reads` | Conditional put, multi-key transactions |
 | **TTL precision** | Lazy on access, against an absolute expiry | Sweeping expiry |
-| **Durability** | Per stream: ephemeral, or `Leader` or `Quorum` acknowledgement | — |
-| **Authorization** | Tenant-scoped tokens, RBAC per resource, OIDC exchange | — |
+| **Durability** | Per stream: ephemeral, or `Leader` or `Quorum` acknowledgement | None |
+| **Authorization** | Tenant-scoped tokens, RBAC per resource, OIDC exchange | None |
 | **Quotas** | Per-tenant publish rate, per broker | Per-namespace; subscriptions, cache and storage; set in the control plane |
 | **Multi-key operations** | None | Transactions |
 
@@ -793,8 +789,8 @@ assert!(fast_count >= expected_count);
 
 **Exactly-once delivery is not implemented.** An idempotent producer keeps a
 publish retry from duplicating the record; a consumer's redelivery is still
-at-least-once. If duplicates are unacceptable on the consuming side — billing,
-accounting — the deduplication has to be in the application, keyed on
+at-least-once. If duplicates are unacceptable on the consuming side (billing,
+accounting), the deduplication has to be in the application, keyed on
 something the record carries.
 
 ### Cache Usage Patterns
@@ -810,7 +806,7 @@ something the record carries.
 - Large values (> 1 MB) better served by object storage
 
 :::tip[Design for Semantics]
-Design your application for the semantics Felix provides, not the semantics you
-wish it had. Where a guarantee is missing, the honest options are to layer it in
-the application or to choose a different tool — not to assume it will arrive.
+Design your application for the semantics Felix provides. Where a guarantee is
+missing, build it in the application or choose a different tool; do not assume
+it will arrive.
 :::

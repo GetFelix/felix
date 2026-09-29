@@ -5,9 +5,9 @@ title: "Case Study: Two Throughput Defects"
 Felix's sustained loopback throughput was once capped at about **73 MB/s** of
 payload regardless of configuration, and after that cap was lifted, roughly
 **one benchmark run in three** still landed 5–6× below the rest on identical
-settings. This page documents both defects: what they looked like, how they
-were diagnosed, what fixed them, and — most importantly — the investigative
-method, which generalizes better than either fix does.
+settings. This page covers both defects: what they looked like, how they
+were diagnosed, and what fixed them. It also covers the investigative
+method, which carries over to other problems better than either fix does.
 
 The mechanisms and the code that implements them are described in
 [Concurrency internals](/felix/development/internals-concurrency/#the-quic-io-runtime).
@@ -17,8 +17,8 @@ Current numbers are in [Benchmarks](/felix/features/benchmarks/).
 Every measurement here is macOS on loopback, and the first defect turns out
 to be a macOS pathology: the same benchmark on Linux sustains ~643 MB/s at
 the *pre-fix* baseline, above what macOS reaches with all of these fixes
-applied. The dedicated I/O runtime pool is therefore enabled on macOS only —
-on Linux it measures slower. The second defect (the MTU black-hole collapse)
+applied. The dedicated I/O runtime pool is therefore enabled on macOS only,
+because on Linux it measures slower. The second defect (the MTU black-hole collapse)
 and the measurement lessons are platform-neutral.
 :::
 
@@ -26,7 +26,7 @@ and the measurement lessons are platform-neutral.
 
 ### The symptom
 
-The ceiling was **per-byte**, and nothing else:
+The ceiling depended on bytes and nothing else:
 
 | Payload | Messages/s | Payload rate |
 |---|---:|---:|
@@ -37,10 +37,10 @@ The ceiling was **per-byte**, and nothing else:
 | 32 KiB | 2,185 | 71.6 MB/s |
 
 A 16× spread in payload size and a 16× spread in message rate produced the
-same byte rate. That single result eliminates every per-message, per-batch,
-and per-frame explanation at once — encode cost, channel operations, publisher
+same byte rate. That result rules out every per-message, per-batch and
+per-frame explanation at once: encode cost, channel operations, publisher
 round trips, framing overhead. Any of those would hold *messages* per second
-constant, not *bytes*.
+constant, and here *bytes* per second were constant.
 
 Meanwhile every individual stage measured fast: decode 27 µs, append 1 µs,
 QUIC write 2 µs. Twelve of sixteen cores sat idle. No queue, lock, or
@@ -48,14 +48,13 @@ flow-control window was ever saturated, and the QUIC layer reported zero
 packet loss, zero congestion events, and zero blocked frames in either
 direction.
 
-That combination — everything fast, nothing saturated, rate fixed per byte —
-is the signature of a **latency-bound dependency chain**, not a resource
-limit.
+Every stage fast, nothing saturated and the rate fixed per byte: that points
+to a latency-bound dependency chain rather than a resource limit.
 
 ### What it wasn't
 
-Fifteen hypotheses were measured and rejected before the real one was found.
-They are recorded because most are plausible enough to be proposed again:
+Fifteen hypotheses were measured and rejected before the real cause was found.
+Most are plausible enough that someone will propose them again, so here they are:
 
 | Hypothesis | Verdict |
 |---|---|
@@ -72,13 +71,13 @@ They are recorded because most are plausible enough to be proposed again:
 | Publisher connection concurrency | flat from 1 to 16 connections |
 | Per-event and per-batch client costs | ruled out by the byte-rate invariance above |
 
-Five structural refactors were tested against this ceiling. None moved it,
-because none of them was the problem.
+Five structural refactors were also tested against this ceiling. None of them
+moved it.
 
 ### The mechanism
 
-Quinn's driver tasks — the endpoint receive loop and each connection's
-transmit/ACK/timer loop — do a **bounded slice of work per poll** and then
+Quinn's driver tasks (the endpoint receive loop and each connection's
+transmit/ACK/timer loop) do a bounded slice of work per poll and then
 reschedule themselves. Sustained throughput is therefore:
 
 ```
@@ -86,11 +85,10 @@ bounded work per poll ÷ scheduler re-poll latency
 ```
 
 On a runtime shared with ~50 application tasks, that re-poll latency grows
-with load. And because wakeups scale with **datagram count**, and datagram
-count is bytes ÷ MTU, the cost lands per byte — which is exactly why the
-ceiling looked like a payload-size problem rather than a scheduling one.
-
-Felix was, in effect, clocked by its own scheduler.
+with load. Wakeups scale with datagram count, and datagram count is
+bytes ÷ MTU, so the cost lands per byte. That is why the ceiling looked like
+a payload-size problem rather than a scheduling one. In effect, Felix was
+clocked by its own scheduler.
 
 ### The fix
 
@@ -101,8 +99,8 @@ Three changes, all in Felix, using only official quinn APIs:
    role, so a driver's self-wake is re-polled immediately instead of queueing
    behind application work or migrating cores.
 2. **Pump colocation.** The two tasks that trade a wakeup with the transport
-   per datagram or per write — the client's subscription reader and the
-   broker's per-connection delivery writer — run on the same thread as their
+   per datagram or per write (the client's subscription reader and the
+   broker's per-connection delivery writer) run on the same thread as their
    connection's drivers, turning a cross-core kernel round trip into a task
    switch.
 3. **ACK-frequency tuning.** Max ACK delay 25 ms → 2 ms, and one ACK per 20
@@ -115,8 +113,8 @@ Three changes, all in Felix, using only official quinn APIs:
 | 1 KiB × batch 64, fanout 1 | 75 MB/s | **~461 MB/s** |
 | 16 KiB × batch 64, fanout 1 | 72 MB/s | **~503 MB/s** |
 
-The latency profile was unaffected by design — these changes alter transport
-acking and task placement, not request round trips.
+Latency was unaffected. These changes alter transport acking and task
+placement and leave request round trips alone.
 
 ## Defect 2: one run in three, 5–6× slower
 
@@ -128,26 +126,26 @@ at 20–24 K. The slow mode was selected near startup, was sticky for the life
 of the process, and became much more likely under background CPU load.
 
 Everything about it pointed at scheduling. It appeared during scheduling
-work; a real scheduling defect had just been fixed in the same area
-(endpoint-to-runtime assignment depended on creation history, making every
-second in-process benchmark case slow — deterministic alternation that had
-masqueraded as randomness); and the slow mode's fingerprint was **5.7× more
-system time and 5.7× more context switches per message** at the same CPU
-utilization — one kernel round trip per item instead of one per batch, the
-textbook shape of a wakeup lockstep.
+work. A real scheduling defect had just been fixed in the same area:
+endpoint-to-runtime assignment depended on creation history, which made every
+second in-process benchmark case slow, a deterministic alternation that had
+looked random. And the slow mode used 5.7× more system time and 5.7× more
+context switches per message at the same CPU utilization. That is one kernel
+round trip per item instead of one per batch, the usual shape of a wakeup
+lockstep.
 
 A scheduling-based theory was tested directly (keeping the I/O threads
 runnable through the inter-datagram gap so cross-thread wakes become flag
 checks) and changed nothing: the slow-run rate was identical with and
-without it. A fix that does not move the failure rate is a diagnosis
-falsified — the theory was discarded and the investigation went back to
+without it. A fix that does not move the failure rate falsifies the
+diagnosis, so the theory was dropped and the investigation went back to
 observation.
 
 ### The diagnosis
 
 Logging per-connection `quinn::ConnectionStats` on both ends
 (`FELIX_CONN_STATS_MS`) and comparing one fast against one slow run found the
-difference in a single field on a single connection — the publish connection
+difference in a single field on a single connection, the publish connection
 carrying the offered load:
 
 | | Fast run | Slow run |
@@ -168,8 +166,8 @@ t≥0.75s   mtu=1200    pinned for the rest of the run
 ```
 
 At MTU 1200 the same byte stream costs ~13.6× the datagrams, and each
-datagram carries a syscall and a wakeup chain — which is precisely the 5.7×
-system-time-per-message fingerprint that had read as a scheduling defect.
+datagram carries a syscall and a wakeup chain. That accounts for the 5.7×
+system time per message that had looked like a scheduling defect.
 An earlier check ("MTU reaches 16354 in both modes") had been performed on a
 *delivery* connection; the collapse hits the connection carrying the load.
 
@@ -177,24 +175,25 @@ An earlier check ("MTU reaches 16354 in both modes") had been performed on a
 
 Three interlocking behaviors, all in the QUIC layer:
 
-1. **The loss burst is congestion, not an MTU problem.** At high rate the
-   publish path keeps a multi-megabyte standing queue in the receiver's UDP
-   socket buffer, within a couple MB of its cap. A scheduling stall of a few
-   milliseconds on the draining side overflows it, and the kernel drops a
-   window of packets. Background CPU load makes stalls — and therefore the
-   collapse — more likely. If the startup ramp survives without a burst,
-   steady state is loss-free: hence bimodal and startup-selected.
+1. **The loss burst is congestion.** It has nothing to do with the MTU. At
+   high rate the publish path keeps a multi-megabyte standing queue in the
+   receiver's UDP socket buffer, within a couple MB of its cap. A scheduling
+   stall of a few milliseconds on the draining side overflows it, and the
+   kernel drops a window of packets. Background CPU load makes stalls, and so
+   the collapse, more likely. If the startup ramp gets through without a
+   burst, steady state is loss-free. That is why the runs were bimodal and
+   the mode was picked at startup.
 2. **Quinn's black-hole detector cannot tell the difference.** Every packet
-   in the burst is full-MTU — that is simply what a saturated sender's
-   traffic looks like — and "large packets vanish while small ones survive"
-   is exactly the signature the detector watches for. It declares an MTU
+   in the burst is full-MTU, because that is what a saturated sender's
+   traffic looks like, and "large packets vanish while small ones survive"
+   is the pattern the detector watches for. It declares an MTU
    black hole and resets the path MTU to `min_mtu` (1200 by default), with a
    60-second cooldown before discovery may run again.
 3. **Recovery is starved by the load itself.** Quinn sends MTU probes only
    when a transmit poll finds nothing else to send. A backlogged publisher
    never has an empty transmit buffer, so after a collapse no probe is ever
-   sent: the connection stays collapsed not for the 60-second cooldown but
-   for the life of the load.
+   sent. The connection stays collapsed for as long as the load lasts, well
+   past the 60-second cooldown.
 
 ```mermaid
 flowchart LR
@@ -220,19 +219,19 @@ flowchart LR
 
 ### The fix
 
-For loopback peers — the benchmark's topology, and the one path where a
-16 KiB datagram is guaranteed by the interface itself — connections now
+Loopback is the benchmark's topology and the one path where the interface
+itself guarantees a 16 KiB datagram. For loopback peers, connections now
 start at the loopback MTU *and* guarantee it, on both the connect and accept
 sides:
 
 - `initial_mtu = 16336` (fits IPv4/IPv6 headers within the 16 KiB loopback
   interface MTU), removing the discovery ramp;
-- `min_mtu = 16336` on macOS (**4096 on every other platform** — see below),
-  which is the part that matters: the black-hole verdict resets to `min_mtu`,
+- `min_mtu = 16336` on macOS (**4096 on every other platform**, see below).
+  This is the part that matters. The black-hole verdict resets to `min_mtu`,
   so with the floor at the real MTU there is nothing to collapse to, and a
   congestive loss burst is handled as ordinary congestion;
-- an initial congestion window scaled to the MTU per RFC 9002's formula —
-  quinn's default window is a flat 14,720 bytes, smaller than one 16 KiB
+- an initial congestion window scaled to the MTU per RFC 9002's formula.
+  Quinn's default window is a flat 14,720 bytes, smaller than one 16 KiB
   segment, which otherwise deadlocks the handshake outright.
 
 The guarantee is conditional on the socket buffers the OS actually granted
@@ -248,15 +247,15 @@ pinned for a minute.
 ### Why the guaranteed size is smaller off macOS
 
 Everything above was measured on macOS. Benchmarking Linux later showed the
-same guarantee stalling delivery completely there — zero events delivered,
-every sustained batch run — and the cause is a platform difference this fix
-had not accounted for.
+same guarantee stalling delivery completely there: zero events delivered on
+every sustained batch run. The cause is a platform difference this fix had
+not accounted for.
 
 Linux UDP GSO carries a whole `sendmsg` batch inside one IP datagram, so
 `MTU × segments` must stay under 65,535. quinn batches up to 10 datagrams,
 which makes 6,553 bytes the real ceiling. A guaranteed 16,336 needs 163,360
 bytes per batch, the kernel refuses it, and quinn only falls back to
-non-offloaded sends on `EIO`/`EINVAL` — so the rejection repeats on every
+non-offloaded sends on `EIO`/`EINVAL`, so the rejection repeats on every
 batch and the connection never recovers. macOS is immune because it has no
 GSO at all: one syscall per datagram, no aggregate, no ceiling.
 
@@ -264,11 +263,10 @@ The guaranteed size is therefore capped at **4,096 off macOS**, which holds
 margin even if quinn's batch size grows, and which measured fastest on Linux
 regardless (1.17 GB/s at 4 KiB × batch 64 × fanout 1).
 
-There is a sharper irony here. The black-hole "misdiagnosis" this whole
-section treats as a bug is, on Linux, the only thing that recovers a
-GSO-oversized connection: collapsing the MTU to 1200 makes the batch fit
-again. Guaranteeing `min_mtu` removed that escape hatch. The pin did not
-create the loss — it prevented the recovery.
+On Linux, the black-hole "misdiagnosis" this section treats as a bug is the
+only thing that recovers a GSO-oversized connection: collapsing the MTU to
+1200 makes the batch fit again. Guaranteeing `min_mtu` removed that escape
+hatch. The pin did not cause the loss; it prevented the recovery.
 
 ### The result
 
@@ -325,31 +323,31 @@ flowchart LR
 The benchmark harness now warns when a throughput run is undersized, and the
 matrix scales message counts per payload so this cannot silently return.
 
-**Build the honest baseline.** A minimal store-and-forward relay — the
-smallest thing doing the broker's job over two QUIC hops — reached 540 MB/s.
-That single number reframed everything: it proved the architecture was worth
-~7× what Felix was achieving, so the gap had to be in Felix's code rather
-than in QUIC, the extra hop, or the OS.
+**Build an honest baseline.** A minimal store-and-forward relay, the
+smallest thing that does the broker's job over two QUIC hops, reached
+540 MB/s. That showed the architecture could do about 7× what Felix was
+achieving, so the gap had to be in Felix's code rather than in QUIC, the
+extra hop, or the OS.
 
 **Let invariance do the eliminating.** The byte-rate invariance across a 16×
 payload range ruled out more hypotheses in one measurement than the
 preceding five refactors did.
 
-**Distrust a fix that arrives without a mechanism — and a mechanism whose
+**Distrust a fix that arrives without a mechanism, and a mechanism whose
 fix changes nothing.** Five topology changes were implemented and measured
-before anyone could explain why the first ceiling existed; all five were
+before anyone could explain why the first ceiling existed. All five were
 wasted. The second defect ran the same trap in reverse: a plausible
 scheduling theory survived until its direct fix failed to move the failure
 rate, which falsified it in one experiment.
 
-**A bimodal distribution is a state machine, not noise.** Two clean modes
-with nothing in between means something discrete latches early and persists.
-The productive question is *what state distinguishes the modes* — here,
-one field (`current_mtu`) on one connection — not *why is the benchmark
-noisy*. Averaging across modes, or publishing medians without investigating
-the spread, would have reported the defect as the product's performance.
+**Treat a bimodal distribution as a state machine.** Two clean modes with
+nothing in between means something discrete latches early and persists. The
+useful question is *what state distinguishes the modes* (here, one field,
+`current_mtu`, on one connection) rather than *why is the benchmark noisy*.
+Averaging across modes, or publishing medians without investigating the
+spread, would have reported the defect as the product's performance.
 
-**Inspect the entity carrying the load.** The MTU had been checked and found
-healthy — on a delivery connection. Per-connection statistics on *every*
-connection, kept until the anomaly is attributable to one of them, is what
-turned four rounds of dead ends into a one-line diagnosis.
+**Inspect the connection carrying the load.** The MTU had been checked and
+found healthy, but on a delivery connection. Collecting statistics on
+*every* connection until the anomaly could be pinned to one of them turned
+four rounds of dead ends into a one-line diagnosis.

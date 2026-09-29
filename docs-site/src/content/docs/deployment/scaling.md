@@ -85,8 +85,8 @@ credential the others use, and `FELIX_NODE_ZONE` if the cluster uses zones. Once
 the rebalance above starts on the next placement pass
 (`FELIX_SHARD_RECONCILE_INTERVAL_MS`, 5 s by default).
 
-Nothing else is required. A cluster that came up unevenly — every shard on
-the first broker to register, say — corrects itself the same way.
+Nothing else is required. A cluster that came up unevenly, say with every
+shard on the first broker to register, corrects itself the same way.
 
 ## Draining a broker
 
@@ -132,8 +132,8 @@ once it is back.
 
 ## Removing a broker
 
-Drain it, then wait until no assignment names it at all — not as leader, and
-not as a follower either. Leading nothing is not enough: the drain also
+Drain it, then wait until no assignment names it at all, as leader or as
+follower. Leading nothing is not enough: the drain also
 replaces the broker wherever it holds a copy for another leader, and that
 only happens while it is `draining`. Once it has left, a follower slot still
 naming it stays as it is, and that shard runs one replica short. The handoff a
@@ -215,7 +215,7 @@ Metrics on the destination broker:
 | Metric | Meaning |
 | --- | --- |
 | `felix_broker_shard_move_seconds` | histogram: from the broker first seeing itself named as the destination to serving the shard |
-| `felix_broker_shard_switchover_seconds` | histogram: from the fence to the destination serving the shard — the window clients see |
+| `felix_broker_shard_switchover_seconds` | histogram: from the fence to the destination serving the shard, the window clients see |
 
 Metrics on any broker a publish reaches during the switch-over:
 

@@ -4,9 +4,9 @@ title: "Publish/Subscribe"
 
 The model is small: publishers send to a **stream**, every subscriber to that
 stream receives what lands on it, and streams are scoped by
-`(tenant, namespace, stream)`. What this page is really about is the two
-properties the implementation works hardest for — cheap fanout, and the
-guarantee that one slow subscriber cannot hurt anyone else.
+`(tenant, namespace, stream)`. Most of this page covers two properties the
+implementation works hard for: cheap fanout, and one slow subscriber not
+slowing anyone else down.
 
 ```mermaid
 graph LR
@@ -72,15 +72,15 @@ publisher
 Batching amortizes per-request overhead (framing, syscalls, one ack for the
 whole batch), and it is the single biggest throughput lever on the publish
 path. Measured batch throughput is in
-[Benchmarks](/felix/features/benchmarks/) — and note that a batched run
-measures a throughput profile, not request latency.
+[Benchmarks](/felix/features/benchmarks/). A batched run measures a
+throughput profile, not request latency.
 
 ### Acked publishes are pipelined
 
 Acked publishes (`AckMode::PerMessage` / `AckMode::PerBatch`) do not stall
 the stream for the broker's round trip. The client writes acked requests back
 to back and resolves each caller's future as the matching ack arrives, in
-order — so concurrent publishers on the same stream share the stream's full
+order. Concurrent publishers on the same stream share the stream's full
 bandwidth instead of taking turns paying a round trip each. In-flight acked
 data is bounded by the publisher's byte budget (`publish_inflight_bytes`,
 4 MiB by default): a request holds its budget until the broker's ack, not
@@ -92,8 +92,8 @@ acked publishes may be unanswered on a connection, and their acks come back in
 the order the stream sent them.
 
 A single caller that awaits each publish before issuing the next still
-experiences one round trip per publish, by construction — batch, or publish
-concurrently, to amortize it.
+pays one round trip per publish. Batch, or publish concurrently, to amortize
+it.
 
 ### Broker side
 
@@ -113,8 +113,8 @@ floor batching adds. Delivery uses binary `EventBatch` framing by default.
 ## Ordering
 
 Within one stream (strictly: one shard of one stream), subscribers see
-records in publish order. Across streams there is no ordering relationship at
-all — two publishes to different streams may be observed in either order.
+records in publish order. Across streams there is no ordering: two publishes
+to different streams may be observed in either order.
 On a multi-shard stream, ordering is per routing key. A stream maps a key to a
 shard by `hash(key) % shards`, or, for streams created with jump-hash routing,
 by jump consistent hashing of the same hash; an unkeyed publish goes to shard
@@ -133,14 +133,14 @@ at each level:
   `publish_queue_wait_timeout_ms`, then fail. That failure means the broker
   is overloaded, and it is deliberately visible.
 - **The subscriber queue** (`subscriber_queue_capacity`) bounds what one
-  subscription can have pending. What happens when it fills is the overflow
-  policy, and it is the crux:
+  subscription can have pending. What happens when it fills is set by the
+  overflow policy:
 
 ![One slow subscriber and two fast ones, under each overflow policy. Under DropNew, the default, the slow subscriber's bounded queue fills and further records are dropped for that subscriber alone while the publisher and the fast subscribers run at full rate. Under Block nothing is dropped, and the publisher and both fast subscribers are pulled down to the slow subscriber's speed.](/felix/diagrams/slow-consumer.svg)
 
-This is the trade the whole design turns on. Under the default a publisher never
-waits on a subscriber, which is exactly why one stalled consumer cannot degrade
-the rest — and exactly why a subscriber can silently miss records.
+Under the default a publisher never waits on a subscriber. That is why one
+stalled consumer cannot degrade the rest, and also why a subscriber can
+silently miss records.
 
 The overflow policy covers live records only. A subscription resumed from an
 earlier offset reads history the broker pages off disk for it alone, with no
@@ -154,7 +154,7 @@ behaves as `DropNew`: the arriving record is the one discarded. The metric
 
 :::caution[At-Most-Once Semantics]
 A dropped event is not redelivered. A subscriber that falls behind its queue
-misses messages — but on a **durable** stream the loss is detectable and
+misses messages. On a **durable** stream the loss is detectable and
 recoverable: delivered events carry log offsets, so a gap in offsets is a drop
 (less any `skipped_before` the event reports, for the generation-start records a
 new leader writes), and the subscriber can resume from the offset it last
@@ -171,8 +171,8 @@ timeout lapses. See [Projections](/felix/architecture/projections/).
 ### At-most-once, per subscriber
 
 This is what a plain subscription gives: no subscriber acknowledgements, no
-redelivery, the lowest latency. The right fit for signals whose old values
-are worthless — dashboards, telemetry, presence.
+redelivery, the lowest latency. It suits signals whose old values are
+worthless, such as dashboards, telemetry and presence.
 
 Ways a subscriber misses records: it fell behind its bounded queue, the
 network partitioned, or the broker restarted while the stream was
@@ -223,11 +223,11 @@ carries.
 
 ## Tuning
 
-Start with the defaults and change things only off a measurement — the
+Start with the defaults and change things only off a measurement. The
 defaults are what [Benchmarks](/felix/features/benchmarks/) measures. The
 knobs pull in two directions:
 
-**Toward latency** — smaller batches, shorter delays, shallower queues:
+Toward latency, use smaller batches, shorter delays and shallower queues:
 
 ```yaml
 event_batch_max_events: 8
@@ -238,7 +238,7 @@ subscriber_queue_capacity: 64
 subscriber_writer_lanes: 2
 ```
 
-**Toward throughput** — bigger batches, deeper queues, more connections:
+Toward throughput, use bigger batches, deeper queues and more connections:
 
 ```yaml
 event_batch_max_events: 256
@@ -261,7 +261,7 @@ let config = ClientConfig {
 ```
 
 In a throughput-shaped configuration, per-message latency is dominated by
-batch fill and queueing — the latency percentiles of a batched run measure
+batch fill and queueing, so the latency percentiles of a batched run measure
 the queue, not the request.
 
 ## How this compares
@@ -271,7 +271,7 @@ ecosystem and higher per-message latency; Redis pub/sub and NATS (core) are
 fast fire-and-forget with no per-subscriber isolation or replay. Felix sits
 between: at-most-once fanout with real isolation, plus durable streams and
 consumer groups on the same log when you need replay or redelivery. If your
-workload is heavy stream *processing* — joins, windows, transformations —
+workload is heavy stream *processing* (joins, windows, transformations),
 that layer does not exist here; use a processing framework on top, or a
 system that ships one.
 
