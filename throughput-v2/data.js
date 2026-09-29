@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790661443561,
+  "lastUpdate": 1790662023409,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -20540,6 +20540,58 @@ window.BENCHMARK_DATA = {
             "range": "4499.07",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 818752.50\nmean: 818286.64\nstdev: 4499.07\ncv: 0.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9c021350a838b3f681f65b907691f83bdbca91a8",
+          "message": "fix(controlplane): gate new replicated fields on the metadata version (#857)\n\nThe metadata version gate covered new command variants but not new\nfields. An older member decodes a newer entry or snapshot with serde and\ndrops any field it does not know, so a mixed or rolled-back control plane\ncould store a jump-hash stream as modulo and move keys between shards,\nor apply a replica report without its leader check.\n\nEvery key path a command or the snapshot can serialize is now listed with\nits level in store/raft/command/fields.txt, and a command's level is the\nhigher of its variant's and that of the newest field it carries. Below a\nfield's level the proposer drops it on every member alike (report leader,\nnode zone) or refuses the command (refresh-token narrowing, jump-hash\nrouting, and finalizing jump_hash_routing). METADATA_VERSION is 3.\n\nA member also refuses an entry carrying a non-empty field it would drop,\nas Unsupported, and stops at restore on such a snapshot, so a future\nrollback past a level in use is loud instead of silent.\n\nA test builds every replicated type from full struct literals and checks\nthe paths they serialize against fields.txt, so a new field does not\ncompile without a sample and fails until it has a level.\n\nCloses #842\n\nSpec-Unaffected: control-plane metadata versioning; no TLA+ model covers the metadata Raft command set",
+          "timestamp": "2026-09-28T23:03:14-07:00",
+          "tree_id": "c2a143b66d90ada347b98fa8039b73a975738dd3",
+          "url": "https://github.com/gabloe/felix/commit/9c021350a838b3f681f65b907691f83bdbca91a8"
+        },
+        "date": 1790662022327,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 332417.76,
+            "range": "7971.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 332417.76\nmean: 336230.45\nstdev: 7971.68\ncv: 2.37%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 332417.76,
+            "range": "7971.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 332417.76\nmean: 336230.45\nstdev: 7971.68\ncv: 2.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82579.2,
+            "range": "4076.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82579.20\nmean: 81038.60\nstdev: 4076.64\ncv: 5.03%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 825792.02,
+            "range": "40766.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 825792.02\nmean: 810385.98\nstdev: 40766.39\ncv: 5.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
