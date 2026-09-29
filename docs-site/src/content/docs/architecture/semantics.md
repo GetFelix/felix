@@ -93,15 +93,10 @@ something the record carries.
 `kind` is the one most likely to mislead: creating a stream with `kind: Queue`
 does not make it a queue, and does not stop it being subscribed to normally.
 Consumer groups work over any durable stream. `retention` is decided by the
-broker-wide `FELIX_DURABLE_RETENTION_*` settings instead, and `delivery` by how
-a client chooses to read.
-:::
-
-:::caution[A stream's `delivery` field is not enforced]
-The control plane accepts `AtMostOnce` and `AtLeastOnce` on a stream and stores
-the value, but no broker code reads it. What a consumer gets is decided by how
-it reads — a plain subscription, or a consumer group — and not by what the
-stream declares. Do not rely on it.
+broker-wide `FELIX_DURABLE_RETENTION_*` settings instead. The control plane
+stores `delivery` (`AtMostOnce` or `AtLeastOnce`), but no broker code reads it:
+what a consumer gets depends on whether it reads through a plain subscription
+or a consumer group.
 :::
 
 ### Consistency: how many brokers must hold it
@@ -137,33 +132,33 @@ same log, with the same fsync policy. What changes is what the acknowledgement
 > A `Quorum` acknowledgement survives losing the leader. A `Leader`
 > acknowledgement is a promise only that one broker can keep.
 
-:::note[The one interleaving fault injection can't reach is closed by ordering]
-The guarantee holds against every fault the suite injects — kill, graceful
-stop, freeze and partition. A model check of the promotion protocol
-(`task tla:check`) finds one interleaving no injected fault reaches: a leader
-that acknowledges a `Quorum` write and dies before the control plane learns
-which replica holds it. The leader closes it by ordering rather than by
-testing: it waits for the report naming who holds the record to land *before*
-the mark that releases the acknowledgement moves, and the control plane
-answers each shard's report on its own merits, so a report it discarded (stale
-generation, not the leader) never counts as landed. `FelixShard.tla` explores
-5.38M distinct states of that design without violating it; the same model with
-the ordering removed loses an acknowledged record in a second.
+#### How `Quorum` is enforced
 
-Once an operator finalizes the `majority_ack` fleet feature, a `Quorum` stream
-does without that ordering and without the lease: a write is acknowledged once
-a majority of its replicas has answered that it holds it at the leader's
-generation, and any promoted leader fences a majority and takes the furthest
-log before it serves. A leader cut off from the control plane then keeps
-acknowledging what its followers hold. `Leader` streams and caches keep the
-lease for writes. Once `lease_free_reads` is finalized too, a get or counter
-get on a replicated `Quorum` cache is linearizable without the lease: after it
-takes its value the broker sends the promotion fence at its own generation to
-the shard's replicas, and answers only once a majority confirms no newer
-leader has reached it. A leader cut off from its replicas refuses the read at
-once; one cut off only from the control plane keeps serving it. Stream readers
-and watches keep the lease. See the upgrades page for the runbooks.
-:::
+The rule depends on which fleet features an operator has finalized (see
+[Upgrades](/felix/deployment/upgrades/) for the runbooks).
+
+**By default**, the replication driver reports to the control plane which
+replicas hold each record, and the quorum mark that releases an acknowledgement
+moves only after that report has landed. The leader also re-checks its lease
+before it answers. The ordering closes the one interleaving a model check of
+the promotion protocol (`task tla:check`) finds and no injected fault reaches:
+a leader that acknowledges a write and dies before the control plane learns
+who holds it. `FelixShard.tla` explores 5.38M distinct states of this design
+without a violation. With the ordering removed it loses an acknowledged record
+in a second.
+
+**With `majority_ack` finalized** (it needs `generation_start` too), a `Quorum`
+stream acknowledges a write once a majority of its replicas has answered that
+it holds it at the leader's generation. Neither the report nor the lease is on
+the path, and a promoted leader fences a majority and takes the furthest log
+before it serves. A leader cut off from the control plane keeps acknowledging
+what its followers hold. `Leader` streams and caches keep the report and the
+lease.
+
+**With `lease_free_reads` finalized** as well, a get or counter get on a
+replicated `Quorum` cache confirms leadership with a round instead of the
+lease; [Cache Semantics](#consistency-model) describes it. Stream readers and
+cache watches keep the lease.
 
 #### What each one costs
 
@@ -199,8 +194,8 @@ that: the same fault put to both, on a real three-node cluster.
 **What a reader sees of a `Quorum` stream.** A consumer group and a Kafka
 consumer read only up to the shard's quorum mark, the committed high-water
 mark: a record past it can be lost at failover and its offset reused by the
-next leader. A `Leader` stream's readers see everything durable on the leader,
-as before. Plain subscriptions are gated the same way: live delivery waits for
+next leader. A `Leader` stream's readers see everything durable on the leader.
+Plain subscriptions are gated the same way: live delivery waits for
 the mark, the replay ring holds only committed records (after a restart too,
 and a follower that drops a dead leader's uncommitted records drops them from
 the ring as well), and history for a resumed subscription is read up to the
@@ -208,7 +203,7 @@ mark.
 
 ### Message Ordering
 
-**Within a stream**: Ordering is preserved per publisher-broker-subscriber path.
+**Within a shard**: a key always maps to the same shard, and a shard is one log on one leader, so ordering holds per shard.
 
 ```mermaid
 graph LR
@@ -221,7 +216,7 @@ graph LR
 ```
 
 **Guarantees**:
-- Messages from a single publisher to a stream arrive in send order
+- Messages from a single publisher to one shard arrive in send order
 - A single subscriber sees messages in the order they were enqueued
 - Order is preserved through batching and fanout
 
@@ -295,14 +290,7 @@ graph TB
 
 **Isolation mechanism**:
 
-Each subscription maintains an independent buffer:
-
-```rust
-pub struct Subscription {
-    buffer: BoundedQueue<Event>,  // Per-subscription buffer
-    event_stream: UnidirectionalStream,  // Independent QUIC stream
-}
-```
+Each subscription has its own bounded queue and its own QUIC stream.
 
 **Buffer behavior**:
 
@@ -405,6 +393,10 @@ publish_queue_wait_timeout_ms: 1000
   checkpointed offset rather than restarting at the tail; on an ephemeral one
   the tail is all there is
 
+A subscribe with a start position on a durable stream reports `live_offset`,
+the tail when it joined. Records below it are catch-up and records from it on
+are new, with nothing skipped between the two, even under concurrent publishes.
+
 **Publisher disconnects**:
 
 - In-flight publishes may be lost if not acknowledged
@@ -416,42 +408,49 @@ publish_queue_wait_timeout_ms: 1000
 - In-memory state is lost. Durable streams, the log-backed cache, and consumer-group positions are on disk and survive.
 - Active subscriptions are terminated
 - Clients detect connection loss and must reconnect
-- No historical replay available
+- Durable streams replay after a restart; ephemeral ones cannot
 
 ## Cache Semantics
 
 ### Consistency Model
 
-Felix cache provides **eventual consistency** with **read-your-writes** for single clients:
+A cache key hashes to one shard, and each shard has one owner. A broker that
+receives an operation for a key it does not own forwards it to the owner, so a
+value written through any broker is readable through every other, and two
+brokers never hold different values for the same key. A cache declares
+`Leader` (the default) or `Quorum` when it is created, as a stream does, and
+the level decides what an acknowledgement means for puts, deletes and counter
+adds alike.
 
-```mermaid
-sequenceDiagram
-    participant C1 as Client 1
-    participant B as Broker Cache
-    participant C2 as Client 2
-    
-    C1->>B: put(key=X, value=1)
-    B-->>C1: ok
-    C1->>B: get(key=X)
-    B-->>C1: value=1
-    
-    Note over C2: Concurrent get may see old value briefly
-    C2->>B: get(key=X)
-    B-->>C2: value=1 (or old value)
-```
+**`Leader`.** The owner applies the change and answers. Replicas receive it
+afterwards, so the acknowledgement promises only that the owner holds it. The
+owner serves reads and writes only while it holds its lease, and refuses them
+with `shard_unavailable` (reason `fenced`) once the lease lapses.
 
-**Guarantees**:
+**`Quorum`.** A put, delete or counter add is acknowledged once a majority of
+the shard's replica set holds it, and only while the owner still holds its
+lease. A get or counter get takes its value, waits until a majority holds
+everything up to the tail it read, and then confirms the owner still leads, so
+a value it returns is one a failover cannot take back. A write that does not
+reach a majority in time fails with `quorum_timeout`, and one whose owner
+loses the shard first fails with `leadership_lost`. Both mean the outcome is
+unknown, not that the write failed.
 
-1. **Read-your-writes**: Client sees its own writes immediately
-2. **Monotonic reads**: Client never sees older values after newer ones (single session)
-3. **Eventual consistency**: All clients eventually see the latest value
-4. **No dirty reads**: Clients never see partial or uncommitted writes
+By default that confirmation is the lease, which is only as safe as the
+brokers' clocks. Once an operator finalizes `lease_free_reads` (with
+`majority_ack` and `generation_start`), a read of a replicated `Quorum` cache
+confirms instead with one round of fences at the owner's generation, answered
+by a majority after the read began. That makes the read linearizable without
+relying on clocks. Setting `FELIX_QUORUM_READS=lease` on a broker keeps its
+reads on the lease. Writes and cache watches keep the lease in every mode:
+`majority_ack` applies to `Quorum` streams only.
 
-**Not guaranteed**:
+At every level one owner applies each key's changes in order, so there are no
+torn writes. Not provided:
 
-- Linearizability across clients
-- Causal consistency across keys
+- Compare-and-swap or conditional put
 - Multi-key transactions
+- Causal consistency across keys
 
 ### TTL and Expiration
 
@@ -484,18 +483,15 @@ client
 - Expired entries return `null` on `cache_get`
 - Expired entries may occupy memory until accessed or evicted
 
-:::caution[TTL Precision]
-TTL enforcement is best-effort. Under high load, expired entries might be accessible for short periods after TTL expires. This is typically < 100ms but not guaranteed.
-:::
 ### Cache Scoping
 
 Cache entries are scoped to `(tenant_id, namespace, cache_name, key)`:
 
 ```rust
 // These are independent cache entries:
-client.cache_put_scoped("tenant1", "prod", "sessions", "user123", data).await?;
-client.cache_put_scoped("tenant1", "staging", "sessions", "user123", data).await?;
-client.cache_put_scoped("tenant2", "prod", "sessions", "user123", data).await?;
+client.cache_put("tenant1", "prod", "sessions", "user123", data.clone(), None).await?;
+client.cache_put("tenant1", "staging", "sessions", "user123", data.clone(), None).await?;
+client.cache_put("tenant2", "prod", "sessions", "user123", data, None).await?;
 ```
 
 **Isolation guarantees**:
@@ -535,31 +531,10 @@ sequenceDiagram
     B-->>C1: value=A or value=B
 ```
 
-**Behavior**: Last write wins, but order is undefined for concurrent writes.
-
-**No atomic operations**:
-
-- No compare-and-swap
-- No atomic increment
-- No multi-key transactions
-
-**Planned features**:
-
-- Conditional put (if-not-exists, if-match)
-- Atomic increment/decrement
-- Watch/notify on key changes
-
-### Cache vs. Pub/Sub Integration (Future)
-
-Planned feature: Pub/sub invalidation for cache consistency.
-
-```rust
-// Publish invalidates cache entry
-client.publish_with_invalidation("events", "user-updated", event, 
-    vec!["cache:sessions:user123"]).await?;
-
-// Subscribers and cache both receive update
-```
+**Behavior**: Last write wins, in the order the owner applies the writes,
+which the clients do not control. For a value many clients update, use a
+counter (`counter_add`), which the owner adds atomically. To react to changes,
+watch the key (`watch_cache`); see [Cache](/felix/features/cache/).
 
 ## Tenant and Namespace Model
 
@@ -657,18 +632,17 @@ Within a single broker:
 
 In a clustered deployment:
 
-- **Shard leadership**: Only one leader per shard, and it serves only while it
-  holds a lease. A broker that has been superseded stops acknowledging rather
-  than discovering the fact later
+- **Shard leadership**: Only one leader per shard. A leader acknowledges and
+  serves reads only while it holds a lease, so a superseded broker stops
+  rather than discovering the fact later. Two exceptions: a `Quorum` stream
+  under `majority_ack` acknowledges on its followers' answers instead, and a
+  `Quorum` cache read under `lease_free_reads` confirms with a round (see
+  [How `Quorum` is enforced](#how-quorum-is-enforced))
 - **Metadata consistency**: strongly consistent, because it lives in one Postgres that every control-plane instance reads and writes, or in an embedded Raft group. A Raft member that comes back with a wiped volume withholds its vote until it has caught up, so it cannot help elect a leader missing an acknowledged write (see [Raft metadata](/felix/architecture/metadata-raft/))
 - **Cross-shard ordering**: Not guaranteed. Ordering is per key, because a key
   always resolves to the same shard and a shard is one log on one leader
-- **Cache consistency**: One owner per key, not eventual. A key hashes to a
-  shard, that shard has one owner, and a broker receiving an operation for a key
-  it does not own forwards it there — so a value written through any broker is
-  readable through every other, and two brokers cannot hold divergent values for
-  the same key. A cache declares `Leader` or `Quorum` like a stream; counter
-  adds are acknowledged by the leader alone whatever it declares
+- **Cache consistency**: One owner per key, with `Leader` or `Quorum`
+  acknowledgement per cache. See [Cache Semantics](#consistency-model)
 
 ## Failure Scenarios and Behavior
 
@@ -684,7 +658,7 @@ In a clustered deployment:
 
 - Subscriber detects connection loss
 - Buffered events are lost
-- Subscriber must reconnect and re-subscribe (starts from tail)
+- Subscriber must reconnect and re-subscribe, resuming from its last offset on a durable stream
 
 **Broker-Control Plane partition**:
 
@@ -700,13 +674,10 @@ In a clustered deployment:
 - In-memory state is lost. Durable streams, the log-backed cache, and consumer-group positions are on disk and survive.
 - Clients detect connection loss
 - Clients must reconnect to recovered broker
-- Subscriptions must be re-established
-
-**Planned behavior with durability**:
-
-- Durable streams can replay from last checkpoint
-- Subscribers can resume from last acknowledged offset
-- Cache state can be rebuilt from log
+- Subscriptions must be re-established. A durable stream replays from a
+  checkpointed offset, and a consumer group resumes from its last acknowledged
+  position
+- The log-backed cache rebuilds its state from its log
 
 ### Shard Moves
 
@@ -724,7 +695,8 @@ and clients see less of it than of one:
 - **Subscriptions follow.** The old leader delivers what it committed, then
   ends each subscription with `shard_moved`. A `ClusterClient` subscription
   resumes on the new owner with nothing repeated or skipped. A cache watch
-  gets the same frame and is reopened by the caller.
+  gets the same frame: a `ClusterClient` watch follows the shard, and a
+  `Client` watch must be reopened by the caller.
 - **Nothing acknowledged is lost.** Group positions, dead letters, counters
   and idempotent producers' sequences move with the shard.
 
@@ -795,7 +767,7 @@ assert!(fast_count >= expected_count);
 | **Consumer groups** | At-least-once, bounded redelivery, dead letters | Shard assignment across a group's consumers |
 | **Message ordering** | Per shard | Configurable cross-shard |
 | **Subscriber isolation** | Yes | — |
-| **Cache** | Routed to one owner, replicated, read-your-writes through that owner; `Leader` or `Quorum` acknowledgement per cache | `Quorum` for counter updates, which are acknowledged by the leader |
+| **Cache** | Routed to one owner, replicated; `Leader` or `Quorum` per cache, covering puts, deletes and counter adds; linearizable `Quorum` reads with `lease_free_reads` | Conditional put, multi-key transactions |
 | **TTL precision** | Lazy on access, against an absolute expiry | Sweeping expiry |
 | **Durability** | Per stream: ephemeral, or `Leader` or `Quorum` acknowledgement | — |
 | **Authorization** | Tenant-scoped tokens, RBAC per resource, OIDC exchange | — |
@@ -828,13 +800,12 @@ something the record carries.
 **Good cache use cases**:
 - Session data with TTL
 - Configuration with infrequent updates
-- Rate limiting counters (with planned atomic increment)
+- Rate limiting and other counters, with `counter_add`
 - Recently published message lookup
 
 **Poor cache use cases**:
 - Strongly consistent shared state requiring transactions
 - Large values (> 1 MB) better served by object storage
-- Frequently updated counters (better as pub/sub)
 
 :::tip[Design for Semantics]
 Design your application for the semantics Felix provides, not the semantics you
