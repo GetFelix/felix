@@ -78,6 +78,11 @@ Required fields:
 ### Admin API: IdP Issuers
 
 IdP issuer admin endpoints require `tenant.manage` on `tenant:{tenant_id}`.
+That is enough to add an issuer no other tenant trusts. Changing an existing
+issuer's keys (`jwks_url`, `discovery_url`), `audiences` or `claim_mappings`,
+registering an issuer another tenant already trusts, and deleting an issuer
+also need `tenant.manage:cluster:*`, because those settings decide which
+principals and groups the issuer's tokens become.
 
 Create or update an issuer for a tenant:
 
