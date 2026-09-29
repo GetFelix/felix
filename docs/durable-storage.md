@@ -5,9 +5,9 @@ across a crash, and reads them back.
 
 Companion documents:
 
-- [`storage-format.md`](storage-format.md) — the byte layout, versioning rules,
+- [`storage-format.md`](storage-format.md): the byte layout, versioning rules,
   and exactly which corruption recovery may repair.
-- [`storage-performance.md`](storage-performance.md) — what durability costs,
+- [`storage-performance.md`](storage-performance.md): what durability costs,
   measured, and the regression budget.
 
 ## The guarantee
@@ -140,7 +140,7 @@ sequenceDiagram
         DEV-->>D: flushed
         D-->>L: durable
     else None / Periodic
-        Note over L,D: returns immediately —<br/>a background timer flushes later
+        Note over L,D: returns immediately;<br/>a background timer flushes later
     end
 
     L-->>B: AppendResult { first, last }
@@ -151,7 +151,7 @@ sequenceDiagram
 ### One order, not three
 
 Offsets are assigned under the segment lock, but the fsync wait happens after it
-is released — so two concurrent publishes can resume from a shared group-commit
+is released, so two concurrent publishes can resume from a shared group-commit
 flush in either order. Left alone, the log on disk could read `A, B` while a
 cursor replay and a live subscriber both saw `B, A`.
 
@@ -166,7 +166,7 @@ fan-in. Only the cheap post-flush half is ordered.
 
 Releasing a turn wakes exactly the publisher whose turn it now is, not every
 publisher parked behind it. The distinction only shows up under concurrency, and
-then it dominates — waking all of them makes the work per commit grow with the
+then it dominates: waking all of them makes the work per commit grow with the
 number in flight, so throughput falls as load rises. Measured at
 [storage-performance.md](storage-performance.md#8-releasing-a-commit-turn-wakes-one-publisher-not-all-of-them).
 
@@ -183,7 +183,7 @@ reaches a subscriber.
 
 | Mode | Flush trigger | Acknowledged when | Loss window |
 | --- | --- | --- | --- |
-| `None` | seal, shutdown | bytes reach the page cache | unbounded — whatever the OS decides |
+| `None` | seal, shutdown | bytes reach the page cache | unbounded (whatever the OS decides) |
 | `Periodic { interval }` | background timer | bytes reach the page cache | one interval |
 | `OnCommit` | the append itself | bytes reach the device | none |
 
@@ -205,8 +205,8 @@ N:
 
 ![Group commit: four concurrent appends queue in the page cache, a single fsync runs, and all four are acknowledged together](assets/storage/group-commit.svg)
 
-The lock protocol behind that picture — who flushes, and what the others find
-when they wake:
+The lock protocol behind that picture (who flushes, and what the others find
+when they wake):
 
 ```mermaid
 sequenceDiagram
@@ -227,7 +227,7 @@ sequenceDiagram
 
 Measured on a Mac Studio (Apple M4 Max, APFS): 253 durable appends/second at
 concurrency 1,
-14,387 at concurrency 64 — a 57× gain from the same code path. The fan-in
+14,387 at concurrency 64, a 57× gain from the same code path. The fan-in
 actually achieved is reported as `felix_storage_sync_batch_appends`; a value near
 1 under load means appends are serialising on the device instead of sharing a
 flush.
@@ -252,8 +252,8 @@ has the measurements.
 ## Segments and rollover
 
 A shard's log is one *active* segment plus any number of sealed ones, and the
-whole of its life — filling, sealing, rolling, and eventually being trimmed away
-by retention — looks like this:
+whole of its life (filling, sealing, rolling, and eventually being trimmed away
+by retention) looks like this:
 
 <p align="center">
   <img src="assets/log-lifecycle.svg" alt="A shard's log over time: the active segment fills to the size cap, is sealed with its preallocated tail trimmed, a new segment opens at the next offset, retention later deletes the oldest sealed segment whole, base_offset advances, and a read below it returns Trimmed" width="900">
@@ -317,13 +317,13 @@ interval of sequential decoding.
 Bounds that hold regardless of log size:
 
 - `max_bytes` caps the payload bytes returned, across every segment the read
-  touches — one budget for the whole call, not one per file.
+  touches. It is one budget for the whole call, not one per file.
 - `max_records_per_read` caps the record count, because payload bytes alone do
   not bound a response made of empty records.
 - At least one record is always returned when the range has data, so a record
   larger than the caller's budget is still readable.
 - Reading at or past the tail returns an empty vector. Reading *below* the base
-  offset returns `StorageError::Trimmed { requested, oldest }` — those offsets
+  offset returns `StorageError::Trimmed { requested, oldest }`: those offsets
   existed and are gone, which is a different fact from "nothing here yet".
 
 `read_range` returns every record, including a leader's generation-start
@@ -338,7 +338,7 @@ it.
 
 Durability is only half of a resume: records surviving a restart is worthless if
 a reconnecting client cannot say where it got to. A subscriber asks for a start
-position — `latest`, `earliest`, or an exact offset — and delivered events carry
+position (`latest`, `earliest`, or an exact offset), and delivered events carry
 their offsets so the client has something to checkpoint. See
 [the protocol](protocol.md#subscribe).
 
@@ -394,8 +394,8 @@ Two consequences worth stating plainly:
   its event connection until it resumes or closes the subscription.
 - **A discarded offset is an error, not a silent skip.** Asking for an offset
   below what retention still holds returns `CursorTooOld` naming the oldest
-  available offset. Quietly restarting at the tail — which is what a client got
-  before resume existed — is the failure this exists to remove, so it is not the
+  available offset. Quietly restarting at the tail, which is what a client got
+  before resume existed, is the failure this exists to remove, so it is not the
   fallback.
 
 ## Recovery
@@ -426,7 +426,7 @@ flowchart TD
 Four properties:
 
 1. **A provably incomplete tail is repaired.** A crash mid-append leaves a
-   partial record at the end of the newest segment — one cut short by end of
+   partial record at the end of the newest segment: one cut short by end of
    file, or claiming a length that could not fit. Nothing could have
    acknowledged a record that was never finished, so it is truncated away.
 
@@ -451,8 +451,8 @@ Four properties:
    never moves again, and every later append, commit, flush and shutdown on that
    log returns the error until the process restarts and recovery re-reads what
    actually reached the disk. Linux may drop the dirty pages a failed writeback
-   could not write, so the *next* fsync returns success having flushed nothing —
-   "fsyncgate". Believing it would acknowledge records that are gone, which is
+   could not write, so the *next* fsync returns success having flushed nothing
+   ("fsyncgate"). Believing it would acknowledge records that are gone, which is
    the same silent loss the checksum rule above refuses to risk.
    Readers stop at the durable bound once the log is poisoned. The batch whose
    flush failed is still written past it, and its publish was refused, so a
@@ -521,18 +521,18 @@ after the snapshot are in the active segment, which the full scan above has
 already read, so a current snapshot adds nothing to startup. A missing or
 stale one is replaced by reading the sealed segments' marks, which
 `felix_storage_producer_state_rebuilt_total` counts. See
-`docs/storage-format.md`, "`producers` — the producer snapshot".
+the producer snapshot section of `docs/storage-format.md`.
 
 ### What is validated at startup
 
-Fully checksumming every segment is `O(bytes on disk)` — minutes for a large
+Fully checksumming every segment is `O(bytes on disk)`: minutes for a large
 shard, which is the difference between a rolling restart and an outage. By
 default:
 
 - The **active** segment is always scanned in full. It is the only one that can
   have a torn tail, and it is bounded by `segment_size_bytes`.
 - **Sealed** segments get their header validated, their index loaded, and the
-  records after the last index entry checked — bounded by one index interval.
+  records after the last index entry checked, which is bounded by one index interval.
   Everything else is verified lazily, because every read verifies the checksum of
   every record it returns.
 
@@ -717,7 +717,7 @@ felix-log-tool verify --dir /var/lib/felix/streams/shard --payload-bytes 128
 felix-log-tool bench  --dir /tmp/bench --records 20000 --concurrency 8 --fsync on_commit
 ```
 
-The end-to-end demo — publish, crash, restart, recover — is:
+The end-to-end demo (publish, crash, restart, recover) is:
 
 ```sh
 cargo run --release -p felix-broker-service --bin durable-restart-demo
@@ -748,7 +748,7 @@ fail rather than print the wrong numbers.
   `Trimmed` (storage) or `CursorTooOld` (broker) rather than a short read. See
   [Retention](#retention) below.
 - **No tiered storage.** [`tiered.rs`](../crates/server/felix-storage/src/tiered.rs) is
-  still trait scaffolding — `TieredStore`, `OffloadedSegment`, `ColdCacheConfig`
+  still trait scaffolding: `TieredStore`, `OffloadedSegment`, `ColdCacheConfig`
   and `RetentionPolicy` are declared, and nothing implements them. There is no
   hot/cold split, no offload, and no cold-tier read path; every read comes from
   local segments. See [Tiered storage](#tiered-storage-what-is-already-in-place)
@@ -777,7 +777,7 @@ Four properties are worth knowing, because each rules out a class of surprise:
 - **Age comes from the records, not the filesystem.** `timestamp_micros` on the
   newest record in a segment decides, so restoring or copying a directory does
   not reset the clock. The *newest* record is the one that counts, which is the
-  conservative end — a segment survives until everything in it has expired.
+  conservative end: a segment survives until everything in it has expired.
 - **It runs on its own timer, never on an append.** Retention is bulk file
   deletion; putting it on the publish path would trade a bounded disk for an
   unbounded p999.
@@ -789,8 +789,8 @@ Four properties are worth knowing, because each rules out a class of surprise:
 
 What a reader sees after a trim is the point of the feature. `read_range` below
 `base_offset` returns `StorageError::Trimmed { requested, oldest }`, which the
-broker translates to `BrokerError::CursorTooOld`. That distinction — "those
-records existed and are gone" versus "nothing here yet" — is what lets a
+broker translates to `BrokerError::CursorTooOld`. That distinction between "those
+records existed and are gone" and "nothing here yet" is what lets a
 resuming subscriber tell a real gap from an empty tail. A trim landing
 *mid-replay* surfaces the same way rather than silently ending the history
 early. `earliest` means the oldest record still retained, so it keeps working on
@@ -799,7 +799,7 @@ a trimmed stream instead of becoming an error.
 An operator can force a pass with `StreamLog::enforce_retention_now` instead of
 waiting out the interval.
 
-> `a_power_loss_after_retention_leaves_no_gap` — every crash image built after a
+> `a_power_loss_after_retention_leaves_no_gap`: every crash image built after a
 > sweep under `FsyncMode::None` recovers without a gap (Linux only).
 
 ## Cache and counter compaction
@@ -858,14 +858,14 @@ before flushing. A pass cut short leaves only redundant copies, which the next
 pass after a restart reclaims. Closing a shard stops its pass the same way.
 
 > `writes_do_not_wait_on_a_slow_compaction` and
-> `adds_do_not_wait_on_a_slow_compaction` — a held pass delays no write.
+> `adds_do_not_wait_on_a_slow_compaction`: a held pass delays no write.
 > `a_crash_mid_compaction_replays_to_the_same_cache`,
 > `a_crash_mid_compaction_keeps_every_sum` and
-> `a_crash_mid_trim_leaves_a_longer_log` — a crash anywhere in a pass recovers.
-> `a_power_loss_anywhere_in_a_pass_keeps_every_live_value` — the same under a
+> `a_crash_mid_trim_leaves_a_longer_log`: a crash anywhere in a pass recovers.
+> `a_power_loss_anywhere_in_a_pass_keeps_every_live_value`: the same under a
 > simulated power loss, with `FsyncMode::None` (Linux only).
-> `a_key_with_a_write_in_flight_is_not_copied` — a copy never undoes a write.
-> `shutdown_abandons_a_held_compaction` — shutdown does not wait on the budget.
+> `a_key_with_a_write_in_flight_is_not_copied`: a copy never undoes a write.
+> `shutdown_abandons_a_held_compaction`: shutdown does not wait on the budget.
 
 **Upgrading from 0.6.0-preview or earlier.** Older builds compacted by
 writing the live set into a sibling `<shard>.compacting` directory, renaming
@@ -894,7 +894,7 @@ Tiering is not built. The log is shaped so that adding it means adding a tier
 rather than reworking the log:
 
 - **Sealed segments are immutable and self-describing.** Once sealed, a segment
-  is fsynced, trimmed to exactly its contents, and never written again — so it is
+  is fsynced, trimmed to exactly its contents, and never written again, so it is
   safe to copy to object storage while the log keeps running.
 - **`AppendOnlyLog::seal` already returns the offload unit.** `SealedSegment {
   descriptor, checksum }` maps directly onto `OffloadedSegment`: the descriptor
@@ -903,14 +903,14 @@ rather than reworking the log:
 - **Reads already route per segment.** `SegmentSet::read` walks segments in
   offset order and asks each one for its share of the range, under a single
   shared budget. A cold tier slots in as another source at that seam; nothing
-  above it — `read_range`, the trimmed-offset error, the byte and record
-  bounds — needs to change.
+  above it needs to change: not `read_range`, the trimmed-offset error, or the
+  byte and record bounds.
 - **`StorageError::Trimmed` already distinguishes "gone" from "not yet".** A
   reader asking for an offset that has left local storage gets a distinct,
   actionable error rather than an empty range, which is exactly the signal a
   cold-tier fetch would hang off.
 
-The open questions tiering still has to answer — when a segment becomes cold, how
-much local cache to keep, and what a cold read costs in tail latency — are design
+The open questions tiering still has to answer (when a segment becomes cold, how
+much local cache to keep, and what a cold read costs in tail latency) are design
 work, not refactoring. Tracked as
 [#172](https://github.com/gabloe/felix/issues/172).

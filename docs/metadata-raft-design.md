@@ -4,13 +4,13 @@
 hosted inside the control-plane instances themselves, built on openraft,
 served through the existing store traits as a third backend alongside memory
 and Postgres. Brokers and clients cannot tell which backend answered. SWIM
-for node liveness is rejected for now — that decision is recorded in
+for node liveness is rejected for now; that decision is recorded in
 [control-plane.md](control-plane.md#why-liveness-stays-centralized-swim-considered),
 because it stands on its own whether or not Raft ships.**
 
 Recorded for [#333](https://github.com/gabloe/felix/issues/333). The
 alternatives and what would overturn each choice are below, in the same
-spirit as [replication-design.md](replication-design.md) — which decided the
+spirit as [replication-design.md](replication-design.md), which decided the
 *opposite* for stream payloads, and whose argument this document must not
 quietly contradict.
 
@@ -21,7 +21,7 @@ deferred Raft option. The one that fired: Felix should be deployable where no
 database platform exists. M7 made the control plane highly available as N
 stateless instances over an HA Postgres; that is the right trade wherever a
 managed database is available, and it remains supported. Raft is for
-everywhere else — and for removing the last external dependency from a
+everywhere else, and for removing the last external dependency from a
 self-contained cluster.
 
 ## What has to be true
@@ -36,7 +36,7 @@ split already lives.
 contract ha-postgres.md demands of the database platform (synchronous
 replication), for the same reason: a rolled-back shard-assignment
 `generation` can be reused for a different owner, and brokers de-duplicate
-ownership changes by generation. Raft gives this by construction — an
+ownership changes by generation. Raft gives this by construction: an
 acknowledged write is committed on a majority.
 
 **The M7 signal must keep holding.** Rolling restart of every instance, and
@@ -45,7 +45,7 @@ The existing `rolling_restart.rs` test is the yardstick; it gets a Raft
 variant with no Postgres underneath.
 
 **Writes are rare and small; reads are constant.** Tenants, streams,
-assignments, membership — kilobytes that change on operator action, plus
+assignments and membership are kilobytes that change on operator action, plus
 heartbeats on a fixed cadence. The read side (broker watches, snapshots,
 routing) dwarfs the write side. The design must put its cost on the path
 that can afford it.
@@ -60,7 +60,7 @@ are never rewritten. Does that argument not kill a metadata Raft log too?
 No, and the distinction is worth stating precisely: that invariant belongs to
 `felix-storage`'s segment log, and the metadata Raft log **never touches
 `felix-storage`**. It is a separate, purpose-built, kilobyte-scale log whose
-semantics are Raft's — suffix truncation included — owned by the control
+semantics are Raft's, suffix truncation included, owned by the control
 plane, on the control plane's own volume. The "keep two logs" objection in
 that document was about writing every *payload* record twice; here there is
 no payload, and the second log holds only metadata commands. Reusing the
@@ -73,7 +73,7 @@ operation the segment format deliberately does not have.
 ### Shape
 
 Every control-plane instance embeds a Raft node. The group is the
-control-plane replica set — three for production, one (single-node group)
+control-plane replica set: three for production, one (single-node group)
 for development. Each instance persists the Raft log and periodic snapshots
 on its own volume; this is the PVC-per-pod StatefulSet shape
 [control-plane.md](control-plane.md#kubernetes-deployment-model) has
@@ -97,14 +97,14 @@ sketched since the beginning.
 `InMemoryStore` already implements every store trait and holds the entire
 metadata state. The Raft state machine is that store plus an `apply(command)`
 entry point: commands mutate it, snapshots serialize it, and reads are served
-from it directly on whichever instance received them. This is not a
-convenience — it is the design's main simplification. The state machine does
+from it directly on whichever instance received them. Reusing the store this way is the
+design's main simplification. The state machine does
 not need inventing; it needs a command log in front of something that
 already exists and is already contract-tested against Postgres.
 
 **Commands are API-shaped, not statement-shaped.** One command per logical
 mutation: `CreateStream`, `RegisterNode`, `Heartbeat`, `PlaceShard`,
-`BootstrapTenantAuth`, and so on — roughly one per mutating store-trait
+`BootstrapTenantAuth`, and so on: roughly one per mutating store-trait
 method, not one per row touched. Two things fall out:
 
 - **Multi-step atomicity is free.** M7 made tenant bootstrap a single
@@ -118,9 +118,9 @@ method, not one per row touched. Two things fall out:
   clock, generate randomness, or consult anything outside the command and
   the state. Every timestamp is stamped at *propose* time (the heartbeat
   rule "the recorded time is the control plane's own clock" becomes "the
-  leader's clock, carried in the command" — same authority, same property:
-  a broker still cannot postpone its own expiry). Every generated value —
-  signing-key material, kids — is generated at the API layer and carried in
+  leader's clock, carried in the command", with the same authority and the same property:
+  a broker still cannot postpone its own expiry). Every generated value
+  (signing-key material, kids) is generated at the API layer and carried in
   the command. Signing keys already live in Postgres rows today; carrying
   them in log entries on the same class of volume changes their exposure
   surface by nothing, but it is stated here so nobody discovers it in a
@@ -173,7 +173,7 @@ over.
 ### Reads: local, because the contract already allows it
 
 Broker snapshot/changes polling is *pull-based and eventually consistent by
-contract* — a broker behind by one poll is the normal case the resnapshot
+contract*: a broker behind by one poll is the normal case the resnapshot
 rules already handle. So follower-served reads change nothing for brokers,
 and they are what keeps read load off the leader.
 
@@ -182,13 +182,13 @@ windows, maintained by the state machine exactly as `InMemoryStore`
 maintains them today, so all three resnapshot signals
 (`first seq > since`, empty-but-advanced, `next_seq < since`) survive
 unchanged. Sequence numbers are state-machine state, identical on every
-instance at the same applied index — a broker can fail over between
+instance at the same applied index, so a broker can fail over between
 instances mid-poll and the numbers still mean the same thing, which is
 better than today, where an in-memory control plane restarting resets them.
 
 Admin reads that feed decisions (the sweep's view before claiming an expiry,
 placement's reads) run on the leader, which serves them from applied
-state — leader-local reads after `ReadIndex`-style confirmation where
+state: leader-local reads after `ReadIndex`-style confirmation where
 staleness would change a decision. The expiry sweep and the placement
 reconciler run **only on the leader**, which replaces M7's
 "each node claimed by exactly one sweep" cross-instance coordination with
@@ -208,8 +208,8 @@ well-defined epoch (Raft term) underneath the one it already has
 (assignment generation).
 
 Replica reports go through the log like everything else placement decides
-on — `RecordReplicaReport`, restamped with the leader's clock on the way in,
-exactly as a heartbeat is — so every member holds them and a new Raft leader
+on (`RecordReplicaReport`, restamped with the leader's clock on the way in,
+exactly as a heartbeat is), so every member holds them and a new Raft leader
 promotes from what the old one knew rather than waiting for leaders to report
 to *it*. They are in snapshots too (`replica_reports`, left out while
 empty, so an older snapshot without the field still loads). A live leader
@@ -224,15 +224,15 @@ peers' in a way the byte-for-byte snapshot comparison could not see.
 State is small, so snapshots are cheap: serialize the whole store at a log
 threshold, truncate the log behind it. An instance that lost its volume
 rejoins empty and is caught up by snapshot install plus log replay, without
-a vote until it has (see [Rejoining after a lost volume](#rejoining-after-a-lost-volume))
-— the Raft-native answer to the question backup/restore answers for Postgres. For
+a vote until it has (see [Rejoining after a lost volume](#rejoining-after-a-lost-volume)).
+This is the Raft-native answer to the question backup/restore answers for Postgres. For
 disaster recovery beyond quorum loss, the same snapshot format doubles as an
 export: the import path below reads either a Postgres database or a snapshot
 file.
 
 ### Group membership and bootstrap
 
-Initial members come from configuration — for the StatefulSet shape, the
+Initial members come from configuration. For the StatefulSet shape, the
 ordinal peers (`felix-controlplane-{0,1,2}`) via the headless service that
 control-plane.md already reserves for exactly this. Growing the group is
 learner-first: a new instance joins as a non-voting learner, catches up by
@@ -253,19 +253,19 @@ A member that starts with no Raft state therefore withholds its vote: it
 refuses vote requests and does not stand for election. It asks its peers
 (`GET /internal/raft/standing`) which case it is in:
 
-- **The group exists** — some peer's log is past the initial membership
+- **The group exists**: some peer's log is past the initial membership
   entry. The member follows the leader like a learner: it takes the log or a
   snapshot but has no vote. It asks the leader for its last log index
   (`GET /internal/raft/catch-up-target`, answered only after a read-index
   round confirms the leadership) and votes again once it has applied that
   far. Readiness keeps it out of rotation until then.
-- **First boot** — a majority, this member included, answers and is empty,
+- **First boot**: a majority, this member included, answers and is empty,
   *and* the operator set `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`. Each such
   member initializes the configured group, which openraft allows. A
   single-member group decides this alone. With the default, `existing`, an
   empty majority waits and logs why instead: a member cannot tell a first
   boot from a lost volume, and only the operator knows which it is.
-- **Neither** — it waits and asks again, so a lone wiped member never forms a
+- **Neither**: it waits and asks again, so a lone wiped member never forms a
   group of its own.
 
 The withheld vote is written to the member's store before any of this, so a
@@ -300,18 +300,18 @@ the API serves. The ceremony:
    every member. Its import guard refuses a group that already holds state,
    so pointing the tool at the wrong cluster is an error message, not a
    catastrophe. *Abort here: tear the group down; nothing has changed.*
-2. **Freeze metadata writes** — flip the Postgres-backed instances out of
+2. **Freeze metadata writes**: flip the Postgres-backed instances out of
    rotation (their readiness during a drain already does this). Brokers
    keep serving on their catalogs and leases, exactly as during any
    control-plane blip. *Abort here: put the old instances back in
    rotation; nothing has changed.*
 3. **Export**: `felix-controlplane migrate export-postgres state.json`
    (with `FELIX_CONTROLPLANE_POSTGRES_URL` pointing at the frozen
-   database). The tool prints a summary — counts per entity — for the
+   database). The tool prints a summary (counts per entity) for the
    before/after comparison.
 4. **Import**: `felix-controlplane migrate import state.json
-   http://<any-member-peer-address>` — one `ImportState` command proposed
-   through the group: atomic on every member, forwarded to the leader from
+   http://<any-member-peer-address>` proposes one `ImportState` command
+   through the group, atomic on every member, forwarded to the leader from
    whichever address you gave. The tool talks to the peer listener as a
    peer, so run it with the group's `FELIX_RAFT_CLUSTER_ID` and
    `FELIX_RAFT_PEER_TOKEN` (and `FELIX_RAFT_TLS_*` under peer mTLS; the URL
@@ -339,7 +339,7 @@ zero-write-downtime cutover.
 **Disaster recovery beyond quorum loss** uses the same two commands, and
 this is deliberate: the export file *is* the DR artifact, and
 `migrate import ... --overwrite` onto a fresh group is the restore. The
-`--overwrite` flag is the loud warning made mechanical — it discards
+`--overwrite` flag is the loud warning made mechanical: it discards
 whatever the target group holds, and consumers' checkpoints with it, so it
 belongs in a runbook and nowhere else. Take exports on a schedule the way
 database backups are taken, with two caveats:
@@ -365,10 +365,10 @@ store it encrypted, as you would the database it came from.
 
 ### Probes
 
-- `/v1/system/live` — unchanged: process-local, never touches consensus.
+- `/v1/system/live`: unchanged, process-local, never touches consensus.
   An instance that lost quorum must not be restarted into the same lost
   quorum.
-- `/v1/system/ready` — ready when this instance knows a leader and its
+- `/v1/system/ready`: ready when this instance knows a leader and its
   applied index is within a freshness bound of the leader's commit. A
   follower serving watches is ready; an instance partitioned from the group
   is not; during an election the group is briefly all-unready for writes,
@@ -380,16 +380,16 @@ store it encrypted, as you would the database it came from.
 
 **openraft, pinned to the stable 0.9 line** (0.9.25 at time of writing;
 the 0.10 line is still alpha), wrapped behind a small crate-local seam so
-openraft types never appear in the store traits or handlers — the same
+openraft types never appear in the store traits or handlers. This is the same
 discipline as the storage layer's `AppendOnlyLog` seam, and the insurance
 against openraft's documented pre-1.0 API instability.
 
-- **openraft** — async, tokio-native, snapshot/learner/membership machinery
+- **openraft**: async, tokio-native, snapshot/learner/membership machinery
   included, proven as the metadata consensus of Databend among others.
-- **raft-rs (TiKV)** — rejected: a sync core that requires hand-building
+- **raft-rs (TiKV)**: rejected, as a sync core that requires hand-building
   the tick loop, transport, storage, and snapshot orchestration openraft
   ships; that is most of the risk for none of the fit.
-- **Hand-rolled** — rejected. ha-postgres.md put it as "every line of
+- **Hand-rolled**: rejected. ha-postgres.md put it as "every line of
   consensus code Felix does not carry is one it cannot get wrong"; that was
   an argument for deferring, and now that the work is scheduled it is an
   argument for a maintained implementation with an existing test corpus.
@@ -533,19 +533,19 @@ leader's snapshot as in
 | Something other than a member reaches the peer port | Refused before any route runs: wrong cluster id 403, missing or wrong peer token 401, and under peer mTLS no TLS handshake without a certificate from the cluster CA |
 | Network partition, leader in minority | Old leader steps down (cannot commit), majority elects; minority instances fail readiness rather than serve writes that cannot commit |
 | Quorum lost (2 of 3 down) | Writes and readiness fail on survivors; brokers keep serving on catalogs and leases as during any control-plane outage; recovery = restore instances, or restore-from-snapshot ceremony documented with appropriately loud warnings |
-| Clock skew between instances | Irrelevant to Raft safety (term-based). Liveness expiry does not depend on it either: heartbeats are stamped and judged by one clock — the store's, which under Postgres is `clock_timestamp()` — so two instances comparing their own `SystemTime` is not a thing that can happen |
+| Clock skew between instances | Irrelevant to Raft safety (term-based). Liveness expiry does not depend on it either: heartbeats are stamped and judged by one clock (the store's, which under Postgres is `clock_timestamp()`), so two instances comparing their own `SystemTime` is not a thing that can happen |
 | Disk full on one instance | That instance fails writes → falls out of quorum participation → fails readiness; group continues on the majority |
 
 ## Testing
 
 - **Determinism harness**: apply the same command sequence to two state
-  machines, assert byte-identical snapshots — the cheap test that catches
+  machines, assert byte-identical snapshots. It is the cheap test that catches
   the expensive bug (a clock or a HashMap iteration order leaking into
   apply).
 - **The contract suites run against the Raft backend** as they run against
   memory and Postgres (`contract::nodes`, `contract::shards`,
   `contract::signing_keys`, `contract::placement` including the expiring
-  lease, `contract::refresh_tokens`) — that is what the trait seam is for.
+  lease, `contract::refresh_tokens`); that is what the trait seam is for.
   There are no contracts for tenants, streams, or RBAC on any backend yet.
 - **`rolling_restart.rs`, Raft variant**: three instances, no Postgres,
   same zero-failed-calls assertion, plus a hard kill of the leader
@@ -560,19 +560,19 @@ leader's snapshot as in
 ## What would overturn this
 
 - **Heartbeat write volume dominating the log** at broker counts Felix
-  actually reaches — the fix is decentralizing liveness (the SWIM decision
+  actually reaches: the fix is decentralizing liveness (the SWIM decision
   gets reopened), not abandoning Raft for the metadata that is actually
   rare.
 - **A multi-region metadata requirement.** One Raft group in one region is
   this design; metadata with region-local write latency everywhere is a
   different problem (and was already out of scope for Postgres HA too).
-- **openraft 0.10 stabilizing with a materially better storage API** — the
+- **openraft 0.10 stabilizing with a materially better storage API**: the
   seam exists so that upgrade is a contained event, not a redesign.
 
 ## Sequencing
 
 Tracked as milestone M13; the issue breakdown mirrors this document's
-sections — Raft core and storage, state machine and command set, the store
+sections: Raft core and storage, state machine and command set, the store
 backend and forwarding, migration tooling, probes and packaging, and the
 chaos/conformance pass. [#333](https://github.com/gabloe/felix/issues/333)
 is the umbrella.
@@ -581,42 +581,42 @@ is the umbrella.
 
 | Piece | Issue | State |
 | --- | --- | --- |
-| Raft core: seam, redb log/vote/snapshot store, HTTP transport, group lifecycle | [#337](https://github.com/gabloe/felix/issues/337) | **Landed** — `services/felix-controlplane-service/src/raft/`. The store passes openraft's own storage conformance suite; group tests cover election, replication, restart-as-rejoin, wiped-volume rebuild by snapshot, and learner-first growth. Nothing serves metadata from it yet. |
-| Metadata state machine | [#338](https://github.com/gabloe/felix/issues/338) | **Landed** — `store/raft/command.rs` (the versioned, API-shaped command set) and `store/raft/state_machine.rs` (`MetadataStateMachine`, the in-memory store behind the seam). The determinism harness applies a full-coverage script to two machines and requires byte-identical snapshots; a real three-node group settles eight concurrent bootstraps by log order alone with byte-identical replicas. Landing it surfaced and fixed real iteration-order leaks: multi-node expiry and cascading deletes published change events in HashMap order. Nothing serves API traffic from it yet. |
-| Store backend, forwarding, read semantics | [#339](https://github.com/gabloe/felix/issues/339) | **Landed** — `store/raft.rs` (`RaftStore`), the third backend behind the store traits: reads from local applied state, writes proposed through the seam with follower→leader forwarding inside it, sweep and placement gated to the leader by a linearizable read-index check, and `StorageBackend::Raft` selectable via `FELIX_RAFT_NODE_ID` / `FELIX_RAFT_DATA_DIR` / `FELIX_RAFT_PEERS`. Passes the same node/shard contract suites as memory and Postgres; a binary-level test serves the HTTP API with no database and keeps its metadata across a restart. Finding recorded below. Probes are minimal (leader-known) until #341. |
-| Migration from Postgres | [#340](https://github.com/gabloe/felix/issues/340) | **Landed** — `felix-controlplane migrate export-postgres/import`, the generic trait-level export (works against any backend, doubling as the DR artifact), the `ImportState` command with its used-store guard and `--overwrite` restore path, and the ceremony above. The pg-tests E2E migrates a populated Postgres into a Raft group over the real propose route and verifies records, sequence heads, generations, and auth state; a broker at the head continues without a resnapshot. |
-| Probes, packaging, configuration | [#341](https://github.com/gabloe/felix/issues/341) | **Landed** — readiness answers from consensus state (leader known, apply-lag bounded, and a leader counts only while a quorum has acknowledged it within 5s — a quorumless leader leaves rotation, proven by test); liveness stays process-local. Timings are tunable (`FELIX_RAFT_HEARTBEAT_MS`, `FELIX_RAFT_ELECTION_TIMEOUT_MIN/MAX_MS`, snapshot/write knobs) with unworkable combinations refused at startup. Consensus position ships as `felix_meta_raft_*` gauges plus forwarded-proposal and write-timeout counters. Kubernetes shape documented on the docs-site page. Known fact below. |
-| Chaos and conformance | [#342](https://github.com/gabloe/felix/issues/342) | **Landed** — `tests/raft_chaos.rs`: three real binaries, no database, broker-shaped traffic and metadata writes flowing while every member is SIGTERM-restarted, the leader is SIGKILLed, the leader is frozen (SIGSTOP) past several elections and thawed, and a follower's volume is wiped. Verdict per run: zero failed calls, election gaps bounded, and **every acknowledged write present on every member** once each has applied a later marker write — the milestone's completion signal, met. It caught four real bugs before landing (below). A second test wipes the *leader* while the only other holder of a write is frozen, the case in which a wiped member voting from an empty log loses that write ([above](#rejoining-after-a-lost-volume)). |
+| Raft core: seam, redb log/vote/snapshot store, HTTP transport, group lifecycle | [#337](https://github.com/gabloe/felix/issues/337) | **Landed**: `services/felix-controlplane-service/src/raft/`. The store passes openraft's own storage conformance suite; group tests cover election, replication, restart-as-rejoin, wiped-volume rebuild by snapshot, and learner-first growth. Nothing serves metadata from it yet. |
+| Metadata state machine | [#338](https://github.com/gabloe/felix/issues/338) | **Landed**: `store/raft/command.rs` (the versioned, API-shaped command set) and `store/raft/state_machine.rs` (`MetadataStateMachine`, the in-memory store behind the seam). The determinism harness applies a full-coverage script to two machines and requires byte-identical snapshots; a real three-node group settles eight concurrent bootstraps by log order alone with byte-identical replicas. Landing it surfaced and fixed real iteration-order leaks: multi-node expiry and cascading deletes published change events in HashMap order. Nothing serves API traffic from it yet. |
+| Store backend, forwarding, read semantics | [#339](https://github.com/gabloe/felix/issues/339) | **Landed**: `store/raft.rs` (`RaftStore`), the third backend behind the store traits: reads from local applied state, writes proposed through the seam with follower→leader forwarding inside it, sweep and placement gated to the leader by a linearizable read-index check, and `StorageBackend::Raft` selectable via `FELIX_RAFT_NODE_ID` / `FELIX_RAFT_DATA_DIR` / `FELIX_RAFT_PEERS`. Passes the same node/shard contract suites as memory and Postgres; a binary-level test serves the HTTP API with no database and keeps its metadata across a restart. Finding recorded below. Probes are minimal (leader-known) until #341. |
+| Migration from Postgres | [#340](https://github.com/gabloe/felix/issues/340) | **Landed**: `felix-controlplane migrate export-postgres/import`, the generic trait-level export (works against any backend, doubling as the DR artifact), the `ImportState` command with its used-store guard and `--overwrite` restore path, and the ceremony above. The pg-tests E2E migrates a populated Postgres into a Raft group over the real propose route and verifies records, sequence heads, generations, and auth state; a broker at the head continues without a resnapshot. |
+| Probes, packaging, configuration | [#341](https://github.com/gabloe/felix/issues/341) | **Landed**: readiness answers from consensus state (leader known, apply-lag bounded, and a leader counts only while a quorum has acknowledged it within 5s; a quorumless leader leaves rotation, proven by test); liveness stays process-local. Timings are tunable (`FELIX_RAFT_HEARTBEAT_MS`, `FELIX_RAFT_ELECTION_TIMEOUT_MIN/MAX_MS`, snapshot/write knobs) with unworkable combinations refused at startup. Consensus position ships as `felix_meta_raft_*` gauges plus forwarded-proposal and write-timeout counters. Kubernetes shape documented on the docs-site page. Known fact below. |
+| Chaos and conformance | [#342](https://github.com/gabloe/felix/issues/342) | **Landed** in `tests/raft_chaos.rs`: three real binaries, no database, broker-shaped traffic and metadata writes flowing while every member is SIGTERM-restarted, the leader is SIGKILLed, the leader is frozen (SIGSTOP) past several elections and thawed, and a follower's volume is wiped. Verdict per run: zero failed calls, election gaps bounded, and **every acknowledged write present on every member** once each has applied a later marker write. That was the completion signal, and it was met. It caught four real bugs before landing (below). A second test wipes the *leader* while the only other holder of a write is frozen, the case in which a wiped member voting from an empty log loses that write ([above](#rejoining-after-a-lost-volume)). |
 
 One deliberate deviation from the sketch above, made while landing #337: the
 Raft log lives in **redb** (an embedded, crash-safe, single-file ACID store)
-rather than hand-rolled files. Consensus durability plumbing — votes and
-entries that must never be acknowledged and then lost — is the last place
+rather than hand-rolled files. Consensus durability plumbing (votes and
+entries that must never be acknowledged and then lost) is the last place
 Felix should be inventive, and openraft's storage suite now enforces the
 semantics against the real store on every test run.
 
-Four findings from landing #342 — each one a bug the chaos suite caught
+Four findings from landing #342, each one a bug the chaos suite caught
 that no earlier test could see:
 
 - **`loosen-follower-log-revert` is not optional.** A member rejoining with
   a wiped volume reports a log that went backwards; without that openraft
   feature the *leader* trips a debug assertion in its replication-progress
-  tracking when the member returns — and a release build would carry the
+  tracking when the member returns, and a release build would carry the
   inconsistent progress state silently. The feature is now on, with the
   reasoning at the dependency declaration.
 - **A restart is not done until the state machine is.** A restarted member
   learned the leader within a heartbeat and reported ready while its
-  volatile state machine was still replaying the log — serving a world
+  volatile state machine was still replaying the log, serving a world
   missing entries it had itself committed. Startup now blocks until the
   replay reaches the committed index persisted on its own disk.
 - **A wiped member's apply-lag reads zero.** Lag is measured against the
   member's *own* log, which is exactly the blind spot for a member that has
   none of the group's state yet. Readiness now refuses a follower that
-  knows a leader but holds an empty log — it has joined an established
+  knows a leader but holds an empty log: it has joined an established
   group and nothing has replicated into it yet. (A leader is exempt; a
   genuinely new cluster is leaderless, so formation is never blocked.)
 - **One hung hop must not eat the whole write budget.** A leader that is
-  frozen — not dead — accepts the forwarded connection and stalls, and a
+  frozen (not dead) accepts the forwarded connection and stalls, and a
   single forward could consume the entire proposal budget, leaving nothing
   for the retry after the group elected a successor. Every attempt is now
   individually capped well below the budget.
@@ -627,11 +627,11 @@ restarts the current *leader* pauses metadata writes for one election
 timeout (~1.2s at defaults) while a successor elects itself. Reads keep
 serving throughout, followers restart with no pause at all, and brokers are
 unaffected by construction. openraft 0.10 adds `transfer_leader`; adopting
-it is a contained change because the seam owns the shutdown path — until
+it is a contained change because the seam owns the shutdown path. Until
 then this is a documented bound, not a bug.
 
-One finding from landing #339: **openraft's write path waits indefinitely**
-— a leader that has lost quorum queues proposals forever rather than
+One finding from landing #339: **openraft's write path waits indefinitely**:
+a leader that has lost quorum queues proposals forever rather than
 failing them. The seam now owns an overall write deadline (default 10s,
 elections and forwarding included), so "no quorum" reaches callers as an
 error rather than a hang; the quorum-loss test is what surfaced it. The API
@@ -645,7 +645,7 @@ predictions coming true:
 
 - **The iteration-order leak was real.** Multi-node expiry and the
   tenant/namespace cascade deletes published their change events in HashMap
-  iteration order — harmless on one instance, state-forking on replicas,
+  iteration order, harmless on one instance, state-forking on replicas,
   because each event takes a sequence number as it publishes. They now
   publish in sorted order, and the determinism harness is what holds that
   door shut.

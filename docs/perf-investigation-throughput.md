@@ -2,22 +2,22 @@
 
 Working log of a performance investigation into Felix's end-to-end pub/sub
 throughput, particularly at larger payload sizes. Records what was measured,
-what was concluded, and — importantly — which hypotheses turned out to be
+what was concluded, and which hypotheses turned out to be
 wrong.
 
 **Status: resolved for macOS; Linux benchmarked in round 18, one open defect.** 
 Main ceiling fixed (rounds 7–10); residual bimodality was a path-MTU black-hole collapse (round 15); the
 Linux CI failure was publish-side shedding in an under-configured test (round
-16). Round 17 then established that **the ceiling itself is macOS-specific** —
-Linux is faster at the pre-fix baseline than macOS is after every fix — and
+16). Round 17 then established that **the ceiling itself is macOS-specific**
+(Linux is faster at the pre-fix baseline than macOS is after every fix), and
 that the I/O runtime pool must stay off there. Round 18 finally benchmarked Linux on real
 hardware: the pool verdict holds, Linux reaches **1.17 GB/s** (2.3x macOS), and
 the round-15 loopback MTU guarantee is a **hard delivery stall** there whenever
-the documented sysctl tuning is applied — unfixed as of that round.
+the documented sysctl tuning is applied, unfixed as of that round.
 The ceiling was scheduling, not any Felix
 stage: quinn's driver tasks do a bounded slice of work per poll and reschedule
 themselves, so sustained throughput is that slice divided by scheduler re-poll
-latency — and on a runtime shared with ~50 app tasks that latency, times one
+latency, and on a runtime shared with ~50 app tasks that latency, times one
 wakeup chain per datagram, was the whole pipeline's clock. Fixes (all in Felix,
 official quinn only): dedicated single-threaded I/O runtimes for quinn drivers,
 colocation of the two transport-facing pump tasks with those drivers, and
@@ -28,12 +28,12 @@ QUIC ACK-frequency tuning. Result on the same box and benchmark:
 | 4 KiB × batch 64, fanout 1 (sustained) | 73 MB/s | **p50 548 MB/s** (max 557) |
 | 1 KiB, fanout 1 | 74.9 MB/s | **~480 MB/s** |
 | 16 KiB, fanout 1 | ~72 MB/s | **~507 MB/s** |
-| latency profile (1 KiB, batch 1, acked) | — | p50 129 µs / p999 256 µs |
+| latency profile (1 KiB, batch 1, acked) | n/a | p50 129 µs / p999 256 µs |
 
 **Both defects are fixed.** The residual bimodality (~30% of runs 5–6×
 slower, rounds 12–14) turned out to be quinn's MTU black-hole detector
 misreading a congestive loss burst and collapsing the path MTU to 1200 for
-the rest of the run — see round 15 for the diagnosis and fix.
+the rest of the run; see round 15 for the diagnosis and fix.
 
 Map of this document: rounds 1–6 are the elimination history that pointed at the
 mechanism; 7–10 are the diagnosis and fix of the main ceiling; 11–14 cover the
@@ -51,7 +51,7 @@ and fix of the residual.
   `net.inet.udp.recvspace=786896`, `net.inet.udp.maxdgram=9216`
 
 Broker and client both run **in the same process** in this harness, sharing one
-tokio runtime — worth remembering when reading CPU numbers.
+tokio runtime, which is worth remembering when reading CPU numbers.
 
 ## Headline findings
 
@@ -62,12 +62,12 @@ tokio runtime — worth remembering when reading CPU numbers.
    window, 1 KiB and 4 KiB converge on the same ~73 MB/s payload rate. Larger
    payloads simply hit the window sooner, which *looked* size-dependent.
 3. **Felix is meaningfully slower than raw quinn on the same box**, but the gap
-   is ~3.5× on wire bytes at comparable core counts — not the 8× a naive
+   is ~3.5× on wire bytes at comparable core counts, not the 8× a naive
    payload-vs-payload comparison suggests. See "Corrections" below.
 4. **Both Felix and raw quinn are ~90% system time** on macOS loopback. (An
-   early suspicion that Felix sends smaller datagrams was later **disproven** —
-   see round 2; Felix runs at MTU 16354 with ~15,650 B/datagram.)
-5. **The ceiling is exactly per-byte** — 70–73 MB/s across a 16× payload range —
+   early suspicion that Felix sends smaller datagrams was later **disproven**;
+   see round 2. Felix runs at MTU 16354 with ~15,650 B/datagram.)
+5. **The ceiling is exactly per-byte** (70–73 MB/s across a 16× payload range),
    and every structural explanation tested has been eliminated. See round 6.
 
 ## The measurement flaw (finding 1)
@@ -87,19 +87,19 @@ Throughput at 4 KiB, fanout 1, batch 64, varying run length (3 reps each):
 
 Variance within a run length is ~±5%; across run lengths throughput falls
 monotonically. The marginal rate between successive windows keeps dropping
-(20,800 → 16,370 msg/s), so this is not a fixed startup transient — the short
+(20,800 → 16,370 msg/s), so this is not a fixed startup transient. The short
 runs are simply measuring buffer fill.
 
 **Consequence:** the numbers in
 `docs-site/src/content/docs/features/benchmarks.md` are affected. The macOS
 1 KiB × fanout 1 row (244–263 K msg/s) is a buffer-absorption measurement. That
 page's methodology section promises "sustainable rates, not burst rates measured
-while shedding" — it is correct about shedding (drops really are 0), but the
+while shedding". It is correct about shedding (drops really are 0), but the
 buffering artifact defeats the intent regardless.
 
 ## The cliff is an artifact (finding 2)
 
-Original payload sweep (fanout 1, batch 64, total 20,000 — all under the window
+Original payload sweep (fanout 1, batch 64, total 20,000, all under the window
 except the last two rows):
 
 | Payload | msg/s | MB/s |
@@ -139,8 +139,8 @@ size, i.e. on total run bytes relative to the window.
 
 ## Raw quinn baseline (finding 3)
 
-Standalone probe replicating Felix's transport settings exactly — same windows,
-same MTU config, same 8 MiB `SO_SNDBUF`/`SO_RCVBUF` halve-until-accepted loop —
+Standalone probe replicating Felix's transport settings exactly (same windows,
+same MTU config, same 8 MiB `SO_SNDBUF`/`SO_RCVBUF` halve-until-accepted loop),
 moving bytes over loopback with no broker, no wire protocol, no fanout.
 One uni stream, 256 KiB writes, 32 MB per run.
 
@@ -194,15 +194,15 @@ and by loopback double-counting; treat it as indicative, not exact.
 | Cores busy (CPU/wall) | 3.4 of 16 | 2.8 |
 | Voluntary ctx switches | 7,374 | 0 |
 | Involuntary ctx switches | 361,126 | 54,279 |
-| Max RSS | 554 MB | — |
+| Max RSS | 554 MB | n/a |
 
-Both are overwhelmingly kernel time — macOS UDP loopback is syscall-dominated,
+Both are overwhelmingly kernel time: macOS UDP loopback is syscall-dominated,
 consistent with what `benchmarks.md` already reports. Critically, **Felix leaves
 12+ of 16 cores idle** while running well below the transport ceiling, so this
 is not a CPU-saturation problem.
 
 `sample`-based symbol occurrence counts over 8 s under load (occurrence counts
-of frames in the call tree, **not** sample-weighted — indicative only):
+of frames in the call tree, **not** sample-weighted, so indicative only):
 
 ```
 __sendmsg 63   __psynch_mutexwait 41   __psynch_cvsignal 32   malloc 29
@@ -215,14 +215,14 @@ The pthread mutex/condvar family taken together is the largest userspace
 category, which lines up with the note already in `benchmarks.md` that the next
 target is "user-space scheduling and synchronization."
 
-## Corrections — hypotheses that were tested and disproven
+## Corrections: hypotheses that were tested and disproven
 
 Recorded deliberately, because several are plausible enough to be re-proposed.
 
 1. **The redundant payload copy is not the bottleneck.** `decode_publish_batch`
    does `bytes.to_vec()` per payload (`crates/protocol/felix-wire/src/client/binary/publish.rs:317`) and
    every caller immediately converts back with `Bytes::from(vec)`
-   (`handlers/publish/uni.rs:82`, `control.rs:108`) — a genuine
+   (`handlers/publish/uni.rs:82`, `control.rs:108`), a genuine
    `Bytes`→`Vec`→`Bytes` round trip caused only by `PublishBatch.payloads` being
    `Vec<Vec<u8>>`. Measured: **6.8 µs per 64 × 4 KiB frame (38.3 GB/s)** versus
    0.2 µs for a refcount clone. At 73 MB/s that is ~0.2% of one core. Worth
@@ -258,13 +258,13 @@ Recorded deliberately, because several are plausible enough to be re-proposed.
 ## Current best understanding
 
 The publisher blocks in `client_send_await` (p50 3.8 ms at 4 KiB) while every
-instrumented broker operation stays in the microseconds — `broker_decode` 27 µs,
+instrumented broker operation stays in the microseconds: `broker_decode` 27 µs,
 `broker_publish_append` 1 µs, `broker_quic_write` 2 µs, `broker_sub_write` 2 µs.
 The machine is 90% kernel time and 12+ cores idle. So the cost is not in any
 single operation and not in CPU-bound work; it is in how many kernel operations
 Felix performs per byte, and in the handoffs between the tasks that perform them.
 
-The leading suspicion — **not yet verified** — is that Felix's effective
+The leading suspicion (**not yet verified**) is that Felix's effective
 datagram size is far below the MTU quinn negotiates. The probe sent ~15,267
 bytes per packet (2,096 packets for 32 MB at upper 16384); Felix's netstat-derived
 average is ~1,835 bytes. If real, that is ~8× more syscalls per byte and would
@@ -287,13 +287,13 @@ udp_tx_datagrams=15106  udp_tx_bytes=236417567  udp_tx_ios=15106
 
 **15,650 bytes per datagram, zero loss, zero congestion events.** Path MTU
 discovery works perfectly. The netstat-derived "~1,835 B/datagram" from round 1
-was wrong — it is diluted by ACKs, idle connections and system-wide traffic.
+was wrong: it is diluted by ACKs, idle connections and system-wide traffic.
 `udp_tx_ios == udp_tx_datagrams` confirms no GSO on macOS, one syscall per
 datagram, as expected.
 
 ### The raw-quinn baseline, corrected twice
 
-Round 1's "628–819 MB/s" figures were **32 MB runs — inside the 64 MiB send
+Round 1's "628–819 MB/s" figures were **32 MB runs, inside the 64 MiB send
 window**, so the probe had the same measurement flaw as the harness. Sweeping
 run size properly:
 
@@ -313,7 +313,7 @@ six subsequent runs and is treated as an anomaly, but it shows MTU discovery
 
 ### Nothing in the pipeline is saturated
 
-Queue sweep at a valid run size (234 MB) — all flat:
+Queue sweep at a valid run size (234 MB), all flat:
 
 | Config | MB/s |
 |---|---:|
@@ -324,7 +324,7 @@ Queue sweep at a valid run size (234 MB) — all flat:
 | `PUBLISH_INFLIGHT_BYTES=32MiB` | 71.6 |
 | all three | 77.5 |
 
-Note this also retracts round 1's "+34% from `PUBLISH_INFLIGHT_BYTES`" — that was
+Note this also retracts round 1's "+34% from `PUBLISH_INFLIGHT_BYTES`"; that was
 measured on a buffer-absorbed run. At a valid size it does nothing.
 
 Instrumentation overhead is likewise minor: timings on 17,430 / timings off
@@ -345,12 +345,12 @@ to user time** (e.g. 1.52 s STIME against 0.14 s UTIME).
 | Cores busy | 3.4 of 16 | 1.7 |
 | Involuntary ctx switches | 361,126 | 32,837 |
 
-**Felix spends ~8× more kernel time per byte than raw quinn** — and the weighted
+**Felix spends ~8× more kernel time per byte than raw quinn**, and the weighted
 self-time profile shows `__sendmsg` is only 2.3% of samples. So that kernel time
 is not I/O. It is thread scheduling, futex and condvar traffic.
 
 Corrected self-time profile (the round-1 "symbol occurrence counts" were
-meaningless — they ignored both sample weights and tree structure):
+meaningless; they ignored both sample weights and tree structure):
 
 ```
  5.2%  tracing Instrumented::poll
@@ -378,7 +378,7 @@ meaningless — they ignored both sample weights and tree structure):
 | 4 | 213.3 MB/s | 53.3 MB/s |
 | 8 | 294.4 MB/s | 36.8 MB/s |
 
-Aggregate capacity is not capped at 73 MB/s — it reaches 294 MB/s across eight
+Aggregate capacity is not capped at 73 MB/s. It reaches 294 MB/s across eight
 independent subscriber chains. **One subscriber's chain caps at ~75 MB/s**,
 against raw quinn's 750 MB/s on a single stream.
 
@@ -395,20 +395,20 @@ independent chains (fanout) scales; adding parallelism within a chain
 That is a **latency-bound dependency chain, not a throughput-bound resource**:
 each stage blocks handing off to the next, and the cost is a kernel round trip
 per handoff. The reason it presents as a *byte* rate is that wakeups scale with
-**datagram count** — `read_exact` on a 256 KiB frame is woken once per ~16 KB
-datagram arrival — and datagram count is bytes divided by MTU. This also explains
+**datagram count** (`read_exact` on a 256 KiB frame is woken once per ~16 KB
+datagram arrival), and datagram count is bytes divided by MTU. This also explains
 the MTU sensitivity measured in round 1 (upper 1452 → 36.3 MB/s vs upper 16384 →
 75.7 MB/s): fewer, larger datagrams mean proportionally fewer wakeups.
 
 **Unverified.** The wakeup-per-datagram mechanism is inferred from converging
-evidence, not directly counted. Counting wakeups per byte — via the existing
+evidence, not directly counted. Counting wakeups per byte (via the existing
 `felix_perf_publish_worker_wakeups_total` / `..._jobs_total` counters under the
-`perf_debug` feature, or `dtrace` on context switches — is the step that would
+`perf_debug` feature, or `dtrace` on context switches) is the step that would
 confirm or kill it, and should happen before any large change.
 
 ## Round 3: the architecture is not the problem
 
-The one-hop blast is an unfair target — Felix does two QUIC hops and twice the
+The one-hop blast is an unfair target: Felix does two QUIC hops and twice the
 wire traffic by construction. So: a minimal **store-and-forward relay**
 (publisher → relay → subscriber), where the relay parses length-prefixed frames
 and forwards each one. This is the smallest thing that does the broker's job,
@@ -426,7 +426,7 @@ and it establishes what Felix's *architecture* is worth on this box.
 Two conclusions, one of which kills the leading candidate fix:
 
 1. **Store-and-forward over two QUIC hops is worth ~540 MB/s.** Felix gets
-   73 MB/s — **13% of what its own architecture allows.** The gap is Felix's
+   73 MB/s, **13% of what its own architecture allows.** The gap is Felix's
    code, not QUIC, not the extra hop, not macOS loopback.
 2. **`read_exact` vs `read_chunk` makes no measurable difference.** Candidate fix
    #1 below is dead. Good: it was the most invasive of the three and would have
@@ -440,7 +440,7 @@ CPU per byte, all three systems, normalised to wire bytes:
 | Minimal relay, two hops | 2.5 ms | 2.70 s | 541 MB/s |
 | **Felix** | **23.8 ms** | 1.63 s | 73 MB/s |
 
-Felix's **user** time is unremarkable — lower than the relay's, in fact. Its
+Felix's **user** time is unremarkable, lower than the relay's, in fact. Its
 **system** time per byte is ~9× the relay's. Since datagram sizes and counts are
 comparable and `__sendmsg` is ~2% of the profile, that kernel time is
 synchronization: futex/condvar traffic from task and thread handoffs. Felix runs
@@ -474,7 +474,7 @@ Static analysis (correctly) identified that `event_batch_max_bytes` defaults to
 64 KiB (`services/felix-broker-service/src/config.rs`), that
 `handlers/subscribe/feeder.rs` splits a 256 KiB envelope into four separately
 encoded 64 KiB lane frames, and that `_lane_flush_hints` in `feeder.rs:24-29` is
-a dead binding — `flush_max_items`, `flush_max_delay` and `max_bytes_per_write`
+a dead binding: `flush_max_items`, `flush_max_delay` and `max_bytes_per_write`
 are captured and never used. **All three verified in the code.**
 
 The prediction was that letting a batch travel as one frame would cut downstream
@@ -493,10 +493,10 @@ round-3 relay result: hops, locks and copies are individually free, so reducing
 the number of them does not help either. The chain description is accurate; the
 causal claim attached to it is not.
 
-`_lane_flush_hints` being dead is still a real bug worth fixing — the configured
-flush delay genuinely does nothing — but fixing it will not recover throughput.
+`_lane_flush_hints` being dead is still a real bug worth fixing (the configured
+flush delay genuinely does nothing), but fixing it will not recover throughput.
 
-### The pipeline is bimodal — the strongest remaining lead
+### Pipeline bimodality is the strongest remaining lead
 
 Back-to-back runs of an *identical* configuration
 (`WORKER_THREADS=2`, `DISABLE_TIMINGS=1`, `--sub-delivery-shaping-off`):
@@ -511,23 +511,23 @@ while `shaping off` by itself on default threads gives 17,224 (71 MB/s).
 
 **Felix intermittently runs 4× faster on identical settings.** Delivery drops
 stay 0 in both modes, so the fast mode is not shedding. This is the single most
-informative unexplained observation: the pipeline can evidently reach ~400 MB/s
-— within striking distance of the 540 MB/s relay ceiling — but usually settles
+informative unexplained observation: the pipeline can evidently reach ~400 MB/s,
+within striking distance of the 540 MB/s relay ceiling, but usually settles
 into a mode that is 4× slower.
 
 That is the signature of a scheduling/coalescing bistability: in one mode a
 stage accumulates several items per wakeup and amortises the chain; in the other
 it processes one item per wakeup in lockstep. Which one it lands in appears to
 depend on startup timing. **Finding what selects the fast mode, and making it
-the only mode, is the most promising path to closing the gap** — far more so
+the only mode, is the most promising path to closing the gap**, far more so
 than any of the structural changes tested so far.
 
-## Round 5: the direct subscription writer — built, correct, no faster
+## Round 5: the direct subscription writer is correct and no faster
 
 Implemented the direct egress path: one task owning both the subscription
 receiver and the QUIC `SendStream`, draining, encoding, coalescing up to
 `max_bytes_per_write`, and issuing a single `write_all_chunks`. It skips lane
-registration entirely — no lane channel, no lane task, no connection-writer
+registration entirely: no lane channel, no lane task, no connection-writer
 channel or task, no DashMap routing, no `FuturesUnordered`. Behind
 `subscriber_direct_writer` / `FELIX_SUB_DIRECT_WRITER` so it can be A/B'd.
 
@@ -552,14 +552,14 @@ removing 2 hops cannot recover anything either.
 - **Making batching real / raising write sizes.** Round 4 already tested the
   prediction directly: one frame per batch instead of four measured the same.
 - **Batching client dispatch (one channel op per frame instead of 64).** The
-  ceiling is invariant to event rate — 1 KiB delivers 73,126 events/s and 4 KiB
+  ceiling is invariant to event rate: 1 KiB delivers 73,126 events/s and 4 KiB
   delivers 18,250 events/s, both at ~73 MB/s. A per-event cost would cap
   events/s, not bytes/s. Ruled out by that invariance.
 - **Removing the client publisher round trip.** Same argument: it is per-batch,
   and batch rate varies 4× across payload sizes with no change in byte rate.
 - **Flow control.** Checked: the client's event stream window is already 64 MiB
   and its connection window 256 MiB (`crates/sdk/felix-client/src/config.rs:27-29`).
-  At 73 MB/s that is 0.86 s of buffering — not window-limited.
+  At 73 MB/s that is 0.86 s of buffering, so not window-limited.
 
 ## Where this leaves it
 
@@ -608,7 +608,7 @@ backpressured*. The broker is not credit-starved by a slow client, and the
 publisher is not credit-starved by the broker.
 
 This inverts the reading of `client_send_await p50 = 3.8 ms`. It is not evidence
-of something blocking downstream — if it were, we would see blocked frames. The
+of something blocking downstream; if it were, we would see blocked frames. The
 producer side simply is not feeding faster.
 
 ### Publisher concurrency does not scale
@@ -641,7 +641,7 @@ Every row ~312 MB, so all are past the send window:
 **A 16× spread in payload size and a 16× spread in message rate produce the same
 70–73 MB/s.** This is the strongest single result in the investigation. It
 definitively eliminates every per-message, per-event, per-batch and per-frame
-explanation — including client dispatch channel operations, publisher round
+explanation, including client dispatch channel operations, publisher round
 trips, encode/decode cost, and framing overhead. Any of those would hold
 *messages* per second constant, not *bytes*.
 
@@ -690,7 +690,7 @@ system time, and the bimodality (two stable cycle patterns).
 
 Concrete suspects not yet eliminated, in order:
 
-1. A timer- or park-driven wakeup cycle in the delivery path — note
+1. A timer- or park-driven wakeup cycle in the delivery path. Note
    `71 MB/s ÷ 64 KiB ≈ 1,090 writes/s ≈ 0.92 ms per write`, suspiciously close to
    a 1 ms timer granularity. Raising `max_bytes_per_write` alone did not move it,
    which would fit if the *actual* per-cycle payload is bounded elsewhere.
@@ -700,7 +700,7 @@ Concrete suspects not yet eliminated, in order:
    draining what is available.
 
 The decisive next measurement is a **timestamped trace of one subscriber's write
-cycle** — when each write is issued, how many bytes it carried, and how long the
+cycle**: when each write is issued, how many bytes it carried, and how long the
 task was parked between writes. That directly reads off "bytes per cycle" and
 "cycle time" and would confirm or kill the quantisation theory in one run. The
 `felix_sub_direct_write_frames` / `felix_sub_direct_write_bytes` histograms added
@@ -708,23 +708,23 @@ with the direct writer are the natural place to start.
 
 ## Candidate fixes, highest confidence first
 
-1. ~~**Read with `read_chunk` instead of `read_exact`.**~~ **Disproven (round 3)**
-   — the relay probe shows no difference. Do not do this.
-2. ~~**Reduce egress frame granularity.**~~ **Disproven (round 4)** — one frame
+1. ~~**Read with `read_chunk` instead of `read_exact`.**~~ **Disproven (round 3)**:
+   the relay probe shows no difference. Do not do this.
+2. ~~**Reduce egress frame granularity.**~~ **Disproven (round 4)**: one frame
    per batch instead of four measures the same.
-3. ~~**Collapse handoffs in the delivery chain.**~~ **Disproven (round 3)** — a
+3. ~~**Collapse handoffs in the delivery chain.**~~ **Disproven (round 3)**: a
    relay with 4 added mpsc hops, a mutex ring append and a re-encode copy runs
    at 507–534 MB/s, indistinguishable from the 511 MB/s zero-hop baseline. Hops
    are not the cost, so removing them will not help.
-4. **Investigate the bimodality.** *(now the top item — items 1-3 and the direct
+4. **Investigate the bimodality.** *(now the top item; items 1-3 and the direct
    writer are all disproven)* The pipeline reaches ~400 MB/s intermittently
    on unchanged settings. Instrument which stage's batching collapses in the slow
-   mode — a per-wakeup item-count histogram at each stage
+   mode. A per-wakeup item-count histogram at each stage
    (`feeder`, `run_writer_lane`, `run_connection_writer`, client dispatch) would
    show it directly. This is the highest-value next step.
 5. **Set runtime width deliberately.** Worth ~20–33% and already measurable, but
    validate against a standalone broker before changing any default.
-6. **Fix `_lane_flush_hints`** (`feeder.rs:24-29`) — the configured flush delay
+6. **Fix `_lane_flush_hints`** (`feeder.rs:24-29`): the configured flush delay
    is silently ignored. A correctness/config-honesty bug, not a throughput fix,
    though it may interact with the bimodality above since coalescing is exactly
    what the dead hints were meant to control.
@@ -732,7 +732,7 @@ with the direct writer are the natural place to start.
 Not worth doing on this evidence: the `Bytes`→`Vec`→`Bytes` copy, storage/fsync
 work, `io_uring`, anything sendfile-shaped, or `core_shards` as a default.
 
-## Round 7: cwnd/rtt visibility kills the congestion theories — and relocates the problem
+## Round 7: cwnd/rtt visibility kills the congestion theories and relocates the problem
 
 Added `cwnd`/`rtt` to the broker's `FELIX_CONN_STATS_MS` logging and a matching
 client-side logger (the client is the sender on the publish path, so its
@@ -741,7 +741,7 @@ congestion state is invisible from broker-side stats).
 - **Congestion window is not the cap.** The busy delivery connection grows to
   cwnd 22–30 MB; the busy publish connection to 13–15 MB. Idle/app-limited
   connections pin at the 2×MTU minimum (32,708 B), but they carry no load.
-- **Loopback RTT under load is 30–100 ms** — pure queuing delay (~3–8 MB
+- **Loopback RTT under load is 30–100 ms**, pure queuing delay (~3–8 MB
   standing in kernel socket buffers). The transport is being fed and drained
   slower than it can go, and the queue keeps the control loop sluggish.
 - `FELIX_INITIAL_CWND=8MiB` on every endpoint: no change. Confirms cwnd is not
@@ -754,11 +754,11 @@ congestion state is invisible from broker-side stats).
   never the bottleneck; the broker→subscriber delivery chain is the bimodal
   stage.**
 - In slow mode the delivery connection sends a steady 80 MB/s with zero loss,
-  zero blocked frames and a 22 MB cwnd — the transport is idle; the app side
+  zero blocked frames and a 22 MB cwnd. The transport is idle; the app side
   offers one ~52 KB write per ~0.8 ms. In fast mode the same code pushes
   450–500 MB/s (with some socket-buffer loss, which Cubic absorbs).
 
-## Round 8: the mechanism — driver re-poll latency is the clock
+## Round 8: driver re-poll latency is the clock
 
 Reading quinn 0.11 internals gave the missing piece:
 
@@ -775,22 +775,22 @@ Reading quinn 0.11 internals gave the missing piece:
   pays a fixed scheduler round trip. Per-message and per-frame costs never
   mattered because the datagram chain dominates.
 
-**Fix 1 — dedicated I/O runtimes** (`crates/protocol/felix-transport`): quinn endpoints
+**Fix 1: dedicated I/O runtimes** (`crates/protocol/felix-transport`): quinn endpoints
 get a `quinn::Runtime` implementation that spawns all driver tasks onto a pool
 of *single-threaded* tokio runtimes (round-robin per endpoint,
-`FELIX_IO_RUNTIME_THREADS`, default = available parallelism; the demo pins 2 —
+`FELIX_IO_RUNTIME_THREADS`, default = available parallelism; the demo pins 2;
 see round 9). Driver self-wakes now re-poll immediately and never migrate
 cores; on macOS the threads are pinned to high QoS. Measured: fast mode
-appears at *default* settings for the first time — 121–137 K msg/s
+appears at *default* settings for the first time: 121–137 K msg/s
 (~500–560 MB/s) in most runs.
 
 Verified along the way with a temporarily patched local quinn (raised
-per-poll bounds, pacing off — diagnostic only, **removed**; the shipped fix
+per-poll bounds, pacing off; diagnostic only, **removed**; the shipped fix
 uses official crates exclusively): raising quinn's internal bounds was worth
 only ~+20% once drivers were isolated, and pacing was not the residual
 bottleneck.
 
-## Round 9: the bimodality — batching vs per-datagram lockstep
+## Round 9: the bimodality is batching vs per-datagram lockstep
 
 With drivers isolated, runs are either ~90 MB/s or ~530 MB/s on identical
 settings. What was established:
@@ -799,7 +799,7 @@ settings. What was established:
   → driver → reader → ACK path back) processes one quantum per wakeup and
   parks. One cross-thread wakeup chain per ~16 KB datagram at ~200 µs ≈
   85 MB/s, invariant to write size, ACK frequency, queue depths and payload
-  size — exactly the shape rounds 1–6 measured.
+  size: exactly the shape rounds 1–6 measured.
 - Fast mode is the batched equilibrium: some queue depth exists, every poll
   amortises many datagrams, and the pipeline runs at the machine's real
   capacity.
@@ -811,12 +811,12 @@ settings. What was established:
   isolated from each other, lockstep dominates (~90 MB/s). Sharing a thread
   forces batching. Hence the demo (13 endpoints in one process) pins the pool
   to 2; a standalone broker has one endpoint and is indifferent.
-- Forced all-E-core execution (`taskpolicy -b`) still reaches 190 MB/s — slow
+- Forced all-E-core execution (`taskpolicy -b`) still reaches 190 MB/s. Slow
   mode is *waiting*, not slow execution.
 
-**Fix 2 — pump colocation** (`QuicConnection::spawn_pump`): the two tasks that
-exchange a wakeup with the transport per datagram/write — the client's
-subscription read task and the broker's per-connection delivery writer — are
+**Fix 2: pump colocation** (`QuicConnection::spawn_pump`). The two tasks that
+exchange a wakeup with the transport per datagram/write (the client's
+subscription read task and the broker's per-connection delivery writer) are
 spawned onto the same single-threaded runtime as their connection's drivers,
 making those wakeups same-thread task switches. Worth ~+13% and shrinks the
 lockstep window. The client *publisher* writer must NOT be colocated: it
@@ -825,7 +825,7 @@ waits on (measured 5× loss).
 
 ## Round 10: ACK frequency, and levers that did not survive
 
-**Fix 3 — ACK frequency** (`felix-transport`, quinn's ACK-frequency
+**Fix 3: ACK frequency** (`felix-transport`, quinn's ACK-frequency
 extension): `max_ack_delay` 25 ms → 2 ms (a window-limited sender resumes only
 on an ACK, so delayed ACKs stall the pipeline for the full delay) and
 `ack_eliciting_threshold` 1 → 20 (each reverse-path ACK costs a datagram plus
@@ -837,7 +837,7 @@ Measured and rejected:
 
 | Candidate | Verdict |
 |---|---|
-| Huge initial cwnd (`FELIX_INITIAL_CWND` up to 5 GB, which also disables quinn's pacer) | worse — burst loss thrash |
+| Huge initial cwnd (`FELIX_INITIAL_CWND` up to 5 GB, which also disables quinn's pacer) | worse: burst loss thrash |
 | Fixed-window congestion controller (official `congestion_controller_factory` API) | worse than Cubic for the same reason; removed |
 | Colocating the client publisher writer | 5× worse; reverted |
 | 1–4 MiB egress writes (`FELIX_SUB_MAX_BYTES_PER_WRITE`) | no change in either mode |
@@ -848,7 +848,7 @@ Measured and rejected:
 ## Resolution summary
 
 Root cause, one sentence: **Felix's throughput was clocked by scheduler wakeup
-latency — one cross-thread wakeup chain per QUIC datagram — because quinn's
+latency (one cross-thread wakeup chain per QUIC datagram) because quinn's
 bounded-work driver tasks shared runtimes with all application tasks; every
 per-stage measurement was fast because no stage was the problem.**
 
@@ -867,7 +867,7 @@ Shipped changes (official quinn/quinn-proto only):
    13-endpoint single-process topology; honours
    `FELIX_EVENT_BATCH_MAX_BYTES`/`FELIX_SUB_MAX_BYTES_PER_WRITE` overrides.
 5. Removed: the round-5 direct subscription writer (built, measured, no
-   effect — deleted), the `FixedWindow` congestion mode, and every vendored
+   effect, deleted), the `FixedWindow` congestion mode, and every vendored
    quinn experiment.
 
 Both perf profiles benefit: the throughput profile lands at ~550 MB/s p50 and
@@ -885,7 +885,7 @@ changes affect only transport acking, not request round trips).
   chasing it further; `FELIX_IO_RUNTIME_THREADS` is the lever to sweep.
 - **A load-sensitive test flake surfaced during this work**:
   `publish_sharding_preserves_stream_order` intermittently observed a
-  contiguous gap (~100 events) under full-suite parallelism — including in
+  contiguous gap (~100 events) under full-suite parallelism, including in
   configurations where every queue on the path is `Block`, which should make
   gaps impossible. It did not reproduce on unmodified `main` (12 runs) nor in
   the final 14-run verification, and its incidence tracked machine state more
@@ -902,7 +902,7 @@ Round 1 suggested `mtu_discovery_upper_bound` of 8192 beat 16384 by ~30%. That
 comparison came from buffer-absorbed 32 MB probe runs and **does not survive**
 the corrected sweep: at valid run sizes the probe reaches 16354 and sustains
 750–800 MB/s. Treat the 16384 default as fine and unproven-either-way, not as a
-known 30% win. Note the QUIC spec distinction — Felix's
+known 30% win. Note the QUIC spec distinction: Felix's
 `initial_mtu` of 1200 is correctly RFC-safe and must stay conservative, since
 RFC 9000 §14 requires PMTUD before exceeding ~1252 bytes on an unknown path.
 The *discovery upper bound* is quinn's DPLPMTUD (RFC 8899) probing, which is
@@ -950,7 +950,7 @@ Suggested follow-ups not yet done:
   send window, so the round-1 measurement artifact cannot silently return.
 - Re-run and correct the affected tables in
   `docs-site/src/content/docs/features/benchmarks.md`, including the
-  `core_shards` claims — the current numbers are both artifact-tainted (round 1)
+  `core_shards` claims. The current numbers are both artifact-tainted (round 1)
   and now far below what the fixed pipeline delivers.
 - Investigate the residual slow-mode tail and the
   `publish_sharding_preserves_stream_order` gap observation (see "What remains
@@ -972,8 +972,8 @@ plausible-looking wrong data.
 chart mixed **six code states**: of 5,682 rows, only 2,257 were the new run.
 The rest were commits from three days earlier.
 
-`git_sha` cannot separate them, because the interesting changes are uncommitted
-— several sessions share one sha with `git_dirty: true`. That is what the
+`git_sha` cannot separate them, because the interesting changes are uncommitted:
+several sessions share one sha with `git_dirty: true`. That is what the
 tooling's own warning ("their git_sha does not identify what was measured") was
 telling us.
 
@@ -995,7 +995,7 @@ filtering there are no incomplete groups left (448 rows, 0 incomplete).
 
 The throughput charts plotted msg/s across payloads 0–4096 on one linear axis.
 0 B does ~3.7M msg/s and 4 KiB does ~21K, so the 4 KiB bar was 0.6% of the
-tallest and rendered as nothing — reading as "4 KiB has no throughput" when it
+tallest and rendered as nothing, reading as "4 KiB has no throughput" when it
 was in fact moving the most *bytes* on the chart.
 
 **Fix.** Log y-axis on message-rate charts, plus a new
@@ -1004,7 +1004,7 @@ throughput measure. 0 B is excluded from it rather than drawn as a zero bar.
 
 ### 4. The demo's own sweep measured buffer fill
 
-`--all` hardcoded `total = 5000` for every payload — 20 MB at 4 KiB, well
+`--all` hardcoded `total = 5000` for every payload: 20 MB at 4 KiB, well
 inside the 64 MiB send window. Sizing is now per payload, with a floor that
 clears the window whenever affordable and a cap on *delivered* messages so a
 20-case sweep stays ~40 s. Only combinations where clearing the window would
@@ -1019,7 +1019,7 @@ becomes a multi-minute benchmark.
 
 The matrix's throughput half was **unusable**: 45% of `batch=64` cells had
 p90/p10 trial spread above 1.5×, some 7.2×, and the medians mostly landed in
-the degraded mode (~87–114 MB/s — near the *pre-fix* ceiling) while hand
+the degraded mode (~87–114 MB/s, near the *pre-fix* ceiling) while hand
 measurement on an idle machine gave 477–509 MB/s. Publishing those would have
 reported the bug as the product's performance.
 
@@ -1027,8 +1027,8 @@ reported the bug as the product's performance.
 run that overlaps with compilation, a test suite or a docs build is
 contaminated. Run the matrix on an otherwise idle machine.
 
-The latency half of the same matrix was fine — 224 cells, only 15% with
-meaningful spread — and is the basis for the published latency table.
+The latency half of the same matrix was fine (224 cells, only 15% with
+meaningful spread) and is the basis for the published latency table.
 
 ## Round 12: the bimodality is endpoint→I/O-runtime placement (half of it)
 
@@ -1046,7 +1046,7 @@ The decisive measurement. Same command, one fast run and one slow, under
 | **context switches per message** | **0.42** | **2.40** | **5.7×** |
 
 Both modes saturate the same ~1.9 cores. The slow mode is not blocked on a
-timer or starved of CPU — it performs **5.7× more kernel work per message**.
+timer or starved of CPU. It performs **5.7× more kernel work per message**.
 That is the lockstep, quantified: one wakeup chain per item instead of one per
 batch.
 
@@ -1074,9 +1074,9 @@ Endpoints were assigned to I/O runtimes round-robin. Slow-run rate by pool size,
 
 | pool | before grouping | after grouping |
 |---|---|---|
-| 1 | 0/8 (but capped ~345 MB/s — one thread serializes) | — |
+| 1 | 0/8 (but capped ~345 MB/s; one thread serializes) | not run |
 | 2 | 1/8 | 2/8 |
-| 3 | **7/8** | — |
+| 3 | **7/8** | not run |
 | 4 | 7/8 | 3/8 |
 | 6 | **8/8** | **1/8** |
 
@@ -1085,8 +1085,8 @@ Two configurations were *deterministic*, which is what made this tractable:
 assignment showed the difference is not the pattern but which endpoints land
 together:
 
-- **fast** — broker endpoint alone on runtime 0; client publish + client event share runtime 1
-- **slow** — broker endpoint shares runtime 0 with the client's event endpoint
+- **fast**: broker endpoint alone on runtime 0; client publish + client event share runtime 1
+- **slow**: broker endpoint shares runtime 0 with the client's event endpoint
 
 Mechanism: the server endpoint drives every connection in both directions, so
 sharing it with anything starves it; and a client's publish and event endpoints
@@ -1104,15 +1104,15 @@ Client => pool_len - 1,                // always the last runtime
 Reserving the last runtime for clients is what makes the partition stable. A
 history-dependent selection (`seq % pool_len` for servers) alternates them onto
 the client runtime as endpoints accumulate, which matters wherever many
-endpoints are created in one process — see round 14.
+endpoints are created in one process; see round 14.
 
-Default pool size dropped from available-parallelism to **2** — a bigger pool
+Default pool size dropped from available-parallelism to **2**. A bigger pool
 cannot make a single endpoint faster (an endpoint's driver is one task on one
 runtime) and actively splits communicating endpoints. The old default was
 chosen to relieve a parallel-test-suite flake, never for throughput.
 
-This eliminated the pool-size sensitivity — including the 8/8 and 7/8
-deterministic cases — and **raised nothing else**: fast-mode throughput is
+This eliminated the pool-size sensitivity, including the 8/8 and 7/8
+deterministic cases, and **raised nothing else**: fast-mode throughput is
 unchanged at ~122K msg/s (500 MB/s) against 123K before.
 
 ### Also ruled out this round
@@ -1125,13 +1125,13 @@ unchanged at ~122K msg/s (500 MB/s) against 123K before.
 | App runtime width | ~1/8 slow at 1, 2, 4, 8 and 16 worker threads |
 | I/O pool size (after grouping) | 1–3/8 at every size |
 | Event connection pool | 1/8 at pool 1, 2/8 at pool 8 |
-| `cargo run` vs direct binary | no difference (an earlier claim that it *did* was a zsh word-splitting bug in the test harness — see below) |
+| `cargo run` vs direct binary | no difference (an earlier claim that it *did* was a zsh word-splitting bug in the test harness; see below) |
 
 ### Scripting the demo
 
 **zsh does not word-split unquoted parameter expansions.** Passing the demo's
 arguments through a shell variable (`$ARGS`) delivers them as a single string,
-which the parser ignores — the demo then falls back to its full built-in sweep
+which the parser ignores. The demo then falls back to its full built-in sweep
 and reports a different benchmark entirely. Pass literal arguments, or a shell
 array, when scripting runs.
 
@@ -1156,7 +1156,7 @@ What is known about it:
 ### Test flake, cause not established
 
 `publish_sharding_preserves_stream_order` fails intermittently under full-suite
-parallelism — never in isolation (4/4 passes at every pool setting), and the
+parallelism, never in isolation (4/4 passes at every pool setting), and the
 failure is a **2-second timeout, not a data gap**. Rate has ranged from 0/12 to
 2/4 across sessions, correlating with machine load; the last five suite runs
 were clean.
@@ -1170,18 +1170,18 @@ mitigation if it recurs.
 ### The single-run trap
 
 The `--all` sweep runs **one trial per case**. With a ~30% slow rate, several
-cases in any sweep will read 5–7× low — two adjacent cases in the log above
+cases in any sweep will read 5–7× low: two adjacent cases in the log above
 differ 5.7× and 7.1× on identical settings. `--all` is a smoke demo; anything
 quoted must come from `task perf:latency-matrix`, which medians five trials.
 
 Related output fix: the demo printed queueing delay for `batch > 1` runs under
 the same `p50 =` label as real request latency. Those percentiles scale with
-run length by design — lengthening runs to clear the send window made them grow
+run length by design. Lengthening runs to clear the send window made them grow
 from single-digit ms to hundreds of ms, which reads as a catastrophic
 regression and is not one. Batched runs now print under an explicit
 `queueing delay (NOT per-message latency ...)` heading.
 
-## Round 14: benchmark lifecycle — assignment stability and drop accounting
+## Round 14: benchmark lifecycle (assignment stability and drop accounting)
 
 Two defects in the benchmark's lifecycle handling distorted the round-13 sweep:
 endpoint assignment drifted across repeated in-process cases, and subscriber
@@ -1196,8 +1196,8 @@ creation history: `Server => seq % pool_len`. With the default pool of 2 and
 
 | case | server runtime | clients | result |
 |---|---|---|---|
-| 1 | 0 | 1 | isolated — fast |
-| 2 | **1** | 1 | **server shares with clients — slow** |
+| 1 | 0 | 1 | isolated, fast |
+| 2 | **1** | 1 | **server shares with clients, slow** |
 | 3 | 0 | 1 | fast |
 | … | alternating | always 1 | alternating |
 
@@ -1210,15 +1210,15 @@ slower" from this model alone:
 
 | # | payload | fanout | delivered/s | vs previous |
 |---|---|---|---|---|
-| 10 | 1 KiB | 1 | 396,692 | — |
+| 10 | 1 KiB | 1 | 396,692 | n/a |
 | 11 | 1 KiB | 1 | 314,002 | 1.3× slower |
-| 12 | 1 KiB | 10 | 738,852 | — |
+| 12 | 1 KiB | 10 | 738,852 | n/a |
 | 13 | 1 KiB | 10 | 129,991 | **5.7× slower** |
-| 14 | 4 KiB | 1 | 108,146 | — |
+| 14 | 4 KiB | 1 | 108,146 | n/a |
 | 15 | 4 KiB | 1 | 80,607 | 1.3× slower |
-| 16 | 4 KiB | 10 | 192,867 | — |
+| 16 | 4 KiB | 10 | 192,867 | n/a |
 | 17 | 4 KiB | 10 | 26,987 | **7.1× slower** |
-| 18 | 256 B | 1 | 1,298,113 | — |
+| 18 | 256 B | 1 | 1,298,113 | n/a |
 | 19 | 256 B | 1 | 977,113 | 1.3× slower |
 
 **5 of 5 pairs**, and the two extremes are the fanout-10 cases where the server
@@ -1246,7 +1246,7 @@ nothing to do with queue policy.
 
 **Fix.** A subscriber that times out, errors, or sees its stream close now
 fails the run with context instead of abandoning events. The field is renamed
-`unaccounted` and documented as a shortfall, not a drop counter — the real
+`unaccounted` and documented as a shortfall, not a drop counter. The real
 counters are `metrics` counters with no recorder installed in the demo, so they
 are honestly not collected here. A non-zero value now prints
 `sanity: INVALID RUN ... throughput above is not meaningful`.
@@ -1301,7 +1301,7 @@ Two things this class of bug requires:
 ### Next step
 
 One item remains: the ~30% fresh-process slow rate. The standalone-broker
-reproduction is still the right next move — a real broker has one endpoint and
+reproduction is still the right next move: a real broker has one endpoint and
 its clients are separate processes, so if the residual does not reproduce
 there, it is a property of the single-process harness rather than of Felix.
 
@@ -1311,7 +1311,7 @@ CI (ubuntu runners) failed on a branch that was green on macOS:
 `publish_sharding_preserves_stream_order` timed out after 30 s. Reproduced in
 a Linux container (`--cpus 4`): passes 4/4 in 0.4 s at the PR base, hangs 4/4
 on the branch **in isolation**, and only `FELIX_IO_RUNTIME_THREADS=0` cured
-it — so the dedicated I/O runtime pool looked responsible.
+it, so the dedicated I/O runtime pool looked responsible.
 
 ### The wrong turn, and what corrected it
 
@@ -1337,7 +1337,7 @@ That conclusion was wrong, and two things falsified it:
 ### The actual cause
 
 Counting at each stage settles it. The broker's control loop reads **444
-frames** — all 400 publishes plus setup — but `publish_batch_to_handle` runs
+frames** (all 400 publishes plus setup), but `publish_batch_to_handle` runs
 only **128 times**, and instrumenting checkpoint 4 shows **77 publishes
 explicitly dropped** in a single run:
 
@@ -1345,7 +1345,7 @@ explicitly dropped** in a single run:
 DBG ingest: DROPPED (queue full, policy=Drop)   x77
 ```
 
-Checkpoint 4 — the per-worker publish ingress queue, depth 64 — defaults to
+Checkpoint 4, the per-worker publish ingress queue (depth 64), defaults to
 `EnqueuePolicy::Drop`. The test pins `Block` on the broker's subscriber queue,
 the lane queue and the client's subscriber queue, but leaves publish ingress
 at its default, then asserts that all 200 events per stream arrive in order.
@@ -1361,7 +1361,7 @@ workers drained faster than the reader filled the queue.
 ### The fix
 
 `pub_ingress_wait: true` in that test's `BrokerConfig`, which switches
-checkpoint 4 to `Backpressure` — the same combination
+checkpoint 4 to `Backpressure`, the same combination
 `internals-concurrency.md` already documents as the requirement for lossless
 mode, and the one the benchmark harness uses. Note the env var
 (`FELIX_PUB_INGRESS_WAIT`) is *not* enough here: the test builds
@@ -1382,7 +1382,7 @@ The pool default returns to `2` on every platform.
 ### What this cost, and the lesson
 
 Two commits of misdiagnosis: first blaming the pool, then gating it to macOS.
-The trace evidence was real but read one layer too low — an ACKed-but-unread
+The trace evidence was real but read one layer too low: an ACKed-but-unread
 frame at the transport is equally consistent with "the sender stopped
 producing", and the sender had. **Count the item at every stage before
 concluding anything from a wakeup-shaped symptom**: 444 in, 128 through,
@@ -1390,7 +1390,7 @@ concluding anything from a wakeup-shaped symptom**: 444 in, 128 through,
 theory had not.
 
 Worth carrying separately: a 400-message unacked burst shedding ~19% at
-default settings on a 4-CPU host is *documented* behaviour, not a bug — but
+default settings on a 4-CPU host is *documented* behaviour, not a bug, but
 it is a sharper edge than the docs' "overload becomes visible" framing
 suggests, and worth revisiting when the ingress queue depth is next tuned.
 
@@ -1398,7 +1398,7 @@ suggests, and worth revisiting when the ingress queue depth is next tuned.
 
 GitHub was down, so the PR could not be re-tested; running CI's checks locally
 in a Linux container answered a question the whole investigation had left
-open — **all of rounds 1–16 were measured on macOS.**
+open: **all of rounds 1–16 were measured on macOS.**
 
 An A/B of the branch against the merge-base, same container, same configs
 (CI's `ci_subset_*` shapes, 5 trials each):
@@ -1412,7 +1412,7 @@ An A/B of the branch against the merge-base, same container, same configs
 
 Distributions are tight on both sides (base 78–85 µs, branch 151–155 µs), so
 this is not noise. It is also what CI's "18 potential performance
-regressions" was reporting — that verdict was correct and was *not* an
+regressions" was reporting. That verdict was correct and was *not* an
 artifact of the round-16 shedding bug.
 
 ### Which change, and can it be tuned out
@@ -1428,7 +1428,7 @@ Bisected by environment switch on the branch binary:
 
 The I/O runtime pool accounts for all of it; ACK-frequency tuning and ack
 pipelining are innocent (both remain active in the restored-latency config).
-No variant recovers it — pool sizes 1, 2, 4 and 8 all land at 150–153 µs, and
+No variant recovers it: pool sizes 1, 2, 4 and 8 all land at 150–153 µs, and
 disabling pump colocation only partially recovers throughput (1.09 M → 1.19 M
 against the base's 1.48 M) while leaving latency unchanged.
 
@@ -1439,7 +1439,7 @@ The decisive number is the *base* Linux throughput: 628 K msg/s at 1 KiB is
 branch applied (461 MB/s at 1 KiB). The ~73 MB/s per-byte ceiling that
 started this investigation does not exist on Linux at all.
 
-That reframes the pool. It removes a macOS scheduling pathology — quinn's
+That reframes the pool. It removes a macOS scheduling pathology: quinn's
 bounded-work drivers re-polling slowly on a shared, loaded runtime. Linux's
 scheduler evidently does not have that pathology, so isolating drivers there
 buys nothing and costs a cross-thread hop per datagram, which is exactly what
@@ -1448,7 +1448,7 @@ the numbers show.
 ### Disposition
 
 The pool defaults to `2` on macOS and `0` elsewhere. This is the same code
-shape as the round-16 gate that was reverted — but for the opposite reason,
+shape as the round-16 gate that was reverted, but for the opposite reason,
 and this time with both platforms measured: not "Linux is unvalidated", but
 "Linux is measurably faster without it".
 
@@ -1456,7 +1456,7 @@ and this time with both platforms measured: not "Linux is unvalidated", but
 deployment target and has never been benchmarked properly. Everything
 published in `benchmarks.md` is macOS. Before any further transport tuning,
 the matrix should be run on a real Linux host to establish where its ceiling
-actually is — the optimization targets there are likely entirely different
+actually is. The optimization targets there are likely entirely different
 from the ones rounds 1–15 chased.
 
 ## Round 18: the loopback MTU guarantee collapses sustained throughput on Linux
@@ -1484,26 +1484,26 @@ default of `0` is correct and needs no change.
 ### Every sustained-throughput run failed
 
 `4 KiB x batch 64 x fanout 1` died with `dedicated delivery channel timed out
-after 0 of 16384 measured events` — **zero** events delivered, not slow
+after 0 of 16384 measured events`: **zero** events delivered, not slow
 delivery. Batch-1 latency runs on the same host passed. The trigger is the
 loopback jumbo-MTU guarantee from round 15, which had never actually executed
 on Linux: CI runners are stock-clamped so the round-16 buffer gate disables it
 there, and macOS was the only platform where it ever engaged. Raising the
-sysctls — which `installation.md` tells Linux users to do — turns it on.
+sysctls, which `installation.md` tells Linux users to do, turns it on.
 
 ### What it is not
 
 | Hypothesis | Test | Verdict |
 |---|---|---|
-| Jumbo datagrams fail on Linux | `FELIX_INITIAL_MTU=16336` (no pin) | **Wrong** — 507–671 MB/s, `lost_packets=23/76282` |
-| Scaled initial cwnd (RFC 9002) | `INITIAL_MTU=16336` + `INITIAL_CWND=163360` | **Wrong** — 621 MB/s, faster than default cwnd |
-| ACK-frequency tuning | `FELIX_ACK_FREQ_DISABLE=1` | **Wrong** — still fails |
-| Socket-buffer overflow | `/proc/net/snmp` before/after | **Wrong** — `RcvbufErrors=0 SndbufErrors=0 InErrors=0` |
+| Jumbo datagrams fail on Linux | `FELIX_INITIAL_MTU=16336` (no pin) | **Wrong**: 507–671 MB/s, `lost_packets=23/76282` |
+| Scaled initial cwnd (RFC 9002) | `INITIAL_MTU=16336` + `INITIAL_CWND=163360` | **Wrong**: 621 MB/s, faster than default cwnd |
+| ACK-frequency tuning | `FELIX_ACK_FREQ_DISABLE=1` | **Wrong**: still fails |
+| Socket-buffer overflow | `/proc/net/snmp` before/after | **Wrong**: `RcvbufErrors=0 SndbufErrors=0 InErrors=0` |
 
 That last row matters most, and it contradicts the theory the round-16 gate was
 built on. The kernel drops nothing. quinn reports `lost_packets=155037` of
 `226986` datagrams (68%) with `congestion_events=18674` on packets the kernel
-delivered — the loss is **spurious**, declared by quinn's loss detector, and it
+delivered. The loss is **spurious**, declared by quinn's loss detector, and it
 collapses cwnd until the sender stalls and the connection is lost. Raising
 buffers further cannot help.
 
@@ -1516,8 +1516,8 @@ identical MTU. Pinned size determines the outcome (4 KiB, batch 64, fanout 1):
 |---|---|
 | 16336 (default loopback) | **FAIL** |
 | 8192 | **FAIL** |
-| 4096 | OK — 788 MB/s |
-| 2048 | OK — 575 MB/s |
+| 4096 | OK, 788 MB/s |
+| 2048 | OK, 575 MB/s |
 
 Safe at <= 4096, fatal at >= 8192. The threshold sits between them; it was not
 bisected further.
@@ -1527,9 +1527,9 @@ bisected further.
 ### The mechanism: Linux UDP GSO's 64 KiB aggregate limit
 
 Established by reading quinn 0.11.11 / quinn-proto 0.11.16 / quinn-udp 0.5.15,
-after two hypotheses died there first (it is not GRO receive-buffer truncation —
+after two hypotheses died there first (it is not GRO receive-buffer truncation:
 `quinn::endpoint` sizes receive slots at ~64 KiB; and `min_mtu` cannot itself
-cause loss — every use in quinn-proto is inside `mtud.rs` feeding black-hole
+cause loss: every use in quinn-proto is inside `mtud.rs` feeding black-hole
 detection).
 
 Linux `UDP_SEGMENT` lets one `sendmsg` carry N segments, but the aggregate is
@@ -1550,7 +1550,7 @@ the real ceiling is:
 | 8192 | 81,920 | **exceeds** |
 | 16336 | 163,360 | **exceeds** |
 
-The measured boundary — safe at <= 4096, fatal at >= 8192 — brackets 6553.
+The measured boundary (safe at <= 4096, fatal at >= 8192) brackets 6553.
 
 **Why it never recovers.** `quinn-udp`'s `sendmsg` error path disables
 segmentation offload only on `EIO` or `EINVAL`. An oversized aggregate returns
@@ -1559,14 +1559,14 @@ identically. The transmit is dropped after quinn has counted it as sent.
 
 That resolves every anomaly the earlier reading could not:
 
-- **`RcvbufErrors=0`** — the datagrams are rejected at the syscall and never
+- **`RcvbufErrors=0`**: the datagrams are rejected at the syscall and never
   enter any kernel buffer. Drop counters count packets the kernel accepted.
-- **quinn's 226,986 sent vs the kernel's ~64.5 K** — the difference is batches
+- **quinn's 226,986 sent vs the kernel's ~64.5 K**: the difference is batches
   quinn believes it sent and the kernel refused.
 - **68% loss is real, not spurious.** quinn's detector correctly observes that
   those packets were never acknowledged.
 - **macOS is immune because it has no GSO.** Round 2 measured
-  `udp_tx_ios == udp_tx_datagrams` there — one syscall per datagram, no
+  `udp_tx_ios == udp_tx_datagrams` there: one syscall per datagram, no
   aggregate, no 64 KiB ceiling. Nothing about scheduling or congestion explains
   why the platform matters; this does.
 
@@ -1574,7 +1574,7 @@ The `min_mtu` framing from the previous section survives in structure but not in
 cause: `initial_mtu = 16336` is what sizes packets into GSO-oversize territory,
 and pinning `min_mtu` removes the escape hatch, because unpinned a black-hole
 verdict drops the MTU to 1200 where `1200 x 10` fits comfortably. The pin does
-not create the loss; it prevents the only recovery from it — and that recovery
+not create the loss; it prevents the only recovery from it, and that recovery
 was round 15's "misdiagnosis", which turns out to have been load-bearing on
 Linux.
 
@@ -1604,12 +1604,12 @@ black-hole verdict ever runs.
 
 **Recommended change:** cap the loopback guarantee in `loopback_initial_mtu`
 at 4096 on non-macOS. macOS keeps 16336, where it is measured good over
-hundreds of runs — but macOS should be re-measured at 4096 before assuming
+hundreds of runs, but macOS should be re-measured at 4096 before assuming
 16336 is still its optimum there.
 
 Why 4096 rather than the exact 6553 the constraint allows: `MAX_TRANSMIT_SEGMENTS`
 is private to quinn, so the bound cannot be derived through its public API.
-Deriving it from `max_gso_segments()` instead does not work either — that is 64
+Deriving it from `max_gso_segments()` instead does not work either: that is 64
 on Linux, and `65535 / 64 = 1023`, below QUIC's 1200 floor. 4096 is the value
 that keeps margin: it survives the segment count rising to 15, where 6553 breaks
 the moment it moves at all. The invariant is a comment, and no test can catch a
@@ -1617,7 +1617,7 @@ regression in it, so the margin is doing real work.
 
 **Better, once it can be measured:** disable segmentation offload on this path
 (`TransportConfig::enable_segmentation_offload(false)`) and keep the full 16336.
-That reproduces macOS's proven configuration exactly — no GSO, jumbo datagrams —
+That reproduces macOS's proven configuration exactly (no GSO, jumbo datagrams)
 and removes the 64 KiB constraint rather than dodging it. On loopback, GSO's
 syscall amortisation is worth little when each datagram is already 16 KiB. It
 needs a tuned Linux host to validate before shipping.
@@ -1636,7 +1636,7 @@ Greedy stage-wise sweep, 3 trials per point, 4 KiB / batch 64 / fanout 1:
 ![Throughput by publish stream count](assets/linux-round18/publish-parallelism.png)
 
 - **MTU and chunk-size picks are within noise.** Stage A read 512/515/518/616/527
-  across 4096–12288 — the 10240 "winner" is an isolated spike between two ~520
+  across 4096–12288; the 10240 "winner" is an isolated spike between two ~520
   neighbours. Chunk size likewise (515/615/413/520). A greedy search with 3
   trials locks onto noise peaks and carries them forward.
 - **`FELIX_EVENT_BATCH_MAX_DELAY_US` does nothing** here: 807.6 / 808.8 / 811.3
@@ -1669,11 +1669,11 @@ All uncommitted. Grouped by what would make sensible commits.
 - `client.rs`: `FELIX_CONN_STATS_MS` path-stats logger (client is the sender on
   the publish path, so its cwnd/rtt is invisible from broker stats).
 - `subscription.rs`: subscription read task colocated via `spawn_pump`.
-- The publisher writer is deliberately *not* colocated — it blocks in
+- The publisher writer is deliberately *not* colocated: it blocks in
   `write_all` and starves the drivers it waits on (measured 5× worse).
 - `publisher.rs`/`wire/ack.rs`: acked publishes are pipelined. The writer no
   longer awaits each broker ack inline (which capped acked throughput per
-  stream at one request per RTT — ~9.4 K msg/s on loopback, ~20/s on a 50 ms
+  stream at one request per RTT, ~9.4 K msg/s on loopback, ~20/s on a 50 ms
   WAN); it hands written requests to a per-stream ack-reader task that
   resolves them in order as acks arrive. Admission permits ride with the
   pending ack so the in-flight byte budget still reflects unacked data. Ack
@@ -1739,7 +1739,7 @@ All uncommitted. Grouped by what would make sensible commits.
 ## Round 15: the residual is a path-MTU collapse, not scheduling
 
 Reproduced first: 5/16 fresh-process runs at ~21–24 K msg/s against a
-~118–120 K fast mode (4 KiB, fanout 1, batch 64) — the round-13/14 residual,
+~118–120 K fast mode (4 KiB, fanout 1, batch 64), the round-13/14 residual,
 alive and well.
 
 ### The lockstep theory, tested and killed
@@ -1749,7 +1749,7 @@ threads. Tested directly: a bounded busy-wait in `on_thread_park` on the I/O
 runtimes (so a thread about to park stays runnable through the inter-datagram
 gap, turning cross-thread wakes into flag checks). Result: slow-run rate
 unchanged at every spin length (2/12 at 0 µs, ~3/16 at 100 µs, 5/12 at
-500 µs) — and the 100 µs run introduced *new* intermediate modes, because in
+500 µs), and the 100 µs run introduced *new* intermediate modes, because in
 tokio the parked worker is what polls the I/O driver, so spinning before the
 park delays datagram receipt. Wrong theory, and the instrument perturbed the
 system. Removed entirely.
@@ -1778,14 +1778,14 @@ t=3.0s   mtu=1200   ...            ...         lost=674   (stuck until run ends)
 
 Path-MTU discovery *succeeds*, then a single ~674-packet loss burst drops the
 MTU back to 1200 for the rest of the run. At 1200 instead of 16354 the same
-byte stream costs ~13.6× the datagrams — and each datagram carries a syscall
+byte stream costs ~13.6× the datagrams, and each datagram carries a syscall
 and a wakeup chain, which is precisely the 5.7× system time and 5.7× context
 switches per message round 12 measured. Every earlier observation fits:
 client-side (the client is the publish-path sender), broker stages unaffected,
 sticky from "startup" (the collapse lands in the first second, during the
 warmup ramp), and worse under background CPU load (see below). Round 2's
-"80.3 MB/s anomaly with MTU collapsed to 1200 and 649 lost packets" — recorded
-once, not reproduced, set aside — was this defect.
+"80.3 MB/s anomaly with MTU collapsed to 1200 and 649 lost packets", recorded
+once, not reproduced and set aside, was this defect.
 
 Round 12's "MTU reaches 16354 in both modes" check was made on a delivery
 connection; the collapse hits the *publish* connection carrying the offered
@@ -1798,8 +1798,8 @@ load. The check was right and looked at the wrong connection.
    the 13 ms loopback "RTT") sits within ~1.5 MB of the receiver's 8 MB UDP
    socket buffer (`kern.ipc.maxsockbuf` caps it there). A scheduling stall of
    a few ms on the draining side overflows the buffer and the kernel drops a
-   window of packets. Background CPU load makes such stalls — and therefore
-   the collapse — much more likely. If the ramp survives without a burst,
+   window of packets. Background CPU load makes such stalls, and therefore
+   the collapse, much more likely. If the ramp survives without a burst,
    steady state is loss-free (fast runs: 0 lost packets), hence bimodal.
 2. **Quinn's black-hole detector cannot tell the difference.** Every dropped
    packet in the burst is full-MTU (that is what a saturated sender's traffic
@@ -1823,25 +1823,25 @@ The fix took three iterations, each of which taught something about quinn's
 MTU machinery; recorded because every intermediate state *looked* plausible
 and shipped alone would not have worked.
 
-1. **Initial MTU alone is not enough — the handshake deadlocks.** Starting
+1. **Initial MTU alone is not enough: the handshake deadlocks.** Starting
    loopback connections at `initial_mtu = 16336` hit a second quinn surprise:
    the default initial congestion window is a flat 14,720 bytes (RFC 9002's
    constant, sized for ~1200-byte datagrams, not MTU-scaled) and quinn's send
-   path reserves a full segment per datagram — so an initial MTU larger than
+   path reserves a full segment per datagram, so an initial MTU larger than
    the window blocks the very first packet on congestion control, forever.
    This also means a hand-set `FELIX_INITIAL_MTU=16354` had always been a
    deadlock. Fixed by scaling the window with RFC 9002's own formula
    (`clamp(14720, 2×mtu, 10×mtu)` = 32,672 at 16,336) whenever no explicit
    `FELIX_INITIAL_CWND` is set and the MTU requires it.
-2. **Initial MTU + window is still not enough — the collapse floor is
+2. **Initial MTU + window is still not enough: the collapse floor is
    `min_mtu`.** With connections starting and running at 16336, slow runs
    continued at the same ~30% rate, and the capture showed why: the busy
    publish connection began at 16336 and a loss burst still dropped it to
    **1200**. Quinn's black-hole reset target is `TransportConfig::min_mtu`
    (default 1200), not `initial_mtu`. Raising the start size alone changes
    nothing about the failure mode.
-3. **The actual fix: guarantee the loopback MTU.** For a loopback peer —
-   the one path where a 16 KiB datagram is guaranteed by construction — the
+3. **The actual fix: guarantee the loopback MTU.** For a loopback peer
+   (the one path where a 16 KiB datagram is guaranteed by construction), the
    config variant sets both `initial_mtu` *and* `min_mtu` to 16336 (fits
    IPv4/IPv6 headers within the 16 KiB loopback interface MTU; capped by
    `FELIX_MTU_UPPER_BOUND`/`FELIX_MAX_UDP_PAYLOAD`). With the floor at
@@ -1855,7 +1855,7 @@ and shipped alone would not have worked.
    `initial_mtu = 16336` but the probe bound still at 16384, MTUD probes for
    sizes that can never fit (16384 minus IP/UDP headers is less than the
    probe). A probe is full-MTU, bypasses the congestion check when sent, and
-   counts against the window once in flight — so on a *quiet* connection at
+   counts against the window once in flight, so on a *quiet* connection at
    the two-segment initial window, the doomed probe → loss-detection →
    retransmit cycle starves every ordinary small send behind it ("blocked by
    congestion control" for tens of seconds). Busy connections never noticed
@@ -1865,12 +1865,12 @@ and shipped alone would not have worked.
    is guaranteed, there is nothing to discover, no probe is ever sent.
 5. **And gate the whole guarantee on the granted socket buffers.** CI turned
    up the converse failure: on stock Linux, `SO_RCVBUF` is silently clamped
-   to `net.core.rmem_max` (~208 KB — about 26 jumbo datagrams of headroom
+   to `net.core.rmem_max` (~208 KB, about 26 jumbo datagrams of headroom
    against ~350 at MTU 1200), and sustained batch load overflowed it so
    badly that every CI throughput trial and the 4 KiB batch integration test
    timed out. Worse, the pinned `min_mtu` forbids the one thing that helps a
    tiny buffer: smaller datagrams. The guarantee now applies only when the
-   socket's *achieved* send/receive buffers (read back post-bind — the
+   socket's *achieved* send/receive buffers (read back post-bind, since the
    configured size says nothing on Linux) hold at least 64 full-size
    datagrams (~1 MiB); below that, connections keep the stock RFC-safe path.
    macOS grants the requested 8 MiB and keeps the fast path; stock-limit
@@ -1898,12 +1898,12 @@ and restores the stock cooldown):
 The fix arm's 20 runs span 112.3–125.1 K msg/s. The fast mode itself gained
 ~3% from skipping the MTU discovery ramp.
 
-The round-14 open item — reproduce on a standalone broker before chasing
-further — is answered by mechanism: the collapse requires overflowing the
+The round-14 open item (reproduce on a standalone broker before chasing
+further) is answered by mechanism: the collapse requires overflowing the
 receiver's UDP socket buffer with full-MTU packets, which any sufficiently
 fast sender can do to any receiver on any high-MTU path; it was never a
 property of the in-process harness. Loopback deployments are now immune by
 construction; non-loopback paths degrade for ≤2 s per spurious verdict when
 their load has idle gaps, and a continuously saturated non-loopback sender
-remains exposed to probe starvation — a quinn behavior worth an upstream
+remains exposed to probe starvation, a quinn behavior worth an upstream
 conversation.

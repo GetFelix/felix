@@ -120,7 +120,7 @@ Four rules, each of which exists for a reason:
   putting each in the changefeed would evict every real membership change from
   the retention window. Only the lifecycle move that expiry causes is published.
 
-Requires `node.manage` over the node being reported — see
+Requires `node.manage` over the node being reported; see
 [Authorizing membership writes](#authorizing-membership-writes).
 
 ### Fleet features
@@ -239,7 +239,7 @@ may legitimately map ports.
 A broker also polls `/v1/nodes` on the same interval to build its address book,
 and reads it again whenever an assignment change wakes it. Shard assignments
 name an owner by node id, and only the catalog turns that into an address to
-forward to — without it a broker knows a shard is owned elsewhere and cannot
+forward to. Without it a broker knows a shard is owned elsewhere and cannot
 reach it. The read on a wake is for a broker that restarted: it re-registers
 under the same id on new ports, and nothing in the assignments says so. A refresh that fails keeps the previous catalog rather than
 emptying it, because a control-plane blip must not turn a healthy cluster into
@@ -251,12 +251,12 @@ A three-node cluster can be run locally with
 
 **Ownership is eventually consistent at the broker.** A shard that moves is not
 known to its old owner until that broker's next sync, and until then it serves
-publishes for the shard locally — those records land in its log and no
+publishes for the shard locally. Those records land in its log and no
 subscriber on the new owner sees them. There is no fencing today, and the
 generation check in the forwarding protocol does not cover this: a stale ex-owner
 never forwards, so nothing compares generations. A publish acknowledged in that
 window is durably written to a broker nobody reads it from, so this is write loss
-rather than a delay — tracked in
+rather than a delay. It is tracked in
 [#239](https://github.com/gabloe/felix/issues/239), and closed by the leases in
 [the replication design](replication-design.md): a broker without a valid lease
 refuses, rather than racing its watch. What holds today is convergence within the
@@ -298,7 +298,7 @@ The sequence:
 3. **Drain, then deregister** on SIGTERM, before connections are drained, so
    nothing new is placed here while in-flight work finishes.
 
-A registration refused with a 4xx — a duplicate advertised address, say — stops
+A registration refused with a 4xx (a duplicate advertised address, say) stops
 the broker with a clear error instead of retrying. A wrong identity stays wrong,
 and retrying only hides the misconfiguration. An unreachable control plane is
 retried, because it may simply be starting.
@@ -339,8 +339,8 @@ explain each one's placement standing:
 `placement.reasons` exists because "this broker is registered but shards are not
 landing on it" is otherwise answered by reading a lifecycle string and doing
 heartbeat arithmetic by hand. It reports a stale heartbeat separately from the
-lifecycle, so the window between a heartbeat lapsing and the sweep noticing —
-where a node still reads `live` — is visible rather than inferred.
+lifecycle, so the window between a heartbeat lapsing and the sweep noticing,
+where a node still reads `live`, is visible rather than inferred.
 
 `placement.routable` is what brokers read to decide whether they may forward
 to a node: true while it is live or draining and its heartbeat is inside the
@@ -367,7 +367,7 @@ conferring one.
 
 `cluster:*` sits outside the tenant hierarchy on purpose. No tenant scope
 contains it, and `validate_new_rule_allowed` admits a policy only when its
-object is already inside the caller's scope — so a tenant admin cannot grant
+object is already inside the caller's scope, so a tenant admin cannot grant
 themselves cluster access, and nothing in the bootstrap seed grants it either.
 The converse also holds: cluster scope confers nothing inside a tenant, so it is
 not a backdoor into tenant data.
@@ -394,7 +394,7 @@ and two spellings for one scope is how a policy review misses one.
 
 A node scope is an island in the same way `cluster:*` is. No tenant scope
 contains it, so a tenant admin cannot grant themselves one; and it confers
-nothing inside a tenant. `node.view` does not imply `node.manage` — reading the
+nothing inside a tenant. `node.view` does not imply `node.manage`: reading the
 fleet is not permission to change it.
 
 ##### Giving a broker its credential
@@ -413,7 +413,7 @@ visible in a process listing. Whitespace is trimmed, and a blank value is
 treated as no credential rather than as an empty one.
 
 The same credential authenticates the shard-assignment watch and the metadata
-feeds the broker seeds from — tenants, namespaces, streams and caches — which
+feeds the broker seeds from (tenants, namespaces, streams and caches), which
 are cluster metadata by the same argument. That makes it a broker's credential
 rather than a *member's*: a standalone broker with `FELIX_CONTROLPLANE_URL` and
 no `FELIX_NODE_ID` still presents it, and without one its sync is refused on
@@ -455,7 +455,7 @@ manage actions already: token exchange expands `tenant.manage:tenant:{t}` to
 
 **The catalog is the operator's.** Which tenants exist is cluster metadata, not
 something any one tenant owns, so creating, listing and deleting tenants sits
-in cluster scope alongside membership — and deleting is operator-only even for
+in cluster scope alongside membership, and deleting is operator-only even for
 the tenant's own admin, since it takes the signing keys with it. Cluster scope
 still confers nothing *inside* a tenant: an operator who can create `t1` cannot
 read its streams without a `t1` token.
@@ -510,8 +510,8 @@ all along; one created ahead of it appears on a later page. There is no
 snapshot across pages: a listing read over several requests is not a
 point-in-time view. The snapshot and changes feeds are for that.
 
-**Filtering** — by the caller's rights, and by `/v1/nodes`' filters and
-`?leader=` — fills the page from further on rather than returning it short, so
+**Filtering**, by the caller's rights and by `/v1/nodes`' filters and
+`?leader=`, fills the page from further on rather than returning it short, so
 every page but the last holds exactly `limit` entries, and a cursor never names
 an entry the caller was not shown. The last page can be empty when everything
 after the previous one was filtered out. A caller who can see little of a large
@@ -537,7 +537,7 @@ needs.
 `node.view:cluster:*` as the node listing, because ownership and membership are
 the same view of the cluster.
 
-There is **at most one assignment per (stream, shard)** — that is the primary
+There is **at most one assignment per (stream, shard)**. That is the primary
 key, and it is the invariant placement depends on.
 
 `generation` increments on every write and is owned by the store, never the
@@ -560,7 +560,7 @@ control plane which replicas hold its log and how far each has got. Promotion
 is gated on it: a lost leader is replaced only by a replica reported caught up,
 and among those by the one reported furthest ahead. A report may also carry
 `drained: true`, the leader's word that it has stopped serving the shard at
-that generation and its log will not grow — the fence of a planned move. Requires `node.manage` over
+that generation and its log will not grow: the fence of a planned move. Requires `node.manage` over
 the reporting node, and the node must lead the shard it reports on; a report
 naming a generation ahead of the assignment is refused, since one claiming
 `u64::MAX` would otherwise block every real report after it.
@@ -576,7 +576,7 @@ Control planes before this answered 204 whatever they did with each shard.
 cascading from it, not in the memory of the instance that received them. With
 several instances over one Postgres, the instance a report reaches and the
 instance that runs placement need not be the same process, and a report only
-one of them had seen was a position no promoter could use — a `Quorum`
+one of them had seen was a position no promoter could use: a `Quorum`
 acknowledgement released on it could not be made good at failover. Under Raft
 the report is a log command, restamped with the leader's clock as a heartbeat
 is. Reports only move forward: one replaces the held report at a later
@@ -601,8 +601,8 @@ did; a member still on that build ignores the node and applies every report,
 so finish the roll before relying on the check.
 
 **One clock on both sides.** A report is stamped with the store's clock and its
-freshness is judged, by whichever instance plans, against the store's clock —
-`clock_timestamp()` under Postgres, the leader's process clock under Raft. A
+freshness is judged, by whichever instance plans, against the store's clock
+(`clock_timestamp()` under Postgres, the leader's process clock under Raft). A
 report is believed for twice the expiry timeout plus one heartbeat interval:
 long enough to outlive the detection of the leader that made it, since a
 report that expired sooner would leave a shard unpromotable forever, and no
@@ -632,7 +632,7 @@ lifecycle or stream changes, so a pass can still act on a node or stream that
 changed after it was read; the next pass corrects it.
 
 The hash is written out rather than taken from `DefaultHasher`, whose seeding is
-not part of its contract — a placement decision that changed with the Rust
+not part of its contract. A placement decision that changed with the Rust
 version, or differed between two instances, would be silently catastrophic. The
 shard key and the node id are hashed independently and then mixed, because a
 single pass over the concatenation is badly behaved at the size a cluster
@@ -788,15 +788,15 @@ checks do that, both compared under the same lock or log entry as the write:
 
 An occasional conflict or fenced pass is expected with several instances; a
 steady rate means instances keep planning from reads that are already old. A shard with
-no eligible leader is left unplaced and logged with the reason — an empty
+no eligible leader is left unplaced and logged with the reason. An empty
 cluster and a full one are reported differently, because they need different
 fixes.
 
 **A pass also runs as soon as a move can advance**, not only on the timer. When
 an instance records a replica report that is exactly what a move is waiting
-for — a leader reporting `drained` at a fenced generation, or a report putting
+for (a leader reporting `drained` at a fenced generation, or a report putting
 the staged successor, or a follower being copied in, within the fence's lag
-bound — it wakes its own reconciler. Wakes
+bound), it wakes its own reconciler. Wakes
 coalesce: however many arrive while a pass is pending or running, one more
 pass follows, and only one pass is ever in flight. The wake changes when a pass
 runs, never what it decides; the pass reads the store and judges the report
@@ -848,8 +848,8 @@ replacement is copied in beside it, named in the assignment as `joining`
 (`reseat`), and the departing follower leaves only once the replacement is
 within the lag bound (`seat`), so the shard never has fewer copies than it
 asked for while the new one fills. A
-**live node over its share** of leadership — more than `ceil(shards /
-live nodes)` — gives a shard to a node under its share. Moves in flight are
+**live node over its share** of leadership (more than `ceil(shards /
+live nodes)`) gives a shard to a node under its share. Moves in flight are
 counted as complete for the share calculation, so a node never stages more
 moves than it needs, and only over-to-under moves are made, so the process
 converges without trading shards back and forth. A follower that is merely
@@ -924,13 +924,13 @@ after the fence.
 | --- | --- |
 | `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `timed_out`, `reseat`, `seat`, and an operator's `cancel`, `retake` and `discard` |
 | `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout; a steady count means a copy that cannot finish |
-| `felix_shard_moves_waiting` | moves that could not advance in the last pass — a destination not catching up, a leader not reporting drained, or a move limit holding a drain back |
+| `felix_shard_moves_waiting` | moves that could not advance in the last pass: a destination not catching up, a leader not reporting drained, or a move limit holding a drain back |
 | `felix_shard_assignment_write_conflicts_total` | placements and move steps not written because another instance changed the shard after this pass read it; the next pass re-plans |
 | `felix_placement_writes_fenced_total` | passes and operator requests that stopped because another placement write landed after they read the store; the pass re-plans, the request is decided again |
 | `felix_placement_lease_held` | 1 on the instance holding the placement lease; summed across instances it is 1, or 0 while a lease that was not released runs out |
 | `felix_placement_lease_takeovers_total` | times this instance took the placement lease |
 | `felix_shard_move_duration_seconds` | histogram: from a move's first step (the stage, or the fence when the destination was already caught up) to its cut-over |
-| `felix_shard_move_fence_seconds` | histogram: from the fence to the cut-over — the window in which the shard is not served |
+| `felix_shard_move_fence_seconds` | histogram: from the fence to the cut-over, the window in which the shard is not served |
 
 The two histograms are **per-instance observations**, timed from the steps
 the instance itself wrote; the start an assignment carries is for the move
@@ -1068,14 +1068,14 @@ Output is a plain table; `--json` prints the API's response.
 `GET /v1/shard-assignments/snapshot` returns every current assignment plus a
 `next_seq`; `GET /v1/shard-assignments/changes?since=N` returns the changes from
 there. A broker applies the snapshot and then polls, and the two together
-describe every committed change exactly once — the snapshot is read at a
+describe every committed change exactly once: the snapshot is read at a
 consistent point and `next_seq` is the log position at that same point.
 
 **Long-poll.** `changes?since=N&wait_ms=M` waits, when there is nothing new,
 for up to `M` ms (capped at 25 000, under the 30 s idle timeout common to
 proxies and HTTP clients) and answers as soon as there is. "Nothing new" means
-an empty page with `next_seq` equal to `since`; anything else — a change, or
-any of the re-snapshot signals below — answers at once, and the page is read
+an empty page with `next_seq` equal to `since`; anything else (a change, or
+any of the re-snapshot signals below) answers at once, and the page is read
 exactly as it is without `wait_ms`, so retention, the page limit and the
 snapshot fallback are unchanged. A wait that runs out answers the same empty
 page an immediate request would have. Without `wait_ms` (or with `0`) the
@@ -1101,7 +1101,7 @@ on from a checkpoint the control plane can no longer honour:
 | --- | --- | --- |
 | first returned `seq` > `since` | changes between were evicted from the window | re-snapshot |
 | empty page but `next_seq` > `since` | the whole span was evicted, not empty | re-snapshot |
-| `next_seq` < `since` | the sequence reset under us — a control plane restarted onto a store that does not persist it | re-snapshot |
+| `next_seq` < `since` | the sequence reset under us: a control plane restarted onto a store that does not persist it | re-snapshot |
 
 The second is the subtle one: an empty page is only safe when the log has not
 moved. Treating it as "nothing new" whenever it is empty silently skips
@@ -1110,7 +1110,7 @@ everything that was evicted.
 Changes are applied by generation, not arrival: a change carrying a generation
 at or below the one already held is dropped. That is what makes duplicate
 delivery harmless and stops a reordered or retried poll rolling ownership
-backwards. Falling behind is not an error — a broker that was away long enough
+backwards. Falling behind is not an error. A broker that was away long enough
 resnapshots and carries on.
 
 Both endpoints require `node.view:cluster:*`.
@@ -1147,7 +1147,7 @@ not the same event as the shard becoming servable.
   away. A snapshot replaces the whole picture, so only the full set can say what
   disappeared.
 - **A failed flush still gives up the shard.** Ownership has moved regardless,
-  and continuing to serve would be worse than an unflushed tail — but the error
+  and continuing to serve would be worse than an unflushed tail, but the error
   is logged loudly.
 
 | Metric | Meaning |
@@ -1156,8 +1156,8 @@ not the same event as the shard becoming servable.
 | `felix_broker_shard_transitions_total{from,to}` | local ownership moves |
 | `felix_broker_shard_stale_events_total` | events ignored for an old generation |
 | `felix_broker_shard_open_failures_total` | non-zero means a shard the cluster believes is placed here is not being served |
-| `felix_broker_shard_move_seconds` | histogram, on the destination: from first seeing itself named as a shard's `successor` to serving it — the whole move, copy included |
-| `felix_broker_shard_switchover_seconds` | histogram, on the destination: from seeing the old leader fenced to serving the shard — the window in which nobody serves it, as clients see it |
+| `felix_broker_shard_move_seconds` | histogram, on the destination: from first seeing itself named as a shard's `successor` to serving it: the whole move, copy included |
+| `felix_broker_shard_switchover_seconds` | histogram, on the destination: from seeing the old leader fenced to serving the shard: the window in which nobody serves it, as clients see it |
 | `felix_broker_shard_move_held_total` | publishes that reached this broker while their shard was moving and were held for the cut-over instead of refused |
 | `felix_broker_shard_move_hold_seconds` | histogram: how long each held publish waited, however it ended |
 | `felix_broker_shard_move_hold_refused_total{reason}` | publishes to a moving shard refused as `moving`: `timed_out` when the move did not cut over within `FELIX_SHARD_MOVE_HOLD_MS`, `full` when `FELIX_SHARD_MOVE_HOLD_MAX` were already waiting |
@@ -1176,7 +1176,7 @@ path never takes a lock a writer can hold and never makes a control-plane call.
 Updates replace the table entirely rather than patching shards, because a
 partial update would let a reader see half a rebalance.
 
-Every outcome is explicit — there is deliberately no "not sure, handle it
+Every outcome is explicit. There is deliberately no "not sure, handle it
 locally", because that is a broker writing a shard it does not own:
 
 | Outcome | Meaning |
@@ -1210,7 +1210,7 @@ shard for up to a TTL. The check is two atomic loads, so paying it per publish
 costs less than reasoning about staleness.
 
 Both reads are `ArcSwap` loads, so the resolver is synchronous and allocation
-free — no lock a writer can hold, and no await added to the publish path. A
+free: no lock a writer can hold, and no await added to the publish path. A
 single-node broker short-circuits on a null check before either.
 
 One task keeps the two views in step, in a fixed order: reconcile local shard
@@ -1271,15 +1271,15 @@ Two references, two different policies, chosen rather than inherited:
   names `FOR SHARE`, so a delete racing a write cannot both pass their checks.
 
 Shard numbers are validated against the stream's `shards` count on every write.
-Streams cannot currently be resized — `StreamPatchRequest` has no `shards` field
-— so no assignment can be orphaned by a shrink. When resize arrives, assignments
+Streams cannot currently be resized (`StreamPatchRequest` has no `shards` field),
+so no assignment can be orphaned by a shrink. When resize arrives, assignments
 above the new bound have to be removed in the same transaction.
 
 ### Metrics
 
 Every label below is bounded. Lifecycle has four values, region has as many as
 an operator configures, and failure kinds have two. **No metric carries
-`node_id`** — a fleet view is `felix_node_count`, and a broker's own view is its
+`node_id`**. A fleet view is `felix_node_count`, and a broker's own view is its
 own series.
 
 Control plane:
@@ -1340,8 +1340,8 @@ Broker:
 | `felix_broker_membership_registrations_total{outcome}` | `registered`, `rejected`, or `unavailable` |
 
 The `rejected` / `unavailable` split is the one worth keeping. `rejected` means
-the control plane answered and said no — a duplicate address, a superseded
-incarnation — and retrying never fixes it. `unavailable` means nothing answered.
+the control plane answered and said no (a duplicate address, a superseded
+incarnation), and retrying never fixes it. `unavailable` means nothing answered.
 Collapsed into one counter, a misconfigured broker looks exactly like a flaky
 network.
 
@@ -1369,7 +1369,7 @@ be a member; it is legitimately 0 during a drain.
 
 The timeout is three intervals: one lost heartbeat is a hiccup, three is a
 pattern. Startup fails if `expiry_timeout_ms` is not greater than
-`heartbeat_interval_ms` — a timeout at or below the interval expires brokers
+`heartbeat_interval_ms`: a timeout at or below the interval expires brokers
 that are heartbeating exactly as told to.
 
 A node is marked down only after the timeout **plus the regrant margin**, and
@@ -1394,8 +1394,8 @@ a query and produce no duplicate events.
 
 ### Why liveness stays centralized (SWIM, considered)
 
-**Decision: Felix keeps hub-and-spoke liveness — brokers heartbeat the control
-plane, a sweep evicts on silence — and does not adopt SWIM-style gossip
+**Decision: Felix keeps hub-and-spoke liveness (brokers heartbeat the control
+plane, a sweep evicts on silence) and does not adopt SWIM-style gossip
 membership. Recorded here so the question is answered once, with the triggers
 that would reopen it.**
 
@@ -1411,7 +1411,7 @@ Four reasons it is the wrong trade for Felix today:
 
 - **Detection is not the authority, and splitting them creates two clocks.**
   Eviction only matters when placement acts on it, and placement is
-  centralized — rendezvous hashing over control-plane metadata, with shard
+  centralized: rendezvous hashing over control-plane metadata, with shard
   ownership fenced by leases the control plane grants. More than that: **the
   heartbeat is also the lease renewal.** A leader's authority to serve and its
   liveness signal deliberately travel on one channel to one authority, which
@@ -1422,7 +1422,7 @@ Four reasons it is the wrong trade for Felix today:
   arithmetic exists to close.
 - **Safety already does not rest on detection speed.** Data-plane failover is
   lease-driven: a lost leader is replaced in about a second, bounded by lease
-  expiry plus the safety margin — not by the 15s liveness timeout, which only
+  expiry plus the safety margin, not by the 15s liveness timeout, which only
   gates *placement eligibility*. SWIM's sub-second detection would accelerate
   a decision Felix deliberately does not take quickly, on a signal that
   fencing renders non-load-bearing.
@@ -1435,16 +1435,16 @@ Four reasons it is the wrong trade for Felix today:
 - **False positives are already handled where it matters.** The timeout is
   three missed intervals, eviction is non-destructive (a broker re-registers
   and is placeable again), and a wrongly-expired *leader* cannot corrupt
-  anything — its lease, not its liveness row, is what lets it write.
+  anything, because its lease, not its liveness row, is what lets it write.
 
 What SWIM would genuinely add is evidence about **asymmetric reachability**: a
 broker the control plane can see but its peers cannot reads `live` in the
 catalog while every forward to it fails. Leases keep that safe, and
 `felix_broker_shard_watch_failures_total` plus the forwarding metrics make it
 visible, but placement today cannot act on it. The cheap version of SWIM's
-insight — brokers reporting peer reachability to the control plane as an
+insight (brokers reporting peer reachability to the control plane as an
 advisory placement input, alongside the replica-status reports they already
-send — covers that gap without a second membership protocol, and is the
+send) covers that gap without a second membership protocol, and is the
 first thing to build if it starts biting in practice.
 
 Reopen this decision when any of these becomes true: broker counts reach the
@@ -1469,12 +1469,12 @@ advisory reports cannot deliver.
 - Under the Postgres backend, control-plane pods are stateless: all metadata
   is in the database, and an instance holds nothing worth a volume.
 - Under the raft backend, each pod carries a PVC for the Raft log and
-  snapshots — that volume is what makes a pod restart a rejoin. The
+  snapshots; that volume is what makes a pod restart a rejoin. The
   reference StatefulSet shape is on the docs-site Metadata Raft page.
 - Dataplane brokers use PVCs for durable log segments (when enabled).
 
 ### Services
-- Headless Service for control-plane peer discovery — required by the raft
+- Headless Service for control-plane peer discovery, required by the raft
   backend (stable per-pod names feed `FELIX_RAFT_PEERS`, on the separate,
   token-authenticated Raft peer port), unused by the Postgres backend, whose
   instances do not know about each other.
@@ -1485,7 +1485,7 @@ advisory reports cannot deliver.
 - Control plane replicas: two or more. An odd count matters only for the Raft
   end state; instances share nothing today, so any number works and two is
   enough to survive losing one. The database is the half that actually holds
-  state — run it HA per [ha-postgres.md](ha-postgres.md).
+  state; run it HA per [ha-postgres.md](ha-postgres.md).
 - Use PodDisruptionBudgets so a rolling deploy cannot take every instance at
   once.
 - Prefer anti-affinity for control plane pods to avoid single-node failure.
@@ -1500,7 +1500,7 @@ Two endpoints, because they drive different actions.
 | --- | --- | --- | --- |
 | `/v1/system/live` | Should this process be restarted? | Nothing outside the process. It touches no database and answers `200` whenever the runtime can answer at all. | liveness probe |
 | `/v1/system/ready` | Should this instance get traffic? | The store not answering, answering an error, or being on an older schema than this build expects. `503` with a reason. | readiness probe |
-| `/v1/system/health` | — | The same check as `/v1/system/ready`. Kept because deployments already point at it. | nothing new |
+| `/v1/system/health` | n/a | The same check as `/v1/system/ready`. Kept because deployments already point at it. | nothing new |
 
 **Liveness must not check the database.** A liveness probe drives restarts, and
 an external database outage that fails one restarts every instance, repeatedly,
@@ -1533,7 +1533,7 @@ pg_readiness`):
 | …and is *not* restarted for it | Asserts `/v1/system/live` stays `200` through the same outage |
 | A transient outage recovers with no intervention | Restores connectivity; readiness returns on its own |
 | A database older than this build does not get traffic | Hides the newest applied migration row; readiness turns `503`, and returns when it is put back |
-| A probe answers rather than hangs | Black-holes the connection — established, then silent — and the probe still comes back inside its own bound |
+| A probe answers rather than hangs | Black-holes the connection (established, then silent), and the probe still comes back inside its own bound |
 
 The mechanism itself (cache window, timeout, draining short-circuit) is covered
 separately in `src/api/readiness/tests.rs` against a probe that fails on command;
@@ -1576,20 +1576,20 @@ reported rather than logged as a clean drain.
 
 No control-plane handler long-polls: the `changes` feeds return immediately
 with whatever is committed past `since`, and waiting is the caller's loop. That
-is a shutdown property as much as an API one — a drain only has to outlast
+is a shutdown property as much as an API one: a drain only has to outlast
 requests in service, never a watcher parked on a hanging poll.
 
 What a drain looks like on the metrics endpoint, which outlives it:
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_ready_state` | 1 in rotation, 0 draining — the flag both `/ready` endpoints read |
+| `felix_ready_state` | 1 in rotation, 0 draining; the flag both `/ready` endpoints read |
 | `felix_inflight_requests` | requests currently being served, so "waiting on what?" has an answer |
 | `felix_drain_duration_ms` | how long the last drain took |
 | `felix_drain_forced_total{subsystem}` | subsystems cut off by the deadline; non-zero means work was dropped, and it is the counter to alert on because the warning log dies with the pod |
 
-The rolling-restart guarantee — two instances over one Postgres, every broker
-heartbeat and watch served across a restart of each — is exercised end to end
+The rolling-restart guarantee (two instances over one Postgres, every broker
+heartbeat and watch served across a restart of each) is exercised end to end
 by `tests/rolling_restart.rs` (`cargo test -p felix-controlplane-service --features pg-tests
 --test rolling_restart`).
 

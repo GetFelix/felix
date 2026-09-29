@@ -17,7 +17,7 @@ admits. A record acknowledged under `Quorum` must survive any failure the
 configured majority tolerates.
 
 **Availability.** A shard survives its leader failing. It also survives the
-control plane being briefly unreachable — a broker must not stop serving because
+control plane being briefly unreachable: a broker must not stop serving because
 a metadata service restarted.
 
 **Write latency.** A publish already crosses ingress, offset assignment,
@@ -50,7 +50,7 @@ under `Quorum`, where shipping is what *produces* the commit: a follower stores
 a record before any majority holds it, so a leader that dies mid-flight leaves
 that record on some followers and not others. The next leader may legitimately
 reuse the offset. Every leader-change scheme has to reconcile that, and Felix is
-not an exception — `Divergence::Conflict` exists precisely because it happens.
+not an exception. `Divergence::Conflict` exists precisely because it happens.
 
 The invariant that actually holds, and that recovery depends on, is:
 
@@ -70,8 +70,8 @@ is required either way. It is:
    Leases reuse the heartbeat the broker already sends, and pay for it with the
    safety interval described below.
 2. **Two logs, or one.** Raft over the stream log means either the segment log
-   *is* the Raft log — with Raft's index and term bookkeeping in the record
-   format — or every record is written twice and the two can disagree after a
+   *is* the Raft log (with Raft's index and term bookkeeping in the record
+   format), or every record is written twice and the two can disagree after a
    crash. The second is a durability path the storage design deliberately does
    not have.
 
@@ -92,13 +92,13 @@ The two have opposite cost profiles:
 
 | | Control-plane metadata | Stream payload |
 | --- | --- | --- |
-| Volume | Assignments, tenants, streams — kilobytes, changing rarely | The entire data plane |
+| Volume | Assignments, tenants, streams: kilobytes, changing rarely | The entire data plane |
 | Groups | One, for the cluster | One per shard: hundreds or thousands per broker |
 | What consistency buys | Linearizable reads of small state everyone must agree on | Durability of records already ordered by a single writer |
 | Cost of a round trip | Paid once per metadata change | Paid on every publish |
 
 A stream's records are already totally ordered by their leader. Consensus is not
-being asked to *establish* an order — the log has one. It is being asked to
+being asked to *establish* an order; the log has one. It is being asked to
 replicate an existing order durably. That is a weaker requirement than Raft
 solves, and paying Raft's price for it is paying for agreement that has already
 happened.
@@ -112,7 +112,7 @@ bounded duration `L`. The lease is the authority to serve; the assignment alone
 is not.
 
 A lease is bound to the generation. A new generation is a new lease, never a
-renewal of the old one — which is what makes generation the epoch that fences
+renewal of the old one, which is what makes generation the epoch that fences
 writes.
 
 The leader renews through the heartbeat it already sends. A renewal that does not
@@ -127,7 +127,7 @@ A broker may accept a write for shard `S` if and only if **all** of:
 1. It holds a lease for `S` at generation `G`.
 2. Its own monotonic clock reads earlier than `expiry(G) − ε`, where `ε` covers
    clock drift and the time between this check and the record reaching disk.
-3. Its local shard state for `S` is open at exactly generation `G` — the check
+3. Its local shard state for `S` is open at exactly generation `G`, the check
    `IngressRouter::dispatch` already performs.
 4. For a `Quorum` stream, a majority of the replica set for `G` **including the
    leader** has durably stored the record. For a `Leader` stream, the leader's
@@ -135,8 +135,8 @@ A broker may accept a write for shard `S` if and only if **all** of:
 
 Conditions 1–3 are checked **twice**: once when the request is admitted, and
 again immediately before the record is committed to the log. The second check is
-not redundant. Everything between them can take arbitrarily long — a full ingress
-queue, a slow fsync, a VM pause — and a lease that was valid on admission may
+not redundant. Everything between them can take arbitrarily long (a full ingress
+queue, a slow fsync, a VM pause), and a lease that was valid on admission may
 have expired by the time the bytes reach the disk. Fencing only at the routing
 boundary leaves exactly the window this design exists to close.
 
@@ -198,7 +198,7 @@ instants is the safety interval, and it is why leases are safe without
 synchronized clocks.
 
 The broker cannot observe `t`, so it anchors at the instant it **sent** the
-heartbeat — always at or before `t`, so the round trip comes out of its own
+heartbeat. That is always at or before `t`, so the round trip comes out of its own
 lease rather than out of the margin. Anchoring at the instant the *response* was
 handled runs the other way: a buffered read or a VM pause in between would push
 the lease past `t + L`, which is the safety interval being spent by the same
@@ -553,7 +553,7 @@ two nodes, over a real interval `T`, each monotonic clock advances by between
 `T(1−ρ)` and `T(1+ρ)` for a known `ρ`.
 
 This is a real assumption and it can be violated. The realistic violation is not
-NTP error — it is **process suspension**: a VM migration, a stop-the-world pause,
+NTP error. It is **process suspension**: a VM migration, a stop-the-world pause,
 a throttled container. A broker suspended past its expiry wakes believing it
 still holds a lease.
 
@@ -574,8 +574,8 @@ tune, and the residual risk to state honestly rather than claim away.
 ### Replication
 
 The leader ships records to followers over the internal transport that already
-exists (#105). Under `Quorum` it ships them *before* they are committed — that
-is what makes the majority — so a follower can hold a record no majority ever
+exists (#105). Under `Quorum` it ships them *before* they are committed (that
+is what makes the majority), so a follower can hold a record no majority ever
 acknowledged, from a leader that then died.
 
 A follower therefore truncates, but only **above** the high-water mark. Below it
@@ -602,11 +602,11 @@ have adopted, and a new leader reusing the offset is ordinary rather than
 alarming.
 
 Reconciling that needs the two sides to agree on where their histories diverge,
-which is what the generation of each record establishes — see
+which is what the generation of each record establishes; see
 [Divergence and truncation](#divergence-and-truncation) (#406).
 
 Catch-up for a new or lagging follower is a bounded `read_range` from the leader,
-with sealed-segment checksums to verify wholesale rather than record by record —
+with sealed-segment checksums to verify wholesale rather than record by record,
 the primitives the storage layer already exposes for this purpose.
 
 **This works only while the leader still holds what the follower is missing.**
@@ -639,8 +639,8 @@ every open, so it is the same on any replica that holds the same records:
 - **A restarted broker** rebuilds the state as it opens the shard, before the
   shard takes a write, from a snapshot saved at each rollover plus the active
   segment that recovery scans anyway.
-- **A batch cut short** — its leader died while writing or shipping it, so the
-  replica holds only its first records — is finished by the re-send: the
+- **A batch cut short** (its leader died while writing or shipping it, so the
+  replica holds only its first records) is finished by the re-send: the
   missing records are appended, and the batch is not written twice. If
   anything else was appended after it first, it can never be finished, and the
   re-send is appended whole.
@@ -757,7 +757,7 @@ rather than its own tail, so the leader cannot resume past records neither side
 has compared (#406).
 
 Repairing it needs the two to agree on where their histories part, and offsets
-alone do not say — both logs have an offset 100, and being told "they differ at
+alone do not say: both logs have an offset 100, and being told "they differ at
 100" does not say how far back the agreement goes. The generation does say,
 because a generation belongs to exactly one leader: the highest generation both
 brokers hold is the last one they cannot disagree within, and its end offset on
@@ -767,7 +767,7 @@ So a follower records where each generation began in its log, as a small map
 beside the segments. It then repairs itself, with no exchange at all: a
 conflict is droppable when the batch that found it comes from a **newer**
 generation than the one this follower last accepted, and the divergence sits at
-or after where that older generation began. Both conditions matter — a leader
+or after where that older generation began. Both conditions matter. A leader
 disagreeing with *itself* is an inconsistency rather than a predecessor's
 leftovers, and repairing that would let a leader rewrite its own history.
 
@@ -830,7 +830,7 @@ be that a new kind could not be sent to a peer that might not understand it: an
 unknown kind ended the stream, and those streams are long-lived lanes carrying
 every in-flight request, so a probe cost far more than it learned. A peer now
 steps over a kind it does not know and refuses that one frame, so the cost is no
-longer prohibitive — but it is still a round trip, and repairing from what a
+longer prohibitive, but it is still a round trip, and repairing from what a
 follower already knows needs none, along with no negotiation and no
 rolling-upgrade order. An older peer predating that change still drops the
 stream, so a probe would also have to wait out a deployment.
@@ -844,22 +844,22 @@ cursor starts.**
 A cursor is a belief about a follower's position under one leadership, so a
 generation change discards it. What replaced it was offset zero, which meant
 every follower of every shard the failed broker led byte-compared the whole log
-before anything new could move — the leader reading its own log off disk and
+before anything new could move, the leader reading its own log off disk and
 pushing records the follower already had. On a log of any size that turns a
 failover into an outage, and it happened for every shard at once.
 
 The leader records where *its own* generation begins, which until then only
-followers did — leaving a broker's history with a hole over exactly the stretch
+followers did, leaving a broker's history with a hole over exactly the stretch
 it led. It is recorded when the shard is taken, while it is still `Opening`:
 that is the one moment the tail *is* the generation's start, because the phase
 exists precisely to hold writes back until recovery finishes.
 
 Below that offset, this broker's records were taken from earlier leaders while
-it was a follower, and so were the follower's — two prefixes of the same log
+it was a follower, and so were the follower's, and two prefixes of the same log
 agree. At or above it is where they can differ: what this leadership wrote, and
 what a predecessor left on the follower alone. So comparison starts one record
 below the boundary, so the first batch overlaps something the follower already
-holds and the boundary is checked rather than assumed — the same check Raft
+holds and the boundary is checked rather than assumed. It is the same check Raft
 makes at `prevLogIndex`. A follower further behind than that still says so with
 a `LogGap`, and the leader rewinds in that one exchange.
 
@@ -869,7 +869,7 @@ follower's tail with records it wrote under an older generation sitting just
 below. Accepting it would leave those records uncompared, and one of them may
 be a dead leader's unacknowledged write at an offset the new leader filled
 differently: two brokers disagreeing at a committed offset. So a batch from a newer generation that begins past them is
-answered with a `LogGap` naming the first uncompared record — the later of
+answered with a `LogGap` naming the first uncompared record: the later of
 where the older generation began here and the commit offset. The leader rewinds
 and the overlap is compared like any other, so a conflict is found and repaired
 as above. When that takes several batches, the follower remembers in memory how
@@ -891,7 +891,7 @@ Three things this deliberately does not do:
 
 - **It does not go in the record format.** A generation per record would mean a
   segment format bump, and `SegmentHeader::decode` rejects an unknown version
-  outright rather than guess — by design, since a moved field produces a
+  outright rather than guess. That is by design, since a moved field produces a
   plausible mis-parse. The map is derived state that can be rebuilt or absent.
 - **It does not truncate below the high-water mark.** Everything there is on a
   majority. A truncation point computed below it is a bug, not a repair, and
@@ -900,8 +900,8 @@ Three things this deliberately does not do:
   The storage layer refuses the cut on its own as well
   (`StorageError::BelowCommit`), so no caller can get round it.
 - **It does not make a halted follower repair itself.** Truncating a divergent
-  suffix is a decision with a policy attached — how many followers may rebuild
-  at once, and at what bandwidth — so the repair is the leader's, under that
+  suffix is a decision with a policy attached (how many followers may rebuild
+  at once, and at what bandwidth), so the repair is the leader's, under that
   policy, and described in "Rebuilding a halted follower" below.
 
 ### Who may be promoted
@@ -911,7 +911,7 @@ record it may have acknowledged. The leader is the only party that can say: it
 knows both its own tail and how far each follower has acknowledged, where a
 follower knows only where it is.
 
-The bound is **zero** — a follower is caught up when it is missing nothing a
+The bound is **zero**: a follower is caught up when it is missing nothing a
 client was promised. What that covers depends on the stream. Under `Leader` a
 write is acknowledged before it ships, so it is the leader's whole log. Under
 `Quorum` it is the log up to the offset a majority holds, which is the most the
@@ -955,13 +955,13 @@ last report naming no follower, and the shard never failed over.
 rule is not enough, and a model check shows why: if the report travels after the
 acknowledgements it describes, a leader that reports two followers level, then
 acknowledges a `Quorum` write held by only one of them, then dies, leaves the
-control plane a fresh report naming the other — and promoting it loses the
+control plane a fresh report naming the other, and promoting it loses the
 acknowledged record. Report expiry does not close it; the report is recent, it
 is just older than the acknowledgement.
 
 What closes it is ordering. The leader reports who holds the record and waits
 for that report to land *before* moving the quorum mark, and the mark is what
-releases the acknowledgement — so the control plane cannot be behind a client.
+releases the acknowledgement, so the control plane cannot be behind a client.
 A report that does not land leaves the mark where it was, and the publish waits
 rather than being acknowledged on a report nobody received.
 
@@ -1032,7 +1032,7 @@ acknowledged.
 
 Both halves are checked. `docs/formal/FelixShard.tla` explores 5.38M distinct
 states of the implemented design without violating `AckedSurvive`, and
-`FelixShardNoReportOrder.cfg` — the same design with the ordering removed —
+`FelixShardNoReportOrder.cfg`, the same design with the ordering removed,
 loses an acknowledged record in a second (`task tla:check`). Promotion then
 prefers the replica furthest ahead among those reported, with score only
 breaking ties. See [`docs/formal/README.md`](formal/README.md).
@@ -1041,7 +1041,7 @@ breaking ties. See [`docs/formal/README.md`](formal/README.md).
 the code used to do: fall back to ordinary scoring and hand the shard to
 whichever node scores highest, which may never have seen it. That broker then
 serves an empty log at a newer generation while the records sit on replicas that
-were not chosen — a failover that *is* the data loss, and one nothing downstream
+were not chosen: a failover that *is* the data loss, and one nothing downstream
 reports as one. Unavailable is visible and recoverable; silently empty is
 neither.
 
@@ -1058,7 +1058,7 @@ Positions are held in the control plane's memory. They change constantly, are
 advisory, and expire in about a second, so persisting them would cost a write
 per report for data that is worthless by the time it could be read back. The
 consequence is that a second control-plane instance starts knowing nothing and
-cannot promote until leaders have reported to it — which matters for M7's
+cannot promote until leaders have reported to it, which matters for M7's
 multi-instance work and not before.
 
 ## Failure model
@@ -1071,7 +1071,7 @@ multi-instance work and not before.
 | Leader fails before its first replica report | No report names a caught-up replica, so none is promoted. The shard is unavailable until that broker returns, or until an operator abandons the log. |
 | New leader, no client write since | Its log ends in its generation-start record, which never reaches a subscriber. A subscription's `live_offset` stops short of it, so a reader catching up to `live_offset` finishes instead of waiting for the next write. |
 | Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. With `majority_ack` finalized, a `Quorum` stream keeps taking and acknowledging writes its followers hold until a promoted successor's fence reaches them; with `lease_free_reads` too, `Quorum` cache reads its replicas confirm keep being served, and other reads stop with the lease. |
-| Leader partitioned from followers | `Quorum` writes fail — correctly, the majority is unreachable. `Leader` writes succeed and accumulate loss-window exposure, which the lag metric shows. |
+| Leader partitioned from followers | `Quorum` writes fail, correctly: the majority is unreachable. `Leader` writes succeed and accumulate loss-window exposure, which the lag metric shows. |
 | Control plane unavailable | No new leases are granted. Existing leases run to expiry (5 to 11 s with the defaults), then shards go unavailable. Deliberate: granting without a functioning authority is how split-brain happens. When it comes back, brokers renew within about 3 s. The expiry sweep waits one expiry window after a restart, a Raft leader change, or regaining its store, so the outage does not mark the fleet down. With `majority_ack` finalized, `Quorum` streams go on acknowledging writes a majority of their replicas holds, since nothing on that path asks the control plane; `Leader` streams and caches stop as described, and reads too unless `lease_free_reads` is finalized, when `Quorum` cache reads go on as long as a majority of the shard's replicas answers. |
 | Broker suspended past expiry | Refused at the durable-append check on waking. |
 | Stale broker after reassignment | Its lease has expired, so it refuses. This is what closes #239 by construction rather than by racing a watch. |
@@ -1089,7 +1089,7 @@ multi-instance work and not before.
 - **Promotion**, gated on a caught-up follower.
 
 The gate matters more than the promotion. A replica that holds no log can be
-promoted perfectly well and will then serve an empty shard — the failover *is*
+promoted perfectly well and will then serve an empty shard. The failover *is*
 the data loss. So promotion requires a follower within the catch-up bound.
 
 Leaders now report which followers hold everything they do, so the gate has real
@@ -1118,7 +1118,7 @@ to drift from the truth:
 Both halves of this are implemented (#112). The follower's side is the exchange,
 the append rule, and the fence at the storing end. The leader's side keeps one
 cursor per follower, ships bounded batches from its own log, and moves the
-cursor only on the follower's answer — so a follower that has fallen behind or
+cursor only on the follower's answer, so a follower that has fallen behind or
 been rebuilt is caught up by its own `LogGap`, with no separate negotiation and
 nothing kept on disk.
 
@@ -1131,15 +1131,15 @@ sides hold, the second that this broker is no longer the leader.
 satisfied, exactly as before. A `Quorum` publish is held until a majority of the
 replica set *of the generation it was written at* holds its records durably.
 
-The majority always counts the leader, so `replication_factor: 1` — the default
-— makes `Quorum` behave exactly like `Leader` rather than never acknowledging.
+The majority always counts the leader, so `replication_factor: 1` (the default)
+makes `Quorum` behave exactly like `Leader` rather than never acknowledging.
 A halted follower counts for nothing: it has stopped rather than fallen behind,
 and letting its last position count would make an acknowledgement mean less than
 it says.
 
 The mark that releases such a publish advances **at the majority, not at the
 last follower**. A pass ships to every follower at once and moves the mark as
-soon as enough of them have answered to make one — with three replicas, the
+soon as enough of them have answered to make one: with three replicas, the
 moment the first follower has the records. Waiting for all of them put one dead
 or slow replica's whole timeout in front of every acknowledgement on the shard,
 every pass, which is the failure `Quorum` exists to tolerate rather than be
@@ -1169,7 +1169,7 @@ changes what an acknowledgement rests on.
 The replica report goes to the control plane **before** the mark is published,
 and is awaited. Releasing the publish first leaves a window in which a leader
 has told a client its record is on a majority and has told the control plane
-nothing about which replica holds it — and a leader that dies in that window is
+nothing about which replica holds it, and a leader that dies in that window is
 replaced by whichever replica scores highest, which may be the one that does not
 have it. A report that did not land leaves the mark where it was, for the same
 reason: the argument rests on the control plane knowing who holds the record, so
@@ -1179,7 +1179,7 @@ The report is written to the control plane's **store**, not kept by the
 instance that received it. That is the other half of the same argument: with
 several instances over one database, the instance a report reaches and the
 instance that later promotes need not be the same process, and a report held
-only in memory was a position no other promoter could use — an
+only in memory was a position no other promoter could use: an
 acknowledgement resting on it could not be made good at failover. See
 [control-plane.md](control-plane.md#replica-reports).
 
@@ -1188,7 +1188,7 @@ the price of the acknowledgement meaning what it says. One report per shard per
 pass in the healthy case: the majority report already describes every follower,
 because they finish together. A follower that answers late enough to move after
 that report sends a second one, so a replica that is level does not look behind
-— and so out of promotion — until the next pass.
+(and so out of promotion) until the next pass.
 
 **Reports are not one round trip each.** A flush takes every report queued at
 that moment and sends them as one request, which the endpoint has always
@@ -1202,7 +1202,7 @@ the same choice: a timer would add its own wait to a pass with a single shard to
 report, which is the deployment least able to spare it on a `Quorum` publish.
 Batches grow under load, which is when they are worth having, and an idle broker
 waits for nothing. `felix_broker_replica_reports_per_request` says how well it
-is working — one, on a broker leading hundreds of shards, means it is not.
+is working. One, on a broker leading hundreds of shards, means it is not.
 
 A wait that runs out is reported as a failure, and the distinction matters: the
 records *are* durable on the leader and may yet reach a majority. The broker is
@@ -1217,7 +1217,7 @@ operator asked to be quorum-replicated at the weaker guarantee, silently.
 
 The `Leader` loss window is exported as `felix_broker_replication_lag_records`:
 how far the slowest follower is behind, across every shard this broker leads. A
-halted follower is excluded from it — it has stopped rather than fallen behind,
+halted follower is excluded from it, because it has stopped rather than fallen behind,
 and `felix_broker_replication_halted` is where that shows.
 
 That gauge is a bare **count**, and has to stay one: a label per shard is a
@@ -1226,15 +1226,15 @@ broker. So it answers "is replication healthy here" and nothing more, and the
 only way to learn *which* replica had stopped was to grep for the warning
 logged at the halt.
 
-A halt does not resolve on its own — the follower is out of every quorum until
-someone acts — so the broker also serves a listing beside the metrics, at
+A halt does not resolve on its own (the follower is out of every quorum until
+someone acts), so the broker also serves a listing beside the metrics, at
 `GET /replication/halted` on `FELIX_BROKER_METRICS_BIND`. It names the shard,
 the node, the generation, how far the follower had got, why it stopped, and
 what to do about it, because the reason alone does not say whether the
 follower's data is wrong or merely incomplete. It is a listing rather than a
 metric, which is what lets it carry an identity: it is read on demand and its
 size is the number of halted replicas, normally zero. A healthy broker answers
-`[]` rather than 404 — "nothing is halted" and "this broker does not answer
+`[]` rather than 404: "nothing is halted" and "this broker does not answer
 that question" are different things to a dashboard.
 
 Read-only, deliberately. That listener has no authentication of its own, so it
@@ -1252,7 +1252,7 @@ the copy the majority agrees on, and already has the shipping path to send it.
 
 The rebuild is one message. `ReplicateRebuild` names the shard, which of its
 logs, and the leader's oldest surviving offset; a follower of that shard at
-that generation discards the log — records, index, and generation history —
+that generation discards the log (records, index, and generation history)
 and answers that its new copy begins at the offset it was given. From there it
 is an ordinary follower that far behind: shipping resumes at the base, and the
 follower is counted as caught up when it reaches the tail, like any other. The
@@ -1269,7 +1269,7 @@ already, so a follower that is merely too far behind (`needs_bootstrap`) is
 rebuilt as before.
 
 It happens under a policy, because a rebuild is a full transfer of the shard,
-and every halted follower at once — across every shard a failed broker led — is
+and every halted follower at once, across every shard a failed broker led, is
 how a recovery becomes an outage:
 
 | Variable | Default | Meaning |
@@ -1296,7 +1296,7 @@ begins, since the follower is shipping again.
 ### Planned handoff
 
 Everything above is about a leader that is *gone*. A leader that is alive and
-must give a shard up — its node is draining, or it holds more than its share —
+must give a shard up (its node is draining, or it holds more than its share)
 needs a different fence. The lease cannot be it: the lease is per node, the
 node keeps heartbeating, and a revocation that has to reach the old leader is
 the thing the lease design exists to avoid depending on.
@@ -1310,21 +1310,21 @@ often the assignment is re-delivered. The next assignment, the one that names
 the successor, is not written until the old leader has said it stopped.
 
 Saying so rides the replica report. The leader keeps leading for replication
-while draining — the followers are caught up from it, and the successor is
-one of them — and reports `drained` once no write can land any more. That
+while draining (the followers are caught up from it, and the successor is
+one of them) and reports `drained` once no write can land any more. That
 needs more than closing admission. Admission checks ownership, and a write it
 lets in can then wait in a publish queue for as long as the queue is deep;
 a tail that has not moved for a while says nothing about a write still
-queued. So every write — a publish, a forwarded publish, a cache put or
+queued. So every write (a publish, a forwarded publish, a cache put or
 delete, a counter add, a consumer group's poll, ack, nack or dead-letter
-change — enters a per-shard write fence at the moment it claims its place in
+change) enters a per-shard write fence at the moment it claims its place in
 the log, and stays counted until it is durable and fanned out. The shard
 lifecycle closes the fence as soon as it sees the move, whether the move
 arrives as a draining copy of the served generation or as a new, draining
 generation, and before the new servable set is published. A write that
 reaches its claim after that is refused, the same way a publish to a shard
 this broker does not serve is refused. A publish acknowledged when it is
-queued rather than when it is written — the default, `ack_on_commit` off —
+queued rather than when it is written (the default, `ack_on_commit` off)
 cannot be refused later, because the client already holds the ack. So a
 publish enters the fence earlier still, when it is routed, and holds its place
 until it is written: the move waits for it rather than losing it, whichever
@@ -1344,7 +1344,7 @@ the same replicas. Normally they go after the report and never hold it up,
 since no publish waits on group state. The drained pass is the exception: it
 ships them first, and reports `drained` only once the move's successor holds
 the shard's log and each of them. A dead letter or counter add the new leader
-lacks is lost at the cut-over — a dead-lettered record past the group's
+lacks is lost at the cut-over: a dead-lettered record past the group's
 cursor is skipped, and an acknowledged add is gone from the sum. Any other
 follower still behind on one of them is left out of the report's `caught_up`,
 so it is not promoted, but it does not hold the move. A move that has lost
@@ -1391,7 +1391,7 @@ the successor opening, nobody serves the shard. That window is the cost of the
 fence, the same way the safety interval is the cost of the lease.
 
 A publish that lands in the window is held rather than refused. Routing sees
-the shard's leader fenced — this broker, or the one it would forward to — and
+the shard's leader fenced (this broker, or the one it would forward to) and
 waits, before admitting the publish, for the routes to change; then it
 dispatches again, to the new owner. A publish routed a moment before the fence
 closed finds the fence shut when it tries to enter and waits the same way. A
@@ -1417,15 +1417,15 @@ the fence its log holds every write it accepted
 ([control-plane.md](control-plane.md#operator-controls)).
 
 While it copies, the destination is not counted toward the quorum. A leader
-that saw the destination added to the replica set — it was not a follower of
-the previous generation — computes the quorum mark over the set without it,
+that saw the destination added to the replica set (it was not a follower of
+the previous generation) computes the quorum mark over the set without it,
 the set the stream asked for. Counting it made every `Quorum` publish on a
 one-replica stream wait for the whole copy, and made one on a larger stream
 wait for it whenever a replica was down. Leaving it out loses nothing: a
 promotion picks only a replica the last report names caught up, and the
 cut-over waits for the destination to be level. A destination that was
 already a replica keeps counting, and a leader with no earlier pass to compare
-against counts it too — slower, never weaker. The copy is also shipped in
+against counts it too: slower, never weaker. The copy is also shipped in
 slices of 50 ms, with the shard's next pass run as each slice ends, so the
 copy is not slowed by waiting for a wake.
 `FelixShardStagedMoveVotes` in `docs/formal/` shows the wait without this, and
@@ -1463,66 +1463,66 @@ leader that dies mid-move is a failover, and the successor is a candidate
 there like any other replica. Neither path can name a broker holding less
 than the report said, because the report is the only input either reads.
 
-> `a_move_switches_over_in_well_under_a_second` — with every broker on the
+> `a_move_switches_over_in_well_under_a_second`: with every broker on the
 > default sync interval and placement on a slow timer, the destination accepts
 > a publish well under a second after the fence, and nothing acknowledged
 > before the move is lost.
 >
-> `a_drained_broker_hands_its_shard_over_with_every_record` — an unreplicated
+> `a_drained_broker_hands_its_shard_over_with_every_record`: an unreplicated
 > durable shard moves off a draining broker and every record acknowledged
 > before the drain is readable from the new owner.
 >
-> `continuous_publishing_through_a_move_is_never_refused` — two publishers,
+> `continuous_publishing_through_a_move_is_never_refused`: two publishers,
 > one through the old owner and one through the destination, run through a
 > whole move: none is refused, and every acknowledged record is on the new
 > owner exactly once.
 >
-> `a_subscription_follows_its_shard_to_the_new_owner` — a subscriber reading
+> `a_subscription_follows_its_shard_to_the_new_owner`: a subscriber reading
 > from the start while a publisher writes through the move receives every
 > offset once, in order, including every acknowledged record.
 >
-> `cancelling_a_fenced_move_loses_no_acknowledged_write` — a fenced move is
+> `cancelling_a_fenced_move_loses_no_acknowledged_write`: a fenced move is
 > cancelled with a publisher and a following subscriber running; the old
 > leader takes the shard back and every acknowledged record is delivered once.
 >
-> `a_quorum_publish_during_a_copy_is_not_held_by_it` — a one-replica `Quorum`
+> `a_quorum_publish_during_a_copy_is_not_held_by_it`: a one-replica `Quorum`
 > stream keeps acknowledging while its destination is stalled mid-copy.
 >
-> `a_move_completes_while_a_publisher_keeps_writing` — four writers keep the
+> `a_move_completes_while_a_publisher_keeps_writing`: four writers keep the
 > log growing between every two reports; the move still fences, cuts over,
 > and every acknowledged write is on the new owner.
 >
-> `a_move_that_cannot_copy_is_abandoned_after_its_timeout` — the leader
+> `a_move_that_cannot_copy_is_abandoned_after_its_timeout`: the leader
 > cannot reach a live destination; the staging is undone in one write at the
 > move timeout, the leader serves throughout, and the move finishes once the
 > destination is reachable.
 >
-> `records_acknowledged_during_a_move_survive_it` — publishes arriving through
+> `records_acknowledged_during_a_move_survive_it`: publishes arriving through
 > the staging, fence and cut-over are either acknowledged and on the new owner,
 > or refused.
 >
-> `a_destination_that_dies_mid_transfer_does_not_take_the_shard` — the
+> `a_destination_that_dies_mid_transfer_does_not_take_the_shard`: the
 > staged successor is killed before the cut-over; the shard lands on a broker
 > that holds the log.
 >
-> `a_draining_shard_reports_drained_once_its_fence_is_quiet` — the broker
+> `a_draining_shard_reports_drained_once_its_fence_is_quiet`: the broker
 > side of the fence: no drained report while a write is inside it, however
 > still the tail looks, and the report that follows includes that write.
 >
 > `a_draining_shard_withholds_drained_until_its_dead_letters_are_shipped`,
-> `a_draining_cache_withholds_drained_until_its_counters_are_shipped` — no
+> `a_draining_cache_withholds_drained_until_its_counters_are_shipped`: no
 > drained report while the successor has the shard's log but not its dead
 > letters or counters; the report follows once they are shipped.
-> `a_lagging_replica_other_than_the_successor_is_left_out_not_waited_for` —
+> `a_lagging_replica_other_than_the_successor_is_left_out_not_waited_for`:
 > another replica missing a dead letter does not hold the report, and is not
 > in its `caught_up`.
 >
-> `a_moved_shard_keeps_its_group_state_and_counters` — group acks and counter
+> `a_moved_shard_keeps_its_group_state_and_counters`: group acks and counter
 > adds keep arriving while a shard and a cache move off a live broker; on the
 > new owner no acknowledged record is handed out again, the dead-letter list
 > is unchanged, and the counter holds every acknowledged add.
 >
-> `a_durable_publish_claimed_after_the_fence_is_refused` — a publish admitted
+> `a_durable_publish_claimed_after_the_fence_is_refused`: a publish admitted
 > before the fence and claimed after it is refused and never written; the
 > same holds for cache, counter, consumer-group and forwarded writes
 > (`cache_writes_after_the_fence_are_refused`,
@@ -1532,12 +1532,12 @@ than the report said, because the report is the only input either reads.
 
 Both halves are model-checked. `docs/formal/FelixShardHandoff.cfg` explores
 the move as implemented without a violation;
-`FelixShardHandoffNoWait.cfg` — the same move cutting over as soon as the
-fence is written — finds two brokers serving the shard at once in seven
+`FelixShardHandoffNoWait.cfg`, the same move cutting over as soon as the
+fence is written, finds two brokers serving the shard at once in seven
 steps, because the old leader has not seen the fence yet. The lease does not
 close that: it has not lapsed, and the leader is alive and meant to keep it.
 Only the leader's own word that it stopped does. And
-`FelixShardHandoffNoClaimFence.cfg` — the fence checked at admission only —
+`FelixShardHandoffNoClaimFence.cfg`, the fence checked at admission only,
 finds a write admitted before the fence, claimed after the drained report,
 and acknowledged by the old leader after the successor took over, which the
 successor does not hold.
@@ -1547,24 +1547,24 @@ The steps, their triggers and the policy that bounds them are in
 
 ## What this does to the other M5 issues
 
-- **#111 (fenced leadership)** — this is now specific: the epoch is the
+- **#111 (fenced leadership)**: this is now specific: the epoch is the
   assignment generation, the fence is the lease, and it is enforced at both the
   routing and durable-append boundaries. **#239 is subsumed**: a stale ex-owner is
   a broker without a valid lease, and the same check refuses it.
-- **#112 (replicate records)** — append-only shipping, not a consensus log. The
+- **#112 (replicate records)**: append-only shipping, not a consensus log. The
   catch-up path is `read_range` plus sealed-segment checksums. **Done**, both
   halves. Catch-up currently re-reads from the offset the follower names rather
   than verifying whole sealed segments by checksum; that is an optimisation for
   #114, not a change to the rule.
-- **#113 (Leader and Quorum)** — the majority is over the replica set *of the
+- **#113 (Leader and Quorum)**: the majority is over the replica set *of the
   current generation*, and an acknowledgement from a replica at an older
   generation does not count toward it.
-- **#114 (bootstrap followers)** — bounded range reads from the leader; no
+- **#114 (bootstrap followers)**: bounded range reads from the leader; no
   snapshot-install protocol is needed, because the log is the snapshot.
-- **#115 (failure injection)** — needs lease expiry, clock skew, and suspension
+- **#115 (failure injection)**: needs lease expiry, clock skew, and suspension
   as injectable faults, not just process kills. The harness can stop and move a
   broker today (#108); it cannot yet pause one or skew its clock.
-- **#116 (semantics)** — must document the `Leader` loss window in terms of the
+- **#116 (semantics)**: must document the `Leader` loss window in terms of the
   lag metric, and state that `Quorum` is majority-including-leader.
 
 ## What would overturn this
@@ -1573,8 +1573,8 @@ Stated because a decision without one is an opinion.
 
 **Raft's real advantage is that it needs no clock assumption for safety.** Leases
 trade that for a simpler data path. If Felix ever needs to run where drift rate
-cannot be bounded — or where process suspension is common enough that `ε` cannot
-be chosen — that trade stops being worth it.
+cannot be bounded, or where process suspension is common enough that `ε` cannot
+be chosen, that trade stops being worth it.
 
 The other trigger is the storage layer changing. The argument above rests on
 "no committed record is ever rewritten." If that invariant is ever relaxed for another
