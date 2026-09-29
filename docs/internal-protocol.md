@@ -448,7 +448,8 @@ leader, and will not truncate or rebuild below it.
 to a follower that offered `GENERATION_LABELS`. Such a batch travels as
 `ReplicateLabelledRecords` (kind 32): the `ReplicateRecords` body, one mark
 per payload, the log (`u8`), then `has_commit u8` (`0` or `1`) and
-`commit_offset u64` (zero without one), then `count u32` and that many
+`commit_offset u64` (zero without one, and a nonzero offset beside
+`has_commit = 0` is refused), then `count u32` and that many
 `generation u64, start_offset u64` pairs, oldest first: the generation the
 first record belongs to and every later one starting by the batch's end. The
 follower labels the records it appended with exactly those, rather than with
