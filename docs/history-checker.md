@@ -4,7 +4,7 @@ A Jepsen-style check of what clients actually observed. Concurrent clients
 append to and read `Quorum` streams, and put to and get keys of a `Quorum`
 cache, on a real three-broker cluster while a
 nemesis kills, pauses and partitions brokers, and in the long runs also cuts
-links, skews clocks and fails fsyncs. Every operation is recorded with
+links, skews clocks, fails fsyncs, moves shards and drains brokers. Every operation is recorded with
 when it started, when it ended and what it returned. Once the faults are healed,
 the checker compares that history with what a replicated append-only log
 promises.
@@ -164,8 +164,10 @@ included.
 | Clock | `ControlPlaneClockStep` | The control plane's wall clock jumps 15s forward | Stepped back to the true clock |
 | Disk | `SlowFsync` | Each of the broker's flushes waits 200ms | Delay removed |
 | Disk | `FsyncFailOnce` | The broker's next flush fails with `EIO` | Fault removed, broker restarted |
+| Assignment | `MoveShard` | An operator moves one of the workload's shards to another broker | Wait for the move to finish |
+| Assignment | `Drain` | An operator drains the broker | Put back to live, wait for the moves in flight |
 
-The non-process kinds go through the harness's `Cluster::inject` (see
+The link, clock and disk kinds go through the harness's `Cluster::inject` (see
 [the cluster harness](cluster-harness.md), "The fault API"). There are two
 types named `Fault`: `felix_cluster::Fault` is the harness's vocabulary, and
 `felix_cluster::history::Fault` is the campaign's, a fault with its target
@@ -180,6 +182,20 @@ write. Healing the control-plane step is a backward step. That leaves
 every heartbeat stamp in the future, and the expiry sweep pulls them back to
 its clock, so a broker that dies right after it still goes down within one
 window (`a_control_plane_clock_stepped_back_still_expires_a_dead_broker`).
+
+The assignment kinds go through the control plane's operator API, as an
+operator would, while the placement loop keeps running. `MoveShard` picks a
+stream or cache shard the target broker leads (any shard, if it leads none)
+and starts a move to another broker with `POST /v1/shard-moves`. Every shard
+is on all three brokers, so the destination is always one of its replicas and
+the move goes through the planned handoff: staged, fenced, cut over. `Drain`
+marks the broker draining, so placement moves its leaderships off it. It
+keeps its seat as a follower of the shards it only followed, since there is no
+fourth broker to reseat them on, but each shard it led cuts over without it.
+Healing marks it live again. Both heals then wait up to 60s (times `FELIX_TEST_TIMEOUT_SCALE`)
+for every shard to have no move in flight, placement's own included, so the
+next fault never lands mid-move. A move still running by then fails the
+campaign as a stall.
 
 `Campaign::cluster_config` takes the nemesis and starts the cluster for it:
 with proxied links when it may pick a link fault, and with
@@ -217,9 +233,12 @@ faults a failing run printed, implement `Nemesis`.
 > at least one fault injected and healed.
 > `every_fault_family_is_injected_and_healed_in_a_campaign` — a 75-second
 > campaign on the lease that goes round every kind in a fixed order leaves a valid history
-> and injects and heals at least one fault of each family.
+> and injects and heals at least one fault of each family. The order puts a
+> shard move fourth and a drain sixth, so both run on every PR.
 > `all_faults_never_steps_a_broker_clock_back` — the nemesis never asks for a
 > step the harness would refuse.
+> `a_move_goes_from_the_leader_to_another_broker` — a move names one of the
+> workload's shards, its current leader, and a different broker.
 
 ## Running it
 
@@ -283,6 +302,37 @@ Each violation names:
   shown with its client, value, outcome and `[invoke..complete]` span in
   milliseconds since the run began.
 - **The offsets** that disagree.
+
+After the timeline comes a dump of the cluster's state, taken while it is
+still up:
+
+```text
+cluster state:
+  broker-0: running, live, lease held 1, heartbeat age s 0.1, watch checkpoint 87, slowest follower lag 0, halted followers 0, quorum marks withheld 2
+  ...
+  stream history-0/0: leader broker-1, replicas [broker-0, broker-2], generation 9, assigning
+    report at generation 9 (212ms old): leader log end 164, majority at 164; broker-0 at 164 caught up, broker-2 at 161 caught up
+  cache history-cache/0: leader broker-2, replicas [broker-0, broker-1], generation 5, assigning
+    ...
+```
+
+- **Each broker**: whether its process is running, its lifecycle in the
+  control plane, and a few of its own metrics. A paused broker shows
+  "metrics did not answer".
+- **Each of the workload's shards**: the control plane's assignment, with its
+  leader, replicas, generation and state, and any move in flight (`moving to`,
+  `joining`, and why).
+- **The last replica report** its leader sent: the generation it was sent at,
+  its age, the leader's log end, and each replica's position. "Majority at" is
+  the offset a majority of the copies had reached by that report, which is
+  as far as the leader could have acknowledged. Brokers do not export
+  per-shard positions or quorum marks (their replication metrics are not
+  labelled by shard), so the report is the per-replica view.
+
+The dump is also printed when the campaign cannot finish, for example when a
+heal fails or a list has no complete final read. The error then carries the
+fault timeline too, since the checker never ran. `Campaign::state_dump` takes
+it from any test.
 
 Put the spans next to the fault timeline. A loss whose acknowledgement arrived
 just before a leader was paused or partitioned points at the acknowledgement

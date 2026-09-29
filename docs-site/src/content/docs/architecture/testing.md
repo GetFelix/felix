@@ -50,8 +50,9 @@ pause (`SIGSTOP`) and partition. The nightly workflow
 (`.github/workflows/history.yml`) runs for 20 minutes with a random seed and
 adds link faults (dropped or delayed peer traffic, lost control-plane replies),
 clock faults (a broker's lease clock at 0.5x or 20x, the control plane's wall
-clock stepped 15 s forward) and disk faults (slow fsyncs, one failed fsync).
-
+clock stepped 15 s forward), disk faults (slow fsyncs, one failed fsync) and
+assignment faults (an operator moving a shard to another replica, a broker
+drained and put back).
 
 `FELIX_HISTORY_MODE` picks the replication path. In `lease` mode the campaign
 tests the report and lease path every stream uses by default. In `lease-free`
