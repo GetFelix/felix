@@ -1945,7 +1945,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_SHARD_RECONCILE_INTERVAL_MS` | `5000` | How often placement re-plans. Bounds how quickly a failover happens, and how quickly a shard move advances a step. A pass fails over at most 64 shards to nodes that hold no copy of them. The rest wait for the next pass. |
 | `FELIX_SHARD_MOVES_MAX_CONCURRENT` | `1` | Copies in flight across the cluster: shard moves, and followers being replaced on a draining broker. Each is a full copy of a shard's log. `0` holds every move. |
 | `FELIX_SHARD_MOVES_MAX_PER_NODE` | unset | Copies in flight into or out of any one broker. Unset or `0` is no limit beyond the cluster-wide one. |
-| `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` | `1000` | How far behind the leader's tail a move's destination may be when the leader is fenced. The rest is copied before the cut-over, so this bounds the switch-over, not what is lost. |
+| `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` | `1000` | How far behind the leader's tail a move's destination may be when the leader is fenced. The rest is copied before the cut-over, so this bounds the switch-over, not what is lost. A replacement follower takes the place of the one it replaces within the same bound; on a `Quorum` stream it must also hold what a majority of the replica set holds. |
 | `FELIX_SHARD_MOVE_TIMEOUT_MS` | `1800000` | A move that has not reached its fence, or a follower replacement that has not caught up, this long after it started is abandoned and its slot goes to the next move. A fenced move is always finished. `0` never gives up. |
 | `FELIX_CP_URL`, `FELIX_CP_SYNC_INTERVAL_MS` | — | Short aliases used by the demos and cluster harness. |
 

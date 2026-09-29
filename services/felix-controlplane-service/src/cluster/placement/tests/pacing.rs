@@ -180,6 +180,120 @@ fn a_replacement_is_copied_in_before_the_departing_follower_leaves() {
     }
 }
 
+/// A report at generation 3 with the leader's tail and each follower's
+/// position, and every follower named caught up, as a leader reports before
+/// its generation has anything counted.
+struct Tailed {
+    tail: u64,
+    offsets: BTreeMap<String, u64>,
+}
+
+impl Tailed {
+    fn at(tail: u64, offsets: &[(&str, u64)]) -> Self {
+        Self {
+            tail,
+            offsets: offsets.iter().map(|(n, o)| (n.to_string(), *o)).collect(),
+        }
+    }
+}
+
+impl CaughtUp for Tailed {
+    fn is_caught_up(&self, _key: &ShardKey, _node_id: &str) -> bool {
+        true
+    }
+
+    fn reported_offset(&self, _key: &ShardKey, node_id: &str) -> Option<u64> {
+        self.offsets.get(node_id).copied()
+    }
+
+    fn lag_records(&self, _key: &ShardKey, node_id: &str) -> Option<u64> {
+        Some(self.tail - self.offsets.get(node_id)?)
+    }
+
+    fn leader_offset(&self, _key: &ShardKey) -> Option<u64> {
+        Some(self.tail)
+    }
+
+    fn reported_generation(&self, _key: &ShardKey) -> Option<u64> {
+        Some(3)
+    }
+
+    fn as_of_millis(&self) -> Option<u64> {
+        Some(NOW)
+    }
+}
+
+/// **On a `Quorum` stream the replacement is seated only once it holds what
+/// a majority of the set it joined holds.** The leader and the departing
+/// follower may hold records the lagging follower lacks; seating a joiner
+/// short of them leaves the joiner and the lagging follower a majority of the
+/// new set without them. Within the lag bound is not enough.
+#[test]
+fn a_quorum_replacement_waits_for_what_the_old_set_holds() {
+    use crate::model::MoveReason;
+
+    let streams = vec![Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 3)
+    }];
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Draining, None),
+        node("broker-c", NodeLifecycle::Live, None),
+        node("broker-d", NodeLifecycle::Live, None),
+    ];
+    let mut joining = shard(
+        "orders",
+        0,
+        "broker-a",
+        &["broker-b", "broker-c", "broker-d"],
+    );
+    joining.generation = 3;
+    joining.joining = Some("broker-d".to_string());
+    joining.move_started_at_millis = Some(NOW);
+    joining.move_reason = Some(MoveReason::Replace);
+    let seat = |report: &Tailed| {
+        let plan = plan_with(
+            &streams,
+            &[],
+            &nodes,
+            std::slice::from_ref(&joining),
+            report,
+            policy(1),
+        );
+        matches!(
+            decision_for(&plan, "orders", 0),
+            Decision::Move(MoveStep::Seat { .. }, _)
+        )
+    };
+
+    // {a, b} hold 10, c is at 4: the joiner at 6 is within the lag bound but
+    // short of what the old set holds.
+    let short = Tailed::at(10, &[("broker-b", 10), ("broker-c", 4), ("broker-d", 6)]);
+    assert!(!seat(&short), "seated a joiner missing what a and b hold");
+    // Level with the majority of the old set.
+    assert!(seat(&Tailed::at(
+        12,
+        &[("broker-b", 10), ("broker-c", 4), ("broker-d", 10)]
+    )));
+    // A follower the report leaves out may hold everything the leader does.
+    assert!(!seat(&Tailed::at(10, &[("broker-c", 4), ("broker-d", 6)])));
+    assert!(seat(&Tailed::at(10, &[("broker-c", 4), ("broker-d", 10)])));
+    // A `Leader` stream keeps the lag bound alone.
+    let plan = plan_with(
+        &[replicated_stream("orders", 1, 3)],
+        &[],
+        &nodes,
+        std::slice::from_ref(&joining),
+        &short,
+        policy(1),
+    );
+    assert!(matches!(
+        decision_for(&plan, "orders", 0),
+        Decision::Move(MoveStep::Seat { .. }, _)
+    ));
+}
+
 /// A node copies at most `max_per_node` shards in or out at once, even
 /// with cluster-wide slots to spare.
 #[test]

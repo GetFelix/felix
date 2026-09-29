@@ -30,6 +30,12 @@ pub trait CaughtUp {
         None
     }
 
+    /// The leader's own tail, as last reported. `None` when the leader did not
+    /// say.
+    fn leader_offset(&self, _key: &ShardKey) -> Option<u64> {
+        None
+    }
+
     /// Whether the leader of `key` has reported, at exactly `generation`, that
     /// it has stopped serving and its log will not grow. A report from an
     /// earlier generation describes a leader that was still writing.

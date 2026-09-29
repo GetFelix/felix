@@ -646,6 +646,15 @@ for what the current release actually guarantees.
   so the fence needs a majority of the set that acknowledged. The dead
   member stays a follower until it returns or is drained. Upgrade the
   control plane before finalizing `majority_ack`.
+- **Replacing a `Quorum` follower keeps what the old set acknowledged.** A
+  drain seats the replacement and drops the old follower once the
+  replacement is within the move lag bound, or once a report names it caught
+  up, which a leader does for every follower at a new generation before
+  anything is counted there. Seated early, the replacement and a lagging
+  follower were a majority of the new set without a record the leader and
+  the old follower acknowledged, and a failover then lost it. On a durable
+  `Quorum` stream the seat now also waits until the replacement holds what a
+  majority of the set holds.
 
 - **A subscription's `live_offset` is reachable after a leadership change.**
   It was the raw log tail, so when the log ended in a new leader's

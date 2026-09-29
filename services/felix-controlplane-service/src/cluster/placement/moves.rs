@@ -178,6 +178,7 @@ pub(super) fn move_step<'a>(
     leaders: &mut HashMap<&'a str, u32>,
     leader_share: u32,
     moves: &mut Moves,
+    fenced: bool,
 ) -> Decision {
     let leader = existing.leader.as_str();
     let leader_live = is_live(leader);
@@ -327,6 +328,7 @@ pub(super) fn move_step<'a>(
             is_draining,
             caught_up,
             moves,
+            fenced,
         );
     }
 
@@ -552,6 +554,7 @@ fn reseat<'a>(
 
 /// A follower replacement in progress: seat it once it has caught up, or
 /// undo it if it cannot finish.
+#[allow(clippy::too_many_arguments)]
 fn replacement_step(
     existing: &ShardAssignment,
     joining: &str,
@@ -560,6 +563,7 @@ fn replacement_step(
     is_draining: &dyn Fn(&str) -> bool,
     caught_up: &dyn CaughtUp,
     moves: &Moves,
+    fenced: bool,
 ) -> Decision {
     let departing = existing
         .replicas
@@ -585,7 +589,9 @@ fn replacement_step(
             None,
         );
     };
-    if moves.ready_to_fence(caught_up, &existing.key, joining) {
+    if moves.ready_to_fence(caught_up, &existing.key, joining)
+        && (!fenced || holds_what_the_set_held(existing, joining, caught_up))
+    {
         let mut replicas = existing.replicas.clone();
         replicas.retain(|replica| replica != departing);
         return Decision::Move(
@@ -614,6 +620,48 @@ fn replacement_step(
     Decision::Waiting(Blocked::DestinationCatchingUp {
         successor: joining.to_string(),
     })
+}
+
+/// Whether `joining` holds everything a majority of the set it joined holds,
+/// by a report at the current generation.
+///
+/// Seating drops a follower, and on a fenced stream the next promotion counts
+/// a majority of the smaller set. A record acknowledged before the joiner
+/// came in may sit on the leader and the departing follower alone; seated
+/// early, the joiner and the lagging follower are a majority without it. A
+/// record acknowledged since needed three of the four, so it survives the
+/// drop. `FelixShardFencedAckSeatEarly` in `docs/formal/FelixShard.tla`.
+///
+/// A member the report leaves out is taken to be level with the leader: its
+/// position is unknown, and assuming less could pass a record it holds.
+fn holds_what_the_set_held(
+    existing: &ShardAssignment,
+    joining: &str,
+    caught_up: &dyn CaughtUp,
+) -> bool {
+    let key = &existing.key;
+    let (Some(tail), Some(held)) = (
+        caught_up.leader_offset(key),
+        caught_up.reported_offset(key, joining),
+    ) else {
+        return false;
+    };
+    let old: Vec<&str> = existing
+        .replicas
+        .iter()
+        .map(String::as_str)
+        .filter(|replica| *replica != joining)
+        .collect();
+    let mut positions: Vec<u64> = std::iter::once(tail)
+        .chain(
+            old.iter()
+                .map(|replica| caught_up.reported_offset(key, replica).unwrap_or(tail)),
+        )
+        .collect();
+    positions.sort_unstable_by(|a, b| b.cmp(a));
+    // `majority_of` in felix-replication: the leader and half the followers.
+    let needed = old.len().div_ceil(2) + 1;
+    held >= positions[needed - 1]
 }
 
 /// The replica set once `target` leads: nodes that already hold a copy first
@@ -839,6 +887,12 @@ impl CaughtUp for AtGeneration<'_> {
     fn lag_records(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
         self.current(key)
             .then(|| self.inner.lag_records(key, node_id))
+            .flatten()
+    }
+
+    fn leader_offset(&self, key: &ShardKey) -> Option<u64> {
+        self.current(key)
+            .then(|| self.inner.leader_offset(key))
             .flatten()
     }
 

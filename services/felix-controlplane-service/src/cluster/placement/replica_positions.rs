@@ -126,6 +126,10 @@ impl CaughtUp for ReplicaPositions {
         Some(tail.saturating_sub(*report.offsets.get(node_id)?))
     }
 
+    fn leader_offset(&self, key: &ShardKey) -> Option<u64> {
+        self.fresh(key)?.leader_offset
+    }
+
     fn reported_generation(&self, key: &ShardKey) -> Option<u64> {
         self.fresh(key).map(|report| report.generation)
     }

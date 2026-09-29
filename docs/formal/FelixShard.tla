@@ -124,6 +124,16 @@
 (* that held what the old set acknowledged (AckedHeldByLeader). Without it *)
 (* a promotion keeps the set, the old leader included.                     *)
 (*                                                                         *)
+(* With spares, `MaxMoves` also bounds follower replacements. `Reseat`     *)
+(* adds a spare beside a follower that is leaving, at a new generation, so *)
+(* the leader ships to and counts four; `Seat` then drops the leaving one, *)
+(* at another. `SeatHoldsCopy` seats only once the newcomer holds what a   *)
+(* majority of the set held when it joined. Without it TLC finds a record  *)
+(* acknowledged on the leader and the leaving follower, the newcomer       *)
+(* seated without it, and the next leader fencing the newcomer and the     *)
+(* lagging follower, a majority of the new set that never saw it           *)
+(* (AckedHeldByLeader).                                                    *)
+(*                                                                         *)
 (* `StartRecord` has a leader write a generation-start record before any   *)
 (* client write, and lets the mark and the report's length stop only at a  *)
 (* record of its own generation. Without it, a leader acknowledges a       *)
@@ -168,7 +178,8 @@ CONSTANTS
     LabelOnReceipt, \* whether a follower labels a shipped record with the sender's generation
     StartRecord,    \* whether a new leader writes a generation-start record and the mark waits for it
     Spares,         \* brokers outside the replica set that a failover may bring in
-    ReplaceOnPromote \* whether a promotion swaps the old leader for a spare
+    ReplaceOnPromote, \* whether a promotion swaps the old leader for a spare
+    SeatHoldsCopy   \* whether a replacement is seated only once it holds what the old set held
 
 ASSUME Promotion \in {"leader-report", "log-order", "any"}
 ASSUME ReportBeforeAck \in BOOLEAN
@@ -183,11 +194,11 @@ ASSUME AckChecksLease \in BOOLEAN /\ AckOnResponse \in BOOLEAN
 ASSUME AckByFollowers \in BOOLEAN /\ FenceOnPromote \in BOOLEAN
 ASSUME LabelOnReceipt \in BOOLEAN
 ASSUME StartRecord \in BOOLEAN
-\* Only a promotion changes the set, so spares are checked with follower acks
-\* (no handoff, no cancel) and no staged copy.
-ASSUME Spares \subseteq Brokers /\ ReplaceOnPromote \in BOOLEAN
+\* Only a promotion or a replacement changes the set, so spares are checked
+\* with follower acks (no handoff, no cancel) and no staged copy.
+ASSUME Spares \subseteq Brokers /\ ReplaceOnPromote \in BOOLEAN /\ SeatHoldsCopy \in BOOLEAN
 ASSUME Spares /= {} => AckByFollowers /\ ~StageMove
-ASSUME ReplaceOnPromote => Spares /= {}
+ASSUME ReplaceOnPromote => Spares /= {} /\ MaxMoves = 0
 \* The fence is modelled on promotion only, as the broker fences: a planned
 \* move and a cancel name a leader without one, so neither is checked
 \* alongside follower acks. The fence without follower acks is the broker as
@@ -231,15 +242,19 @@ VARIABLES
     answered,   \* who has answered each broker's fence at the generation it leads
     confirmed,  \* per leader, how far each follower answered that it holds, at the leader's generation
     out,        \* brokers outside the replica set: the spares, and a leader swapped out
-    mine        \* the replica set each broker was given when it was named leader
+    mine,       \* the replica set each broker was given when it was named leader
+    joining,    \* a spare being copied in beside a leaving follower: {} or {j}
+    leaving,    \* the follower it replaces: {} or {o}
+    joinedAt    \* how much of the leader's log a majority of the set held when it joined
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
            draining, successor, stopped, moves, ver, cpView, staged, heard,
-           promised, fencing, answered, confirmed, out, mine >>
+           promised, fencing, answered, confirmed, out, mine, joining, leaving, joinedAt >>
 
 \* Placement's state, which only the control plane's decisions change.
-handoffVars == << draining, successor, stopped, moves, ver, cpView, staged, out, mine >>
+handoffVars == << draining, successor, stopped, moves, ver, cpView, staged, out, mine,
+                  joining, leaving, joinedAt >>
 
 \* The promotion fence's state.
 fenceVars == << promised, fencing, answered, confirmed >>
@@ -251,9 +266,9 @@ Promises == AckByFollowers \/ FenceOnPromote
 NoReport == [holders |-> {}, len |-> 0, drained |-> FALSE, gen |-> 0]
 
 \* The replica set the stream asked for: everyone but a destination still
-\* copying and the brokers outside it. A quorum is a majority of this set,
-\* unless `LearnerVotes`.
-ReplicaSet == Brokers \ (staged \cup out)
+\* copying, a replacement still joining, and the brokers outside it. A quorum
+\* is a majority of this set, unless `LearnerVotes`.
+ReplicaSet == Brokers \ (staged \cup out \cup joining)
 QuorumSet == IF LearnerVotes THEN Brokers ELSE ReplicaSet
 
 MajorityOf(S, of) == Cardinality(S \cap of) * 2 > Cardinality(of)
@@ -344,6 +359,9 @@ Init ==
     /\ confirmed = [b \in Brokers |-> [f \in Brokers |-> 0]]
     /\ out = Spares
     /\ mine = [b \in Brokers |-> Brokers \ Spares]
+    /\ joining = {}
+    /\ leaving = {}
+    /\ joinedAt = 0
 
 -----------------------------------------------------------------------------
 (* Time. Real time ticks, and with it each broker's clock moves by zero,   *)
@@ -412,7 +430,7 @@ StepDown(b) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
                     hbOut, hbAt, log, hwm, halted, acked, writes, staleCommit,
                     draining, successor, moves, ver, cpView, staged, promised, answered,
-                    confirmed, out, mine >>
+                    confirmed, out, mine, joining, leaving, joinedAt >>
 
 -----------------------------------------------------------------------------
 (* Writes. Admission checks the broker is serving; the write then waits,  *)
@@ -732,7 +750,7 @@ ByLogOrder(old, f) ==
 
 \* Any replica, halted or not: what placement can pick with no report to go
 \* by, since only a report names a halt.
-ByAny(f) == f \in ReplicaSet
+ByAny(f) == f \in ReplicaSet \cup joining
 
 \* What a planner reads: the assignment and the last report. `lapsed` is
 \* judged at the read and stays true: once the lease at a generation has
@@ -750,7 +768,8 @@ Snapshot(p) ==
     /\ cpView' = [cpView EXCEPT ![p] = {Now}]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
-                    draining, successor, stopped, moves, ver, staged, out, mine >>
+                    draining, successor, stopped, moves, ver, staged, out, mine,
+                    joining, leaving, joinedAt >>
     /\ UNCHANGED fenceVars
 
 \* A write decided from read `v` lands only if nothing was written since,
@@ -783,13 +802,17 @@ Promote(v, f, views) ==
     \* A promoted destination leads, so it is part of the set from here.
     /\ staged' = staged \ {f}
     \* What `choose_replicas` in placement/plan.rs would write: the old set
-    \* without the dead leader, plus a spare. `keep_replicas` keeps the set.
+    \* without the dead leader, plus a spare. `keep_replicas` keeps the set,
+    \* without a replacement still joining, which failover ends.
     /\ IF ReplaceOnPromote /\ out /= {}
        THEN \E d \in out :
               /\ out' = (out \ {d}) \cup {v.leader}
               /\ mine' = [mine EXCEPT ![f] = (ReplicaSet \ {v.leader}) \cup {d}]
-       ELSE /\ mine' = [mine EXCEPT ![f] = ReplicaSet]
-            /\ UNCHANGED out
+       ELSE /\ mine' = [mine EXCEPT ![f] = ReplicaSet \cup {f}]
+            /\ out' = out \cup (joining \ {f})
+    /\ joining' = {}
+    /\ leaving' = {}
+    /\ joinedAt' = 0
     \* The new leader persists its generation itself first; with
     \* `FenceOnPromote` it then fences the others before it serves.
     /\ promised' = IF Promises THEN [promised EXCEPT ![f] = gen + 1] ELSE promised
@@ -894,7 +917,7 @@ Fence(v, f, views) ==
     /\ successor' = f
     /\ moves' = moves + 1
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
-                    staleCommit, staged, out, mine >>
+                    staleCommit, staged, out, mine, joining, leaving, joinedAt >>
     /\ UNCHANGED fenceVars
 
 \* The leader sees the fence. Modelled as the broker noticing; the cut-over
@@ -905,7 +928,8 @@ ObserveFence(b) ==
     /\ stopped' = [stopped EXCEPT ![b] = TRUE]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
-                    draining, successor, moves, ver, cpView, staged, out, mine >>
+                    draining, successor, moves, ver, cpView, staged, out, mine,
+                    joining, leaving, joinedAt >>
     /\ UNCHANGED fenceVars
 
 CutOver(v, f, views) ==
@@ -928,7 +952,7 @@ CutOver(v, f, views) ==
     /\ staged' = staged \ {f}
     /\ log' = [log EXCEPT ![f] = Opened(f, gen + 1)]
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
-                    staleCommit, successor, moves, out, mine >>
+                    staleCommit, successor, moves, out, mine, joining, leaving, joinedAt >>
     /\ UNCHANGED fenceVars
 
 \* An operator cancels a fenced move (`cancel_move` in
@@ -956,13 +980,76 @@ Retake(v, f, views) ==
     /\ stopped' = [stopped EXCEPT ![f] = FALSE]
     /\ log' = [log EXCEPT ![f] = Opened(f, gen + 1)]
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, queued, pending,
-                    acked, writes, staleCommit, successor, moves, staged, out, mine >>
+                    acked, writes, staleCommit, successor, moves, staged, out, mine,
+                    joining, leaving, joinedAt >>
     /\ UNCHANGED fenceVars
+
+-----------------------------------------------------------------------------
+(* Replacing a follower (`reseat` and `replacement_step` in                 *)
+(* services/felix-controlplane-service/src/cluster/placement/moves.rs). The *)
+(* leader stays; each step is a new generation at which it ships to, and   *)
+(* counts, the set it was given. It opens each with a start record, as it  *)
+(* opens a promotion.                                                      *)
+
+\* The most of `b`'s log a majority of the set it leads holds, `b` included
+\* and halted followers not. Placement reads it from a report at the joining
+\* generation, which is later, so what it reads is at least this.
+OldSetLen(b) ==
+    LET held == { k \in 0..Len(log[b]) :
+                    MajorityOf({ m \in mine[b] \ halted : HoldsPrefix(m, b, k) } \cup {b},
+                               mine[b]) }
+    IN CHOOSE k \in held : \A j \in held : j <= k
+
+\* The leader, still serving, moves to the next generation with `set`.
+Regenerate(v, views, set) ==
+    /\ v.leader = leader /\ ~v.lapsed
+    /\ bgen[leader] = gen /\ ~fencing[leader]
+    /\ Cas(v)
+    /\ ver' = ver + 1
+    /\ cpView' = views
+    /\ gen' = gen + 1
+    /\ bgen' = [bgen EXCEPT ![leader] = gen + 1]
+    /\ promised' = [promised EXCEPT ![leader] = gen + 1]
+    /\ confirmed' = [confirmed EXCEPT ![leader] = [m \in Brokers |-> 0]]
+    /\ log' = [log EXCEPT ![leader] = Opened(leader, gen + 1)]
+    /\ report' = NoReport
+    /\ mine' = [mine EXCEPT ![leader] = set]
+    /\ UNCHANGED << now, clock, leader, cpExpiry, inflight, bexpiry, hbOut, hbAt, hwm, halted,
+                    queued, pending, acked, writes, staleCommit, draining, successor, stopped,
+                    staged, fencing, answered >>
+
+\* A spare joins beside the follower `o`, and counts toward the quorum from
+\* here: a record is acknowledged on three of the four.
+Reseat(v, o, views) ==
+    /\ moves < MaxMoves
+    /\ joining = {}
+    /\ o \in ReplicaSet \ {leader}
+    /\ \E d \in out :
+        /\ Regenerate(v, views, mine[leader] \cup {d})
+        /\ joining' = {d}
+        /\ out' = out \ {d}
+    /\ leaving' = {o}
+    /\ joinedAt' = OldSetLen(leader)
+    /\ moves' = moves + 1
+
+\* The leaving follower goes. With `SeatHoldsCopy`, only once the newcomer
+\* holds what a majority of the set held when it joined; a record
+\* acknowledged since is on three of the four, and survives losing one.
+Seat(v, j, views) ==
+    /\ j \in joining
+    /\ SeatHoldsCopy => HoldsPrefix(j, leader, joinedAt)
+    /\ Regenerate(v, views, mine[leader] \ leaving)
+    /\ out' = out \cup leaving
+    /\ joining' = {}
+    /\ leaving' = {}
+    /\ joinedAt' = 0
+    /\ UNCHANGED moves
 
 \* A placement write, from a read taken in the same step or from one a
 \* planner has held since.
 Decide(v, f, views) ==
-    Promote(v, f, views) \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
+    \/ Promote(v, f, views) \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
+    \/ Reseat(v, f, views) \/ Seat(v, f, views)
 
 -----------------------------------------------------------------------------
 
@@ -1053,12 +1140,14 @@ NoTruncationBelowHwm ==
     \A b \in Brokers : Len(log[b]) >= hwm[b]
 
 \* Every acknowledged record is on a majority of the stream's replica set, so
-\* it survives any minority loss.
+\* it survives any minority loss. The one set of four, a promoted replacement
+\* leading the three it joined, needs two: every fence there takes three.
 AckedOnMajority ==
     Quorum =>
         \A id \in acked :
-            MajorityOf({ b \in Brokers : \E i \in 1..Len(log[b]) : log[b][i].id = id },
-                       ReplicaSet)
+            LET holders == { b \in ReplicaSet : \E i \in 1..Len(log[b]) : log[b][i].id = id }
+            IN \/ Cardinality(holders) * 2 > Cardinality(ReplicaSet)
+               \/ Cardinality(ReplicaSet) = 4 /\ Cardinality(holders) = 2
 
 \* A `Quorum` write is never held back by a destination's copy: whenever the
 \* stream's own replica set would acknowledge it, the leader can. A latency
@@ -1089,5 +1178,7 @@ TypeOK ==
     /\ confirmed \in [Brokers -> [Brokers -> Nat]]
     /\ out \subseteq Brokers
     /\ mine \in [Brokers -> SUBSET Brokers]
+    /\ joining \subseteq Brokers /\ leaving \subseteq Brokers
+    /\ joinedAt \in Nat
 
 =============================================================================

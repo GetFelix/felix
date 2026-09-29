@@ -274,6 +274,7 @@ pub(super) fn plan_abandoning(
                 &mut leaders,
                 leader_share,
                 &mut moves,
+                fenced,
             );
             shards.push(ShardPlan { key, decision });
             note_spread(&mut unspread, shards.last(), &current, &eligible);
