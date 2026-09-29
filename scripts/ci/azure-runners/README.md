@@ -3,7 +3,8 @@
 Two persistent Ubuntu 24.04 VMs (`Standard_D8as_v5`, 8 vCPU, 256 GB Premium SSD)
 in resource group `felix-ci-runners`, region `eastus`, registered to
 `gabloe/felix` with the label `felix-azure`. They take the heavy jobs: CI's
-`test`, `coverage`, the nightly history campaign and the nightly fuzz matrix.
+`test`, `coverage`, the nightly history campaign, the nightly fuzz matrix and the nightly
+power-loss sweep.
 Which jobs and why is in `docs-site/src/content/docs/development/building.md`.
 
 ```bash
@@ -63,9 +64,9 @@ download gigabytes per run for nothing, so the self-hosted path skips it and
 runs `.github/actions/warm-target` instead:
 
 - Each job gets its own slot, `~/felix-cache/<job>` (`ci-test`, `coverage`,
-  `history`, `fuzz-nightly`). Slots are per job because the jobs build with
-  different flags (llvm-cov instrumentation, nightly sanitizers) and would
-  evict each other.
+  `history`, `fuzz-nightly`, `power-loss`). Slots are per job because the
+  jobs build with different flags (llvm-cov instrumentation, nightly
+  sanitizers) and would evict each other.
 - The checkout's `target` becomes a symlink to the slot and `CARGO_TARGET_DIR`
   points at it. Both are needed: the Taskfile names `target/...` by relative
   path, and `actions/checkout` wipes untracked files, so a real `target/`

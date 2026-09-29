@@ -478,11 +478,22 @@ IdP trust is **configured per tenant**. The control plane only accepts tokens fr
 ### Admin API (preferred)
 
 IdP issuer endpoints require a Felix token with `tenant.manage` for the tenant.
-Changing an existing issuer's `jwks_url` or `discovery_url`, or deleting an
-issuer (which would let it be re-created elsewhere), additionally requires
-`tenant.manage:cluster:*`. Principal ids are
-`sha256(iss|sub)`, so whoever controls an issuer's keys can mint tokens as any
-of its subjects, including ones holding cluster grants.
+A tenant admin can register a new issuer that no other tenant trusts. Three
+things additionally require `tenant.manage:cluster:*`:
+
+- changing anything that decides which tokens an existing issuer accepts or
+  who they identify: `jwks_url`, `discovery_url`, `audiences`,
+  `claim_mappings.subject_claim` or `claim_mappings.groups_claim`. Re-posting
+  the same settings needs nothing more;
+- registering an issuer that another tenant already trusts, such as a shared
+  corporate IdP;
+- deleting an issuer, since deleting and re-creating it would get around the
+  first rule.
+
+Principal ids are `sha256(iss|sub)` and IdP groups become
+`group:<iss>#<name>`, so whoever controls an issuer's keys, or picks which
+claim is read as the subject or the groups, can pose as any of its subjects
+or groups, including ones holding cluster grants.
 RBAC endpoints require explicit RBAC actions (`rbac.view`, `rbac.policy.manage`, `rbac.assignment.manage`).
 
 Use the control plane admin endpoints to manage IdP issuers per tenant:

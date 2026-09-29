@@ -172,7 +172,10 @@ threat model, replay rules, rotation procedure, and recovery steps are in
 [`docs/security/bootstrap.md`](https://github.com/gabloe/felix/blob/main/docs/security/bootstrap.md).
 
 After bootstrap, admin actions require explicit Felix permissions:
-- IdP issuer admin: `tenant.manage:tenant:{tenant_id}`
+- IdP issuer admin: `tenant.manage:tenant:{tenant_id}`, plus
+  `tenant.manage:cluster:*` to change an existing issuer's keys, audiences or
+  claim mapping, to register an issuer another tenant already trusts, or to
+  delete one
 - RBAC list: `rbac.view:<scoped object>`
 - RBAC policy writes: `rbac.policy.manage:<scoped object>`
 - RBAC assignment writes: `rbac.assignment.manage:<scoped object>`

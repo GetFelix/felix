@@ -326,6 +326,13 @@ impl StreamLog {
         Ok(appended.first_offset)
     }
 
+    /// Where readers must stop once the log is poisoned: its durable offset.
+    /// Past it may be a batch whose publish failed, which no reader should
+    /// see. `None` while the log is healthy.
+    pub fn poisoned_read_end(&self) -> Option<Offset> {
+        self.log.is_poisoned().then(|| self.durable_offset())
+    }
+
     /// Offset the next published record will take.
     pub async fn tail_offset(&self) -> Result<Offset> {
         self.log.tail_offset().await.map_err(storage_error)

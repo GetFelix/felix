@@ -124,7 +124,7 @@ jobs:
             echo '```'
             echo
             echo '```'
-            sed -n '/violation(s)/,/^test /p' ${{ runner.temp }}/history-output.txt | head -80
+            sed -n '/violation(s)\|could not finish/,/^test /p' ${{ runner.temp }}/history-output.txt | head -150
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           echo "history campaign seed: $SEED, mode: $MODE"

@@ -454,6 +454,13 @@ Four properties:
    could not write, so the *next* fsync returns success having flushed nothing —
    "fsyncgate". Believing it would acknowledge records that are gone, which is
    the same silent loss the checksum rule above refuses to risk.
+   Readers stop at the durable bound once the log is poisoned. The batch whose
+   flush failed is still written past it, and its publish was refused, so a
+   resumed subscription, a Kafka Fetch (and its high watermark) and a group
+   poll all end at the last durable offset rather than at the tail. A `Quorum`
+   stream's readers already stop at the quorum mark, which only counts
+   records a majority holds.
+
    A **failed write does not poison the log.** A batch is one `write` into
    the page cache, and `ENOSPC` or `EIO` there can still leave a prefix of
    the batch in the file. The writer truncates the segment back to its last
@@ -487,6 +494,25 @@ rule.
 > `a_power_loss_during_truncation_leaves_no_gap` and
 > `a_power_loss_during_a_reset_leaves_old_or_new` stop the pass after each
 > unlink and open crash images of every stop (Linux only).
+
+**The power-loss suite checks all of this against simulated reboots.** A
+workload runs against a real log while a test layer records what each flush made
+durable, then builds the directory a reboot could find (unsynced pages dropped,
+torn or zeroed, unsynced directory changes undone) and opens a log on it. Every
+record acknowledged as durable must come back, and what recovery keeps must be a
+gap-free prefix. The workload races a background roll against appends, so one
+seed does not replay one interleaving, and a missing sync can hide behind a
+handful of lucky seeds. Every pull request runs eight workload seeds per
+scenario, from `0x5eed0001`, plus pinned seeds that caught a bug the range
+missed: `0x5eed0009` is the first to fail with the directory sync after writing
+`durable.mark` removed. The nightly `power-loss-nightly.yml` workflow runs 110
+seeds per scenario from a random base, printed in the job summary; replay one
+with `FELIX_POWER_LOSS_SEED=<seed> FELIX_POWER_LOSS_SEEDS=1`.
+
+> `on_commit_survives_any_writeback`,
+> `periodic_with_background_roll_survives_any_writeback` and
+> `no_fsync_keeps_what_explicit_syncs_covered` in
+> `crates/server/felix-storage/src/disk_log/tests/power_loss.rs` (Linux only).
 
 Idempotent producers' state is derived the same way, before the log takes its
 first append: each producer's place comes from the marks its records carry,

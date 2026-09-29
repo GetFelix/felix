@@ -91,6 +91,8 @@ expectations=(
   "FelixShardFigure8FollowerAcks pass"
   "FelixShardFigure8FollowerAcksNoStartRecord violates AckedOnMajority"
   "FelixShardUnfencedAck violates AckedHeldByLeader"
+  "FelixShardFencedAckAnyKept pass"
+  "FelixShardFencedAckAnyReplaced violates AckedHeldByLeader"
   "FelixShardReadsRound pass"
   "FelixShardReadsNoRound violates NoStaleRead"
   "FelixShardReadsLease violates NoStaleRead"

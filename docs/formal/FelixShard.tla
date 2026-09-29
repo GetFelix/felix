@@ -114,6 +114,16 @@
 (* stream shard once the fleet finalized `majority_ack`, and before that   *)
 (* with `FenceOnPromote` alone, alongside the report and the lease.        *)
 (*                                                                         *)
+(* `Spares` are brokers outside the replica set, which placement may bring *)
+(* in when it fails over. `Promotion = "any"` promotes any replica, as a   *)
+(* placement reading a stale report or none may. `ReplaceOnPromote` swaps  *)
+(* the old leader for a spare in the same write that names the new one, as *)
+(* `choose_replicas` would; the fence then counts a majority of the new    *)
+(* set, and                                                                *)
+(* TLC finds the new leader and the spare opening without the one replica  *)
+(* that held what the old set acknowledged (AckedHeldByLeader). Without it *)
+(* a promotion keeps the set, the old leader included.                     *)
+(*                                                                         *)
 (* `StartRecord` has a leader write a generation-start record before any   *)
 (* client write, and lets the mark and the report's length stop only at a  *)
 (* record of its own generation. Without it, a leader acknowledges a       *)
@@ -134,7 +144,7 @@ CONSTANTS
     MaxWrites,      \* how many client writes the run admits
     CheckAtCommit,  \* re-check the lease before committing, or only at admission
     Quorum,         \* acknowledge on a majority (TRUE) or on the leader alone (FALSE)
-    Promotion,      \* "leader-report" or "log-order"
+    Promotion,      \* "leader-report", "log-order" or "any"
     ReportBeforeAck, \* whether a Quorum ack waits for the report describing it
     Handoff,        \* whether the control plane may move the shard off a live leader
     WaitForDrained, \* whether a cut-over waits for the leader's drained report
@@ -156,9 +166,11 @@ CONSTANTS
     AckByFollowers, \* whether a Quorum ack counts followers at this generation instead of the report
     FenceOnPromote, \* whether a promoted leader fences a majority and catches up before serving
     LabelOnReceipt, \* whether a follower labels a shipped record with the sender's generation
-    StartRecord     \* whether a new leader writes a generation-start record and the mark waits for it
+    StartRecord,    \* whether a new leader writes a generation-start record and the mark waits for it
+    Spares,         \* brokers outside the replica set that a failover may bring in
+    ReplaceOnPromote \* whether a promotion swaps the old leader for a spare
 
-ASSUME Promotion \in {"leader-report", "log-order"}
+ASSUME Promotion \in {"leader-report", "log-order", "any"}
 ASSUME ReportBeforeAck \in BOOLEAN
 ASSUME Handoff \in BOOLEAN /\ WaitForDrained \in BOOLEAN /\ FenceAtClaim \in BOOLEAN
 ASSUME AckOnAdmit \in BOOLEAN /\ FenceFromAdmit \in BOOLEAN
@@ -171,6 +183,11 @@ ASSUME AckChecksLease \in BOOLEAN /\ AckOnResponse \in BOOLEAN
 ASSUME AckByFollowers \in BOOLEAN /\ FenceOnPromote \in BOOLEAN
 ASSUME LabelOnReceipt \in BOOLEAN
 ASSUME StartRecord \in BOOLEAN
+\* Only a promotion changes the set, so spares are checked with follower acks
+\* (no handoff, no cancel) and no staged copy.
+ASSUME Spares \subseteq Brokers /\ ReplaceOnPromote \in BOOLEAN
+ASSUME Spares /= {} => AckByFollowers /\ ~StageMove
+ASSUME ReplaceOnPromote => Spares /= {}
 \* The fence is modelled on promotion only, as the broker fences: a planned
 \* move and a cancel name a leader without one, so neither is checked
 \* alongside follower acks. The fence without follower acks is the broker as
@@ -212,15 +229,17 @@ VARIABLES
     promised,   \* the highest generation each broker has durably accepted
     fencing,    \* a promoted leader that has not finished its fence
     answered,   \* who has answered each broker's fence at the generation it leads
-    confirmed   \* per leader, how far each follower answered that it holds, at the leader's generation
+    confirmed,  \* per leader, how far each follower answered that it holds, at the leader's generation
+    out,        \* brokers outside the replica set: the spares, and a leader swapped out
+    mine        \* the replica set each broker was given when it was named leader
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
            draining, successor, stopped, moves, ver, cpView, staged, heard,
-           promised, fencing, answered, confirmed >>
+           promised, fencing, answered, confirmed, out, mine >>
 
 \* Placement's state, which only the control plane's decisions change.
-handoffVars == << draining, successor, stopped, moves, ver, cpView, staged >>
+handoffVars == << draining, successor, stopped, moves, ver, cpView, staged, out, mine >>
 
 \* The promotion fence's state.
 fenceVars == << promised, fencing, answered, confirmed >>
@@ -232,16 +251,23 @@ Promises == AckByFollowers \/ FenceOnPromote
 NoReport == [holders |-> {}, len |-> 0, drained |-> FALSE, gen |-> 0]
 
 \* The replica set the stream asked for: everyone but a destination still
-\* copying. A quorum is a majority of this set, unless `LearnerVotes`.
-ReplicaSet == Brokers \ staged
+\* copying and the brokers outside it. A quorum is a majority of this set,
+\* unless `LearnerVotes`.
+ReplicaSet == Brokers \ (staged \cup out)
 QuorumSet == IF LearnerVotes THEN Brokers ELSE ReplicaSet
 
 MajorityOf(S, of) == Cardinality(S \cap of) * 2 > Cardinality(of)
 Majority(S) == MajorityOf(S, QuorumSet)
 
+\* A leader ships to, fences and counts the set its own assignment named,
+\* which a deposed leader still holds after the control plane has moved on.
+\* With no spares every broker is in every set, as before.
+Members(b) == IF Spares = {} THEN Brokers ELSE mine[b]
+LeaderMajority(b, S) == IF Spares = {} THEN Majority(S) ELSE MajorityOf(S, mine[b])
+
 \* Brokers are interchangeable, and so are planners, which lets TLC fold
 \* their permutations.
-Symm == Permutations(Brokers) \cup Permutations(Planners)
+Symm == Permutations(Brokers \ Spares) \cup Permutations(Planners)
 
 \* A broker's lease is good while it believes it leads and its own clock is
 \* short of its own expiry by the margin it gives up.
@@ -288,7 +314,7 @@ Init ==
     /\ now = 0
     /\ clock = [b \in Brokers |-> 0]
     /\ gen = 1
-    /\ leader \in Brokers
+    /\ leader \in Brokers \ Spares
     /\ cpExpiry = L
     /\ report = NoReport
     /\ inflight = <<>>
@@ -316,6 +342,8 @@ Init ==
     /\ fencing = [b \in Brokers |-> FALSE]
     /\ answered = [b \in Brokers |-> {}]
     /\ confirmed = [b \in Brokers |-> [f \in Brokers |-> 0]]
+    /\ out = Spares
+    /\ mine = [b \in Brokers |-> Brokers \ Spares]
 
 -----------------------------------------------------------------------------
 (* Time. Real time ticks, and with it each broker's clock moves by zero,   *)
@@ -384,7 +412,7 @@ StepDown(b) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
                     hbOut, hbAt, log, hwm, halted, acked, writes, staleCommit,
                     draining, successor, moves, ver, cpView, staged, promised, answered,
-                    confirmed >>
+                    confirmed, out, mine >>
 
 -----------------------------------------------------------------------------
 (* Writes. Admission checks the broker is serving; the write then waits,  *)
@@ -499,6 +527,7 @@ Confirm(b, f, k) ==
 \* newer on the follower than it is, and its fence answer overclaims.
 Ship(b, f) ==
     /\ bgen[b] > 0 /\ f /= b /\ f \notin halted
+    /\ f \in Members(b)
     /\ bgen[f] = 0
     /\ bgen[b] >= LastGen(f)
     /\ ~fencing[b]
@@ -577,8 +606,8 @@ AckReadyOver(b, i, of) ==
 \* is newer overwrites it: FelixShardFigure8FollowerAcksNoStartRecord.cfg.
 HeldAtGen(b, i) ==
     /\ OwnGen(b, i)
-    /\ Majority({ m \in Brokers \ {b} : confirmed[b][m] >= i }
-                \cup (IF promised[b] = bgen[b] THEN {b} ELSE {}))
+    /\ LeaderMajority(b, { m \in Brokers \ {b} : confirmed[b][m] >= i }
+                         \cup (IF promised[b] = bgen[b] THEN {b} ELSE {}))
 
 \* With `AckChecksLease = FALSE` the lease plays no part: a broker that still
 \* believes it leads acknowledges on the report alone, however lapsed its own
@@ -697,9 +726,13 @@ ByLeaderReport(r, f) == f \in r.holders /\ f \notin halted
 \* (last generation, length) is greatest.
 ByLogOrder(old, f) ==
     /\ f \notin halted
-    /\ \A o \in Brokers \ (halted \cup {old}) :
+    /\ \A o \in Brokers \ (halted \cup out \cup {old}) :
         \/ LastGen(o) < LastGen(f)
         \/ LastGen(o) = LastGen(f) /\ Len(log[o]) <= Len(log[f])
+
+\* Any replica, halted or not: what placement can pick with no report to go
+\* by, since only a report names a halt.
+ByAny(f) == f \in ReplicaSet
 
 \* What a planner reads: the assignment and the last report. `lapsed` is
 \* judged at the read and stays true: once the lease at a generation has
@@ -717,7 +750,7 @@ Snapshot(p) ==
     /\ cpView' = [cpView EXCEPT ![p] = {Now}]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
-                    draining, successor, stopped, moves, ver, staged >>
+                    draining, successor, stopped, moves, ver, staged, out, mine >>
     /\ UNCHANGED fenceVars
 
 \* A write decided from read `v` lands only if nothing was written since,
@@ -730,8 +763,10 @@ Cas(v) == CasWrites => v.ver = ver
 Promote(v, f, views) ==
     /\ f /= v.leader
     /\ v.lapsed
-    /\ IF Promotion = "leader-report" THEN ByLeaderReport(v.report, f)
-                                      ELSE ByLogOrder(v.leader, f)
+    /\ f \notin out
+    /\ CASE Promotion = "leader-report" -> ByLeaderReport(v.report, f)
+          [] Promotion = "log-order"     -> ByLogOrder(v.leader, f)
+          [] Promotion = "any"           -> ByAny(f)
     /\ Cas(v)
     /\ ver' = ver + 1
     /\ cpView' = views
@@ -747,6 +782,14 @@ Promote(v, f, views) ==
     /\ stopped' = [stopped EXCEPT ![f] = FALSE]
     \* A promoted destination leads, so it is part of the set from here.
     /\ staged' = staged \ {f}
+    \* What `choose_replicas` in placement/plan.rs would write: the old set
+    \* without the dead leader, plus a spare. `keep_replicas` keeps the set.
+    /\ IF ReplaceOnPromote /\ out /= {}
+       THEN \E d \in out :
+              /\ out' = (out \ {d}) \cup {v.leader}
+              /\ mine' = [mine EXCEPT ![f] = (ReplicaSet \ {v.leader}) \cup {d}]
+       ELSE /\ mine' = [mine EXCEPT ![f] = ReplicaSet]
+            /\ UNCHANGED out
     \* The new leader persists its generation itself first; with
     \* `FenceOnPromote` it then fences the others before it serves.
     /\ promised' = IF Promises THEN [promised EXCEPT ![f] = gen + 1] ELSE promised
@@ -783,6 +826,7 @@ Ahead(f, b) ==
 \* last record's generation, the two halves of `Ahead`.
 AnswerFence(b, f) ==
     /\ fencing[b] /\ bgen[b] > 0 /\ f /= b /\ f \notin halted
+    /\ f \in Members(b)
     /\ promised[f] < bgen[b]
     /\ promised' = [promised EXCEPT ![f] = bgen[b]]
     /\ answered' = [answered EXCEPT ![b] = @ \cup {f}]
@@ -797,7 +841,7 @@ AnswerFence(b, f) ==
 \* the answer furthest ahead by `Ahead`, taken before this.
 OpenForWrites(b) ==
     /\ fencing[b]
-    /\ Majority(answered[b] \cup {b})
+    /\ LeaderMajority(b, answered[b] \cup {b})
     /\ fencing' = [fencing EXCEPT ![b] = FALSE]
     /\ log' = [log EXCEPT ![b] = Opened(b, bgen[b])]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
@@ -850,7 +894,7 @@ Fence(v, f, views) ==
     /\ successor' = f
     /\ moves' = moves + 1
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
-                    staleCommit, staged >>
+                    staleCommit, staged, out, mine >>
     /\ UNCHANGED fenceVars
 
 \* The leader sees the fence. Modelled as the broker noticing; the cut-over
@@ -861,7 +905,7 @@ ObserveFence(b) ==
     /\ stopped' = [stopped EXCEPT ![b] = TRUE]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
-                    draining, successor, moves, ver, cpView, staged >>
+                    draining, successor, moves, ver, cpView, staged, out, mine >>
     /\ UNCHANGED fenceVars
 
 CutOver(v, f, views) ==
@@ -884,7 +928,7 @@ CutOver(v, f, views) ==
     /\ staged' = staged \ {f}
     /\ log' = [log EXCEPT ![f] = Opened(f, gen + 1)]
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
-                    staleCommit, successor, moves >>
+                    staleCommit, successor, moves, out, mine >>
     /\ UNCHANGED fenceVars
 
 \* An operator cancels a fenced move (`cancel_move` in
@@ -912,7 +956,7 @@ Retake(v, f, views) ==
     /\ stopped' = [stopped EXCEPT ![f] = FALSE]
     /\ log' = [log EXCEPT ![f] = Opened(f, gen + 1)]
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, queued, pending,
-                    acked, writes, staleCommit, successor, moves, staged >>
+                    acked, writes, staleCommit, successor, moves, staged, out, mine >>
     /\ UNCHANGED fenceVars
 
 \* A placement write, from a read taken in the same step or from one a
@@ -1043,5 +1087,7 @@ TypeOK ==
     /\ fencing \in [Brokers -> BOOLEAN]
     /\ answered \in [Brokers -> SUBSET Brokers]
     /\ confirmed \in [Brokers -> [Brokers -> Nat]]
+    /\ out \subseteq Brokers
+    /\ mine \in [Brokers -> SUBSET Brokers]
 
 =============================================================================

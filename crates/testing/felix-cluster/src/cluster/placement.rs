@@ -21,6 +21,16 @@ impl Cluster {
         self.control_plane().place_shards().await
     }
 
+    /// What placement would decide if `down` had stopped heartbeating, from
+    /// the reports held now. A dry run: nothing is written. For a test that
+    /// has to know the promoted replica before the failover happens.
+    pub async fn plan_if_down(
+        &self,
+        down: &str,
+    ) -> Result<felix_controlplane_service::cluster::placement::Plan> {
+        self.control_plane().plan_if_down(down).await
+    }
+
     /// Run the control plane's placement loop on `interval` and on the wakes a
     /// move's reports send, as a deployment does. For a test that measures a
     /// move rather than stepping it.
@@ -214,11 +224,25 @@ impl Cluster {
     /// operator API. Returns the step the control plane wrote (`stage` or
     /// `fence`). Nothing moves further until placement is stepped.
     pub async fn start_move(&self, stream: &str, shard: u32, destination: &str) -> Result<String> {
+        self.start_move_of("stream", stream, shard, destination)
+            .await
+    }
+
+    /// [`Cluster::start_move`] for a shard of either kind: `stream` or
+    /// `cache`.
+    pub async fn start_move_of(
+        &self,
+        kind: &str,
+        name: &str,
+        shard: u32,
+        destination: &str,
+    ) -> Result<String> {
         let body = serde_json::json!({
             "tenant_id": self.tenant_id,
             "namespace": self.namespace,
-            "stream": stream,
+            "stream": name,
             "shard": shard,
+            "kind": kind,
             "destination": destination,
         });
         let url = format!("{}/v1/shard-moves", self.control_plane_url());
@@ -258,6 +282,34 @@ impl Cluster {
     pub async fn shard_moves(&self) -> Result<serde_json::Value> {
         let url = format!("{}/v1/shard-moves", self.control_plane_url());
         self.operator_call(self.http.get(&url)).await
+    }
+
+    /// The shards with a move or follower replacement in flight, as
+    /// `kind name/shard`: a staged successor or joining follower, or a leader
+    /// fenced for the cut-over.
+    pub async fn moving_shards(&self) -> Result<Vec<String>> {
+        use felix_controlplane_service::store::ControlPlaneStore;
+        let assignments = self
+            .control_plane()
+            .store
+            .list_shard_assignments()
+            .await
+            .map_err(|err| anyhow!("list shard assignments: {err}"))?;
+        Ok(assignments
+            .iter()
+            .filter(|a| {
+                a.successor.is_some()
+                    || a.joining.is_some()
+                    || a.state == felix_controlplane_service::model::ShardState::Draining
+            })
+            .map(|a| {
+                let kind = match a.key.kind {
+                    felix_controlplane_service::model::ShardKind::Stream => "stream",
+                    felix_controlplane_service::model::ShardKind::Cache => "cache",
+                };
+                format!("{kind} {}/{}", a.key.stream, a.key.shard)
+            })
+            .collect())
     }
 
     /// Stop placement starting moves of its own.

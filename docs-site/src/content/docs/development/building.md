@@ -142,6 +142,8 @@ Other workflows:
 - `pages.yml`: builds and deploys this docs site.
 - `history.yml`: the nightly history-checker campaign.
 - `fuzz-nightly.yml`: the long fuzz campaign.
+- `power-loss-nightly.yml`: the storage power-loss suite across 110 seeds per
+  scenario from a random base, where pull requests run eight plus the pinned ones.
 - `soak.yml`: a weekly soak and resource-leak run.
 - `perf-pr.yml`, `perf-publish.yml`, `perf-comprehensive.yml`: benchmarks. The
   PR run is advisory and never fails a check.
@@ -157,6 +159,7 @@ are too slow for a GitHub-hosted runner:
 - `coverage.yml`
 - `history.yml`, the nightly history campaign
 - `fuzz-nightly.yml`
+- `power-loss-nightly.yml`
 
 Everything else, including the four TLA+ shards, stays on GitHub-hosted
 runners. The shards run in parallel there, which two machines could not match.

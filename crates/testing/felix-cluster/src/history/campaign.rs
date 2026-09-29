@@ -12,8 +12,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use felix_controlplane_service::store::ControlPlaneStore;
 
-use super::model::{Consistency, History, ListSpec};
-use super::nemesis::{ClusterView, Nemesis};
+use super::model::{Consistency, History, ListSpec, millis};
+use super::nemesis::{ClusterView, Nemesis, ShardView};
 use super::rng::Rng;
 use super::workload::{ClientKind, Workload};
 use crate::{CacheSpec, Cluster, ClusterConfig, StreamSpec, wait};
@@ -217,18 +217,46 @@ impl Campaign {
     /// Run the campaign against `cluster` and return what happened.
     ///
     /// Errors only when the harness cannot do its part: a fault that cannot
-    /// be healed, or a list with no complete final read. Anything the
-    /// brokers get wrong is in the history, for the checker.
+    /// be healed, or a list with no complete final read. The error then
+    /// carries the fault timeline and a [`Campaign::state_dump`]. Anything
+    /// the brokers get wrong is in the history, for the checker.
     pub async fn run(&self, cluster: &mut Cluster, nemesis: &mut impl Nemesis) -> Result<History> {
-        let mut rng = Rng::new(self.seed);
         let workload = Arc::new(Workload::new(cluster, self));
+        match self.run_with(cluster, nemesis, &workload).await {
+            Ok(history) => Ok(history),
+            Err(err) => {
+                let (_, _, faults) = workload.take();
+                let mut timeline = String::from("fault timeline:\n");
+                for fault in faults {
+                    timeline.push_str(&format!("  {} {}\n", millis(fault.at), fault.what));
+                }
+                let dump = self.state_dump(cluster).await;
+                Err(anyhow!("{err:#}\n{timeline}{dump}"))
+            }
+        }
+    }
+
+    /// Who leads each of the workload's shards, at which generation and with
+    /// which replicas, how far each replica had got, and what each broker's
+    /// metrics say. What to read next to the fault timeline when a run fails.
+    pub async fn state_dump(&self, cluster: &Cluster) -> String {
+        super::dump::state(cluster, self).await
+    }
+
+    async fn run_with(
+        &self,
+        cluster: &mut Cluster,
+        nemesis: &mut impl Nemesis,
+        workload: &Arc<Workload>,
+    ) -> Result<History> {
+        let mut rng = Rng::new(self.seed);
         cluster.run_placement(PLACEMENT_INTERVAL);
 
         let mut lists = std::collections::BTreeMap::new();
         for list in &self.lists {
             // The harness's readiness probe is already in each stream; the
             // workload's records start at the tail.
-            let read = settled_read(cluster, &workload, list).await?;
+            let read = settled_read(cluster, workload, list).await?;
             let base = read.tail.unwrap_or(0);
             workload.set_base(list, base);
             lists.insert(
@@ -248,11 +276,11 @@ impl Campaign {
                     ClientKind::Idempotent
                 };
                 let client_rng = rng.fork();
-                tokio::spawn(Arc::clone(&workload).run_client(process, kind, client_rng))
+                tokio::spawn(Arc::clone(workload).run_client(process, kind, client_rng))
             })
             .collect();
 
-        let result = self.unleash(cluster, nemesis, &workload, &mut rng).await;
+        let result = self.unleash(cluster, nemesis, workload, &mut rng).await;
         workload.stop();
         for client in clients {
             client.await.context("a client task panicked")?;
@@ -261,7 +289,7 @@ impl Campaign {
 
         let mut final_reads = std::collections::BTreeMap::new();
         for list in &self.lists {
-            let read = settled_read(cluster, &workload, list).await?;
+            let read = settled_read(cluster, workload, list).await?;
             final_reads.insert(list.clone(), read.elements);
         }
         let (ops, registers, faults) = workload.take();
@@ -314,25 +342,44 @@ impl Campaign {
     }
 
     async fn view(&self, cluster: &Cluster) -> ClusterView {
-        let mut leaders = Vec::new();
-        for list in &self.lists {
-            if let Ok(owners) = cluster.shard_owners_for(list).await {
-                for owner in owners.into_values() {
-                    if !leaders.contains(&owner) {
-                        leaders.push(owner);
-                    }
-                }
-            }
+        let owners = cluster.shard_owners().await.unwrap_or_default();
+        let mut shards = Vec::new();
+        for (kind, name) in self.shard_names() {
+            let prefix = format!("{kind}/{}/{}/{name}/", cluster.tenant_id, cluster.namespace);
+            let mut found: Vec<ShardView> = owners
+                .iter()
+                .filter_map(|(key, leader)| {
+                    Some(ShardView {
+                        kind,
+                        name: name.to_string(),
+                        shard: key.strip_prefix(&prefix)?.parse().ok()?,
+                        leader: leader.clone(),
+                    })
+                })
+                .collect();
+            found.sort_by_key(|view| view.shard);
+            shards.extend(found);
         }
-        if let Ok(owner) = cluster.shard_owner_of("cache", &self.cache, 0).await
-            && !leaders.contains(&owner)
-        {
-            leaders.push(owner);
+        let mut leaders = Vec::new();
+        for shard in &shards {
+            if !leaders.contains(&shard.leader) {
+                leaders.push(shard.leader.clone());
+            }
         }
         ClusterView {
             nodes: cluster.node_ids(),
             leaders,
+            shards,
         }
+    }
+
+    /// Every stream and cache the workload uses, lists first, as `(kind,
+    /// name)`.
+    pub(super) fn shard_names(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        self.lists
+            .iter()
+            .map(|list| ("stream", list.as_str()))
+            .chain(std::iter::once(("cache", self.cache.as_str())))
     }
 }
 

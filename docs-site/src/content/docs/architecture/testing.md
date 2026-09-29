@@ -50,8 +50,9 @@ pause (`SIGSTOP`) and partition. The nightly workflow
 (`.github/workflows/history.yml`) runs for 20 minutes with a random seed and
 adds link faults (dropped or delayed peer traffic, lost control-plane replies),
 clock faults (a broker's lease clock at 0.5x or 20x, the control plane's wall
-clock stepped 15 s forward) and disk faults (slow fsyncs, one failed fsync).
-
+clock stepped 15 s forward), disk faults (slow fsyncs, one failed fsync) and
+assignment faults (an operator moving a shard to another replica, a broker
+drained and put back).
 
 `FELIX_HISTORY_MODE` picks the replication path. In `lease` mode the campaign
 tests the report and lease path every stream uses by default. In `lease-free`
@@ -184,3 +185,9 @@ The decoders that parse input from outside the process are fuzzed; see
 [Fuzzing](/felix/development/fuzzing/). The wire-protocol conformance runner
 (`task conformance`) holds a catalogue of required scenarios, and CI checks the
 Python and TypeScript clients' results against it.
+
+The storage power-loss suite rebuilds the directory a reboot could find after
+each flush and checks that recovery keeps every acknowledged record. Pull
+requests run eight workload seeds per scenario plus pinned ones that once caught
+a bug the eight missed; `power-loss-nightly.yml` runs 110 per scenario from a
+random base. See [Durable storage](https://github.com/gabloe/felix/blob/main/docs/durable-storage.md).
