@@ -454,6 +454,12 @@ Four properties:
    could not write, so the *next* fsync returns success having flushed nothing —
    "fsyncgate". Believing it would acknowledge records that are gone, which is
    the same silent loss the checksum rule above refuses to risk.
+   Readers stop at the durable bound once the log is poisoned. The batch whose
+   flush failed is still written past it, and its publish was refused, so a
+   resumed subscription, a Kafka Fetch (and its high watermark) and a group
+   poll all end at the last durable offset rather than at the tail. A `Quorum`
+   stream's readers already stop at the quorum mark, which only counts
+   records a majority holds.
 
 2. **Committed data is never silently discarded.** Corruption anywhere else is a
    startup error naming the shard, segment and byte position. Refusing to start

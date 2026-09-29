@@ -187,6 +187,9 @@ impl GroupReader {
         now: Instant,
     ) -> Result<Vec<Claimed>> {
         let log_tail = log.tail_offset().await?;
+        // Past a poisoned log's durable offset may be a batch whose publish
+        // failed.
+        let committed = committed.min(log.poisoned_read_end().unwrap_or(u64::MAX));
         let tail = log_tail.min(committed);
         let tracker = self.tracker_for(key).await?;
         let claim = {

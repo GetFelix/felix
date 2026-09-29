@@ -116,10 +116,15 @@ impl StreamState {
     }
 
     /// How far readers of this shard may see. Only a `Quorum` stream asks the
-    /// service; everything else is bounded by local durability alone.
+    /// service; everything else is bounded by local durability alone, which
+    /// matters once a failed flush poisons the log with a failed batch at its
+    /// tail.
     pub(crate) fn read_bound(&self) -> ReadBound {
         if self.consistency() != ConsistencyLevel::Quorum {
-            return ReadBound::Unbounded;
+            return match self.durable.as_ref().and_then(StreamLog::poisoned_read_end) {
+                Some(end) => ReadBound::Committed(end),
+                None => ReadBound::Unbounded,
+            };
         }
         self.held.bound()
     }

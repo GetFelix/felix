@@ -44,7 +44,7 @@ static FOLLOWER: Mutex<Option<Follower>> = Mutex::new(None);
 /// Whether flushes fail, and for how long.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub(crate) enum FsyncFailure {
+pub enum FsyncFailure {
     None = 0,
     /// Every flush fails with `EIO`: a device that has gone bad.
     Always = 1,
@@ -76,7 +76,7 @@ pub fn fsync_delay() -> Option<Duration> {
 }
 
 /// Make flushes in this process fail. Process-wide, like the delay.
-pub(crate) fn set_fsync_failure(failure: FsyncFailure) {
+pub fn set_fsync_failure(failure: FsyncFailure) {
     if FSYNC_FAILURE.swap(failure as u8, Ordering::AcqRel) != failure as u8 {
         tracing::warn!(
             ?failure,

@@ -353,7 +353,12 @@ impl Broker {
                 }
                 ReadBound::Committed(_) | ReadBound::Settling => {}
             }
-            if from_offset >= log.tail_offset().await? {
+            // A poisoned log's durable offset is as far as it will ever get.
+            let end = match log.poisoned_read_end() {
+                Some(end) => end,
+                None => log.tail_offset().await?,
+            };
+            if from_offset >= end {
                 return Ok(Vec::new());
             }
             let _ = tokio::time::timeout(COMMIT_RECHECK, moved).await;
