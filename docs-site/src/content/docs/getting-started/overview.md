@@ -13,7 +13,7 @@ for what is and is not built.
 
 ## The core idea: one log, three readings
 
-Internally there is a single primitive — an append-only log per shard. Each
+Internally there is a single primitive: an append-only log per shard. Each
 external API is a different way of reading it:
 
 - **Streams** read by offset. Every subscription keeps its own cursor, so a
@@ -25,33 +25,29 @@ external API is a different way of reading it:
   with TTL.
 
 Because it is one log, there is one durability path, one recovery path, one
-placement rule and one replication path. There is no cache-vs-stream
-consistency bug to have, because there is no second system to disagree with
-the first.
+placement rule and one replication path. There is no second
+system, so the cache and the stream cannot drift apart.
 
 ## What Felix optimizes for
 
-Predictable latency under load, more than peak batch throughput. The choices
-that follow from that:
+Felix puts predictable latency under load ahead of peak batch throughput.
+Several choices follow from that.
 
-- **QUIC for Felix clients.** Streams multiplex over one connection
-  without head-of-line blocking, and every connection is TLS 1.3.
-- **Backpressure everywhere.** Queues are bounded and overflow policy is
-  explicit, so one slow path degrades locally instead of cascading.
-- **Slow-consumer isolation.** A stalled subscriber loses *its own* events
-  (under the default `drop_new` policy) rather than stalling the publisher or
-  other subscribers. The [slow-consumer demo](/felix/demos/slow-consumer-isolation/)
-  runs both policies side by side.
-- **Explicit tuning knobs.** Batching bounds, flow-control windows, pool
-  sizes, and fsync policy are configuration, not magic.
+Felix clients use QUIC, so streams multiplex over one connection without
+head-of-line blocking, and every connection is TLS 1.3. Queues are bounded and
+their overflow policy is explicit, so one slow path degrades locally instead of
+cascading. A stalled subscriber loses *its own* events (under the default
+`drop_new` policy) rather than stalling the publisher or other subscribers; the
+[slow-consumer demo](/felix/demos/slow-consumer-isolation/) runs both policies
+side by side. Batching bounds, flow-control windows, pool sizes and fsync policy
+are all ordinary configuration.
 
-Measured numbers live on the [Benchmarks](/felix/features/benchmarks/) page —
-one place, so they can't drift page to page.
+Measured numbers are kept on the [Benchmarks](/felix/features/benchmarks/) page
+so they only need updating in one place.
 
 ## The pieces
 
-These are the main pieces, and the boundaries between them are the design.
-Everything below the dotted line is transport-independent: the broker core has no idea QUIC
+These are the main pieces. Everything below the dotted line is transport-independent: the broker core has no idea QUIC
 exists, which is what makes it testable in-process.
 
 ```mermaid
@@ -113,8 +109,8 @@ flowchart TB
   cluster client. Python (`crates/sdk/felix-python`) and TypeScript
   (`crates/sdk/felix-typescript`) ship too, both as bindings over this client
   rather than reimplementations; Go and C# are not started.
-- **The control plane** (`services/felix-controlplane-service`) holds metadata — tenants,
-  namespaces, streams, caches, nodes — behind a REST API, and assigns every
+- **The control plane** (`services/felix-controlplane-service`) holds metadata (tenants,
+  namespaces, streams, caches, nodes) behind a REST API, and assigns every
   shard to a broker. Brokers watch its assignment feed. It is not on the data
   path: a publish never waits on it.
 
@@ -131,7 +127,7 @@ Configured per stream:
   queued, before the write, so a crash can still lose an acknowledged record.
   Set `ack_on_commit` to acknowledge only after the write. With
   `consistency: quorum`, the acknowledgement additionally waits until a
-  majority of the replica set holds the record — so a failover cannot lose an
+  majority of the replica set holds the record, so a failover cannot lose an
   acknowledged write.
 - **Consumer groups** redeliver anything unacknowledged, count attempts, and
   park repeat failures as dead letters you can list, discard, or redrive.
@@ -139,7 +135,7 @@ Configured per stream:
   not exactly-once: a consumer can still see a record twice on redelivery, so
   deduplicate there if duplicates matter.
 
-A lost leader is replaced by a replica that provably holds the log — about a
+A lost leader is replaced by a replica that provably holds the log. That takes about a
 second on a local three-node cluster. This is tested against process kill,
 graceful stop, a leader frozen past its lease, and a partitioned broker that
 keeps heartbeating.
@@ -155,8 +151,8 @@ Details in [Security](/felix/features/security/).
 ## Running it
 
 A single broker is fine for development and for workloads that fit on one
-machine — durable storage and the cache work there; replication needs
-somewhere to replicate to.
+machine. Durable storage and the cache both work on one broker; replication
+needs a second one to replicate to.
 
 A cluster is brokers plus a control plane:
 
@@ -168,7 +164,7 @@ The control plane keeps its metadata in one of three backends:
 | --- | --- | --- |
 | `memory` | This process, nothing else. The default. | Development, and the harness |
 | `postgres` | One external database the instances share | A platform that already runs an HA Postgres |
-| `raft` | The control-plane instances themselves, replicated between them | No external database to operate — edge sites, appliances, or anywhere Postgres is a burden rather than a convenience |
+| `raft` | The control-plane instances themselves, replicated between them | No external database to run: edge sites, appliances, or anywhere Postgres is a burden |
 
 Raft has shipped: the instances form a quorum and survive losing one without
 losing an acknowledged write. Postgres remains fully supported; the trade
@@ -178,7 +174,7 @@ between the two, and the migration path, are in
 
 Felix runs anywhere a process runs. For orchestrators it ships the pieces
 they expect: readiness and liveness endpoints that answer different questions,
-and a bounded graceful drain on SIGTERM — see
+and a bounded graceful drain on SIGTERM. See
 [Graceful shutdown](/felix/deployment/graceful-shutdown/).
 
 ## Is Felix right for your workload?
@@ -191,17 +187,17 @@ partition-assigning consumers: Felix serves the Kafka protocol for those (see
 [Kafka compatibility](/felix/features/kafka/)).
 
 A bad fit: petabyte-scale batch pipelines, complex stream processing
-(joins, windowing — use Flink or Kafka Streams), or anything that needs a
+(joins, windowing; use Flink or Kafka Streams), or anything that needs a
 mature connector ecosystem today. Kafka Connect and Kafka Streams need
 consumer groups, which Felix's Kafka listener does not offer. Felix is young
 and its ecosystem is small.
 
-The honest version of this list, kept current per capability, is
+The full version of this list, kept current per capability, is
 [What Felix Is For](/felix/getting-started/what-felix-is-for/).
 
 ## Where to next
 
-- [Quickstart](/felix/getting-started/quickstart/) — run a broker and the demos
-- [Installation](/felix/getting-started/installation/) — build from source
-- [System design](/felix/architecture/system-design/) — the architecture in depth
-- [Broker API](/felix/api/broker-api/) — the wire-level API
+- [Quickstart](/felix/getting-started/quickstart/): run a broker and the demos
+- [Installation](/felix/getting-started/installation/): build from source
+- [System design](/felix/architecture/system-design/): the architecture in depth
+- [Broker API](/felix/api/broker-api/): the wire-level API
