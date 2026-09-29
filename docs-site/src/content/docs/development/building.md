@@ -152,8 +152,9 @@ Other workflows:
 
 ## Self-hosted runners
 
-Two persistent Azure VMs (8 vCPU each, label `felix-azure`) take the jobs that
-are too slow for a GitHub-hosted runner:
+Four persistent Azure VMs (8 vCPU each, label `felix-azure`) take the jobs that
+are too slow for a GitHub-hosted runner, but only for pushes to `main`,
+schedules and manual runs:
 
 - `ci.yml`'s `test` job
 - `coverage.yml`
@@ -164,21 +165,21 @@ Everything else stays on GitHub-hosted runners. The four TLA+ shards run in
 parallel there, which two machines could not match, and each fuzz target uses
 one core, so the nightly fuzz matrix gains little from eight.
 
-There are two runners and each takes one job at a time, so when both are busy
-jobs wait in the queue.
+Each runner takes one job at a time, so when all four are busy jobs wait in
+the queue.
 
-**Fork pull requests never run on them.** The repository is public, and a
-persistent machine that ran a stranger's code would hand it to the next job.
-Each of those jobs picks its runner like this:
+**Pull requests never run on them.** Every pull request, from a branch or a
+fork, runs these jobs on `ubuntu-latest`. That keeps PR CI from queueing behind
+`main` and the nightlies, and it keeps fork code off persistent machines: the
+repository is public, and a machine that ran a stranger's code would hand it to
+the next job. Each of those jobs picks its runner like this:
 
 ```yaml
-runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
+runs-on: ${{ github.event_name != 'pull_request' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
 ```
 
-Pushes, schedules, manual runs and pull requests from branches in this
-repository go to `felix-azure`. A pull request from a fork gets
-`ubuntu-latest`. On top of that, the repository requires a maintainer to
-approve workflow runs for every outside contributor's pull request.
+On top of that, the repository requires a maintainer to approve workflow runs
+for every outside contributor's pull request.
 
 On the self-hosted path the jobs skip `swatinem/rust-cache` and keep a warm
 target directory per job under `~/felix-cache` instead, through

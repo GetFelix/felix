@@ -1,11 +1,18 @@
 # Self-hosted CI runners in Azure
 
-Two persistent Ubuntu 24.04 VMs (`Standard_D8as_v5`, 8 vCPU, 256 GB Premium SSD)
-in resource group `felix-ci-runners`, region `eastus`, registered to
-`gabloe/felix` with the label `felix-azure`. They take the heavy jobs: CI's
-`test`, `coverage`, the nightly history campaign and the nightly power-loss
-sweep. The nightly fuzz matrix stays on GitHub-hosted runners: each target
-fuzzes on one core, so eight cores buy it little.
+Four persistent Ubuntu 24.04 VMs (`Standard_D8as_v5`, 8 vCPU, 256 GB Premium SSD)
+registered to `gabloe/felix` with the label `felix-azure`:
+
+| VMs | Resource group | Region |
+|---|---|---|
+| `felix-ci-runner-1`, `-2` | `felix-ci-runners` | `eastus` |
+| `felix-ci-runner-3`, `-4` | `felix-ci-runners-westus2` | `westus2` |
+
+They take the heavy jobs (CI's `test`, `coverage`, the nightly history
+campaign and the nightly power-loss sweep) for pushes to `main`, schedules and
+manual runs. Pull requests run those jobs on GitHub-hosted runners. The
+nightly fuzz matrix stays on GitHub-hosted runners too: each target fuzzes on
+one core, so eight cores buy it little.
 Which jobs and why is in `docs-site/src/content/docs/development/building.md`.
 
 ```bash
@@ -15,10 +22,19 @@ Which jobs and why is in `docs-site/src/content/docs/development/building.md`.
 ./deploy.sh down       # deregister and delete everything
 ```
 
-`GROUP`, `LOCATION`, `SIZE` and `COUNT` override the defaults. `eastus` because
-the Azure perf sessions use westus3, centralus and eastus2, and the
-subscription caps Dasv5 at 20 vCPUs per region: two 8-vCPU runners there would
-leave the perf cells no room.
+`GROUP`, `LOCATION`, `SIZE`, `COUNT` and `FIRST` (the first VM's number)
+override the defaults, which describe the eastus pair. Each region is its own
+resource group, so pass the same variables to every command for the westus2
+pair:
+
+```bash
+GROUP=felix-ci-runners-westus2 LOCATION=westus2 FIRST=3 COUNT=2 ./deploy.sh up
+GROUP=felix-ci-runners-westus2 FIRST=3 COUNT=2 ./deploy.sh register
+```
+
+Two regions because the subscription caps vCPUs at 20 per region, which fits
+two 8-vCPU runners, and the Azure perf sessions use westus3, centralus and
+eastus2: runners there would leave the perf cells no room.
 
 ## Security model
 
@@ -33,15 +49,16 @@ leave the perf cells no room.
   `gh api -X POST repos/gabloe/felix/actions/runners/registration-token` and
   hands it over run-command. The runner then holds only its own runner
   credential.
-- **Trusted events only.** The repo is public, and a persistent runner that ran
+- **No pull requests.** The repo is public, and a persistent runner that ran
   a fork's PR would run that fork's code with the next job's secrets in reach.
   Every job routed here uses:
 
   ```yaml
-  runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
+  runs-on: ${{ github.event_name != 'pull_request' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
   ```
 
-  so a fork PR falls back to GitHub-hosted. Fork PRs also need approval from a
+  so every PR, fork or not, runs on GitHub-hosted and never waits for these
+  machines. Fork PRs also need approval from a
   maintainer before any workflow runs (repo setting
   `approval_policy=all_external_contributors`).
 - The `runner` user has no sudo, but it is in the `docker` group because the
@@ -87,6 +104,6 @@ az vm run-command invoke -g felix-ci-runners -n felix-ci-runner-1 \
 
 ## Capacity
 
-Two runners, one job each. When both are busy, jobs queue. The nightly
-history campaign holds one runner for about half an hour; a push in that
-window waits for the other.
+Four runners, one job each. When all four are busy, jobs queue. PRs never
+wait for them. The nightly history campaign holds one runner for about half an
+hour.
