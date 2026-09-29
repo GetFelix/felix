@@ -51,7 +51,9 @@ env:
 
 jobs:
   campaign:
-    runs-on: ubuntu-latest
+    # Only schedule and dispatch trigger this, so it always lands on the
+    # self-hosted runners; the expression is the same as ci.yml's for one rule.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
     # 20 minutes of faults, plus a build that may be cold and the start-up.
     timeout-minutes: 75
     steps:
@@ -63,7 +65,14 @@ jobs:
           toolchain: "1.97.1"
 
       - name: Rust cache
+        if: runner.environment == 'github-hosted'
         uses: swatinem/rust-cache@v2
+
+      - name: Warm target dir
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/warm-target
+        with:
+          slot: history
 
       - name: Build the broker the harness runs
         run: cargo build -p felix-broker-service --bin felix-broker
@@ -96,7 +105,7 @@ jobs:
           FELIX_HISTORY_DURATION_SECS: ${{ inputs.duration_secs || '1200' }}
         run: |
           set -o pipefail
-          cargo test -p felix-cluster --test history -- --nocapture 2>&1 | tee /tmp/history-output.txt
+          cargo test -p felix-cluster --test history -- --nocapture 2>&1 | tee ${{ runner.temp }}/history-output.txt
 
       - name: Report the seed
         if: failure()
@@ -115,7 +124,7 @@ jobs:
             echo '```'
             echo
             echo '```'
-            sed -n '/violation(s)/,/^test /p' /tmp/history-output.txt | head -80
+            sed -n '/violation(s)/,/^test /p' ${{ runner.temp }}/history-output.txt | head -80
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           echo "history campaign seed: $SEED, mode: $MODE"
@@ -125,5 +134,5 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: history-output
-          path: /tmp/history-output.txt
+          path: ${{ runner.temp }}/history-output.txt
           retention-days: 30

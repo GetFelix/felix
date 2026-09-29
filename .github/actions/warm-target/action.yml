@@ -1,0 +1,36 @@
+name: Warm target dir
+description: >-
+  On a persistent self-hosted runner, point target/ at a per-job directory that
+  outlives the checkout, so builds stay incremental without the Actions cache.
+  The GitHub-hosted path uses swatinem/rust-cache instead.
+inputs:
+  slot:
+    description: Directory name under ~/felix-cache; one per job, since jobs build with different flags.
+    required: true
+  max-gb:
+    description: Wipe the slot before the run once it grows past this. Cargo never collects stale artifacts.
+    required: false
+    default: "100"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        SLOT: ${{ inputs.slot }}
+        MAX_GB: ${{ inputs.max-gb }}
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE"
+        dir="$HOME/felix-cache/$SLOT"
+        mkdir -p "$dir"
+        used="$(du -s --block-size=1G "$dir" | cut -f1)"
+        if [ "$used" -gt "$MAX_GB" ]; then
+          echo "$dir is ${used} GB, over ${MAX_GB}; starting cold"
+          rm -rf "$dir" && mkdir -p "$dir"
+        fi
+        # Both: the Taskfile names target/ by relative path, and cargo-fuzz
+        # reads CARGO_TARGET_DIR.
+        rm -rf target
+        ln -s "$dir" target
+        echo "CARGO_TARGET_DIR=$dir" >> "$GITHUB_ENV"
+        echo "target -> $dir (${used} GB)"

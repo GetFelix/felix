@@ -14,8 +14,10 @@ on:
       - "**/*.md"
 
 jobs:
+  # Self-hosted for trusted events, GitHub-hosted for fork PRs; see ci.yml's
+  # test job.
   coverage:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
     timeout-minutes: 150
     permissions:
       contents: write
@@ -55,6 +57,19 @@ jobs:
         env:
           # Same reason as above: this resolves a release through the API.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Warm target dir
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/warm-target
+        with:
+          slot: coverage
+
+      # task coverage runs llvm-cov with --no-clean, so on a warm target dir the
+      # last run's profiles would be merged into this one. This drops those and
+      # the workspace's own artifacts, and keeps the dependencies.
+      - name: Drop stale coverage profiles
+        if: runner.environment == 'self-hosted'
+        run: cargo llvm-cov clean --workspace
 
       - name: Wait for Postgres service
         run: |

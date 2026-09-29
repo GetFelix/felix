@@ -43,7 +43,9 @@ env:
 jobs:
   fuzz:
     name: Fuzz ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    # Self-hosted like history.yml. Twelve targets on two runners queue for a
+    # few hours; the timeout below counts from when a job starts, not queues.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
     # The budget plus a cold nightly build, cmin, and the cache round trip.
     timeout-minutes: 60
     strategy:
@@ -81,12 +83,19 @@ jobs:
           toolchain: nightly
 
       - name: Rust Cache
+        if: runner.environment == 'github-hosted'
         uses: swatinem/rust-cache@v2
         with:
           workspaces: ${{ matrix.dir }}
           # Its own key: the sanitizer flags make these builds useless to
           # every other job.
           shared-key: fuzz-nightly
+
+      - name: Warm target dir
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/warm-target
+        with:
+          slot: fuzz-nightly
 
       - name: Install cargo-fuzz
         working-directory: .
