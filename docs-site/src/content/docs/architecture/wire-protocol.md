@@ -95,7 +95,7 @@ Purpose: Protocol identification and frame synchronization. Decoders should reje
 Protocol version: `1`, and it has stayed `1` on purpose.
 
 Capabilities are added by negotiating flag and feature bits during the
-handshake, not by bumping this number — see
+handshake, not by bumping this number. See
 [Capability negotiation](#capability-negotiation-not-version-negotiation). The
 field exists so a peer speaking something entirely different is rejected at the
 header rather than misparsed.
@@ -298,12 +298,12 @@ Subscribe to changes for one cache key or key prefix.
 ```
 
 **Semantics**:
-- Sent only to a broker that advertised `FEATURE_CACHE_WATCH` — only brokers
-  whose cache is log-backed do
+- Sent only to a broker that advertised `FEATURE_CACHE_WATCH`. Only brokers
+  whose cache is log-backed advertise it
 - Exactly one of `key` / `prefix`; both or neither is refused
 - `from_offset` resumes at the first change not yet seen; absent watches from
   now. An offset past the tail is refused with `subscribe_cursor_error`
-- `retained` asks for current state first — each matching key's current value,
+- `retained` asks for current state first (each matching key's current value),
   then live changes. Requires `FEATURE_CACHE_WATCH_RETAINED` (an older
   watch-capable broker would ignore the field and silently serve a live-only
   watch), and is refused together with `from_offset`
@@ -430,10 +430,10 @@ Watch confirmation.
 - `resume_offset` is where live delivery begins; everything below it was
   covered by the replay or the snapshot
 - `resnapshot: true` means the requested history was collapsed by compaction,
-  so the watch begins with each matching key's current value instead — a
+  so the watch begins with each matching key's current value instead. This is a
   defined signal, never a silent gap
 - `retained_count`, present exactly when retained delivery was requested, is
-  how many current values precede live delivery — `0` is the defined "no
+  how many current values precede live delivery. `0` is the defined "no
   retained value" answer, so joining an empty key cannot be mistaken for a
   slow one
 
@@ -453,7 +453,7 @@ One cache change on a watch's event stream.
 
 **Semantics**:
 - Absent `value` means the key was deleted
-- `offset` is the change's cache-log offset — checkpoint `offset + 1` to resume
+- `offset` is the change's cache-log offset; checkpoint `offset + 1` to resume
 - Offsets are sparse on a filtered watch, so a gap between them is not a drop
   signal; `cache_watch_lagged` is
 
@@ -506,8 +506,8 @@ moved to another broker; the broker ends the stream after it.
 { "type": "counter_value", "value": "number | absent", "request_id": "number" }
 ```
 
-Absent `value` means the counter has never been written — distinct from a sum
-of zero.
+Absent `value` means the counter has never been written, which is distinct from
+a sum of zero.
 
 #### Subscribed, PublishOk, CacheOk, Ok
 
@@ -562,7 +562,7 @@ For high-throughput publish workloads, Felix supports binary encodings that redu
 ### When to Use Binary Mode
 
 Binary mode is enabled by setting flag bit 0 (`flags | 0x0001`). **All client
-publishes use binary encoding by default**, acknowledged or not — the Rust client's
+publishes use binary encoding by default**, acknowledged or not. The Rust client's
 `Publisher::publish`/`publish_batch` methods select it automatically. Call
 `publish_json`/`publish_batch_json` explicitly to opt into JSON instead (e.g. for
 debugging or a non-Rust client that hasn't implemented the binary decoder yet).
@@ -711,13 +711,13 @@ client that offered that bit:
 
 With both, it carries exactly the information the JSON `publish_ok` /
 `publish_error` messages do. A client that published with the JSON encoding still
-receives those JSON messages instead — the reply always matches the encoding of the
+receives those JSON messages instead: the reply always matches the encoding of the
 request.
 
 ## Capability negotiation
 
 Flag bits decide how a payload is parsed, so neither side may guess which bits the
-other understands. The supported set is exchanged during the auth handshake — already
+other understands. The supported set is exchanged during the auth handshake, which is already
 the first round trip on every control stream, so negotiation adds no latency.
 
 The client offers its set, and the broker answers with its own:
@@ -741,7 +741,7 @@ Both directions degrade cleanly, because decoders ignore unknown fields:
 | legacy | legacy | unchanged |
 
 `ORIGINAL_V1_FLAGS` (`0x0001 | 0x0002 | 0x0004`) is what an absent advertisement
-resolves to — the bits that predate negotiation. It is deliberately frozen; adding to
+resolves to: the bits that predate negotiation. It is frozen; adding to
 it would make clients assume support that older brokers lack.
 
 The broker sends `auth_ok` only in reply to an `auth` that offered `client_flags`, so
@@ -849,7 +849,7 @@ and a frame with `0x0800` but not `0x0020` is rejected.
 
 **Why no subscription id in the frame**: the subscription is already bound to
 its uni-directional event stream by the `EventStreamHello` frame sent when
-the stream opens (see [EventStreamHello](#eventstreamhello)) — every
+the stream opens (see [EventStreamHello](#eventstreamhello)). Every
 subsequent frame on that stream belongs to that subscription, so repeating
 the id per batch is redundant. This is also what makes the encoding
 *shareable*: the broker encodes one `Bytes` buffer per publish batch and
@@ -1103,14 +1103,13 @@ Any client or server claiming Felix protocol compatibility must pass the full co
 
 Felix does not bump a protocol version to add a capability. There is no version
 list and no highest-mutually-supported handshake; a peer says what it can do and
-the other side answers with what it will do. This is a deliberate choice, and it
-is why there are two separate mechanisms rather than one:
+the other side answers with what it will do. There are two separate mechanisms:
 
 - **Frame flags** select the *payload layout*. A client offers `client_flags` on
   `auth` and the broker answers `server_flags` on `auth_ok`, as described under
   [Capability negotiation](#capability-negotiation) above. Because a flag decides how the body is
-  parsed, an unknown flag bit is **rejected rather than masked off** — masking one
-  means confidently misparsing the body. `ORIGINAL_V1_FLAGS` is what an absent
+  parsed, an unknown flag bit is **rejected rather than masked off**, because masking
+  one means misparsing the body. `ORIGINAL_V1_FLAGS` is what an absent
   advertisement means, and it is frozen: nothing is ever added to it, because a
   peer that predates negotiation cannot be asked.
 - **Feature bits** say a *request exists*. They live in their own number space,
@@ -1118,7 +1117,7 @@ is why there are two separate mechanisms rather than one:
   the safe reading rather than a lossy one.
 
 Both are additive. An optional field must default to the pre-existing behaviour,
-so an old peer and a new peer exchange byte-identical frames — that property is
+so an old peer and a new peer exchange byte-identical frames. That property is
 what makes a rolling upgrade safe, and it is checked by the conformance suite.
 
 ### Deprecation Policy
@@ -1151,10 +1150,10 @@ Planned protocol enhancements (not in v1):
 
 Since delivered, and no longer on this list: consumer acknowledgements for
 at-least-once delivery (consumer groups), historical replay from an offset,
-tenant isolation, a per-tenant publish rate limit, and — for the cache — server-side filtering, which is what a
+tenant isolation, a per-tenant publish rate limit, and server-side filtering for the cache, which is what a
 keyed watch is (`cache_watch` delivers one key or prefix, filtered at the
 broker's fanout boundary). Stream filtering above refers to streams, where it
-remains future. Sequence numbers for exactly-once are **not** on this list —
+remains future. Sequence numbers for exactly-once are **not** on this list;
 exactly-once is not planned.
 
 These extensions will be added the same way every capability has been: an

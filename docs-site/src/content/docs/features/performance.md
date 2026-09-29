@@ -4,13 +4,13 @@ title: "Performance Tuning"
 
 Felix trades between latency, throughput, and memory with explicit knobs.
 This page explains which knob moves which needle, gives three starting-point
-profiles, and points at the measured numbers. Nothing here has seen
-production — the configurations are benchmark-tested starting points, and
-your own measurement outranks all of them.
+profiles, and points at the measured numbers. None of this has run in
+production. The configurations are benchmark-tested starting points, and
+your own measurements should override them.
 
 ## Understanding Felix Performance
 
-Felix performance is determined by several interconnected factors:
+These factors decide Felix performance, and they interact:
 
 1. **Network transport**: QUIC connection and stream configuration
 2. **Batching**: Message aggregation at publish and delivery stages
@@ -21,9 +21,9 @@ Felix performance is determined by several interconnected factors:
 
 ## Performance Profiles
 
-Felix provides three pre-configured profiles as starting points. They are the
-same pipeline with one dial turned — how long a message is allowed to wait for
-company before being sent:
+Felix has three preset profiles to start from. They are the same pipeline with
+one setting changed: how long a message may wait for others to batch with
+before it is sent.
 
 ```mermaid
 flowchart LR
@@ -61,7 +61,7 @@ flowchart LR
     class T3 warm
 ```
 
-:::note[Read the trade-off, not the ranking]
+:::note[These are trade-offs]
 None of these is "faster" in the abstract. Batching raises bytes per second and
 raises per-message latency at the same time, because a batched message waits for
 the batch. That is why the [benchmark harness](/felix/features/benchmarks/)
@@ -107,8 +107,7 @@ publish_chunk_bytes: 16384
 ```
 
 **Expected performance**: see [Benchmarks](/felix/features/benchmarks/) for current, measured
-numbers across payload/fanout shapes — this profile is the default the
-harness runs against. Numbers here are intentionally not duplicated to avoid
+numbers across payload/fanout shapes. The harness runs against this profile. Numbers here are intentionally not duplicated to avoid
 drift; the benchmarks page is regenerated from `latency-demo` and is the
 source of truth.
 
@@ -160,7 +159,7 @@ subscriber_lane_shard: auto
 
 **Expected performance**: the latency-focused profile in
 [Benchmarks](/felix/features/benchmarks/) (batch = 1, per-message acked) measures this
-shape directly — sub-millisecond p999 at fanout 1-10 on the reference
+shape directly: sub-millisecond p999 at fanout 1-10 on the reference
 hardware there.
 
 **Best for**:
@@ -224,8 +223,8 @@ the transport scheduling work and need re-validation.
 
 :::note[Lossless pacing is an explicit trade-off]
 `block` queues + `pub_ingress_wait: true` mean producers slow down
-instead of anything being dropped — the right choice for pipelines that
-can't tolerate loss, and for benchmarking sustainable throughput.
+instead of anything being dropped. Use it for pipelines that can't tolerate
+loss, and for benchmarking sustainable throughput.
 Production defaults favor shedding (`drop_new`) so overload stays
 visible and bounded. See
 [Benchmarks: Saturation behavior](/felix/features/benchmarks/#saturation-behavior).
@@ -334,15 +333,15 @@ pub_workers_per_conn: 4                # Publish workers per connection (ignored
 
 **Design intent**: defaults are deliberately shallow. `pub_queue_depth` and
 the lane queues bound how much can queue *before* backpressure or shedding
-kicks in — the goal is throughput that plateaus with bounded latency and
-overload that's visible (drops, counters), not a deep buffer that hides
-backlog until it OOMs or the tail latency becomes unbounded. `pub_inflight_bytes`
+kicks in. The goal is throughput that plateaus with bounded latency, and
+overload that shows up in drops and counters. A deep buffer hides the backlog
+until the process runs out of memory or tail latency grows without bound. `pub_inflight_bytes`
 is a second, independent budget on *bytes* rather than item count, so a few
 large batches can't blow past the ingress memory budget even with a small
 `pub_queue_depth`.
 
 - **Shallower** (production default direction): lower memory, backpressure/drops surface sooner, bounded tail latency.
-- **Deeper** (opt-in, throughput profile): higher burst tolerance and memory, and only safe paired with `subscriber_queue_policy: block` + `pub_ingress_wait: true` (lossless pacing) — otherwise deep queues just delay when drops happen, not whether they happen.
+- **Deeper** (opt-in, throughput profile): higher burst tolerance and memory, and only safe paired with `subscriber_queue_policy: block` + `pub_ingress_wait: true` (lossless pacing). Without those, deep queues only delay the drops.
 
 **Memory per queue**:
 
@@ -368,7 +367,7 @@ subscriber_lane_shard: auto  # auto | subscriber_id_hash | connection_id_hash | 
 Event batches are now encoded once per publish and the encoded `Bytes`
 handle is shared across every subscriber of a stream (see
 [Wire Protocol: Shared Binary EventBatch](/felix/architecture/wire-protocol/#shared-binary-eventbatch-encoding)).
-Lanes no longer parallelize *encoding* cost — they parallelize the QUIC
+Lanes no longer parallelize *encoding* cost. They parallelize the QUIC
 *write* syscalls across subscribers. Older lane-count sweep numbers from
 before this change are not representative of current behavior and have
 been removed; see [Benchmarks](/felix/features/benchmarks/) for current measurements.
@@ -379,7 +378,7 @@ Start here:
 3. Increase to `8` only if throughput is still lane-bound
 4. Avoid assuming larger lane counts always help; watch p99/p999
 5. For multi-stream workloads, also evaluate `core_shards` (thread-per-core
-   stream ownership) — see [Benchmarks](/felix/features/benchmarks/), which showed larger
+   stream ownership). See [Benchmarks](/felix/features/benchmarks/), which showed larger
    gains there than lane count alone.
 
 ### Cache Parameters
@@ -437,7 +436,7 @@ intentionally not duplicated here to avoid the two pages drifting apart.
 :::note
 These cache numbers predate the transport-layer tuning (MTU discovery,
 congestion window, socket buffers) documented in
-[Benchmarks](/felix/features/benchmarks/) — the cache path uses the same QUIC
+[Benchmarks](/felix/features/benchmarks/). The cache path uses the same QUIC
 transport and likely benefits similarly, but hasn't been re-measured
 since. Treat as directional until re-run with `cache-demo`.
 :::
@@ -567,8 +566,8 @@ core_shards: 4   # tune to (physical cores - 2)
 5. **Re-measure**: Verify improvement
 6. **Iterate**: Repeat until requirements met
 
-:::tip[Measure, Don't Guess]
-Performance tuning without measurement leads to worse performance. Always benchmark before and after changes.
+:::tip[Measure before and after]
+Tuning without measuring tends to make things worse. Benchmark before and after each change.
 :::
 ### Monitoring in Production
 
@@ -585,7 +584,7 @@ Performance tuning without measurement leads to worse performance. Always benchm
 - Slow subscriber count
 
 Alert against your own measured baseline (say, p99 above twice it) rather
-than absolute numbers — the useful thresholds are workload-shaped.
+than absolute numbers, because useful thresholds depend on the workload.
 
 ## Hardware Recommendations
 
@@ -597,7 +596,7 @@ than absolute numbers — the useful thresholds are workload-shaped.
 
 Felix is CPU-bound for:
 - QUIC encryption (TLS 1.3 AEAD, always on)
-- Wire encoding/decoding — binary by default for unacknowledged publishes
+- Wire encoding/decoding: binary by default for unacknowledged publishes
   and always for event delivery; JSON only for acked publishes and explicit
   `publish_json`/`publish_batch_json` calls
 - Fanout: encoding happens once per publish batch and the encoded frame is
@@ -628,7 +627,7 @@ QUIC benefits from:
 
 ### Disk
 
-- **Ephemeral streams**: not used at all — no disk I/O on the hot path
+- **Ephemeral streams**: not used, so there is no disk I/O on the hot path
 - **Durable streams**: NVMe SSD strongly recommended. Under `fsync_mode =
   on_commit` each commit costs one device flush (~4ms on a typical NVMe), which
   group commit amortises across concurrent publishers; under `periodic` the
@@ -636,11 +635,11 @@ QUIC benefits from:
   budget are in
   [storage-performance.md](https://github.com/gabloe/felix/blob/main/docs/storage-performance.md).
 
-## The whole method in one paragraph
+## Summary
 
 Start from the balanced profile, run a realistic workload, and change one
 knob at a time off a measurement. Queue depths tell you where pressure is;
 batching buys throughput at the price of per-message latency; pools buy
 isolation at the price of memory. Leave telemetry off in production, keep
 2–3× headroom above expected load, and write down what you changed and what
-it measured — the next person tuning this will be you, six months out.
+it measured.

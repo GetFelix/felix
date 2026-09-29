@@ -2,17 +2,15 @@
 title: "Component Architecture"
 ---
 
-Seven components, and the boundaries between them are the design: the broker
-core has no networking in it, the protocol has no transport in it, and the
-storage layer knows nothing about either. This page walks each component and
-what it owns.
+Felix has seven components. The broker core has no networking in it, the
+protocol has no transport in it, and the storage layer knows nothing about
+either. This page walks through each component and what it owns.
 
 ## Overview
 
-The Felix system is composed of seven core components that work together to serve
-**streams, caches and queues** — three readings of one append-only log rather
-than three subsystems, as [Projections](/felix/architecture/projections/)
-explains.
+Together they serve **streams, caches and queues**. These are three readings of
+one append-only log rather than three subsystems, as
+[Projections](/felix/architecture/projections/) explains.
 
 ```mermaid
 graph TB
@@ -92,7 +90,7 @@ Every Felix message is wrapped in a fixed 12-byte header:
 
 - **Magic**: `0x464C5831` ("FLX1") for protocol identification
 - **Version**: Protocol version (currently 1)
-- **Flags**: Selects the payload layout — binary publish batch, binary event batch,
+- **Flags**: Selects the payload layout: binary publish batch, binary event batch,
   acked publish, publish ack. See
   [Wire Protocol](/felix/architecture/wire-protocol/) for the full table.
 - **Length**: Payload size in bytes (up to 4 GiB)
@@ -108,7 +106,7 @@ Binary publish batches reduce parsing overhead and can achieve 30-40% higher thr
 :::
 ## felix-transport: QUIC Abstraction
 
-The transport layer provides a clean abstraction over QUIC, hiding the complexity of connection management, stream lifecycle, and flow control while exposing Felix-specific semantics.
+The transport layer wraps QUIC. It handles connection management, stream lifecycle and flow control, and exposes Felix-specific semantics on top.
 
 ### Core Abstractions
 
@@ -188,7 +186,7 @@ The transport layer enforces encryption by default:
 
 ## felix-broker: Core Logic
 
-The broker is the heart of Felix, implementing pub/sub fanout, cache operations, consumer groups, stream routing, and backpressure management.
+The broker implements pub/sub fanout, cache operations, consumer groups, stream routing and backpressure.
 
 ### Architecture Layers
 
@@ -255,31 +253,30 @@ Each stream shard runs one publish at a time, so executors beyond the number of 
 :::
 :::note[Want the real code path?]
 This section is a conceptual overview. For an accurate, function-by-function
-walkthrough with file references — including exactly how admission,
-stream resolution, and fanout work — see
+walkthrough with file references, including exactly how admission,
+stream resolution, and fanout work, see
 [Internals: The Publish Path](/felix/development/internals-publish/).
 :::
 ### Subscription Management
 
 Each subscription's broker-core state is a channel slot in its stream's
-subscriber registry, plus a dedicated feeder task and QUIC event stream —
-see [Internals: Subscribe & Fanout](/felix/development/internals-subscribe/)
+subscriber registry, plus a dedicated feeder task and QUIC event stream.
+See [Internals: Subscribe & Fanout](/felix/development/internals-subscribe/)
 for the exact types (`SubscriptionReceiver`, `WriterLaneManager`,
 `run_lane_feeder`) and handshake sequence.
 
 **Isolation guarantees**:
 
-- Slow subscribers never block fast subscribers *by default* (`drop_new` queue policy — see [backpressure internals](/felix/development/internals-concurrency/) for the opt-in `block` mode and why it inverts this guarantee)
+- Slow subscribers never block fast subscribers *by default* (`drop_new` queue policy; see [backpressure internals](/felix/development/internals-concurrency/) for the opt-in `block` mode and why it inverts this guarantee)
 - Per-subscription buffering with configurable depth (`subscriber_queue_capacity`)
 - Independent flow control per subscription stream
-- Overload is counted (`felix_subscribe_dropped_total`), not silently absorbed
+- Dropped events are counted in `felix_subscribe_dropped_total`
 
 ### Fanout Architecture
 
 When a message is published, the broker fans it out to all subscribers. The
-key property: the event frame is encoded **once per publish batch**, not
-once per subscriber — every subscriber's feeder gets a clone of the same
-`Arc`-wrapped, lazily-encoded frame.
+event frame is encoded **once per publish batch**. Every subscriber's feeder
+gets a clone of the same `Arc`-wrapped, lazily-encoded frame.
 
 ```mermaid
 sequenceDiagram
@@ -299,9 +296,9 @@ sequenceDiagram
     and
         B->>S3: envelope.clone()
     end
-    S1->>S1: shared_event_frame() — encodes, caches in envelope
-    S2->>S2: shared_event_frame() — cache hit, no re-encode
-    S3->>S3: shared_event_frame() — cache hit, no re-encode
+    S1->>S1: shared_event_frame() (encodes, caches in envelope)
+    S2->>S2: shared_event_frame() (cache hit, no re-encode)
+    S3->>S3: shared_event_frame() (cache hit, no re-encode)
 ```
 
 **Batching behavior**:
@@ -324,7 +321,7 @@ The cache provides low-latency key-value operations with TTL:
 - `cache_put(tenant, namespace, cache, key, value, ttl_ms)`: Store with optional expiration
 - `cache_get(tenant, namespace, cache, key)`: Retrieve value or null if missing/expired
 - `cache_delete(tenant, namespace, cache, key)`: Explicit deletion, answering
-  with the value it removed — or `null` if the key was not there, so a caller
+  with the value it removed, or `null` if the key was not there, so a caller
   can tell a delete that did something from one that did not
 
 **Implementation characteristics**:
@@ -369,7 +366,7 @@ They travel on the **control stream**, like publish and subscribe setup.
 
 - **Durable storage is required.** A group's position lives in a log, so a
   broker started without `FELIX_DURABLE_STORAGE_DIR` serves no groups and does
-  not advertise `FEATURE_CONSUMER_GROUP` — a group that forgot its position on
+  not advertise `FEATURE_CONSUMER_GROUP`. A group that forgot its position on
   restart would redeliver everything it had already finished
 - The cursor is a key → latest-value projection over its own log under
   `<root>/groups`, monotonic, so a late acknowledgement cannot rewind it
@@ -381,7 +378,7 @@ They travel on the **control stream**, like publish and subscribe setup.
   does not hold a record for ever
 - Past `FELIX_GROUP_MAX_ATTEMPTS` (5) a record is **dead-lettered** to a log
   under `<root>/dead-letters`, so one poison record cannot stall the queue
-  behind it. A dead letter is a **pointer** — the record stays in the stream's
+  behind it. A dead letter is a **pointer**: the record stays in the stream's
   log at that offset, readable by an ordinary replay
 - **Only the shard's leader serves its group**, and a poll is refused rather
   than forwarded. Relaying would put the claim and the acknowledgement on
@@ -396,7 +393,7 @@ See [Queues](/felix/features/queues/) for the API and
 
 ## felix-storage: Storage Abstraction
 
-The storage layer provides pluggable backends for different durability and performance requirements.
+The storage layer has backends for different durability and performance needs.
 
 ### Storage Modes
 
@@ -422,7 +419,7 @@ Persistent storage with configurable durability:
 - **Torn-tail repair** on startup; interior corruption fails startup loudly
   rather than discarding acknowledged records
 - **Sparse indexes** for offset lookups, rebuilt from the segment they describe
-  whenever they are missing, short, or stale — they are derived, never trusted
+  whenever they are missing, short, or stale, so an index is never trusted
 - **Configurable fsync** policies, with group commit so one flush serves many
   waiters
 - **At-least-once** delivery when replayed from a checkpointed offset
@@ -494,7 +491,7 @@ Under Postgres:
 
 - Writes are transactions, so a shard has one current assignment
 - Change feeds are sequenced from a locked row rather than a sequence, because a
-  sequence hands out numbers in request order and not commit order — a snapshot
+  sequence hands out numbers in request order, not commit order. A snapshot
   taken between two commits would resume past a change it never saw
 - Placement is conditional writes, not a shared snapshot: a pass reads its inputs
   separately, and each assignment write is refused if the generation or placement
@@ -640,7 +637,7 @@ See the [Performance Tuning](/felix/features/performance/) guide for detailed co
 
 ## Design Principles
 
-The component architecture embodies several key principles:
+The components follow these principles:
 
 1. **Clear boundaries**: Each component has a well-defined responsibility
 2. **Testability**: Components can be tested in isolation with mock implementations
@@ -650,5 +647,5 @@ The component architecture embodies several key principles:
 6. **Explicitness**: Configuration is explicit, not hidden behind auto-tuning
 
 :::tip[Understanding Performance]
-When debugging performance issues, think in terms of component boundaries. Is the bottleneck in wire encoding? Transport flow control? Broker queueing? Storage I/O? Each component has different tuning knobs and scaling characteristics.
+When debugging performance, work out which component the bottleneck is in: wire encoding, transport flow control, broker queueing or storage I/O. Each has its own tuning knobs and scales differently.
 :::

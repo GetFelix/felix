@@ -19,7 +19,7 @@ client does nothing special: it connects to a broker and publishes.
   <a href="/felix/video/cluster-cross-broker-demo.mp4">Download it instead</a>.
 </video>
 
-<p><small>45 seconds, no audio — the terminals carry the whole story.</small></p>
+<p><small>45 seconds, no audio. Everything happens in the terminals.</small></p>
 
 ## What the three panes are
 
@@ -33,22 +33,22 @@ client does nothing special: it connects to a broker and publishes.
 
 **`published "hello" to orders via broker-0 → forwarded to broker-2 → acknowledged`**
 
-That is the whole demo. `broker-0` received the publish, resolved that
+`broker-0` received the publish, resolved that
 `broker-2` owns the shard, sent it there over the internal protocol, waited for
 `broker-2` to write it durably, and only then acknowledged. The record then
 appears in the subscriber pane, attached to `broker-2`.
 
 **`published "direct" to orders via broker-2 (the owner) — written locally, no hop`**
 
-The same command aimed at the owner. No hop. The forward happens only when it
-has to, and the client sees the same result either way.
+The same command aimed at the owner, so there is no hop. The forward happens
+only when it has to, and the client sees the same result either way.
 
 **The two bursts at the end.** Six records sent one at a time arrive in order.
-Twenty-four sent twelve at a time do not — `par-004`, `par-006`, `par-005` and so
-on. That is correct rather than a defect: concurrent publishes through different
-brokers have no defined relative order, and the owner assigns offsets as it
-commits them. Felix orders a publisher's own sequence, not a race between three
-of them.
+Twenty-four sent twelve at a time do not (`par-004`, `par-006`, `par-005` and so
+on). This is expected. Concurrent publishes through different brokers have no
+defined relative order, and the owner assigns offsets as it commits them. Felix
+keeps each publisher's own sequence in order, but not the order across three
+racing publishers.
 
 ## Running it yourself
 
@@ -59,8 +59,8 @@ task cluster:demo          # the same story in one pane, no tmux needed
 
 Both start a real cluster and tear it down afterwards. The owning broker is
 chosen by hashing the shard key against the node ids, so it differs between
-runs — the video happens to show `broker-2`.
+runs. The video happens to show `broker-2`.
 
 See [the cluster harness](https://github.com/gabloe/felix/blob/main/docs/cluster-harness.md)
-for what it does and does not exercise — notably that the brokers are real
+for what it does and does not exercise. In particular, the brokers are real
 processes while the control plane runs in the harness itself.

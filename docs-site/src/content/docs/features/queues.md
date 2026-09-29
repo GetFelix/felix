@@ -8,20 +8,19 @@ every subscriber to a stream sees every record, the members of a group divide
 the records between them: one consumer holds a record at a time, and the record
 is not finished until someone says so.
 
-It is the same log underneath — see
-[Projections](/felix/architecture/projections/) — read through a cursor the
+It is the same log underneath (see
+[Projections](/felix/architecture/projections/)), read through a cursor the
 group shares instead of a cursor per subscriber.
 
 ![A consumer group reading a shard's log. Records are claimed by consumers A and B and acknowledged one by one, and the group's cursor advances behind them. When offset 4 is acknowledged while offset 3 is still in flight, the cursor stops at 3 rather than skipping it; once offset 3's claim lapses, it is redelivered, and settling it lets the cursor jump past both.](/felix/diagrams/consumer-group.svg)
 
-The moment worth watching is the one in the middle. Offset 4 is acknowledged
-while offset 3 is still held, and **the cursor stops at 3 anyway** — it only ever
-advances over a contiguous run of finished records. That is what makes the
-cursor safe to restart from: everything below it is genuinely done, so a broker
+In the middle of the diagram, offset 4 is acknowledged while offset 3 is still
+held, and the cursor stops at 3 anyway. It only advances over a contiguous run
+of finished records, which makes the cursor safe to restart from: everything below it is genuinely done, so a broker
 that restarts redelivers offset 3 and nothing before it.
 
-The alternative — moving the cursor to the highest acknowledged offset — would
-be simpler and would silently drop offset 3 on the next restart.
+Moving the cursor to the highest acknowledged offset would be simpler, and
+would silently drop offset 3 on the next restart.
 
 ## The loop
 
@@ -74,7 +73,7 @@ fast producer.
 
 Every delivery carries `attempts`, counting this one. `1` is a first attempt;
 anything higher is a redelivery, so a consumer can behave differently on a
-retry — log it, route it elsewhere, or give up early.
+retry: log it, route it elsewhere, or give up early.
 
 After `FELIX_GROUP_MAX_ATTEMPTS` deliveries the broker gives up on a record: the
 offset is recorded as a **dead letter** and the group moves past it. Without
@@ -92,9 +91,8 @@ for offset in dead {
 }
 ```
 
-**A dead letter is a pointer, not a copy.** The record stays in the stream's log
-at that offset, readable by an ordinary replay. Nothing is duplicated, and
-nothing is moved somewhere you have to go and find.
+A dead letter is a pointer to the record, not a copy. The record stays in the
+stream's log at that offset, readable by an ordinary replay.
 
 A redrive resets the record's attempt count and makes it owed again. It does
 **not** move the group's cursor backwards, so everything already finished stays
@@ -146,7 +144,7 @@ queue preserves the order records are *handed out* in and says nothing about the
 order they are finished in. If you need per-key ordering, use a stream with a
 routing key so related records land on one shard.
 
-**Exactly-once.** A record can arrive twice — after a claim lapses, after a
+**Exactly-once.** A record can arrive twice: after a claim lapses, after a
 leader is lost, after an idle group is rebuilt, or after a redrive. Handlers must tolerate seeing the same
 record again.
 

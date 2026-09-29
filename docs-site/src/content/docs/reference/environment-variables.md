@@ -193,7 +193,7 @@ export FELIX_TLS_CERT_EXPORT="/tmp/felix-dev-ca.pem"
 **Notes**:
 - Development only. The broker generates a self-signed certificate at startup.
   Without exporting it, the only way for a non-Rust client to connect is to
-  skip verification entirely, which is a habit worth not forming.
+  skip verification entirely.
 - Point a client at the file: the Python client takes `ca_file=`, and other
   clients take whatever their TLS stack calls a CA bundle.
 - Startup fails if the file cannot be written. A deployment that asked for
@@ -472,7 +472,7 @@ export FELIX_EVENT_BATCH_MAX_DELAY_US="1000"  # Prioritize batching
 export FELIX_EVENT_BATCH_MAX_DELAY_US="5000"  # Maximum batching
 ```
 
-**Critical tuning parameter**:
+**Tuning**:
 - Lower: Reduced latency, more frequent sends
 - Higher: Better batching, higher latency
 - Typical range: 50-1000 microseconds
@@ -1128,7 +1128,7 @@ Process-wide levers read by every Felix QUIC endpoint (broker, client, demos). S
 
 **Description**: Upper bound for QUIC path-MTU discovery. Discovery converges to the real path MTU at or below it, so on a 1500-byte network the bound never binds.
 
-Raising it above 6,553 on Linux will stall delivery. Linux UDP GSO packs a whole `sendmsg` batch into one IP datagram, so `MTU × segments` must stay under 65,535, and quinn batches up to 10. Above that the kernel rejects every batch with `EMSGSIZE`, which quinn does not recognise as a GSO failure (it falls back only on `EIO`/`EINVAL`). So the transmit is dropped after quinn has counted it as sent, and the stall is permanent rather than degrading. This is not a throughput preference. It is the difference between working and not.
+Raising it above 6,553 on Linux will stall delivery. Linux UDP GSO packs a whole `sendmsg` batch into one IP datagram, so `MTU × segments` must stay under 65,535, and quinn batches up to 10. Above that the kernel rejects every batch with `EMSGSIZE`, which quinn does not recognise as a GSO failure (it falls back only on `EIO`/`EINVAL`). So the transmit is dropped after quinn has counted it as sent, and the stall is permanent rather than degrading. Treat 6,553 as a hard limit, not a tuning choice.
 
 The default is `4096` rather than 6,553 because quinn's batch size is private to it, and 6,553 breaks the moment it rises. 4,096 also measured fastest on Linux. macOS has no GSO and no such limit.
 
@@ -1145,7 +1145,7 @@ export FELIX_MTU_UPPER_BOUND="16384"  # macOS, or any path with no GSO
 
 **Description**: Starting datagram size before path-MTU discovery completes. The RFC-safe default works everywhere. Raising it on known-good paths (jumbo-frame LAN) skips the discovery ramp. Connections to a loopback peer automatically start at the loopback MTU and guarantee it, which makes the path immune to spurious black-hole collapse (see `FELIX_MTU_BLACK_HOLE_COOLDOWN_MS`) and, because the guarantee also freezes the discovery bound, removes probe traffic entirely.
 
-The guaranteed size is 16,336 bytes on macOS and 4,096 elsewhere (both capped by `FELIX_MTU_UPPER_BOUND`). The lower cap off macOS is not conservatism. Linux UDP GSO packs a whole `sendmsg` batch into a single IP datagram, so `MTU × segments` must stay under 65,535. Quinn batches up to 10, putting the real ceiling at 6,553 bytes. Above it the kernel rejects every batch and delivery stalls outright, measured as a total stall at both 8,192 and 16,336. macOS has no GSO (one syscall per datagram) and no such limit. 4,096 also measured fastest on Linux. See the [performance case study](/felix/features/performance-case-study/).
+The guaranteed size is 16,336 bytes on macOS and 4,096 elsewhere (both capped by `FELIX_MTU_UPPER_BOUND`). The cap is lower off macOS because Linux UDP GSO packs a whole `sendmsg` batch into a single IP datagram, so `MTU × segments` must stay under 65,535. Quinn batches up to 10, putting the real ceiling at 6,553 bytes. Above it the kernel rejects every batch and delivery stalls outright, measured as a total stall at both 8,192 and 16,336. macOS has no GSO (one syscall per datagram) and no such limit. 4,096 also measured fastest on Linux. See the [performance case study](/felix/features/performance-case-study/).
 
 The loopback path also requires the socket's granted UDP buffers to reach ~1 MiB. That threshold is a proxy for "this host has been tuned", not a burst-headroom calculation. Hosts where Linux silently clamps `SO_RCVBUF` to a stock `net.core.rmem_max` (~208 KB) keep the RFC-safe default. Raise `rmem_max`/`wmem_max` to enable it. Setting `FELIX_INITIAL_MTU` explicitly disables the loopback special case and applies to every path.
 
@@ -1870,12 +1870,12 @@ absent. They are listed in that script rather than here.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `FELIX_CONTROLPLANE_BIND` | `0.0.0.0:8443` | Address the control-plane API listens on. |
-| `FELIX_CONTROLPLANE_TLS_CERT` | — | PEM certificate chain the API listener serves. Set with the key below, or neither. Without them the API is plain HTTP and startup warns. Re-read every 30s, so a renewal on disk reaches the next handshake. The Raft peer listener is separate and has its own `FELIX_RAFT_TLS_CERT`, `_KEY` and `_CA`. |
-| `FELIX_CONTROLPLANE_TLS_KEY` | — | PEM private key for `FELIX_CONTROLPLANE_TLS_CERT`. |
+| `FELIX_CONTROLPLANE_TLS_CERT` | unset | PEM certificate chain the API listener serves. Set with the key below, or neither. Without them the API is plain HTTP and startup warns. Re-read every 30s, so a renewal on disk reaches the next handshake. The Raft peer listener is separate and has its own `FELIX_RAFT_TLS_CERT`, `_KEY` and `_CA`. |
+| `FELIX_CONTROLPLANE_TLS_KEY` | unset | PEM private key for `FELIX_CONTROLPLANE_TLS_CERT`. |
 | `FELIX_CONTROLPLANE_METRICS_BIND` | `0.0.0.0:8080` | Separate address for the metrics endpoint. |
-| `FELIX_CONTROLPLANE_CONFIG` | — | Path to a YAML config file. Values in the file override the environment. |
+| `FELIX_CONTROLPLANE_CONFIG` | unset | Path to a YAML config file. Values in the file override the environment. |
 | `FELIX_CONTROLPLANE_STORAGE_BACKEND` | inferred | `memory`, `postgres` or `raft`. Unset, it is `postgres` when `FELIX_CONTROLPLANE_POSTGRES_URL` is set, `raft` when `FELIX_RAFT_NODE_ID`, `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_PEERS` are set, and `memory` otherwise. `memory` loses everything on restart. An unrecognised value is treated as unset. |
-| `FELIX_CONTROLPLANE_POSTGRES_URL` | — | Connection string. Required when the backend is `postgres`. |
+| `FELIX_CONTROLPLANE_POSTGRES_URL` | unset | Connection string. Required when the backend is `postgres`. |
 | `FELIX_CONTROLPLANE_POSTGRES_MAX_CONNECTIONS` | `10` | Pool size. Caps concurrent database work. |
 | `FELIX_CONTROLPLANE_POSTGRES_CONNECT_TIMEOUT_MS` | `5000` | Bounds establishing a new physical connection. |
 | `FELIX_CONTROLPLANE_POSTGRES_ACQUIRE_TIMEOUT_MS` | `5000` | Bounds waiting for a pooled connection before failing fast. |
@@ -1888,17 +1888,17 @@ absent. They are listed in that script rather than here.
 | `FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS` | `false` | Also link each IdP group under its bare name (`group:{name}`) as well as its issuer-scoped one (`group:{issuer}#{name}`), while groupings are migrated. It lets any IdP the tenant trusts claim any bare group name, so turn it off afterwards. |
 | `FELIX_EXCHANGE_TOKEN_TTL_SECONDS` | `900` | Lifetime of a Felix access token minted by the token exchange. The default is short to limit blast radius if a token leaks. Prefer refresh over raising it: a long-running process should refresh rather than hold one long-lived bearer token. |
 | `FELIX_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Lifetime of a refresh token (30 days). This is how a long-running process stays authenticated without standing IdP credentials. Refresh tokens are single-use and rotate on every refresh, so this bounds a stolen and never used token. One that is used produces a replay, which revokes its whole chain immediately. |
-| `FELIX_RAFT_NODE_ID` | — | This instance's id in the metadata Raft group (see [Metadata Raft](/felix/architecture/metadata-raft/)). `FELIX_RAFT_NODE_ID`, `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_PEERS` together select the raft backend, or startup fails on a partial set. |
-| `FELIX_RAFT_DATA_DIR` | — | Where the Raft log, vote, and snapshots live. Must survive restarts: it is what makes a restart a rejoin rather than a fresh member. |
-| `FELIX_RAFT_PEERS` | — | The initial group as `id=host:port,...` of every member's Raft peer listener (`FELIX_RAFT_BIND_ADDR`). Identical on every member. |
-| `FELIX_RAFT_BIND_ADDR` | — | Required under raft. Where this member serves the Raft RPCs. A listener of its own, never the API port: the `propose` route can replace the whole metadata store. Keep it reachable from the other members only. |
-| `FELIX_RAFT_CLUSTER_ID` | — | Required under raft. Names the group, like etcd's cluster token. Recorded in the data dir on first start. A member refuses to start on a data dir recorded under another id, and peers refuse requests carrying another id. |
-| `FELIX_RAFT_PEER_TOKEN` | — | Required under raft, at least 32 characters, identical on every member. Every Raft request must carry it, and it is compared in constant time. It is the cluster-admin credential: whoever holds it can replace the store, so keep it in a Secret and give it to nothing but the members and the `migrate import` tool. |
+| `FELIX_RAFT_NODE_ID` | unset | This instance's id in the metadata Raft group (see [Metadata Raft](/felix/architecture/metadata-raft/)). `FELIX_RAFT_NODE_ID`, `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_PEERS` together select the raft backend, or startup fails on a partial set. |
+| `FELIX_RAFT_DATA_DIR` | unset | Where the Raft log, vote, and snapshots live. Must survive restarts: it is what makes a restart a rejoin rather than a fresh member. |
+| `FELIX_RAFT_PEERS` | unset | The initial group as `id=host:port,...` of every member's Raft peer listener (`FELIX_RAFT_BIND_ADDR`). Identical on every member. |
+| `FELIX_RAFT_BIND_ADDR` | unset | Required under raft. Where this member serves the Raft RPCs. A listener of its own, never the API port: the `propose` route can replace the whole metadata store. Keep it reachable from the other members only. |
+| `FELIX_RAFT_CLUSTER_ID` | unset | Required under raft. Names the group, like etcd's cluster token. Recorded in the data dir on first start. A member refuses to start on a data dir recorded under another id, and peers refuse requests carrying another id. |
+| `FELIX_RAFT_PEER_TOKEN` | unset | Required under raft, at least 32 characters, identical on every member. Every Raft request must carry it, and it is compared in constant time. It is the cluster-admin credential: whoever holds it can replace the store, so keep it in a Secret and give it to nothing but the members and the `migrate import` tool. |
 | `FELIX_RAFT_INSECURE_PEERS` | `false` | `true` lets a raft member start without `FELIX_RAFT_PEER_TOKEN`. For a throwaway local group only. Anyone who reaches the peer listener can then replace the store. |
 | `FELIX_RAFT_INITIAL_CLUSTER_STATE` | `existing` | `new` lets an empty member form a brand-new group when a majority of the configured members is empty. `existing` never forms one, so members that lost their volumes wait instead of starting an empty control plane. Set `new` for the first start of a cluster only. |
-| `FELIX_RAFT_TLS_CERT` | — | PEM certificate this member presents on the peer listener and to its peers. Set with `FELIX_RAFT_TLS_KEY` and `FELIX_RAFT_TLS_CA` to turn on peer mTLS. A partial set fails startup. The certificate must name the host each member reaches it by in `FELIX_RAFT_PEERS`. |
-| `FELIX_RAFT_TLS_KEY` | — | PEM private key for `FELIX_RAFT_TLS_CERT`. |
-| `FELIX_RAFT_TLS_CA` | — | PEM CA bundle. Peers must present a certificate signed by it, and only it is trusted for the servers this member connects to. |
+| `FELIX_RAFT_TLS_CERT` | unset | PEM certificate this member presents on the peer listener and to its peers. Set with `FELIX_RAFT_TLS_KEY` and `FELIX_RAFT_TLS_CA` to turn on peer mTLS. A partial set fails startup. The certificate must name the host each member reaches it by in `FELIX_RAFT_PEERS`. |
+| `FELIX_RAFT_TLS_KEY` | unset | PEM private key for `FELIX_RAFT_TLS_CERT`. |
+| `FELIX_RAFT_TLS_CA` | unset | PEM CA bundle. Peers must present a certificate signed by it, and only it is trusted for the servers this member connects to. |
 | `FELIX_RAFT_HEARTBEAT_MS` | `150` | Leader heartbeat interval within the metadata group. |
 | `FELIX_RAFT_ELECTION_TIMEOUT_MIN_MS` | `600` | Lower edge of the election window. Must exceed the heartbeat. A window at or below it elects against healthy leaders, and startup refuses it. |
 | `FELIX_RAFT_ELECTION_TIMEOUT_MAX_MS` | `1200` | Upper edge of the election window. Must exceed the minimum. |
@@ -1912,20 +1912,20 @@ absent. They are listed in that script rather than here.
 | `FELIX_REGION_ID` | `local` | Region this instance reports. |
 | `FELIX_REGION_BRIDGES` | unset | Directional region allowlist as comma-separated `source>dest` pairs, e.g. `eu-west-1>us-east-1`. A two-way bridge is two pairs. On the control plane it says where a stream created with a `region` may have copies: its own region and any it has a bridge to. Unset keeps such a stream in its own region. Streams without a region are placed anywhere either way. A malformed pair fails startup. Set the same value on every broker. |
 | `FELIX_BOOTSTRAP_ENABLED` | `false` | Enables the first-run bootstrap endpoints. Leave off once credentials exist. |
-| `FELIX_BOOTSTRAP_TOKEN` | — | Token the bootstrap endpoints require. |
-| `FELIX_BOOTSTRAP_TOKEN_PREVIOUS` | — | The token being rotated out, still accepted alongside the current one so a rotation is a rolling deploy rather than an outage. Requires `FELIX_BOOTSTRAP_TOKEN`. |
+| `FELIX_BOOTSTRAP_TOKEN` | unset | Token the bootstrap endpoints require. |
+| `FELIX_BOOTSTRAP_TOKEN_PREVIOUS` | unset | The token being rotated out, still accepted alongside the current one so a rotation is a rolling deploy rather than an outage. Requires `FELIX_BOOTSTRAP_TOKEN`. |
 | `FELIX_BOOTSTRAP_BIND_ADDR` | `127.0.0.1:9095` | Restricts bootstrap to a separate listener. |
-| `FELIX_BOOTSTRAP_TLS_CERT` | — | PEM certificate chain the bootstrap listener presents. All three TLS variables together, or startup fails. A partial set is a misconfiguration, not "TLS off". |
-| `FELIX_BOOTSTRAP_TLS_KEY` | — | PEM private key for the bootstrap listener's certificate. |
-| `FELIX_BOOTSTRAP_TLS_CLIENT_CA` | — | PEM CA bundle. Only clients presenting a certificate signed by it can complete the TLS handshake with the bootstrap listener. |
+| `FELIX_BOOTSTRAP_TLS_CERT` | unset | PEM certificate chain the bootstrap listener presents. All three TLS variables together, or startup fails. A partial set is a misconfiguration, not "TLS off". |
+| `FELIX_BOOTSTRAP_TLS_KEY` | unset | PEM private key for the bootstrap listener's certificate. |
+| `FELIX_BOOTSTRAP_TLS_CLIENT_CA` | unset | PEM CA bundle. Only clients presenting a certificate signed by it can complete the TLS handshake with the bootstrap listener. |
 
 ### Node identity and membership
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `FELIX_NODE_ID` | — | This broker's identity in the cluster. Must be stable across restarts. |
-| `FELIX_NODE_ADVERTISE_ADDR` | — | Address peers should reach this broker on. |
-| `FELIX_CLIENT_ADVERTISE_ADDR` | — | Address *clients* should reach it on, when it differs from the peer address. |
+| `FELIX_NODE_ID` | unset | This broker's identity in the cluster. Must be stable across restarts. |
+| `FELIX_NODE_ADVERTISE_ADDR` | unset | Address peers should reach this broker on. |
+| `FELIX_CLIENT_ADVERTISE_ADDR` | unset | Address *clients* should reach it on, when it differs from the peer address. |
 | `FELIX_NODE_ZONE` | unset | Failure domain this broker is in within its region, such as an availability zone or a rack, sent with its registration as the node's `zone`. Placement puts each shard's copies in different zones wherever a broker with room is in one the shard lacks, and moves and drains keep that spread. Unset (or blank) means no zone: the broker is treated as sharing a zone with no other. Takes effect when the broker next registers. |
 | `FELIX_KAFKA_LISTEN` | unset | `ip:port` the Kafka-protocol listener binds (Kafka consumers and producers). Unset turns the listener off. See [Kafka compatibility](/felix/features/kafka/). |
 | `FELIX_KAFKA_ADVERTISE_ADDR` | `FELIX_KAFKA_LISTEN` | `host:port` Kafka clients are told to connect to for this broker (in Metadata responses). A hostname is fine. Registered as the node's `kafka_addr`, and ignored while `FELIX_KAFKA_LISTEN` is unset. |
@@ -1936,8 +1936,8 @@ absent. They are listed in that script rather than here.
 | `FELIX_KAFKA_MAX_CONNECTIONS_PER_IP` | `128` | Kafka connections one source IP may hold, checked before the total, so one host cannot take every slot. Refusals are counted in `felix_kafka_refused_total{reason="per_ip_limit"}`. `0` is unlimited. |
 | `FELIX_KAFKA_AUTH_TIMEOUT_MS` | `10000` | How long a Kafka connection has to finish SASL. Until it does, each request is capped at 64 KiB. A connection past the deadline is closed and counted under `reason="auth_timeout"`, an oversized unauthenticated request under `reason="unauthenticated_frame_size"`. Does not apply with `FELIX_KAFKA_ANONYMOUS_TENANT`, where every connection starts authenticated. |
 | `FELIX_REGION_BRIDGES` | unset | The same allowlist as the control plane's. A broker forwards a request to a shard's leader only in its own `FELIX_REGION_ID` or a region it has a bridge to, and refuses the rest as `shard_unavailable` with reason `region_not_routable`. Unset forwards within the broker's own region only. A malformed pair fails startup. |
-| `FELIX_NODE_TOKEN` / `FELIX_NODE_TOKEN_FILE` | — | Access credential this broker presents to the control plane, on every call including the metadata feeds it seeds from (which require `node.view:cluster:*`). Required with `FELIX_NODE_ID`. A standalone broker may omit it, but then its sync is refused and it says so at startup. The file form is re-read every 30s, so whatever mints the credential (a Vault agent, SPIRE, a sidecar) can rotate it without a restart. A replacement that is already expired is declined rather than adopted. A broker joining a cluster refuses to start with an expiring token supplied by value and no refresh file, because nothing could then renew it. |
-| `FELIX_NODE_REFRESH_TOKEN_FILE` | — | Path to this broker's refresh token. With it the broker re-mints its access token before expiry and stays registered indefinitely. It is a path, not a value: refreshing spends the token and mints a replacement, so the broker writes the replacement back here. A restart that presented a spent one would be read as a replay and revoke the whole chain. The path must be writable. Setting `FELIX_NODE_REFRESH_TOKEN` instead fails startup, rather than locking the broker out at its first restart. Either this or `FELIX_NODE_TOKEN_FILE` is required when the credential carries an `exp` and `FELIX_NODE_ID` is set. |
+| `FELIX_NODE_TOKEN` / `FELIX_NODE_TOKEN_FILE` | unset | Access credential this broker presents to the control plane, on every call including the metadata feeds it seeds from (which require `node.view:cluster:*`). Required with `FELIX_NODE_ID`. A standalone broker may omit it, but then its sync is refused and it says so at startup. The file form is re-read every 30s, so whatever mints the credential (a Vault agent, SPIRE, a sidecar) can rotate it without a restart. A replacement that is already expired is declined rather than adopted. A broker joining a cluster refuses to start with an expiring token supplied by value and no refresh file, because nothing could then renew it. |
+| `FELIX_NODE_REFRESH_TOKEN_FILE` | unset | Path to this broker's refresh token. With it the broker re-mints its access token before expiry and stays registered indefinitely. It is a path, not a value: refreshing spends the token and mints a replacement, so the broker writes the replacement back here. A restart that presented a spent one would be read as a replay and revoke the whole chain. The path must be writable. Setting `FELIX_NODE_REFRESH_TOKEN` instead fails startup, rather than locking the broker out at its first restart. Either this or `FELIX_NODE_TOKEN_FILE` is required when the credential carries an `exp` and `FELIX_NODE_ID` is set. |
 | `FELIX_NODE_HEARTBEAT_INTERVAL_MS` | `5000` | How often a broker reports itself alive. |
 | `FELIX_NODE_EXPIRY_TIMEOUT_MS` | `15000` | Silence after which a node is considered gone, plus `FELIX_NODE_REGRANT_MARGIN_MS`. The sweep also waits this long after the control plane starts, becomes Raft leader, or regains its store, so an outage does not expire the fleet. Brokers take 0.75 × this as their lease. Placement will not promote a replica whose last report is older than roughly twice this. |
 | `FELIX_NODE_EXPIRY_SWEEP_INTERVAL_MS` | `2000` | How often expiry is evaluated. |
@@ -1947,16 +1947,16 @@ absent. They are listed in that script rather than here.
 | `FELIX_SHARD_MOVES_MAX_PER_NODE` | unset | Copies in flight into or out of any one broker. Unset or `0` is no limit beyond the cluster-wide one. |
 | `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` | `1000` | How far behind the leader's tail a move's destination may be when the leader is fenced. The rest is copied before the cut-over, so this bounds the switch-over, not what is lost. A replacement follower takes the place of the one it replaces within the same bound; on a `Quorum` stream it must also hold what a majority of the replica set holds. |
 | `FELIX_SHARD_MOVE_TIMEOUT_MS` | `1800000` | A move that has not reached its fence, or a follower replacement that has not caught up, this long after it started is abandoned and its slot goes to the next move. A fenced move is always finished. `0` never gives up. |
-| `FELIX_CP_URL`, `FELIX_CP_SYNC_INTERVAL_MS` | — | Short aliases used by the demos and cluster harness. |
+| `FELIX_CP_URL`, `FELIX_CP_SYNC_INTERVAL_MS` | unset | Short aliases used by the demos and cluster harness. |
 
 ### Peer protocol, between brokers
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `FELIX_INTERNAL_BIND` | `0.0.0.0:5001` | Address for the broker-to-broker QUIC endpoint. Separate from the client one. |
-| `FELIX_INTERNAL_TLS_CERT` | — | PEM certificate chain this broker presents to peers, leaf first. Its DNS name must be the broker's `FELIX_NODE_ID`. Set with the two below, or none of the three. |
-| `FELIX_INTERNAL_TLS_KEY` | — | PEM private key for that certificate. Re-read with the certificate every 30s, so a renewal on disk is picked up by the next handshake without a restart. |
-| `FELIX_INTERNAL_TLS_CA` | — | PEM bundle every peer's certificate must chain to. With all three set, every peer connection is mutually authenticated and the certificate's name is checked against the node id in both directions. Without them the peer link is encrypted but unauthenticated, and a broker with `FELIX_NODE_ID` refuses to start unless `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`. |
+| `FELIX_INTERNAL_TLS_CERT` | unset | PEM certificate chain this broker presents to peers, leaf first. Its DNS name must be the broker's `FELIX_NODE_ID`. Set with the two below, or none of the three. |
+| `FELIX_INTERNAL_TLS_KEY` | unset | PEM private key for that certificate. Re-read with the certificate every 30s, so a renewal on disk is picked up by the next handshake without a restart. |
+| `FELIX_INTERNAL_TLS_CA` | unset | PEM bundle every peer's certificate must chain to. With all three set, every peer connection is mutually authenticated and the certificate's name is checked against the node id in both directions. Without them the peer link is encrypted but unauthenticated, and a broker with `FELIX_NODE_ID` refuses to start unless `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`. |
 | `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED` | `false` | Let a cluster member start without peer mTLS. Anything that can reach `FELIX_INTERNAL_BIND` is then treated as a broker and can forward writes and rebuild replicas, so set it only when a network policy keeps that port reachable from brokers alone. |
 | `FELIX_INTERNAL_CONNS_PER_PEER` | `1` | Connections held to each peer. |
 | `FELIX_INTERNAL_STREAMS_PER_CONN` | `4` | Multiplexed streams per peer connection, so one large forwarded batch does not block smaller requests. |
@@ -1997,15 +1997,15 @@ absent. They are listed in that script rather than here.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `FELIX_CLIENT_CONFIG` | — | Path to a client config file. |
-| `FELIX_AUTH_TENANT`, `FELIX_AUTH_TOKEN`, `FELIX_TOKEN` | — | Credentials a client presents. `FELIX_TOKEN` is also the token `felix-controlplane admin` sends, unless `--token` is given. |
+| `FELIX_CLIENT_CONFIG` | unset | Path to a client config file. |
+| `FELIX_AUTH_TENANT`, `FELIX_AUTH_TOKEN`, `FELIX_TOKEN` | unset | Credentials a client presents. `FELIX_TOKEN` is also the token `felix-controlplane admin` sends, unless `--token` is given. |
 | `FELIX_KEEPALIVE_MS` | `2000` | QUIC keep-alive interval. Keep it well under the idle timeout, on both client and broker, or quiet connections are dropped. |
 | `FELIX_MAX_IDLE_TIMEOUT_MS` | `6000` | QUIC idle timeout before a connection is dropped. Also how long a broker that died without closing (killed, unplugged) takes to be noticed, and so how long a publish in flight to it waits before a `ClusterClient` retries elsewhere. |
 | `FELIX_EVENT_ROUTER_MAX_PENDING` | `16384` | Events buffered by the client's router before it applies backpressure. |
-| `FELIX_SUB_DEDICATED_THREAD`, `FELIX_SUB_DEDICATED_QUEUE_CAPACITY` | — | Give a subscription its own thread and queue. |
-| `FELIX_SUB_DELIVERY_SHAPING`, `FELIX_SUB_EGRESS_CONNS` | — | Delivery shaping and egress fan-out on the broker. |
-| `FELIX_PUBLISH_SHARDING` / `FELIX_PUB_SHARDING` | — | Route publishes to a worker by stream rather than round-robin. |
-| `FELIX_PUMP_COLOCATE` | — | Colocate the delivery pump with the publish worker for a stream. |
-| `FELIX_WORKER_THREADS` | — | Tokio worker threads. Defaults to the core count. |
-| `FELIX_TIMING_SAMPLE_EVERY` | — | Sample rate for timing histograms. |
-| `FELIX_SERVICE_INSTANCE_ID` | — | Instance identity reported in telemetry. |
+| `FELIX_SUB_DEDICATED_THREAD`, `FELIX_SUB_DEDICATED_QUEUE_CAPACITY` | unset | Give a subscription its own thread and queue. |
+| `FELIX_SUB_DELIVERY_SHAPING`, `FELIX_SUB_EGRESS_CONNS` | unset | Delivery shaping and egress fan-out on the broker. |
+| `FELIX_PUBLISH_SHARDING` / `FELIX_PUB_SHARDING` | unset | Route publishes to a worker by stream rather than round-robin. |
+| `FELIX_PUMP_COLOCATE` | unset | Colocate the delivery pump with the publish worker for a stream. |
+| `FELIX_WORKER_THREADS` | unset | Tokio worker threads. Defaults to the core count. |
+| `FELIX_TIMING_SAMPLE_EVERY` | unset | Sample rate for timing histograms. |
+| `FELIX_SERVICE_INSTANCE_ID` | unset | Instance identity reported in telemetry. |

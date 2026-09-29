@@ -171,7 +171,7 @@ do not mean more concurrent callers contending on shared stream state.
    | Durable publish | fence check, `claim_publish` (offsets taken) | device flush, fanout, quorum wait, the answer |
    | Ephemeral publish | fence check, `publish_batch_with_outcome` | quorum wait, the answer |
    | Idempotent publish | sequence check and append (offsets taken), off the executor | device flush, quorum wait, the answer |
-   | Forward | the whole round trip, off the executor | — |
+   | Forward | the whole round trip, off the executor | nothing |
 
    A durable shard may have `pub_flush_concurrency` flushes outstanding.
    Past that, its next claim waits for one off the executor, holding only its
@@ -181,11 +181,11 @@ do not mean more concurrent callers contending on shared stream state.
    publishes wait. Either way a slow disk, a slow peer, or a quorum that has
    not formed holds up its own shard and nothing else.
 
-   > `a_stalled_forward_does_not_hold_up_another_shard` -- with one executor,
+   > `a_stalled_forward_does_not_hold_up_another_shard`: with one executor,
    > a publish to a local shard is written and acknowledged while a forward
    > to a peer that never answers is still waiting.
 
-   > `one_shards_publishes_are_answered_in_order_across_a_full_queue` -- one
+   > `one_shards_publishes_are_answered_in_order_across_a_full_queue`: one
    > shard's acks come back in the order the publishes were sent, and the log
    > holds exactly the accepted publishes in that order, while the queue
    > keeps refusing others in between.
@@ -199,7 +199,7 @@ do not mean more concurrent callers contending on shared stream state.
    subscriber feeders it woke waited for its thread, and a subscriber that
    reads fast enough would still overflow its bounded queue.
 
-   > `subscribers_drain_between_an_executors_queued_publishes` -- with a
+   > `subscribers_drain_between_an_executors_queued_publishes`: with a
    > backlog of 32 publishes queued and a subscriber queue of 4 on one
    > thread, the subscriber receives all 32.
 

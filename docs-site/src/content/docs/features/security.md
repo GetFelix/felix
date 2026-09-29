@@ -70,10 +70,10 @@ client certificate yet, so they cannot connect to a broker with
 ## Multi-tenancy and isolation
 
 Everything is scoped `tenant → namespace → stream/cache`, and the scope is
-part of every wire operation — there is no unscoped request to forget to
+part of every wire operation, so there is no unscoped request to forget to
 check. The broker rejects unknown tenants, and a token for one tenant is
 useless against another (the `tid` claim is checked after signature
-verification, precisely so a valid signature for the wrong tenant fails).
+verification, so a valid signature for the wrong tenant fails).
 
 Within a tenant, namespaces are the isolation unit for environments or teams:
 `acme/production/orders` and `acme/staging/orders` share nothing but a
@@ -125,7 +125,7 @@ Two optional hardening layers, independent of each other:
 - **Token rotation without an outage.** `FELIX_BOOTSTRAP_TOKEN_PREVIOUS`
   holds the token being retired; both are accepted (each compared in constant
   time) while a rolling deploy replaces one with the other. Setting only the
-  previous token fails startup — that shape means the rotation removed the
+  previous token fails startup, because it means the rotation removed the
   wrong half.
 - **mTLS on the bootstrap listener.** `FELIX_BOOTSTRAP_TLS_CERT`,
   `FELIX_BOOTSTRAP_TLS_KEY`, and `FELIX_BOOTSTRAP_TLS_CLIENT_CA` (all three,
@@ -163,11 +163,11 @@ Content-Type: application/json
 
 Initialization is **atomic and exactly-once per tenant**: the signing keys,
 issuers, RBAC seed, and the bootstrapped flag commit as one store operation,
-serialized on the tenant row. Racing the call against itself — including
-through different control-plane instances behind one load balancer — produces
+serialized on the tenant row. Racing the call against itself, including
+through different control-plane instances behind one load balancer, produces
 one winner and `409 already_initialized` for everyone else, and a failure
 part-way leaves the tenant retryable rather than half-initialized. The token
-itself is a static shared secret, valid while bootstrap is enabled — the full
+itself is a static shared secret, valid while bootstrap is enabled. The full
 threat model, replay rules, rotation procedure, and recovery steps are in
 [`docs/security/bootstrap.md`](https://github.com/gabloe/felix/blob/main/docs/security/bootstrap.md).
 
@@ -197,23 +197,22 @@ Canonical RBAC object formats:
 - `namespace:{tenant_id}/{namespace}`
 - `stream:{tenant_id}/{namespace}/{stream_or_*}`
 - `cache:{tenant_id}/{namespace}/{cache_or_*}`
-- `group:{tenant_id}/{namespace}/{stream_or_*}/{group_or_*}` — one consumer group; a `*` only after other `*`s
-- `cluster:*` — the cluster itself, outside the tenant hierarchy
-- `node:{node_id}` — one broker, also outside it
+- `group:{tenant_id}/{namespace}/{stream_or_*}/{group_or_*}`: one consumer group; a `*` only after other `*`s
+- `cluster:*`: the cluster itself, outside the tenant hierarchy
+- `node:{node_id}`: one broker, also outside it
 
 Write-time protections:
 - `tenant:*` is rejected
 - non-tenant-scoped wildcards are rejected
 - policy/assignment writes are rejected if target scope is broader than caller scope
 
-This prevents common privilege-escalation footguns when delegating namespace or stream admins.
+This blocks privilege escalation when delegating namespace or stream admins.
 
 #### Cluster scope
 
-`cluster:*` covers broker membership — which brokers exist, whether they are
-alive, and whether placement can use them — plus the tenant catalog and the
-metadata feeds. It is an island in both directions, and that is the property
-it exists for:
+`cluster:*` covers broker membership (which brokers exist, whether they are
+alive, and whether placement can use them), the tenant catalog, and the
+metadata feeds. It is isolated from tenant scope in both directions:
 
 ```mermaid
 flowchart TB
@@ -234,18 +233,14 @@ flowchart TB
 ```
 
 A permission is only writable when its object already sits inside the writer's
-own scope. The two crossed links are the whole security property: because no
-arrow runs between them, a tenant admin cannot write themselves `cluster:*`, and
+own scope. Because no arrow runs between the two scopes, a tenant admin cannot write themselves `cluster:*`, and
 cluster scope cannot read tenant data.
 
-- **No tenant scope contains it.** Since a policy write is admitted only when
-  its object is already inside the caller's scope, a tenant admin cannot grant
-  themselves `cluster:*`. The bootstrap seed does not grant it either.
-- **It contains no tenant object.** Cluster scope is not a backdoor into tenant
-  data.
+No tenant scope contains `cluster:*`, and the bootstrap seed does not grant it
+either. In the other direction, `cluster:*` contains no tenant object.
 
-Reads require `node.view:cluster:*`. Writes — register, heartbeat, drain,
-deregister — require `node.manage` over the node being changed, held either as
+Reads require `node.view:cluster:*`. Writes (register, heartbeat, drain,
+deregister) require `node.manage` over the node being changed, held either as
 `node:{node_id}` by that broker or as `cluster:*` by an operator. A node is an
 RBAC object rather than a field the caller asserts, which is what stops one
 broker acting for another.
@@ -308,7 +303,7 @@ Response:
 }
 ```
 
-The request body can only narrow the permissions RBAC grants — never widen
+The request body can only narrow the permissions RBAC grants. It cannot widen
 them.
 
 ### Felix Token Claims
@@ -412,13 +407,11 @@ sequenceDiagram
 
 ## Not built
 
-Stated plainly, so nobody designs around a protection that is not there:
-
 - **Encryption at rest.** Durable log segments are plaintext on disk. If the
   disk needs protecting today, use filesystem or block-level encryption.
 - **End-to-end payload encryption.** The broker sees plaintext payloads. A
-  client can of course encrypt its own payloads before publishing — the
-  broker treats them as opaque bytes either way — but Felix ships no key
+  client can of course encrypt its own payloads before publishing, since the
+  broker treats them as opaque bytes, but Felix ships no key
   management for it.
 - **Broker-to-broker authentication without certificates.** mTLS is built
   and required by default; with `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`

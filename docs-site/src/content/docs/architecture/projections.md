@@ -6,27 +6,25 @@ description: "Streams, caches and queues as three readings of one log, with the 
 Felix stores everything in one kind of thing: an append-only log of records,
 split into shards, each shard owned by one broker and replicated to others.
 A *semantic* is a way of reading that log. Streams, caches and queues are three
-readings of the same bytes, not three subsystems.
+readings of the same bytes.
 
 This page says what each one stores, what it keeps in memory, and what it
-rebuilds from the log — and cites the test behind every claim it makes. A claim
-here without a citation is a claim nothing checks, which is the failure this
-page exists to prevent. `scripts/check_doc_evidence.py` verifies that every test
+rebuilds from the log, and cites the test behind each claim. A claim here
+without a citation is one nothing checks. `scripts/check_doc_evidence.py` verifies that every test
 named below still exists.
 
 ![One append-only log read three ways at once. Records carrying a key and a value are appended with ascending offsets. A stream marker advances across every record in order; a queue marker advances over the same records but trails, moving only as they are acknowledged; and a cache is not one position but one marker per key, each jumping to that key's newest record. Records superseded by a later write to the same key are marked as dead for the cache alone, and the stream still reads them.](/felix/diagrams/three-readings.svg)
 
-The three markers are the whole idea. A stream, a queue and a cache are not
-three stores — they are **three ways of pointing into one log**, and they run at
-the same time over the same bytes:
+A stream, a queue and a cache are **three ways of pointing into one log**, and
+they run at the same time over the same bytes:
 
 - a **stream** marker sweeps every record, in the order it was written;
 - a **queue** marker covers the same records but trails, because it moves only
   as records are acknowledged;
-- a **cache** is not a single position at all. It is one marker per key, each
-  jumping to that key's newest record and leaving the older ones behind.
+- a **cache** is one marker per key, each jumping to that key's newest record and leaving the older ones
+  behind.
 
-Which is why only the cache treats an older record as dead. Compaction reclaims
+So only the cache treats an older record as dead. Compaction reclaims
 those; a stream reading the same log still returns them, until retention removes
 the segment they live in. Nothing is copied into a second store, and no reading
 can disturb another.
@@ -49,7 +47,7 @@ reimplements any of it:
 A new leader writes a generation-start record before it serves. It takes an
 offset, and every reading below skips it. Only replication ships it.
 
-> `a_cache_value_survives_the_loss_of_its_owner` — a cache shard is replicated
+> `a_cache_value_survives_the_loss_of_its_owner`: a cache shard is replicated
 > by the machinery that replicates a stream, because it is the same log.
 
 ## Streams: read the log forward
@@ -68,7 +66,7 @@ Ordering is per shard. Two records in one shard are delivered in the order they
 were written; two records in different shards have no order between them,
 because they are different logs.
 
-> `a_publish_to_a_non_owner_is_still_forwarded` — a publish entering any broker
+> `a_publish_to_a_non_owner_is_still_forwarded`: a publish entering any broker
 > reaches the shard's owner.
 
 ## Caches: read the log through a key index
@@ -80,9 +78,8 @@ at that offset.
 - **In memory:** an index of key to the offset of its latest record, plus the
   bytes each record occupies, so compaction knows when it is worth running.
 - **Rebuilt from the log:** the whole index. It is never read from disk, and it
-  catches up to the log's tail whenever it is behind — which is what lets a
-  follower be promoted and serve records that arrived by replication rather
-  than through a put.
+  catches up to the log's tail whenever it is behind. That lets a promoted
+  follower serve records that arrived by replication instead of through a put.
 
 Compaction copies the live set forward and drops superseded and expired
 records. It **appends the live set at the tail** rather than renumbering from
@@ -91,11 +88,11 @@ deletes the sealed segments below the point it copied from. It runs on a
 background task with its own I/O budget, so no write waits for it, and a crash
 anywhere in a pass replays to the same cache.
 
-> `a_cache_survives_a_restart` — the index is rebuilt from the log.
-> `the_index_catches_up_with_records_appended_behind_it` — records that arrive
+> `a_cache_survives_a_restart`: the index is rebuilt from the log.
+> `the_index_catches_up_with_records_appended_behind_it`: records that arrive
 > without going through a put are still found.
-> `compaction_does_not_rewind_the_offset_space` — an offset keeps its meaning.
-> `a_deleted_key_stays_deleted_across_a_restart` — a tombstone is a record like
+> `compaction_does_not_rewind_the_offset_space`: an offset keeps its meaning.
+> `a_deleted_key_stays_deleted_across_a_restart`: a tombstone is a record like
 > any other.
 
 ## Queues: read the log through a shared cursor
@@ -105,29 +102,29 @@ bookkeeping for what is currently handed out.
 
 - **In the log:** nothing of the group's own. The records are the stream's.
 - **On disk, beside the log:** the group's committed position, and the offsets
-  it has given up on. Both are themselves key-to-latest-value projections —
-  the same reading the cache is, on their own roots.
+  it has given up on. Both are key-to-latest-value projections, the same
+  reading the cache uses, on their own roots.
 - **In memory:** what is handed out and to when, what is owed, and how many
   times each unsettled record has been tried.
 
 The in-memory part is deliberately not durable. A leader that dies loses it and
 the group resumes from its committed position, so those records are delivered
-again — which is at-least-once, the guarantee a queue offers anyway.
+again. That is at-least-once, the guarantee a queue offers anyway.
 
-> `a_position_survives_a_restart` — the committed position is durable.
-> `an_offset_in_flight_is_not_handed_out_again` — one consumer holds a record at
+> `a_position_survives_a_restart`: the committed position is durable.
+> `an_offset_in_flight_is_not_handed_out_again`: one consumer holds a record at
 > a time.
-> `a_lapsed_claim_is_handed_out_again` — a consumer that stops answering does
+> `a_lapsed_claim_is_handed_out_again`: a consumer that stops answering does
 > not hold a record for ever.
-> `the_cursor_does_not_advance_over_a_gap` — the position moves only over a
+> `the_cursor_does_not_advance_over_a_gap`: the position moves only over a
 > contiguous run of acknowledgements.
-> `a_record_is_given_up_on_after_the_attempt_bound` — one poison record does not
+> `a_record_is_given_up_on_after_the_attempt_bound`: one poison record does not
 > stop the queue.
-> `only_the_shard_owner_serves_a_group` — two brokers cannot both hand out the
+> `only_the_shard_owner_serves_a_group`: two brokers cannot both hand out the
 > same records.
-> `a_group_position_survives_a_leader_failover` — a promoted leader resumes
+> `a_group_position_survives_a_leader_failover`: a promoted leader resumes
 > where the group had got to.
-> `a_dead_letter_survives_a_leader_failover` — and it still lists what that
+> `a_dead_letter_survives_a_leader_failover`: and it still lists what that
 > group gave up on.
 
 Both of those travel together. The offsets a group abandoned are one log per
@@ -153,8 +150,7 @@ same record again.
 
 ## Where this stops being true
 
-The claims above are the ones with tests. These are the gaps, listed so nothing
-here has to be read as covering them:
+The claims above are the ones with tests. These are the known gaps:
 
 - **Retention outranks a group.** A record trimmed before a group reached it is
   skipped, and the group moves past. A retention window shorter than a group is

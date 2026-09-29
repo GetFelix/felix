@@ -3,17 +3,17 @@ title: "Benchmarks"
 ---
 
 Felix ships a reproducible benchmark harness (`latency-demo`) that measures
-end-to-end pub/sub performance — client publish → broker fanout → client
-delivery — over real QUIC connections with TLS 1.3. This page documents the
-methodology, current results, the transport levers that matter, and how to
+end-to-end pub/sub performance (client publish → broker fanout → client
+delivery) over real QUIC connections with TLS 1.3. This page covers the
+methodology, current results, the transport settings that matter, and how to
 compare Felix against other pub/sub systems fairly.
 
-:::note[Loopback numbers — the real-network ones are separate]
-The results here are measured over **loopback** (an in-process or same-host
-broker), the right harness for catching regressions in Felix's own code. For
-numbers taken on **real hardware over a real network with a real IdP** — the
-1.63 GB/s aggregate ingest, ~181 µs acked-publish latency, and durability-free-
-for-throughput results — see [Real-Network Performance
+:::note[These are loopback numbers; real-network results are on a separate page]
+The results here are measured over loopback (an in-process or same-host
+broker), which is the right setup for catching regressions in Felix's own
+code. For numbers taken on real hardware over a real network with a real IdP
+(1.63 GB/s aggregate ingest, ~181 µs acked-publish latency, and the finding
+that durability costs no throughput), see [Real-Network Performance
 (Azure)](/felix/features/real-network-performance/), which reads the loopback
 figures below as its baseline.
 :::
@@ -31,33 +31,33 @@ cargo run --release -p felix-broker-service --bin latency-demo --all-features --
 
 ## Methodology
 
-Numbers are only useful if they are honest. The harness enforces:
+The harness enforces the following:
 
-- **Truthful delivery windows.** Delivered throughput is computed from publish
-  start to the instant the *last event actually arrived* — not to when drain
-  tasks are joined. Trailing bookkeeping never inflates the denominator.
+- **Accurate delivery windows.** Delivered throughput is computed from publish
+  start to the instant the *last event actually arrived*, rather than to when
+  drain tasks are joined. Trailing bookkeeping never inflates the denominator.
 - **Lossless backpressure in both profiles.** The throughput profile
   (batch > 1) runs with blocking queues end-to-end and bounded ingress waits
   (`pub_ingress_wait`), so the publisher is paced to the pipeline's sustainable
   rate. The latency profile (batch = 1) blocks the broker's core
-  per-subscriber queue and the client's own subscriber channel, not just the
-  writer-lane queue below them — both defaulted to `DropNew` and could drop
-  warmup/measurement messages under load before that was tightened. In both
-  profiles **every message is delivered** (`unaccounted 0`). A subscriber that
-  times out now fails the run rather than abandoning its remaining events, so a
-  shortfall cannot be quietly reported as shedding. A number measured while
-  shedding is not a throughput or latency number.
+  per-subscriber queue and the client's own subscriber channel as well as the
+  writer-lane queue below them. Both of those default to `DropNew`, which could
+  drop warmup and measurement messages under load. In both profiles every
+  message is delivered (`unaccounted 0`). A subscriber that times out fails
+  the run instead of abandoning its remaining events, so a shortfall cannot be
+  quietly reported as shedding. A number measured while shedding load is not
+  a valid throughput or latency number.
 - **Latency mode measures per-message RTT.** The latency profile (batch = 1)
   publishes with per-message acks, measuring full round-trip behavior rather
   than fire-and-forget enqueue rates.
 - **Warmup excluded.** Handshake, stream setup, path-MTU discovery, and
   congestion ramp are absorbed by warmup messages before measurement starts.
-- **Fanout counted honestly.** `delivered throughput` counts every
+- **Fanout counted explicitly.** `delivered throughput` counts every
   subscriber delivery; `per-sub throughput` divides by fanout.
 
 ### A run must exceed the send window
 
-The single easiest way to publish a wrong throughput number: any batched run
+This is the easiest way to publish a wrong throughput number. Any batched run
 whose total volume fits inside the 64 MiB QUIC connection send window is
 absorbed by buffers before backpressure appears, so the harness reports
 buffer-fill rate rather than sustained throughput. A 1 KiB run once appeared to
@@ -71,18 +71,18 @@ running by hand: **`payload × total` should comfortably exceed 128 MiB.**
 ### One session at a time
 
 `data/raw/latency_demo_runs.jsonl` is append-only, so it accumulates every run
-ever performed on the machine — across commits, branches, and code states.
+ever performed on the machine, across commits, branches and code states.
 Each matrix invocation therefore stamps a `session_id`, and
-`normalize_and_aggregate.py` derives from the **latest session only** by
-default. Pass `--session all` to include history, or `--session <id-prefix>`
-to pick one. Without this the derived CSVs and every chart built from them mix
-unrelated code states, which previously produced charts holding a single bar
-with every other payload marked "no data".
+`normalize_and_aggregate.py` uses only the latest session by default. Pass
+`--session all` to include history, or `--session <id-prefix>` to pick one.
+Without this the derived CSVs and every chart built from them mix unrelated
+code states, which can produce a chart with a single bar and every other
+payload marked "no data".
 
 ## Results
 
 Measured on an Apple M4 Max (macOS, APFS, loopback), release build, TLS 1.3
-enabled — QUIC always encrypts, so per-packet crypto is inside every number
+enabled. QUIC always encrypts, so per-packet crypto is inside every number
 here. All runs are sized past the 64 MiB QUIC send window, so these are
 sustained rates rather than buffer-fill (see
 [methodology](#a-run-must-exceed-the-send-window)).
@@ -105,8 +105,8 @@ within noise.
 ![Latency profile p99 by payload and publisher preset, fanout 10](/felix/charts/latency_demo/balanced/f10_b1_json_a8b3321b_p99.svg)
 
 Fanout-10 tails improved sharply with the transport scheduling work: p99 went
-from ~1.05–1.13 ms to 278–399 µs, and p999 from 1.32–2.09 ms to 340–483 µs —
-roughly **3–4× better tail latency** at fanout 10, with fanout 1 also improving
+from ~1.05–1.13 ms to 278–399 µs, and p999 from 1.32–2.09 ms to 340–483 µs.
+That is roughly 3–4× better tail latency at fanout 10. Fanout 1 also improved
 (p99 199–212 µs → 165–176 µs). This profile is stable: 85% of cells hold a
 p90/p10 trial spread under 1.5×.
 
@@ -122,14 +122,14 @@ default publisher pool (4 connections × 2 streams).
 | 4 KiB | 124,004 msg/s | **508 MB/s** | 121,968 | 1.03× |
 | 16 KiB | 30,707 msg/s | **503 MB/s** | 30,120 | 1.04× |
 
-Against the pre-fix ceiling of ~73 MB/s — which was flat across every payload
-size — that is roughly a **7× improvement**, and the byte rate now rises with
+The pre-fix ceiling was ~73 MB/s, flat across every payload size. Against
+that, this is roughly a **7× improvement**, and the byte rate now rises with
 payload size instead of pinning to a constant.
 
 These are macOS figures, and the ceiling they describe is a macOS pathology.
 Spot-checked on Linux (4-CPU container, 1 KiB × batch 64 × fanout 1), the
-*pre-fix* baseline already sustains ~628 K msg/s ≈ 643 MB/s — above what
-macOS reaches with every fix applied. The dedicated I/O runtime pool is
+*pre-fix* baseline already sustains ~628 K msg/s ≈ 643 MB/s, which is above
+what macOS reaches with every fix applied. The dedicated I/O runtime pool is
 therefore enabled on macOS only; on Linux it measures slower (see
 `FELIX_IO_RUNTIME_THREADS` in the
 [environment variable reference](/felix/reference/environment-variables/)).
@@ -144,16 +144,17 @@ on this page carries. The [performance case study](/felix/features/performance-c
 has the measurements and their caveats.
 
 :::note[Why the spread column is tight]
-Trial-to-trial spread this narrow is itself a result of the path-MTU fix in
-the [case study](/felix/features/performance-case-study/). Before it, a
+Trial-to-trial spread is this narrow because of the path-MTU fix in the
+[case study](/felix/features/performance-case-study/). Before it, a
 congestive loss burst during ramp-up could trip QUIC's MTU black-hole
-detector and pin a connection at a 1200-byte MTU for the rest of the run — a
-~13× datagram (and syscall) multiplier that made roughly one run in three
-land 5–6× low. Removing it also roughly doubled the 256 B row, by taking the
-MTU discovery ramp out of short runs.
+detector and pin a connection at a 1200-byte MTU for the rest of the run.
+That multiplied datagrams (and syscalls) by ~13× and made roughly one run in
+three land 5–6× low. The fix also roughly doubled the 256 B row, by taking
+the MTU discovery ramp out of short runs.
 
-Medians of several trials remain the standard for anything published here —
-that policy is what exposed the defect rather than averaging it away.
+Anything published here is still a median of several trials. Looking at the
+spread across trials is what exposed the defect, where averaging would have
+hidden it.
 :::
 
 ![Delivered payload MB/s by payload and publisher preset, fanout 1](/felix/charts/latency_demo/balanced/f1_b64_binary_a8b3321b_delivered_mb_per_s.svg)
@@ -163,7 +164,7 @@ that policy is what exposed the defect rather than averaging it away.
 The charts come from the same post-fix matrix session as the latency charts
 above (3 trials per cell, fresh session, run-size floor past the QUIC send
 window). Publisher presets are within a few percent of each other at every
-payload — connection count is not a throughput lever, as the
+payload. Connection count does not affect throughput, as the
 [QUIC transport page](/felix/features/quic-transport/) explains.
 
 ### Historical cross-platform comparison
@@ -171,7 +172,7 @@ payload — connection count is not a throughput lever, as the
 :::note[These predate the transport fix and are kept for context only]
 The tables below were measured before the scheduling work and on a mix of
 macOS and a Linux devcontainer. Several macOS throughput rows are also
-**buffer-absorption artifacts** — runs whose total volume fit inside the
+buffer-absorption artifacts: runs whose total volume fit inside the
 64 MiB send window, so they report buffer-fill rate rather than sustained
 throughput. Do not compare them against the numbers above; the Linux figures
 in particular have not been re-measured on the fixed pipeline.
@@ -197,8 +198,9 @@ in particular have not been re-measured on the fixed pipeline.
 | 4 KiB | 1 | 62–87 K | 97 K | 120 K |
 | 4 KiB | 10 | ~107 K | 499–561 K | 566–590 K |
 
-Every row completes with `delivery drops 0`: these are sustainable rates under
-end-to-end backpressure, not burst rates measured while shedding load. Rates
+Every row completes with `delivery drops 0`, so these are sustainable rates
+under end-to-end backpressure rather than burst rates measured while
+shedding load. Rates
 count subscriber deliveries. The Linux 4 KiB × fanout 10 binary result delivers
 about **2.3 GB/s** of payload.
 
@@ -216,7 +218,7 @@ throughput remained within variance at 410–431 K msg/s because macOS loopback
 was dominated by UDP kernel time; the same change improved 4 KiB × fanout 10
 p99 latency from 365 ms to 221 ms.
 
-Linux GSO closes that kernel-bound gap decisively: 4 KiB × fanout 10 reaches
+Linux GSO closes that kernel-bound gap: 4 KiB × fanout 10 reaches
 499–561 K JSON and 566–590 K binary delivered msg/s, up to roughly 5x the
 macOS JSON rate. For the representative 1 KiB × fanout 10 binary workload,
 `/usr/bin/time -v` reported 1.23 s user time and 0.33 s system time over
@@ -224,11 +226,10 @@ macOS JSON rate. For the representative 1 KiB × fanout 10 binary workload,
 system time. System time therefore fell by about 90%, flipping the workload
 from roughly 5.5:1 system-dominated to 3.7:1 user-dominated.
 
-This Linux workload is no longer syscall-bound. The "user-space scheduling and
-synchronization" target this paragraph used to predict has since been
-confirmed and fixed: throughput was clocked by scheduler wakeup latency on the
-QUIC driver tasks — roughly one cross-thread wakeup chain per datagram — and
-isolating those drivers onto dedicated single-threaded runtimes (plus pump
+This Linux workload is no longer syscall-bound. The remaining bottleneck was
+user-space scheduling: throughput was clocked by scheduler wakeup latency on
+the QUIC driver tasks, roughly one cross-thread wakeup chain per datagram.
+Isolating those drivers onto dedicated single-threaded runtimes (plus pump
 colocation and ACK-frequency tuning) raised sustained macOS loopback
 throughput ~7.5×. See
 [Concurrency internals](/felix/development/internals-concurrency/#the-quic-io-runtime)
@@ -236,7 +237,7 @@ for how that placement works.
 
 ## The transport levers that matter
 
-These findings came out of profiling the QUIC path and are wired into
+These settings came out of profiling the QUIC path and are wired into
 `felix-transport` defaults; each has an environment override:
 
 | Lever | Default | Why it matters |
@@ -253,20 +254,22 @@ Broker-side levers (see [Configuration](/felix/reference/configuration/)):
 `pub_inflight_bytes` (ingress byte budget), `pub_ingress_wait` (lossless
 backpressure vs. shed-on-overload), subscriber queue policies
 (`block` / `drop_new` / `drop_old`) and depths, and `core_shards`
-(`FELIX_CORE_SHARDS`) — thread-per-core stream ownership: each stream's
-publish worker and lane feeders run on a dedicated core-pinned runtime
-(Linux pinning; dedicated threads elsewhere). Measured lossless (zero drops):
-+27% on a 4-stream × fanout-4 workload (1.24M → 1.59M msg/s, unpinned macOS);
-on Linux (devcontainer), +25% single-stream (1 KiB × fanout 10: 1.63M → 2.04M
-msg/s) and parity-to-2.5× multi-stream with high environment variance — never
-below baseline in any run. **Caveat:** the 2026-08 investigation found these
-`core_shards` gains were likely measured under the buffer-absorption artifact
-(run volumes inside the send window). Re-measured on the fixed pipeline in
-the workload the feature targets (4 streams × fanout 4 × 1 KiB × batch 64,
-five fresh runs per arm, macOS): shards 0 median 661 K msg/s delivered,
-shards 4 median 668 K — **+1%, within run-to-run variance**. The off-by-default
-setting stands; treat `core_shards` as a placement experiment to validate on
-your own hardware, not a general throughput lever.
+(`FELIX_CORE_SHARDS`).
+
+`core_shards` gives each stream's publish worker and lane feeders a dedicated
+core-pinned runtime (pinned on Linux; dedicated threads elsewhere). Early
+lossless measurements showed +27% on a 4-stream × fanout-4 workload
+(1.24M → 1.59M msg/s, unpinned macOS). On Linux (devcontainer) they showed
++25% single-stream (1 KiB × fanout 10: 1.63M → 2.04M msg/s) and parity to
+2.5× multi-stream with high environment variance, never below baseline in
+any run. **Caveat:** the 2026-08 investigation found these gains were likely
+measured under the buffer-absorption artifact (run volumes inside the send
+window). Re-measured on the fixed pipeline in the workload the feature
+targets (4 streams × fanout 4 × 1 KiB × batch 64, five fresh runs per arm,
+macOS), shards 0 had a median of 661 K msg/s delivered and shards 4 had
+668 K: **+1%, within run-to-run variance**. The setting stays off by
+default. Treat `core_shards` as a placement experiment to validate on your
+own hardware rather than a general throughput lever.
 
 ## Saturation behavior
 
@@ -282,10 +285,10 @@ should slow down rather than lose events.
 Cross-system numbers are only meaningful when measured side-by-side on the
 same hardware, same payload sizes, same fanout, and same delivery guarantees.
 Published figures for other brokers vary by an order of magnitude across
-hardware and configurations, so treat any single citation with suspicion —
+hardware and configurations, so treat any single citation with suspicion,
 including ours. Structural differences to keep in mind:
 
-- **Transport & encryption.** Felix runs QUIC with mandatory TLS 1.3 —
+- **Transport & encryption.** Felix runs QUIC with mandatory TLS 1.3, so
   per-packet crypto is included in every number above. NATS/Redis/Kafka
   benchmarks are typically plaintext TCP; enabling TLS on those systems
   materially changes their numbers.
@@ -294,7 +297,7 @@ including ours. Structural differences to keep in mind:
   enqueue rates or allow silent slow-consumer drops (e.g. Redis client output
   buffer limits, NATS slow-consumer disconnects).
 - **Batching.** Kafka-class systems trade latency for batch throughput;
-  compare them against Felix's batch=64 profile, not the latency profile.
+  compare them against Felix's batch=64 profile rather than the latency profile.
 
 For a like-for-like harness against NATS on the same machine:
 
@@ -313,25 +316,25 @@ match TLS configuration on both sides before drawing conclusions.
 
 ## Continuous benchmarking
 
-Three CI workflows keep this data honest and current, rather than relying on
-someone remembering to re-run the harness by hand:
+Three CI workflows keep this data current without anyone having to remember
+to re-run the harness by hand:
 
-- **`.github/workflows/perf-pr.yml`** — on every PR, builds and benchmarks
+- `.github/workflows/perf-pr.yml` runs on every PR. It builds and benchmarks
   both the PR's merge-base and the PR head back-to-back on the same runner
   instance (a small fast subset, not the full matrix below), then posts a
   PR comment comparing them via a Welch's t-test
   (`scripts/perf/compare_benchmarks.py`). Running both sides on the same
   runner controls for GitHub Actions' shared/virtualized runner noise far
-  better than comparing against a historical stored value. Advisory only —
-  it does not block merging.
-- **`.github/workflows/perf-publish.yml`** — on every merge to `main`, runs
+  better than comparing against a historical stored value. It is advisory
+  only and does not block merging.
+- `.github/workflows/perf-publish.yml` runs on every merge to `main`. It runs
   the same fast subset once and publishes it as a historical time series
   (via `benchmark-action/github-action-benchmark`, stored on the
   `benchmark-data` branch) so trends over time are browsable.
-- **`.github/workflows/perf-comprehensive.yml`** — the full matrix below,
-  on a weekly schedule or manual dispatch (too slow — roughly 1,000
-  individual runs — for every PR or every merge). Produces the artifacts
-  used to regenerate this page; see below.
+- `.github/workflows/perf-comprehensive.yml` runs the full matrix below on a
+  weekly schedule or manual dispatch. At roughly 1,000 individual runs it is
+  too slow for every PR or every merge. It produces the artifacts used to
+  regenerate this page; see below.
 
 ### Historical dashboards
 
@@ -361,13 +364,13 @@ measurement semantics, and configuration fingerprint.
 The dashboards run on **shared, virtualized GitHub-hosted runners**; the
 [Results](#results) table above was measured on a dedicated Apple Silicon
 host. Expect the dashboard figures to land roughly **1.4–3× below** the
-documented Linux numbers — for example ~166 K msg/s for 1 KiB × fanout 1
-batch-64 on CI versus 442 K on the dev host. That gap is hardware, not a
-regression.
+documented Linux numbers, for example ~166 K msg/s for 1 KiB × fanout 1
+batch-64 on CI versus 442 K on the dev host. That gap comes from the
+hardware and is not a regression.
 
-Read the dashboards for **trend over time and PR-vs-baseline deltas**, and
-this page for **absolute capability on real hardware**. The per-PR check
-(`perf-pr.yml`) is meaningful precisely because it benchmarks both sides
+Read the dashboards for trend over time and PR-vs-baseline deltas, and this
+page for absolute capability on real hardware. The per-PR check
+(`perf-pr.yml`) is meaningful because it benchmarks both sides
 back-to-back on the *same* runner instance, so the hardware term cancels;
 a single dashboard datapoint in isolation carries much less signal.
 
@@ -397,6 +400,6 @@ python3 scripts/perf/render_markdown_snippets.py
 
 Key output fields: `delivered throughput` (all subscribers), `delivered
 per-sub throughput`, `p50/p99/p999` (per-message publish→delivery latency),
-`delivery drops` (must be 0 in both profiles — see the methodology note
-above), `publish submit throughput` (client-side enqueue rate — an upper
-bound, not a delivery claim).
+`delivery drops` (must be 0 in both profiles; see the methodology note
+above), `publish submit throughput` (client-side enqueue rate, an upper
+bound that says nothing about delivery).

@@ -590,8 +590,8 @@ Remove a key, and find out whether it was there.
 ```
 
 **Response**: a `cache_value` carrying **the value that was removed**, or a null
-value if the key was not there — so a caller can tell a delete that did
-something from one that did not.
+value if the key was not there. A caller can tell a delete that did something
+from one that did not.
 
 Sent only to a broker that advertised `FEATURE_CACHE_DELETE`. A delete is an
 append like a put: it writes a tombstone record carrying the key, and compaction
@@ -652,7 +652,7 @@ cache_send_window: 268435456         # 256 MiB send window
 
 The third way to read a stream. Where `subscribe` pushes every record to every
 subscriber, a **consumer group** hands each record to one consumer and takes it
-back if nobody says it was handled — see
+back if nobody says it was handled. See
 [Queues](/felix/features/queues/) for the semantics.
 
 Every request below goes **only to the broker that leads the shard**, and only
@@ -661,7 +661,7 @@ forwarded: relaying would put the claim and the acknowledgement on different
 brokers, and a queue's whole promise is that one consumer holds a record at a
 time.
 
-They travel on the **control stream**, not a stream of their own.
+They travel on the control stream.
 
 ### Group Poll
 
@@ -691,9 +691,8 @@ Claim records to work on.
 
 `wait_ms` is how long the broker may hold the request open waiting for work, so
 an idle consumer costs one open request rather than a round trip per attempt.
-The broker caps it at `FELIX_GROUP_MAX_WAIT_MS`. **An empty `records` after the
-wait means nothing was available — it is an answer, not an error.** That
-includes a group at its in-flight cap (`FELIX_GROUP_MAX_IN_FLIGHT`): it gets
+The broker caps it at `FELIX_GROUP_MAX_WAIT_MS`. An empty `records` after the
+wait means nothing was available, and is not an error. That includes a group at its in-flight cap (`FELIX_GROUP_MAX_IN_FLIGHT`): it gets
 nothing more until some of what it holds is acknowledged, handed back or lapses.
 
 `attempts` counts deliveries including this one, so `1` is a first attempt and
@@ -738,7 +737,7 @@ record cannot stall the queue behind it.
 Sent only to a broker that advertised `FEATURE_GROUP_DEAD_LETTERS`, a separate
 bit from `FEATURE_CONSUMER_GROUP`.
 
-A dead letter is a **pointer, not a copy**: the record is still in the stream's
+A dead letter is a pointer to the record, not a copy of it. The record is still in the stream's
 log at that offset, readable by an ordinary replay. `group_discard` drops it
 from the list; `group_redrive` puts it back in play.
 
@@ -760,8 +759,8 @@ for record in records {
 ### Requirements
 
 Consumer groups need **durable storage**. A broker started without
-`FELIX_DURABLE_STORAGE_DIR` serves no groups and does not advertise the feature
-— a group that forgot its position on restart would redeliver everything it had
+`FELIX_DURABLE_STORAGE_DIR` serves no groups and does not advertise the feature.
+A group that forgot its position on restart would redeliver everything it had
 already finished, which is worse than not offering queues at all.
 
 ## Cluster Operations
@@ -780,7 +779,7 @@ stream, so probing costs the connection.
 ```
 
 Which brokers a client may connect to. Gated by `FEATURE_TOPOLOGY`. An empty
-list is not an error — it means the cluster has told this broker of no
+list is not an error. It means the cluster has told this broker of no
 client-reachable address, which is the normal answer on a single node.
 
 ### Redirects
@@ -791,11 +790,11 @@ client-reachable address, which is the normal answer on a single node.
 
 A **subscribe** sent to a broker that does not own the shard is answered with
 this, naming the one that does. Gated by `FEATURE_REDIRECT`, and sent only to a
-client that offered the bit — everyone else gets an ordinary `error`, because a
+client that offered the bit. Everyone else gets an ordinary `error`, because a
 client that cannot decode `not_leader` must not be sent one.
 
-It is an instruction, not a failure. A **publish** to the wrong broker is
-*forwarded* instead and needs nothing from the client.
+The client should reconnect to the named broker. A **publish** to the wrong
+broker is *forwarded* instead and needs nothing from the client.
 
 ### Stream Shards
 
@@ -813,8 +812,8 @@ a key's shard itself must use the stream's own mapping.
 
 A subscription reads **one shard**, so a client consuming a whole stream needs
 this to know how many to open; nothing else on the wire says. `0` means the
-broker knows nothing of that stream, which is **not** the same as one shard — a
-client that rounded it up would read shard 0 and call it the stream.
+broker knows nothing of that stream. It does not mean one shard: a client that
+rounded it up would read shard 0 and call it the stream.
 
 ### Cache Shards
 
@@ -973,8 +972,8 @@ raise `pub_queue_depth`.
 ```
 
 Publish, subscribe and cache operations each check a permission against the
-tenant-scoped token. A **forwarded** publish is authorized twice — at the broker
-the client reached and again at the shard's owner — so routing does not launder
+tenant-scoped token. A **forwarded** publish is authorized twice (at the broker
+the client reached and again at the shard's owner), so routing does not launder
 a credential.
 
 ### Connection Errors
@@ -1104,8 +1103,7 @@ cache_streams_per_conn: 2
 cache_conn_recv_window: 134217728  # Smaller windows for lower memory
 ```
 
-One general rule for the tuning sections above: change knobs off a
-measurement, not a hunch. High queue depth means too few workers; contention
+Change these knobs based on measurements. High queue depth means too few workers; contention
 means too many; dropped events mean buffers too small for the workload's
 bursts; high memory means the opposite. Broker telemetry and client metrics
 (see [Observability](/felix/features/observability/)) tell you which.

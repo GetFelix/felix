@@ -2,8 +2,8 @@
 title: "Control Plane API"
 ---
 
-The control plane holds the cluster's metadata — tenants, namespaces,
-streams, caches, nodes — behind a REST API, decides shard placement, and
+The control plane holds the cluster's metadata (tenants, namespaces,
+streams, caches and nodes) behind a REST API, decides shard placement, and
 publishes the assignment feed brokers follow. It is never on the data path.
 This page documents its endpoints and how brokers and operators use them.
 
@@ -151,7 +151,7 @@ Canonical object grammar for RBAC policy payloads:
 - `namespace:{tenant_id}/{namespace}` or `namespace:{tenant_id}/*`
 - `stream:{tenant_id}/{namespace}/{stream}` or `stream:{tenant_id}/{namespace}/*`
 - `cache:{tenant_id}/{namespace}/{cache}` or `cache:{tenant_id}/{namespace}/*`
-- `cluster:*` — the cluster itself; see [Cluster membership](#cluster-membership)
+- `cluster:*`, the cluster itself; see [Cluster membership](#cluster-membership)
 
 Rejected on write:
 - `tenant:*`
@@ -228,7 +228,7 @@ handoff at a time. A shard being moved shows its destination as `successor`
 and, once the leader has been told to stop, `"state": "draining"`.
 
 `PATCH /v1/nodes/{node_id}` changes `region`, `labels` or `capacity`, and moves
-`lifecycle` between `live` and `draining` — `{"lifecycle": "live"}` cancels a
+`lifecycle` between `live` and `draining`. `{"lifecycle": "live"}` cancels a
 drain. Nothing observed is patchable: a `down` or `left` broker is revived only
 by registering, so a patch cannot claim a silent broker is alive.
 
@@ -305,9 +305,9 @@ the assignment it would write or the reason it cannot.
 ### Tenants, namespaces, streams and caches
 
 Every resource endpoint takes a Felix bearer token, checked before anything
-else — a tenant that does not exist has no signing keys, so a request against
-it answers `401` whatever the token says, rather than a `404` that would say
-whether it exists.
+else. A tenant that does not exist has no signing keys, so a request against
+it answers `401` whatever the token says. A `404` would reveal whether the
+tenant exists.
 
 | Endpoint | Requires |
 | --- | --- |
@@ -374,7 +374,7 @@ full bare array when neither parameter is given, and with
 GET /v1/tenants/t1/namespaces/payments/streams?limit=100&cursor=InMyIg
 ```
 
-The tenant catalog — which tenants exist — is cluster metadata, so creating,
+The tenant catalog (which tenants exist) is cluster metadata, so creating,
 listing and deleting tenants takes the same kind of operator credential as
 managing the fleet, and deleting is operator-only even for the tenant's own
 admin. The feeds are what brokers seed from, and take the broker's own
@@ -401,7 +401,7 @@ Content-Type: application/json
 Initialization is atomic and exactly-once per tenant, across every
 control-plane instance: exactly one concurrent call wins and returns `200`
 with the tenant's signing-key id; every other returns
-`409 already_initialized`. A failed call leaves the tenant retryable — the
+`409 already_initialized`. A failed call leaves the tenant retryable, because the
 bootstrapped flag only commits together with a complete seed.
 
 | Status | Meaning |
@@ -410,7 +410,7 @@ bootstrapped flag only commits together with a complete seed.
 | `400` | Validation failed (empty display name, no admin principals, blank issuer) |
 | `401` | Missing or wrong `X-Felix-Bootstrap-Token` |
 | `404` | Bootstrap is not enabled on this control plane |
-| `409` | The tenant is already initialized — by an earlier call, or by a concurrent one that won |
+| `409` | The tenant is already initialized, by an earlier call or a concurrent one that won |
 
 ### GET /v1/tenants/{tenant_id}/.well-known/jwks.json
 

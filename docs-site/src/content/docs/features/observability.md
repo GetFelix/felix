@@ -3,9 +3,8 @@ title: "Observability"
 ---
 
 Three windows into a running Felix: structured logs, Prometheus metrics, and
-optional per-stage telemetry for performance work. This page lists what
-actually exists and which signals answer which questions — every metric named
-here is one the code emits.
+optional per-stage telemetry for performance work. This page lists which
+signals answer which questions. Every metric named here is one the code emits.
 
 ## Logging
 
@@ -40,8 +39,8 @@ scrape_configs:
       - targets: ['broker-1:8080', 'broker-2:8080', 'broker-3:8080']
 ```
 
-Rather than an exhaustive list, here are the questions that come up and the
-metrics that answer them.
+The metrics below are grouped by the question they answer. The list is not
+exhaustive.
 
 **Is the publish path healthy?**
 
@@ -70,14 +69,13 @@ the ingress queue, `ok` for one that was acknowledged, and `dropped`, `error`,
 `not_owner` or `unroutable` when it went nowhere. `forwarded` is counted on top
 of the eventual outcome, when a broker relays a publish to the shard's owner.
 `felix_publish_bytes_total` adds the payload bytes of every `accepted` and `ok`
-request — payloads only, not frame or routing overhead.
+request. It counts payloads only, not frame or routing overhead.
 
 `felix_client_publish_cancelled_after_enqueue_total` is a client metric, and
 non-zero is not an error. Cancelling a publish after it reaches the worker does
-not cancel the publish — the record is sent and very likely lands, and only the
-caller learning so is lost. It is here because those records have to be
-explicable: a timeout around a publish means *do not know*, not *did not
-happen*, and this is the number that says how often that happened.
+not cancel the publish: the record is sent and very likely lands, and only the
+caller's knowledge of it is lost. A timeout around a publish means *do not
+know*, not *did not happen*, and this counter says how often that happened.
 
 A rising ingress depth means publishers are outrunning the broker; drops and
 rejections say the overflow policy fired, which is deliberate and visible.
@@ -85,15 +83,15 @@ rejections say the overflow policy fired, which is deliberate and visible.
 `felix_client_publish_forwarded_total` is a client metric, labelled by the
 owner the batch went to. Non-zero means this client is publishing to a broker
 that does not own the shard, and each of those records is decrypted,
-re-encrypted and decrypted again on the way — roughly half the throughput per
-core. It is the client-side half of `felix_broker_forwards_total`, and the one
+re-encrypted and decrypted again on the way, which costs roughly half the
+throughput per core. It is the client-side half of `felix_broker_forwards_total`, and the one
 that says *which* client is mis-aimed.
 
 `felix_broker_json_publishes_total` should be flat at zero. The data path is
 binary; a client only falls back to JSON against a broker that did not advertise
 the frame it wanted, so a non-zero rate means something in the deployment is
-older than it looks — and it is paying for it, at roughly 70% of the binary
-path's throughput.
+older than it looks. JSON runs at roughly 70% of the binary path's
+throughput.
 
 **Are subscribers keeping up?**
 
@@ -145,8 +143,7 @@ the rest share `_overflow`, so a non-zero overflow counter means the busiest
 tenant may be hiding there. Quotas are set with the `FELIX_TENANT_PUBLISH_*`
 variables in the [environment reference](/felix/reference/environment-variables/#connection-limits-and-tenant-quotas).
 
-**Is durability the bottleneck?** The storage layer's metrics are designed
-around exactly this question — compare append time against sync time, and
+**Is durability the bottleneck?** Compare append time against sync time, and
 watch the group-commit fan-in:
 
 ```prometheus
@@ -181,7 +178,7 @@ felix_broker_lease_held
 felix_broker_lease_refusals_total           # writes and reads refused after a lease lapsed, by boundary
 felix_broker_credential_expires_in_seconds  # counts down; -1 when the token carries no exp
 felix_broker_credential_refreshes_total     # by outcome: ok, unavailable
-felix_broker_credential_rotations_total     # by outcome: ok, rejected — a token file rewritten from outside
+felix_broker_credential_rotations_total     # by outcome: ok, rejected; a token file rewritten from outside
 ```
 
 **Are Kafka clients being served?** Only when the Kafka listener is on
@@ -218,11 +215,10 @@ counts consumers that tried to join a group; Felix refuses those on purpose.
 
 **Alert on `felix_broker_credential_expires_in_seconds` crossing a threshold**,
 not only on the refresh and rotation counters. The counters say renewal is
-failing; the gauge says how long that has left to matter. It matters a lot: the
-heartbeat carries this credential and the heartbeat *is* the lease renewal, so a
-token that expires is not a degraded broker — it is one that stops serving the
-shards it leads once the lease lapses. That is the safe outcome, and still an
-outage.
+failing; the gauge says how much time is left. The heartbeat carries this
+credential and the heartbeat *is* the lease renewal, so a broker whose token
+expires stops serving the shards it leads once the lease lapses. That is the
+safe outcome, and still an outage.
 
 A broker joining a cluster refuses to start when the credential expires and
 neither `FELIX_NODE_REFRESH_TOKEN_FILE` nor `FELIX_NODE_TOKEN_FILE` is set, so
@@ -258,8 +254,8 @@ curl -s http://broker:8080/replication/halted | jq
 ]
 ```
 
-A halt does not clear on its own — that replica is out of every quorum until
-someone acts — so any non-zero count is worth waking for. `reason` is stable
+A halt does not clear on its own. That replica is out of every quorum until
+someone acts, so any non-zero count is worth waking for. `reason` is stable
 and safe to key a runbook off; `remedy` is prose and says whether the
 follower's data is wrong or merely incomplete, which is what decides whether a
 rebuild is the right move.
@@ -273,7 +269,7 @@ log of every shard the broker leads, which is what a backup point records (see
 ### Bootstrap attempts
 
 `felix_bootstrap_attempts_total{outcome,reason}` covers the day-0 credential.
-Bootstrap is presented once per tenant, by an operator, and never again — so a
+Bootstrap is presented once per tenant, by an operator, and never again, so a
 *rejected* attempt is either a misconfigured deploy or someone guessing, and a
 burst of `already_initialized` refusals against live tenants is what a leaked
 token looks like.
@@ -286,8 +282,8 @@ rate(felix_bootstrap_attempts_total{outcome="rejected"}[5m])
 rate(felix_bootstrap_attempts_total{reason="already_initialized"}[5m])
 ```
 
-`reason` is a small closed set — `missing_token`, `malformed_token`,
-`invalid_token`, `no_token_configured`, `already_initialized`, `ok` — so it is
+`reason` is a small closed set (`missing_token`, `malformed_token`,
+`invalid_token`, `no_token_configured`, `already_initialized`, `ok`), so it is
 safe to group by. The token itself is never logged, including a near miss.
 
 **Example queries**:
@@ -308,7 +304,7 @@ rate(felix_storage_sync_batch_appends_sum[5m]) / rate(felix_storage_sync_batch_a
 
 ## Shutdown and drain
 
-Four signals, and the reason each one exists.
+Four signals cover shutdown:
 
 | Metric | Type | What it tells you |
 | --- | --- | --- |
@@ -317,9 +313,9 @@ Four signals, and the reason each one exists.
 | `felix_drain_duration_ms` | gauge | How long the last drain took. |
 | `felix_drain_forced_total` | counter, by `subsystem` | Subsystems cancelled because the deadline expired. **Non-zero means work was dropped.** |
 
-The last one is the point. A drain that finished in time and a drain that was
+The last one matters most. A drain that finished in time and a drain that was
 cut off both take roughly the deadline to report, so duration alone cannot tell
-them apart — and the log line that says which does not survive the pod.
+them apart, and the log line that says which does not survive the pod.
 
 Alert on `felix_drain_forced_total` increasing. Everything else here is for
 watching a rolling restart happen.
@@ -328,7 +324,7 @@ watching a rolling restart happen.
 
 The metrics listener serves `/live` and `/ready`, and they answer different
 questions on purpose. `/live` says "this process can respond at all" and
-touches nothing outside the process — a liveness probe drives restarts, and
+touches nothing outside the process. A liveness probe drives restarts, and
 restarting every instance because a dependency is down turns one outage into
 a restart loop. `/ready` says "send this instance traffic," and goes false
 first thing during shutdown so load balancers steer away before anything
@@ -345,7 +341,7 @@ failed exports are logged by the exporter and the spans are dropped.
 
 **Configuration** is by environment variable. Felix does take a YAML config file
 (`FELIX_BROKER_CONFIG`, see [Configuration](/felix/reference/configuration/)),
-but it has no tracing keys — the exporter speaks OTLP over gRPC (tonic) and is
+but it has no tracing keys. The exporter speaks OTLP over gRPC (tonic) and is
 configured entirely through the standard OTel variables:
 
 ```bash
@@ -368,9 +364,8 @@ it came from without the broker being told twice:
 ## Per-stage telemetry
 
 For performance investigations, both the broker and client can record
-per-stage timing samples — decode, fanout, write, and so on. It is off by
-default and behind a feature flag, because it is a profiling tool, not a
-production metrics system. The same flag turns on the hot-path metrics marked
+per-stage timing samples (decode, fanout, write, and so on). It is off by
+default and behind a feature flag because it is a profiling tool. The same flag turns on the hot-path metrics marked
 *(telemetry)* above:
 
 ```toml
@@ -398,4 +393,4 @@ is transport-side or above it. Off unless set.
   (broker backed up), then `felix_storage_sync_duration_seconds` (durability
   is the cost), then the client-side telemetry to see which stage grew.
 - **Cache misses you didn't expect**: TTL expiry, a broker restart on an
-  ephemeral cache, or a key/scope mismatch — in that order of likelihood.
+  ephemeral cache, or a key/scope mismatch, in that order of likelihood.

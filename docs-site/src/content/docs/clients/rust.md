@@ -3,13 +3,11 @@ title: "Rust Client SDK"
 ---
 
 `felix-client` is the Rust SDK: publish, subscribe, cache, consumer groups,
-and the cluster client, over multiplexed QUIC connections. This page is the
-working reference — setup, configuration, and the patterns that matter in
-practice.
+and the cluster client, over multiplexed QUIC connections. This page covers
+setup, configuration, and common patterns.
 
-It is also what every other language binds to rather than reimplementing —
-see [Choosing a Client](/felix/clients/overview/) for the Python and
-TypeScript bindings and for how a new language is gated on a conformance suite.
+The Python and TypeScript clients bind to it. See [Choosing a Client](/felix/clients/overview/) for those bindings
+and for how a new language is gated on a conformance suite.
 
 ## Installation
 
@@ -221,10 +219,10 @@ hash, fixed when the stream was created. `ClusterClient` asks for it once per
 stream along with the shard count (`Client::stream_routing`), so it computes
 the same shard the broker does.
 
-### At-least-once duplicates, and says so
+### At-least-once may duplicate
 
-By default a publish whose outcome was ambiguous — the broker may or may not
-have written it before the connection went — is **reported, not re-sent**,
+By default a publish whose outcome was ambiguous (the broker may or may not
+have written it before the connection went) is **reported, not re-sent**,
 because nothing downstream can tell two copies apart.
 
 ```rust
@@ -233,9 +231,9 @@ cluster
     .await?;
 ```
 
-That is the opt-in: the record is then certain to land and **may land twice**.
-It does not carry a routing key — the re-send path has nowhere to put one — so
-it is `publish_keyed` or `publish_at_least_once`, not both.
+With this opt-in the record is certain to land and **may land twice**.
+It does not carry a routing key, because the re-send path has nowhere to put
+one, so you can use `publish_keyed` or `publish_at_least_once` but not both.
 
 For at-least-once *without* the duplication, see
 [`IdempotentProducer`](#idempotent-producers).
@@ -302,7 +300,7 @@ can arrive out of order.
 ### Errors you can act on
 
 Calls return `anyhow::Result`, and the cases worth branching on are carried as
-typed errors inside it. Recover them with `downcast_ref` — matching on the
+typed errors inside it. Recover them with `downcast_ref`. Matching on the
 message would break the first time one is reworded.
 
 ```rust
@@ -329,12 +327,12 @@ match cluster.publish("acme", "prod", "events", payload, AckMode::PerMessage).aw
 | Type | Recover with | What it means |
 | --- | --- | --- |
 | `SubscribeCursorError` | `downcast_ref` | the start offset is gone, or ahead of the tail |
-| `NotLeaderError` | `downcast_ref` | the broker does not own the shard — routing, not failure |
+| `NotLeaderError` | `downcast_ref` | the broker does not own the shard; this is routing, not failure |
 | `PublishRefused` | `downcast_ref` | an idempotent publish the broker would not append, with the reason |
 | `BrokerError` | `downcast_ref` | any other refusal from a broker that sends error codes: the `code`, and a `retry` class saying whether the request may have been applied |
 
-`BrokerError.retry` is the field to branch on. `OutcomeUnknown` — a quorum
-timeout, say — means the publish may have landed, so resending a plain publish
+`BrokerError.retry` is the field to branch on. `OutcomeUnknown` (a quorum
+timeout, say) means the publish may have landed, so resending a plain publish
 can write it twice; `Retry`, `RetryAfter` and `Redirect` mean nothing was
 applied. A broker that predates error codes returns the same failures as plain
 errors with the same text, so treat a missing `BrokerError` as "no code", not as
@@ -365,7 +363,7 @@ is final, and everything else is retried. The full table is under "Retries" in
 
 ```rust
 if let Some(cursor) = err.downcast_ref::<SubscribeCursorError>() {
-    // `available` is the nearest offset that would have worked — the oldest
+    // `available` is the nearest offset that would have worked: the oldest
     // retained for TooOld, the current tail for InFuture. Resuming from it is
     // the smallest gap you can take rather than restarting at `earliest`.
     eprintln!("asked for {}, nearest is {}", cursor.requested, cursor.available);
@@ -377,7 +375,7 @@ if let Some(cursor) = err.downcast_ref::<SubscribeCursorError>() {
 
 At-least-once *without* the duplication. The producer numbers its batches, the
 shard's leader remembers the last few, and a batch carrying a sequence it
-already holds is answered from memory rather than appended — so a re-send after
+already holds is answered from memory rather than appended, so a re-send after
 a lost acknowledgement lands once.
 
 Rust only: neither binding wraps this yet.
@@ -444,16 +442,14 @@ starts again under a new id rather than being told a batch landed that nobody
 can vouch for.
 
 :::caution[Do not race this against a timeout]
-`publish_batch` is not cancel-safe, and the consequence is specific rather than
-vague. Dropping the future mid-send leaves the sequence in doubt: the batch may
+`publish_batch` is not cancel-safe. Dropping the future mid-send leaves the sequence in doubt: the batch may
 have been appended under it, and the cursor still points at it. A broker that
 predates `sequence_reused` answers a remembered sequence *without appending*,
 so reusing it there would discard a different batch and report success; a
 current broker refuses it, but the producer cannot tell which it has.
 
-So a cancelled publish **stops the producer** — the next call refuses and says
-why, and you take a fresh id. A producer is cheap to re-initialise; silently
-dropped records are not cheap at all.
+So a cancelled publish **stops the producer**: the next call refuses and says
+why, and you take a fresh id. A producer is cheap to re-initialise.
 :::
 
 A publish that returns an error other than a refusal is in doubt for the same
@@ -563,7 +559,7 @@ loop {
                 if let Some(cursor) = err.downcast_ref::<SubscribeCursorError>() {
                     // Retention discarded it. `available` is the nearest offset
                     // that would have worked, so this takes the smallest gap
-                    // rather than restarting at the beginning -- and says so,
+                    // rather than restarting at the beginning, and says so,
                     // because a silent restart at the tail loses records with
                     // nothing reported.
                     tracing::error!(
@@ -758,7 +754,7 @@ client
 ### Delete
 
 ```rust
-// Answers with the value that was removed, or `None` if the key was not there —
+// Answers with the value that was removed, or `None` if the key was not there,
 // so a caller can tell a delete that did something from one that did not.
 match client.cache_delete("acme", "prod", "sessions", "user-abc").await? {
     Some(removed) => audit_log("session revoked", removed),
@@ -817,7 +813,7 @@ while let Some(item) = watch.recv().await {
 
 A resume whose history compaction has collapsed begins with each matching
 key's current value instead, and `watch.resnapshot()` says so. Needs a broker
-advertising `FEATURE_CACHE_WATCH` — only brokers whose cache is log-backed do.
+advertising `FEATURE_CACHE_WATCH`, which only brokers with a log-backed cache send.
 `ClusterClient::watch_cache` returns a `ClusterCacheWatch`, which follows a
 moved shard itself: `ShardMoved` arrives as a notice and the changes carry on
 from the new owner, none repeated or skipped. A prefix watch reads one shard; on a multi-shard cache use
@@ -828,8 +824,7 @@ contract.
 ### Retained Watch
 
 Start from current state instead of from now: each matching key's current
-value first, then live changes — the join primitive for presence and state
-sync:
+value first, then live changes. Use it to join presence or state sync:
 
 ```rust
 let mut watch = client
@@ -847,7 +842,7 @@ let state_size = watch.retained_count().expect("retained watches report a count"
 
 Needs `FEATURE_CACHE_WATCH_RETAINED`, a separate bit so an older watch-capable
 broker is never asked for state it would silently not deliver. Mutually
-exclusive with `from_offset` — a resume already replays what a retained start
+exclusive with `from_offset`, because a resume already replays what a retained start
 shortcuts.
 
 ### Counters
@@ -856,7 +851,7 @@ shortcuts.
 // Apply a delta and learn the sum including it, in one round trip.
 let after = client.counter_add("acme", "prod", "limits", "user:42:reqs", 1).await?;
 
-// Read; None means never written — distinct from a sum of zero.
+// Read; None means never written, which differs from a sum of zero.
 let sum = client.counter_get("acme", "prod", "metrics", "page:home").await?;
 ```
 
@@ -932,7 +927,7 @@ loop {
 }
 ```
 
-An empty batch means nothing was available. **It is an answer, not an error.**
+An empty batch means nothing was available. It is not an error.
 
 ### Dead letters
 
@@ -970,12 +965,12 @@ log at that offset, readable by an ordinary replay.
 
 ## Clusters
 
-`Client` talks to one broker. `ClusterClient` follows the cluster — it takes
+`Client` talks to one broker. `ClusterClient` follows the cluster: it takes
 several addresses, learns the rest, reconnects when the broker it is using goes
 away, and follows a redirect to whichever broker owns a shard.
 
-It holds one connection per broker, shared by every role that broker plays --
-entry, shard owner, redirect target, producer leader -- with every stream
+It holds one connection per broker, shared by every role that broker plays
+(entry, shard owner, redirect target, producer leader), with every stream
 multiplexed on it. A second connection opens only when the first is saturated
 (`cluster_streams_per_conn` streams, or the broker's QUIC stream credit), up to
 `cluster_conn_pool`. A connection that dies fails only its own streams and is
@@ -1016,8 +1011,8 @@ A shard whose owner is still opening it (`not_ready`, as a promoted leader
 answers while it fences its replicas) is asked again with the `ReconnectPolicy`
 backoff; the call fails only if some shard is still refused after the last attempt.
 
-**Ordering is per shard and nothing more** — merging cannot restore an order
-that never existed. Resumption is a vector: `positions()` returns one offset per
+**Ordering is per shard only.** Merging cannot restore an order that never
+existed. Resumption is a vector: `positions()` returns one offset per
 shard, and `resubscribe_sharded` takes it back. See
 [Multi-node client](https://github.com/gabloe/felix/blob/main/docs/multi-node-client.md)
 for the full contract.
@@ -1256,12 +1251,12 @@ async fn test_cache_ttl() {
 }
 ```
 
-## Performance in one paragraph
+## Performance
 
 Reuse one client (its pools are the expensive part), batch publishes when
 latency permits, pipeline cache requests, and keep the subscription loop
-non-blocking — spawn slow work instead of stalling the reader. Everything
-else is a knob to turn off a measurement; see
+non-blocking by spawning slow work instead of stalling the reader. Tune
+anything else from a measurement; see
 [Benchmarks](/felix/features/benchmarks/).
 
 ## API Reference Summary
