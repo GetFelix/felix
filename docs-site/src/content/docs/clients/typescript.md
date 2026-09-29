@@ -441,6 +441,65 @@ Three things there matter:
 `start` and `retained` are mutually exclusive. A resume already replays the
 state a retained start shortcuts, so asking for both is refused. A prefix watch reads **one shard**.
 
+## Atomic commits
+
+`commit` writes an event and the state it changes as one record on the shard
+an entity key routes to. A subscriber, a consumer group and `stateGet` all see
+the whole commit or none of it, at the same offset.
+
+```ts
+import { CommitOp, EventCountError, NotOnOwningShardError } from "felix-client";
+
+const stream = "order-events";
+const receipt = await client.commit("acme", "orders", Buffer.from("order-42"), [
+  CommitOp.enqueue(stream, '{"type":"placed","id":42}'),
+  CommitOp.put(stream, "order-42", '{"status":"placed"}'),
+  CommitOp.delete(stream, "cart-42"),
+]);
+receipt.offset; // bigint: where the event is read, and the state's version
+
+const state = await client.stateGet("acme", "orders", stream, Buffer.from("order-42"), "order-42");
+state.version === receipt.offset; // true
+```
+
+| Call | Resolves with |
+| --- | --- |
+| `commit(tenantId, namespace, entityKey, ops)` | `{ offset: bigint }` |
+| `stateGet(tenantId, namespace, stream, entityKey, key)` | `{ value: Buffer \| null, version: bigint \| null, asOf: bigint \| null }` |
+| `CommitOp.publish(stream, payload)`, `CommitOp.enqueue(queue, payload)` | the commit's one event, for subscribers or for consumer groups (the same record: a queue is a stream read through a group) |
+| `CommitOp.put(stream, key, value)`, `CommitOp.delete(stream, key)` | state changes, applied in order |
+
+The builders return plain objects (`{ op: "put", stream, key, value }` and so
+on), so writing the literal works as well.
+
+A commit is refused before anything is sent when it cannot be one record:
+
+```ts
+try {
+  await client.commit("acme", "orders", Buffer.from("order-42"), [
+    CommitOp.publish("order-events", "placed"),
+    CommitOp.put("inventory", "sku-1", "3"), // another stream
+  ]);
+} catch (err) {
+  if (err instanceof NotOnOwningShardError) console.log(err.index, err.stream, err.owner);
+  else if (err instanceof EventCountError) console.log(err.count);
+  else throw err;
+}
+```
+
+Both extend `CommitError`, which a broker without commits also rejects with.
+Failures after the commit was sent are the ordinary classes above; a commit is
+**not idempotent**, so an `OutcomeUnknownError` means it may already be
+written.
+
+**What atomic covers:** every part of one commit, on one shard's log, across a
+failover. **What it does not:** another stream or shard, a Felix cache (a
+commit's state is the stream shard's own, read with `stateGet`), or a retry.
+State is rebuilt from the retained log, so keep an entity stream's retention
+long enough. The stream must be durable, and in a cluster the operator must
+finalize the `atomic_commit` fleet feature first. The full semantics are in
+[`docs/atomic-commit.md`](https://github.com/gabloe/felix/blob/main/docs/atomic-commit.md).
+
 ## Multi-shard streams
 
 A subscription reads one shard. `subscribeSharded` opens one per shard, follows

@@ -34,6 +34,7 @@
 
 mod authz;
 mod cache;
+mod commit;
 mod counter;
 mod discovery;
 mod group;
@@ -702,7 +703,55 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 )
                 .await?
             }
+            Message::Commit {
+                tenant_id,
+                namespace,
+                stream,
+                entity_key,
+                event,
+                changes,
+                request_id,
+            } => {
+                commit::commit(
+                    &cx,
+                    &mut session,
+                    commit::Target {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        entity_key,
+                    },
+                    event,
+                    changes,
+                    request_id,
+                )
+                .await?
+            }
+            Message::StateGet {
+                tenant_id,
+                namespace,
+                stream,
+                entity_key,
+                key,
+                request_id,
+            } => {
+                commit::state_get(
+                    &cx,
+                    &mut session,
+                    commit::Target {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        entity_key,
+                    },
+                    key,
+                    request_id,
+                )
+                .await?
+            }
             Message::GroupRecords { .. }
+            | Message::CommitOk { .. }
+            | Message::StateValue { .. }
             | Message::Unsupported { .. }
             | Message::GroupDeadLetterList { .. }
             | Message::CacheValue { .. }

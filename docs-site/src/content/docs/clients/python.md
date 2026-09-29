@@ -397,6 +397,70 @@ needs one watch per shard. On a multi-shard cache the broker refuses a prefix
 watch that names no shard, rather than quietly reading shard 0. The merged
 helper, `watch_cache_sharded`, is Rust-only for now.
 
+## Atomic commits
+
+`commit` writes an event and the state it changes as one record on the shard
+an entity key routes to. A subscriber, a consumer group and `state_get` all
+see the whole commit or none of it, at the same offset.
+
+```python
+import felix
+
+stream = "order-events"
+receipt = client.commit(
+    "acme",
+    "orders",
+    b"order-42",
+    [
+        felix.CommitOp.enqueue(stream, b'{"type":"placed","id":42}'),
+        felix.CommitOp.put(stream, "order-42", b'{"status":"placed"}'),
+        felix.CommitOp.delete(stream, "cart-42"),
+    ],
+)
+print(receipt.offset)  # where the event is read, and the state's version
+
+state = client.state_get("acme", "orders", stream, b"order-42", "order-42")
+assert state.version == receipt.offset
+print(state.value, state.as_of)
+```
+
+`AsyncClient` has the same two methods, awaited.
+
+| Call | Returns |
+| --- | --- |
+| `commit(tenant_id, namespace, entity_key, ops)` | `CommitReceipt(offset)` |
+| `state_get(tenant_id, namespace, stream, entity_key, key)` | `StateValue(value, version, as_of)`; `value` is `None` for a key never written or deleted |
+| `CommitOp.publish(stream, payload)`, `CommitOp.enqueue(queue, payload)` | the commit's one event, for subscribers or for consumer groups (the same record: a queue is a stream read through a group) |
+| `CommitOp.put(stream, key, value)`, `CommitOp.delete(stream, key)` | state changes, applied in order |
+
+A commit is refused before anything is sent when it cannot be one record:
+
+```python
+try:
+    client.commit("acme", "orders", b"order-42", [
+        felix.CommitOp.publish("order-events", b"placed"),
+        felix.CommitOp.put("inventory", "sku-1", b"3"),   # another stream
+    ])
+except felix.NotOnOwningShardError as err:
+    print(err.index, err.stream, err.owner)   # 1 inventory order-events
+except felix.EventCountError as err:
+    print(err.count)                          # not exactly one event
+except felix.CommitError:
+    ...                                       # the broker does not support commits
+```
+
+Both are subclasses of `CommitError`, itself a `FelixError`. Failures after the
+commit was sent are the ordinary classes above; note that a commit is **not
+idempotent**, so an `OutcomeUnknownError` means it may already be written.
+
+**What atomic covers:** every part of one commit, on one shard's log, across a
+failover. **What it does not:** another stream or shard, a Felix cache (a
+commit's state is the stream shard's own, read with `state_get`), or a retry.
+State is rebuilt from the retained log, so keep an entity stream's retention
+long enough. The stream must be durable, and in a cluster the operator must
+finalize the `atomic_commit` fleet feature first. The full semantics are in
+[`docs/atomic-commit.md`](https://github.com/gabloe/felix/blob/main/docs/atomic-commit.md).
+
 ## Multi-shard streams
 
 A subscription reads one shard. `subscribe_sharded` opens one per shard,

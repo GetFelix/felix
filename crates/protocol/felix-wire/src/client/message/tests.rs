@@ -4,6 +4,7 @@
 mod auth;
 mod cache;
 mod codec;
+mod commit;
 mod idempotent;
 mod stream;
 mod topology;

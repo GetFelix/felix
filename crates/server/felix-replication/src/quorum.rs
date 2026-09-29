@@ -99,6 +99,13 @@ impl QuorumMarks {
             .is_some_and(|fleet| fleet.supports(felix_common::fleet::GENERATION_START))
     }
 
+    /// Whether the fleet has enabled `feature`. False without a fleet.
+    pub fn fleet_supports(&self, feature: felix_common::fleet::FleetFeature) -> bool {
+        self.fleet
+            .as_ref()
+            .is_some_and(|fleet| fleet.supports(feature))
+    }
+
     /// Let `Quorum` reads confirm leadership with `check` once the fleet has
     /// finalized `lease_free_reads`, unless `by_lease` keeps them on the
     /// lease. Only the first call counts.
@@ -882,6 +889,24 @@ pub async fn read_skips_lease<S: ShardServing + ?Sized>(
         .cache_consistency(&shard.tenant_id, &shard.namespace, &shard.stream)
         .await
         == Some(felix_broker::ConsistencyLevel::Quorum)
+}
+
+/// Confirm, after a read of a stream shard's state took its value, that this
+/// broker still leads the shard, as [`await_cache_quorum`] does for a cache
+/// read: by a round when the fleet reads without the lease and the shard has
+/// replicas to ask, and by the lease otherwise.
+pub async fn confirm_state_read<S: ShardServing + ?Sized>(
+    shard: &crate::ShardKey,
+    marks: Option<&QuorumMarks>,
+    ingress: Option<&S>,
+) -> Result<(), anyhow::Error> {
+    let (Some(marks), Some(ingress)) = (marks, ingress) else {
+        return Ok(());
+    };
+    if !ingress.replicated(shard) {
+        return release(ingress, "read");
+    }
+    confirm_read(shard, marks, ingress).await
 }
 
 /// Confirm, after a `Quorum` read took its value, that this broker still

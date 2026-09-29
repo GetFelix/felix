@@ -681,3 +681,60 @@ The remaining shards keep delivering, so a consumer that is not told has no way
 to know it is now reading part of the stream while believing it reads all of
 it.
 """
+
+# ---------------------------------------------------------------------------
+# Atomic commits
+#
+# An event and the state it changes, written as one record on the shard an
+# entity key routes to. See docs/atomic-commit.md.
+# ---------------------------------------------------------------------------
+
+[[scenario]]
+id = "commit.returns_the_offset"
+required = true
+title = "A commit is answered with the offset its event sits at"
+detail = """
+Commit one event and a state change on the durable stream, keyed by an
+entity. The answer carries an offset, and a subscriber or a group reading the
+entity's shard sees the event, byte for byte, at that offset.
+"""
+
+[[scenario]]
+id = "commit.state_get_returns_the_version"
+required = true
+title = "A state read returns the value and the version that wrote it"
+detail = """
+After a commit that puts a key, a state read of that key through the same
+entity returns the value, a version equal to the commit's offset, and an as_of
+at or past it. A deleted or never-written key reads as absent, not empty.
+"""
+
+[[scenario]]
+id = "commit.another_stream_is_refused"
+required = true
+title = "An operation on another stream is refused before anything is sent"
+detail = """
+A commit whose operations name two streams spans two logs. The client refuses
+it with a typed error naming the offending operation (NotOnOwningShard), and
+nothing is written. A client that splits the commit into two writes fails.
+"""
+
+[[scenario]]
+id = "commit.exactly_one_event"
+required = true
+title = "A commit with no event, or two, is refused with a typed error"
+detail = """
+A commit is one record with one offset, so it carries exactly one publish or
+enqueue. Zero or two is refused on the client (EventCount) before anything is
+sent.
+"""
+
+[[scenario]]
+id = "commit.negotiated"
+required = true
+title = "Commits are sent only to a broker that advertised them"
+detail = """
+The broker advertises FEATURE_ATOMIC_COMMIT in auth_ok. A client uses commit
+and state_get only when it saw the bit, and a peer that offers no capabilities
+gets the same plain ok, byte for byte, that it always did.
+"""

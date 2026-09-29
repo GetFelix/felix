@@ -71,3 +71,26 @@ test("anything else is left alone", () => {
   assert.equal(errors.typed(unknownKind), unknownKind);
   assert.equal(errors.typed(undefined), undefined);
 });
+
+test("a commit refusal carries which op was wrong", () => {
+  const split = errors.typed(
+    native(
+      'FELIX_NOT_ON_OWNING_SHARD {"index":1,"owner":"orders","stream":"inventory"}\n' +
+        "operation 1 is on stream \"inventory\"",
+    ),
+  );
+  assert.ok(split instanceof errors.NotOnOwningShardError);
+  assert.ok(split instanceof errors.CommitError);
+  assert.equal(split.index, 1);
+  assert.equal(split.stream, "inventory");
+  assert.equal(split.owner, "orders");
+  assert.equal(split.code, undefined);
+
+  const count = errors.typed(native('FELIX_EVENT_COUNT {"count":2}\ntwo events'));
+  assert.ok(count instanceof errors.EventCountError);
+  assert.equal(count.count, 2);
+
+  const old = errors.typed(native("FELIX_COMMIT: this broker does not support atomic commits"));
+  assert.ok(old instanceof errors.CommitError);
+  assert.equal(old.retryable, false);
+});

@@ -21,6 +21,7 @@ use bytes::Bytes;
 
 use super::{ClaimedDurable, ClaimedPublish, PublishOutcome};
 use crate::broker::shards::StreamHandle;
+use crate::commit::StateOp;
 use crate::error::{BrokerError, Result};
 use crate::stream::{DeliveryEnvelope, HeldBatch, QueuedDelivery, SubQueuePolicy, SubscriberEntry};
 use crate::telemetry::{t_histogram, t_now_if};
@@ -30,6 +31,7 @@ use crate::timings;
 pub(super) struct Completion {
     handle: StreamHandle,
     payloads: Vec<Bytes>,
+    commit: Option<Arc<[StateOp]>>,
     /// Holds the commit turn until the batch is fanned out.
     durable: Option<ClaimedDurable>,
     sample: bool,
@@ -64,12 +66,14 @@ impl Completion {
         let ClaimedPublish {
             handle,
             payloads,
+            commit,
             durable,
             sample,
         } = claimed;
         Self {
             handle,
             payloads,
+            commit,
             durable,
             sample,
             log_capacity,
@@ -85,6 +89,7 @@ impl Completion {
         Self {
             handle,
             payloads: batch.payloads,
+            commit: batch.commit,
             durable: None,
             sample: false,
             log_capacity,
@@ -139,6 +144,7 @@ impl Completion {
         let batch = HeldBatch {
             payloads: std::mem::take(&mut self.payloads),
             first_offset,
+            commit: self.commit.take(),
         };
         let start = state.held.push(batch);
         drop(ring);
@@ -226,7 +232,13 @@ impl Completion {
         let (senders, skipped_before) = self
             .handle
             .state
-            .append_batch_at(&self.payloads, first_offset, turn, self.log_capacity)
+            .append_batch_at(
+                &self.payloads,
+                first_offset,
+                turn,
+                self.log_capacity,
+                self.commit.as_deref(),
+            )
             .ok_or(BrokerError::PublishSuperseded {
                 first_offset: first_offset.unwrap_or_default(),
             })?;

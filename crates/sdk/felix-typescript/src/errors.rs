@@ -24,7 +24,9 @@
 //! safe to split. Both halves ship as one package, so this is an internal
 //! detail rather than something a caller parses.
 
-use felix_client::{BrokerError, NotLeaderError, SubscribeCursorError, SubscriptionLost};
+use felix_client::{
+    BrokerError, CommitError, NotLeaderError, SubscribeCursorError, SubscriptionLost,
+};
 use felix_wire::RetryClass;
 use napi::{Error, Status};
 
@@ -53,6 +55,9 @@ pub(crate) const KIND_OUTCOME_UNKNOWN: &str = "FELIX_OUTCOME_UNKNOWN";
 pub(crate) const KIND_GENERIC: &str = "FELIX_ERROR";
 /// A bad argument to this binding, rather than a failure of the call.
 pub(crate) const KIND_INVALID: &str = "FELIX_INVALID";
+pub(crate) const KIND_COMMIT: &str = "FELIX_COMMIT";
+pub(crate) const KIND_NOT_ON_OWNING_SHARD: &str = "FELIX_NOT_ON_OWNING_SHARD";
+pub(crate) const KIND_EVENT_COUNT: &str = "FELIX_EVENT_COUNT";
 
 /// Classify an error from the Rust client into a typed one.
 pub(crate) fn classify(err: impl Into<anyhow::Error>) -> Error {
@@ -75,6 +80,25 @@ pub(crate) fn invalid(message: impl Into<String>) -> Error {
 pub(crate) fn encode(err: &anyhow::Error) -> String {
     let text = format!("{err:#}");
 
+    // Refused by the client before anything was sent, so no broker code: the
+    // fields that say which op was wrong ride in the same JSON slot.
+    if let Some(commit) = err.chain().find_map(|e| e.downcast_ref::<CommitError>()) {
+        return match commit {
+            CommitError::NotOnOwningShard {
+                index,
+                stream,
+                owner,
+            } => {
+                let meta = serde_json::json!({ "index": index, "stream": stream, "owner": owner });
+                format!("{KIND_NOT_ON_OWNING_SHARD} {meta}\n{text}")
+            }
+            CommitError::EventCount(count) => {
+                let meta = serde_json::json!({ "count": count });
+                format!("{KIND_EVENT_COUNT} {meta}\n{text}")
+            }
+            _ => format!("{KIND_COMMIT}{KIND_SEPARATOR}{text}"),
+        };
+    }
     if let Some(broker) = err.chain().find_map(|e| e.downcast_ref::<BrokerError>()) {
         let mut meta = serde_json::json!({
             "code": broker.code.as_str(),

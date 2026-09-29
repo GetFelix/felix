@@ -10,7 +10,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use felix_controlplane_service::store::ControlPlaneStore;
 
 use super::model::{Consistency, History, ListSpec, millis};
 use super::nemesis::{ClusterView, Nemesis, ShardView};
@@ -28,7 +27,16 @@ pub const DURATION_VAR: &str = "FELIX_HISTORY_DURATION_SECS";
 pub const MODE_VAR: &str = "FELIX_HISTORY_MODE";
 
 /// The fleet features the lease-free mode finalizes.
-pub const LEASE_FREE_FEATURES: &[&str] = &["generation_start", "majority_ack", "lease_free_reads"];
+pub const LEASE_FREE_FEATURES: &[&str] = &[
+    "generation_start",
+    "majority_ack",
+    "lease_free_reads",
+    ATOMIC_COMMIT,
+];
+
+/// Finalized in every mode, so the workload can commit. It changes no
+/// acknowledgement or read path, only whether a commit is accepted.
+pub const ATOMIC_COMMIT: &str = "atomic_commit";
 
 /// How long every broker has to turn the finalized features on.
 const FEATURES_TIMEOUT: Duration = Duration::from_secs(30);
@@ -43,8 +51,8 @@ const SETTLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Which path `Quorum` writes and reads take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// No fleet feature finalized: acknowledgements and reads rest on the
-    /// leader's lease.
+    /// Only [`ATOMIC_COMMIT`] finalized: acknowledgements and reads rest on
+    /// the leader's lease.
     Lease,
     /// [`LEASE_FREE_FEATURES`] finalized once the cluster is up: writes are
     /// acknowledged by a majority at the leader's generation and cache reads
@@ -67,7 +75,7 @@ impl Mode {
 
     pub fn features(self) -> &'static [&'static str] {
         match self {
-            Mode::Lease => &[],
+            Mode::Lease => &[ATOMIC_COMMIT],
             Mode::LeaseFree => LEASE_FREE_FEATURES,
         }
     }
@@ -175,42 +183,10 @@ impl Campaign {
     /// features, returning once every broker has turned them on.
     pub async fn start(&self, nemesis: &impl Nemesis) -> Result<Cluster> {
         let cluster = Cluster::start(self.cluster_config(nemesis)).await?;
-        let features = self.mode.features();
-        if features.is_empty() {
-            return Ok(cluster);
-        }
-        let store = &cluster
-            .control_plane
-            .as_ref()
-            .context("the lease-free mode needs the control plane")?
-            .store;
-        for feature in features {
-            store
-                .finalize_fleet_feature(feature)
-                .await
-                .map_err(|err| anyhow!("finalize {feature}: {err}"))?;
-        }
-        let enabled = features.len() as f64;
-        for id in cluster.node_ids() {
-            wait::until(
-                FEATURES_TIMEOUT,
-                &format!("{id} to enable {features:?}"),
-                || {
-                    let id = id.clone();
-                    let cluster = &cluster;
-                    async move {
-                        cluster
-                            .metric(&id, "felix_broker_fleet_feature_enabled")
-                            .await
-                            .ok()
-                            .flatten()
-                            == Some(enabled)
-                    }
-                },
-            )
+        cluster
+            .finalize_fleet_features(self.mode.features(), FEATURES_TIMEOUT)
             .await
             .with_context(|| format!("mode {}: the fleet features did not turn on", self.mode))?;
-        }
         Ok(cluster)
     }
 
@@ -293,11 +269,14 @@ impl Campaign {
             final_reads.insert(list.clone(), read.elements);
         }
         let (ops, registers, faults) = workload.take();
+        let (commit_values, commit_reads) = workload.take_commits();
         Ok(History {
             lists,
             ops,
             final_reads,
             registers,
+            commit_values,
+            commit_reads,
             faults,
         })
     }

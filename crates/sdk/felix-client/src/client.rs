@@ -9,6 +9,7 @@
 
 mod cache;
 mod cache_watch;
+mod commit;
 mod connect;
 mod discovery;
 mod groups;

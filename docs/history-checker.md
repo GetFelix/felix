@@ -41,6 +41,14 @@ checked as registers (`history/register.rs`).
 - **get(key)** returns the value under the key, or a miss. A get that failed
   observed nothing and is not recorded. Keys start absent and are never
   deleted.
+- **commit(list, value)** is an [atomic commit](atomic-commit.md): one record
+  that appends `value` to the list and sets the list's state to `value`. It is
+  recorded as an append too, with the same outcomes, so rules 1 to 6 cover
+  its event. A commit is never re-sent.
+- **commit read(list)** reads the list to its tail, then the list's state
+  (the value and the offset of the commit that wrote it), then the list again
+  from that offset. A commit read whose first read fell short of its tail, or
+  whose state read failed, is not recorded.
 
 Times come from one monotonic clock that every client shares, so "A completed
 before B was invoked" means the same thing to every client.
@@ -56,6 +64,13 @@ before B was invoked" means the same thing to every client.
 | 5 | No phantoms | A read sees a value no append wrote, a value appended to another list, or a value before its append began |
 | 6 | Failed writes stay absent | A read sees a value whose append was answered as a definite failure |
 | 7 | No stale cache reads | A get returns the value of an ok put `u` although, before the get began, a value `w` whose put began after `u`'s was acknowledged was already in effect; or a get misses although some value was already in effect |
+| 8 | No partial commits | A commit read's first read saw a commit's event and the state it read next is older than that commit (the event without the state); or the state names a commit whose event is not at the state's version in the read that followed (the state without the event), or a value no commit wrote |
+
+Rule 8 leans on the order of the three looks. Every commit event the first
+read saw was committed before the state was read, so the state must be at
+least that commit; a commit landing in between can only make the state newer,
+which is allowed. The state's version is an offset, so the read after it must
+hold that commit's event there, whatever landed since.
 
 Rule 5 covers cache gets too: a get that returns a value no put to that key
 wrote, or returns it before its put began, is a phantom.
@@ -107,6 +122,9 @@ violation.
 > `a_get_older_than_an_earlier_get_is_stale`,
 > `a_miss_after_an_acknowledged_put_is_stale`,
 > `a_value_nobody_put_is_a_phantom`: one hand-built violation per case.
+> `a_reader_that_sees_both_halves_is_valid`,
+> `the_event_without_the_state_is_a_partial_commit`,
+> `the_state_without_the_event_is_a_partial_commit`: rule 8, both ways round.
 
 ## The campaign
 
@@ -125,7 +143,9 @@ waits until every broker reports all three on
 (`felix_broker_fleet_feature_enabled`). A broker that does not turn them on
 fails the run before any fault, so a lease-free run cannot quietly test the
 lease. The features are described in
-[replication design](replication-design.md).
+[replication design](replication-design.md). Both modes also finalize
+`atomic_commit`, which changes no acknowledgement or read path and only lets
+the clients commit.
 
 | Mode | Stream writes are acknowledged | Cache reads confirm leadership |
 | --- | --- | --- |

@@ -196,24 +196,32 @@ impl SegmentWriter {
         self.version >= 4
     }
 
+    /// Whether a commit record may be appended here.
+    pub fn holds_commits(&self) -> bool {
+        self.version >= 5
+    }
+
     /// The layout version in the segment header.
     pub fn version(&self) -> u16 {
         self.version
     }
 
     /// The version a segment following this one is written at so that it
-    /// holds `records`: v4 once this one is, or when `records` include a
-    /// generation-start record, and [`BASELINE_VERSION`] otherwise.
+    /// holds `records`: never below this one's, v5 when `records` include a
+    /// commit record, v4 when they include a generation-start record, and
+    /// [`BASELINE_VERSION`] otherwise. A log moves up only when it has to, so
+    /// a build that predates a version reads it until then.
     pub fn successor_version(&self, records: &[AppendRecord]) -> u16 {
-        let needs_v4 = self.version >= FORMAT_VERSION
-            || records
-                .iter()
-                .any(|record| record.mark.is_generation_start());
-        if needs_v4 {
-            FORMAT_VERSION
-        } else {
-            BASELINE_VERSION
-        }
+        let needed = records
+            .iter()
+            .map(|record| match record.mark {
+                RecordMark::Commit => FORMAT_VERSION,
+                RecordMark::GenerationStart => 4,
+                _ => BASELINE_VERSION,
+            })
+            .max()
+            .unwrap_or(BASELINE_VERSION);
+        needed.max(self.version).max(BASELINE_VERSION)
     }
 
     /// Whether every record in `records` may be appended here.
@@ -222,6 +230,7 @@ impl SegmentWriter {
             RecordMark::None => true,
             RecordMark::Opens(_) | RecordMark::Continues => self.holds_marks(),
             RecordMark::GenerationStart => self.holds_generation_starts(),
+            RecordMark::Commit => self.holds_commits(),
         })
     }
 

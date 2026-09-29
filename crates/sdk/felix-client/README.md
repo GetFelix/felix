@@ -49,6 +49,10 @@ while let Some(event) = events.next_event().await? {
   plausibly succeed, so a caller is not guessing from a message.
 - **Idempotent publishes.** `publish_at_least_once` resends; the idempotent
   producer path removes the duplicate the resend would otherwise create.
+- **Atomic commits.** `commit` writes an event and state changes as one record
+  on an entity's shard, `state_get` reads the state at the commit's version,
+  and `CommitError` refuses a commit that would span two logs. See
+  [atomic commits](../../../docs/atomic-commit.md).
 
 ## Features
 

@@ -109,6 +109,20 @@ pub enum BrokerError {
         shard: u32,
         reason: NotReadable,
     },
+    /// A commit record's payload does not decode.
+    #[error("malformed commit record: {0}")]
+    MalformedCommit(String),
+    /// Commits and their state live in the shard's log, so a stream without
+    /// one has nowhere to put them.
+    #[error("an atomic commit needs a durable stream")]
+    CommitNeedsDurableStream,
+    /// The shard's state view could not be rebuilt because commits kept
+    /// landing while it read. Retry.
+    #[error("the shard's state is being rebuilt; retry")]
+    StateViewBusy,
+    /// The shard's state cannot be read here yet, for the reason given.
+    #[error("the shard's state is not readable here: {0}")]
+    StateNotReadable(NotReadable),
 }
 
 /// Why [`BrokerError::NotReadable`].

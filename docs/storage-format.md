@@ -1,4 +1,4 @@
-# Felix Durable Segment Format (v4)
+# Felix Durable Segment Format (v5)
 
 This document defines the on-disk representation of a durable Felix stream. It is
 the source of truth for anyone reading, writing, repairing, or replicating
@@ -95,7 +95,7 @@ file:
 | Offset | Size | Field | Value |
 | --- | --- | --- | --- |
 | 0 | 4 | `magic` | `0x464C5347` (`"FLSG"`) |
-| 4 | 2 | `version` | `3` when written, or `4` for a segment that holds a generation-start record; `2` is still read |
+| 4 | 2 | `version` | `3` when written, `4` for a segment that holds a generation-start record, or `5` for one that holds a commit record; `2` is still read |
 | 6 | 2 | `flags` | `0`; any other value is rejected |
 | 8 | 8 | `base_offset` | logical offset of this segment's first record |
 | 16 | 8 | `created_at_micros` | wall clock at creation, informational |
@@ -184,6 +184,34 @@ only once the fleet has finalized `generation_start` (see the upgrades page in
 the docs site). Until then this build creates v3 segments and a v3 build can
 still open everything it wrote; after it, the first record rolls the log onto a
 v4 segment, and later segments stay at v4. Indexes stay at v3.
+
+### Commit records
+
+**Bit 28** of `payload_len` marks an atomic commit: an event and the state
+updates committed with it, in one record so that replication, truncation and
+the committed mark take all of it or none
+([`atomic-commit.md`](atomic-commit.md)). It has no tag. The payload is the
+broker's (`felix_broker::CommitRecord`), big-endian:
+
+```text
+u8   version (1)
+u32  event length, then the event
+u32  operation count, then per operation:
+       u8   0 put, 1 delete
+       u32  key length, then the key (UTF-8)
+       u32  value length, then the value (put only)
+```
+
+Readers outside replication see the record as its event: subscriptions and
+replay, Kafka fetch and consumer groups get the event bytes at the record's
+offset. The stream shard's state view is projected from the operations.
+Replication ships and compares the record exactly as stored.
+
+Payloads are capped below 2^28, so the length never reaches bit 28. At most
+one of bits 28 to 31 is set. Only a v5 segment may hold the record, for the
+same reason only a v4 one may hold a generation-start record, and a segment
+is written at v5 only to hold one. The record is written only once the fleet
+has finalized `atomic_commit`, so until then no log leaves v4.
 
 ## Index file
 

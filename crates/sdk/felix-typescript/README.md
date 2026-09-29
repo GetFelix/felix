@@ -59,6 +59,7 @@ Everything the Python binding wraps, with one exception noted below.
 | Counters | `counterAdd`, `counterGet` |
 | Cache watches | `watchCache(..., key?, prefix?, start?, retained?)` → `recv()`, `retainedCount` |
 | Consumer groups | `groupPoll`, `groupAck`, `groupNack`, `groupDeadLetters`, `groupDiscard`, `groupRedrive` (each follows the broker's redirect to the shard's leader) |
+| Atomic commits | `commit(tenant, ns, entityKey, [CommitOp.publish \| enqueue, put, delete])` → `{ offset }`, `stateGet(tenant, ns, stream, entityKey, key)` → `{ value, version, asOf }`; `NotOnOwningShardError` and `EventCountError` refuse a commit that is not one record. See [atomic commits](../../../docs/atomic-commit.md) |
 
 Every handle has an idempotent `close()` and implements `Symbol.asyncDispose`,
 so on Node 24 and newer a `throw` releases it on the way out:

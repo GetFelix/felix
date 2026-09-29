@@ -17,6 +17,7 @@ use super::delivery::{QueuedDelivery, SubQueuePolicy};
 use super::producers::ProducerTable;
 use super::subscription::SubscriptionReceiver;
 use crate::ConsistencyLevel;
+use crate::commit::{StateEntry, StateOp, StateView};
 use crate::durable::StreamLog;
 use crate::handoff::{ShardHandoff, ShardMoved};
 
@@ -86,6 +87,7 @@ impl StreamState {
                 log: VecDeque::new(),
                 next_seq: 0,
                 generation_start_run: None,
+                state_view: None,
             }),
             subscriber_queue_capacity,
             subscriber_queue_policy,
@@ -201,19 +203,23 @@ impl StreamState {
         if !state.log.is_empty() {
             return;
         }
+        // The ring holds what readers see, so a commit record goes in as its
+        // event.
         for record in records {
             if record.offset >= next_seq {
                 continue;
             }
             state.log.push_back(LogEntry {
                 seq: record.offset,
-                payload: record.payload,
+                payload: crate::commit::client_record(record).payload,
             });
         }
         let overflow = state.log.len().saturating_sub(capacity);
         if overflow > 0 {
             state.log.drain(..overflow);
         }
+        state.next_seq = next_seq;
+        state.state_view = None;
         state.next_seq = next_seq;
         // The commit order is keyed on disk offsets, so it has to restart from
         // the recovered tail too, or the first publish after a restart would
@@ -247,6 +253,7 @@ impl StreamState {
         state.log.clear();
         state.next_seq = next_seq;
         state.generation_start_run = None;
+        state.state_view = None;
         // Writes arriving as a follower: whatever this broker held as a
         // leader was not committed under it.
         self.held.discard();
@@ -265,6 +272,7 @@ impl StreamState {
         state.log.clear();
         state.next_seq = next_seq;
         state.generation_start_run = None;
+        state.state_view = None;
         self.held.discard();
         // Under the ring lock, as in `advance_to`.
         self.commit_sequencer.reset(next_seq);
@@ -299,12 +307,17 @@ impl StreamState {
     /// `turn` is the batch's commit turn, when it has one. `None` comes back,
     /// and nothing is appended, if a reset superseded it: resets bump the
     /// sequencer under this same lock, so the check cannot race one.
+    ///
+    /// `commit` is a commit's state updates. They go to the state view under
+    /// the same lock as the event goes to the ring, so no reader sees one
+    /// without the other.
     pub(crate) fn append_batch_at(
         &self,
         payloads: &[Bytes],
         first_seq: Option<u64>,
         turn: Option<&CommitTurn<'_>>,
         log_capacity: usize,
+        commit: Option<&[StateOp]>,
     ) -> Option<(Arc<Vec<SubscriberEntry>>, u64)> {
         if payloads.is_empty() {
             return Some((self.subscribers_snapshot.load_full(), 0));
@@ -346,6 +359,10 @@ impl StreamState {
         // consumed offsets without reaching the ring; the tail is what the next
         // cursor must point at either way.
         state.next_seq = state.next_seq.max(seq);
+        if let (Some(ops), Some(first), Some(view)) = (commit, first_seq, state.state_view.as_mut())
+        {
+            view.apply(first, ops);
+        }
 
         // Trim once after append to keep the newest `log_capacity` entries.
         let overflow = state.log.len().saturating_sub(log_capacity);
@@ -383,6 +400,34 @@ impl StreamState {
         state.generation_start_run = (run > 0).then_some((next_offset, run));
     }
 
+    /// `key`'s entry in the state view and the view's version. `Err` holds
+    /// the offset a rebuild must read to when the view is not built.
+    pub(crate) fn read_state(
+        &self,
+        key: &str,
+    ) -> std::result::Result<(Option<StateEntry>, Option<u64>), u64> {
+        let state = self.log_state.lock();
+        match &state.state_view {
+            Some(view) => Ok((view.get(key).cloned(), view.version())),
+            None => Err(state.next_seq),
+        }
+    }
+
+    /// Install a view rebuilt from the log below `end`, if nothing reached
+    /// the ring since. Otherwise the view has missed a commit and the caller
+    /// rebuilds again.
+    pub(crate) fn install_state_view(&self, view: StateView, end: u64) -> bool {
+        let mut state = self.log_state.lock();
+        if state.state_view.is_some() {
+            return true;
+        }
+        if state.next_seq != end {
+            return false;
+        }
+        state.state_view = Some(view);
+        true
+    }
+
     /// Append with sequence numbers drawn from the ring's own counter.
     ///
     /// Only ephemeral streams use this; a durable stream pins its sequences to
@@ -390,7 +435,7 @@ impl StreamState {
     /// exercise the ring without a log behind it.
     #[cfg(test)]
     pub(crate) fn append_batch(&self, payloads: &[Bytes], log_capacity: usize) {
-        self.append_batch_at(payloads, None, None, log_capacity);
+        self.append_batch_at(payloads, None, None, log_capacity, None);
     }
 
     pub(crate) fn register_subscriber(&self) -> (u64, SubscriptionReceiver) {
@@ -607,6 +652,9 @@ pub(crate) struct LogState {
     /// generation-start records, so the batch published at `offset` reports
     /// them as skipped rather than letting a subscriber read them as a drop.
     pub(crate) generation_start_run: Option<(u64, u64)>,
+    /// The keyed state of every commit below `next_seq`, once built. `None`
+    /// until a reader asks, and again whenever the ring is reset.
+    pub(crate) state_view: Option<StateView>,
 }
 
 #[derive(Debug)]

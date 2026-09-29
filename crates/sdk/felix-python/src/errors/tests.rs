@@ -19,6 +19,7 @@ fn every_code_maps_to_a_class_that_matches_its_retry_class() {
         ("draining", Kind::Connection),
         ("internal", Kind::OutcomeUnknown),
         ("storage", Kind::OutcomeUnknown),
+        ("stale_claim", Kind::Generic),
     ];
     assert_eq!(expected.len(), ErrorCode::ALL.len(), "a code is unmapped");
     for code in ErrorCode::ALL {
@@ -92,4 +93,18 @@ fn a_lost_subscription_is_a_connection_error() {
     })
     .context("resubscribe to shard 0 of orders");
     assert_eq!(classify(&err).kind, Kind::Connection);
+}
+
+#[test]
+fn a_commit_refusal_is_its_own_class() {
+    let split = anyhow::Error::new(felix_client::CommitError::NotOnOwningShard {
+        index: 1,
+        stream: "inventory".to_string(),
+        owner: "orders".to_string(),
+    });
+    assert_eq!(classify(&split).kind, Kind::NotOnOwningShard);
+    let count = anyhow::Error::new(felix_client::CommitError::EventCount(2));
+    assert_eq!(classify(&count).kind, Kind::EventCount);
+    let old = anyhow::Error::new(felix_client::CommitError::Unsupported);
+    assert_eq!(classify(&old).kind, Kind::Commit);
 }

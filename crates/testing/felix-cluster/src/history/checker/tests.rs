@@ -76,6 +76,8 @@ fn history(ops: Vec<Op>, final_a: &[(u64, u64)]) -> History {
         ops,
         final_reads,
         registers: Vec::new(),
+        commit_values: Default::default(),
+        commit_reads: Vec::new(),
         faults: Vec::new(),
     }
 }

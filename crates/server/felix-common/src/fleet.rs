@@ -61,6 +61,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     MAJORITY_ACK,
     LEASE_FREE_READS,
     JUMP_HASH_ROUTING,
+    ATOMIC_COMMIT,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -87,6 +88,12 @@ pub const MAJORITY_ACK: FleetFeature = FleetFeature::new("majority_ack");
 /// alongside [`MAJORITY_ACK`] and [`GENERATION_START`]. See
 /// `docs/replication-design.md` ("Reads without the lease").
 pub const LEASE_FREE_READS: FleetFeature = FleetFeature::new("lease_free_reads");
+
+/// A stream shard accepts atomic commits: an event and state updates written
+/// as one commit record. The record needs storage format v5 and a replication
+/// mark an older build refuses, so it waits for the whole fleet. See
+/// `docs/atomic-commit.md`.
+pub const ATOMIC_COMMIT: FleetFeature = FleetFeature::new("atomic_commit");
 
 /// The most features one gate tracks. A report longer than this is cut, which
 /// only ever leaves features off.

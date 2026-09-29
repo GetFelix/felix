@@ -63,6 +63,7 @@ pub(crate) use control::{
 };
 pub(crate) use ingress::{PublishTarget, decrement_depth, reset_local_depth_only};
 pub(crate) use order::AckOrder;
+pub(crate) use route::resolve_shard;
 #[cfg(test)]
 pub(crate) use scheduler::test_channel;
 pub(crate) use stream_cache::StreamHandleCache;

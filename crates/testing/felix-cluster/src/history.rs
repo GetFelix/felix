@@ -8,6 +8,7 @@
 //! - [`model`]: what a history is.
 //! - [`checker`]: the rules, and the report of what broke them.
 //! - [`register`]: `Quorum` cache keys as registers, and the stale-read check.
+//! - [`commit`]: atomic commits, and the check that no reader sees part of one.
 //! - [`nemesis`]: which fault next, and how to inject and heal it.
 //! - [`campaign`]: the run itself, configured from the environment, and
 //!   the state dump a failing run prints.
@@ -17,6 +18,7 @@
 
 pub mod campaign;
 pub mod checker;
+pub mod commit;
 mod dump;
 pub mod model;
 pub mod nemesis;

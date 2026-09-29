@@ -6,6 +6,7 @@
 
 mod caches;
 mod faults;
+mod fleet;
 mod groups;
 mod metrics;
 mod ownership;

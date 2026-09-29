@@ -202,6 +202,9 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardIdempotentHandoffMemory.cfg` | the same with the sequences in the leader's memory | violate `NoDuplicate` |
 | `FelixShardCancelResend.cfg` | `FelixShardCancel.cfg` with writes re-sent, checked against the retaken leader's log | pass every invariant and `NoDuplicate` (6.28M distinct states) |
 | `FelixShardCancelResendMemory.cfg` | the same with the sequences in the leader's memory | violate `NoDuplicate` |
+| `FelixAtomicCommit.cfg` | `FelixAtomicCommit.tla`: two atomic commits, each one record, applied whole by three views on every broker, across two promotions | pass `NoPartialCommit` and `CommitSurvives` (21.8K distinct states) |
+| `FelixAtomicCommitSplitRecords.cfg` | the same with each part written as its own record, the mark stopping only at a commit's end | violate `NoPartialCommit` |
+| `FelixAtomicCommitPartialApply.cfg` | the same with the views applying a record one part at a time | violate `NoPartialCommit` |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting
@@ -608,6 +611,26 @@ live ones holds every acknowledged record; the generation comes first because
 a stale proposal from an older leader can be longer than the log that
 superseded it. That rule needs each replica to say where it is (a position on
 its own heartbeat) rather than the leader to say where its followers were.
+
+### One record per commit
+
+`FelixAtomicCommit.tla` is a small model of its own, for
+[atomic commits](../atomic-commit.md): an event, a state update and an
+enqueue written together on one shard. Leadership is plain Raft (the vote,
+the committed mark counting only the leader's own generation) because the
+question is not whether the log survives a failover, which `FelixShard.tla`
+answers, but whether a mixed batch survives it whole. Each broker keeps three
+views of its log and applies committed records to them; `NoPartialCommit`
+says no view set anywhere shows part of a commit, and `CommitSurvives` says a
+commit any view shows is still in the leader's log.
+
+The broker writes a commit as one record, and the model passes. Written as a
+record per part, it fails even with the leader's mark stopping only at a
+commit's end: replication ships by bytes, a follower can hold the event
+without the state, and once promoted it keeps that half and its mark covers
+it with its next commit. Applied a part at a time, it fails on one broker
+with no failover at all. Those two are why the record is one record and why
+the state view is updated under the ring's lock.
 
 ## Running it
 

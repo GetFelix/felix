@@ -151,6 +151,17 @@ function wrap(value) {
   });
 }
 
+/**
+ * Builders for the ops `client.commit` takes. Each returns a plain object, so
+ * writing the object literal by hand works just as well.
+ */
+const CommitOp = {
+  publish: (stream, payload) => ({ op: "publish", stream, payload: Buffer.from(payload) }),
+  enqueue: (queue, payload) => ({ op: "enqueue", queue, payload: Buffer.from(payload) }),
+  put: (stream, key, value) => ({ op: "put", stream, key, value: Buffer.from(value) }),
+  delete: (stream, key) => ({ op: "delete", stream, key }),
+};
+
 /** The public `Client`: a façade over the native one that types its errors. */
 const Client = {
   async connect(addrs, tenantId, token, serverName, caFile, offerAlpn) {
@@ -174,6 +185,10 @@ module.exports = {
   ShardUnavailableError: errors.ShardUnavailableError,
   OverloadedError: errors.OverloadedError,
   OutcomeUnknownError: errors.OutcomeUnknownError,
+  CommitError: errors.CommitError,
+  NotOnOwningShardError: errors.NotOnOwningShardError,
+  EventCountError: errors.EventCountError,
+  CommitOp,
   /** The unwrapped addon, for anyone who wants it. Errors are untyped there. */
   native,
 };

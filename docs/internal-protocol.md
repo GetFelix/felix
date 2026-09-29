@@ -432,6 +432,12 @@ when every serving broker supports it. A peer that predates the byte still
 cannot decode the batch (`UnknownInternalProducerMark`) rather than storing
 the record as a client's.
 
+An **atomic commit record** travels the same way, with mark byte `4` and no
+tag ([`atomic-commit.md`](atomic-commit.md)). It follows the same rule: a
+leader accepts a commit only once the fleet has finalized `atomic_commit`, and
+a peer that predates the byte refuses the batch rather than storing the
+commit as an ordinary event.
+
 **The commit offset** rides with the records too. Under `Quorum` the leader
 sends its quorum mark, one past the last record a majority holds and the
 control plane has been told about, as `ReplicateRecords.commit_offset`. A batch

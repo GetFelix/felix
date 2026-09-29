@@ -3,6 +3,7 @@
 //! and the bounds on a range read.
 
 mod append_and_read;
+mod commit;
 mod durability;
 mod generation_start;
 mod placed_at_a_base_offset;

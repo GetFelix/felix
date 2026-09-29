@@ -38,6 +38,9 @@ Beyond streams, both surfaces cover:
   by offset, or ``retained=True`` to receive current state before live changes.
 * **Multi-shard streams** — ``subscribe_sharded`` opens one subscription per
   shard, follows each shard's own owner, and merges them.
+* **Atomic commits** — ``commit`` writes an event and state updates as one
+  record on the shard an entity key routes to, and ``state_get`` reads that
+  state with the commit's offset as its version. See docs/atomic-commit.md.
 """
 
 from ._felix import (
@@ -52,12 +55,17 @@ from ._felix import (
     CacheWatchLagged,
     CacheWatchShardMoved,
     Client,
+    CommitError,
+    CommitOp,
+    CommitReceipt,
     ConnectionError,
     CursorError,
     Event,
+    EventCountError,
     FelixError,
     GroupRecord,
     NotFoundError,
+    NotOnOwningShardError,
     OutcomeUnknownError,
     OverloadedError,
     ShardedSubscriptionHandle,
@@ -66,6 +74,7 @@ from ._felix import (
     ShardRecord,
     ShardRecovered,
     ShardUnavailableError,
+    StateValue,
     SubscriptionHandle,
     __version__,
 )
@@ -94,6 +103,10 @@ __all__ = [
     "CacheChange",
     "CacheWatchLagged",
     "CacheWatchShardMoved",
+    # Atomic commits
+    "CommitOp",
+    "CommitReceipt",
+    "StateValue",
     # Errors
     "FelixError",
     "ConnectionError",
@@ -103,5 +116,8 @@ __all__ = [
     "ShardUnavailableError",
     "OverloadedError",
     "OutcomeUnknownError",
+    "CommitError",
+    "NotOnOwningShardError",
+    "EventCountError",
     "__version__",
 ]

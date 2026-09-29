@@ -12,6 +12,7 @@
 
 pub mod auth;
 pub(crate) mod cache_routing;
+pub(crate) mod commit_ops;
 pub(crate) mod core_shards;
 pub mod forward;
 pub(crate) mod group_ops;

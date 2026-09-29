@@ -449,6 +449,51 @@ An absent `value` means the counter has never been written, a different
 answer from a sum of zero, exactly as a cache miss differs from a stored
 empty value.
 
+### Commit
+```
+{ "type": "commit", "tenant_id": "<string>", "namespace": "<string>",
+  "stream": "<string>", "entity_key": "<base64>", "event": "<base64>",
+  "changes": [ { "op": "put", "key": "<string>", "value": "<base64>" },
+               { "op": "delete", "key": "<string>" } ],
+  "request_id": <u64> }
+```
+
+Appends `event` and applies `changes` to the shard of `stream` that
+`entity_key` routes to, as one record. Every reader sees all of it or none of
+it. Answered with `commit_ok`, or with `error`; a broker that does not lead
+the shard answers `not_leader` to a client that offered `FEATURE_REDIRECT`,
+and never forwards a commit. A cluster member refuses one until the fleet has
+finalized `atomic_commit`. Sent only to a broker that advertised
+`FEATURE_ATOMIC_COMMIT`. Semantics in [`atomic-commit.md`](atomic-commit.md).
+
+### CommitOk (server -> client)
+```
+{ "type": "commit_ok", "request_id": <u64>, "offset": <u64> }
+```
+
+The commit is durable, on a majority for a `Quorum` stream. `offset` is where
+its event is read and the version of every key it wrote.
+
+### StateGet
+```
+{ "type": "state_get", "tenant_id": "<string>", "namespace": "<string>",
+  "stream": "<string>", "entity_key": "<base64>", "key": "<string>",
+  "request_id": <u64> }
+```
+
+Reads `key` in the state of the shard `entity_key` routes to. Answered with
+`state_value`. Sent only to a broker that advertised `FEATURE_ATOMIC_COMMIT`.
+
+### StateValue (server -> client)
+```
+{ "type": "state_value", "value": "<base64>|null", "version": <u64|absent>,
+  "as_of": <u64|absent>, "request_id": <u64> }
+```
+
+`version` is the offset of the commit that wrote `value`. `as_of` is the
+offset of the last commit the answer reflects: every commit at or below it,
+and none after. A null `value` is a key never written or deleted.
+
 ### StreamShards
 ```
 { "type": "stream_shards", "tenant_id": "<string>", "namespace": "<string>",
@@ -1028,6 +1073,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x2000` | `FEATURE_UNSUPPORTED` | The peer answers an unknown request with `unsupported` (see below) |
 | `0x4000` | `FEATURE_SEQUENCE_REUSED` | The client reads `publish_refused` with `sequence_reused`; see [idempotent producers](#idempotent-producers) |
 | `0x8000` | `FEATURE_PUBLISH_PIPELINE` | The client pipelines acked publishes; the broker grants a `publish_window` and answers each stream's publishes in request order. See [pipelined publishes](#pipelined-publishes) |
+| `0x1_0000` | `FEATURE_ATOMIC_COMMIT` | The broker accepts `commit` and `state_get`. See [atomic commits](atomic-commit.md) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -1042,7 +1088,11 @@ broker to client, so the broker sends it only to a client that offered
 `FEATURE_REDIRECT`, and answers everyone else with an ordinary `error`.
 
 `FEATURE_CACHE_DELETE` runs the other way, because `cache_delete` is a request:
-a client sends it only to a broker that advertised the bit. Getting that
+a client sends it only to a broker that advertised the bit. So does
+`FEATURE_ATOMIC_COMMIT`, which is a feature bit and not a frame flag for the
+same reason: `commit` is a new request in the JSON codec, and no existing
+frame changes shape, so a peer that never sends one exchanges byte-identical
+frames with a broker that has it. Getting that
 backwards is worse than a refused request: an unrecognised message type ends
 the broker's control loop, so probing costs the connection.
 

@@ -263,7 +263,7 @@ fn a_generation_start_mark_round_trips_and_an_unknown_mark_is_refused() {
         first_offset: 10,
         checksum: 1,
         payloads: vec![Bytes::from_static(b"x"), Bytes::from_static(b"y")],
-        marks: vec![ProducerMark::GenerationStart, ProducerMark::None],
+        marks: vec![ProducerMark::GenerationStart, ProducerMark::Commit],
         commit_offset: None,
         generations: None,
     };
@@ -273,9 +273,9 @@ fn a_generation_start_mark_round_trips_and_an_unknown_mark_is_refused() {
 
     let mut body = bytes::BytesMut::new();
     crate::internal::replicate::put_marks(&mut body, &[ProducerMark::GenerationStart]);
-    body[0] = 4;
+    body[0] = 5;
     assert!(matches!(
         crate::internal::replicate::take_marks(&mut body.freeze(), 1),
-        Err(Error::UnknownInternalProducerMark(4))
+        Err(Error::UnknownInternalProducerMark(5))
     ));
 }

@@ -10,7 +10,10 @@
 //! A broker that negotiated error codes says which it is, and the class is
 //! chosen from that. Only an error without a code (an older broker, or a
 //! failure inside the client) falls back to reading the message.
-use felix_client::{BrokerError, NotLeaderError, SubscribeCursorError, SubscriptionLost};
+use felix_client::{
+    BrokerError, CommitError as ClientCommitError, NotLeaderError, SubscribeCursorError,
+    SubscriptionLost,
+};
 use felix_wire::RetryClass;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
@@ -65,6 +68,24 @@ create_exception!(
     FelixError,
     "The write may or may not have been applied. Only an idempotent request is safe to resend."
 );
+create_exception!(
+    _felix,
+    CommitError,
+    FelixError,
+    "A commit was refused before it was sent: it spans two logs, carries the wrong number of events, or the broker does not support commits."
+);
+create_exception!(
+    _felix,
+    NotOnOwningShardError,
+    CommitError,
+    "An operation names a stream other than the commit's. A different stream is a different log, and a commit writes one. Carries `index`, `stream` and `owner`."
+);
+create_exception!(
+    _felix,
+    EventCountError,
+    CommitError,
+    "A commit carries exactly one event (publish or enqueue). Carries `count`."
+);
 
 /// Which exception class an error becomes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +98,9 @@ pub(crate) enum Kind {
     ShardUnavailable,
     Overloaded,
     OutcomeUnknown,
+    Commit,
+    NotOnOwningShard,
+    EventCount,
 }
 
 /// An error from the Rust client, decided but not yet a Python object.
@@ -106,6 +130,18 @@ pub(crate) fn classify(err: &anyhow::Error) -> Classified {
         retry_after_ms: None,
     };
 
+    // Refused by the client before anything was sent, so there is no code.
+    if let Some(commit) = err
+        .chain()
+        .find_map(|e| e.downcast_ref::<ClientCommitError>())
+    {
+        out.kind = match commit {
+            ClientCommitError::NotOnOwningShard { .. } => Kind::NotOnOwningShard,
+            ClientCommitError::EventCount(_) => Kind::EventCount,
+            _ => Kind::Commit,
+        };
+        return out;
+    }
     if let Some(broker) = err.chain().find_map(|e| e.downcast_ref::<BrokerError>()) {
         out.kind = kind_for_code(broker.code.as_str(), broker.retry);
         out.code = Some(broker.code.as_str().to_string());
@@ -183,7 +219,18 @@ pub(crate) fn to_py_err(err: anyhow::Error) -> PyErr {
         Kind::ShardUnavailable => ShardUnavailableError::new_err(text),
         Kind::Overloaded => OverloadedError::new_err(text),
         Kind::OutcomeUnknown => OutcomeUnknownError::new_err(text),
+        Kind::Commit => CommitError::new_err(text),
+        Kind::NotOnOwningShard => NotOnOwningShardError::new_err(text),
+        Kind::EventCount => EventCountError::new_err(text),
     };
+    if let Some(commit) = err
+        .chain()
+        .find_map(|e| e.downcast_ref::<ClientCommitError>())
+    {
+        Python::attach(|py| {
+            let _ = annotate_commit(py, &py_err, commit);
+        });
+    }
     if classified.code.is_some() {
         Python::attach(|py| {
             // Best effort: without the attributes it is still the right class,
@@ -208,6 +255,12 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     module.add("OverloadedError", py.get_type::<OverloadedError>())?;
     module.add("OutcomeUnknownError", py.get_type::<OutcomeUnknownError>())?;
+    module.add("CommitError", py.get_type::<CommitError>())?;
+    module.add(
+        "NotOnOwningShardError",
+        py.get_type::<NotOnOwningShardError>(),
+    )?;
+    module.add("EventCountError", py.get_type::<EventCountError>())?;
     // Class-level defaults, so an error without a code still answers `None`.
     let base = py.get_type::<FelixError>();
     for name in ["code", "retry", "detail"] {
@@ -245,6 +298,25 @@ fn kind_from_text(lower: &str) -> Kind {
         return Kind::Connection;
     }
     Kind::Generic
+}
+
+/// The fields of a commit refusal, so a caller can say which op was wrong.
+fn annotate_commit(py: Python<'_>, err: &PyErr, commit: &ClientCommitError) -> PyResult<()> {
+    let value = err.value(py);
+    match commit {
+        ClientCommitError::NotOnOwningShard {
+            index,
+            stream,
+            owner,
+        } => {
+            value.setattr("index", *index)?;
+            value.setattr("stream", stream)?;
+            value.setattr("owner", owner)?;
+        }
+        ClientCommitError::EventCount(count) => value.setattr("count", *count)?,
+        _ => {}
+    }
+    Ok(())
 }
 
 fn annotate(py: Python<'_>, err: &PyErr, classified: &Classified) -> PyResult<()> {

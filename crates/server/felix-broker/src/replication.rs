@@ -251,6 +251,7 @@ pub fn mark_to_wire(mark: RecordMark) -> ProducerMark {
         },
         RecordMark::Continues => ProducerMark::Continues,
         RecordMark::GenerationStart => ProducerMark::GenerationStart,
+        RecordMark::Commit => ProducerMark::Commit,
     }
 }
 
@@ -269,6 +270,7 @@ pub fn mark_from_wire(mark: ProducerMark) -> RecordMark {
         }),
         ProducerMark::Continues => RecordMark::Continues,
         ProducerMark::GenerationStart => RecordMark::GenerationStart,
+        ProducerMark::Commit => RecordMark::Commit,
     }
 }
 

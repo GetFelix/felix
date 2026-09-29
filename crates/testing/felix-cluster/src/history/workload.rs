@@ -10,6 +10,7 @@
 //! Every client also puts to and gets keys of one `Quorum` cache, through a
 //! random broker, which is what exercises `Quorum` cache reads.
 
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -20,6 +21,7 @@ use felix_client::{BrokerError, ClusterClient, IdempotentProducer, NotLeaderErro
 use felix_wire::AckMode;
 
 use super::campaign::Campaign;
+use super::commit::{CommitRead, STATE_KEY, StateSeen};
 use super::model::{Action, AppendOutcome, Element, FOREIGN_PAYLOAD, FaultEvent, Op};
 use super::register::{RegisterAction, RegisterOp};
 use super::rng::Rng;
@@ -34,6 +36,15 @@ const READ_PERCENT: u64 = 20;
 
 /// Percent of operations that are cache puts or gets, half each.
 const CACHE_PERCENT: u64 = 20;
+
+/// Percent of operations that are atomic commits, and reads of a list with
+/// its state.
+const COMMIT_PERCENT: u64 = 10;
+const COMMIT_READ_PERCENT: u64 = 5;
+
+/// The entity every commit names. Lists have one shard, so any key routes to
+/// shard 0; one key keeps every commit of a list on one state.
+const ENTITY: &[u8] = b"history";
 
 /// How long a client may take to reach a broker before trying again.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -126,6 +137,14 @@ impl Workload {
 
     pub(super) fn stop(&self) {
         self.stop.store(true, Ordering::Release);
+    }
+
+    /// The values commits wrote, and the commit reads, in completion order.
+    pub(super) fn take_commits(&self) -> (BTreeSet<u64>, Vec<CommitRead>) {
+        (
+            std::mem::take(&mut *self.recorder.commit_values.lock().expect("history lock")),
+            std::mem::take(&mut *self.recorder.commit_reads.lock().expect("history lock")),
+        )
     }
 
     /// Everything recorded, in completion order.
@@ -278,6 +297,8 @@ struct Recorder {
     start: Instant,
     ops: Mutex<Vec<Op>>,
     registers: Mutex<Vec<RegisterOp>>,
+    commit_values: Mutex<BTreeSet<u64>>,
+    commit_reads: Mutex<Vec<CommitRead>>,
     faults: Mutex<Vec<FaultEvent>>,
 }
 
@@ -287,6 +308,8 @@ impl Recorder {
             start: Instant::now(),
             ops: Mutex::new(Vec::new()),
             registers: Mutex::new(Vec::new()),
+            commit_values: Mutex::new(BTreeSet::new()),
+            commit_reads: Mutex::new(Vec::new()),
             faults: Mutex::new(Vec::new()),
         }
     }
@@ -360,6 +383,10 @@ impl Client<'_> {
                 self.read().await
             } else if roll < READ_PERCENT + CACHE_PERCENT {
                 self.cache_op().await
+            } else if roll < READ_PERCENT + CACHE_PERCENT + COMMIT_PERCENT {
+                self.commit(cluster).await
+            } else if roll < READ_PERCENT + CACHE_PERCENT + COMMIT_PERCENT + COMMIT_READ_PERCENT {
+                self.commit_read(cluster).await
             } else {
                 match self.kind {
                     ClientKind::Plain => self.append_plain(cluster).await,
@@ -522,6 +549,100 @@ impl Client<'_> {
             action,
         });
         ok
+    }
+
+    /// Commit a fresh value as a list's event and as its state, in one
+    /// record. Recorded as an append too, so the list rules check its event.
+    /// Never re-sent: a commit has no producer sequence to make a re-send
+    /// safe.
+    async fn commit(&mut self, cluster: &ClusterClient) -> bool {
+        let w = self.workload;
+        let list = self.rng.pick(&w.lists).clone();
+        let value = w.next_value.fetch_add(1, Ordering::Relaxed);
+        w.recorder
+            .commit_values
+            .lock()
+            .expect("history lock")
+            .insert(value);
+        let invoke = w.now();
+        let committed = tokio::time::timeout(
+            w.op_timeout,
+            cluster.commit(
+                &w.tenant_id,
+                &w.namespace,
+                ENTITY,
+                vec![
+                    felix_client::CommitOp::publish(list.clone(), encode(value)),
+                    felix_client::CommitOp::put(list.clone(), STATE_KEY, encode(value)),
+                ],
+            ),
+        )
+        .await;
+        let outcome = match committed {
+            Ok(Ok(receipt)) => AppendOutcome::Ok {
+                offset: Some(receipt.offset),
+            },
+            Ok(Err(err)) => classify(&err),
+            Err(_) => AppendOutcome::Info,
+        };
+        self.record_append(invoke, list, value, outcome)
+    }
+
+    /// Read a list to its tail, then its state, then the list again from the
+    /// state's version, and record all three for the partial-commit check.
+    async fn commit_read(&mut self, cluster: &ClusterClient) -> bool {
+        let w = self.workload;
+        let list = self.rng.pick(&w.lists).clone();
+        let addrs = w.addrs();
+        let addr = *self.rng.pick(&addrs);
+        let invoke = w.now();
+        let from = self.read_from(&list);
+        let Ok(before) = w.read(addr, &list, from, w.op_timeout).await else {
+            return false;
+        };
+        if !before.complete {
+            return false;
+        }
+        let got = tokio::time::timeout(
+            w.op_timeout,
+            cluster.state_get(&w.tenant_id, &w.namespace, &list, ENTITY, STATE_KEY),
+        )
+        .await;
+        let Ok(Ok(state)) = got else {
+            return false;
+        };
+        let state = match (state.value, state.version) {
+            (Some(value), Some(version)) => Some(StateSeen {
+                value: decode(&value),
+                version,
+            }),
+            _ => None,
+        };
+        let after = match state {
+            Some(seen) => match w.read(addr, &list, Some(seen.version), w.op_timeout).await {
+                // Only a read that reached past the version can say what
+                // is there.
+                Ok(read) if read.complete && read.tail.is_some_and(|tail| tail > seen.version) => {
+                    Some(read.elements)
+                }
+                _ => None,
+            },
+            None => None,
+        };
+        w.recorder
+            .commit_reads
+            .lock()
+            .expect("history lock")
+            .push(CommitRead {
+                process: self.process,
+                invoke,
+                complete: w.now(),
+                list,
+                before: before.elements,
+                state,
+                after,
+            });
+        true
     }
 
     /// Where a read starts: mostly a little behind the furthest tail seen,

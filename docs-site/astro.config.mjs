@@ -116,6 +116,7 @@ export default defineConfig({
             { label: 'QUIC Transport', slug: 'features/quic-transport' },
             { label: 'Pub/Sub Streaming', slug: 'features/pubsub' },
             { label: 'Queues and Consumer Groups', slug: 'features/queues' },
+            { label: 'Atomic Commits', slug: 'features/atomic-commits' },
             { label: 'Distributed Cache', slug: 'features/cache' },
             { label: 'Kafka Compatibility', slug: 'features/kafka' },
             { label: 'Performance Tuning', slug: 'features/performance' },

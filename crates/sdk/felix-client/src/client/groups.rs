@@ -370,6 +370,8 @@ fn group_response_id(message: &Message) -> Option<u64> {
         Message::GroupRecords { request_id, .. }
         | Message::GroupDeadLetterList { request_id, .. }
         | Message::ProducerInitOk { request_id, .. }
+        | Message::CommitOk { request_id, .. }
+        | Message::StateValue { request_id, .. }
         | Message::CacheOk { request_id } => Some(*request_id),
         _ => None,
     }

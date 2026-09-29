@@ -63,6 +63,15 @@ people out, so they are worth saying here:
 - **A prefix watch reads one shard.** Keys sharing a prefix do not share a
   shard, so watching a whole multi-shard cache means one watch per shard.
 
+Both surfaces also have atomic commits: `commit(tenant_id, namespace,
+entity_key, [CommitOp.publish(...) or CommitOp.enqueue(...), CommitOp.put(...),
+CommitOp.delete(...)])` writes an event and its state changes as one record and
+returns a `CommitReceipt` with the offset, and `state_get` reads the state back
+with that offset as its version. A commit naming a second stream raises
+`NotOnOwningShardError`, and one without exactly one event raises
+`EventCountError`, before anything is sent. See
+[atomic commits](../../../docs/atomic-commit.md) for what atomic covers.
+
 The [clients page](../../../docs-site/src/content/docs/api/clients.md) has the
 worked examples.
 

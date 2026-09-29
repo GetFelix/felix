@@ -312,6 +312,52 @@ impl Client {
         Ok(previous.map(|v| v.to_vec().into()))
     }
 
+    /// Commit `ops` as one record on the shard `entityKey` routes to.
+    ///
+    /// Every reader sees all of it or none of it. `ops` must carry exactly one
+    /// event (`publish` or `enqueue`) and name one stream; otherwise the call
+    /// rejects with `EventCountError` or `NotOnOwningShardError` before
+    /// anything is sent.
+    #[napi]
+    pub async fn commit(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        entity_key: Buffer,
+        ops: Vec<crate::commit::CommitOp>,
+    ) -> Result<crate::commit::CommitReceipt> {
+        let ops = ops
+            .into_iter()
+            .map(crate::commit::to_client)
+            .collect::<Result<Vec<_>>>()?;
+        let receipt = self
+            .cluster()?
+            .commit(&tenant_id, &namespace, &entity_key, ops)
+            .await
+            .map_err(classify)?;
+        Ok(crate::commit::CommitReceipt {
+            offset: BigInt::from(receipt.offset),
+        })
+    }
+
+    /// `key` in the state of `stream`'s shard that `entityKey` routes to.
+    #[napi]
+    pub async fn state_get(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        entity_key: Buffer,
+        key: String,
+    ) -> Result<crate::commit::StateValue> {
+        let state = self
+            .cluster()?
+            .state_get(&tenant_id, &namespace, &stream, &entity_key, &key)
+            .await
+            .map_err(classify)?;
+        Ok(state.into())
+    }
+
     /// Add to a counter and return its new value. `delta` may be negative.
     #[napi]
     pub async fn counter_add(

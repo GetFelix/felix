@@ -40,6 +40,7 @@
 
 mod broker;
 mod cache;
+mod commit;
 mod durable;
 mod error;
 mod handoff;
@@ -65,6 +66,10 @@ pub use stream::{
     DeliveryEnvelope, ReadBound, ReadBounds, SubQueuePolicy, Subscription, SubscriptionGuard,
     SubscriptionReceiver,
 };
+
+// Atomic commits.
+pub use broker::StateRead;
+pub use commit::{CommitRecord, StateOp, client_record};
 
 // Caches.
 pub use cache::{CacheChangeEvent, CacheWatchFilter, CacheWatchHub, CacheWatchSubscription};
