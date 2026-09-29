@@ -83,8 +83,9 @@ record I am looking at.
 
 Two limits are worth knowing before you picture this working at scale. A
 subscriber that falls too far behind has records dropped rather than buffered
-for ever, and it is told that it happened — good for a live feed, wrong for
-anything that must see every record without checking. And a group of workers
+for ever, and it is not told. On a durable stream the gap in the offsets shows
+it. That suits a live feed and is wrong for anything that must see every
+record without checking. And a group of workers
 reads one shard: if you split a stream across several, each shard gets its own
 group, and dividing the work between them is yours to arrange.
 
@@ -177,7 +178,7 @@ Felix is pre-1.0 and in active development. **It has not been run in production 
 anyone**, including its author.
 
 What exists today: multi-broker clusters, a durable log with crash recovery,
-replication with leader leases and failover, online rebalancing (live shard
+replication with fenced failover and majority acknowledgement, online rebalancing (live shard
 moves, drain and join), a cache with expiry and counters,
 consumer groups with acknowledgements and redelivery, a control plane over REST,
 and tenant-scoped tokens with OIDC token exchange.
