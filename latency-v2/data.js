@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790658861008,
+  "lastUpdate": 1790659208115,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -25740,6 +25740,72 @@ window.BENCHMARK_DATA = {
             "range": "221.14",
             "unit": "us",
             "extra": "trials: 5\nmedian: 614.00\nmean: 701.40\nstdev: 221.14\ncv: 31.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c0d2e4be23ceec488b637b7eade3b7daeb427df4",
+          "message": "fix(broker): stop readers at the durable offset once a log is poisoned (#851)\n\nAfter a failed flush poisons a Leader-consistency log, the refused batch is\nstill written past the durable bound, and subscribers, Kafka Fetch and group\npolls read up to the tail and saw it. Readers of a poisoned log now stop at\nits durable offset: the stream's read bound becomes Committed(durable) for\nsubscriptions, a Kafka high watermark is capped at it, and a group poll\nclaims nothing past it.\n\nSpec-Unaffected: bounds local reads of a poisoned log; the modelled replication and lease logic is unchanged",
+          "timestamp": "2026-09-28T22:14:08-07:00",
+          "tree_id": "cd23a16bf4126d4a92a614a50f274e4a94baa5ac",
+          "url": "https://github.com/gabloe/felix/commit/c0d2e4be23ceec488b637b7eade3b7daeb427df4"
+        },
+        "date": 1790659204803,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 177,
+            "range": "5.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 179.20\nstdev: 5.50\ncv: 3.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 239,
+            "range": "98.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 239.00\nmean: 281.60\nstdev: 98.06\ncv: 34.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 298,
+            "range": "263.25",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 298.00\nmean: 415.00\nstdev: 263.25\ncv: 63.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 212,
+            "range": "7.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 212.00\nmean: 215.80\nstdev: 7.53\ncv: 3.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 433,
+            "range": "131.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 433.00\nmean: 500.60\nstdev: 131.95\ncv: 26.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 656,
+            "range": "654.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 656.00\nmean: 971.80\nstdev: 654.55\ncv: 67.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
