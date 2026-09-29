@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790630111803,
+  "lastUpdate": 1790641926268,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19864,6 +19864,58 @@ window.BENCHMARK_DATA = {
             "range": "5549.75",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1080523.61\nmean: 1080164.08\nstdev: 5549.75\ncv: 0.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "60bbca69039472d2965f2011700d5996dcb6f2ea",
+          "message": "feat(routing): jump-hash stream routing behind the fleet gate (#831)\n\n* feat(routing): jump-hash stream routing behind the fleet gate\n\nA stream's key-to-shard mapping is now recorded with it and fixed at\ncreation. Streams created after the fleet finalizes jump_hash_routing\nuse jump consistent hashing; streams created before keep modulo, so no\nkey of a live stream ever moves.\n\n- Control plane: streams.routing (migration 0022), chosen at create\n  from the fleet gate, and stamped onto every shard-assignment feed.\n- Broker: the routing table keeps each stream's width and mapping from\n  the same assignments; keyed publishes resolve by it, and\n  stream_shards_view carries routing for jump-hash streams.\n- Client: ClusterClient caches the stream's routing with its width, so\n  its owner cache is keyed by the shard the broker picks.\n- The broker now reports jump_hash_routing in fleet::IMPLEMENTED.\n\nSpec-Unaffected: the TLA+ model does not cover key-to-shard routing; it models one shard's log and replication, which this does not change.\n\n* build(demos): re-lock the demos for felix-wire in the router's dependencies\n\nSpec-Unaffected: lockfiles only",
+          "timestamp": "2026-09-28T17:28:15-07:00",
+          "tree_id": "695ad6af9e0ebd195a2bf925578bfaff28bace2e",
+          "url": "https://github.com/gabloe/felix/commit/60bbca69039472d2965f2011700d5996dcb6f2ea"
+        },
+        "date": 1790641925559,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347553.56,
+            "range": "13878.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347553.56\nmean: 339750.63\nstdev: 13878.92\ncv: 4.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347553.56,
+            "range": "13878.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347553.56\nmean: 339750.63\nstdev: 13878.92\ncv: 4.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82299.17,
+            "range": "614.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82299.17\nmean: 82343.23\nstdev: 614.52\ncv: 0.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 822991.68,
+            "range": "6145.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 822991.68\nmean: 823432.30\nstdev: 6145.15\ncv: 0.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
