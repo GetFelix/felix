@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790650263863,
+  "lastUpdate": 1790651174192,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -25410,6 +25410,72 @@ window.BENCHMARK_DATA = {
             "range": "471.13",
             "unit": "us",
             "extra": "trials: 5\nmedian: 743.00\nmean: 880.40\nstdev: 471.13\ncv: 53.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4ac832d825040dde90e779c7c41c96efdc63f633",
+          "message": "test(history): run the campaign lease-free and check Quorum cache reads (#830)\n\n* test(history): run the campaign lease-free and check Quorum cache reads\n\nThe list-append campaign finalized no fleet features, so it only ever tested\nthe lease path. FELIX_HISTORY_MODE=lease|lease-free now picks the path;\nlease-free finalizes generation_start, majority_ack and lease_free_reads\nonce the cluster is up and fails the run unless every broker turns them on.\n\nThe workload also puts to and gets keys of a Quorum cache, and a new rule\n(7, stale-read) flags a get that returns a value already overwritten, or\nmisses a key already written, before it began. Cache gets that return a\nvalue nobody put are phantoms.\n\nUnset, the per-PR main campaign runs lease-free and the every-family one on\nthe lease. The nightly defaults to lease-free, with a workflow_dispatch\ninput to choose.\n\nSpec-Unaffected: test harness and checker only; no broker or modelled code changes\n\n* fix(replication): reopen a generation that already has records without a start record\n\nA shard whose generation began before the fleet finalized generation_start\nnever served again once its leader reopened it at that same generation (a\nrestart, or a lost lease) after the finalize. The reopen is a new term, so it\ngoes through the promotion fence, and the fence path insisted on writing a\ngeneration-start record at the generation's recorded start. That start was\nfar behind the tail, the write refused, and the shard stayed closed forever,\nfencing again on every append wake of any other shard.\n\nThe non-fenced open already skipped the record when the generation had\nrecords, and the replication design says a reopen writes none. The fenced\nopen now does the same: when the log's newest generation is the leader's own\nand it has records, those records are the generation's own, the mark already\ncounts from its recorded start, and there is nothing inherited to cover.\n\nA shard the broker keeps closed after a fence now waits FENCE_RETRY before\nthe next one, instead of being fenced again at once: PromotionGate::open says\nwhether it opened.\n\nSpec-Unaffected: the mark's counting rule and where start records go are unchanged; the fenced reopen now follows the rule the model and the unfenced path already had (a generation with its own records needs no start record).\n\n* fix(cache): never acknowledge a cache write the store refused\n\nA cache put or delete whose log write failed was logged and dropped by\nStorageApi, and the broker went on to acknowledge it: the quorum wait read\nthe unchanged tail, found it already on a majority, and released the ack.\nAfter one failed fsync poisons a Quorum cache shard's log, every later\nput is acknowledged while reads keep returning the last value applied,\nand with lease_free_reads the round confirms those reads. The lease-free\nhistory campaign (seed 7317239339343802470) caught it as stale reads on\nall three keys while broker-1's fsync was failing.\n\nStorageApi's put, get and delete now return Result, and the local and\nforwarded cache paths answer a refused write as a storage error and a\nfailed read as an error instead of a miss.\n\nSpec-Unaffected: the model's leader holds a write before acknowledging it; the code acknowledged one its own store refused, which is not a protocol step\n\n* test(cluster): skip the harness probe when checking a reopened generation's records\n\nStart-up readiness can publish its probe to the stream under test, and the\ncheck compared every payload before the reopen.\n\nSpec-Unaffected: test-only change\n\n* fix(subscribe): stop live_offset short of trailing generation-start records\n\nA subscription's live_offset was the raw log tail. Every new stream\nleadership (a promotion or either end of a move) writes a generation-start\nrecord at the tail, and that record is never delivered. Until a client\nwrote again, a reader waiting to reach live_offset waited forever for an\nevent at an offset that holds none.\n\nThe lease-free history campaign hit this in its final reads: a leadership\nchange late in the campaign, no writes after it, and the read of that stream\nstopped one short of the tail (tail 293, last event 291, a generation-start\nrecord at 292) for the whole 180 s settle window. The lease campaign never\nfinalizes generation_start, so it never saw it.\n\nlive_offset now steps back over the generation-start records the log ends\nwith, never below start_offset. The walk-back the promotion path already\ndid to count its skip run uses the same helper.\n\nSpec-Unaffected: only the live_offset reported to subscribers changes; the replication protocol, the mark's counting rule, where start records go and promotion are untouched.\n\n* fix(storage): update the EphemeralCache doctest for fallible get and put\n\nSpec-Unaffected: documentation example only\n\n* test(cluster): wait for both followers to be level before the mixed-fleet failover\n\nThe mixed-fleet promotion test assumed the fenceless broker would never be\npromoted. Failover promotes the replica furthest ahead in the leader's last\nreport, and the report that releases a Quorum publish is sent as soon as a\nmajority holds it, so it can show the fenceless follower one record ahead of\nthe other. The control plane then promotes it; it opens without the fence, as\nit should, and never counts a lease-path promotion.\n\nThe test now waits until the control plane holds a report with both followers\nat the leader's tail before cutting the leader off, so only placement's fixed\nranking decides, and says so directly if the fenceless broker is promoted.\n\nSpec-Unaffected: test-only; promotion and fencing are unchanged.\n\n* fix(broker): fail startup when the metrics port cannot be bound\n\nThe metrics listener was bound inside its spawned task, so a taken port left\nthe error in a join handle nobody reads until shutdown. The broker ran on with\nno /ready, /live or /metrics and logged nothing. The cluster harness hands each\nbroker a port it probed and released, and it retries a broker that exits;\none that loses the port race this way never exits, so the start timed out\n\"waiting for broker-0 to be ready\" with no logs to say why.\n\nThe listener is now bound before the spawn and a failure ends startup.\n\nSpec-Unaffected: startup error handling only; no replication or storage behaviour changes.\n\n* test(cluster): scale the start-up readiness wait and print broker logs when start fails\n\nCluster::start waited a fixed 30s for each broker's /ready while every other\nstart-up wait, and the same wait on restart, was scaled by\nFELIX_TEST_TIMEOUT_SCALE. The coverage job sets it to 5, so this one wait was\nthe tightest.\n\nA failed start also dropped the cluster without panicking, so its Drop never\nprinted the broker logs and the error was all there was. The error now carries\neach broker's log.\n\nSpec-Unaffected: test harness only.",
+          "timestamp": "2026-09-28T20:03:13-07:00",
+          "tree_id": "4b7a336feaa09c5f64ace8ee4fa4ce60a29f5e35",
+          "url": "https://github.com/gabloe/felix/commit/4ac832d825040dde90e779c7c41c96efdc63f633"
+        },
+        "date": 1790651170720,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 104,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 104.00\nmean: 103.20\nstdev: 1.30\ncv: 1.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 137,
+            "range": "2.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 137.00\nmean: 138.40\nstdev: 2.79\ncv: 2.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 182,
+            "range": "6.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 181.40\nstdev: 6.43\ncv: 3.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 136,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 136.00\nmean: 135.80\nstdev: 0.84\ncv: 0.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 265,
+            "range": "5.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 265.00\nmean: 267.60\nstdev: 5.18\ncv: 1.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 367,
+            "range": "25.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 367.00\nmean: 363.60\nstdev: 25.29\ncv: 6.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
