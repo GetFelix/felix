@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790666706832,
+  "lastUpdate": 1790682122995,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -20644,6 +20644,58 @@ window.BENCHMARK_DATA = {
             "range": "6022.48",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 824572.98\nmean: 825966.20\nstdev: 6022.48\ncv: 0.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7311b0fad2f2b116313a44fb048519f7539e4feb",
+          "message": "fix(placement): seat a Quorum replacement only once it holds what the old set held (#862)\n\nReplacing a follower adds the newcomer beside the one leaving, then drops\nthe one leaving once the newcomer is within the move lag bound or a report\nnames it caught up. A leader names every follower caught up at a new\ngeneration until something is counted there, so the seat could fire with\nthe newcomer holding nothing. A record acknowledged on the leader and the\nleaving follower was then held by neither the newcomer nor the lagging\nfollower, a majority of the new set, and a failover lost it.\n\nOn a durable Quorum stream the seat now also waits, on a report at the\njoining generation, until the newcomer holds at least what a majority of\nthe set it joined holds, counting a member the report leaves out as level\nwith the leader.\n\nThe model gains follower replacement (Reseat, Seat) under MaxMoves with\nspares, and SeatHoldsCopy. FelixShardFencedAckSeat passes and\nFelixShardFencedAckSeatEarly violates AckedHeldByLeader.",
+          "timestamp": "2026-09-29T04:38:41-07:00",
+          "tree_id": "d9cb8049b10ac1e484db75cc54fbc70637c94093",
+          "url": "https://github.com/gabloe/felix/commit/7311b0fad2f2b116313a44fb048519f7539e4feb"
+        },
+        "date": 1790682121857,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 507910.08,
+            "range": "25459.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 507910.08\nmean: 522594.31\nstdev: 25459.64\ncv: 4.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 507910.08,
+            "range": "25459.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 507910.08\nmean: 522594.31\nstdev: 25459.64\ncv: 4.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120177.42,
+            "range": "3236.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120177.42\nmean: 118630.37\nstdev: 3236.57\ncv: 2.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1201774.16,
+            "range": "32365.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1201774.16\nmean: 1186303.66\nstdev: 32365.65\ncv: 2.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
