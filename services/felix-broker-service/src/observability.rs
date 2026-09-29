@@ -10,7 +10,6 @@ pub(crate) mod backup;
 pub(crate) mod tenants;
 pub mod timings;
 
-use std::net::SocketAddr;
 use std::sync::OnceLock;
 
 use felix_common::lifecycle::Readiness;
@@ -67,7 +66,7 @@ pub(crate) fn init_observability(service_name: &str) -> PrometheusHandle {
     install_metrics_recorder()
 }
 
-/// Serves Prometheus metrics and health endpoints on the given socket address.
+/// Serves Prometheus metrics and health endpoints on `listener`.
 ///
 /// Starts an asynchronous HTTP server exposing:
 /// - `/metrics`: Prometheus metrics endpoint.
@@ -77,10 +76,10 @@ pub(crate) fn init_observability(service_name: &str) -> PrometheusHandle {
 /// - `/backup/offsets`: the committed offsets a backup point records.
 ///
 /// Runs until `shutdown` resolves, then stops accepting new requests and lets
-/// in-flight ones finish. Returns an I/O error if binding or serving fails.
+/// in-flight ones finish. Returns an I/O error if serving fails.
 pub(crate) async fn serve_metrics<F>(
     handle: PrometheusHandle,
-    addr: SocketAddr,
+    listener: tokio::net::TcpListener,
     readiness: Readiness,
     halted: std::sync::Arc<felix_replication::halted::HaltedReplicas>,
     backup: backup::BackupOffsets,
@@ -89,7 +88,6 @@ pub(crate) async fn serve_metrics<F>(
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let listener = tokio::net::TcpListener::bind(addr).await?;
     // Read-only for the same reason `/replication/halted` is.
     let router = health_router(handle, readiness, halted).merge(backup::router(backup));
     axum::serve(listener, router.into_make_service())

@@ -98,6 +98,34 @@ async fn run_with_shutdown_controlplane_enabled() -> Result<()> {
     Ok(())
 }
 
+/// A broker that cannot serve `/ready` has to exit, so whatever started it
+/// can try again, rather than run on unready with nothing reporting why.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_taken_metrics_port_fails_startup() -> Result<()> {
+    let taken = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let _g1 = EnvGuard::set(
+        "FELIX_BROKER_METRICS_BIND",
+        &taken.local_addr()?.to_string(),
+    );
+    let _g2 = EnvGuard::set("FELIX_QUIC_BIND", "127.0.0.1:0");
+    let _g3 = EnvGuard::unset("FELIX_CP_URL");
+    let _g4 = EnvGuard::set("FELIX_CONTROLPLANE_URL", "http://127.0.0.1:1");
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        run_with_shutdown(std::future::pending::<()>()),
+    )
+    .await
+    .expect("startup should fail, not run on without a metrics listener");
+    let err = result.expect_err("the metrics port is taken");
+    assert!(
+        format!("{err:#}").contains("metrics"),
+        "unexpected error: {err:#}"
+    );
+    Ok(())
+}
+
 fn free_tcp() -> std::net::SocketAddr {
     std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
