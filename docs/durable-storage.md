@@ -140,7 +140,7 @@ sequenceDiagram
         DEV-->>D: flushed
         D-->>L: durable
     else None / Periodic
-        Note over L,D: returns immediately;<br/>a background timer flushes later
+        Note over L,D: returns immediately.<br/>A background timer flushes later
     end
 
     L-->>B: AppendResult { first, last }
