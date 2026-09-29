@@ -681,5 +681,7 @@ Stated because a guarantee without its failure model is a slogan.
   > `crates/testing/felix-cluster/tests/queues/consumer_groups.rs`, including
   > `a_group_position_survives_a_leader_failover` and
   > `a_dead_letter_survives_a_leader_failover`.
-- **Retention is per stream and unbounded by default.** A stream with no
-  retention policy grows until the disk does not.
+- **Retention is set per broker and unbounded by default.** The broker applies
+  `FELIX_DURABLE_RETENTION_BYTES` and `FELIX_DURABLE_RETENTION_SECONDS` to each
+  stream's log. The retention policy recorded on a stream is not read. With
+  neither variable set, a log grows until the disk is full.

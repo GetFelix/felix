@@ -27,10 +27,8 @@ sequenceDiagram
 
 **Default broker endpoint**: `0.0.0.0:5000` (configurable via `quic_bind`)
 
-**TLS requirements**:
-- TLS 1.3 minimum
-- Certificate validation (can be disabled for development)
-- SNI supported for virtual hosting (future)
+The connection uses TLS 1.3, and the client always verifies the broker's
+certificate. There is no switch to turn verification off.
 
 ### Connection Pooling
 
@@ -74,6 +72,13 @@ If authentication fails, the broker rejects the connection or returns an unautho
 
 ## Publish Operations
 
+The JSON `publish` and `publish_batch` messages below are the compatibility
+path. Current clients publish with binary frames and fall back to JSON only
+against a broker that did not advertise the frame they need. The binary forms
+also carry a routing key, a request id for acks, and an idempotent producer's
+sequence. See [Binary PublishBatch](https://github.com/gabloe/felix/blob/main/docs/protocol.md#binary-publishbatch)
+and the keyed, acked and idempotent variants after it in `docs/protocol.md`.
+
 ### Single Message Publish
 
 Publish a single message to a stream.
@@ -87,6 +92,8 @@ Publish a single message to a stream.
   "namespace": "string",
   "stream": "string",
   "payload": "base64-encoded-bytes",
+  "key": "base64-encoded-bytes",
+  "request_id": 1,
   "ack": "none" | "per_message"
 }
 ```
@@ -99,31 +106,30 @@ Publish a single message to a stream.
 | `namespace` | string | Yes | Namespace within tenant |
 | `stream` | string | Yes | Target stream name |
 | `payload` | base64 | Yes | Message payload (base64-encoded binary) |
+| `key` | base64 | No | Routing key; picks the shard on a sharded stream |
+| `request_id` | u64 | With an ack | Echoed in the answer |
 | `ack` | enum | No | Acknowledgement mode (default: `none`) |
 
-**Acknowledgement modes**:
+With `ack: "none"` the broker sends nothing back. With `per_message` it answers
+once the publish is committed, or with the reason it was refused:
 
-- `none`: Fire-and-forget, no broker acknowledgement
-- `per_message`: Broker sends `ok` after enqueuing message
-
-**Response** (if `ack` != `none`):
+```json
+{ "type": "publish_ok", "request_id": 1 }
+```
 
 ```json
 {
-  "type": "ok",
-  "request_id": "string"
+  "type": "publish_error",
+  "request_id": 1,
+  "message": "stream not found: tenant=acme namespace=prod stream=events",
+  "code": "not_found",
+  "retry": "retry_after",
+  "detail": null
 }
 ```
 
-**Errors**:
-
-```json
-{
-  "type": "error",
-  "request_id": "string",
-  "message": "Unknown tenant: acme-corp"
-}
-```
+`code`, `retry` and `detail` are sent only to a client that offered
+`FEATURE_ERROR_CODES`. See [Error Handling](#error-handling).
 
 **Example usage**:
 
@@ -155,20 +161,9 @@ publisher
     .await?;
 ```
 
-**Performance characteristics**:
+Every message costs a frame of its own, so batch when throughput matters.
+Measured numbers are on the [Benchmarks](/felix/features/benchmarks/) page.
 
-- **Latency**: ~100-500 µs for ack mode (localhost)
-- **Throughput**: ~50-100k messages/sec per connection (single message publishes)
-- **Bottleneck**: per-message framing overhead
-
-:::note[When to Use Single Publish]
-Use single publish for:
-- Low-rate event streams (< 1000 msg/sec)
-- Interactive request/response patterns
-- Simplicity over throughput
-
-For high-throughput workloads, use batch publish instead.
-:::
 ### Batch Publish
 
 Publish multiple messages in a single operation.
@@ -196,14 +191,8 @@ Publish multiple messages in a single operation.
 | `payloads` | array | Yes | Array of base64-encoded payloads |
 | `ack` | enum | No | Acknowledgement mode (default: `none`) |
 
-**Response** (if `ack` == `per_batch`):
-
-```json
-{
-  "type": "ok",
-  "request_id": "string"
-}
-```
+With `ack: "per_batch"` and a `request_id`, the answer is one `publish_ok` or
+`publish_error` for the whole batch, shaped as above.
 
 **Example usage**:
 
@@ -221,30 +210,8 @@ publisher
     .await?;
 ```
 
-**Performance characteristics**:
-
-- **Latency**: ~200-1000 µs for batch of 64 (includes fanout)
-- **Throughput**: ~150-250k messages/sec per connection (batch=64)
-- **Optimal batch size**: 32-128 messages
-
-**Batch size tuning**:
-
-```rust
-use felix_wire::AckMode;
-let publisher = client.publisher().await?;
-
-// Small batches: lower latency, lower throughput
-let small_batch = collect_messages(timeout_ms: 10, max_count: 8);
-publisher
-    .publish_batch("acme", "prod", "stream", small_batch, AckMode::PerBatch)
-    .await?;
-
-// Large batches: higher latency, higher throughput
-let large_batch = collect_messages(timeout_ms: 100, max_count: 128);
-publisher
-    .publish_batch("acme", "prod", "stream", large_batch, AckMode::PerBatch)
-    .await?;
-```
+Larger batches raise throughput and add latency. See
+[Benchmarks](/felix/features/benchmarks/) for measured trade-offs.
 
 ### Binary Batch Publish
 
@@ -275,11 +242,8 @@ publisher
     .await?;
 ```
 
-**Performance improvement**:
-
-- **30-40% higher throughput** vs JSON for large batches
-- **Lower CPU usage** (no JSON parsing)
-- **Best for**: payload > 512 bytes, batch > 32 messages
+The Rust client uses this frame for every publish once the broker advertises
+it, so `publish` and `publish_batch` already take this path.
 
 ### Publish Pipeline Configuration
 
@@ -290,7 +254,6 @@ Broker-side tuning for publish pipeline:
 pub_workers_per_conn: 4        # Workers per connection
 pub_queue_depth: 64             # Publish queue bound
 publish_queue_wait_timeout_ms: 2000  # Queue full timeout
-publish_chunk_bytes: 16384      # Large payload chunking
 ```
 
 **Worker sizing**:
@@ -314,23 +277,34 @@ Subscribe to a stream to receive events.
   "type": "subscribe",
   "tenant_id": "string",
   "namespace": "string",
-  "stream": "string"
+  "stream": "string",
+  "subscription_id": 7,
+  "start": "latest" | "earliest" | { "offset": 1200 },
+  "shard": 0
 }
 ```
+
+`start` defaults to `latest`. `earliest` means the oldest record retained, and
+`{"offset": n}` resumes at offset `n` on a durable stream. `shard` defaults to 0,
+and a subscription reads one shard. An offset the broker cannot serve is
+answered with `subscribe_cursor_error` (`too_old` or `in_future`) instead of a
+silent restart at the tail.
 
 **Response**:
 
 ```json
-{
-  "type": "ok",
-  "request_id": "string"
-}
+{ "type": "subscribed", "subscription_id": 7, "start_offset": 1200, "live_offset": 1350 }
 ```
+
+`start_offset` is the first offset delivered and `live_offset` is the stream's
+tail when the subscriber was registered. Both are sent only for a subscribe with
+a `start`, on a durable stream, to a client that negotiated
+`FLAG_EVENT_BATCH_OFFSETS`.
 
 **Broker behavior**:
 
 1. Broker validates tenant/namespace/stream
-2. Broker sends `ok` on control stream
+2. Broker sends `subscribed` on control stream
 3. Broker opens new unidirectional stream for events
 4. Broker sends `event_stream_hello` as first frame on event stream
 5. Broker begins streaming events
@@ -358,9 +332,12 @@ Events arrive on a dedicated unidirectional stream per subscription.
   "tenant_id": "acme",
   "namespace": "prod",
   "stream": "events",
-  "payload": "base64-encoded-bytes"
+  "payload": "base64-encoded-bytes",
+  "offset": 1200
 }
 ```
+
+`offset` is present on durable streams only.
 
 **Event batch frame**:
 
@@ -374,6 +351,14 @@ Events arrive on a dedicated unidirectional stream per subscription.
 }
 ```
 
+In practice events arrive in binary batches. With `FLAG_EVENT_BATCH_OFFSETS`
+negotiated, each batch starts with a `base_offset`, and event `i` sits at
+`base_offset + i`. A gap between batches means the subscriber's queue dropped
+events. With `FLAG_EVENT_BATCH_SKIPPED` as well, a batch also carries
+`skipped_before`, the count of offsets before it that hold no event, so a gap
+can be told apart from a record that was never an event. See
+[Event batch offsets](https://github.com/gabloe/felix/blob/main/docs/protocol.md#event-batch-offsets).
+
 **Event stream lifecycle**:
 
 ```mermaid
@@ -382,7 +367,7 @@ sequenceDiagram
     participant B as Broker
     
     C->>B: subscribe
-    B-->>C: ok
+    B-->>C: subscribed
     Note over B: Open event stream
     B->>C: event_stream_hello
     loop Event delivery
@@ -439,9 +424,9 @@ let mut sub3 = client.subscribe("acme", "staging", "logs").await?;
 
 // Process events from all subscriptions concurrently
 tokio::select! {
-    Some(event) = sub1.next() => handle_order(event),
-    Some(event) = sub2.next() => handle_inventory(event),
-    Some(event) = sub3.next() => handle_log(event),
+    Ok(Some(event)) = sub1.next_event() => handle_order(event),
+    Ok(Some(event)) = sub2.next_event() => handle_inventory(event),
+    Ok(Some(event)) = sub3.next_event() => handle_log(event),
 }
 ```
 
@@ -485,7 +470,10 @@ Store a key-value pair with optional TTL.
 ```json
 {
   "type": "cache_put",
-  "request_id": "unique-id",
+  "tenant_id": "acme",
+  "namespace": "prod",
+  "cache": "sessions",
+  "request_id": 1,
   "key": "string",
   "value": "base64-encoded-bytes",
   "ttl_ms": number | null
@@ -496,7 +484,8 @@ Store a key-value pair with optional TTL.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `request_id` | string | Yes | Client-provided correlation ID |
+| `tenant_id`, `namespace`, `cache` | string | Yes | Which cache |
+| `request_id` | u64 | Yes | Client-provided correlation ID |
 | `key` | string | Yes | Cache key |
 | `value` | base64 | Yes | Value to store (base64-encoded) |
 | `ttl_ms` | number | No | Time-to-live in milliseconds (null = no expiration) |
@@ -504,10 +493,7 @@ Store a key-value pair with optional TTL.
 **Response**:
 
 ```json
-{
-  "type": "ok",
-  "request_id": "unique-id"
-}
+{ "type": "cache_ok", "request_id": 1 }
 ```
 
 **Example usage**:
@@ -539,11 +525,8 @@ client
     .await?;
 ```
 
-**Performance**:
-
-- **p50 latency**: 160-260 µs (varies with payload size)
-- **p99 latency**: 350-450 µs
-- **Throughput**: 125-185k ops/sec (concurrency=32)
+Measured latency and throughput are on the
+[Benchmarks](/felix/features/benchmarks/) page.
 
 ### Cache Get
 
@@ -579,16 +562,15 @@ Retrieve a value from the cache.
 
 ```rust
 match client.cache_get("acme", "prod", "sessions", session_id).await? {
-    Some(session_data) => {
-        // Session found
-        validate_session(session_data)?;
-    }
-    None => {
-        // Session expired or doesn't exist
-        return Err("Invalid session");
-    }
+    Some(session_data) => validate_session(session_data)?,
+    None => anyhow::bail!("session expired or unknown"),
 }
 ```
+
+On a replicated `Quorum` cache, the broker confirms it still leads the shard
+before answering a get. `FELIX_QUORUM_READS` picks how: `majority` (the default)
+runs a round its replicas answer, and `lease` trusts the lease instead. Before
+the fleet has finalized `lease_free_reads`, every read uses the lease.
 
 ### Cache Delete
 
@@ -627,19 +609,16 @@ match client.cache_delete("acme", "prod", "sessions", session_id).await? {
 Cache streams support pipelining multiple requests:
 
 ```rust
-// Send multiple requests without waiting
-let req1 = client.cache_get_async("config", "key1");
-let req2 = client.cache_get_async("config", "key2");
-let req3 = client.cache_get_async("config", "key3");
-
-// Await responses
-let (val1, val2, val3) = tokio::join!(req1, req2, req3);
+// Three requests in flight at once on the client's cache streams
+let (val1, val2, val3) = tokio::join!(
+    client.cache_get("acme", "prod", "config", "key1"),
+    client.cache_get("acme", "prod", "config", "key2"),
+    client.cache_get("acme", "prod", "config", "key3"),
+);
 ```
 
-**Benefits**:
-- Amortize network round-trip latency
-- Improve throughput under concurrency
-- Reduce overall request completion time
+Pipelining hides the round trip, so concurrent requests finish sooner than
+the same requests sent one after another.
 
 **Request_id requirement**:
 
@@ -656,13 +635,8 @@ cache_streams_per_conn: 4         # Streams per connection
 # Total concurrent cache operations: 8 × 4 = 32
 ```
 
-**Performance impact**:
-
-| Config | p50 (µs) | p99 (µs) | Throughput (k ops/s) |
-|--------|----------|----------|---------------------|
-| 1 conn, 1 stream | 175 | 850 | 45 |
-| 4 conn, 2 streams | 168 | 420 | 125 |
-| 8 conn, 4 streams | 165 | 360 | 180 |
+More streams allow more requests in flight. See
+[Benchmarks](/felix/features/benchmarks/) for measured numbers.
 
 ### Cache Configuration
 
@@ -792,10 +766,11 @@ already finished, which is worse than not offering queues at all.
 
 ## Cluster Operations
 
-A broker in a cluster answers three requests that a standalone one does not, and
-each is gated by a feature bit the broker advertises during the handshake. A
-client must not send one to a broker that did not advertise it: an unrecognised
-message type ends the broker's control loop, so probing costs the connection.
+A broker in a cluster supports the four messages below that a standalone one
+does not, each gated by a feature bit it advertises during the handshake. A
+client must not send one to a broker that did not advertise it. Unless both
+sides negotiated `FEATURE_UNSUPPORTED`, an unrecognised message type closes the
+stream, so probing costs the connection.
 
 ### Topology
 
@@ -857,6 +832,21 @@ cache.
 
 `ClusterClient::subscribe_sharded` does all of this for you: it asks, opens one
 subscription per shard, and follows each shard's own redirect.
+
+## Other Messages
+
+The control stream carries more than this page walks through. Each is
+specified in [`docs/protocol.md`](https://github.com/gabloe/felix/blob/main/docs/protocol.md):
+
+| Message | What it does |
+| --- | --- |
+| `auth` / `auth_ok` | The first round trip on every control stream. The client offers `client_flags` and features, and the broker answers with `server_flags`, `server_features` and, when granted, a `publish_window`. |
+| `subscribe_cursor_error` | A subscribe asked for an offset the broker cannot serve: `too_old` (retention removed it) or `in_future`. |
+| `shard_moved` | The last frame on a subscription's or cache watch's event stream when its shard moved, with where to resume. Sent only with `FEATURE_SHARD_MOVED`. |
+| `cache_watch` | Watch a cache key or prefix: current values, then every change. |
+| `counter_add` / `counter_get` | Add to and read a cache's counters. |
+| `producer_init` / `publish_idempotent` | Take a producer id and publish numbered batches that land once when re-sent. |
+| `unsupported` | The answer to a request type the broker does not know, when both sides negotiated `FEATURE_UNSUPPORTED`. |
 
 ## HTTP Endpoints
 
@@ -935,29 +925,24 @@ must be tolerated. The full table is in `docs/protocol.md` under "Error codes".
 
 ### Common Errors
 
-**Unknown tenant/namespace/stream**:
+**Unknown stream**:
 
 ```json
 {
-  "type": "error",
-  "message": "Unknown tenant: acme-corp"
+  "type": "publish_error",
+  "request_id": 1,
+  "message": "stream not found: tenant=acme namespace=prod stream=events",
+  "code": "not_found",
+  "retry": "retry_after"
 }
 ```
 
-**Resolution**: Ensure tenant/namespace exists in broker metadata.
+The stream does not exist on this broker. Brokers learn streams from the
+control plane, so a stream created a moment ago can answer this until the
+broker's next sync. Retry after a short wait, and check the stream exists if it
+persists.
 
-**Malformed request**:
-
-```json
-{
-  "type": "error",
-  "message": "Invalid payload encoding"
-}
-```
-
-**Resolution**: Validate request payload format.
-
-**Timeout**:
+**Publish queue full**:
 
 ```json
 {
@@ -979,8 +964,11 @@ raise `pub_queue_depth`.
 
 ```json
 {
-  "type": "error",
-  "message": "Unauthorized: insufficient permissions for stream 'events'"
+  "type": "publish_error",
+  "request_id": 1,
+  "message": "forbidden",
+  "code": "forbidden",
+  "retry": "fatal"
 }
 ```
 
@@ -1000,24 +988,34 @@ QUIC connection errors are surfaced as connection-level failures:
 
 **Retry logic**:
 
+Branch on the error's retry class. A `BrokerError` is recovered from the
+`anyhow::Error` with `downcast_ref`. Only `retry`, `retry_after` and `redirect`
+say nothing was applied. `outcome_unknown` may have landed, so re-sending it is
+safe only through an idempotent producer.
+
 ```rust
-async fn publish_with_retry(client: &Client, retries: u32) -> Result<()> {
-    use felix_wire::AckMode;
+use felix_client::{BrokerError, Client, RetryClass};
+use felix_wire::AckMode;
+use std::time::Duration;
+
+async fn publish_with_retry(client: &Client, data: &[u8], retries: u32) -> anyhow::Result<()> {
     let publisher = client.publisher().await?;
     for attempt in 0..retries {
-        match publisher
+        let err = match publisher
             .publish("acme", "prod", "events", data.to_vec(), AckMode::PerMessage)
             .await
         {
-            Ok(_) => return Ok(()),
-            Err(e) if e.is_retriable() => {
+            Ok(()) => return Ok(()),
+            Err(err) => err,
+        };
+        match err.downcast_ref::<BrokerError>().map(|e| e.retry) {
+            Some(RetryClass::Retry | RetryClass::RetryAfter) => {
                 tokio::time::sleep(Duration::from_millis(100 * 2u64.pow(attempt))).await;
-                continue;
             }
-            Err(e) => return Err(e),
+            _ => return Err(err),
         }
     }
-    Err("Max retries exceeded")
+    anyhow::bail!("gave up after {retries} attempts")
 }
 ```
 

@@ -8,8 +8,8 @@ working reference — setup, configuration, and the patterns that matter in
 practice.
 
 It is also what every other language binds to rather than reimplementing —
-see [Clients in Other Languages](/felix/clients/overview/) for Python and for how
-new languages are gated on a conformance suite.
+see [Choosing a Client](/felix/clients/overview/) for the Python and
+TypeScript bindings and for how a new language is gated on a conformance suite.
 
 ## Installation
 
@@ -17,18 +17,10 @@ new languages are gated on a conformance suite.
 cargo add felix-client
 ```
 
-Or in `Cargo.toml`:
+With the optional telemetry feature:
 
-```toml
-[dependencies]
-felix-client = "0.5"
-```
-
-Optional features:
-
-```toml
-[dependencies]
-felix-client = { version = "0.5", features = ["telemetry"] }
+```bash
+cargo add felix-client --features telemetry
 ```
 
 **Features**:
@@ -302,10 +294,10 @@ PublishSharding::RoundRobin
 PublishSharding::HashStream
 ```
 
-**When to use each**:
-
-- **RoundRobin**: Default, good for single stream, evenly distributes load
-- **HashStream**: Publishing to multiple streams, keeps stream-specific ordering
+`HashStream` is the default. It sends every publish to one stream through the
+same writer, so each stream's publishes reach the broker in order.
+`RoundRobin` spreads load evenly across writers, but publishes to one stream
+can arrive out of order.
 
 ### Errors you can act on
 
@@ -771,9 +763,9 @@ match client.cache_delete("acme", "prod", "sessions", "user-abc").await? {
 }
 ```
 
-Needs a broker advertising `FEATURE_CACHE_DELETE`; the client returns an error
-rather than probing, because an unrecognised message type ends the broker's
-control loop.
+Needs a broker advertising `FEATURE_CACHE_DELETE`. The client returns an error
+rather than probing, because a broker that does not advertise
+`FEATURE_UNSUPPORTED` ends its control loop on an unrecognised message type.
 
 ### Watch
 
@@ -925,8 +917,8 @@ loop {
 
     for record in records {
         // `attempts` is 1 on a first delivery and higher on a redelivery, so a
-        // consumer can treat a retry differently. Absent means the broker did
-        // not report it, which is not the same as a first attempt.
+        // consumer can treat a retry differently. 0 means the broker did not
+        // report it, which is not the same as a first attempt.
         match handle(&record.payload, record.attempts) {
             Ok(()) => client.group_ack("acme", "prod", "jobs", 0, "fulfilment", record.offset).await?,
             // Hand it back for immediate redelivery rather than waiting out the
@@ -1036,64 +1028,30 @@ owner left off. Needs `FEATURE_CACHE_SHARDS`.
 
 ## Connection Management
 
-### Automatic Reconnection
-
-Clients should implement reconnection logic:
-
-```rust
-use std::net::SocketAddr;
-
-async fn connect_with_retry(
-    addr: SocketAddr,
-    server_name: &str,
-    config: ClientConfig,
-    max_retries: u32,
-) -> Result<Client> {
-    for attempt in 0..max_retries {
-        match Client::connect(addr, server_name, config.clone()).await {
-            Ok(client) => return Ok(client),
-            Err(e) if attempt < max_retries - 1 => {
-                let delay = Duration::from_millis(100 * 2u64.pow(attempt));
-                eprintln!("Connection failed, retrying in {:?}: {}", delay, e);
-                tokio::time::sleep(delay).await;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    unreachable!()
-}
-```
-
-### Health Monitoring
-
-Check connection health:
+`Client` does not reconnect. When its connection drops, calls fail and the
+application decides what to do. Use `ClusterClient` if you want reconnection
+handled for you: it retries on another broker with the backoff in
+`ReconnectPolicy`, which `connect_with_policy` lets you tune.
 
 ```rust
-async fn monitor_connection(client: &Client) -> Result<()> {
-    loop {
-        match client.health_check().await {
-            Ok(()) => {
-                // Connection healthy
-            }
-            Err(e) => {
-                eprintln!("Health check failed: {:?}", e);
-                // Implement reconnection
-            }
-        }
-        tokio::time::sleep(Duration::from_secs(5)).await;
-    }
-}
+use felix_client::{ClusterClient, ReconnectPolicy};
+
+let policy = ReconnectPolicy {
+    attempts: 10,
+    max_backoff: Duration::from_secs(5),
+    ..ReconnectPolicy::default()
+};
+let client = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy).await?;
 ```
 
 ## Telemetry
 
 ### Enabling Telemetry
 
-Compile with telemetry feature:
+Compile with the telemetry feature:
 
-```toml
-[dependencies]
-felix-client = { version = "0.5", features = ["telemetry"] }
+```bash
+cargo add felix-client --features telemetry
 ```
 
 ### Collecting Metrics
@@ -1105,7 +1063,7 @@ use felix_client::{frame_counters_snapshot, reset_frame_counters};
 let counters = frame_counters_snapshot();
 println!("Frames out: {}", counters.frames_out_ok);
 println!("Frames in: {}", counters.frames_in_ok);
-println!("Publish batches acked: {}", counters.pub_batches_out_ok);
+println!("Publish batches sent: {}", counters.pub_batches_out_ok);
 println!("Events received: {}", counters.sub_items_in_ok);
 
 // Reset counters
@@ -1131,29 +1089,34 @@ if let Some(samples) = timings::take_samples() {
 :::caution[Telemetry Overhead]
 Telemetry adds measurable overhead (5-15% in high-throughput workloads). Use only for debugging and profiling, not in production hot paths unless necessary.
 :::
+
 ## Patterns
 
 ### Connection Pooling
 
+Connect once and share the client. Connect inside the application's own
+runtime: the client's tasks live on the runtime that created it, so a client
+built on a throwaway runtime dies with that runtime.
+
 ```rust
-// Good: reuse client across application
 use felix_wire::AckMode;
 use std::net::SocketAddr;
+use tokio::sync::OnceCell;
 
-lazy_static! {
-    static ref FELIX_CLIENT: Client = {
-        let quinn = quinn::ClientConfig::with_platform_verifier();
-        let config = ClientConfig::optimized_defaults(quinn);
-        let addr: SocketAddr = "127.0.0.1:5000".parse().unwrap();
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(Client::connect(addr, "localhost", config))
-            .unwrap()
-    };
+static FELIX_CLIENT: OnceCell<Client> = OnceCell::const_new();
+
+async fn felix() -> Result<&'static Client> {
+    FELIX_CLIENT
+        .get_or_try_init(|| async {
+            let quinn = quinn::ClientConfig::with_platform_verifier();
+            let config = ClientConfig::optimized_defaults(quinn);
+            let addr: SocketAddr = "127.0.0.1:5000".parse()?;
+            Client::connect(addr, "localhost", config).await
+        })
+        .await
 }
 
-// Use shared client
-let publisher = FELIX_CLIENT.publisher().await?;
+let publisher = felix().await?.publisher().await?;
 publisher
     .publish("acme", "prod", "events", data.to_vec(), AckMode::None)
     .await?;
@@ -1162,6 +1125,8 @@ publisher
 ### Error Recovery
 
 ```rust
+use felix_client::{BrokerError, RetryClass};
+
 async fn publish_with_retry(
     client: &Client,
     tenant: &str,
@@ -1178,7 +1143,7 @@ async fn publish_with_retry(
             .await
         {
             Ok(()) => return Ok(()),
-            Err(e) if is_retriable(&e) && attempt < max_retries - 1 => {
+            Err(e) if safe_to_resend(&e) && attempt < max_retries - 1 => {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
@@ -1188,10 +1153,14 @@ async fn publish_with_retry(
     unreachable!()
 }
 
-// Client calls return `anyhow::Error`. What counts as transient is the
-// application's call; inspect the error chain to decide.
-fn is_retriable(_error: &anyhow::Error) -> bool {
-    true
+// The broker says in `BrokerError::retry` whether the publish may have been
+// applied. `OutcomeUnknown` is not safe to resend here, because a plain
+// publish could land twice. Use an `IdempotentProducer` for that case.
+fn safe_to_resend(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<BrokerError>().map(|e| e.retry),
+        Some(RetryClass::Retry | RetryClass::RetryAfter)
+    )
 }
 ```
 
@@ -1267,7 +1236,7 @@ async fn test_cache_ttl() {
             .cache_get("test", "default", "cache", "key")
             .await
             .unwrap(),
-        Some(b"value".to_vec())
+        Some(Bytes::from_static(b"value"))
     );
     
     // Wait for expiration
@@ -1296,11 +1265,15 @@ else is a knob to turn off a measurement; see
 
 | Operation | Method | Use Case |
 |-----------|--------|----------|
+| Publisher | `Client::publisher()` | Streaming publish |
 | Single publish | `Publisher::publish()` | Low-rate events |
 | Batch publish | `Publisher::publish_batch()` | High-throughput |
+| Idempotent publish | `idempotent_producer()` | Safe resend after `OutcomeUnknown` |
 | Subscribe | `subscribe()` | Event consumption |
-| Cache put | `cache_put()` | Store with TTL |
-| Cache get | `cache_get()` | Retrieve value |
-| Publisher | `Client::publisher()` | Streaming publish |
+| Cache put / get / delete | `cache_put()`, `cache_get()`, `cache_delete()` | Key-value with TTL |
+| Cache watch | `watch_cache()`, `watch_cache_retained()` | Follow changes to a key or prefix |
+| Counters | `counter_add()`, `counter_get()` | Durable counters |
+| Consumer groups | `group_poll()`, `group_ack()`, `group_nack()` | Work queues |
+| Cluster | `ClusterClient::connect()` | Multi-broker, reconnects and follows redirects |
 
 For complete API documentation, see the [rustdoc](https://docs.rs/felix-client).

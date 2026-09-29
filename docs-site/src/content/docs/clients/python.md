@@ -254,7 +254,7 @@ code this client does not know still carries a retry class.
 
 All three are `None` when the broker predates error codes, or when the failure
 happened in the client (a lost connection, say). Then the class is chosen from
-the message, the way older versions of this client always did.
+the message.
 
 Never match on the message. It is prose and it will be reworded; that is
 exactly what the exception types and `code` exist to spare you.
@@ -311,39 +311,75 @@ for offset in client.group_dead_letters("t1", "default", "orders", shard, "billi
         client.group_discard("t1", "default", "orders", shard, "billing", offset)
 ```
 
+## Cache and counters
+
+```python
+client.cache_put("t1", "default", "sessions", "user-abc", data, ttl=3600.0)
+value = client.cache_get("t1", "default", "sessions", "user-abc")      # bytes or None
+removed = client.cache_delete("t1", "default", "sessions", "user-abc") # bytes or None
+```
+
+`ttl` is in seconds and takes a float, so `ttl=0.5` is half a second. Leave it
+out and the entry has no time-to-live. `cache_get` returns `None` for a key that is
+missing or expired. `cache_delete` returns the value it removed, or `None` if
+the key was not there, so you can tell a delete that did something from one
+that did not.
+
+Counters live beside the cache and use the same scoping:
+
+```python
+total = client.counter_add("t1", "default", "limits", "user:42:reqs", 1)  # sum after the add
+current = client.counter_get("t1", "default", "limits", "user:42:reqs")   # int or None
+```
+
+`counter_add` takes a signed delta and returns the sum including it.
+`counter_get` returns `None` for a counter that was never written, which is not
+the same as zero. A retry after a lost acknowledgement counts twice. Counters
+need a durable broker that advertises `FEATURE_COUNTERS`.
+
+`AsyncClient` has the same methods as coroutines.
+
 ## Cache watches
 
 What makes the cache a state-synchronisation primitive rather than a
 notification: resume by offset, and loss that is loud.
 
 ```python
-with client.watch_cache(
-    "t1", "default", "sessions",
-    felix.CacheWatchFilter.prefix("room:42:"),
-    retained=True,
-) as watch:
-    # Retained values arrive first, and the count says exactly how many. Zero is
-    # a definite answer — the prefix is empty — not a silence to wait through.
-    roster = {}
-    for _ in range(watch.retained_count):
-        change = watch.recv()
-        roster[change.key] = change.value
+roster = {}
+resume_from = None
+while True:
+    with client.watch_cache(
+        "t1", "default", "sessions",
+        felix.CacheWatchFilter.prefix("room:42:"),
+        start=resume_from,
+        retained=resume_from is None,
+    ) as watch:
+        if resume_from is None:
+            # Retained values arrive first, and the count says exactly how many.
+            # Zero is a definite answer (the prefix is empty), not a silence to
+            # wait through.
+            for _ in range(watch.retained_count):
+                change = watch.recv()
+                roster[change.key] = change.value
+        resume_from = None
 
-    # State is now complete. Everything after this is live.
-    for item in watch:
-        if isinstance(item, felix.CacheWatchLagged):
-            # Not an error: the watch did its job by saying so. Offsets on a
-            # filtered watch are sparse, so loss cannot be inferred the way a
-            # stream subscriber infers it — this is the only signal.
-            watch = client.watch_cache(..., start=item.resume_from)
-            continue
-        if isinstance(item, felix.CacheWatchShardMoved):
-            # The shard moved to another broker; the watch follows it there.
-            continue
-        if item.value is None:
-            roster.pop(item.key, None)     # a delete is a change with no value
-        else:
-            roster[item.key] = item.value
+        # State is now complete. Everything after this is live.
+        for item in watch:
+            if isinstance(item, felix.CacheWatchLagged):
+                # Not an error: the watch did its job by saying so. Offsets on a
+                # filtered watch are sparse, so loss cannot be inferred the way a
+                # stream subscriber infers it. This is the only signal.
+                resume_from = item.resume_from
+                break
+            if isinstance(item, felix.CacheWatchShardMoved):
+                # The shard moved to another broker; the watch follows it there.
+                continue
+            if item.value is None:
+                roster.pop(item.key, None)     # a delete is a change with no value
+            else:
+                roster[item.key] = item.value
+    if resume_from is None:
+        break                                  # the broker ended the watch
 ```
 
 Three things in that example are load-bearing:
@@ -419,8 +455,8 @@ with its own connection pool, and they do not share discovery.
 
 - **`at_least_once` with a routing key** — the re-send path does not carry one,
   and the client refuses the combination rather than silently dropping the key.
-- **Idempotent producers** (`producer_init` / `publish_idempotent`) — the Rust
-  client has them; this binding does not wrap them yet.
+- **Idempotent producers.** The Rust client's `IdempotentProducer` is not
+  wrapped yet.
 
 Both are marked in the conformance catalogue, so the binding reports them as
 unclaimed rather than passing over them in silence.

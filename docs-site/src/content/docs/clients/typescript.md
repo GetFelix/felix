@@ -75,9 +75,14 @@ choices and no third: the platform trust store, or an explicit `caFile` for a
 self-signed development broker. There is deliberately no "skip verification"
 switch.
 
-`offerAlpn: true` makes the client offer the `felix/1` ALPN, which a broker
-running with `FELIX_TLS_REQUIRE_ALPN=true` insists on. It is off by default
-because a broker older than ALPN support refuses a client that offers it.
+Passing `true` as `offerAlpn` makes the client offer the `felix/1` ALPN, which
+a broker running with `FELIX_TLS_REQUIRE_ALPN=true` insists on. It is off by
+default because a broker older than ALPN support refuses a client that offers
+it.
+
+```ts
+const client = await Client.connect(addrs, "t1", token, "localhost", caFile, true);
+```
 
 ## Disposal
 
@@ -291,8 +296,7 @@ code, except that an `outcome_unknown` retry class always makes an
 `OutcomeUnknownError`.
 
 All three are `undefined` when the broker predates error codes, or when the failure
-happened in the client. Then the class is chosen from the message, the way
-older versions of this client always did.
+happened in the client. Then the class is chosen from the message.
 
 `err.kind` is this client's own name for the class (`FELIX_CONNECTION`,
 `FELIX_SHARD_UNAVAILABLE`, …), set whether or not the broker sent a code, for
@@ -351,6 +355,32 @@ for (const offset of offsets) {
   }
 }
 ```
+
+## Cache and counters
+
+```ts
+await client.cachePut("t1", "default", "sessions", "user-abc", data, 3600);  // ttlSeconds
+const value = await client.cacheGet("t1", "default", "sessions", "user-abc");      // Buffer | null
+const removed = await client.cacheDelete("t1", "default", "sessions", "user-abc"); // Buffer | null
+```
+
+`ttlSeconds` is a number of seconds and may be fractional, so `0.5` is half a
+second. Leave it out and the entry has no time-to-live. `cacheGet` returns `null`
+for a key that is missing or expired. `cacheDelete` returns the value it
+removed, or `null` if the key held nothing, so you can tell a delete that did
+something from one that did not.
+
+Counters live beside the cache and use the same scoping:
+
+```ts
+const total = await client.counterAdd("t1", "default", "limits", "user:42:reqs", 1); // sum after the add
+const current = await client.counterGet("t1", "default", "limits", "user:42:reqs");  // number | null
+```
+
+`counterAdd` takes a signed delta and returns the sum including it.
+`counterGet` returns `null` for a counter that was never written, which is not
+the same as zero. A retry after a lost acknowledgement counts twice. Counters
+need a durable broker that advertises `FEATURE_COUNTERS`.
 
 ## Cache watches
 
@@ -456,9 +486,13 @@ A single offset carried across shards would replay on every shard but one.
 :::caution[A shard that delivered nothing has no position]
 `positions()` only lists shards that handed something over. On resume, a shard
 not in the map starts wherever `start` says — the live tail by default — so
-records published to it while you were away are missed. Pass
-`start: "earliest"` alongside `resume` if that matters, or make sure every
-shard has reported before you checkpoint.
+records published to it while you were away are missed. Pass `"earliest"` as
+`start` alongside `resume` if that matters, or make sure every shard has
+reported before you checkpoint:
+
+```ts
+await client.subscribeSharded("t1", "default", "orders", "earliest", positions);
+```
 :::
 
 ## Buffers are Buffers
@@ -470,15 +504,15 @@ Payloads and cache values come back as real `Buffer`s, not wrappers. `equals`,
 if (event.payload.equals(expected)) { /* ... */ }
 ```
 
-Offsets, counters and cache-watch offsets are `bigint`. Mixing them with
-`number` throws, so `offset + 1n` rather than `offset + 1`.
+Stream offsets, group offsets and cache-watch offsets are `bigint`. Mixing
+them with `number` throws, so `offset + 1n` rather than `offset + 1`. Counter
+values are plain `number`s, exact up to `Number.MAX_SAFE_INTEGER`.
 
 ## What is not wrapped
 
-- **Idempotent producers** (`producerInit` / `publishIdempotent`) — they turn an
+- **Idempotent producers.** The Rust client's `IdempotentProducer` turns an
   ambiguous publish into one the broker recognises as a re-send and refuses to
-  append twice. Surface over a primitive that already exists, not protocol
-  work.
+  append twice. This binding does not wrap it yet.
 
 Marked in the conformance catalogue, so the binding reports it as unclaimed
 rather than passing over it in silence.
