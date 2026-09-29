@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790659208115,
+  "lastUpdate": 1790659537823,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -25806,6 +25806,72 @@ window.BENCHMARK_DATA = {
             "range": "654.55",
             "unit": "us",
             "extra": "trials: 5\nmedian: 656.00\nmean: 971.80\nstdev: 654.55\ncv: 67.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fb3e1ed417a56871a8e3a2efa0e91bc5923b5df6",
+          "message": "fix(placement): keep the replica set when a Quorum shard fails over (#855)\n\nFailover rebuilt the followers with choose_replicas, which drops the dead\nleader and adds live brokers that never held the shard. With majority_ack\nfinalized the promoted leader fences a majority of that new set: with a\nspare broker it could be the new leader and the spare alone, and with no\nother live broker the set was empty and it fenced nobody. Either way it\ncould open without a write the old leader and another follower\nacknowledged, and with the control plane on the minority side of a\npartition both sides acknowledged.\n\nA durable Quorum stream now keeps the previous set, the dead leader in it,\nminus any copy a move was still staging, so the fence needs a majority of\nthe set that acknowledged. A down member stays a follower, as a down\nfollower already does.\n\nThe model gains spare brokers, Promotion = \"any\" and ReplaceOnPromote:\nFelixShardFencedAckAnyKept passes, FelixShardFencedAckAnyReplaced loses\nthe record.",
+          "timestamp": "2026-09-28T22:19:31-07:00",
+          "tree_id": "4201abc329bac70623b6c8a5bfde68ed618e8f2e",
+          "url": "https://github.com/gabloe/felix/commit/fb3e1ed417a56871a8e3a2efa0e91bc5923b5df6"
+        },
+        "date": 1790659535233,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 166,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 166.00\nmean: 166.40\nstdev: 1.14\ncv: 0.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 225,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 225.00\nmean: 224.60\nstdev: 1.14\ncv: 0.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 285,
+            "range": "16.08",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 285.00\nmean: 286.20\nstdev: 16.08\ncv: 5.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 205,
+            "range": "7.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 205.00\nmean: 208.00\nstdev: 7.28\ncv: 3.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 415,
+            "range": "286.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 415.00\nmean: 543.60\nstdev: 286.57\ncv: 52.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 583,
+            "range": "861.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 583.00\nmean: 959.60\nstdev: 861.97\ncv: 89.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
