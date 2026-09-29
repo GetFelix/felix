@@ -14,10 +14,10 @@ on:
       - "**/*.md"
 
 jobs:
-  # Self-hosted for trusted events, GitHub-hosted for fork PRs; see ci.yml's
-  # test job.
+  # Self-hosted for pushes to main, GitHub-hosted for PRs; see ci.yml's test
+  # job.
   coverage:
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
+    runs-on: ${{ github.event_name != 'pull_request' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
     timeout-minutes: 150
     permissions:
       contents: write

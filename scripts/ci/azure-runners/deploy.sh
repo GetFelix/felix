@@ -15,13 +15,14 @@ GROUP="${GROUP:-felix-ci-runners}"
 LOCATION="${LOCATION:-eastus}"
 SIZE="${SIZE:-Standard_D8as_v5}"
 COUNT="${COUNT:-2}"
+FIRST="${FIRST:-1}"
 REPO="${REPO:-gabloe/felix}"
 LABELS="${LABELS:-felix-azure}"
 IMAGE="Canonical:ubuntu-24_04-lts:server:latest"
 KEY="${KEY:-$HOME/.ssh/felix-ci-runners}"
 PREFIX="felix-ci-runner"
 
-vm_names() { for i in $(seq 1 "${COUNT}"); do echo "${PREFIX}-${i}"; done; }
+vm_names() { for i in $(seq "${FIRST}" $((FIRST + COUNT - 1))); do echo "${PREFIX}-${i}"; done; }
 
 # run_on <vm> <script>: run as root and fail unless the script reached the end.
 # run-command reports success for a delivered script whatever its exit code,
