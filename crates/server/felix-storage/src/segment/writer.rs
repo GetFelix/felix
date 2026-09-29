@@ -342,7 +342,7 @@ impl SegmentWriter {
         // rewind itself fails there is no way to restore the invariant, and the
         // writer refuses further appends rather than building on a file whose
         // shape it no longer knows.
-        if let Err(err) = self.file.write_all(&self.staging) {
+        if let Err(err) = crate::io::write_all(&self.file, &self.staging) {
             self.rewind_after_failed_write()?;
             return Err(StorageError::Io(err));
         }

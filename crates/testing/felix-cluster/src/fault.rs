@@ -60,6 +60,8 @@ pub enum Fault {
     },
     /// `node`'s flushes are slow or fail. See [`FsyncFault`].
     Fsync { node: String, fault: FsyncFault },
+    /// `node`'s segment writes fail. See [`WriteFault`].
+    Write { node: String, fault: WriteFault },
 }
 
 impl Fault {
@@ -126,4 +128,21 @@ pub enum FsyncFault {
     /// reports a writeback error once. What catches code that retries a
     /// failed fsync and trusts the retry.
     FailOnce,
+}
+
+/// How a broker's disk refuses a segment write.
+///
+/// Every record a broker appends, as leader or as follower, reaches its log
+/// through one write per batch, and that write passes the fault first. A
+/// failed write lands half its batch before it reports, like a disk that
+/// fills mid-write, so the broker has a partial record to clean up.
+/// Flushes, indexes and the small metadata files are not affected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteFault {
+    /// Every write fails with `ENOSPC` until healed: a full disk.
+    NoSpace,
+    /// Every write fails with `EIO` until healed: a disk that has gone bad.
+    Io,
+    /// The next write fails with `EIO` and later ones succeed.
+    IoOnce,
 }

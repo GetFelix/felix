@@ -18,3 +18,4 @@ mod majority_ack;
 mod membership;
 mod partition;
 mod promotion_fence;
+mod writes;

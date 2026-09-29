@@ -122,6 +122,7 @@ scenario can cut a leader's links and speed up its clock at once.
 | `Suspend` | `SIGSTOP`: the broker stays alive, holds its lease and answers nothing | Signal (Unix only) |
 | `Clock` | Time stepped or running at a different rate | `FELIX_CLOCK_FAULT_FILE` |
 | `Fsync` | Flushes delayed, failing with `EIO`, or failing once | `FELIX_STORAGE_FAULT_FILE` |
+| `Write` | Segment writes failing with `ENOSPC` or `EIO`, or failing once | `FELIX_STORAGE_FAULT_FILE` |
 
 Process-level faults are methods: `stop_node`, `kill_node`, `pause_node`,
 `partition_node`, `restart_control_plane`, `drain_node` and `add_node`.

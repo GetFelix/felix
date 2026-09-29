@@ -264,6 +264,7 @@ cluster.heal_all().await?;
 | `Suspend { node }` | `SIGSTOP`: alive, silent, holding its lease | Signal |
 | `Clock { process, fault }` | Time stepped (`StepMillis`, forward only on a broker) or running at a `Rate` | Clock fault file |
 | `Fsync { node, fault }` | Flushes slow (`Delay`), failing with `EIO` (`Fail`), or failing once (`FailOnce`) | Storage fault file |
+| `Write { node, fault }` | Segment writes failing with `ENOSPC` (`NoSpace`) or `EIO` (`Io`), or failing once with `EIO` (`IoOnce`) | Storage fault file |
 
 An endpoint is a broker (`Endpoint::node(id)`) or the control plane. A fault
 naming a broker the cluster does not have, or a link fault on a cluster
@@ -274,7 +275,8 @@ that is the whole of it, and they stay in the harness's process group so a
 Ctrl-C of the test still reaches them.
 
 `crates/testing/felix-cluster/tests/failures/` has one module per family
-(`links`, `clocks`, `fsync`, and `faults` for suspend and composition). Each
+(`links`, `clocks`, `fsync`, `writes`, and `faults` for suspend and
+composition). Each
 test checks the fault took effect before anything else and heals it; each
 fails when `inject` is stubbed to do nothing.
 
@@ -379,8 +381,25 @@ generation=1         # a new value arms fail_once again
 
 A failure is reported instead of flushing; the dirty pages are not dropped.
 The fault is process-wide: `fail_once` fails whichever flush on that broker
-comes next, on any of its logs. Only debug builds and builds with the storage
-crate's `fault-injection` feature compile the hook in. The fsync tests run under
+comes next, on any of its logs.
+
+The same file fails segment writes, the one `write` each appended batch
+makes, whether the broker leads the log or follows it:
+
+```text
+write=enospc         # every segment write fails with ENOSPC; or eio
+write=eio_once       # the next segment write fails with EIO, later ones succeed
+write_generation=1   # a new value arms eio_once again
+```
+
+A failed write lands the first half of its batch and then reports, as a disk
+that fills mid-write does, so the test exercises the writer's rewind rather
+than a write that did nothing. Index writes, flushes and the small metadata
+files are not affected. The file is re-read on the next write or flush once
+50 ms have passed.
+
+Only debug builds and builds with the storage crate's `fault-injection`
+feature compile the hooks in. The fsync and write tests run under
 `FELIX_DURABLE_FSYNC_MODE=on_commit` and `FELIX_ACK_ON_COMMIT=true`, since by
 default a `Leader` publish is acknowledged once it is queued and so could not
 fail on the disk.
@@ -393,6 +412,22 @@ fail on the disk.
 
 > `a_quorum_leader_with_a_failed_fsync_does_not_ack` -- a `Quorum` leader whose
 > own flush fails does not acknowledge, whatever its followers hold.
+
+> `a_full_disk_fails_the_publish_and_leaves_no_trace` -- a publish whose write
+> hits `ENOSPC` is refused as `storage`, `outcome_unknown`; after healing the
+> log takes appends again and holds exactly what was acknowledged, before and
+> after a restart.
+
+> `a_single_failed_write_does_not_stop_the_log` -- unlike a failed fsync, one
+> failed write costs one publish and the next is acknowledged.
+
+> `a_quorum_leader_whose_write_fails_does_not_ack` -- a `Quorum` leader whose
+> own write fails refuses the publish, and the record appears nowhere after
+> healing.
+
+> `a_follower_whose_write_fails_does_not_count_toward_the_majority` -- with
+> one follower's disk full a `Quorum` publish is still acknowledged; with both
+> it times out as `quorum_timeout`, `outcome_unknown`.
 
 All three files are read only when their variable is set. The harness sets
 them for every broker it starts and writes them only to inject a fault. A
