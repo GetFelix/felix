@@ -158,15 +158,14 @@ are too slow for a GitHub-hosted runner:
 - `ci.yml`'s `test` job
 - `coverage.yml`
 - `history.yml`, the nightly history campaign
-- `fuzz-nightly.yml`
 - `power-loss-nightly.yml`
 
-Everything else, including the four TLA+ shards, stays on GitHub-hosted
-runners. The shards run in parallel there, which two machines could not match.
+Everything else stays on GitHub-hosted runners. The four TLA+ shards run in
+parallel there, which two machines could not match, and each fuzz target uses
+one core, so the nightly fuzz matrix gains little from eight.
 
 There are two runners and each takes one job at a time, so when both are busy
-jobs wait in the queue. The nightly fuzz matrix and the history campaign start
-at the same time and keep both runners busy for a few hours.
+jobs wait in the queue.
 
 **Fork pull requests never run on them.** The repository is public, and a
 persistent machine that ran a stranger's code would hand it to the next job.
