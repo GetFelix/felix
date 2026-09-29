@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790651177210,
+  "lastUpdate": 1790652598944,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -20072,6 +20072,58 @@ window.BENCHMARK_DATA = {
             "range": "12654.08",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1267717.14\nmean: 1261166.33\nstdev: 12654.08\ncv: 1.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d6a8bccb5394cf574e7399f5e79c2ade0bd15a9f",
+          "message": "fix(wire): refuse a nonzero commit offset in a labelled batch that has none (#837)\n\nReplicateLabelledRecords carries has_commit u8 and then commit_offset u64\nwhatever the flag says. The decoder dropped the offset when has_commit was\n0 without checking it was zero, so a frame with junk there decoded to a\nmessage that re-encodes to different bytes. The internal_message fuzz\ntarget found it on PR #831's first CI run.\n\nThe crashing input is added to the seeds as a regression, alongside a unit\ntest that pokes a nonzero byte into the absent offset.\n\nSpec-Unaffected: frame decoding only; the replication protocol's states and messages are unchanged",
+          "timestamp": "2026-09-28T20:21:23-07:00",
+          "tree_id": "00c29c18e953e283aa81e265fd1933b79e11060e",
+          "url": "https://github.com/gabloe/felix/commit/d6a8bccb5394cf574e7399f5e79c2ade0bd15a9f"
+        },
+        "date": 1790652598141,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 478078.22,
+            "range": "21461.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 478078.22\nmean: 490336.62\nstdev: 21461.74\ncv: 4.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 478078.22,
+            "range": "21461.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 478078.22\nmean: 490336.62\nstdev: 21461.74\ncv: 4.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125732.44,
+            "range": "840.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125732.44\nmean: 125725.98\nstdev: 840.40\ncv: 0.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1257324.41,
+            "range": "8404.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1257324.41\nmean: 1257259.83\nstdev: 8404.05\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
