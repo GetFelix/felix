@@ -19,13 +19,13 @@ Three things keep them apart, and only the first is a wire concern:
    a configuration where they share one. Both internal endpoints negotiate the
    `felix-internal/1` ALPN and the client-facing role negotiates none, so a
    client pointed at the internal port has no protocol in common with it and TLS
-   refuses the handshake — before a frame is read, and before any broker state
+   refuses the handshake before a frame is read, and before any broker state
    is touched.
 3. **A distinct credential.** Peer authentication is mTLS between brokers, with
    the certificate's name checked against the node id in both directions, when
    `FELIX_INTERNAL_TLS_CERT`, `_KEY` and `_CA` are set.
 
-The magic alone is not security — it is what makes a misdirected connection fail
+The magic alone is not security. It is what makes a misdirected connection fail
 loudly instead of quietly.
 
 ## Framing
@@ -47,8 +47,8 @@ an enum makes "unknown kind" a single unambiguous check.
 protocol's unknown flag bits: the kind selects how to read the body, so ignoring
 one means confidently misparsing it.
 
-Refused, though, not fatal. The receiver reads the body — the frozen header says
-how long it is — and answers `UnsupportedKind` against the correlation id, then
+The refusal is not fatal. The receiver reads the body (the frozen header says
+how long it is) and answers `UnsupportedKind` against the correlation id, then
 carries on with the next frame. That distinction is what makes *adding a kind*
 an additive change: these streams are long-lived and multiplex every in-flight
 request to a peer, so dropping one on an unrecognised frame would turn "the peer
@@ -60,7 +60,7 @@ nothing may be added before it.** Without that the refusal could not be matched
 to the request that caused it, and closing the connection would be the only
 option left. `every_body_begins_with_its_correlation_id` holds every kind to it.
 
-A frame that is not *ours* is still fatal — a wrong magic, or a version this
+A frame that is not *ours* is still fatal: a wrong magic, or a version this
 build does not speak. There is nothing to step over, because the bytes are not
 laid out the way the reader assumes, so its length field means nothing.
 
@@ -71,7 +71,7 @@ a node id.
 
 It exists for *when* a mismatch is found, not for what is found. Every frame
 already carries the version, so a mismatched peer would be rejected on its first
-request either way — but that request would be a real forwarded publish, which
+request either way, but that request would be a real forwarded publish, which
 then has to be failed and retried. Doing it at connect makes the connection
 unusable before anything is riding on it.
 
@@ -116,7 +116,7 @@ connection closes; there is no partial understanding.
 
 Additive evolution happens by adding kinds, not by bumping the version. A new
 kind on an old peer is an unknown kind, which is already a typed error rather
-than a misparse. The version exists for the case additive change cannot cover —
+than a misparse. The version exists for the case additive change cannot cover:
 a change to the header or to an existing body layout.
 
 A third case is a change to what brokers *do* with frames they both
@@ -137,7 +137,7 @@ requester. Every response echoes it.
 by exactly one of `ForwardPublishOk`, `ForwardPublishError`, or `NotLeader`;
 `ForwardCacheOp` by exactly one of `ForwardCacheOk`, `ForwardCacheError`, or
 `NotLeader`. A requester that never receives one, because the connection
-dropped, treats the request as failed — nothing is silently abandoned as
+dropped, treats the request as failed, so nothing is silently abandoned as
 pending.
 
 The two paths share `NotLeader`, which carries a routing answer rather than an
@@ -177,10 +177,10 @@ sequenceDiagram
 The `generation` field is what makes this safe. A forwarding broker names the
 assignment generation it resolved against; the owner compares it with its own.
 
-- **Equal** — both agree, and the publish proceeds.
-- **Requester behind** — the shard moved. `NotLeader` carries the new owner, so
+- **Equal**: both agree, and the publish proceeds.
+- **Requester behind**: the shard moved. `NotLeader` carries the new owner, so
   the requester can retry against it rather than guess.
-- **Requester ahead** — the *owner* is behind, and answers `StaleRoute`. It must
+- **Requester ahead**: the *owner* is behind, and answers `StaleRoute`. It must
   not accept the write: it would be writing a shard it may no longer hold.
 
 That asymmetry is the point. A generation mismatch in either direction is an
@@ -196,14 +196,14 @@ request is verified: against the tenant's keys, for `stream.publish` on that
 stream (or `cache.read` / `cache.write` for a cache operation). A credential
 that is missing, does not verify, or does not allow the action is refused
 `Unauthorized` before anything is written. The owner's decision therefore
-depends on the client's authority, not on the forwarder's honesty — which is
+depends on the client's authority, not on the forwarder's honesty, which is
 the property peer authentication alone cannot give.
 
 The credential rides two kinds of its own, `AuthorizedForwardPublish` (22) and
 `AuthorizedForwardCacheOp` (23): the legacy layouts are frozen, so the field is
 appended on a new kind rather than added to the old one. A forwarder holding a
-credential always sends the authorized kind — the credential decides the kind,
-not a flag — and the legacy kinds, though still decodable, are refused by an
+credential always sends the authorized kind (the credential decides the kind,
+not a flag), and the legacy kinds, though still decodable, are refused by an
 owner on this build for the same reason a missing credential is. An owner from
 *before* these kinds answers them `UnsupportedKind`; the forwarder then sends
 the legacy kind once, which is all that owner can read and which it checks no
@@ -218,8 +218,8 @@ is refused. A peer cannot pick the weaker check by rewriting the kind.
 **The `shard` a forward names must be the shard the route was resolved for.**
 The owner appends to the shard the message names, so the routing decision and
 the batch have to agree: a record whose key resolved to shard 3, forwarded with
-shard 0, is written to the wrong log. Nothing downstream detects it — the owner
-legitimately owns shard 0 and the write succeeds — so a whole multi-shard
+shard 0, is written to the wrong log. Nothing downstream detects it, because the owner
+legitimately owns shard 0 and the write succeeds, so a whole multi-shard
 stream's keys can silently collapse onto one shard while the router dispatched
 them correctly all along.
 
@@ -250,24 +250,24 @@ that reason.
 
 A stream shard carries two more logs beside its records: the positions its
 consumer groups have reached, and the offsets those groups gave up on. Each is
-shipped by the same exchange with a kind of its own —
+shipped by the same exchange with a kind of its own:
 `ReplicateGroupRecords`/`ReplicateGroupBootstrap` (kinds 16 and 17) for the
 cursors, `ReplicateDeadLetterRecords`/`ReplicateDeadLetterBootstrap` (kinds 18
-and 19) for the dead letters — same bodies, for the reason the cache pair
+and 19) for the dead letters. The bodies are the same, for the reason the cache pair
 exists: the kind is the only thing stopping a follower from appending the
 offsets a group abandoned into the cursor log that says where it resumes.
 
 Both ride the shard's own replica set at the shard's generation, and neither
 gates the records: no publish waits on group state, and group state lagging
 never holds up the log it describes. What this buys is a promotion that keeps
-the whole group, not half of it — the promoted leader resumes each group where
+the whole group, not half of it: the promoted leader resumes each group where
 it had reached *and* can list and redrive what it had given up on.
 
 A cache shard has the same shape of companion:
 `ReplicateCounterRecords`/`ReplicateCounterBootstrap` (kinds 20 and 21) ship
 its counter log on the cache's replica set, so a promoted replica folds the
 true sum rather than restarting it. And the forwarded cache operation grew two
-op kinds beside put/get/delete — `CounterAdd` (4) and `CounterGet` (5) — with
+op kinds beside put/get/delete, `CounterAdd` (4) and `CounterGet` (5), with
 the delta and the sum riding the envelope's existing value bytes as eight
 big-endian bytes, so the body layout is untouched and an old peer refuses the
 op rather than misparsing it.
@@ -302,13 +302,13 @@ sequenceDiagram
 
 The same generation rules as a forwarded publish, and the same reason: a
 mismatch in either direction is a typed answer, never a successful ownership
-claim. The same credential check too — `Get` and `CounterGet` need
-`cache.read`, everything else `cache.write` — for the reason given under
+claim. The same credential check applies too (`Get` and `CounterGet` need
+`cache.read`, everything else `cache.write`), for the reason given under
 [Authorization across a forward](#authorization-across-a-forward).
 
 `ForwardCacheOk` carries the value a `Get` found or a `Delete` removed, and
 nothing for a `Put`. The value is length-prefixed **behind a presence byte**, so
-a stored empty value stays distinguishable from a miss — the two mean different
+a stored empty value stays distinguishable from a miss. The two mean different
 things, and one encoding for both would make a cached empty value read as
 absent forever.
 
@@ -372,7 +372,7 @@ replica set. `ReplicateRecords` carries the leader's epoch, the offset its first
 payload belongs at, a checksum over the batch, and the payloads.
 
 The offsets are the **leader's**. A follower stores a record at the leader's
-offset or not at all, which is what makes the two logs comparable by offset —
+offset or not at all, which is what makes the two logs comparable by offset:
 the acknowledged mark, the catch-up range, and the caught-up test that gates
 promotion all rest on it.
 
@@ -405,7 +405,7 @@ the leader believe a record had survived a failure it would not have survived,
 and under `Quorum` that belief is the guarantee.
 
 The batch checksum covers each payload's length as well as its bytes. Without
-the length, a batch resplit in transit hashes the same as the original — and a
+the length, a batch resplit in transit hashes the same as the original, and a
 resplit batch is a different set of records, which is exactly the divergence the
 checksum is there to catch. `felix_wire::internal::batch_checksum` is the single
 definition, so the two sides cannot compute it differently.
@@ -416,7 +416,7 @@ idempotent producer wrote carries its producer, sequence and batch length (see
 exactly as the leader did: they are how a promoted replica, or a move's
 destination, answers the producer's re-send. A batch with any marked record
 travels as `ReplicateMarkedRecords` (kind 25): the `ReplicateRecords` body
-followed by one mark per payload — a byte, `0` none, `1` opens a batch, `2`
+followed by one mark per payload: a byte, `0` none, `1` opens a batch, `2`
 continues one, the opening byte followed by `producer_id u64`, `sequence u64`
 and `len u32`. The batch checksum covers the marks after the payloads, only
 when there are any, so an unmarked batch is byte for byte what it always was.
@@ -457,7 +457,7 @@ the sender's generation, which would make a record the sender inherited look
 newer than it is. See `docs/replication-design.md`, "Each record keeps the
 generation it was written at".
 
-`LogConflict` does not converge by *retrying* — the same batch meets the same
+`LogConflict` does not converge by *retrying*, because the same batch meets the same
 bytes. It can be repaired, and the follower does it without an exchange: a
 conflict from a **newer** generation than the one this follower last accepted,
 at or after where that older generation began, is a suffix a dead leader left
@@ -474,7 +474,7 @@ narrower than "never rewritten", and stated there.
 
 ### Bootstrapping a follower
 
-A follower can be positioned below everything the leader still holds — a new
+A follower can be positioned below everything the leader still holds: a new
 replica of a stream with retention, or one that fell far enough behind. Shipping
 cannot bridge that: the records in between are gone from the leader too.
 
@@ -490,7 +490,7 @@ needs before it may place a log that begins anywhere other than zero.
 
 The last row is the point. A log placed over existing records would have a hole
 between what the follower held and what it was given, and a log with a hole is
-one nothing downstream can detect — from the follower's own view its offsets are
+one nothing downstream can detect. From the follower's own view its offsets are
 still contiguous. Discarding those records is not something a bootstrap may do,
 so the leader halts that follower instead, and rebuilds it under its policy.
 
@@ -623,8 +623,8 @@ publish is acknowledged from the owner's answer and from nothing else.
 
 This overrides `ack_on_commit`, the broker setting that otherwise decides
 whether a publish is acknowledged on enqueue or after commit. That setting is a
-statement about a *local* write — "accepted into this broker's ingress queue is
-good enough" — and for a forward the ingress broker has accepted nothing: the
+statement about a *local* write ("accepted into this broker's ingress queue is
+good enough"), and for a forward the ingress broker has accepted nothing: the
 data is not on its disk, and the owner may still refuse it. So a forward always
 takes the commit-ack path, whatever the setting says.
 
@@ -640,9 +640,9 @@ way to tell the two apart.
 
 | Outcome | Applied? | Retried |
 | --- | --- | --- |
-| Shed, backoff, unreachable | No — nothing was sent | Yes |
-| `NotLeader` | No — the refusal is the evidence | Yes, against the owner it names |
-| `StaleRoute`, `Unavailable`, `Overload` | No — refused before writing | Yes |
+| Shed, backoff, unreachable | No, nothing was sent | Yes |
+| `NotLeader` | No, the refusal is the evidence | Yes, against the owner it names |
+| `StaleRoute`, `Unavailable`, `Overload` | No, refused before writing | Yes |
 | `Unauthorized`, `Malformed`, `StorageFailed` | Refused, or tried and failed | No |
 | Connection dropped, request timed out | **Unknown** | **No** |
 
@@ -664,7 +664,7 @@ between two brokers that disagree.
 A redirect to a broker *not* yet tried is followed even when the generation has
 not advanced. On a freshly formed cluster every shard sits at generation 0, so a
 requester whose routing snapshot has not converged points at the wrong owner
-*there* — and the correct owner's redirect is also at generation 0. Refusing
+*there*, and the correct owner's redirect is also at generation 0. Refusing
 every same-generation redirect made that transient misroute fatal instead of
 self-correcting.
 
@@ -674,7 +674,7 @@ A broker asked for a shard it does not own answers `NotLeader`. It never forward
 onward on the requester's behalf. One request crossing an unbounded chain of
 brokers would have unbounded latency and a failure mode nobody can reason about;
 the requester holds the decision instead. This applies to a forwarded cache
-operation exactly as it does to a forwarded publish — both go through the same
+operation exactly as it does to a forwarded publish. Both go through the same
 ownership check for that reason.
 
 ## The transport
@@ -683,7 +683,7 @@ Peers reach each other over a QUIC endpoint of their own. What it guarantees,
 and what it refuses:
 
 **Peers authenticate each other, when told how.** With `FELIX_INTERNAL_TLS_CERT`,
-`FELIX_INTERNAL_TLS_KEY` and `FELIX_INTERNAL_TLS_CA` set — all three or none —
+`FELIX_INTERNAL_TLS_KEY` and `FELIX_INTERNAL_TLS_CA` set (all three or none),
 both ends of every peer connection present a certificate and verify the other's
 chains to the CA. The certificate's DNS name is the broker's identity, and it
 is checked in both directions: a dialler verifies the listener's certificate
@@ -692,13 +692,13 @@ broker fails in the handshake; and the listener checks the node id a peer
 claims in `Hello` against the certificate it presented, so a broker holding a
 valid certificate for one name cannot speak as another. A peer without a
 certificate, with one from another CA, with an expired one, or claiming a name
-its certificate does not carry, is refused — the first three in the handshake,
+its certificate does not carry, is refused: the first three in the handshake,
 the last with `Unauthorized` and a closed connection. It follows that a node id
 has to be a valid DNS name, and startup refuses one that is not.
 
 Rotation is a file swap: the certificate and key are re-read every thirty
 seconds and installed for the *next* handshake, and connections already up keep
-the identity they were made with, so a rolling renewal — cert-manager's, say —
+the identity they were made with, so a rolling renewal (cert-manager's, say)
 never drops healthy traffic. The CA bundle is read once; changing trust roots
 is a restart. Nothing about the key is ever logged; a load failure names the
 variable and the path.
@@ -735,7 +735,7 @@ differently:
 
 **A dropped connection and a timeout are not retryable.** The peer may have
 applied the write before the answer was lost, so retrying is a duplicate rather
-than a repair. Only a shed request — where nothing was sent — is safe to retry
+than a repair. Only a shed request, where nothing was sent, is safe to retry
 as-is.
 
 Idle connections are closed: rebalancing changes which peers a broker forwards

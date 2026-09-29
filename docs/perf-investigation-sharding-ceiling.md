@@ -1,7 +1,7 @@
 # Sharding investigation: keyed publishes, io_uring, and a ceiling that would not move
 
 Working log of a performance session on Azure local NVMe. Records what was
-measured, what shipped, which hypotheses turned out to be wrong — and the bugs
+measured, what shipped, which hypotheses turned out to be wrong, and the bugs
 in the *instrument* that made two of those hypotheses look tested when they
 were not.
 
@@ -11,8 +11,8 @@ flag (#548). Sharding on a single broker is established as *not* a throughput
 lever and is documented as horizontal-only (#552). What remains unexplained is
 a per-broker plateau at **~900 MB/s** with roughly a third of the broker's CPU
 idle, the generators three-quarters idle, and the device at ~67% of its
-measured capability. Ten hypotheses were eliminated, and the eleventh — a single
-saturated task at the quinn endpoint — was **measured and supported**: the
+measured capability. Ten hypotheses were eliminated, and the eleventh (a single
+saturated task at the quinn endpoint) was **measured and supported**: the
 endpoint driver's receive path is ~88% of one core, on a task that cannot use
 more than one. Throughput scales **2.1x with a second broker**, which is the
 same finding from the other direction. Section 9 has the profile.
@@ -38,7 +38,7 @@ accumulated **396 GB** from prior sessions, and stale data had confounded an
 earlier investigation.
 
 SSH is DPI-blocked in this environment. Every remote action goes through
-`az vm run-command`, which has seconds of dispatch latency — a fact that shapes
+`az vm run-command`, which has seconds of dispatch latency. That shapes
 how CPU is sampled (section 7).
 
 ---
@@ -50,7 +50,7 @@ how CPU is sampled (section 7).
 The ingest scenario published **unkeyed**, and an unkeyed record resolves to
 shard 0. Every "12-shard" measurement ever taken with `felix-loadgen` had
 therefore been exercising a single log. A 12-shard stream and a 1-shard stream
-measured identically — 920 against 923 MB/s — because both were the same log.
+measured identically (920 against 923 MB/s) because both were the same log.
 
 Adding keys to the generator exposed the real cost:
 
@@ -78,7 +78,7 @@ u8[key_len] key
 The ordering decision that mattered: when the acked bit is also set, the
 correlation prefix comes **first** and the key prefix follows it. That keeps
 `peek_acked_publish_prefix` reading `request_id` at offset 0 whether or not a
-key follows — which is what lets the broker answer a malformed body with an
+key follows. That is what lets the broker answer a malformed body with an
 error the client can still correlate to its pending request.
 
 An empty key is a key. It hashes to a shard like any other, and is deliberately
@@ -93,7 +93,7 @@ correctness. This follows the existing rule that unknown flag bits are
 *rejected* rather than masked off: masking one means confidently misparsing the
 body.
 
-> `a_keyed_publish_negotiates_the_binary_frame` — the broker advertises the
+> `a_keyed_publish_negotiates_the_binary_frame`: the broker advertises the
 > bit, so the sharding tests exercise the binary path rather than silently
 > falling back to JSON.
 
@@ -140,7 +140,7 @@ rather than shrinking it: the request goes into a ring, the kernel performs it,
 a completion arrives, and no thread is parked.
 
 A rejected alternative is instructive. Running the sync *inline* also removes
-the hand-off, but it destroys the `await` yield point — and background rollover
+the hand-off, but it destroys the `await` yield point, and background rollover
 and retention depend on that scheduling. The inline experiment was built and
 measured precisely to establish this, then discarded.
 
@@ -149,7 +149,7 @@ measured precisely to establish this, then discarded.
 The first version of the ring loop drained completions only when a *new*
 submission arrived, so an in-flight flush with no traffic behind it could wait
 forever. The fix is to never block on `rx.recv()` while any request is
-outstanding. This defect does not appear under load — only at the tail of a
+outstanding. This defect does not appear under load, only at the tail of a
 run, when the traffic that would have rescued it has stopped.
 
 ### The measurement, and a retraction
@@ -172,8 +172,8 @@ suggested +6.5%; repeats brought it down.
 ### Why default off
 
 Linux only, default off. The blocking pool remains the fallback for macOS
-development and for any Linux that cannot build a ring — an old kernel, or a
-container that forbids the syscall. Durability must not depend on an
+development and for any Linux that cannot build a ring (an old kernel, or a
+container that forbids the syscall). Durability must not depend on an
 optimisation being available. Before flipping the default: a CI job running the
 storage suite with the flag on, and crash-recovery tests against the ring.
 
@@ -192,7 +192,7 @@ storage suite with the flag on, and crash-recovery tests against the ring.
 | G | 12 | 4 | hash | on | 842.1 MB/s | busy=66%, 16 publish workers | 22–31% |
 | H | 12 | 4 | hash | on | 895.6 MB/s | busy=69%, raised admission | 23–31% |
 | I | 12 | 4 | hash | on | 925.8 MB/s | busy=68% us=20 sy=21 si=13 wa=13 | 22–31% |
-| J | 12 | 4 | hash | on | **void** — 3 of 4 generators failed to connect | busy=68% | 69% (one generator) |
+| J | 12 | 4 | hash | on | **void**: 3 of 4 generators failed to connect | busy=68% | 69% (one generator) |
 | K | 12 | 4 | **rr** (verified) | on | 912.6 MB/s | busy=66% us=21 sy=20 si=15 wa=11 | not sampled |
 
 † **Runs E and F are void.** The generator ignored client environment config
@@ -214,7 +214,7 @@ about 3%. The broker never exceeds 69% busy; the generators never exceed 31%.
 At 32 publishers per generator, three of four generators died with
 `establish QUIC connection: timed out`. Each publisher constructs its own
 client with its own 4-connection pool, so 32 publishers is 128 connections per
-generator and 512 fleet-wide — more than the broker would accept quickly
+generator and 512 fleet-wide, more than the broker would accept quickly
 enough.
 
 The one generator that did connect produced **594.7 MB/s alone**, at 69% of its
@@ -229,7 +229,7 @@ being handed a quarter of a broker-limited aggregate.
 **The commit sequencer.** The prior session's findings concluded the ceiling
 was "commit-sequencer-bound" and predicted durable throughput scales with
 commit paths. `CommitSequencer` lives on `StreamState`, which is keyed per
-(stream, shard) — so twelve shards is twelve independent commit paths on one
+(stream, shard), so twelve shards is twelve independent commit paths on one
 broker. Throughput did not move. **That prior conclusion is wrong.**
 
 **The publish worker pool.** The pool is process-wide by deliberate design, a
@@ -239,12 +239,12 @@ the default is 4. A plausible funnel. Raised 4 → 16: **842.1 MB/s**, slightly
 
 **Admission windows.** 64 MB process-wide, 16 MB per connection, queue depth 64
 per worker. A byte budget is a window, and throughput under a window is budget
-÷ residence time — which would explain invariance to everything else. Raised
+÷ residence time, which would explain invariance to everything else. Raised
 16×, 16× and 64×: **895.6 MB/s**, no change. Killed.
 
 A falsification check sharpened this before the run: Little's Law says a 64 MB
 window binding at 890 MB/s requires ~72 ms average residence, while measured
-ack p50 on this hardware is ~200 µs — 300× apart. The run agreed with the
+ack p50 on this hardware is ~200 µs, 300× apart. The run agreed with the
 arithmetic.
 
 **A single saturated core.** Aggregate CPU of 60% can hide one core pegged at
@@ -255,7 +255,7 @@ sampling under load: **all eight cores at 67–71%**, softirq spread evenly at
 **This eliminates less than it appears to, and the doc originally overstated
 it.** Tokio is a work-stealing runtime: a single continuously-runnable task
 migrates between worker threads, so at 1 Hz it smears across all eight cores as
-moderate even load — the exact 67–71% signature measured. Per-core sampling can
+moderate even load: the exact 67–71% signature measured. Per-core sampling can
 separate "one pegged CPU" from "work spread across cores"; it *cannot* separate
 "work spread across cores" from "one saturated task being migrated." The
 single-serialisation-point family is therefore **untested, not eliminated**.
@@ -275,14 +275,14 @@ workload at all: ingest publishes `AckMode::None` and requests no acks. Still
 relevant for acked workloads.
 
 **Round-robin publish sharding.** The stream hash pins a publisher to one of
-its client's 8 workers — 4 connections × 2 streams — leaving 7 workers and 3
+its client's 8 workers (4 connections × 2 streams), leaving 7 workers and 3
 connections idle. Round-robin rotates per batch across all 8, an 8× change in
 per-publisher stream parallelism, and `select_worker` is called per batch so
 the rotation is genuine. Run F appeared to test this and did not (#553). Re-run
 on a fixed generator, with the effective configuration printed as proof:
 **912.6 MB/s**. Killed.
 
-**The client's connection funnel.** Wrong for this workload — see section 7.
+**The client's connection funnel.** Wrong for this workload; see section 7.
 
 ### The apparent contradiction, resolved
 
@@ -290,14 +290,14 @@ Two generators had previously produced **1.63 GB/s** aggregate, and one
 generator had been measured at 1.09 GB/s. Now four generators produce ~890 MB/s
 total, ~220 each: aggregate halved while generator count doubled.
 
-The resolution is in the prior campaign's own notes — *adding a second or third
+The resolution is in the prior campaign's own notes: *adding a second or third
 loadgen does not go faster*. One generator hit 950–1151 MB/s by itself; four
 today sum to ~890. The aggregate is unchanged, and each generator simply
 receives a quarter of a broker-side ceiling.
 
 The 1.63 GB/s figure is a different rig and does not contradict this: per
 `docs-site`'s real-network page it is **two load generators against three
-`D4as_v5` brokers** — a `D4` contributing 1,084 MB/s and a `D2` adding 549 —
+`D4as_v5` brokers**, a `D4` contributing 1,084 MB/s and a `D2` adding 549,
 so ~544 MB/s per *broker*. (An earlier revision of this document read it as a
 two-broker session at ~815 per broker. That was wrong twice over: generators
 and brokers were conflated, and the two generators were different sizes, so
@@ -311,19 +311,19 @@ divided by however many generators are pointed at it.
 Everything eliminated above sits **downstream** of QUIC packet intake. What
 sits upstream of all of it is the quinn endpoint. `QuicServer::bind` binds one
 UDP socket and constructs one `Endpoint` from it, so 256 connections are 256
-consumers behind a single feeder — the socket reads and datagram routing are
+consumers behind a single feeder: the socket reads and datagram routing are
 one task's work.
 
 This fits every observation on record:
 
-- **Invariant to shards, workers, admission, flush mechanism** — all downstream
+- **Invariant to shards, workers, admission, flush mechanism**, all downstream
   of intake.
-- **Invariant to connection count** — connections share the socket.
-- **Generators idle at 22–31%** — blocked on a broker that cannot drain faster.
-- **Device at ~67%** — never asked for more.
-- **No hot core** — per the work-stealing note above, a saturated task does not
+- **Invariant to connection count**: connections share the socket.
+- **Generators idle at 22–31%**, blocked on a broker that cannot drain faster.
+- **Device at ~67%**, never asked for more.
+- **No hot core**: per the work-stealing note above, a saturated task does not
   produce one.
-- **Scales with brokers and nothing else** — each broker has its own socket.
+- **Scales with brokers and nothing else**: each broker has its own socket.
 
 It is also continuous with this repository's own prior finding.
 `docs/perf-investigation-throughput.md` concluded that quinn driver re-poll
@@ -336,7 +336,7 @@ worse on Linux at the time.
 Cheap diagnostics, before any code:
 
 - `netstat -su` / `/proc/net/snmp` for `RcvbufErrors` and `InErrors`. Non-zero
-  means the socket reader is behind and QUIC is retransmitting — which caps
+  means the socket reader is behind and QUIC is retransmitting, which caps
   throughput while leaving CPU moderate.
 - `ss -uanm` for receive-queue depth on the listening socket under load.
 - Whether GRO is active on the receive path. Without it, 900 MB/s at a
@@ -369,7 +369,7 @@ commit stream; with twelve, each log sees roughly a twelfth of the concurrency,
 fan-in falls toward 1, and the flush count doubles. Sharding works directly
 against the amortisation that makes durability affordable.
 
-**Each flush gets more expensive.** This dilution does *not* predict — dilution
+**Each flush gets more expensive.** This dilution does *not* predict: dilution
 implies more flushes at the same unit cost. Mean flush went from 0.575 ms to
 1.021 ms, **1.78×**. Twelve logs on one ext4 filesystem turn a single
 sequential append stream into twelve interleaved ones sharing a journal, across
@@ -379,13 +379,13 @@ a RAID0 stripe. At the time of measurement the volume held 441 segment files.
 
 Throughput barely moved while device flush work varied by 3.7×. You can triple
 the disk work and the number does not care, so **the flush path is not the
-binding constraint** — which is also why `io_uring`, a flush-path optimisation,
+binding constraint**, which is also why `io_uring`, a flush-path optimisation,
 is worth only ~4% here.
 
 ### The reframe
 
 Sharding is a **horizontal** lever, not a vertical one. Its purpose is to
-spread work across brokers — more NICs, more cores, more crypto capacity, more
+spread work across brokers: more NICs, more cores, more crypto capacity, more
 independent devices. Twelve shards on one broker share one NIC, one CPU and one
 filesystem, so there is nothing to win and a little to lose.
 
@@ -426,7 +426,7 @@ publish forwarded to one owner.
 
 **The stream-hash funnel.** `select_worker` hashes on
 `(tenant, namespace, stream)` only, so every publisher writing to one stream
-pins to a single worker — one QUIC stream on one connection — and this was
+pins to a single worker (one QUIC stream on one connection), and this was
 announced as the explanation for the per-generator ceiling. It is a real
 inefficiency, but it is **not** this ceiling: the ingest scenario constructs a
 separate client per publisher, so each client serves exactly one publisher and
@@ -503,7 +503,7 @@ Recommended next, in this order:
    published unkeyed. Aggregate broker numbers are probably sound; anything
    characterising sharding or client tuning is not.
 
-Related: #539 — perf session results were gitignored, so published numbers had
+Related: #539. Perf session results were gitignored, so published numbers had
 no auditable evidence trail. Fixed: the ignore rule was narrowed to
 `sessions/*.env`, and the session output behind these numbers is committed
 under `scripts/perf/azure/sessions/`.
@@ -525,7 +525,7 @@ across the brokers, storage wiped between runs, same keyed 12-shard load.
 | B | 2 | `FELIX_IO_RUNTIME_THREADS=2` | 1341.1 MB/s | b0 44%, b1 32% |
 | C | 2 | default (repeat of A) | **1852.4 MB/s** | b0 54%, b1 62% |
 
-Against ~900 MB/s on one broker, two brokers give **2.1x** — essentially linear.
+Against ~900 MB/s on one broker, two brokers give **2.1x**, essentially linear.
 Per-generator throughput doubled from ~220 to ~470 MB/s, which is the third
 independent confirmation that the generators were never the constraint. Each
 broker independently reproduces the "ceiling with CPU to spare" signature.
@@ -547,7 +547,7 @@ TOTAL 396.1% = 3.96 cores of 8
 ```
 
 Eight workers, uniform to within 0.6%. That is the work-stealing signature and
-it is exactly why per-thread sampling cannot answer the question — which is the
+it is exactly why per-thread sampling cannot answer the question, which is the
 correction recorded in section 5.
 
 The stacks can. `perf record -F 199 -g` on the broker process, collapsed:
@@ -563,7 +563,7 @@ The stacks can. `perf record -F 199 -g` on the broker process, collapsed:
 | `broker::` | 3.31% |
 | `Connection::process_payload` | 1.90% |
 
-22.26% of 3.96 cores is **0.88 cores** — and the endpoint driver is a *single
+22.26% of 3.96 cores is **0.88 cores**, and the endpoint driver is a *single
 task*, so one core is its hard ceiling. It is running at ~88% of what it can
 ever use, while the machine as a whole sits at half idle.
 
@@ -576,7 +576,7 @@ downstream of a feeder that is already nearly saturated.
 ### Two traps in reading this profile
 
 **The 1.77% that wasn't.** `poll_socket` resolves as a symbol in only 1.77% of
-samples. Read alone, that number kills the hypothesis — and it was briefly
+samples. Read alone, that number kills the hypothesis, and it was briefly
 reported as doing so. It is an artifact of a release build without frame
 pointers: most stacks reaching the syscall resolve as `[unknown]` above it. The
 syscall itself (`recvmmsg`) is called from exactly one place in this process, so
@@ -585,7 +585,7 @@ between the two numbers.**
 
 **`FELIX_IO_RUNTIME_THREADS` does not isolate what it appears to.** Run B pinned
 the endpoint driver to a dedicated thread, which read `felix-quic-io-0` at
-**99.9% of one core** — an apparently perfect confirmation. It is confounded:
+**99.9% of one core**, an apparently perfect confirmation. It is confounded:
 `IoRuntime::spawn` places *every* quinn task on that runtime, so all 256
 connection drivers and their AEAD land on the same thread. The flamegraph shows
 `aes_gcm_dec_update` and `Connection::process_payload` on that thread, and
@@ -620,7 +620,7 @@ cores, with `FELIX_INITIAL_MTU=1350` (macOS loopback otherwise pins a
 per-byte work), 12 shards and keyed batches.
 
 Flat: 1.00x / 1.00x / 1.00x / 0.98x at 1, 2, 4 and 8 listeners. Not evidence
-the fix does nothing — the rig never reached the regime section 9's endpoint
+the fix does nothing: the rig never reached the regime section 9's endpoint
 driver finding describes:
 
 - **The broker was nowhere near driver-bound.** ~2.5 of 16 cores, ~13 idle.
@@ -628,7 +628,7 @@ driver finding describes:
   cores spread across many is not hitting it.
 - **The generator was the limiter, on one thread of it.** `io_runtime_index`
   sends every *client* endpoint to `pool_len - 1`, so all 16 clients in the
-  test process funnel their QUIC drivers onto one thread — measured at 99.7%
+  test process funnel their QUIC drivers onto one thread, measured at 99.7%
   while the next busiest client thread sat at 3.4%. Four publishers and 32
   publishers gave identical throughput because the measurement was one
   saturated client thread throughout. Section 9's session used four separate
@@ -649,13 +649,13 @@ as its own gap in #597.
 ### The finding that outlasted the run: the pool defeats N listeners at N=2
 
 For servers `io_runtime_index` is `sequence % (pool_len - 1)`, and the macOS
-default pool is 2 — so `sequence % 1`, which is always 0. Every listener a
+default pool is 2, so `sequence % 1`, which is always 0. Every listener a
 broker binds landed on the same I/O thread, measured here as the broker's
 79.5% thread while its others sat at ~35%: the pool defeated the fix before it
 could help.
 
 Linux defaults the pool to 0, so drivers go to the app runtime and tokio
-spreads them — this does not touch the design in section 9. But any
+spreads them. This does not touch the design in section 9. But any
 deployment setting `FELIX_IO_RUNTIME_THREADS >= 1` with a pool of 2 gets one
 driver thread however many ports it binds. Filed as #596; a future session
 should measure `FELIX_IO_RUNTIME_THREADS` in `{0, N+1}` rather than
@@ -664,4 +664,4 @@ rediscover this as a null result.
 One more thing worth carrying forward: broker-stored throughput drifted down
 slightly as listeners rose (543 → 527 → 499 → 485 MiB/s). Inside run-to-run
 spread on a rig this noisy to trust, but worth re-checking where the
-measurement is trustworthy — N endpoints may have a small cost of their own.
+measurement is trustworthy: N endpoints may have a small cost of their own.
