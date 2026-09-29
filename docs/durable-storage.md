@@ -454,6 +454,15 @@ Four properties:
    could not write, so the *next* fsync returns success having flushed nothing —
    "fsyncgate". Believing it would acknowledge records that are gone, which is
    the same silent loss the checksum rule above refuses to risk.
+   A **failed write does not poison the log.** A batch is one `write` into
+   the page cache, and `ENOSPC` or `EIO` there can still leave a prefix of
+   the batch in the file. The writer truncates the segment back to its last
+   good byte and returns the error without consuming any offsets, so the
+   publish is refused, nothing of it survives, and the next append lands
+   where it would have. Nothing already written is in doubt, so the log
+   carries on as soon as the disk does. If the truncation itself fails, the
+   writer no longer knows the file's length and refuses every later append
+   and flush until a restart, when recovery repairs the tail as a torn one.
 
 2. **Committed data is never silently discarded.** Corruption anywhere else is a
    startup error naming the shard, segment and byte position. Refusing to start
@@ -701,6 +710,7 @@ fail rather than print the wrong numbers.
 | `fuzz/` | libFuzzer targets exploring the same properties much further, plus the cache and counter records and the per-shard state files; run nightly (see `docs-site/src/content/docs/development/fuzzing.md`) |
 | `felix-broker/tests/durable_streams.rs` | ordering, restart, rejection without storage, durable vs non-durable isolation |
 | `felix-cluster --test backup` | a backup point taken under load is committed and misses nothing acknowledged before it (`a_point_under_load_is_committed_and_misses_nothing_acknowledged_before_it`), and a live copy restored to it keeps every earlier acknowledgement and nothing past it (`a_live_copy_restored_to_the_point_keeps_every_ack_before_it_and_nothing_after`) |
+| `felix-cluster --test failures writes::` | a real broker whose segment writes fail with `ENOSPC` or `EIO`, every time or once, injected the same way: a refused write is never acknowledged, on a `Leader` or `Quorum` leader, a follower that refuses one is not counted toward a `Quorum` majority, and once the disk takes writes again the log holds exactly what was acknowledged |
 | `felix-cluster --test failures fsync::` | a real broker whose fsyncs are slow, fail with `EIO`, or fail once and then succeed, injected through `FELIX_STORAGE_FAULT_FILE`: a failed flush is never acknowledged, nor is anything after it on that log (see `docs/cluster-harness.md`) |
 
 ## Limits today

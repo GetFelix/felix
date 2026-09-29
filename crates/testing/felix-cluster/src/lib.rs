@@ -51,5 +51,5 @@ pub mod wait;
 pub use cluster::{Assignment, Cluster};
 pub use config::{CacheSpec, ClusterConfig, StreamSpec};
 pub use controlplane::ControlPlane;
-pub use fault::{ClockFault, Endpoint, Fault, FsyncFault};
+pub use fault::{ClockFault, Endpoint, Fault, FsyncFault, WriteFault};
 pub use node::{BrokerNode, broker_binary};
