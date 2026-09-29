@@ -36,6 +36,8 @@ cargo run --release -p felix-cluster -- up --nodes 3
 ```
 
 ```
+starting a 3-node cluster...
+
 cluster up.
 
 control plane   http://127.0.0.1:52704
@@ -49,8 +51,14 @@ placeable: broker-0, broker-1, broker-2
 shard ownership:
   stream/t1/ns/orders/0 -> broker-2
 
+session   /tmp/felix-cluster.json
+
 holding the cluster. press Ctrl-C to tear it down.
 ```
+
+The session file sits in your system temp directory. It records the tenant
+(`t1`), namespace (`ns`), a client token and every broker's address, and it is
+how the other commands find the cluster.
 
 It holds until you interrupt it. In a second window, subscribe:
 
@@ -82,9 +90,9 @@ The subscriber prints it with its log offset:
 That line is the whole model in miniature. The stream's shard is owned by
 `broker-2`, you published through `broker-0`, and `broker-0` forwarded the
 record to the owner and waited for it to be written before acknowledging. Which
-broker you connect to is a routing detail, not a correctness one — and since
-0.5.0 the acknowledgement says when forwarding happened, so a client can see it
-is paying to relay every record.
+broker you connect to is a routing detail, not a correctness one. The
+acknowledgement says when forwarding happened, so a client can see that it is
+paying for a relay on every record.
 
 ### The rest of the cluster commands
 
@@ -109,6 +117,8 @@ cargo run --release -p felix-broker-service --features demo --bin pubsub-demo-si
 
 ```
 == Felix QUIC Pub/Sub Demo ==
+Goal: demonstrate publish/subscribe over QUIC (not cache).
+This demo spins up an in-process broker + QUIC server, then runs a client.
 Step 1/6: booting in-process broker + QUIC server.
 Step 2/6: connecting QUIC client.
 Step 3/6: opening a subscription stream.
@@ -117,6 +127,7 @@ Step 4/6: publishing two messages on the same stream.
 Step 5/6: receiving events.
 Event on demo-topic: hello
 Event on demo-topic: world
+Shutting down demo.
 Demo complete.
 ```
 
@@ -133,12 +144,12 @@ cargo run --release -p felix-broker-service
 On its own this starts and then stops:
 
 ```
-INFO felix_broker: broker started
+INFO felix_broker_service::node: broker started
 Error: FELIX_CONTROLPLANE_URL must be set for auth
 ```
 
 That is deliberate. A broker validates every client token against its tenant's
-signing keys, which it fetches from the control plane, and it registers itself
+signing keys, which it fetches from the control plane, and a clustered broker registers itself
 there so shards can be placed on it. There is no unauthenticated mode to fall
 back to.
 
@@ -147,116 +158,97 @@ at it, and giving each one a node credential:
 
 - **Locally**, `felix-cluster up` does all three, and the session file it writes
   names every address it chose.
-- **On Kubernetes**, the Helm chart at `deploy/helm/felix` wires them together —
-  see [Kubernetes](/felix/deployment/kubernetes/).
+- **On Kubernetes**, the Helm chart at `deploy/helm/felix` wires them together.
+  See [Kubernetes](/felix/deployment/kubernetes/).
 - **With containers**, the images are published on every release and pull
-  without credentials — see [Installation](/felix/getting-started/installation/#container-images)
+  without credentials. See [Installation](/felix/getting-started/installation/#docker-alternative)
   and [Docker Compose](/felix/deployment/docker-compose/). The broker image
   needs the same control-plane URL and credential as any other broker.
 
-## Try the Cache
+## Using the Rust client
 
-Run the cache demonstration:
+A client connects with a tenant and a Felix token, and it verifies the
+broker's certificate. Where each comes from:
 
-```bash
-cargo run --release -p felix-broker-service --features demo --bin cache-demo
-```
+- **The tenant and token.** A client token is a Felix token issued by the
+  control plane's token exchange (`POST /v1/tenants/{tenant}/token/exchange`)
+  for an identity-provider token; see
+  [Security](/felix/features/security/#token-exchange-oidc--felix). For a
+  `felix-cluster up` cluster, the session file holds a ready-made one
+  (`tenant_id`, `namespace`, `client_token`) along with each broker's client
+  address.
+- **The certificate.** A broker without `FELIX_TLS_CERT` generates a
+  self-signed `localhost` certificate at every start. `FELIX_TLS_CERT_EXPORT`
+  writes it to a file the client can trust. A broker with a certificate from a
+  public CA needs no roots at all: pass `None` to use the platform trust store.
 
-This benchmarks cache operations (put, get_hit, get_miss) across various payload sizes and measures latency/throughput.
-
-## Using the Client SDK
-
-Here's a minimal example of using the Felix Rust client:
-
-### Publish and Subscribe
+### Publish and subscribe
 
 ```rust
-use felix_client::{Client, ClientConfig};
-use felix_wire::AckMode;
 use std::net::SocketAddr;
+use std::sync::Arc;
+
+use felix_client::{Client, ClientConfig, quic_client_config};
+use felix_wire::AckMode;
+use rustls::pki_types::CertificateDer;
+use rustls::pki_types::pem::PemObject;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Configure client
-    let quinn = quinn::ClientConfig::with_platform_verifier();
-    let config = ClientConfig::optimized_defaults(quinn);
+    // Trust the broker's certificate.
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in CertificateDer::pem_file_iter("broker-cert.pem")? {
+        roots.add(cert?)?;
+    }
+    let quinn = quic_client_config(Some(Arc::new(roots)), true)?;
+
+    let mut config = ClientConfig::optimized_defaults(quinn);
+    config.auth_tenant_id = Some("t1".to_string());
+    config.auth_token = Some("<felix token>".to_string());
+
     let addr: SocketAddr = "127.0.0.1:5000".parse()?;
-
-    // Connect to broker
     let client = Client::connect(addr, "localhost", config).await?;
-    let publisher = client.publisher().await?;
 
-    // Subscribe to a stream
-    let mut subscription = client
-        .subscribe("my-tenant", "my-namespace", "my-stream")
-        .await?;
-
-    // Spawn a task to receive events
+    let mut subscription = client.subscribe("t1", "ns", "orders").await?;
     tokio::spawn(async move {
-        while let Some(event) = subscription.next_event().await.unwrap() {
-            println!("Received: {:?}", event.payload);
+        while let Ok(Some(event)) = subscription.next_event().await {
+            println!("offset {:?}: {:?}", event.offset, event.payload);
         }
     });
 
-    // Publish messages
+    let publisher = client.publisher().await?;
     for i in 0..10 {
-        let payload = format!("Message {}", i);
         publisher
-            .publish(
-                "my-tenant",
-                "my-namespace",
-                "my-stream",
-                payload.into_bytes(),
-                AckMode::None,
-            )
+            .publish("t1", "ns", "orders", format!("order {i}").into_bytes(), AckMode::PerMessage)
             .await?;
     }
-
     Ok(())
 }
 ```
 
-### Cache Operations
+The stream must already exist in the control plane. `felix-cluster up`
+creates `orders` in tenant `t1`, namespace `ns`. A subscription is served only
+by the broker that owns the stream's shard, so connect to the owner that `up`
+prints. A publish can go through any broker.
+
+### Cache
 
 ```rust
 use bytes::Bytes;
-use felix_client::{Client, ClientConfig};
-use std::net::SocketAddr;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let quinn = quinn::ClientConfig::with_platform_verifier();
-    let config = ClientConfig::optimized_defaults(quinn);
-    let addr: SocketAddr = "127.0.0.1:5000".parse()?;
-    let client = Client::connect(addr, "localhost", config).await?;
+// `client` built as above; the token needs cache.read and cache.write.
+client
+    .cache_put("t1", "ns", "users", "user:123", Bytes::from_static(b"alice"), Some(60_000))
+    .await?;
 
-    // Put a value with 60-second TTL
-    client
-        .cache_put(
-            "my-tenant",
-            "my-namespace",
-            "users",
-            "user:123",
-            Bytes::from_static(b"alice"),
-            Some(60_000),
-        )
-        .await?;
-
-    // Get the value
-    if let Some(value) = client
-        .cache_get("my-tenant", "my-namespace", "users", "user:123")
-        .await?
-    {
-        println!("Cached value: {:?}", value);
-    }
-
-    Ok(())
+if let Some(value) = client.cache_get("t1", "ns", "users", "user:123").await? {
+    println!("cached: {value:?}");
 }
 ```
 
-:::note[API Surface]
-The exact client API is evolving. Check `crates/sdk/felix-client/src/` for the current implementation. The examples above represent the intended ergonomics.
-:::
+The cache must exist in the control plane too, and `felix-cluster up` creates
+none. [Rust client](/felix/clients/rust/) covers the rest of the API.
+
 ## Performance Testing
 
 ### Latency Benchmark
@@ -292,27 +284,28 @@ cargo run --release -p felix-broker-service --features demo --bin latency-demo -
 cargo run --release -p felix-broker-service --features demo --bin cache-demo
 ```
 
-Measures cache operations at various payload sizes with configurable concurrency.
+Measures put, get-hit and get-miss latency across payload sizes. Variables such as `FELIX_CACHE_BENCH_CONCURRENCY` and `FELIX_CACHE_BENCH_PAYLOADS` shape the run.
 
 ## Configuration
 
-Felix can be configured via environment variables or a YAML config file.
+The broker and the Rust client each read `FELIX_*` environment variables, and
+the broker also reads a YAML file.
 
 ### Environment Variables
 
-Key performance tuning variables:
+On the broker, event batching trades latency for throughput:
 
 ```bash
-# Event delivery (pub/sub)
-export FELIX_EVENT_CONN_POOL=8
+export FELIX_EVENT_BATCH_MAX_EVENTS=64
 export FELIX_EVENT_BATCH_MAX_DELAY_US=250
+```
 
-# Cache operations
+On the client, `ClientConfig::from_env_or_yaml` reads the connection pools:
+
+```bash
+export FELIX_EVENT_CONN_POOL=8
 export FELIX_CACHE_CONN_POOL=8
 export FELIX_CACHE_STREAMS_PER_CONN=4
-
-# Publishing
-export FELIX_PUBLISH_CHUNK_BYTES=16384
 ```
 
 ### Config File
@@ -328,7 +321,7 @@ cache_conn_recv_window: 268435456
 ```
 
 Point the broker at it with `FELIX_BROKER_CONFIG=/tmp/felix-config.yml`. It
-still needs `FELIX_CONTROLPLANE_URL` and a node credential — see [Running a
+still needs `FELIX_CONTROLPLANE_URL` and a node credential. See [Running a
 broker yourself](#running-a-broker-yourself).
 
 See [Configuration Reference](/felix/reference/configuration/) for all options.
@@ -354,8 +347,11 @@ task lint
 task demo:pubsub
 task demo:cache
 task demo:latency
+task demo:queues
 task demo:notifications
 task demo:orders
+task demo:slow-consumer
+task demo:state-divergence
 task demo:rbac-live
 task demo:cross-tenant-isolation
 ```

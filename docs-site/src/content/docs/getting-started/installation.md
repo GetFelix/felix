@@ -1,8 +1,13 @@
 ---
 title: "Installation"
+description: "Build Felix from source, check the build, and find the released binaries and container images."
 ---
 
-Felix has no binary releases yet — you build from source. This takes a Rust toolchain and a few minutes.
+Each release attaches Linux x86_64 builds of `felix-broker` and
+`felix-controlplane` to its GitHub release and publishes both as container
+images (see [Docker](#docker-alternative)). Everything else, including the
+demos, the local cluster tool and the clients, builds from source. That takes
+a Rust toolchain and a few minutes.
 
 ## System Requirements
 
@@ -87,16 +92,20 @@ cargo build -p felix-client --release
 Verify everything is working:
 
 ```bash
+task test
+```
+
+That is what CI runs. Without Task, build the load generator first, because
+one cluster test runs its prebuilt binary:
+
+```bash
+cargo build -p felix-loadgen
 cargo test --workspace
 ```
 
-You should see all tests passing:
-
-```
-running 150 tests
-...
-test result: ok. 150 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-```
+The control plane's Postgres tests sit behind a feature and do not run in a
+plain `cargo test`. `task test` starts a Postgres in Docker, when Docker is
+available, and runs them too.
 
 ### Run the Conformance Suite
 
@@ -106,16 +115,12 @@ Felix includes a wire protocol conformance runner to validate correct framing an
 cargo run -p felix-conformance
 ```
 
-Expected output:
+It starts a broker in-process, runs the checks against it, and ends with:
 
 ```
-Running wire protocol conformance tests...
-✓ Frame envelope encoding
-✓ Publish message encoding
-✓ Subscribe message encoding
-✓ Event message encoding
-✓ Cache operations encoding
-All conformance tests passed!
+== Felix Conformance Runner ==
+...
+Conformance checks passed.
 ```
 
 ### Start a cluster
@@ -129,6 +134,8 @@ cargo run --release -p felix-cluster -- up --nodes 3
 ```
 
 ```
+starting a 3-node cluster...
+
 cluster up.
 
 control plane   http://127.0.0.1:52704
@@ -137,6 +144,12 @@ node       client                 metrics
 broker-0   127.0.0.1:53348        127.0.0.1:52706
 broker-1   127.0.0.1:65027        127.0.0.1:52707
 broker-2   127.0.0.1:50410        127.0.0.1:52708
+
+placeable: broker-0, broker-1, broker-2
+shard ownership:
+  stream/t1/ns/orders/0 -> broker-2
+
+session   /tmp/felix-cluster.json
 
 holding the cluster. press Ctrl-C to tear it down.
 ```
@@ -158,13 +171,15 @@ Other demos you can try (including a control-plane RBAC mutation demo):
 ```bash
 cargo run --release -p felix-broker-service --features demo --bin cache-demo
 cargo run --release -p felix-broker-service --features demo --bin latency-demo
+cargo run --release -p felix-broker-service --bin durable-restart-demo
+cargo run --release -p felix-broker-service --bin queue-semantics-demo
 cargo run --release -p felix-broker-service --bin pubsub-demo-notifications
 cargo run --release -p felix-broker-service --bin pubsub-demo-orders
 cargo run --manifest-path demos/rbac-live/Cargo.toml
 cargo run --manifest-path demos/cross_tenant_isolation/Cargo.toml
 ```
 
-Note: the cross-tenant isolation demo uses a Postgres-backed control plane.
+The cross-tenant isolation demo needs Postgres (`task pg:up`).
 
 See the [Demos Overview](/felix/demos/overview/) for details and expected output.
 
@@ -206,8 +221,6 @@ cargo install cargo-llvm-cov
 # Security auditing
 cargo install cargo-deny --version 0.19.0 --locked
 
-# Benchmarking
-cargo install cargo-criterion
 ```
 
 ## Build Customization
@@ -221,42 +234,26 @@ Felix supports optional feature flags:
 Enable detailed per-stage timing instrumentation:
 
 ```bash
-cargo build --release --features telemetry
+cargo build --release -p felix-broker-service --features telemetry
 ```
 
-:::note[Performance Impact]
-Telemetry adds instrumentation overhead. Validate on your workload—high fanout and batching can amplify tail latency effects. Disabled by default for production.
+:::note[Performance impact]
+Telemetry adds instrumentation to the publish and delivery paths, and high fanout or batching can make its cost show in tail latency. The release binaries and images are built without it.
 :::
-### Environment-Specific Builds
+### All Demos
 
-#### Minimal Build
-
-Build only what you need:
-
-```bash
-# Just the broker
-cargo build --release -p felix-broker-service
-
-# Just the client library
-cargo build --release -p felix-client
-```
-
-#### All Demos
-
-Build all demonstration binaries:
+Build every demo binary in the broker service, including the ones behind the
+`demo` feature:
 
 ```bash
-cargo build --release --bins
+cargo build --release -p felix-broker-service --features demo --bins
 ```
 
 ## Platform-Specific Notes
 
 ### Linux
 
-Felix works best on Linux with modern kernel support for QUIC/UDP optimization:
-
-- Kernel 5.8+ recommended
-- Increase UDP buffer sizes for high throughput:
+For high throughput, raise the UDP buffer limits:
 
 ```bash
 sudo sysctl -w net.core.rmem_max=26214400
@@ -283,23 +280,23 @@ Released images are on GHCR and pull without credentials:
 
 ```bash
 docker run -p 5000:5000/udp -p 8080:8080 \
-  -e FELIX_CONTROLPLANE_URL=http://controlplane:8443 \
+  -e FELIX_CONTROLPLANE_URL=http://<control-plane-host>:8443 \
   -e FELIX_NODE_TOKEN_FILE=/etc/felix/node.token \
   -v /path/to/node.token:/etc/felix/node.token:ro \
   ghcr.io/gabloe/felix-broker:0.5.0
 ```
 
 A broker authenticates every client against its tenant's signing keys, which it
-fetches from the control plane, and registers itself there so shards can be
-placed on it — so it needs both a control plane to reach and a node credential
-to present. Without them it logs `broker started` and exits on the next line.
+fetches from the control plane, and it reads its streams from there with a
+node credential. Without `FELIX_CONTROLPLANE_URL` it logs `broker started` and
+exits on the next line. Without the credential it runs but serves no streams.
 [Docker Compose](/felix/deployment/docker-compose/) wires the pair together; for
 a local cluster with nothing to configure, `felix-cluster up` is quicker (see
 the [Quickstart](/felix/getting-started/quickstart/)).
 
 Each release publishes the full version (`0.5.0`), the minor series (`0.5`) and
 `latest`. Use a version tag in anything you keep; `latest` moves. Images are
-signed by digest — see [Kubernetes](/felix/deployment/kubernetes/) for the
+signed by digest. See [Kubernetes](/felix/deployment/kubernetes/) for the
 `cosign verify` invocation.
 
 To build one instead, for a change you have not released:
@@ -308,8 +305,8 @@ To build one instead, for a change you have not released:
 # Build the broker image
 docker build -t felix-broker -f docker/broker.Dockerfile .
 
-# Run what you built
-docker run -p 5000:5000/udp -p 8080:8080 felix-broker
+# Run what you built, with the same variables and mount as above
+docker run -p 5000:5000/udp -p 8080:8080 -e FELIX_CONTROLPLANE_URL=... felix-broker
 ```
 
 ### Control Plane Container
@@ -319,7 +316,7 @@ The same, for the control plane:
 ```bash
 # Or build it: docker build -t felix-controlplane -f docker/controlplane.Dockerfile .
 
-# Run the control plane (example uses a local Postgres)
+# Without a Postgres URL it keeps its metadata in memory.
 docker run -p 8443:8443 \
   -e FELIX_CONTROLPLANE_POSTGRES_URL=postgres://postgres:postgres@host.docker.internal:55432/postgres \
   ghcr.io/gabloe/felix-controlplane:0.5.0
@@ -328,18 +325,6 @@ docker run -p 8443:8443 \
 See [Docker Compose Guide](/felix/deployment/docker-compose/) for orchestrated deployments.
 
 ## Troubleshooting
-
-### OpenSSL Errors (Linux)
-
-If you see OpenSSL-related build errors:
-
-```bash
-# Ubuntu/Debian
-sudo apt-get install pkg-config libssl-dev
-
-# RHEL/CentOS/Fedora
-sudo yum install pkg-config openssl-devel
-```
 
 ### Linker Errors
 
@@ -366,15 +351,6 @@ If the build runs out of memory:
 ```bash
 # Reduce parallel jobs
 cargo build --release -j 2
-```
-
-### Slow Builds
-
-Enable incremental compilation for development:
-
-```bash
-export CARGO_INCREMENTAL=1
-cargo build
 ```
 
 ## Next Steps

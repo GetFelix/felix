@@ -2,18 +2,25 @@
 title: "Demos Overview"
 ---
 
-Felix includes a set of runnable demos that showcase core capabilities such as
-pub/sub, cache operations, latency benchmarking, and multi-tenant workflows.
-Each demo is a **self-contained binary**: it starts an in-process broker and
-QUIC server on a random local port, runs the scenario, and exits.
+Felix includes runnable demos for pub/sub, caching, durability, queues,
+consistency levels, latency, and multi-tenant access control. Each one starts
+what it needs, runs its scenario, and exits. You do not need a broker running
+first.
 
 ## Quick notes
 
-- You do **not** need a separately running broker for these demos.
+- Most demos start a broker inside their own process. The pub/sub, cache,
+  latency, notifications, orders, slow-consumer and state-divergence demos serve
+  it over QUIC on a random local port; the queue and durable-restart demos call
+  the broker directly, with no network.
+- The Leader vs Quorum demo runs a real three-node cluster of `felix-broker`
+  processes through the cluster harness.
+- The RBAC live and cross-tenant demos start a control plane, a broker and a
+  fake IdP on local ports. The cross-tenant demo also needs Postgres, which its
+  Task target starts and stops.
 - Demo auth helpers are enabled for convenience (not production-safe).
-- The RBAC live demo starts a control plane, broker, and fake IdP on local ports.
 - All commands are run from the repository root.
-- If you use Task, run `task demo:slow-consumer`, `task demo:state-divergence`, `task demo:queues`, `task cluster:consistency`, `task demo:pubsub`, `task demo:cache`, `task demo:latency`, `task demo:notifications`, `task demo:orders`, `task demo:rbac-live`, or `task demo:cross-tenant-isolation`.
+- With Task: `task demo:slow-consumer`, `task demo:state-divergence`, `task demo:queues`, `task cluster:consistency`, `task demo:pubsub`, `task demo:cache`, `task demo:latency`, `task demo:notifications`, `task demo:orders`, `task demo:rbac-live`, or `task demo:cross-tenant-isolation`. The durable-restart demo has no Task target; run it with `cargo run`.
 
 ## Demo catalog
 
@@ -24,7 +31,7 @@ QUIC server on a random local port, runs the scenario, and exits.
   stream that drops on overflow; a durable stream replays by offset and a queue
   redelivers, so this is a cost you opt into, not Felix's delivery model.
 - A stalled consumer recovers, everything settles, and it is still permanently
-  wrong about most of the keyspace — with no signal that it is.
+  wrong about most of the keyspace, with no signal that it is.
 - Demonstrates what dropping costs, which is the case for choosing a durable
   stream or a queue when a consumer keeps derived state.
 - See [Local State Divergence](/felix/demos/state-divergence/).
@@ -33,17 +40,31 @@ QUIC server on a random local port, runs the scenario, and exits.
 cargo run --release --manifest-path demos/state-divergence/Cargo.toml
 ```
 
+### Durable Restart (`durable-restart-demo`)
+
+- Publishes 500 records to a durable stream and 500 to an ephemeral one on the
+  same broker, with fsync on commit.
+- Drops the broker without a graceful shutdown, standing in for a crash, then
+  boots a new broker over the same directory.
+- Every acknowledged durable record is read back at its offset, the ephemeral
+  stream comes back empty, and a new publish lands after the recovered records.
+  The demo exits non-zero if any of that fails.
+
+```bash
+cargo run --release -p felix-broker-service --bin durable-restart-demo
+```
+
 ### Queue Semantics (`queue-semantics-demo`)
 
 - The other way to read the log: a consumer group hands each record to one
   consumer and takes it back if nobody says it was handled.
 - Work distribution, redelivery after a worker dies mid-job, an attempt bound,
-  and a dead letter — with the two jobs queued behind the poison one running
+  and a dead letter, with the two jobs queued behind the poison one running
   anyway, which is the point of the bound.
 - Honest about the cost: it counts the redeliveries, because at-least-once is a
   promise about loss and not about duplicates.
-- Deterministic — it drives the visibility timeout rather than sleeping — so
-  `task demo:check` runs it as a behavioural test.
+- Deterministic, because it drives the visibility timeout rather than
+  sleeping, so `task demo:check` runs it as a behavioural test.
 - See [Queue Semantics](/felix/demos/queue-semantics/).
 
 ```bash
@@ -52,7 +73,7 @@ cargo run --release -p felix-broker-service --bin queue-semantics-demo
 
 ### Leader vs Quorum (`felix-cluster consistency`)
 
-- The same fault — a leader cut off from its replicas — put to two streams that
+- The same fault, a leader cut off from its replicas, put to two streams that
   differ only in `consistency`.
 - Quorum refuses the write while the shard stays available. Leader takes it, and
   the shard goes unavailable when the leader dies, because promoting a replica
@@ -92,9 +113,9 @@ cargo run --manifest-path demos/rbac-live/Cargo.toml
 Expected output includes step-by-step PASS/FAIL markers such as:
 
 ```
-STEP 9 publish denied: PASS
-STEP 12 RBAC policies added: PASS
-STEP 15 publish allowed: PASS
+STEP 10 publish denied: PASS
+STEP 13 RBAC policies added: PASS
+STEP 16 publish allowed: PASS
 ```
 
 ### Cross-Tenant Isolation (`demo-cross-tenant-isolation`)
@@ -110,9 +131,9 @@ cargo run --manifest-path demos/cross_tenant_isolation/Cargo.toml
 Expected output includes step-by-step PASS/FAIL markers such as:
 
 ```
-STEP 13 t1 publish allowed: PASS
-STEP 16 t1 token on t2 publish denied: PASS
-STEP 19 t2 token publish denied: PASS
+STEP 15 t1 publish allowed: PASS
+STEP 18 t1 token on t2 publish denied: PASS
+STEP 21 t2 token publish denied: PASS
 ```
 
 ### Pub/Sub Demo (`pubsub-demo-simple`)

@@ -6,7 +6,7 @@ Felix has six distinct places where a message can be slowed down, queued, or
 shed, spread across the publish and subscribe paths covered in
 [Internals: The Publish Path](/felix/development/internals-publish/) and
 [Internals: Subscribe & Fanout](/felix/development/internals-subscribe/). This page is the
-map of all six in one place — what each one guards against, what happens
+map of all six in one place: what each one guards against, what happens
 when it's full, and how they compose into the "throughput plateaus, latency
 stays bounded, overload becomes visible" curve the
 [Benchmarks](/felix/features/benchmarks/) page measures.
@@ -32,7 +32,7 @@ Checkpoints 1-2 are client-side (see
 [Internals: The Publish Path](/felix/development/internals-publish/#client-side-publisherpublish)),
 3-4 are broker ingest, 5-6 are broker egress (see
 [Internals: Subscribe & Fanout](/felix/development/internals-subscribe/)). Below that, QUIC's
-own flow control is the final backpressure layer — a subscriber that isn't
+own flow control is the final backpressure layer. A subscriber that isn't
 reading eventually blocks the connection writer's `send.write_all()`, which
 is why checkpoints 5-6 exist at all: without them, one slow subscriber's
 QUIC-level backpressure would eventually block fanout to every other
@@ -42,26 +42,26 @@ subscriber sharing the broker-core `Arc` snapshot loop.
 
 Checkpoints 1/3 (bytes) and 2/4 (items) look redundant but aren't:
 `pub_queue_depth` alone bounds how many *jobs* queue, but a job's payload
-can be as large as `max_frame_bytes` (16 MiB default) — a handful of large
+can be as large as `max_frame_bytes` (16 MiB default), and a handful of large
 batches can blow the intended memory budget long before they fill an
 item-count queue. `PublishAdmission` (`crates/sdk/felix-client/src/publish/admission.rs`
-and `services/felix-broker-service/src/serving/quic/handlers/publish/` — two separate
-structs, same design) is a `tokio::sync::Semaphore` sized in bytes rather
+and `services/felix-broker-service/src/serving/quic/handlers/publish/admission.rs`, two
+separate structs with the same design) is a `tokio::sync::Semaphore` sized in bytes rather
 than permits-as-items, acquired via `acquire_many_owned(byte_count)`. The
 permit is attached to the request/job and released only when it's actually
-processed, not when it's merely handed to a channel — so the byte budget
+processed, not when it's merely handed to a channel, so the byte budget
 reflects real resident memory, not just admission-time throughput.
 
 ### Why two queue-policy checkpoints on egress (5 and 6)
 
-`subscriber_queue_policy` (5) gates the broker-core fanout loop in
-`Broker::publish_batch_to_handle` — the very first hand-off after a message
-is appended to the log. `subscriber_lane_queue_policy` (6) gates a second,
+`subscriber_queue_policy` (5) gates the broker-core fanout in
+`Broker::complete_publish` (`crates/server/felix-broker/src/broker/publish/completion.rs`),
+the first hand-off after a batch is durable and appended to the replay ring. `subscriber_lane_queue_policy` (6) gates a second,
 independent hand-off one hop later, from a subscription's feeder task to
 its writer lane. They're separate because they guard against different
 failure modes: (5) is about a subscriber's application-level consumer
-falling behind (not reading fast enough); (6) is about the *lane* — shared
-across many subscribers — being saturated, e.g. because one lane's
+falling behind (not reading fast enough). (6) is about the lane, shared
+across many subscribers, being saturated, e.g. because one lane's
 connection writer is stuck on a flow-control-blocked QUIC stream. A
 subscriber can be perfectly healthy at checkpoint 5 and still get shed at
 checkpoint 6 because it happens to share a lane with a slow neighbor.
@@ -70,24 +70,24 @@ checkpoint 6 because it happens to share a lane with a slow neighbor.
 
 ```rust
 pub enum SubQueuePolicy {
-    Block,    // sender awaits queue space — nothing is ever shed
+    Block,    // sender awaits queue space; nothing is ever shed
     DropNew,  // sender try_sends; on Full, the new item is discarded
-    DropOld,  // emulated as DropNew today; tracked separately in metrics
+    DropOld,  // behaves as DropNew; counted separately in metrics
 }
 ```
 
 :::caution[Lossless needs checkpoint 4 too, not just 5 and 6]
 Setting `Block` on the subscriber queue (5), the lane queue (6) *and* the
-client's own subscriber channel still does **not** give you lossless
-delivery. Checkpoint 4 — the broker's publish ingress queue, depth 64 —
-defaults to `Drop`, and unacked publishes have nothing pacing them, so a
+client's own subscriber channel still does not give you lossless
+delivery. Checkpoint 4, the broker's publish ingress queue, defaults to
+`Drop`, and unacked publishes have nothing pacing them, so a
 burst that outruns the broker core is shed before it ever reaches a
 subscriber queue. Measured: a 400-message unacked burst on a 4-CPU host
 dropped 77 publishes with every downstream queue set to `Block`.
 
-Lossless mode is `Block` on 5 and 6 **plus** `pub_ingress_wait: true`
+Lossless mode is `Block` on 5 and 6 plus `pub_ingress_wait: true`
 (checkpoint 4 → `Backpressure`). The symptom of getting this wrong is
-delivery that appears to stall — the missing events were never published,
+delivery that appears to stall: the missing events were never published,
 so nothing downstream is waiting on anything. `felix_broker_ingress_dropped_total`
 is the counter that tells you which it is.
 :::
@@ -98,10 +98,10 @@ counted, bounded-latency event (`felix_subscribe_dropped_total`,
 unbounded tail latency. The [Benchmarks](/felix/features/benchmarks/) harness
 flips both to `Block` (plus `pub_ingress_wait: true` upstream, so the
 publisher itself slows down rather than getting shed at checkpoint 4) to
-measure *lossless sustainable throughput* — a deliberately different mode
+measure *lossless sustainable throughput*, a deliberately different mode
 from the production default, not a "more correct" one. Which mode you want
 is a product decision, not a performance one: `Block` guarantees delivery
-at the cost of publishers slowing down for one bad subscriber; `DropNew`
+at the cost of publishers slowing down for one bad subscriber. `DropNew`
 guarantees publishers never slow down at the cost of that subscriber
 missing events.
 
@@ -110,16 +110,16 @@ missing events.
 **File**: `services/felix-broker-service/src/serving/core_shards.rs`
 
 Everything above describes *what* queues and *what* gets shed. Core
-sharding is about *where* the code that does this actually runs — normally,
+sharding is about *where* the code that does this runs. Normally
 tokio's work-stealing scheduler bounces tasks across OS threads/cores
 freely, which means a stream's publish worker and its subscribers' feeder
 tasks can end up on different cores, turning every hand-off in the chain
 above into a cross-core cache-line bounce and a scheduler wakeup.
 
-`core_shards` (off by default; `FELIX_CORE_SHARDS` / `core_shards: N`) is a
+`core_shards` (off by default, set with `FELIX_CORE_SHARDS` / `core_shards: N`) is a
 fixed set of single-threaded tokio runtimes, one per shard, each pinned to
-a CPU core on Linux (`sched_setaffinity`; a dedicated thread with no hard
-pinning elsewhere):
+a CPU core on Linux (`sched_setaffinity`), or a dedicated thread with no hard
+pinning elsewhere:
 
 ```rust
 pub struct CoreShards {
@@ -152,13 +152,13 @@ agree on which shard owns a given stream:
   subscription's `StreamHandle` and spawns `run_lane_feeder` on
   `shards.handle_for(handle.id())` instead of the default runtime.
 
-The result: a stream's publish-side append/fanout and its subscribers'
-dequeue/encode all execute on one core. What stays *off* the shards
-deliberately: QUIC I/O — quinn does packetization and TLS in its own driver
+The result: a stream's publish-side work and its subscribers'
+dequeue/encode execute on one core. QUIC I/O stays off the shards on purpose:
+quinn does packetization and TLS in its own driver
 tasks regardless of who calls it, and those have their own placement story
 (next section). See
 [Benchmarks: Core Sharding](/felix/features/benchmarks/) for measured impact
-(scales with stream count; single-stream workloads are neutral-to-positive
+(it scales with stream count, and single-stream workloads are neutral-to-positive
 by design, since a single stream only ever has one owning shard either way).
 
 ## The QUIC I/O runtime
@@ -170,13 +170,13 @@ transmit/ACK/timer loop) do a *bounded* slice of work per poll and then
 reschedule themselves. That makes their scheduler re-poll latency the
 transport's throughput ceiling: wakeups scale with datagram count, so a
 shared, loaded runtime turns per-wakeup latency directly into a per-byte
-rate cap — measured as a ~7.5× sustained-throughput defect before this
-existed, and per-byte rather than per-message, which is what made it look
-like a payload-size problem rather than a scheduling one.
+rate cap. Measured on a shared runtime, that cost ~7.5× in sustained
+throughput, and it is per-byte rather than per-message, so it looks like a
+payload-size problem rather than a scheduling one.
 
 ```mermaid
 flowchart LR
-    subgraph shared["Before: drivers share the application runtime"]
+    subgraph shared["Drivers on the shared application runtime"]
         direction LR
         N1(["datagram"]) s1@--> SD["quinn driver<br/><small>bounded work, then reschedules</small>"]
         SD s2@--> SQ{{"waits behind<br/>~50 app tasks"}}
@@ -184,7 +184,7 @@ flowchart LR
         SP s4@--> SO(["~73 MB/s<br/><small>a wakeup chain per datagram</small>"])
     end
 
-    subgraph dedicated["After: drivers own single-threaded runtimes"]
+    subgraph dedicated["Drivers on dedicated single-threaded runtimes (what Felix does)"]
         direction LR
         N2(["datagram"]) d1@--> DD["quinn driver<br/><small>dedicated thread, re-polls immediately</small>"]
         DD d2@--> DP["colocated pump<br/><small>same-thread task switch</small>"]
@@ -218,19 +218,20 @@ saturated resource.
 
 Felix therefore runs quinn drivers on a pool of dedicated *single-threaded*
 runtimes, high QoS on macOS, via a custom `quinn::Runtime` implementation.
-`FELIX_IO_RUNTIME_THREADS` sizes the pool (default: 2; `0` restores the
-shared runtime).
+`FELIX_IO_RUNTIME_THREADS` sizes the pool. On macOS the default is one runtime
+per server endpoint plus one for clients. Elsewhere it is `0`, which runs the
+drivers on the shared runtime.
 
 Which endpoints share a runtime is load-bearing. Assignment is by role,
 not round-robin: server endpoints spread across every runtime but the last,
 and client endpoints all share the last one. A server endpoint multiplexes
 every connection and drives traffic in both directions, so sharing its
-runtime starves it — measured 5–6× slower when a client endpoint landed
+runtime starves it: measured 5–6× slower when a client endpoint landed
 next to it. A client's publish and event endpoints carry the two halves of
 one request/response flow, so *splitting* them across threads makes every
 message pay two cross-thread wakeups. The partition is independent of
-creation order — a history-dependent assignment recreated the slow topology
-on every second benchmark case before this was fixed.
+creation order, because an order-dependent assignment recreates the slow
+topology on every second benchmark case.
 
 Two pump tasks are *colocated* with their connection's drivers through
 `QuicConnection::spawn_pump`, because they exchange a wakeup with the
@@ -248,14 +249,14 @@ the I/O thread starves the very drivers it waits on (measured 5× worse).
 
 With defaults (checkpoints 4-6 shedding, not blocking): as publish rate
 exceeds what a subscriber's consumer can drain, checkpoint 5 or 6 starts
-shedding for *that subscriber only* — other subscribers on the stream are
-unaffected (checkpoint 5 is per-subscriber; checkpoint 6 is per-lane, and
+shedding for *that subscriber only*. Other subscribers on the stream are
+unaffected (checkpoint 5 is per-subscriber, checkpoint 6 is per-lane, and
 lane assignment spreads subscribers across lanes). Publish-side throughput
-is untouched; the overloaded subscriber sees drops and bounded queue depth
+is untouched. The overloaded subscriber sees drops and bounded queue depth
 instead of growing latency. That's the "plateau, don't degrade" curve.
 
 With lossless mode (`Block` + `pub_ingress_wait`): the same overload instead
-propagates backward through every checkpoint — a slow subscriber blocks its
+propagates backward through every checkpoint. A slow subscriber blocks its
 lane, which blocks its feeder, which blocks broker-core fanout for *every*
 subscriber of that stream (checkpoint 5 sends to all subscribers before
 returning), which blocks that stream's publishes on their lane, which fills
@@ -267,8 +268,8 @@ backpressure on every producer of that stream.
 
 | You want to... | Look at |
 |---|---|
-| Add a new backpressure checkpoint | Decide which layer it belongs to (ingest vs. broker-core fanout vs. lane) — see the table above for precedent |
+| Add a new backpressure checkpoint | Decide which layer it belongs to (ingest vs. broker-core fanout vs. lane). See the table above for precedent |
 | Change what happens when a checkpoint is full | `SubQueuePolicy` (`crates/server/felix-broker/src/stream/delivery.rs`) for 5/6, `EnqueuePolicy` (`publish/ack.rs`) for 3/4 |
-| Change the byte-budget admission logic | `PublishAdmission` — separately in `crates/sdk/felix-client/src/publish/admission.rs` (client) and `services/felix-broker-service/src/serving/quic/handlers/publish/admission.rs` (broker); kept intentionally symmetric, change both if you change the design |
+| Change the byte-budget admission logic | `PublishAdmission`, separately in `crates/sdk/felix-client/src/publish/admission.rs` (client) and `services/felix-broker-service/src/serving/quic/handlers/publish/admission.rs` (broker). They are kept symmetric on purpose, so change both if you change the design |
 | Change core-sharding/stream-ownership logic | `services/felix-broker-service/src/serving/core_shards.rs`; the two call sites in `handlers/publish/worker.rs` and `handlers/subscribe.rs` that must agree on `handle_id -> shard` |
-| Debug "why is this subscriber not getting messages" | Check `felix_subscribe_dropped_total` / `felix_sub_queue_dropped_total` counters first — if either is nonzero for a stream, you're at checkpoint 5 or 6, not a bug |
+| Debug "why is this subscriber not getting messages" | Check `felix_subscribe_dropped_total` / `felix_sub_queue_dropped_total` counters first. If either is nonzero for a stream, you're at checkpoint 5 or 6, not a bug |

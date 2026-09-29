@@ -63,7 +63,7 @@ WORKDIR /var/lib/felix
 USER 65532:65532
 
 # Client QUIC (FELIX_QUIC_BIND), broker-to-broker QUIC (FELIX_INTERNAL_BIND),
-# and metrics (FELIX_METRICS_BIND). Documentation rather than enforcement —
+# and metrics (FELIX_BROKER_METRICS_BIND). Documentation rather than enforcement —
 # EXPOSE publishes nothing on its own — but it is what tooling reads.
 EXPOSE 5000/udp 5001/udp 8080/tcp
 

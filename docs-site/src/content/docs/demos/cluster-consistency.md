@@ -20,7 +20,7 @@ for `consistency`, both replicated three ways.
 ## The fault
 
 A leader **cut off from its replicas**. The followers are frozen with `SIGSTOP`,
-not killed — so the leader still believes they are there and keeps trying to
+not killed, so the leader still believes they are there and keeps trying to
 ship to them. It is healthy, and alone.
 
 Each stream's own followers are frozen in turn, so the run does not depend on
@@ -39,7 +39,7 @@ publish failed: the batch is durable here but did not reach a majority within 5s
 The publisher is told while it still holds the record. The shard stays
 available throughout.
 
-Note the shape of that message. It is not "the write failed" — the batch *is*
+Note the shape of that message. It is not "the write failed": the batch *is*
 durable on the leader. The demo is careful about the same thing: the refused
 record may still be **present** afterwards, because it landed on the leader's
 log before the answer came back. That is not a bug. A refusal means *"this
@@ -66,7 +66,7 @@ returns with its disk.
 
 Neither outcome is data loss, and that is the part worth taking away.
 
-`Leader` does not trade safety for latency — it trades **availability** for
+`Leader` does not trade safety for latency. It trades **availability** for
 latency, and it moves the moment you find out:
 
 | | You learn about it | While you |
@@ -80,7 +80,7 @@ ones that would rather be refused.
 
 ## Its counterpart
 
-[`task cluster:failover`](/felix/demos/cross-broker-cluster/) is the other half:
+[`task cluster:failover`](/felix/development/testing/#the-cluster-harness) is the other half:
 a quorum-acknowledged record **surviving** the loss of the broker that
 acknowledged it, read back from the replica promoted in its place. That one
 shows the guarantee working; this one shows what it costs and what happens
@@ -89,13 +89,14 @@ without it.
 ## Honest limits
 
 - Three brokers on one machine. The fault is one a single machine can produce.
-- The demo asserts both outcomes and exits non-zero if either changes — in
+- The demo asserts both outcomes and exits non-zero if either changes, in
   particular if a shard is ever served **without** a record its leader
   acknowledged, which would be silent loss rather than the unavailability shown
   here.
-- Recovery is described but not demonstrated: the harness cannot yet restart a
-  killed broker, so the shard coming back with the old leader's disk is a claim
-  about the design rather than something you watch happen.
+- Recovery is described but not demonstrated. The harness can restart a
+  killed broker over its data directory (`Cluster::restart_node`), but this demo
+  does not, so the shard coming back with the old leader's disk is not
+  something you watch happen here.
 
 ## See also
 

@@ -37,7 +37,8 @@ almost never get past the checksum.
 ## Per pull request
 
 The `fuzz` job in `ci.yml` runs `task fuzz` with `FUZZ_SECONDS=30`: every target
-for 30 seconds, starting from the committed seeds. That catches a decoder
+for 30 seconds. The wire and Kafka targets start from their committed seeds;
+the storage targets have none and start from an empty corpus. That catches a decoder
 change that breaks something the seeds or a minute of mutation reaches. It is
 not meant to find anything deep.
 
@@ -50,8 +51,8 @@ budget and an option to minimize the corpus.
 - **One job per target**, run in parallel, each for 25 minutes by default.
 - **The corpus carries over.** Each target's corpus is kept in the Actions
   cache under `fuzz-corpus-<target>-<run id>`. A run restores the newest entry
-  for its target, fuzzes on top of it with the committed seeds as a second
-  input, and saves the result under a new key. The two newest entries per
+  for its target, fuzzes on top of it (with the committed seeds as a second
+  input, for the targets that have them), and saves the result under a new key. The two newest entries per
   target are kept and older ones are deleted.
 - **The corpus is minimized weekly.** On Sundays, or when the run is started
   with *minimize* set, `cargo fuzz cmin` drops every input that adds no
@@ -94,9 +95,9 @@ cd crates/protocol/felix-wire/fuzz
 cargo +nightly fuzz run frame corpus/frame seeds/frame -- -max_total_time=300
 ```
 
-`seeds/` is committed and read-only. `corpus/` is libFuzzer's working directory
-and is git-ignored. Passing `corpus/<target>` first is what keeps new inputs out
-of `seeds/`.
+`seeds/` is committed and read-only. Only `felix-wire` and `felix-kafka` have
+one. `corpus/` is libFuzzer's working directory and is git-ignored. Passing
+`corpus/<target>` first is what keeps new inputs out of `seeds/`.
 
 ## Adding a target
 

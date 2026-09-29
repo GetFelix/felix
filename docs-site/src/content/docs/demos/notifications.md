@@ -74,7 +74,7 @@ Demo complete.
 - `--drop-subscriber`: drops one subscriber mid-run and restarts it.
 - This demonstrates that other subscribers continue receiving events and that
   the restarted subscriber resumes from new events only. That is a property of
-  *this* demo's streams, which are not durable — a durable stream can be resumed
+  *this* demo's streams, which are not durable. A durable stream can be resumed
   from a checkpointed offset instead. See
   [durable storage](/felix/architecture/durable-storage/).
 

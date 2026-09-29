@@ -24,7 +24,9 @@ REFERENCE = REPO / "docs-site/src/content/docs/reference/environment-variables.m
 # Read by benchmarks, demos, or the test harness only. Not operational surface.
 NOT_OPERATIONAL = {
     "FELIX_BENCH_EMBED_TS",
+    "FELIX_CACHE_BENCH_CONCURRENCY",
     "FELIX_CACHE_BENCH_CONN_STATS",
+    "FELIX_CACHE_BENCH_KEYS",
     "FELIX_CACHE_BENCH_OPS",
     "FELIX_CACHE_BENCH_PAYLOADS",
     "FELIX_CACHE_BENCH_SAMPLES",
