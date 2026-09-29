@@ -305,3 +305,156 @@ async fn nothing_newer_than_the_oldest_member_is_proposed() {
     let enabled = store.finalize_fleet_feature("x").await.expect("finalize");
     assert!(enabled.contains("x"), "{enabled:?}");
 }
+
+/// A group with one member behind, and a stream store to create into.
+async fn store_with_member_at(
+    dir: &std::path::Path,
+    level: u16,
+) -> (Arc<RaftStore>, Arc<std::sync::atomic::AtomicU16>) {
+    let store = single_node_store(dir).await;
+    let version = Arc::new(std::sync::atomic::AtomicU16::new(level));
+    let addr = stub_member(Arc::clone(&version)).await;
+    store
+        .handle
+        .add_learner_without_waiting(2, addr)
+        .await
+        .expect("add old member");
+    store
+        .create_tenant(crate::model::Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "One".to_string(),
+        })
+        .await
+        .expect("tenant");
+    store
+        .create_namespace(crate::model::Namespace {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            display_name: "Ns".to_string(),
+        })
+        .await
+        .expect("namespace");
+    (store, version)
+}
+
+fn routed_stream(name: &str, routing: crate::model::StreamRouting) -> Stream {
+    Stream {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: name.to_string(),
+        kind: crate::model::StreamKind::Stream,
+        shards: 4,
+        replication_factor: 1,
+        retention: crate::model::RetentionPolicy {
+            max_age_seconds: None,
+            max_size_bytes: None,
+        },
+        consistency: crate::model::ConsistencyLevel::Leader,
+        delivery: crate::model::DeliveryGuarantee::AtLeastOnce,
+        durable: false,
+        region: None,
+        routing,
+    }
+}
+
+/// A member before jump-hash routing would store a jump-hash stream as
+/// modulo. So while one is in the group, the stream is refused before it
+/// reaches the log, and so is finalizing the feature that makes it the
+/// default; once every member has it, the routing is kept.
+#[tokio::test]
+async fn a_jump_hash_stream_waits_for_every_member() {
+    use crate::model::StreamRouting;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 2).await;
+    let applied = || store.handle.status().last_applied_index;
+
+    let before = applied();
+    let refused = store
+        .create_stream(routed_stream("jumpy", StreamRouting::JumpHash))
+        .await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("metadata version 3")),
+        "a jump-hash stream was proposed past a member that would drop its routing: {refused:?}"
+    );
+    assert_eq!(applied(), before, "the refused stream reached the log");
+    let refused = store
+        .finalize_fleet_feature(felix_common::fleet::JUMP_HASH_ROUTING.name())
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+
+    // Modulo is what the old member stores anyway.
+    store
+        .create_stream(routed_stream("plain", StreamRouting::Modulo))
+        .await
+        .expect("a modulo stream needs nothing new");
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let created = loop {
+        match store
+            .create_stream(routed_stream("jumpy", StreamRouting::JumpHash))
+            .await
+        {
+            Ok(stream) => break stream,
+            other => assert!(
+                std::time::Instant::now() < deadline,
+                "still refused after every member reported the level: {other:?}"
+            ),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(created.routing, StreamRouting::JumpHash);
+    let key = crate::model::StreamKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "jumpy".to_string(),
+    };
+    assert_eq!(
+        store.get_stream(&key).await.expect("read back").routing,
+        StreamRouting::JumpHash
+    );
+}
+
+/// A member before zones would store a node without its zone. Below that
+/// level the node is registered without one on every member, rather than
+/// with one on some.
+#[tokio::test]
+async fn a_zone_is_kept_only_once_every_member_has_zones() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 1).await;
+
+    let mut zoned = crate::store::contract::nodes::node("broker-z", 7101);
+    zoned.spec.zone = Some("zone-a".to_string());
+    let (registered, _) = store
+        .register_node_in_fleet(zoned.clone())
+        .await
+        .expect("register");
+    assert_eq!(registered.spec.zone, None, "{registered:?}");
+    assert_eq!(
+        store.get_node("broker-z").await.expect("node").spec.zone,
+        None
+    );
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let (registered, _) = store
+            .register_node_in_fleet(zoned.clone())
+            .await
+            .expect("register again");
+        if registered.spec.zone.as_deref() == Some("zone-a") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "zone still dropped after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}

@@ -481,8 +481,42 @@ refused, so until every member is at level 2 brokers register with
 broker reports its features again when it next registers. The enabled set is
 part of the snapshot (`fleet_enabled`, omitted while empty).
 
-A release that adds a variant gives it the next level and raises
-`METADATA_VERSION`. If `felix_meta_raft_unsupported_commands_total` still
+**Fields have levels too.** An older member decodes a newer entry with
+serde, which drops any field it does not know, so a field is as much a
+change to the command set as a variant. Every key path a command or the
+snapshot can serialize is listed with the level that introduced it in
+`store/raft/command/fields.txt`, and a command's level is the higher of its
+variant's and that of the newest field it actually carries. Optional fields
+are left out at their default, so a jump-hash stream needs level 3 and a
+modulo stream needs nothing. Below a field's level the proposer either drops
+the field itself, on every member alike, or refuses the command:
+
+| Field | Level | Below it |
+|---|---|---|
+| refresh token `narrowing` | 1 | the refresh token is not stored and the exchange fails, since without it a refresh could widen the exchange's rights |
+| replica report `leader` | 1 | the report is proposed without it and applies unchecked everywhere, as on the older build |
+| snapshot `refresh_tokens` | 1 | snapshot only |
+| node `zone` | 2 | the node registers without it, like its fleet features |
+| node `features`, snapshot `fleet_enabled` | 2 | as above |
+| stream `routing` | 3 | a jump-hash stream is refused with 409, and so is finalizing `jump_hash_routing` |
+| snapshot `replica_reports` | 3 | snapshot only |
+
+**A member refuses what it would drop.** From level 3 on, a member that
+decodes an entry carrying a non-empty field it does not know answers
+`Unsupported` and counts it, exactly as for an unknown variant, instead of
+applying what is left. A snapshot carrying one stops the member at restore.
+This is the rollback case: a member rolled back below a level already in
+use would otherwise read the newer data and quietly lose the field, and for
+`routing` that turns a jump-hash stream back into modulo and moves keys
+between shards. Builds before level 3 do not have this check, so rolling
+back past level 3 once a jump-hash stream exists silently loses its routing.
+Do not roll a member back below the group's level; roll it forward.
+
+A release that adds a variant or a field gives it the next level and raises
+`METADATA_VERSION`. `store/raft/command/fields/tests.rs` builds every
+replicated type from full struct literals and compares the paths they
+serialize with `fields.txt`, so a new field does not compile until it has a
+sample value, and the test fails until it has a level. If `felix_meta_raft_unsupported_commands_total` still
 moves on a member (something proposed through the raw peer `propose`
 route, or a member added on an older build after the level was computed),
 upgrade it, then wipe its volume and let it rejoin: it rebuilds from the

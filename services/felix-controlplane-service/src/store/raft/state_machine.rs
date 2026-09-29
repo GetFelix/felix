@@ -48,14 +48,14 @@ const APPLIED_IDS_KEPT: usize = 4096;
 /// be answered with what that command actually returned rather than with the
 /// conflict its effect now produces (#529).
 #[derive(Default, Clone, Serialize, Deserialize)]
-struct AppliedIds {
+pub(super) struct AppliedIds {
     /// Apply order, for deterministic eviction.
-    order: VecDeque<String>,
+    pub(super) order: VecDeque<String>,
     /// Ordered, because this is serialized into the snapshot and two replicas
     /// must produce byte-identical ones -- a `HashMap` here would serialize in
     /// arbitrary order and show up as replicas disagreeing. The determinism
     /// harness in this module's tests is what catches that.
-    responses: BTreeMap<String, Vec<u8>>,
+    pub(super) responses: BTreeMap<String, Vec<u8>>,
 }
 
 impl AppliedIds {
@@ -81,10 +81,10 @@ impl AppliedIds {
 /// deduplicating Raft proposals is this layer's concern and not the metadata
 /// store's.
 #[derive(Serialize, Deserialize)]
-struct Snapshot {
-    state: crate::store::export::ExportedState,
+pub(super) struct Snapshot {
+    pub(super) state: crate::store::export::ExportedState,
     #[serde(default)]
-    applied: AppliedIds,
+    pub(super) applied: AppliedIds,
 }
 
 pub struct MetadataStateMachine {
@@ -502,6 +502,7 @@ impl AppStateMachine for MetadataStateMachine {
                 AppliedIds::default(),
             ),
         };
+        refuse_unknown_fields(snapshot, &state, &applied);
         self.store
             .import_state(state)
             .await
@@ -517,6 +518,32 @@ impl AppStateMachine for MetadataStateMachine {
     fn version(&self) -> u16 {
         crate::store::raft::command::METADATA_VERSION
     }
+}
+
+/// Panics if the snapshot carries fields this build would drop.
+///
+/// A snapshot from a newer build (a member rolled back past a level already
+/// in use) would otherwise restore without them, silently: a jump-hash
+/// stream would come back as modulo. Refusing to start is the loud version.
+fn refuse_unknown_fields(
+    raw: &[u8],
+    state: &crate::store::export::ExportedState,
+    applied: &AppliedIds,
+) {
+    let original: serde_json::Value = serde_json::from_slice(raw).expect("snapshot is JSON");
+    // Compared in whichever of the two shapes it arrived in.
+    let decoded = if original.get("state").is_some() {
+        serde_json::json!({ "state": state, "applied": applied })
+    } else {
+        serde_json::to_value(state).expect("exported state serializes by construction")
+    };
+    let dropped = crate::store::raft::command::fields::dropped_fields(&original, &decoded);
+    assert!(
+        dropped.is_empty(),
+        "snapshot carries fields this build does not know ({}); it was written by a newer \
+         release. Run that release on this member instead of this one",
+        dropped.join(", ")
+    );
 }
 
 #[cfg(test)]
