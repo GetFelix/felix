@@ -43,9 +43,9 @@ env:
 jobs:
   fuzz:
     name: Fuzz ${{ matrix.target }}
-    # Self-hosted like history.yml. Twelve targets on two runners queue for a
-    # few hours; the timeout below counts from when a job starts, not queues.
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
+    # Hosted, not the Azure runners: each target fuzzes on one core, and the
+    # history campaign holds those runners at the same hour.
+    runs-on: ubuntu-latest
     # The budget plus a cold nightly build, cmin, and the cache round trip.
     timeout-minutes: 60
     strategy:
