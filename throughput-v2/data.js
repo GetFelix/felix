@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790648474999,
+  "lastUpdate": 1790650266935,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19968,6 +19968,58 @@ window.BENCHMARK_DATA = {
             "range": "11095.19",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 819668.93\nmean: 813964.50\nstdev: 11095.19\ncv: 1.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9305a2e4b83fabae05aaceed021e7ef752640561",
+          "message": "docs(site): fix setup, development, demo, deployment and reference pages (#834)\n\n* docs(site): make the local, compose and Kubernetes setup pages work\n\nBrokers exit without FELIX_CONTROLPLANE_URL, so the local quick start and\nthe compose examples start the control plane first and give the broker its\nURL, credential and a /var/lib/felix volume. Invented log output, /healthz\nand commands the images cannot run are gone. The quickstart SDK examples\nset a tenant and token. The Kubernetes page says the chart's appVersion is\nuntagged and that refreshTokenKey does not survive its read-only mount.\nPrometheus scrapes brokers on 8080.\n\nSpec-Unaffected: docs only\n\n* docs(site): rebuild the development pages from CONTRIBUTING.md\n\nContributing, building and project structure were a generic template\nthat contradicted CONTRIBUTING.md and the grouped crate layout. They now\ndescribe the real toolchain, CI jobs, layout rules and the two harness\ntraps. A new page covers the cluster harness, history checker and TLA+\nmodels. The internals pages gain the durability step and the resume path\nand use the current function names.\n\nSpec-Unaffected: docs only\n\n* docs(site): correct the demo pages\n\nFix the STEP numbers, say which demos run real processes, add\ndurable-restart-demo, and match the state-divergence framing to the\nstatus table.\n\nSpec-Unaffected: docs only\n\n* docs(site): correct the reference and operations pages\n\nMark FELIX_CONTROLPLANE_URL required, list the real health endpoints and\ndefaults, say the YAML file overrides the environment, and add the\nshutdown keys. Troubleshooting drops generic advice and gains a cluster\nsection quoting the broker's own errors. Moving shards documents admin\nabandon. The cache benchmark variables move to the not-operational list.\n\nSpec-Unaffected: docs only",
+          "timestamp": "2026-09-28T19:46:13-07:00",
+          "tree_id": "6563dc83cd82ced12661c52988ca8c7a334384f4",
+          "url": "https://github.com/gabloe/felix/commit/9305a2e4b83fabae05aaceed021e7ef752640561"
+        },
+        "date": 1790650266075,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 323973.23,
+            "range": "8510.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 323973.23\nmean: 325990.67\nstdev: 8510.64\ncv: 2.61%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 323973.23,
+            "range": "8510.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 323973.23\nmean: 325990.67\nstdev: 8510.64\ncv: 2.61%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81500.48,
+            "range": "573.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81500.48\nmean: 81442.81\nstdev: 573.26\ncv: 0.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 815004.84,
+            "range": "5732.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 815004.84\nmean: 814428.07\nstdev: 5732.60\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
