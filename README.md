@@ -231,16 +231,19 @@ If a feature cannot be enforced in code, it is considered incomplete.
 Done: QUIC transport with backpressure, the durable log, the control plane and
 placement, intra-region clustering with replication and failover, the log-backed
 cache, consumer groups, tenant-scoped RBAC, control-plane high availability
-over either Postgres or an embedded Raft group, broker-to-broker mTLS, a Helm
-chart, and Python and TypeScript clients over the Rust one.
+over either Postgres or an embedded Raft group, broker-to-broker mTLS, moving a
+shard without pausing its publishes or ending its subscriptions, a Helm chart,
+and Python and TypeScript clients over the Rust one.
 
 Next, roughly in order:
 
 - Per-stream retention, so a stream's declared policy is the one enforced
-- Moving a shard without pausing its publishes or ending its subscriptions
 - Tiered storage and cold-tier reads
 - Explicit cross-region bridges
-- Encryption at rest, audit logging, and the compliance surface around them
+- Encryption at rest and audit logging
+
+Not planned: end-to-end payload encryption (TLS covers each hop, and a client
+can encrypt payloads itself) and compliance certification.
 
 Detailed plans live in `docs/`, and the per-capability status table on the docs
 site is the authority.
