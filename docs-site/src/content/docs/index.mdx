@@ -9,7 +9,7 @@ editUrl: false
 lastUpdated: false
 hero:
   title: Felix
-  tagline: A QUIC-based clustered log with three readings — streams, caches and queues — built for high-fanout delivery, predictable tail latency and strict slow-consumer isolation.
+  tagline: A QUIC-based clustered log that serves streams, caches and queues, built for high-fanout delivery, predictable tail latency and strict slow-consumer isolation.
   image:
     alt: Felix logo
     file: ../../assets/logo.png
@@ -44,23 +44,23 @@ Felix is a **low-latency** distributed data backend that serves **streams,
 caches and work queues** from one replicated log, over a single QUIC-based
 transport layer.
 
-## What makes it different
+## Design goals
 
-New here? [Why Felix?](/felix/getting-started/why-felix/) is the plain-language
-answer — why one system instead of a log, a cache and a queue, and who should
-not use it. The cards below are the same argument for someone who already knows
-the territory.
+New here? [Why Felix?](/felix/getting-started/why-felix/) explains in
+plain terms why you might run one system instead of a log, a cache and a queue,
+and who should not use it. The cards below make the same case for readers who
+already know the area.
 
 <CardGrid>
   <Card title="Low tail latency" icon="rocket">
-    Designed for predictable p99/p999 under load, not just aggregate throughput.
+    Designed to keep p99/p999 predictable under load, with aggregate throughput second.
     QUIC gives multiplexed streams without head-of-line blocking, and explicit
     backpressure stops one slow path cascading into the rest.
   </Card>
   <Card title="Unified primitives" icon="puzzle">
-    One core log abstraction behind several semantics — **streams** (per-subscription
+    One core log abstraction behind several semantics: **streams** (per-subscription
     fanout cursors), **queues** (shared consumer-group cursors with acks), and
-    **cache** (key → value with TTL). One system instead of three.
+    **cache** (key → value with TTL). You run one system instead of three.
   </Card>
   <Card title="QUIC from the ground up" icon="approve-check">
     Encrypted by default with TLS 1.3, multiplexed streams per connection,
@@ -69,8 +69,8 @@ the territory.
   </Card>
   <Card title="Tunable, explicitly" icon="setting">
     Connection pooling, stream multiplexing, time- and count-bounded batching,
-    flow-control window sizing, and optional per-stage telemetry — all under
-    your control rather than hidden behind defaults.
+    flow-control window sizing, and optional per-stage telemetry. You set
+    all of it; none of it is hidden behind defaults.
   </Card>
 </CardGrid>
 
@@ -86,8 +86,8 @@ the territory.
 
 ## See it behave
 
-The demos are not simulations. Each one runs a real broker and real clients, and
-the slow-consumer, state-divergence and queue demos also assert the property
+Each demo runs a real broker and real clients, and the
+slow-consumer, state-divergence and queue demos also assert the property
 they show as a test.
 
 <CardGrid>
@@ -111,8 +111,7 @@ batching, and flow control.
 
 ![One append-only log per shard, read three ways: as a stream by offset, as a cache through a key index, and as a queue through a cursor shared by a consumer group.](/felix/diagrams/one-log.svg)
 
-Streams, caches and queues are three readings of the same bytes, not three
-subsystems. They share one durability path, one recovery path, one placement
+Streams, caches and queues are three ways of reading the same bytes. They share one durability path, one recovery path, one placement
 rule and one replication path.
 
 <CardGrid>
@@ -135,10 +134,10 @@ rule and one replication path.
     4. Anything unanswered is redelivered, and dead-lettered once it has been attempted too many times.
   </Card>
   <Card title="Composed data flow" icon="right-arrow">
-    Because every semantic is a reading of one log, they compose — each flow below is the primitive a whole class of application is usually hand-built from:
-    1. **Watch a key or prefix** ([keyed watch](/felix/features/cache/#7-keyed-watch)): config push and cache invalidation — every instance learns of a change the moment it lands, with an offset to resume from instead of a poll loop.
-    2. **Current state first, then changes** (retained delivery): presence and state sync — join a room, hold the roster immediately, stay current; the confirmation says the exact moment your state is complete.
-    3. **Deltas folded into a durable sum** (counters): rate limits, usage metering, live tallies — increment and learn where you stand in one round trip, with a sum that survives restart, compaction, and failover.
+    Because every semantic is a reading of one log, they compose. Each flow below covers something applications usually build by hand:
+    1. **Watch a key or prefix** ([keyed watch](/felix/features/cache/#7-keyed-watch)): config push and cache invalidation. Every instance learns of a change the moment it lands, with an offset to resume from instead of a poll loop.
+    2. **Current state first, then changes** (retained delivery): presence and state sync. Join a room, get the roster at once, and stay current; the confirmation marks the exact moment your state is complete.
+    3. **Deltas folded into a durable sum** (counters): rate limits, usage metering and live tallies. Increment and learn where you stand in one round trip, with a sum that survives restart, compaction, and failover.
   </Card>
 </CardGrid>
 
@@ -168,8 +167,8 @@ Felix is a good fit today for:
   is retried if nobody says it was handled
 - **Microservice communication** with unified stream, cache and queue semantics
 
-See [What Felix Is For](/felix/getting-started/what-felix-is-for/) for the honest
-boundaries — including what Felix is deliberately *not*.
+See [What Felix Is For](/felix/getting-started/what-felix-is-for/) for where
+Felix fits and where it does not.
 
 ## Current Status
 
@@ -185,8 +184,8 @@ boundaries — including what Felix is deliberately *not*.
     - [Kafka compatibility](/felix/features/kafka/): Kafka producers (idempotent
       ones included) and partition-assigning consumers against durable
       streams; no Kafka consumer groups or transactions
-    - A control plane over REST, holding metadata in Raft — no external
-      database — or in Postgres, and capability negotiation on the wire
+    - A control plane over REST, holding metadata in Raft (no external
+      database) or in Postgres, and capability negotiation on the wire
     - Tenant-scoped tokens, RBAC, and OIDC token exchange
     - Mutually authenticated broker-to-broker QUIC, when certificates are
       configured
@@ -217,14 +216,14 @@ boundaries — including what Felix is deliberately *not*.
    cargo build --workspace --release
    ```
 
-3. Run a demo — each one is self-contained and starts its own broker.
+3. Run a demo. Each one is self-contained and starts its own broker.
 
    ```bash
    task demo:slow-consumer
    task demo:state-divergence
    ```
 
-4. Or start a real cluster — control plane, credentials and three brokers —
+4. Or start a real cluster (control plane, credentials and three brokers)
    and publish through one broker to a shard another one owns.
 
    ```bash
@@ -244,7 +243,7 @@ See the [Demos Overview](/felix/demos/overview/) or the
   <LinkCard
     title="Source on GitHub"
     href="https://github.com/gabloe/felix"
-    description="The workspace, the demos, and the CI that keeps them honest."
+    description="The workspace, the demos, and the CI that runs them."
   />
   <LinkCard
     title="Issues"
