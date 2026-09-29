@@ -199,10 +199,10 @@ pub(crate) struct Authority<'a> {
 
 /// Which shard a record with this routing key belongs to.
 ///
-/// The stream's width comes from the router's own snapshot rather than the
-/// stream catalog: it is an `ArcSwap` read with no lock, on a path that resolves
-/// a shard for every publish, and the router is already the thing that decides
-/// how the cluster is divided.
+/// The stream's width and mapping come from the router's own snapshot rather
+/// than the stream catalog: it is an `ArcSwap` read with no lock, on a path
+/// that resolves a shard for every publish, and the router is already the
+/// thing that decides how the cluster is divided.
 ///
 /// A broker with no cluster behind it has one shard, so every key lands on 0 —
 /// which is also what a stream placed with one shard does, and is why adding a
@@ -214,19 +214,15 @@ pub(crate) fn resolve_shard(
     stream: &str,
     key: Option<&[u8]>,
 ) -> u32 {
-    let shards = publish_ctx
-        .ingress
-        .as_ref()
-        .map(|ingress| {
-            ingress.shards_for(
-                crate::shards::ShardKind::Stream,
-                tenant_id,
-                namespace,
-                stream,
-            )
-        })
-        .unwrap_or(1);
-    crate::shards::routing::shard_for(shards, key)
+    publish_ctx.ingress.as_ref().map_or(0, |ingress| {
+        ingress.shard_for_key(
+            crate::shards::ShardKind::Stream,
+            tenant_id,
+            namespace,
+            stream,
+            key,
+        )
+    })
 }
 
 /// Turn a resolved route into a publish target.

@@ -22,6 +22,7 @@ fn assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignment {
         generation,
         state: "active".to_string(),
         successor: None,
+        routing: Default::default(),
     }
 }
 
@@ -162,6 +163,7 @@ fn cache_assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignmen
         generation,
         state: "active".to_string(),
         successor: None,
+        routing: Default::default(),
     }
 }
 
@@ -226,4 +228,28 @@ fn an_assignment_without_a_kind_is_a_stream() {
 
     assert_eq!(assignment.key.kind, ShardKind::Stream);
     assert_eq!(assignment.key.shard, 3);
+    assert_eq!(
+        assignment.routing,
+        felix_wire::routing::ShardRouting::Modulo,
+        "a control plane that predates routing only ever had modulo streams"
+    );
+}
+
+#[test]
+fn an_assignment_carries_its_streams_routing() {
+    let json = r#"{
+        "tenant_id": "t1",
+        "namespace": "ns",
+        "stream": "orders",
+        "shard": 3,
+        "leader": "broker-a",
+        "generation": 7,
+        "state": "active",
+        "routing": "jump_hash"
+    }"#;
+    let assignment: ShardAssignment = serde_json::from_str(json).expect("assignment");
+    assert_eq!(
+        assignment.routing,
+        felix_wire::routing::ShardRouting::JumpHash
+    );
 }

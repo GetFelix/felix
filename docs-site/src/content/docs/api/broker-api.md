@@ -827,10 +827,14 @@ It is an instruction, not a failure. A **publish** to the wrong broker is
 ```json
 { "type": "stream_shards", "tenant_id": "acme", "namespace": "prod",
   "stream": "orders", "request_id": 1 }
-{ "type": "stream_shards_view", "shards": 4, "request_id": 1 }
+{ "type": "stream_shards_view", "shards": 4, "request_id": 1,
+  "routing": "jump_hash" }
 ```
 
-How many shards a stream was placed with. Gated by `FEATURE_STREAM_SHARDS`.
+How many shards a stream was placed with, and how it maps routing keys onto
+them. Gated by `FEATURE_STREAM_SHARDS`. `routing` is sent only for a stream
+created with jump-hash routing; absent means `modulo`. A client that computes
+a key's shard itself must use the stream's own mapping.
 
 A subscription reads **one shard**, so a client consuming a whole stream needs
 this to know how many to open; nothing else on the wire says. `0` means the

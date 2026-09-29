@@ -245,5 +245,6 @@ fn assignment(key: &ShardKey, state: &str) -> ShardAssignment {
         generation: GENERATION,
         state: state.to_string(),
         successor: None,
+        routing: Default::default(),
     }
 }

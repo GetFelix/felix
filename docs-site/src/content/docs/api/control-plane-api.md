@@ -305,6 +305,15 @@ one is refused with `400`, and omitting it places the stream anywhere. An
 operator move to a broker outside the allowed regions is refused with `409`
 and code `region_not_allowed`.
 
+A stream also records how routing keys map to its shards, fixed at creation.
+Omitted, `routing` is `"jump_hash"` (jump consistent hashing, which would move
+only about `1/n` of the keys were a stream grown to `n` shards) once the fleet has
+finalized `jump_hash_routing`, and `"modulo"` before. `"routing": "modulo"`
+always works; `"routing": "jump_hash"` before the finalize is refused with
+`409`. Finalizing never changes an existing stream, so no live stream's keys
+move. Stream answers and shard assignments omit `routing` when it is
+`modulo`.
+
 A cache takes `consistency` the same way, `"Leader"` when omitted. Under
 `"Quorum"` a put or delete is acknowledged only once a majority of the shard's
 replicas hold it; counter updates are acknowledged by the leader either way.

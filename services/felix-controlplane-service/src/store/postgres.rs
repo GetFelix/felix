@@ -233,6 +233,13 @@ impl ControlPlaneStore for PostgresStore {
         streams::get_stream(self, key).await
     }
 
+    async fn stream_routings(
+        &self,
+        keys: &[StreamKey],
+    ) -> StoreResult<std::collections::HashMap<StreamKey, crate::model::StreamRouting>> {
+        streams::stream_routings(self, keys).await
+    }
+
     async fn create_stream(&self, stream: Stream) -> StoreResult<Stream> {
         streams::create_stream(self, stream).await
     }

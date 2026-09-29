@@ -21,6 +21,7 @@ fn assigned_to(leader: &str, generation: u64) -> ShardAssignment {
         generation,
         state: "active".to_string(),
         successor: None,
+        routing: Default::default(),
     }
 }
 

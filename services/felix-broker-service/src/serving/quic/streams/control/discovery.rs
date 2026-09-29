@@ -106,19 +106,22 @@ pub(super) async fn stream_shards(
     // than guessing 1: "I do not know" and "exactly one shard" are
     // different answers, and a client that assumed the latter would
     // silently read a fraction of a stream.
-    let shards = match publish_ctx.ingress.as_deref() {
+    let placement = match publish_ctx.ingress.as_deref() {
         Some(ingress) => ingress
-            .placed_shards_for(
+            .placement_for(
                 crate::shards::ShardKind::Stream,
                 &tenant_id,
                 &namespace,
                 &stream,
             )
-            .unwrap_or(0),
+            .unwrap_or_default(),
         // No routing snapshot to consult, so the registry is the
         // only thing that knows whether the stream exists. It is
         // served here and unplaced, which is one shard.
-        None => u32::from(broker.stream_exists(&tenant_id, &namespace, &stream).await),
+        None => felix_router::StreamPlacement {
+            shards: u32::from(broker.stream_exists(&tenant_id, &namespace, &stream).await),
+            routing: Default::default(),
+        },
     };
     handle_ack_enqueue_result(
         send_outgoing_critical(
@@ -127,9 +130,10 @@ pub(super) async fn stream_shards(
             "felix_broker_out_ack_depth",
             ack_throttle_tx,
             Outgoing::Message(Message::StreamShardsView {
-                shards,
+                shards: placement.shards,
                 request_id,
-                routing: None,
+                // Omitted for modulo, so an older client reads the same frame.
+                routing: (!placement.routing.is_modulo()).then_some(placement.routing),
             }),
         )
         .await,

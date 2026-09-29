@@ -4,7 +4,9 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use felix_controlplane_service::api::types::FeatureFlags;
 use felix_controlplane_service::api::{AppState, build_router};
-use felix_controlplane_service::model::{RetentionPolicy, StreamKind};
+use felix_controlplane_service::model::{
+    Node, NodeCapacity, NodeLifecycle, NodeSpec, NodeStatus, RetentionPolicy, StreamKind,
+};
 use felix_controlplane_service::store::{ControlPlaneStore, StoreConfig};
 use tower::ServiceExt;
 
@@ -433,4 +435,111 @@ async fn names_outside_the_identifier_grammar_are_refused() {
     );
     let response = h.app.clone().oneshot(cache).await.expect("cache");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// A stream's routing is decided once, when it is created: modulo until the
+/// fleet finalizes `jump_hash_routing`, jump hash after, and a stream created
+/// before keeps modulo.
+#[tokio::test]
+async fn stream_routing_is_fixed_by_the_fleet_gate_at_creation() {
+    let h = harness().await;
+    let admin = h.admin("t1");
+    create_tenant(&h).await;
+    create_namespace(&h).await;
+    let create = |name: &str, routing: Option<&str>| {
+        let mut body = serde_json::json!({
+            "stream": name,
+            "kind": StreamKind::Stream,
+            "shards": 4,
+            "retention": RetentionPolicy { max_age_seconds: None, max_size_bytes: None },
+            "consistency": "Leader",
+            "delivery": "AtLeastOnce",
+            "durable": false
+        });
+        if let Some(routing) = routing {
+            body["routing"] = serde_json::json!(routing);
+        }
+        json_request_as(
+            "POST",
+            "/v1/tenants/t1/namespaces/default/streams",
+            &admin,
+            body,
+        )
+    };
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(create("legacy", None))
+        .await
+        .expect("create");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert!(
+        read_json(response).await.get("routing").is_none(),
+        "modulo is omitted"
+    );
+    let response = h
+        .app
+        .clone()
+        .oneshot(create("early", Some("jump_hash")))
+        .await
+        .expect("create");
+    assert_eq!(response.status(), StatusCode::CONFLICT, "not finalized yet");
+
+    let feature = felix_common::fleet::JUMP_HASH_ROUTING.name();
+    h.store
+        .register_node(Node {
+            node_id: "broker-a".to_string(),
+            spec: NodeSpec {
+                advertise_addr: "10.0.0.4:7000".to_string(),
+                client_addr: None,
+                kafka_addr: None,
+                region: "local".to_string(),
+                zone: None,
+                labels: Default::default(),
+                capacity: NodeCapacity::default(),
+            },
+            status: NodeStatus {
+                lifecycle: NodeLifecycle::Live,
+                last_heartbeat_at_millis: 1,
+                registered_at_millis: 1,
+                incarnation: 0,
+                features: [feature.to_string()].into(),
+            },
+        })
+        .await
+        .expect("node");
+    h.store
+        .finalize_fleet_feature(feature)
+        .await
+        .expect("finalize");
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(create("fresh", None))
+        .await
+        .expect("create");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(read_json(response).await["routing"], "jump_hash");
+    let response = h
+        .app
+        .clone()
+        .oneshot(create("optout", Some("modulo")))
+        .await
+        .expect("create");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert!(read_json(response).await.get("routing").is_none());
+
+    let get = Request::builder()
+        .uri("/v1/tenants/t1/namespaces/default/streams/legacy")
+        .header("authorization", format!("Bearer {admin}"))
+        .body(Body::empty())
+        .expect("get");
+    let response = h.app.clone().oneshot(get).await.expect("get");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        read_json(response).await.get("routing").is_none(),
+        "finalizing leaves an existing stream on modulo"
+    );
 }

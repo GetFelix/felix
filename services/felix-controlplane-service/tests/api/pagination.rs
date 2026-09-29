@@ -66,6 +66,7 @@ async fn harness() -> Harness {
                 delivery: DeliveryGuarantee::AtLeastOnce,
                 durable: false,
                 region: None,
+                routing: Default::default(),
             })
             .await
             .expect("stream");

@@ -52,6 +52,15 @@ for what the current release actually guarantees.
 
 ### Added
 
+- **Jump-hash stream routing once the `jump_hash_routing` fleet feature is
+  finalized.** A stream's key-to-shard mapping (`routing`: `modulo` or
+  `jump_hash`) is fixed at creation; streams created after the finalize get
+  jump consistent hashing, and existing streams keep modulo, so no key moves.
+  Postgres gains a nullable `streams.routing` column (migration 0022). Shard
+  assignments and `stream_shards_view` carry `routing` only for jump-hash
+  streams, the broker resolves keyed publishes by it, and `ClusterClient`
+  routes by it. `Client::stream_routing` is new; `felix_router::Placed` gains
+  a `routing` field.
 - **`Quorum` cache reads without the lease once the `lease_free_reads` fleet
   feature is finalized** (with `majority_ack` and `generation_start`). A get
   or counter get on a replicated `Quorum` cache, local or forwarded, takes its

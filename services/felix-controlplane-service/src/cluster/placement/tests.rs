@@ -55,6 +55,7 @@ fn replicated_stream(name: &str, shards: u32, replication_factor: u32) -> Stream
         delivery: DeliveryGuarantee::AtMostOnce,
         durable: true,
         region: None,
+        routing: Default::default(),
     }
 }
 

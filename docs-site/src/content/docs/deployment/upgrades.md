@@ -128,6 +128,11 @@ was down during the finalize too.
 After step 3, rolling back means a build that still has the feature. There
 is no way to disable a finalized feature.
 
+What finalizing `jump_hash_routing` changes: streams created from then on map
+routing keys to shards with jump consistent hashing, which keeps most keys in
+place should a stream's shard count ever grow (it cannot change today). Streams that already exist keep the modulo mapping they were created
+with, and nothing about them moves.
+
 #### `generation_start`
 
 Once finalized, a leader writes a generation-start record whenever it starts

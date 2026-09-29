@@ -10,6 +10,8 @@
 #
 # `scripts/check_tla.sh FelixShardFigure8 FelixShardLease` checks only those.
 # `TLC_WORKERS=4` caps TLC's worker threads; the default is one per core.
+# `TLA_SHARD=1/3` checks every third configuration starting with the second,
+# so CI can split the set across parallel jobs.
 #
 # Needs Java 11+ on PATH, or Docker. The TLA+ tools are fetched once, pinned
 # by release and checksum, into target/tla/.
@@ -126,11 +128,21 @@ expectations=(
   "FelixShardIdempotentHandoffMemory violates NoDuplicate"
 )
 
+shard_index=0
+shard_count=1
+if [ -n "${TLA_SHARD:-}" ]; then
+  shard_index="${TLA_SHARD%/*}"
+  shard_count="${TLA_SHARD#*/}"
+fi
+
 fetch_tools
 failed=0
+position=-1
 for entry in "${expectations[@]}"; do
   cfg="${entry%% *}"
   expect="${entry#* }"
+  position=$((position + 1))
+  if [ $((position % shard_count)) -ne "$shard_index" ]; then continue; fi
   # Configurations named on the command line, when any are, and no others.
   if [ "$#" -gt 0 ] && [[ " $* " != *" $cfg "* ]]; then continue; fi
   echo "== $cfg (expected: $expect)"

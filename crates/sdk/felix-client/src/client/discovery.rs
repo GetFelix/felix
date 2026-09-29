@@ -95,6 +95,19 @@ impl Client {
         namespace: &str,
         stream: &str,
     ) -> Result<u32> {
+        let (shards, _) = self.stream_routing(tenant_id, namespace, stream).await?;
+        Ok(shards)
+    }
+
+    /// [`Client::stream_shards`], with how the stream maps routing keys onto
+    /// its shards. A broker that does not say is describing a modulo stream,
+    /// the only mapping that existed before it could.
+    pub async fn stream_routing(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> Result<(u32, felix_wire::routing::ShardRouting)> {
         if !self.supports_stream_shards() {
             anyhow::bail!("broker does not report stream shard counts");
         }
@@ -130,7 +143,9 @@ impl Client {
                 .await?;
         let _ = send.finish();
         match answer {
-            Some(Message::StreamShardsView { shards, .. }) => Ok(shards),
+            Some(Message::StreamShardsView {
+                shards, routing, ..
+            }) => Ok((shards, routing.unwrap_or_default())),
             Some(Message::Error {
                 message,
                 code,

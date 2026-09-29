@@ -93,6 +93,7 @@ fn stream_from_db_maps_fields() {
         delivery: "AtLeastOnce".to_string(),
         durable: true,
         region: None,
+        routing: None,
     };
     let stream = stream_from_db(row).expect("stream");
     assert_eq!(stream.tenant_id, "t1");

@@ -413,6 +413,7 @@ async fn seed_shards(store: &InMemoryStore) {
             delivery: DeliveryGuarantee::AtMostOnce,
             durable: true,
             region: None,
+            routing: Default::default(),
         })
         .await
         .expect("stream");
@@ -505,6 +506,92 @@ async fn shard_assignments_list_and_filter_by_leader() {
         .map(|i| i["shard"].as_u64().unwrap_or_default())
         .collect();
     assert_eq!(shards, vec![0, 2]);
+}
+
+/// Every assignment feed a broker reads carries its stream's routing, and a
+/// modulo stream's assignments omit it so an older broker reads the same bytes.
+#[tokio::test]
+async fn shard_assignments_carry_the_streams_routing() {
+    let (app, store, keys) = setup().await;
+    seed_shards(&store).await;
+    store
+        .create_stream(Stream {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "clicks".to_string(),
+            kind: StreamKind::Stream,
+            shards: 2,
+            replication_factor: 1,
+            retention: RetentionPolicy {
+                max_age_seconds: None,
+                max_size_bytes: None,
+            },
+            consistency: ConsistencyLevel::Leader,
+            delivery: DeliveryGuarantee::AtMostOnce,
+            durable: true,
+            region: None,
+            routing: felix_controlplane_service::model::StreamRouting::JumpHash,
+        })
+        .await
+        .expect("stream");
+    for shard in 0..2 {
+        store
+            .put_shard_assignment(ShardAssignment {
+                key: ShardKey {
+                    tenant_id: "t1".to_string(),
+                    namespace: "ns".to_string(),
+                    stream: "clicks".to_string(),
+                    shard,
+                    kind: felix_controlplane_service::model::ShardKind::Stream,
+                },
+                leader: "broker-b".to_string(),
+                replicas: Vec::new(),
+                generation: 0,
+                state: ShardState::Active,
+                successor: None,
+                joining: None,
+                move_started_at_millis: None,
+                move_reason: None,
+            })
+            .await
+            .expect("assign");
+    }
+    let bearer = token(&keys, vec!["node.view:cluster:*"]);
+
+    for (path, items) in [
+        ("/v1/shard-assignments", "/items"),
+        ("/v1/shard-assignments/snapshot", "/items"),
+        ("/v1/shard-assignments/changes?since=0", "/items"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(get(path, Some(&bearer)))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let body: serde_json::Value = read_json(response).await;
+        let items = body
+            .pointer(items)
+            .and_then(|i| i.as_array())
+            .expect("items");
+        let mut seen = 0;
+        for item in items {
+            // A change nests the assignment; a listing is the assignment.
+            let assignment = item.get("assignment").unwrap_or(item);
+            match assignment["stream"].as_str() {
+                Some("clicks") => {
+                    assert_eq!(assignment["routing"], "jump_hash", "{path}");
+                    seen += 1;
+                }
+                Some("orders") => {
+                    assert!(assignment.get("routing").is_none(), "{path}: {assignment}");
+                    seen += 1;
+                }
+                other => panic!("{path}: unexpected stream {other:?}"),
+            }
+        }
+        assert_eq!(seen, 5, "{path}");
+    }
 }
 
 fn send(method: &str, path: &str, bearer: &str, body: Option<serde_json::Value>) -> Request<Body> {

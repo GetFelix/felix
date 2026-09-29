@@ -82,6 +82,7 @@ pub(crate) async fn seed(store: &dyn ControlPlaneStore) {
             delivery: DeliveryGuarantee::AtMostOnce,
             durable: true,
             region: None,
+            routing: Default::default(),
         })
         .await;
 
@@ -1004,6 +1005,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
             delivery: DeliveryGuarantee::AtMostOnce,
             durable: true,
             region: None,
+            routing: Default::default(),
         })
         .await
         .expect("create the stream to delete");

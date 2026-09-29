@@ -155,6 +155,7 @@ impl Cluster {
                 delivery: DeliveryGuarantee::AtMostOnce,
                 durable: true,
                 region: None,
+                routing: Default::default(),
             })
             .await
             .expect("stream");

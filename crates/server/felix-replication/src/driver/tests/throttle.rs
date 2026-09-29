@@ -24,6 +24,7 @@ fn moving_router_at(replicas: &[&str], successor: &str, generation: u64) -> Arc<
             generation,
             draining: false,
             successor: Some(successor.to_string()),
+            routing: Default::default(),
         }],
         &nodes,
     );

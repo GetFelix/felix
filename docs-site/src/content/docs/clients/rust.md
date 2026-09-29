@@ -224,6 +224,11 @@ Records sharing a key share a shard and stay ordered with respect to each
 other. Records with different keys do not, once a stream has more than one
 shard. A consumer needing total order wants a single-shard stream.
 
+Which shard a key lands on follows the stream's own mapping, modulo or jump
+hash, fixed when the stream was created. `ClusterClient` asks for it once per
+stream along with the shard count (`Client::stream_routing`), so it computes
+the same shard the broker does.
+
 ### At-least-once duplicates, and says so
 
 By default a publish whose outcome was ambiguous — the broker may or may not
