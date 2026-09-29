@@ -14,7 +14,7 @@ scripts/bench-durable-log.sh results.jsonl
 Seven techniques, each taken from a log-structured engine that has already paid
 for the lesson. They are listed in rough order of how much they matter.
 
-### 1. Group commit — the single largest lever
+### 1. Group commit, the single largest lever
 
 An `fsync` flushes the *whole file*, not one caller's bytes. So when N appends
 are in flight, one flush can satisfy all N. Every appender contends for the same
@@ -27,13 +27,13 @@ making each append buy its own device flush.
 
 This is the mechanism behind PostgreSQL's `commit_delay`, MySQL's binlog group
 commit, and RocksDB's WAL group commit. `felix_storage_sync_batch_appends`
-reports the fan-in actually achieved — a value near 1 under concurrent load means
+reports the fan-in actually achieved. A value near 1 under concurrent load means
 appends are serialising on the device and something has regressed.
 
 ### 2. One `write` per batch, not per record
 
 Records are encoded into a reusable staging buffer and handed to the kernel in a
-single `write`. At 128-byte payloads the syscall, not the copy, is what costs —
+single `write`. At 128-byte payloads the syscall, not the copy, is what costs,
 which is why batching 16 records per append is worth 4.8× to 16× the throughput
 of batching one, across every row below. The gain is largest under `on_commit`
 (13–16×), where a batch amortises a device flush as well as a syscall, and
@@ -60,7 +60,7 @@ Appending past end of file makes the filesystem allocate blocks and update the
 inode's block map on the write path, and invites fragmentation as segments from
 different shards interleave. `fallocate(FALLOC_FL_KEEP_SIZE)` on Linux and
 `F_PREALLOCATE` on macOS reserve the blocks up front without changing the file's
-logical length — so recovery's "valid bytes end at EOF" reasoning still holds.
+logical length, so recovery's "valid bytes end at EOF" reasoning still holds.
 
 ### 6. Sparse indexes
 
@@ -71,7 +71,7 @@ bounded read, instead of a scan from the head of the log.
 ### 7. `fdatasync` over `fsync`
 
 An append changes file data and size, not the owner, mode or times a full `fsync`
-also flushes. On macOS this is `F_FULLFSYNC` instead — POSIX `fsync` there leaves
+also flushes. On macOS this is `F_FULLFSYNC` instead, because POSIX `fsync` there leaves
 data in the drive's volatile cache, so anything weaker would be measuring a
 promise the platform does not keep.
 
@@ -83,7 +83,7 @@ Handing the turn on is where that ordering can quietly undo the first technique.
 
 Waking everyone parked behind a turn makes each of them acquire the lock, find
 it is still not their turn, and park again. Only one can proceed, so with N
-publishers in flight a single commit costs N wake-ups to accomplish one — and
+publishers in flight a single commit costs N wake-ups to accomplish one, and
 the work per commit grows with load. That is the classic thundering herd, and it
 turns concurrency from a throughput lever into a throughput tax.
 
@@ -106,12 +106,12 @@ the wake-up:
 
 Read the shapes, not the absolute numbers: an M4 Max laptop, in-process, no QUIC,
 `FsyncMode::None` so no device flush hides the effect. Waking all of them decays
-without a floor — at 64 publishers it retains 6% of its single-publisher rate,
+without a floor: at 64 publishers it retains 6% of its single-publisher rate,
 so adding publishers makes the broker slower in absolute terms. Waking one holds
 flat at ~0.72× from four publishers on.
 
 The step from one publisher to two costs ~38% in **both** columns. That is not
-the herd — it is the price of parking and waking at all, which an uncontended
+the herd. It is the price of parking and waking at all, which an uncontended
 publisher never pays. Everything past two is the herd.
 
 ### 9. Each log flushes on its own thread
@@ -190,8 +190,8 @@ graph LR
     class F,G,H slow
 ```
 
-Roughly four thousand times separates "in the page cache" from "on the device"
-— about 1µs against about 4ms. Nothing in the code can close that gap; group
+Roughly four thousand times separates "in the page cache" from "on the device":
+about 1µs against about 4ms. Nothing in the code can close that gap; group
 commit exists to *amortise* it.
 
 ## Measured results
@@ -232,7 +232,7 @@ that is under a tenth of a second.
 ### What this says
 
 **Durability is free until you ask for the device.** `none` and `periodic` are
-within noise of each other — the periodic flush runs off the append path, so its
+within noise of each other, because the periodic flush runs off the append path, so its
 cost does not appear in append latency at all. A durable stream on `periodic`
 costs roughly what a non-durable one costs, plus the storage write itself.
 
@@ -243,15 +243,15 @@ device; the only variable is how many commits share one.
 
 **Throughput under `OnCommit` scales almost linearly with concurrency.**
 253 → 2,006 → 14,387 records/second at concurrency 1 → 8 → 64. Combined with
-batching, 185,905 records/second — over 700× the single-publisher number, on the
+batching, 185,905 records/second, over 700× the single-publisher number, on the
 same disk, with the same guarantee.
 
 **Tail latency degrades with concurrency for the cheap policies.** `none` at
 concurrency 64 shows p999 of 1.5ms against 5µs at concurrency 1.
 
-The likely cause is contention on the segment write lock rather than I/O —
-appends must assign offsets in order, and `none` does no device work to hide
-behind — but that is an inference from the shape of the numbers, not something
+The likely cause is contention on the segment write lock rather than I/O
+(appends must assign offsets in order, and `none` does no device work to hide
+behind), but that is an inference from the shape of the numbers, not something
 measured. Confirming it needs lock-wait instrumentation on the append path,
 which does not exist yet. It matters for high-fanout publishers on non-durable
 streams and is the most likely place a future optimisation pays off.
@@ -277,8 +277,8 @@ against, and a breach is a design conversation rather than an automatic failure.
 active segment is scanned in full at startup, so a smaller segment restarts
 faster. That is true, and it is not the whole trade.
 
-Every rollover costs several device flushes — sealing the retired segment, and
-creating and directory-syncing its replacement — and those flushes land on
+Every rollover costs several device flushes (sealing the retired segment, and
+creating and directory-syncing its replacement), and those flushes land on
 whichever appends are in flight. Smaller segments roll more often, so the cost
 appears more often, and it appears in the tail:
 
@@ -303,8 +303,8 @@ that used to ride along with them are not:
 * **A rollover no longer stalls the runtime.** The segment set is behind a
   synchronous lock, so a publisher queued on it parked a Tokio worker rather
   than yielding it. Held across a rollover's two device flushes, that stalled
-  everything else on the runtime — other shards, subscriber fanout, the accept
-  loop — once as many publishers were queued as there were workers. Appends now
+  everything else on the runtime (other shards, subscriber fanout, the accept
+  loop) once as many publishers were queued as there were workers. Appends now
   wait on an async gate and yield.
 * **Rollover contention no longer rejects appends.** An append that lost the
   race for the new segment `MAX_ROLL_ATTEMPTS` times returned `Unsupported`.
@@ -334,7 +334,7 @@ p999 against 5.0ms for the inline path. At 256 MiB and at 1 MiB the two were
 within noise. The background roll was not faster in any configuration tested.
 
 The reason is `F_FULLFSYNC`. Durability on macOS means flushing the device write
-cache, and that flush does not overlap with concurrent writes — so moving a
+cache, and that flush does not overlap with concurrent writes, so moving a
 rollover's flushes off the append lock does not hide them, it only stops
 confining them. Instead of a queue behind one lock, the same cost lands on
 whichever appends happen to be in flight, which is strictly worse for the tail.
@@ -369,7 +369,7 @@ than be discovered during it:
 1. **Per-record replication is not viable at `on_commit`.** At 253 durable
    appends/second per publisher, a design that flushes once per replicated record
    caps a node in the low hundreds of writes/second. Replication must batch, and
-   the batch must span publishers — the same argument that produced group commit
+   the batch must span publishers, the same argument that produced group commit
    locally.
 2. **The follower's flush should overlap the leader's, not follow it.** Serialising
    them doubles a 4ms constant. Group commit already proves the machinery for

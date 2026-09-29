@@ -1,13 +1,13 @@
 # Real-network performance suite
 
 **Decision: measure Felix on real Azure networks, from release artifacts, with
-a real IdP on the hot path — and treat every localhost number as a statement
+a real IdP on the hot path, and treat every localhost number as a statement
 about the software, never about a deployment.**
 
 Everything published so far (`docs/storage-performance.md`, the benchmarks
 page, `scripts/perf/presets.yml` runs) was measured over loopback, most of it
 against an in-process broker. Loopback is the right harness for what it
-measures — regressions in Felix's own code, isolated from the network — and
+measures (regressions in Felix's own code, isolated from the network) and
 the wrong instrument for what users will actually see. It hides RTT (loopback
 is ~50µs; an availability zone pair is 1–2ms; a WAN path is tens), hides
 congestion control entirely (cwnd never matters when bandwidth is infinite and
@@ -18,12 +18,12 @@ buying.
 
 This document is the design for closing that gap. The budget is an Azure
 subscription's $200/month of Azure credit, which shapes several decisions
-below — this suite provisions, runs, and **tears down**; nothing idles.
+below: this suite provisions, runs, and **tears down**; nothing idles.
 
-> **The first results are published.** The T1 session's analysis —
-> ~1.09 GB/s / 3.68 M msg/s aggregate ingest (73% of raw line rate), ~181 µs
+> **The first results are published.** The T1 session's analysis
+> covers ~1.09 GB/s / 3.68 M msg/s aggregate ingest (73% of raw line rate), ~181 µs
 > acknowledged-publish latency, durability free for throughput, and every
-> semantic measured against the real Entra IdP — is the "Real-Network
+> semantic measured against the real Entra IdP. It is the "Real-Network
 > Performance (Azure)" page on the docs site
 > (`docs-site/src/content/docs/features/real-network-performance.md`). Raw data
 > lives under `scripts/perf/azure/sessions/`.
@@ -32,7 +32,7 @@ below — this suite provisions, runs, and **tears down**; nothing idles.
 site**, of publication quality: every scenario's aggregates *and* spread,
 each row stamped with the environment that produced it (tier, VM SKUs, zones,
 release tag, measured RTT baselines), fed through the existing
-charts-and-snippets pipeline so page assembly is mechanical — with a written
+charts-and-snippets pipeline so page assembly is mechanical, with a written
 analysis on top that says what the numbers mean, where they beat or trail a
 coordination store, and where the design's costs show up. The `LOADGEN_JSON`
 rows and the per-session `session.json` are shaped for exactly that: the
@@ -45,7 +45,7 @@ Three disciplines carry over from the local suite, and two are new:
 - **Release artifacts, never source builds.** Test machines download the
   GitHub release tarball (`felix-<tag>-linux-x86_64.tar.gz`, produced by
   `release.yml`) and run those bytes. Building on the target machine wastes
-  budget, varies with the toolchain, and — the local lesson — compiling
+  budget, varies with the toolchain, and (the local lesson) compiling
   *during* a run corrupts the measurement. It also makes every result
   attributable to a tag a reader can download.
 - **Nothing else runs on the machines.** The same hygiene as local runs, now
@@ -53,8 +53,8 @@ Three disciplines carry over from the local suite, and two are new:
 - **`throughput` vs `delivered_throughput`** keep their meanings, and batched
   runs still measure a throughput profile, not request latency.
 - **Compare within a session, never across sessions.** Cloud VMs are a
-  hardware lottery (host generation, neighbours). An A/B comparison — leader
-  vs quorum, JSON vs binary, watch fanout 1 vs 50 — is valid inside one
+  hardware lottery (host generation, neighbours). An A/B comparison (leader
+  vs quorum, JSON vs binary, watch fanout 1 vs 50) is valid inside one
   provisioned session on the same VMs, and suspect across sessions. Publish
   per-session baselines beside every delta.
 - **Report variance, not just medians.** Real networks jitter. Every scenario
@@ -72,7 +72,7 @@ Three disciplines carry over from the local suite, and two are new:
   caps the achievable size, but it keeps MTU discovery under the Linux UDP-GSO
   ceiling (`mtu × 10 ≤ 65535`; an MTU ≥8192 hard-stalls sustained throughput
   with a spurious `EMSGSIZE` quinn never recovers from) and converges faster.
-  `FELIX_INITIAL_MTU` stays unset — pinning it is unsafe before PMTUD on a real
+  `FELIX_INITIAL_MTU` stays unset; pinning it is unsafe before PMTUD on a real
   path. The Linux build already picks the right `FELIX_IO_RUNTIME_THREADS=0`
   and core-pinning defaults, so no override is needed there.
 
@@ -81,7 +81,7 @@ Three disciplines carry over from the local suite, and two are new:
 Three tiers, provisioned by the same scripts with a flag. Each answers a
 question the previous one cannot.
 
-### T1 — one zone, real NICs (the baseline)
+### T1: one zone, real NICs (the baseline)
 
 The cluster as a latency-sensitive user would deploy it: everything in one
 availability zone, in a proximity placement group, accelerated networking on.
@@ -101,12 +101,12 @@ more quota) if the fanout/throughput cases show it CPU-bound.
 
 What T1 answers: publish/subscribe/cache/counter latency and throughput over a
 real NIC and switch, fsync against real premium storage, fanout curves, queue
-drain and retained join, and the JWT flow — the honest replacements for every
+drain and retained join, and the JWT flow: the honest replacements for every
 published localhost number.
 
-### T2 — three zones (what quorum costs)
+### T2: three zones (what quorum costs)
 
-Identical, but the three brokers pinned to zones 1/2/3 (no placement group —
+Identical, but the three brokers pinned to zones 1/2/3 (no placement group;
 the zones are the point) and the stream matrix run twice: `Leader` vs
 `Quorum`. Inter-zone RTT (~1–2ms) is exactly the price a quorum
 acknowledgement pays per publish, and nobody has measured Felix paying it.
@@ -115,7 +115,7 @@ What T2 answers: the Leader/Quorum delta on real inter-zone paths; failover
 blackout duration when a zone's broker dies under load; replication lag under
 sustained throughput; whether group-commit amortises the quorum wait.
 
-### T3 — a distant client (what users feel)
+### T3: a distant client (what users feel)
 
 T1's cluster, plus a load generator in a second region (e.g. cluster in
 `eastus2`, client in `westus2`, ~60ms RTT). Latency-focused and
@@ -130,7 +130,7 @@ is real, and watch/retained delivery lag to a remote subscriber.
 ## The IdP is real: Microsoft Entra ID
 
 The control plane's token exchange verifies IdP tokens against a configured
-allowlist — ES256 by default, **optional RS*/PS*** (`auth/exchange.rs`), which
+allowlist: ES256 by default, **optional RS*/PS*** (`auth/exchange.rs`), which
 is exactly what Entra ID issues. The Azure subscription's tenant provides it
 for free: an app registration, client-credentials flow, and the exchange
 endpoint turns Entra's RS256 access token into a Felix EdDSA token, which is
@@ -138,9 +138,9 @@ what brokers verify per request.
 
 Measured, not just wired:
 
-- **Exchange latency** — Entra token → Felix token, cold and warm (JWKS
+- **Exchange latency**: Entra token → Felix token, cold and warm (JWKS
   cached), as its own scenario.
-- **Steady-state cost** — the data-plane numbers are collected with real
+- **Steady-state cost**: the data-plane numbers are collected with real
   Felix tokens minted through this flow and refreshed at realistic intervals,
   so verification sits on the hot path exactly as deployed.
 - Fallback if the Entra tenant fights back: a Keycloak container on the
@@ -155,7 +155,7 @@ scenarios only a real network can ask:
 
 | Scenario | Tier | What it answers |
 |---|---|---|
-| Publish latency (batch 1, per-message ack) — fanout {1, 10, 50} × payload {0, 256B, 4KiB} | T1 | The headline numbers, honestly |
+| Publish latency (batch 1, per-message ack), fanout {1, 10, 50} × payload {0, 256B, 4KiB} | T1 | The headline numbers, honestly |
 | Throughput profile (batch 64) × payload | T1 | Sustained delivery over a real NIC; delivered vs published |
 | Cache put/get, counter add/get latency | T1 | Request/response path incl. routed forwards |
 | Keyed watch: change-to-delivery latency at watcher fanout {1, 50, 500} | T1 | The fanout claim of the composed semantics |
@@ -175,7 +175,7 @@ benchmarks page in the same shape with an environment column (`loopback` |
 
 ## What has to be built
 
-1. **`felix-loadgen`** — the one real gap. Every existing driver is
+1. **`felix-loadgen`**, the one real gap. Every existing driver is
    loopback-bound: `latency-demo` runs an in-process broker, `soak` spawns its
    own child. The generator this suite needs is the measurement core of
    `latency-demo` pointed at remote addresses through `felix-client` /
@@ -183,15 +183,15 @@ benchmarks page in the same shape with an environment column (`loopback` |
    client-credential parameters and does the exchange itself), a scenario
    spec, emits the standard JSONL. Ships *in* the release tarball so the
    load-gen VM downloads the same artifact as the brokers.
-2. **`scripts/perf/azure/`** — reproducible IaC in **Bicep**
-   (`main.bicep`: one resource group per session — VNet + NSG, a proximity
+2. **`scripts/perf/azure/`**: reproducible IaC in **Bicep**
+   (`main.bicep`: one resource group per session with VNet + NSG, a proximity
    placement group for T1 or per-zone pinning for T2, broker/control-plane/
    load-gen VMs with cloud-init) plus the session lifecycle scripts
    (`session.sh` deploys and seeds, `run.sh` drives the matrix on the
    load-gen VM and pulls artifacts back, `teardown.sh` deletes the group).
    Bicep over Terraform because there is no long-lived state to manage in a
    create-run-destroy session, and over raw `az create` calls because a
-   declarative template is what makes a session *reproducible* — the same
+   declarative template is what makes a session *reproducible*: the same
    parameters yield the same cluster, which is the whole point of a
    published benchmark. cloud-init installs the release artifacts on the
    brokers and control plane, builds `felix-loadgen` on the generator, and
@@ -199,12 +199,12 @@ benchmarks page in the same shape with an environment column (`loopback` |
    stream/cache registration run through the real REST + token-exchange flow in
    `seed.sh`. **Orchestration is `az vm run-command`, not SSH**: the operator
    drives every VM over the Azure control plane's HTTPS, which needs no inbound
-   port and sidesteps two real failures the first live run hit — networks that
+   port and sidesteps two real failures the first live run hit: networks that
    deep-packet-inspect and reset outbound `:22` to arbitrary cloud IPs, and
    Ubuntu 24.04's socket-activated sshd failing its first start. The
    VNet-private control plane is reached by running the seed *on* the loadgen,
    which is inside the VNet.
-3. **A release to point at** — see below.
+3. **A release to point at**; see below.
 
 ## Budget
 
@@ -221,10 +221,10 @@ times over.
 
 A full T1 matrix session is ~4 hours ≈ $4. A T2 quorum/failover session ≈ $3.
 T3 adds a second-region generator (+$0.34/hr) and *egress*: at ~$0.09/GB, a
-throughput sweep pushing 100 GB would cost more than the VMs — which is why
+throughput sweep pushing 100 GB would cost more than the VMs, which is why
 T3 is latency-scoped and its total transfer is computed and capped in the
-runner before a run starts. The whole initial program — T1 twice (repeat to
-observe session variance), T2 twice, T3 once, plus debugging headroom — fits
+runner before a run starts. The whole initial program (T1 twice to
+observe session variance, T2 twice, T3 once, plus debugging headroom) fits
 in **under $40 of the $200**. The guardrails that keep it there: everything
 lives in one resource group per session, `teardown.sh` is the last line of
 `run.sh`, and a scheduled `az group delete` at +8 hours backstops a wedged
@@ -240,7 +240,7 @@ session.
 2. Build `felix-loadgen` + `scripts/perf/azure/`, validated against a local
    cluster (the felix-cluster harness) before any Azure spend.
 3. T1 session, twice. Publish the first real-network numbers beside the
-   loopback ones — expect them to be *worse*, and say so plainly; that is the
+   loopback ones. Expect them to be *worse*, and say so plainly; that is the
    point.
 4. T2, then T3. Each produces a results section on the benchmarks page and
    updates any claim the numbers contradict.

@@ -4,7 +4,7 @@
 index maps key to offset, and `get` reads the log. The separate in-memory
 key/value store is kept only for brokers configured without durable storage.**
 
-This is what `docs/architecture.md` has claimed from the start — "one core log,
+This is what `docs/architecture.md` has claimed from the start: "one core log,
 many semantics", with the cache as "key → latest value with TTL, backed by the
 same log". Until now that was aspiration stated as description: the cache was a
 `RwLock<HashMap>` alongside the stream registry, sharing no code, no durability,
@@ -46,7 +46,7 @@ A shard directory is named from a hash of `(tenant, namespace, stream)`, so a
 cache and a stream with the same name in the same namespace would otherwise
 land in the same directory and interleave their records. Separating the roots
 makes that impossible rather than unlikely, costs nothing, and leaves the
-existing stream layout untouched — no migration, because no stream path
+existing stream layout untouched, with no migration because no stream path
 changes.
 
 Nothing enumerates the storage root (recovery scans a *shard* directory for
@@ -58,7 +58,7 @@ One record per write. Little-endian, and versioned in its first byte, because
 this is a durable format and a reader years from now has only these bytes.
 
 <p align="center">
-  <img src="assets/storage/cache-record.svg" alt="Cache record byte layout: a one-byte version, a one-byte op, an eight-byte absolute expiry, a four-byte key length, then the key and — for a put — the value" width="760">
+  <img src="assets/storage/cache-record.svg" alt="Cache record byte layout: a one-byte version, a one-byte op, an eight-byte absolute expiry, a four-byte key length, then the key and, for a put, the value" width="760">
 </p>
 
 - `op` is `0` for a put and `1` for a delete. A delete carries no value.
@@ -66,7 +66,7 @@ this is a durable format and a reader years from now has only these bytes.
   Absolute rather than a duration: a record read back after a restart has to
   mean the same thing it meant when written, and a duration would silently
   restart its life on every recovery.
-- `key_len` bounds the key so the value needs no length of its own — it is
+- `key_len` bounds the key so the value needs no length of its own. It is
   simply the rest of the record, which the segment framing already delimits.
 
 An unknown version is refused rather than guessed at, for the same reason an
@@ -89,7 +89,7 @@ not part of making the claim true.
 ## TTL
 
 Checked at read against the record's own `expires_at_millis`, which is lazy
-expiry — the same behaviour the in-memory cache always had. An expired entry is
+expiry, the same behaviour the in-memory cache always had. An expired entry is
 reported as absent immediately; the space it occupies is reclaimed by
 compaction.
 
@@ -98,8 +98,8 @@ compaction.
 Without it the log grows forever, and "the cache is a log" would be a slow leak
 rather than a design.
 
-Compaction copies the live set — the newest surviving record for each key that
-is neither deleted nor expired — forward to the tail, then deletes the sealed
+Compaction copies the live set (the newest surviving record for each key that
+is neither deleted nor expired) forward to the tail, then deletes the sealed
 segments that held only superseded records. **Records are never rewritten**,
 which is the invariant everything in the storage layer rests on: a copy is a new
 put of the same value, and whole segments are dropped from the head, the way
@@ -119,7 +119,7 @@ is appended at the tail, so an offset names the same record for the life
 of the shard even across many compactions and restarts. Two things depend on
 this. A reader tracking offsets never sees them go backwards. And replication
 ships records *at* their offsets, so a leader that renumbered on compaction would
-make its offset 0 a different record from every follower's — two logs that have
+make its offset 0 a different record from every follower's: two logs that have
 silently diverged, with nothing in either able to detect it.
 
 The cost is that offsets are sparse after a compaction: the numbers the reclaimed
@@ -135,7 +135,7 @@ protocol and relays the answer, the way a publish already does.
 
 This is what makes a cache usable from more than one broker. Before it, every
 broker served its own copy: a `put` on one was invisible to a `get` on another
-and — worse than invisible — two brokers could hold *different* values for one
+and, worse, two brokers could hold *different* values for one
 key with nothing to reconcile them. A miss is detectable; divergence is not.
 
 Three details are load-bearing:
@@ -162,17 +162,17 @@ present is an answer rather than a failure.
 
 It is negotiated: the broker advertises `FEATURE_CACHE_DELETE` in `AuthOk`, and
 a client that does not see the bit reports that the broker cannot delete instead
-of sending the request. That direction matters — an unrecognised message type
+of sending the request. That direction matters: an unrecognised message type
 ends a broker's control loop, so probing an older one costs the connection
 rather than returning an error.
 
 The feature is advertised by a standalone broker as well as a clustered one.
-Only the cluster-shaped features — topology and redirect — depend on there being
+Only the cluster-shaped features, topology and redirect, depend on there being
 a cluster to describe.
 
 ## Watch
 
-A key or key prefix can be subscribed to — etcd's watch, over the cache's own
+A key or key prefix can be subscribed to, like etcd's watch, over the cache's own
 log. `cache_watch` is negotiated (`FEATURE_CACHE_WATCH`) and delivers each
 applied write in the shard's write order: a put with its value, a delete as a
 change with no value, each carrying the log offset the write was appended at.
@@ -184,23 +184,23 @@ reasoning.
 
 **The write order watchers see is disk-offset order.** The store reports each
 applied write to an observer under the shard's apply lock, and applies run
-strictly by offset — the same commit sequencer the stream publish path uses.
+strictly by offset, through the same commit sequencer the stream publish path uses.
 Fsyncs overlap across concurrent writers (that is what group-commits them), but
 what the index and every watcher observe is re-serialised into the order the
 log reads. The observer must not block there, so fanout is `try_send` against
-bounded queues — the same publisher-never-blocks rule stream fanout follows.
+bounded queues, following the same publisher-never-blocks rule stream fanout follows.
 
 **The join is register-before-read.** A watch resuming from an offset registers
 its queue first, then reads the log's tail, then serves `[from_offset, tail)`
 from the log. Registration pins the live edge: every change below the tail is
 on disk and every change at or past it is queued, so the two halves cannot leak
-a write landing in between — the same discipline, for the same past defect,
+a write landing in between. It is the same discipline, for the same past defect,
 as the stream resume path. The registration race is closed by offsets: a change
 applied just before the tail was read can arrive both in the replay and on the
 queue, and the queued copy is dropped because its offset is below the tail.
 
 **Falling behind ends the watch, loudly.** A stream subscriber reads a queue
-drop out of a jump in delivered offsets. A *filtered* watch cannot — other
+drop out of a jump in delivered offsets. A *filtered* watch cannot: other
 keys' writes make its offsets sparse, so any gap looks like traffic it was not
 watching. A watcher whose queue overflows is therefore ended rather than
 thinned: everything already queued is delivered, then `cache_watch_lagged`
@@ -208,24 +208,24 @@ names the offset of the first missed change, and re-watching from it is
 gapless. Silent loss is the one outcome the contract rules out.
 
 **Compaction interplay is the resnapshot rule.** A watch resuming from an
-offset older than the log's base — compaction collapsed that history — cannot
+offset older than the log's base (compaction collapsed that history) cannot
 be replayed, and pretending otherwise would silently skip it. Instead the
 broker answers `resnapshot: true` and delivers each matching key's *current*
 value at its offset, then live changes: the snapshot-plus-changes shape the
 control plane's assignment watch already uses. Compaction itself is silent to
-watchers — it moves where live records sit without changing what the cache
+watchers. It moves where live records sit without changing what the cache
 holds, so notifying would report phantom writes.
 
 **Retained delivery is the snapshot pointed at establishment.** A watch that
-asks for `retained` receives each matching key's current value first — MQTT's
-retained message — then live changes: a client joins and immediately holds the
+asks for `retained` receives each matching key's current value first (MQTT's
+retained message), then live changes: a client joins and immediately holds the
 state instead of waiting for the next write, which is the primitive presence
 and state-sync applications are built on. It is literally cache-read composed
 with the watch's join: the same index snapshot the compacted-resume path
 serves, delivered at establishment instead of as a fallback, under the same
 register-before-read discipline. The confirmation carries `retained_count`, so
 joining an empty key is a definite `0` rather than a silence
-indistinguishable from a slow key — and so the client knows the exact moment
+indistinguishable from a slow key, and the client knows the exact moment
 its state is complete. A key whose newest write races past the live edge
 mid-join can be absent from the retained set; its change is already queued and
 arrives as the first live event, folding to the same state, with the offset
@@ -236,20 +236,20 @@ would deliver every value twice.
 **TTL expiry is not a change.** Expiry is lazy and appends nothing, so no event
 is delivered when an entry lapses; the put's `expires_at_millis` travels with
 the event for watchers that care. A watch replaying history also replays writes
-whose TTL has since lapsed — they are the history.
+whose TTL has since lapsed, because they are the history.
 
 **Watches are served where writes are applied.** A watch belongs to the shard's
 owner, and a broker that does not own the shard redirects (`not_leader`) rather
 than proxies, exactly as a subscribe does. Records replicated to a follower
 bypass `put` and fire no observer, which is correct: the follower serves no
 watches, and a client whose broker fails re-establishes against the promoted
-owner by offset — the rebuilt index and continued offset space are what make
+owner by offset. The rebuilt index and continued offset space are what make
 that resume land exactly where the old watch left off.
 
 ## Counters, beside the cache
 
 A counter is addressed like a cache key and routed like one, but lives in a
-store of its own under `<root>/counters/` — a new durable record shape gets a
+store of its own under `<root>/counters/`. A new durable record shape gets a
 new root, so a build that predates it never meets bytes it cannot read in a
 log it already serves. `docs/projections.md` owns the design; the load-bearing
 consequence here is that a counter and a cache value may share a key and are
@@ -259,8 +259,8 @@ unrelated, and a cache watch does not see counter changes.
 
 A cache's shards are replicated by the machinery that replicates a stream's: the
 leader ships records at their offsets and a follower checks each batch begins at
-its tail. Everything that makes that safe — the generation check, the gap and
-divergence answers, bootstrapping a follower whose history has been trimmed — is
+its tail. Everything that makes that safe (the generation check, the gap and
+divergence answers, bootstrapping a follower whose history has been trimmed) is
 the same code, because a cache shard *is* a log.
 
 Three things had to be true for that to work.
@@ -273,7 +273,7 @@ every follower's.
 message kind with the same body as `ReplicateRecords`, so a follower cannot
 append a cache's records into the stream of the same name. A separate kind
 rather than a field on the shard reference, because the internal protocol
-evolves by adding kinds — widening an existing body needs a version bump, and a
+evolves by adding kinds. Widening an existing body needs a version bump, and a
 version bump makes a rolling upgrade impossible.
 
 **The index catches up.** A follower is shipped records without going through

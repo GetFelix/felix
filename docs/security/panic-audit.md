@@ -1,4 +1,4 @@
-# Panic and abort audit — broker data path
+# Panic and abort audit: broker data path
 
 Audit record for [#140](https://github.com/gabloe/felix/issues/140), covering the
 `unsafe impl Send` question and the `unwrap()`/`expect()` triage. The sustained-load
@@ -19,7 +19,7 @@ into [#154](https://github.com/gabloe/felix/issues/154).
 
 ## `unsafe impl Send`
 
-Both `unsafe impl Send` blocks — `Broker` and `EphemeralCache` — were removed. Neither
+Both `unsafe impl Send` blocks, on `Broker` and `EphemeralCache`, were removed. Neither
 was doing anything: every field of both types is already `Send + Sync`
 (`RwLock<HashMap<..>>`, atomics, `usize`, and `Box<dyn StorageApi + Send>` where
 `StorageApi: Debug + Send + Sync` supplies both auto traits to the trait object). The
@@ -28,7 +28,7 @@ nothing and asserted nothing.
 
 Each type now carries a `const _` assertion that it is `Send + Sync`. If a future field
 breaks the property, the build fails at the definition rather than surfacing as a
-trait-bound error at a distant call site — which is the pressure that produces an
+trait-bound error at a distant call site, which is the pressure that produces an
 `unsafe impl` "fix" in the first place.
 
 ## Panic inventory
@@ -46,29 +46,29 @@ trait-bound error at a distant call site — which is the pressure that produces
 
 ### Invariant-protected (verified, not assumed)
 
-- `handlers/publish/control.rs` — 12 × `request_id.expect("request id checked")`. The protocol
+- `handlers/publish/control.rs`: 12 × `request_id.expect("request id checked")`. The protocol
   invariant is enforced earlier in `handle_publish_message`: an acked publish missing
   `request_id` is rejected with `missing request_id for acked publish` before any of
   these sites run. A malformed client frame produces an error response, not a panic.
-- `handlers/publish/ingress.rs` — 2 × `unreachable!("Wait handled above")`. `EnqueuePolicy` is
+- `handlers/publish/ingress.rs`: 2 × `unreachable!("Wait handled above")`. `EnqueuePolicy` is
   config-derived, not request-derived, and `Wait` is handled in an earlier branch.
-- `handlers/subscribe/writer.rs` — `frames.pop().expect("single frame")` is guarded by an
+- `handlers/subscribe/writer.rs`: `frames.pop().expect("single frame")` is guarded by an
   enclosing `frames.len() == 1`.
-- `felix-broker/src/stream/state.rs` — `next_seq.checked_add(1).expect("log sequence overflow")`
+- `felix-broker/src/stream/state.rs`: `next_seq.checked_add(1).expect("log sequence overflow")`
   requires 2^64 publishes to a single stream.
-- `felix-wire` — `encode_slice(..).expect("base64 encode slice")` writes into a buffer
+- `felix-wire`: `encode_slice(..).expect("base64 encode slice")` writes into a buffer
   resized to exactly `base64_len(payload.len())?`, and that helper returns `Err` on
   overflow. This is on the **encode** path, not decode.
-- `felix-transport:349` — `u64::try_from(connection.stable_id())` converts from `usize`.
+- `felix-transport:349`: `u64::try_from(connection.stable_id())` converts from `usize`.
 
 ## Findings
 
-### F1 — Unbounded allocation from an attacker-declared payload count (fixed)
+### F1: Unbounded allocation from an attacker-declared payload count (fixed)
 
 `decode_publish_batch`, `decode_event_batch`, and `decode_shared_event_batch` read a
 `u32` payload count straight off the wire and passed it to `Vec::with_capacity` before
 validating it against the bytes actually present. Per-payload validation inside the loop
-was correct, but it ran too late — the allocation had already happened.
+was correct, but it ran too late; the allocation had already happened.
 
 Reachability: `decode_publish_batch` is called from
 `handle_binary_publish_batch_control` **before** the `auth_ctx` check, so any peer that
@@ -78,8 +78,8 @@ was sufficient.
 Measured impact: a single such frame reserves 95 GiB (`Vec<Vec<u8>>`) to 127 GiB
 (`Vec<Bytes>`) of address space. Overcommit means one frame typically succeeds, so this
 is not a single-shot crash. At roughly a thousand concurrent decodes the address space
-is exhausted and the failing allocation calls `handle_alloc_error`, which **aborts** —
-it does not unwind, so tokio's per-task panic recovery does not contain it. Under a
+is exhausted and the failing allocation calls `handle_alloc_error`, which **aborts**.
+It does not unwind, so tokio's per-task panic recovery does not contain it. Under a
 memory cgroup or strict overcommit, as in a typical container deployment, the threshold
 is far lower.
 
@@ -87,11 +87,11 @@ Fix: `checked_payload_count` rejects any count exceeding `remaining / 4`, since 
 payload requires at least a 4-byte length prefix. Regression tests cover all three
 decoders plus a boundary case at the maximum supportable count.
 
-### F2 — Non-finding: raw `unwrap` count
+### F2: Non-finding: raw `unwrap` count
 
 The issue notes a ~560-site raw count. The non-test figure is 198, and 171 of those are
 test modules in non-`tests/` files or the opt-in `telemetry` feature. The count on its
-own does not indicate risk, and — as F1 shows — the most serious defect in the decode
+own does not indicate risk, and, as F1 shows, the most serious defect in the decode
 path involved no `unwrap` at all. Counting `unwrap` would not have found it.
 
 ## Residual risk

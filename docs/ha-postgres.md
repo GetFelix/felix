@@ -1,7 +1,7 @@
 # The Postgres the control plane requires
 
 The Felix control plane is deliberately stateless: every piece of durable
-metadata — tenants, streams, membership, shard ownership, auth configuration —
+metadata (tenants, streams, membership, shard ownership, auth configuration)
 lives in one Postgres database, and any number of identical instances serve it.
 That buys a simple availability story for the service itself (run two or more
 instances; see [control-plane.md](control-plane.md)) at the price of an
@@ -23,7 +23,7 @@ a specific Felix behaviour.
 - **Failover must not lose acknowledged commits.** Felix's correctness leans on
   writes staying written: a shard-assignment generation that rolls back can
   re-issue an already-used generation for a *different* owner, and brokers
-  de-duplicate ownership changes by generation — a reused one is
+  de-duplicate ownership changes by generation, so a reused one is
   indistinguishable from a duplicate and is dropped. Run synchronous
   replication (`synchronous_commit = on` to a standby, or quorum-based
   equivalents) for the metadata database. Asynchronous replication trades this
@@ -31,7 +31,7 @@ a specific Felix behaviour.
   occasional CRUD) the synchronous cost is negligible, so the trade buys
   nothing here.
 - **The endpoint follows the primary.** After a failover the same URL must
-  reach the new primary — a VIP, a proxy (PgBouncer/HAProxy), or a Kubernetes
+  reach the new primary: a VIP, a proxy (PgBouncer/HAProxy), or a Kubernetes
   service maintained by the operator. Felix instances do not re-resolve a list
   of hosts or elect anything; they reconnect to the URL they were given.
 - **Backups are of the whole database, restored as a whole.** Metadata tables
@@ -50,7 +50,7 @@ Either of these satisfies the contract; pick by what you already operate.
   multi-AZ/HA enabled. The provider owns replication, failover, and the stable
   endpoint; verify the offering's failover is synchronous (or "zero data loss")
   rather than async replica promotion.
-- **Operator-managed Postgres on Kubernetes** — CloudNativePG or
+- **Operator-managed Postgres on Kubernetes**: CloudNativePG or
   Patroni-based operators (Zalando, Crunchy). Configure at least one
   synchronous standby and point Felix at the operator's *read-write* service
   (e.g. CloudNativePG's `<cluster>-rw`), which is exactly the
@@ -71,7 +71,7 @@ design.
    `FELIX_READINESS_CACHE_TTL_MS`, default 1s, and bounded by
    `FELIX_READINESS_TIMEOUT_MS`, default 2s) every instance fails
    `/v1/system/ready` and load balancers stop routing to all of them.
-   **Liveness keeps passing** — this is an external outage, and restarting
+   **Liveness keeps passing**: this is an external outage, and restarting
    instances neither helps nor is triggered.
 3. The Postgres platform promotes a standby and moves the endpoint.
 4. Instances reconnect through the same URL on their next queries; the first
@@ -82,7 +82,7 @@ design.
    0.75 × `FELIX_NODE_EXPIRY_TIMEOUT_MS` from the last accepted heartbeat: with
    the defaults (15s expiry, 5s heartbeat interval) every broker stops serving
    the shards it leads somewhere between about 5s and 11s into the outage.
-   That is deliberate — see
+   That is deliberate; see
    [the replication design](replication-design.md#failure-model).
 6. Once the database is back, each broker's next heartbeat lands within about
    3s (retries are capped at a fifth of the lease) and renews its lease, so
@@ -113,14 +113,14 @@ N × pool size + platform overhead (replication, backups, admin) + ~20%
 ```
 
 Two instances at the default pool size fit comfortably inside even the small
-managed tiers. The workload is many small statements — heartbeats, changefeed
-polls, CRUD — so per-connection memory matters more than parallel query
+managed tiers. The workload is many small statements (heartbeats, changefeed
+polls, CRUD), so per-connection memory matters more than parallel query
 capacity, and adding control-plane instances scales *availability*, not
 database throughput: the database remains the shared bottleneck, which at
 these rates it is nowhere near.
 
 If you front Postgres with PgBouncer, use session pooling (or transaction
-pooling with no session state assumptions — Felix uses none, but sqlx prepared
+pooling with no session state assumptions; Felix uses none, but sqlx prepared
 statements require `max_prepared_statements` support in PgBouncer ≥ 1.21).
 
 ## Migrations and rolling deploys
@@ -131,7 +131,7 @@ orchestrate. Migrations are additive; readiness fails only when the database
 is *behind* the running build ("the database is at migration X, this build
 expects Y"), never when it is ahead. During a rolling deploy the first new
 instance migrates the database forward and old instances keep serving on the
-now-newer schema. The consequence for operators: **roll forward, not back** —
+now-newer schema. The consequence for operators: **roll forward, not back**:
 a build older than the schema keeps working, but restoring a pre-migration
 backup under a newer build makes every instance refuse readiness until the
 migrations rerun, which they do on the next restart.
@@ -150,21 +150,21 @@ migrations rerun, which they do on the next restart.
 ## When to reconsider Felix-owned Raft
 
 **Reconsidered: the "should Felix run without a database platform" trigger
-below fired, and the alternative now has a decided design —
+below fired, and the alternative now has a decided design,
 [metadata-raft-design.md](metadata-raft-design.md) (milestone M13). Postgres
 HA remains a supported backend and everything on this page stays true for
 it; Raft is the option that removes the external dependency.**
 
-That alternative — control-plane instances forming their own Raft group and
+That alternative, control-plane instances forming their own Raft group and
 owning metadata directly ([the implemented design in
-metadata-raft-design.md](metadata-raft-design.md)) — removes the external
+metadata-raft-design.md](metadata-raft-design.md)), removes the external
 dependency at the cost of Felix implementing consensus, snapshot transfer,
 and its own backup story. It was deferred for as long as these triggers held,
 and is kept here as the record of why it was taken up:
 
 - Operating an HA Postgres (or paying for a managed one) is acceptable for
   every environment Felix targets. The moment Felix needs to run well where no
-  database platform exists — edge sites, appliances — the dependency inverts
+  database platform exists (edge sites, appliances), the dependency inverts
   from convenience to burden.
 - Metadata write rates stay far below where a single primary matters.
 - Failover measured in single-digit seconds is fast enough for metadata. If
@@ -180,7 +180,7 @@ does not carry is one it cannot get wrong.
 Node liveness is a comparison: a heartbeat records a time, and the expiry sweep
 checks it against another. Those two run on different instances, so reading
 each process's own `SystemTime` would make safety depend on their wall clocks
-agreeing to within the margin — much stronger than a bound on how fast they
+agreeing to within the margin. That is much stronger than a bound on how fast they
 drift, and something a single NTP step breaks.
 
 Both sides read `ControlPlaneStore::now_millis` instead. The Postgres backend

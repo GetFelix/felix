@@ -1,4 +1,4 @@
-# Soak and resource-leak report — broker
+# Soak and resource-leak report: broker
 
 Evidence record for [#154](https://github.com/gabloe/felix/issues/154), the
 sustained-load half of the M0 concurrency and resource-leak exit criterion. The
@@ -27,7 +27,7 @@ is the local run that found and validated the fixes below.
 | Phase | What it stresses |
 | --- | --- |
 | `sustained_load` | Steady publish/subscribe through the full QUIC path |
-| `connection_churn` | Connect/publish/disconnect cycles — connection, task, and fd release |
+| `connection_churn` | Connect/publish/disconnect cycles: connection, task, and fd release |
 | `slow_subscribers` | Subscribers that never read: queue saturation and the drop policy |
 | `repeated_load_cycles` | Identical load repeated, to separate a leak from allocator retention |
 | `restart_cycles` | Real `SIGTERM` to a real child process under live traffic |
@@ -37,7 +37,7 @@ is the local run that found and validated the fixes below.
 Two choices matter for reading the numbers:
 
 **Memory is judged across repeated identical cycles, not against a baseline.**
-Comparing post-load RSS to pre-load RSS measures allocator retention, not leaks —
+Comparing post-load RSS to pre-load RSS measures allocator retention, not leaks, because
 allocators do not promptly return freed pages, so that comparison flags every
 healthy run. A leak instead shows peak RSS still climbing on the last identical
 cycle, where retention plateaus.
@@ -52,14 +52,14 @@ unambiguously a broker leak.
 **Process-wide fds and tasks are corroborating evidence, not the assertion.**
 This harness runs the load generators in the *same process* as the broker, so a
 raw `quiesced > baseline` comparison charges the broker for the harness's own
-client teardown — `felix-client`'s `Subscription` spawns detached pipeline tasks
+client teardown: `felix-client`'s `Subscription` spawns detached pipeline tasks
 the harness cannot join, which wind down on their own schedule. An earlier
 version asserted exact equality at a fixed instant and was measuring that race:
 a CI run reported "+8 fds, +4 tasks" while every broker gauge sat at zero.
 
 **Both ends of the comparison are settled rather than sampled at a fixed time.**
 Baseline is taken once the idle broker stops changing, not immediately after
-`start_broker` returns — the runtime keeps allocating briefly after the listener
+`start_broker` returns, because the runtime keeps allocating briefly after the listener
 binds, and sampling into that window produced a baseline below the broker's real
 idle state. The same idle broker read 2 tasks on Linux and 10 on macOS purely
 from where the sample landed. Quiescence likewise polls until fds and tasks are
@@ -71,7 +71,7 @@ passed 6/6 and returned in 11.8–22.3 s.
 
 ## Findings
 
-### F1 — Subscriber connection registry never released entries (fixed)
+### F1: Subscriber connection registry never released entries (fixed)
 
 `ACTIVE_SUB_CONN_COUNTS` retained an entry for **every subscriber connection ever
 made**. After a run with 24 subscriber connections, 22 remained registered
@@ -81,11 +81,11 @@ zero clients connected.
 Cause: an ordering race, not a missing cleanup call. Subscription teardown
 enqueues `LaneCommand::Unregister` and then *immediately* calls
 `unregister_subscriber`, which removes the `subscriber_connections` entry. The
-lane worker dequeues afterwards and used to look the connection up in that map —
-finding nothing, it skipped cleanup entirely, so neither the registry entry nor
+lane worker dequeues afterwards and used to look the connection up in that map.
+Finding nothing, it skipped cleanup entirely, so neither the registry entry nor
 the per-connection metric series was ever released.
 
-Impact: unbounded growth in a long-lived broker with connection churn — both the
+Impact: unbounded growth in a long-lived broker with connection churn, both the
 `DashMap` itself and the `felix_sub_connection_subscribers{connection_id=…}`
 metric cardinality, one label value per connection for the life of the process.
 `felix_sub_active_connections` was also permanently wrong, which matters because
@@ -98,10 +98,10 @@ Regression test:
 `subscribe/tests.rs::lane_unregister_cleans_up_after_teardown_already_removed_the_mapping`,
 confirmed to fail against the pre-fix code.
 
-### F2 — Shutdown always force-aborted rather than draining (fixed)
+### F2: Shutdown always force-aborted rather than draining (fixed)
 
 Every `SIGTERM` restart cycle burned the entire drain deadline and then
-force-cancelled, with both `quic_connections` and `quic_accept_loop` unfinished —
+force-cancelled, with both `quic_connections` and `quic_accept_loop` unfinished:
 3/3 cycles, 10.00 s each against a 10 s deadline.
 
 Cause: the drain waited for connection tasks to end, but a connection task only
@@ -110,8 +110,8 @@ by design, so the wait could never complete. Cancelling admission was not enough
 nothing told the accepted connections to wind down.
 
 This is the gap left when #139 shipped. It meant every rolling update dropped
-in-flight publishes and acknowledgements — the exact failure that issue set out
-to prevent — while appearing to have a graceful shutdown path.
+in-flight publishes and acknowledgements (the exact failure that issue set out
+to prevent) while appearing to have a graceful shutdown path.
 
 Fix: the shutdown token now reaches every connection task.
 `handle_connection_with_shutdown` stops accepting new streams, gives in-flight
@@ -121,18 +121,18 @@ connection with CONNECTION_CLOSE so the peer sees a deliberate shutdown.
 The grace must be bounded for the same reason the connection wait had to be:
 control and subscription streams are long-lived, so waiting on them
 unconditionally just relocates the hang one level down. That was observed
-directly — an intermediate fix that waited on streams without a bound reproduced
+directly: an intermediate fix that waited on streams without a bound reproduced
 the identical 10 s forced abort.
 
 Result: 3/3 cycles now drain cleanly in 3.00 s against a 6 s budget, exit status
 0. Regression test:
 `graceful_shutdown.rs::cancellation_winds_down_accepted_connections`.
 
-That test previously asserted the *opposite* — that accepted connections keep
+That test previously asserted the *opposite*, that accepted connections keep
 running after cancellation. It was encoding the bug, and was rewritten rather
 than worked around.
 
-### F3 — Subscriber queue-depth accounting races teardown (fixed)
+### F3: Subscriber queue-depth accounting races teardown (fixed)
 
 Extended runs showed `felix_sub_queue_len` settling between 1 and 13 rather than
 at a fixed residue. The cause was an admission-order race: publishers made an
@@ -150,7 +150,7 @@ The lane gauge had a separate stale-series issue. A lane worker could exit while
 its last reported labeled value was nonzero; workers now explicitly zero their
 series on every exit path.
 
-### F4 — Subscriber writer ownership cycle retained tasks (fixed)
+### F4: Subscriber writer ownership cycle retained tasks (fixed)
 
 Direct task-count sampling exposed a lifecycle leak that fd sampling had missed.
 After 30 s of quiescence, a short run retained 815 Tokio tasks against a baseline
@@ -196,7 +196,7 @@ Restart cycles: 3/3 clean, 3.00 s each, exit 0, with ~300k messages published
 into each child before its `SIGTERM`.
 
 **On the RSS figure.** It does not return to baseline, and that is expected on
-this platform — macOS `malloc` rarely returns pages. The leak question is
+this platform; macOS `malloc` rarely returns pages. The leak question is
 answered by the repeated-cycle check, not this number. Peak RSS across four
 identical cycles in an earlier run was 663,488 → 690,560 → 701,792 → 735,232 KiB:
 +10.8% total, under the 25% tolerance, but **monotonically increasing across all
@@ -209,11 +209,11 @@ memory growth" claim is treated as settled.
 ## Acceptance criteria status
 
 - [x] Sustained-load and churn runs return resource counts to a documented
-      steady-state envelope after quiescence — broker gauges exactly zero,
+      steady-state envelope after quiescence: broker gauges exactly zero,
       process fds and tasks settling back to the idle baseline, RSS with the
       caveat above.
 - [x] No deadlock, connection leak, fd leak, or task leak remains reproducible.
-- [ ] **No unbounded memory growth** — not fully demonstrated. Monotonic growth
+- [ ] **No unbounded memory growth**: not fully demonstrated. Monotonic growth
       across four cycles is unresolved; needs a longer Linux run.
 - [x] Audit scope, workload, duration, environment, and findings recorded.
 - [x] All reproduced defects fixed (F1-F4), including exact-zero queue

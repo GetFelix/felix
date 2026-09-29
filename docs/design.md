@@ -38,7 +38,7 @@ without sacrificing performance or security.
 
 ### 2.1 Sovereignty First (target design, not yet implemented)
 Felix's target design treats **data sovereignty as a core architectural
-constraint**, not an operational afterthought — this is a design goal for a
+constraint**, not an operational afterthought. This is a design goal for a
 later milestone, not current behavior. What is enforced today is placement and
 forwarding: a stream created with a `region` has every copy in that region or
 one `FELIX_REGION_BRIDGES` bridges it to, and a broker forwards only to leaders
@@ -51,7 +51,7 @@ intent to be validated, not a guarantee to build on.
 - Any cross‑region data movement should be explicit, auditable, and cryptographically isolated.
 
 The goal is that if data is not allowed to leave a region, Felix enforces
-that in code — but this is not enforced today, and no sovereignty or
+that in code. This is not enforced today, and no sovereignty or
 compliance claim should be made about Felix until it is.
 
 ### 2.2 Unified Core, Multiple Semantics
@@ -193,11 +193,11 @@ validates and truncates instead of replaying into a separate store. See
 [Durable Storage](durable-storage.md).
 
 Durability is configurable per stream:
-- `on_commit` — fsync before the acknowledgement, amortised across concurrent
+- `on_commit`: fsync before the acknowledgement, amortised across concurrent
   publishers by group commit
-- `periodic { interval }` — batched fsync on a timer, bounding loss by the
+- `periodic { interval }`: batched fsync on a timer, bounding loss by the
   interval
-- `none` — no explicit fsync (survives a process crash, not a power loss)
+- `none`: no explicit fsync (survives a process crash, not a power loss)
 
 ### 6.3 Retention
 Retention policies are enforced per stream:

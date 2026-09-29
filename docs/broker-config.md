@@ -7,7 +7,7 @@ The broker attempts to load a YAML file from:
 - otherwise `/usr/local/felix/config.yml`
 
 All fields are optional. Omitted values fall back to defaults. Every field also
-has an environment variable override — see
+has an environment variable override; see
 [Environment Variables](../docs-site/src/content/docs/reference/environment-variables.md)
 for the full `FELIX_*` mapping, including legacy aliases.
 
@@ -18,7 +18,7 @@ unless `pub_ingress_wait` is enabled.
 
 ## General Purpose
 
-Balanced settings for mixed workloads and moderate fanout — these are the
+Balanced settings for mixed workloads and moderate fanout. These are the
 built-in defaults, shown explicitly.
 
 ```yaml
@@ -100,7 +100,7 @@ subscriber_max_bytes_per_write: 65536
 Targets max lossless publish/delivery throughput with higher batching.
 Matches the `latency-demo` harness's throughput profile (batch > 1):
 blocking queues plus `pub_ingress_wait` so the publisher is paced to the
-pipeline's sustainable rate instead of shedding — every message delivered,
+pipeline's sustainable rate instead of shedding: every message is delivered,
 `delivery drops 0`.
 
 ```yaml
@@ -271,7 +271,7 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
 - Increasing `pub_workers_per_conn` only helps if publish load is spread across multiple stream
   shards. Oversubscribing executors relative to shards can degrade performance.
 - `pub_inflight_bytes` bounds actual queued-or-processing publish *bytes*, independent of
-  `pub_queue_depth`'s item count — a handful of large batches can't blow past the ingress
+  `pub_queue_depth`'s item count, so a handful of large batches can't blow past the ingress
   memory budget even with a small queue depth.
 - `pub_conn_inflight_bytes` is a per-connection share of `pub_inflight_bytes`: it bounds how
   much of the shared budget a single connection can occupy, so one connection publishing large
@@ -298,7 +298,7 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
 - `subscriber_lane_shard: auto` is the default and is usually the best starting point.
 - Lanes often help high fanout + large payload workloads, but gains can plateau; do not assume
   that more than 8 lanes will improve performance.
-- Event delivery uses binary `EventBatch` (or shared `EventBatch` — see
+- Event delivery uses binary `EventBatch` (or shared `EventBatch`; see
   [Wire Protocol](../docs-site/src/content/docs/architecture/wire-protocol.md)) frames. Unacknowledged
   client publishes are binary-encoded by default; acked publishes currently use the JSON
   control encoding (`Publisher::publish_json`/`publish_batch_json` select JSON explicitly).

@@ -88,25 +88,25 @@ The campaign only runs `Quorum` streams. Under `Quorum`, readers stop at the
 quorum mark, so a read that sees past the end of the final log is a real
 violation.
 
-> `random_linearizable_histories_are_valid` — histories generated from a
+> `random_linearizable_histories_are_valid`: histories generated from a
 > correct log, with concurrency, unknown outcomes and dropped records, pass.
-> `breaking_a_valid_history_is_caught` — losing, duplicating or failing one
+> `breaking_a_valid_history_is_caught`: losing, duplicating or failing one
 > acknowledged value in such a history is caught.
 > `an_acknowledged_append_missing_from_the_final_read_is_lost`,
 > `a_value_twice_in_the_final_read_is_a_duplicate`,
 > `a_read_that_disagrees_with_the_final_log_is_not_a_prefix`,
 > `an_append_acknowledged_first_must_sit_first`,
 > `a_value_no_append_wrote_is_a_phantom`,
-> `a_definitely_failed_append_must_not_appear` — one hand-built violation per
+> `a_definitely_failed_append_must_not_appear`: one hand-built violation per
 > rule, each reported under that rule and no other.
-> `random_linearizable_register_histories_are_valid` — cache histories from a
+> `random_linearizable_register_histories_are_valid`: cache histories from a
 > correct register, with overlapping and unknown puts, pass.
-> `a_planted_stale_get_is_caught` — a get returning the value one
+> `a_planted_stale_get_is_caught`: a get returning the value one
 > acknowledged put behind is caught in such a history.
 > `a_get_of_an_overwritten_value_is_stale`,
 > `a_get_older_than_an_earlier_get_is_stale`,
 > `a_miss_after_an_acknowledged_put_is_stale`,
-> `a_value_nobody_put_is_a_phantom` — one hand-built violation per case.
+> `a_value_nobody_put_is_a_phantom`: one hand-built violation per case.
 
 ## The campaign
 
@@ -227,17 +227,17 @@ needs something of the cluster's configuration, say so through `Nemesis`'s
 campaign with something other than a random schedule, such as a replay of the
 faults a failing run printed, implement `Nemesis`.
 
-> `a_fault_campaign_keeps_quorum_histories_valid` — a 45-second lease-free
+> `a_fault_campaign_keeps_quorum_histories_valid`: a 45-second lease-free
 > campaign of kills, pauses and partitions leaves a valid history, with at
 > least 50 acknowledged appends, 10 acknowledged cache puts, 10 cache gets and
 > at least one fault injected and healed.
-> `every_fault_family_is_injected_and_healed_in_a_campaign` — a 75-second
+> `every_fault_family_is_injected_and_healed_in_a_campaign`: a 75-second
 > campaign on the lease that goes round every kind in a fixed order leaves a valid history
 > and injects and heals at least one fault of each family. The order puts a
 > shard move fourth and a drain sixth, so both run on every PR.
-> `all_faults_never_steps_a_broker_clock_back` — the nemesis never asks for a
+> `all_faults_never_steps_a_broker_clock_back`: the nemesis never asks for a
 > step the harness would refuse.
-> `a_move_goes_from_the_leader_to_another_broker` — a move names one of the
+> `a_move_goes_from_the_leader_to_another_broker`: a move names one of the
 > workload's shards, its current leader, and a different broker.
 
 ## Running it

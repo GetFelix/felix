@@ -2,7 +2,7 @@
 
 The bootstrap endpoint (`POST /internal/bootstrap/tenants/{tenant_id}/initialize`)
 is the one place Felix hands out admin-equivalent power to a caller that does
-not yet have a Felix token — that is its entire reason to exist, and what makes
+not yet have a Felix token. That is its entire reason to exist, and what makes
 it the most security-sensitive surface in the control plane. This document is
 the threat model and the operating rules. The mechanics of what bootstrap
 seeds are in [auth.md](../auth.md#bootstrap-mode-day-0).
@@ -10,7 +10,7 @@ seeds are in [auth.md](../auth.md#bootstrap-mode-day-0).
 ## What an attacker gets
 
 A successful unauthorized bootstrap on a **new** tenant id creates that tenant
-with the attacker's IdP issuer and the attacker's principals as tenant admins —
+with the attacker's IdP issuer and the attacker's principals as tenant admins:
 a full tenant under attacker control, on infrastructure you run. Against an
 **existing, already-initialized** tenant the call returns `409` and changes
 nothing; initialization is exactly-once (see below). The window that matters is
@@ -18,7 +18,7 @@ therefore a tenant that exists but is not yet initialized, and the ability to
 mint tenants that should not exist.
 
 Bootstrap tokens never authorize normal admin endpoints, so the blast radius is
-bounded to initialization — but initialization is enough.
+bounded to initialization, but initialization is enough.
 
 ## Layers, and what each one stops
 
@@ -32,7 +32,7 @@ bounded to initialization — but initialization is enough.
 The layers are independent. The token is required whenever bootstrap is
 enabled; mTLS is optional and recommended anywhere the listener is reachable
 beyond one machine. With mTLS configured, an unauthenticated client is refused
-at the TLS handshake — the token, valid or not, is never seen, and no handler
+at the TLS handshake. The token, valid or not, is never seen, and no handler
 runs.
 
 ```
@@ -42,7 +42,7 @@ FELIX_BOOTSTRAP_TLS_CLIENT_CA=/etc/felix/bootstrap/client-ca.pem
 ```
 
 All three or none: a partial set fails startup rather than coming up
-half-secured, and there is deliberately no TLS-without-client-CA mode — a
+half-secured, and there is deliberately no TLS-without-client-CA mode. A
 bootstrap listener that encrypts but does not authenticate would look secured
 while stopping nobody. The same variables (or the `bootstrap.tls` YAML block)
 must be identical on every control-plane instance, like the token itself.
@@ -50,14 +50,14 @@ must be identical on every control-plane instance, like the token itself.
 ## Token lifetime and replay
 
 The bootstrap token is a static shared secret, valid for as long as bootstrap
-is enabled — it is **not** one-time, and a captured token can be replayed
+is enabled. It is **not** one-time, and a captured token can be replayed
 against any not-yet-initialized tenant until the operator disables bootstrap or
 rotates it. Three consequences:
 
 - **Disable bootstrap after use.** `FELIX_BOOTSTRAP_ENABLED=false` is the real
   end of the token's life; treat leaving it enabled as leaving a door open.
-- **Initialization itself cannot be replayed.** The whole seed — signing keys,
-  issuers, RBAC, and the bootstrapped flag — commits as one atomic, exactly-once
+- **Initialization itself cannot be replayed.** The whole seed (signing keys,
+  issuers, RBAC, and the bootstrapped flag) commits as one atomic, exactly-once
   store operation, serialized on the tenant row. Replaying the call, from the
   same client or through a different control-plane instance, returns `409
   already_initialized` and writes nothing.
@@ -77,7 +77,7 @@ one being retired.
 2. Move callers to the new token.
 3. Deploy again without `FELIX_BOOTSTRAP_TOKEN_PREVIOUS`.
 
-Setting only the previous token fails startup — that shape means the rotation
+Setting only the previous token fails startup, because that shape means the rotation
 removed the wrong half.
 
 ## Multiple instances
@@ -85,7 +85,7 @@ removed the wrong half.
 Every instance validates against the same configuration, so a bootstrap call
 behaves identically through any of them; there is no instance affinity to
 arrange. Concurrent initializes of the same tenant through different instances
-are the normal load-balanced case, and exactly one wins — the store's
+are the normal load-balanced case, and exactly one wins. The store's
 transaction, not a check in the handler, decides which. The losers get `409`,
 and the winner's reported signing-key id is guaranteed to be the key the
 tenant actually holds.

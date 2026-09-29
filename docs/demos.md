@@ -31,7 +31,7 @@ task <demo-task>
 ### Local State Divergence (`demo-state-divergence`)
 
 **What it shows**: what at-most-once delivery costs a consumer maintaining a local
-copy of state. A consumer stalls, recovers, everything quiesces — and it is still
+copy of state. A consumer stalls, recovers, everything quiesces, and it is still
 permanently wrong about most of the keyspace, with no signal that it is.
 
 This demonstrates a gap rather than a feature. It is the executable form of the
@@ -54,7 +54,7 @@ task demo:state-divergence
 
 **What to expect**: under production defaults the stalled consumer ends with most
 of its keyspace holding stale values. Configuring every checkpoint to block removes
-the divergence — at the cost of the slowest consumer throttling the publisher.
+the divergence, at the cost of the slowest consumer throttling the publisher.
 
 ---
 
@@ -75,7 +75,7 @@ task demo:queues
 1. Two workers poll one group; no offset is handed to both.
 2. A worker dies holding work. Polling returns nothing while the claims are
    live; once the visibility timeout lapses another worker gets them, at
-   `attempts = 2`. Nothing is lost — and the demo counts the duplicates,
+   `attempts = 2`. Nothing is lost, and the demo counts the duplicates,
    because at-least-once is a promise about loss and not about duplicates.
 3. A job that always fails is retried to `max_attempts`, dead-lettered, and the
    two jobs queued behind it run anyway. That last part is the point: before
@@ -88,9 +88,9 @@ task demo:queues
   demo drives the visibility timeout itself and its output is identical every
   run. That determinism is why `task demo:check` runs it as a behavioural test:
   every guarantee it narrates is an assertion.
-- Durable storage is required — a group's cursor is a projection over the
+- Durable storage is required. A group's cursor is a projection over the
   stream's log, so a non-durable stream serves no groups.
-- One shard, one broker. Group state — cursor and dead-letter list alike — is
+- One shard, one broker. Group state (cursor and dead-letter list alike) is
   replicated with its shard in a cluster; showing that takes the cluster tests
   rather than this single-broker demo.
 
@@ -108,20 +108,20 @@ task cluster:consistency
 **What it shows**
 
 Two streams identical but for `consistency`, both replicated three ways. The
-fault is a leader cut off from its replicas — followers frozen with `SIGSTOP`,
+fault is a leader cut off from its replicas: followers frozen with `SIGSTOP`,
 so the leader is healthy and alone. Each stream's own followers are frozen in
 turn, so the run does not depend on the two streams sharing a leader.
 
 - **Quorum** refuses the write; the shard stays available. The refused record
   may still be present, because it landed on the leader before the answer came
-  back — a refusal means "cannot be vouched for", not "did not happen".
+  back. A refusal means "cannot be vouched for", not "did not happen".
 - **Leader** takes the write. The leader is then killed while the replicas are
   still frozen, and **no replica is promoted**: opening the shard would drop a
   record that was acknowledged. The shard is unavailable until the old leader
   returns with its disk.
 
 Neither is data loss. `Leader` trades availability for latency and moves when
-you find out — publish time under Quorum, failover time under Leader.
+you find out: publish time under Quorum, failover time under Leader.
 
 **Notes**
 
@@ -135,8 +135,8 @@ you find out — publish time under Quorum, failover time under Leader.
 ### Slow-consumer Isolation (`demo-slow-consumer`)
 
 **What it shows**: that one slow consumer does not degrade the healthy ones, and
-what the alternative costs. Runs the same workload twice — once under `drop_new`
-(the production default) and once under `block` — and prints them side by side.
+what the alternative costs. Runs the same workload twice, once under `drop_new`
+(the production default) and once under `block`, and prints them side by side.
 
 This is the demo to run first: it demonstrates the property in Felix's own one-line
 description of itself rather than a feature.
