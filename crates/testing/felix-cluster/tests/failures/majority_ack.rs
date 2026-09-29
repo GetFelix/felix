@@ -714,3 +714,106 @@ async fn a_partitioned_minority_with_the_control_plane_does_not_open() {
     assert_holds(&cluster, &new, &acknowledged).await;
     cluster.shutdown().await;
 }
+
+/// **Replacing a follower does not shrink the set below the majority that
+/// acknowledged a write.** Four brokers, RF 3: the leader acknowledges records
+/// on itself and `departing` while `lagging` is cut off, then `departing` is
+/// drained and the fourth broker joins in its place, also cut off from the
+/// leader. Seating the newcomer before it holds those records leaves them on
+/// the leader alone among the new set, and once the leader dies, `lagging`
+/// and the newcomer are a majority that never saw them.
+#[serial]
+#[tokio::test]
+async fn seating_a_replacement_keeps_what_the_old_set_acknowledged() {
+    let mut cluster = start_nodes(4, Duration::from_secs(2)).await;
+    let before = assignment(&cluster).await;
+    let leader = before.leader.clone();
+    level_report(&cluster, &leader, &before.replicas).await;
+    let (departing, lagging) = (before.replicas[0].clone(), before.replicas[1].clone());
+    let joiner = cluster
+        .node_ids()
+        .into_iter()
+        .find(|id| *id != leader && !before.replicas.contains(id))
+        .expect("a fourth broker");
+
+    // What follows is acknowledged on {leader, departing}.
+    cluster
+        .inject(&Fault::Refuse {
+            node: leader.clone(),
+            peers: vec![lagging.clone(), joiner.clone()],
+        })
+        .await
+        .expect("cut the lagging follower and the joiner off");
+    let mut acknowledged = vec!["before".to_string()];
+    for i in 0..5 {
+        let payload = format!("on-the-old-set-{i}");
+        cluster
+            .publish_via(&leader, STREAM, payload.clone().into_bytes())
+            .await
+            .unwrap_or_else(|err| panic!("{payload} is held by {leader} and {departing}: {err:#}"));
+        acknowledged.push(payload);
+    }
+
+    cluster.drain_node(&departing).await.expect("drain");
+    felix_cluster::wait::until(Duration::from_secs(10), "the joiner to join", || async {
+        cluster.place_shards().await;
+        assignment(&cluster).await.replicas.contains(&joiner)
+    })
+    .await
+    .expect("placement starts replacing the drained follower");
+
+    // Step placement for a while: a seat here drops `departing` while the
+    // joiner holds nothing the leader wrote before it joined.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        cluster.place_shards().await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let now = assignment(&cluster).await;
+    let generation = now.generation;
+    felix_cluster::wait::until(
+        Duration::from_secs(10),
+        "a report at this generation",
+        || async {
+            cluster
+                .replica_report(STREAM, 0)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|report| report.generation == generation)
+        },
+    )
+    .await
+    .expect("the leader reports at the current generation");
+    let report = cluster
+        .replica_report(STREAM, 0)
+        .await
+        .expect("report")
+        .expect("a report");
+
+    cluster.kill_node(&leader).expect("kill the leader");
+    felix_cluster::wait::until(Duration::from_secs(20), "the leader down", || async {
+        cluster
+            .placeable_nodes()
+            .await
+            .is_ok_and(|live| !live.contains(&leader))
+    })
+    .await
+    .expect("the leader is marked down");
+    restamp(&cluster, report, &leader).await;
+    let new = promote_away_from(&cluster, &leader).await;
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the new leader to serve",
+        || async {
+            cluster
+                .publish_via(&new, STREAM, b"after".to_vec())
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .unwrap_or_else(|err| panic!("{new} serves ({now:?} before the leader died): {err:#}"));
+    assert_holds(&cluster, &new, &acknowledged).await;
+    cluster.shutdown().await;
+}

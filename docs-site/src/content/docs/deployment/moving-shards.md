@@ -37,7 +37,7 @@ t1/ns/orders/5  fenced  drain     broker-2  broker-1     0     1789999990000
 
 | Column | Meaning |
 | --- | --- |
-| `STEP` | `staged`: the destination is copying and the leader still serves. `fenced`: the leader has stopped; the cut-over follows its drained report. `replacing`: a follower on a draining broker is being replaced; leadership does not move. |
+| `STEP` | `staged`: the destination is copying and the leader still serves. `fenced`: the leader has stopped; the cut-over follows its drained report. `replacing`: a follower on a draining broker is being replaced; leadership does not move. The old follower leaves once the new one is within the lag bound, and on a `Quorum` stream once it also holds what a majority of the replica set holds, so a record acknowledged before the swap is never left on too few copies. |
 | `REASON` | `drain`, `balance`, `operator` (you asked), or `replace` |
 | `LAG` | records the destination is behind, from the leader's latest report; `-` without one |
 | `STARTED_MS` | when the move started, on the control plane's clock |

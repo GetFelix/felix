@@ -1003,6 +1003,33 @@ with one copy fewer, and a `Quorum` write needs every live member of an RF 3
 set. `Leader` streams and caches, which the fence does not decide, still get a
 fresh follower in the dead leader's place.
 
+**Replacing a follower waits for what the old set holds.** A drain replaces a
+follower in two steps, each a new generation: the new member joins beside the
+one leaving, and counts toward the quorum from then on, so a write needs three
+of the four; then the one leaving goes. That second step shrinks the set the
+next fence counts. A record acknowledged before the newcomer joined may be on
+the leader and the leaving follower alone. If the newcomer is seated before it
+holds that record, and the leader then dies, the newcomer and the lagging
+follower are a majority of the new set and the next leader opens without it.
+Placement used to seat once the newcomer was within the move lag bound, or once
+a report named it caught up, and a leader names every follower caught up at a
+new generation until something is counted there. So on a durable `Quorum`
+stream the seat now waits, on a report at the joining generation, until the
+newcomer holds at least what a majority of the set it joined holds, counting a
+member the report leaves out as level with the leader
+(`holds_what_the_set_held` in `placement/moves.rs`). A record acknowledged
+before the join is then on the newcomer too, and one acknowledged since is on
+three of the four, so either survives dropping one.
+`seating_a_replacement_keeps_what_the_old_set_acknowledged` loses the record
+without this. `FelixShardFencedAckSeatEarly.cfg` finds the same loss and
+`FelixShardFencedAckSeat.cfg`, with the wait, passes. `Leader` streams and
+caches keep the lag bound alone.
+
+The replication factor of a stream cannot be changed once it is created, and a
+planned move hands the shard to a destination that holds the stopped leader's
+whole log, so neither shrinks the set a fence counts below a majority that
+acknowledged.
+
 Both halves are checked. `docs/formal/FelixShard.tla` explores 5.38M distinct
 states of the implemented design without violating `AckedSurvive`, and
 `FelixShardNoReportOrder.cfg` — the same design with the ordering removed —
@@ -1040,6 +1067,7 @@ multi-instance work and not before.
 | --- | --- |
 | Leader fails | Lease lapses; a caught-up replica is promoted at `G+1` after the safety interval. Unavailable for at most `L + margin + promotion`. |
 | Leader of a `Quorum` stream fails | The promoted replica keeps the previous replica set, the dead leader in it, so its fence needs a majority of the set that acknowledged. A spare broker with an empty log cannot make up that majority, and with a majority of the set down the new leader waits rather than opening alone. The dead leader rejoins as a follower, or a drain replaces it. `Leader` streams and caches get a fresh follower in its place. |
+| A follower of a `Quorum` stream is replaced | The newcomer joins beside the follower leaving and counts toward the quorum. The one leaving goes only once a report at the joining generation shows the newcomer holding what a majority of the set holds, so a leader that dies right after still has a record acknowledged before the join on the next leader's fence. Until then the shard waits with four copies, and the replacement times out like a move. |
 | Leader fails before its first replica report | No report names a caught-up replica, so none is promoted. The shard is unavailable until that broker returns, or until an operator abandons the log. |
 | New leader, no client write since | Its log ends in its generation-start record, which never reaches a subscriber. A subscription's `live_offset` stops short of it, so a reader catching up to `live_offset` finishes instead of waiting for the next write. |
 | Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. With `majority_ack` finalized, a `Quorum` stream keeps taking and acknowledging writes its followers hold until a promoted successor's fence reaches them; with `lease_free_reads` too, `Quorum` cache reads its replicas confirm keep being served, and other reads stop with the lease. |
