@@ -203,19 +203,23 @@ impl StreamState {
         if !state.log.is_empty() {
             return;
         }
+        // The ring holds what readers see, so a commit record goes in as its
+        // event.
         for record in records {
             if record.offset >= next_seq {
                 continue;
             }
             state.log.push_back(LogEntry {
                 seq: record.offset,
-                payload: record.payload,
+                payload: crate::commit::client_record(record).payload,
             });
         }
         let overflow = state.log.len().saturating_sub(capacity);
         if overflow > 0 {
             state.log.drain(..overflow);
         }
+        state.next_seq = next_seq;
+        state.state_view = None;
         state.next_seq = next_seq;
         // The commit order is keyed on disk offsets, so it has to restart from
         // the recovered tail too, or the first publish after a restart would

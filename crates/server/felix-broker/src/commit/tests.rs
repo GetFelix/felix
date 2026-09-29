@@ -246,6 +246,32 @@ async fn state_survives_a_restart_by_replaying_the_log() {
     assert_eq!((read.version, read.as_of), (Some(2), Some(2)));
 }
 
+/// **A restarted broker's replay ring holds a commit's event, not the stored
+/// record.** The ring is refilled from disk at startup, and a resumed
+/// subscriber is served from it.
+#[tokio::test]
+async fn a_restarted_ring_replays_a_commit_as_its_event() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let (broker, _) = broker(dir.path(), ConsistencyLevel::Leader).await;
+        commit(&broker, b"placed", vec![put("order/1", b"placed")]).await;
+    }
+    let (broker, _) = broker(dir.path(), ConsistencyLevel::Leader).await;
+    let resumed = broker
+        .subscribe_from(
+            "t1",
+            "ns",
+            "orders",
+            0,
+            felix_wire::StartPosition::Offset(0),
+        )
+        .await
+        .expect("subscribe");
+    assert!(resumed.history.is_none(), "served from the ring");
+    let payloads: Vec<_> = resumed.backlog.iter().map(|(_, p)| p.clone()).collect();
+    assert_eq!(payloads, ["placed"]);
+}
+
 /// **A rebuilt view holds only what is committed.** A broker that takes over
 /// a log (a restart here, a promotion in a cluster) holds records past the
 /// committed mark that a failover may still replace. Until the mark covers
