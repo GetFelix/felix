@@ -76,7 +76,7 @@ sequenceDiagram
         L->>D: fsync (shared with concurrent appends)
         D-->>L: durable
     else None / Periodic
-        Note over L: returns immediately;<br/>a background timer flushes later
+        Note over L: returns immediately.<br/>A background timer flushes later
     end
 
     L-->>B: offsets assigned
