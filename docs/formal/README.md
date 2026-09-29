@@ -82,8 +82,8 @@ One shard, three brokers, one control plane, discrete time.
   wait. The report counts claimed writes only, as the broker's write fence
   does. Reports carry the generation they were made at and one from a
   superseded generation is dropped on arrival, as the store does.
-  The logs that ride a shard — consumer-group cursors, dead letters,
-  counters — are not modelled separately. They are written through the same
+  The logs that ride a shard (consumer-group cursors, dead letters,
+  counters) are not modelled separately. They are written through the same
   fence, the drained report waits for them to be on the successor, and a
   follower without them is left out of the report's candidates, so a write to
   any of them is modelled as a write to the one log.
@@ -216,7 +216,7 @@ A spec and an implementation are two artifacts in two languages. Nothing in the
 toolchain makes one follow the other, and the gap is not hypothetical: the
 broker gained the report-before-mark ordering in #268, this model went on
 describing the design without it, and `check_tla.sh` pinned the resulting
-`AckedSurvive` violation as *expected* — asserting for three weeks that Felix
+`AckedSurvive` violation as *expected*, asserting for three weeks that Felix
 loses acknowledged records, for a design it no longer had. An issue was then
 filed against the model's finding, proposing work the code did not need.
 
@@ -227,14 +227,14 @@ cited test no longer exists or a configuration cites nothing. Rename the test
 for a behaviour and the spec is put in front of you.
 
 A configuration that deliberately models something the code does *not* do says
-`Evidence: none` and why — the counterexample configurations instead cite the
+`Evidence: none` and why; the counterexample configurations instead cite the
 test proving the check they remove is really there.
 
 Citations do not catch the change that actually drifted: #268 changed the
 protocol without renaming a cited test. So a pull request that touches the
-code this model describes — `services/felix-broker-service/src/{cluster/lease,cluster/membership,replication,serving,shards/lifecycle}`
+code this model describes (`services/felix-broker-service/src/{cluster/lease,cluster/membership,replication,serving,shards/lifecycle}`
 and `services/felix-controlplane-service/src/{api/nodes/reports,cluster/membership,cluster/placement}`,
-tests and metrics aside — must also touch `docs/formal/`, or carry a line
+tests and metrics aside) must also touch `docs/formal/`, or carry a line
 
 ```
 Spec-Unaffected: <why>
@@ -249,13 +249,13 @@ asked whether the model still describes it.
 **What this does not do.** A cited test can keep its name while its assertions
 change, and the spec can model a behaviour wrongly while every citation
 resolves. This makes drift harder to introduce silently; it does not detect it.
-Checking that the implementation *conforms* to the spec needs trace validation —
-emitting protocol events and checking recorded runs are behaviours of the
-spec — which is a different and much larger mechanism.
+Checking that the implementation *conforms* to the spec needs trace validation
+(emitting protocol events and checking recorded runs are behaviours of the
+spec), which is a different and much larger mechanism.
 
 **Trace validation is not planned.** It needs the broker and control plane to
 emit protocol events behind a test-only feature, a mapping from those events
-onto the spec's variables, and TLC in trace mode in CI — a project, not a
+onto the spec's variables, and TLC in trace mode in CI. That is a project rather than a
 check. And what it buys is bounded: it shows the runs the tests happened to
 make are behaviours the spec permits, and says nothing about paths no test
 exercises. The drift that actually occurred (#268) is what the two checks
@@ -475,7 +475,7 @@ names, and the second check is what closes it.
 
 `FelixShardHandoffNoWait.cfg` names the successor as soon as the fence is
 written. TLC finds two leaders in seven steps: the control plane fences the
-leader and cuts over, and the old leader has simply not seen the fence yet —
+leader and cuts over, and the old leader has simply not seen the fence yet:
 it holds a valid lease, believes it leads, and is serving. Nothing about the
 lease closes this, because the lease has not lapsed; the leader is alive and
 was meant to keep it.
@@ -504,8 +504,8 @@ survived.
 `FelixShardHandoffNoClaimFence.cfg` checks the fence at admission only. TLC
 finds an acknowledged record lost in eleven steps:
 
-1. The leader admits a write. It waits to be claimed — in the broker, in a
-   publish queue.
+1. The leader admits a write. It waits to be claimed (in the broker, in a
+   publish queue).
 2. The control plane fences the leader, which sees it and stops serving.
 3. The leader reports `drained`. The report counts claimed writes, and this
    one is not claimed yet, so the report is true as far as it goes.
@@ -516,8 +516,8 @@ finds an acknowledged record lost in eleven steps:
 
 Nothing about waiting longer closes this: however still the leader's tail
 holds, a write can wait in the queue for longer. What closes it is the claim
-checking the fence — `FenceAtClaim = TRUE`, which is
-`FelixShardHandoffLeaderAck.cfg`, passing. The broker's check is
+checking the fence: `FenceAtClaim = TRUE`, which is
+`FelixShardHandoffLeaderAck.cfg`, passes. The broker's check is
 `ShardFence::enter` in `services/felix-broker-service/src/shards/lifecycle/fence.rs`,
 entered by every write right before it claims its place in the log and held
 until the write is durable, and the drained report waits for the fence to be
@@ -589,14 +589,14 @@ leader reports who holds the record, waits for that report to land, and only
 then moves the quorum mark that releases the acknowledgement. That is
 `publish_mark` in `crates/server/felix-replication/src/driver/shard.rs`, which moves the
 mark only `if reported`, and `await_quorum`, which blocks the publish on the
-mark. With `ReportBeforeAck = TRUE` — `FelixShard.cfg`, the implemented design
-— TLC explores 5.4M distinct states and finds no violation.
+mark. With `ReportBeforeAck = TRUE` (`FelixShard.cfg`, the implemented design),
+TLC explores 5.4M distinct states and finds no violation.
 
 So the pair is the point. The ordering is not merely present in the code; the
 model shows the guarantee fails without it.
 
 > A caution on reading a pass. `FelixShard.cfg` passing is only meaningful if
-> acknowledgements actually happen under the added precondition — a
+> acknowledgements actually happen under the added precondition. A
 > precondition nothing can satisfy would make `AckedSurvive` vacuously true.
 > Checked by hand with a temporary `acked = {}` invariant, which TLC violates
 > in 2,307 states: acknowledgements are released, and the pass is about them.
@@ -606,8 +606,8 @@ acknowledged `Quorum` record is in every majority that could acknowledge one
 after it, so the replica with the greatest (last generation, length) among the
 live ones holds every acknowledged record; the generation comes first because
 a stale proposal from an older leader can be longer than the log that
-superseded it. That rule needs each replica to say where it is — a position on
-its own heartbeat — rather than the leader to say where its followers were.
+superseded it. That rule needs each replica to say where it is (a position on
+its own heartbeat) rather than the leader to say where its followers were.
 
 ## Running it
 

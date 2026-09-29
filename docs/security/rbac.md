@@ -25,16 +25,16 @@ Canonical actions:
 - `cache.write`
 - `group.consume`
 - `group.manage`
-- `node.view` — cluster-scoped only; see [Cluster scope](#cluster-scope)
-- `node.manage` — over `node:{node_id}` or `cluster:*`
+- `node.view`: cluster-scoped only; see [Cluster scope](#cluster-scope)
+- `node.manage`: over `node:{node_id}` or `cluster:*`
 
 Consumer groups have two actions, granted over the stream's object
 (`stream:{tenant_id}/{namespace}/{stream}`) or one group's object
 (`group:{tenant_id}/{namespace}/{stream}/{group}`):
 
-- **`group.consume`** — poll, acknowledge, hand back, and list dead letters.
+- **`group.consume`**: poll, acknowledge, hand back, and list dead letters.
   `stream.subscribe` also grants it.
-- **`group.manage`** — redrive or discard a dead letter. `stream.manage` also
+- **`group.manage`**: redrive or discard a dead letter. `stream.manage` also
   grants it; `stream.subscribe` does not.
 
 The broker applies those implied grants when it checks a request
@@ -59,7 +59,7 @@ like this (`PermissionMatcher::allows_group` in `felix-authz`):
 
 1. Allowed if a grant of `A`, or of an action that implies it, matches
    `group:{tenant}/{namespace}/{S}/{G}`.
-2. Otherwise allowed if such a grant matches `stream:{tenant}/{namespace}/{S}` —
+2. Otherwise allowed if such a grant matches `stream:{tenant}/{namespace}/{S}`,
    **unless** the principal holds any grant of `A` (or an action implying it)
    on a `group:` object that could match some group of `S`. Then the principal
    has been scoped to particular groups on `S`, and its stream grants no longer
@@ -87,14 +87,14 @@ Valid canonical objects:
 - `namespace:{tenant_id}/{namespace}`
 - `stream:{tenant_id}/{namespace}/{stream}`
 - `cache:{tenant_id}/{namespace}/{cache}`
-- `group:{tenant_id}/{namespace}/{stream}/{group}` — see
-  [Granting one group](#granting-one-group)
+- `group:{tenant_id}/{namespace}/{stream}/{group}` (see
+  [Granting one group](#granting-one-group))
 
 Allowed wildcards:
 - `namespace:{tenant_id}/*`
 - `stream:{tenant_id}/{namespace}/*`
 - `cache:{tenant_id}/{namespace}/*`
-- `stream:{tenant_id}/*/*` and `cache:{tenant_id}/*/*` — every stream or
+- `stream:{tenant_id}/*/*` and `cache:{tenant_id}/*/*`: every stream or
   cache in the tenant, which is what token exchange expands a tenant-wide
   grant to. A wildcard namespace under a *named* leaf (`stream:t1/*/orders`)
   is refused: a grant across namespaces should not look like a single-stream
@@ -127,7 +127,7 @@ cluster scope cannot read tenant data.
 
 One object sits outside the tenant hierarchy:
 
-- Cluster: `cluster:*` — broker membership, liveness, and placement standing.
+- Cluster: `cluster:*`, covering broker membership, liveness, and placement standing.
 
 It is an island in both directions, and that is the whole security property:
 

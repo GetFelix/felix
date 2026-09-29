@@ -25,7 +25,7 @@ mode no deployment should run.
 
 ## Driving it by hand
 
-`up` writes a session file — the broker addresses and a credential — so a second
+`up` writes a session file (the broker addresses and a credential) so a second
 terminal has something to attach to. The other commands find it themselves.
 
 ```bash
@@ -101,7 +101,7 @@ runs.
 
 Two clusters share one session file, so a second `up` takes it over and warns
 that it has. Whichever stops first leaves the file alone unless it still
-describes that cluster — otherwise stopping the second would leave the first
+describes that cluster. Otherwise stopping the second would leave the first
 running and unreachable, holding its ports with no way to address it.
 
 The session file holds a bearer token. It is written owner-only into the temp
@@ -125,7 +125,7 @@ reason.
 The consequence, stated plainly: the control plane's router, store, placement,
 and HTTP contract are all exercised; its `main`, its own configuration, and its
 shutdown are not. A harness that ran it as a process would need a fake IdP, or a
-way to issue a first credential without one — the latter is worth having on its
+way to issue a first credential without one. The latter is worth having on its
 own, and would let this become a fully out-of-process cluster.
 
 ## Waiting
@@ -134,8 +134,8 @@ Nothing here sleeps for a fixed duration and hopes. Start-up returns only once:
 
 1. every broker answers `/ready`,
 2. the control plane considers every broker placeable,
-3. every shard has a leader — placement is *stepped*, not waited for, so it does
-   not depend on a reconcile timer,
+3. every shard has a leader (placement is *stepped*, not waited for, so it does
+   not depend on a reconcile timer),
 4. **a publish succeeds**,
 5. every broker routes each stream at its full width,
 6. placement has settled, with no move under way, and
@@ -159,8 +159,8 @@ A wait that times out says what it was still waiting for.
 ### Budgets, and where they are wrong
 
 The deadlines are wall-clock constants chosen against a developer machine, and
-what they wait for is almost always setup — a leader elected, a replica caught
-up — rather than the thing under test. On a shared CI runner, and especially
+what they wait for is almost always setup (a leader elected, a replica caught
+up) rather than the thing under test. On a shared CI runner, and especially
 under coverage instrumentation, that setup takes longer for reasons that say
 nothing about the code, and the failure then reports as the semantic having
 broken. That has cost real investigation more than once.
@@ -191,7 +191,7 @@ token if one is not a client-facing action, so a single credential carrying
 ## Faults
 
 `stop_node` kills a broker and waits until the control plane no longer considers
-it placeable, which is the primitive a failure test needs — without it, every
+it placeable, which is the primitive a failure test needs. Without it, every
 such test races the expiry sweep. Liveness windows are tuned short (a 1s expiry
 timeout) because every process is local, so a stopped broker is observable in
 about a second.
@@ -208,21 +208,21 @@ the cluster has already responded to it.
 `pause_node` and `resume_node` suspend and resume a broker with `SIGSTOP` and
 `SIGCONT`. This is the fault a kill cannot produce: the process stays alive,
 keeps every lease and connection it holds, and answers nothing. It is what the
-commit-boundary lease check exists for — a broker suspended past its lease
+commit-boundary lease check exists for: a broker suspended past its lease
 expiry has to refuse the write it was in the middle of when it wakes, rather
 than committing to a shard someone else now leads. Unix only; there is no
 equivalent elsewhere that leaves the process holding its state, and a test that
 quietly did something weaker would be worse than one that does not run.
 
 `crates/testing/felix-cluster/tests/failures/faults.rs` asserts each fault is the fault it
-claims — a paused broker stops answering *and* stays alive, a resumed one comes
-back, a kill returns immediately — because a scenario built on a fault that is
+claims (a paused broker stops answering *and* stays alive, a resumed one comes
+back, a kill returns immediately), because a scenario built on a fault that is
 really something else passes for the wrong reason. It also pins that teardown
 reclaims a suspended broker, so a test panicking mid-fault fails on its own
 rather than wedging the suite.
 
 `drain_node` marks a broker draining through the same endpoint an operator
-uses, and `drain_until_empty` steps placement until it leads nothing — a move
+uses, and `drain_until_empty` steps placement until it leads nothing. A move
 is three assignment writes with a catch-up between the first two, so a single
 `place_shards` does not finish one. `undrain_node` puts it back. `add_node`
 starts one more broker against the running control plane and waits until it
@@ -459,7 +459,7 @@ task cluster:failover              # or -- --pace 0.5 to slow it down
 Starts three brokers with a shard replicated three ways, publishes under
 `Quorum`, kills the broker that acknowledged those records, and reads the whole
 stream back from the broker that took over. It also publishes *through* the
-failover, with a client configured with exactly one broker address — it asks
+failover, with a client configured with exactly one broker address. It asks
 that broker who else is there, and reconnects to one of them on its own.
 
 It fails loudly rather than narrating past a problem: a record acknowledged
@@ -467,7 +467,7 @@ before the kill that is not readable afterwards ends the demo with an error.
 
 Two things in its output look like defects and are not, and it says so:
 several `harness-probe` records (one per broker, published at startup to prove
-the cluster can serve) and, sometimes, one duplicated record — that is
+the cluster can serve) and, sometimes, one duplicated record. That is
 `publish_at_least_once`, which resends after a failure it cannot prove was not
 applied.
 
@@ -475,7 +475,7 @@ applied.
 
 A recording of the three-pane demo is on the docs site:
 [Demo: Cross-broker Publishing](https://gabloe.github.io/felix/demos/cross-broker-cluster/).
-Embedded as video rather than an animated GIF — the same 45 seconds of terminal
+Embedded as video rather than an animated GIF, because the same 45 seconds of terminal
 output would be tens of megabytes as a GIF, and could not be paused on the line
 that matters.
 
@@ -502,7 +502,7 @@ down to narrate over.
 The tmux version ends with two bursts rather than one: six records sent one at a
 time, which arrive in order, then twenty-four sent twelve at a time, which do
 not. Both prefixes are distinct (`seq-`, `par-`) so the subscriber's panel shows
-which is which. The second burst is the interesting one — it makes visible that
+which is which. The second burst is the interesting one. It makes visible that
 concurrent publishes through different brokers have no relative order, which is
 a property worth showing rather than a defect worth hiding. Both wait on `owners` rather than `nodes` to decide
 the cluster is up: `nodes` only reads the session file, so a file left by a
@@ -512,14 +512,14 @@ plane that is gone.
 ## Running the tests
 
 They are `#[serial]`. Each starts three broker processes, and a two-core CI
-runner asked to start nine at once starves them all — the first symptom is a
+runner asked to start nine at once starves them all. The first symptom is a
 readiness timeout that looks like a bug in the broker rather than in the test
 setup. Serial runs also narrow the window in which two clusters can be handed
 the same ephemeral port.
 
 A broker that exits during start-up is started again, up to three times, with
-fresh ports. Port selection is inherently racy — a port is probed, released, and
-only then handed to the child — so losing it is a retry rather than a cluster
+fresh ports. Port selection is inherently racy (a port is probed, released, and
+only then handed to the child), so losing it is a retry rather than a cluster
 failure. A broker that fails every time is genuinely misconfigured and is
 reported with its exit status and the tail of its own log, which is the
 difference between "lost a port" and "the control plane refused this identity".
@@ -548,7 +548,7 @@ claim being tested: a client must not be able to tell how many brokers there
 are, or which one it connected to.
 
 Scenarios live in `scenarios.rs` and are parameterised by which broker the
-publish goes through — the owner, or one that is not. A scenario that a
+publish goes through: the owner, or one that is not. A scenario that a
 deployment cannot express (a non-owner, on a single node) reports `Skipped` and
 says so in the log; it is never quietly run against the owner, which would look
 like coverage while asserting nothing.
@@ -574,12 +574,12 @@ writing an assignment and the old owner reading it, that broker still believes
 it owns the shard. Two mechanisms keep that from becoming acknowledged-write
 loss, one per way a shard can change hands.
 
-An **unplanned** change — the leader is gone — is fenced by the lease: the
+An **unplanned** change (the leader is gone) is fenced by the lease: the
 control plane grants the next generation only after the old one's lease has
 lapsed with a margin, and the old leader stopped serving before that by its
 own clock.
 
-A **planned** change — the leader is alive and the shard is moved — is fenced
+A **planned** change (the leader is alive and the shard is moved) is fenced
 by the assignment. The old owner is told to stop (`state: draining`) at a new
 generation, stops serving the shard the moment its watch delivers that, and
 reports once its log has stopped growing; the successor is named only after
@@ -598,7 +598,7 @@ cluster.publish_via(&non_owner, "orders", payload).await?;
 ```
 
 `Cluster::metric` reads a counter or gauge from one broker's `/metrics`, and
-returns `None` when it was never recorded — which for a counter is the
+returns `None` when it was never recorded, which for a counter is the
 difference between "zero so far" and "this code path never ran". That
 distinction is usually what a cross-broker assertion is making: a publish served
 locally by the wrong broker looks exactly like one whose delivery is slow.

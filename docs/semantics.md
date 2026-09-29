@@ -9,7 +9,7 @@ describing intentions in the present tense. Where something is not enforced, it
 says so rather than omitting it.
 
 Written for the replicated, multi-broker system. It replaces the single-node MVP
-contract, which described a system that no longer exists — at-most-once
+contract, which described a system that no longer exists: at-most-once
 delivery, no authorization, no durability.
 
 ## What an acknowledgement means
@@ -32,7 +32,7 @@ acknowledged record survives the loss of the machine, and group commit is what
 keeps it affordable: one flush serves every waiter queued behind it.
 
 A crash mid-append leaves a **torn tail**, which recovery repairs by discarding
-the incomplete record — it was never acknowledged. Corruption in the *interior*
+the incomplete record, which was never acknowledged. Corruption in the *interior*
 of a segment is refused instead: the broker will not start. Refusing to start
 beats silently losing an acknowledged record. Power loss can also leave the
 end of the active segment as zeros inside the file's length; that is repaired
@@ -64,13 +64,13 @@ majority holds the record; if no majority is reachable it is **refused**, with
 an error that says this broker cannot vouch for the write rather than one that
 claims it failed.
 
-> `a_quorum_publish_without_a_majority_is_refused` — freeze every follower and
+> `a_quorum_publish_without_a_majority_is_refused`: freeze every follower and
 > the publish is refused rather than acknowledged.
-> `a_frozen_follower_does_not_block_a_quorum` — losing a *minority* does not
+> `a_frozen_follower_does_not_block_a_quorum`: losing a *minority* does not
 > stop it, which is the case `Quorum` exists to tolerate.
-> `a_quorum_acknowledged_record_survives_its_leader` — the acknowledged record
+> `a_quorum_acknowledged_record_survives_its_leader`: the acknowledged record
 > is readable after the acknowledging broker is killed.
-> `a_fault_campaign_keeps_quorum_histories_valid` — the same holds for every
+> `a_fault_campaign_keeps_quorum_histories_valid`: the same holds for every
 > record acknowledged during a randomized run of kills, pauses and partitions,
 > checked with the [history checker](history-checker.md).
 
@@ -83,7 +83,7 @@ and `FelixShardNoReportOrder.cfg` shows the loss without the ordering. See
 `docs/replication-design.md` under "Who may be promoted". The guarantee rests on
 "landed" meaning the control plane recorded the report; it now answers each
 shard's report on its own merits rather than success for the whole batch, so a
-report it discarded (not leader, stale generation) no longer reads as landed —
+report it discarded (not leader, stale generation) no longer reads as landed;
 see "A `Quorum` ack rests on a report the control plane stored" below.
 
 **With `ack_on_commit` off, a `Leader` ack is sent when the publish is queued,
@@ -120,7 +120,7 @@ acknowledged, so a newer leader disagreeing with them is a fault to stop on
 (`felix_broker_replicated_total{outcome="below_commit"}`), not a suffix to drop.
 
 A majority is of the replica set, leader included: a set of three needs two, a
-set of five needs three, and a set of one needs one — which is why
+set of five needs three, and a set of one needs one, which is why
 `replication_factor: 1` costs nothing.
 
 ## Failover
@@ -145,7 +145,7 @@ were never acknowledged, and an idempotent producer sends them again.
 > `a_leader_stream_follower_missing_the_newest_record_cannot_lead`.
 
 > `the_promoted_leader_is_one_of_the_replicas` and
-> `a_shard_with_no_caught_up_replica_does_not_fail_over_to_an_empty_broker` — a
+> `a_shard_with_no_caught_up_replica_does_not_fail_over_to_an_empty_broker`: a
 > shard with no qualifying replica is left unavailable rather than served empty.
 
 **A durable shard with no replicas waits for its broker.** With
@@ -160,7 +160,7 @@ in-memory stream has no log to wait for and is placed again straight away.
 > `an_unreplicated_durable_shard_waits_for_its_owner` and
 > `an_operator_can_abandon_the_log_of_a_shard_whose_owner_is_gone`.
 > `failover_completes_within_the_configured_bound`.
-> `records_survive_repeated_failovers` — two failovers in a row, not just one.
+> `records_survive_repeated_failovers`: two failovers in a row.
 
 **A leader that was frozen past its lease and then resumed cannot acknowledge a
 write the cluster has lost.** It wakes still believing it leads; the lease and
@@ -196,7 +196,7 @@ with neither the report nor the lease in the condition: see
 > `a_resumed_leader_does_not_acknowledge_writes_the_cluster_loses`.
 
 That holds for acknowledgements sent after it resumes. A `Leader` publish it
-acknowledged on enqueue before the freeze, and had not yet written, is lost —
+acknowledged on enqueue before the freeze, and had not yet written, is lost;
 see "Consistency" above.
 
 The lease depends on bounded process suspension, not on synchronised clocks:
@@ -301,7 +301,7 @@ throughput rather than correctness.
   nothing ordering it across concurrent publishes, so two publishers racing
   can append in one order and fan out in the other, and two subscribers of the
   same in-memory stream can see that pair in different orders. A durable
-  stream does not have this gap — fanout happens after the commit, on the
+  stream does not have this gap: fanout happens after the commit, on the
   order the commit settled.
 
   There is no ordering across streams.
@@ -370,8 +370,8 @@ accepts them and stores them; the broker reads only `durable`, `shards` and
 | `kind` (`Stream` / `Queue` / `Cache`) | Nothing. A queue is a way of *reading* a stream, not a kind of stream |
 
 `kind` is the one most likely to mislead. Creating a stream with `kind: Queue`
-does not make it a queue and does not stop it being subscribed to normally —
-consumer groups work over any durable stream, and a stream created as `Stream`
+does not make it a queue and does not stop it being subscribed to normally.
+Consumer groups work over any durable stream, and a stream created as `Stream`
 serves them just as well. Do not rely on any of the three.
 
 ## Clients
@@ -395,15 +395,15 @@ how-to; this is the contract.
   deadline is off by default: one shorter than a single attempt's own timeout
   prevents any retry at all, so a useful value depends on the caller's latency
   budget rather than on a number this library can pick.
-- **The backoff is full jitter** — uniform over `[0, ceiling]`, not the ceiling.
+- **The backoff is full jitter**: uniform over `[0, ceiling]` rather than the ceiling.
   Every client notices a failover at the same moment, and an unjittered backoff
   sends all of them at the freshly promoted broker in step.
 - **The broker's retry class decides what happens next.** `fatal` is returned
   at once. `outcome_unknown` is returned by `publish` and never re-sent;
   `publish_at_least_once` and the idempotent producer send it again, the first
   because that is what it promises and the second because its sequence makes
-  the re-send land once — on a durable stream, whichever broker leads the
-  shard by then. `retry` and `redirect` from a cached owner drop that
+  the re-send land once (on a durable stream, whichever broker leads the
+  shard by then). `retry` and `redirect` from a cached owner drop that
   owner and go straight to the entry broker, since a fenced or draining owner
   will not start serving the shard again; from the entry broker they back off.
   `retry_after` backs off for at least as long as the broker asked.
@@ -453,7 +453,7 @@ second copy. A value written through any broker is readable through every other,
 and two brokers cannot both accept a write for one key.
 
 An operation this broker cannot route is refused, and a read it cannot route is
-an error rather than a miss — reporting a miss would let a client conclude a key
+an error rather than a miss, because reporting a miss would let a client conclude a key
 does not exist when it does, on the owner.
 
 > `crates/testing/felix-cluster/tests/caches/cache_routing.rs`, including
@@ -467,8 +467,8 @@ its place.
 
 > `crates/testing/felix-cluster/tests/caches/cache_failover.rs::a_cache_value_survives_the_loss_of_its_owner`.
 
-**A key or prefix can be watched** (#348). `cache_watch` — negotiated as
-`FEATURE_CACHE_WATCH`, and offered only by a log-backed cache — delivers each
+**A key or prefix can be watched** (#348). `cache_watch` (negotiated as
+`FEATURE_CACHE_WATCH`, and offered only by a log-backed cache) delivers each
 applied write in the shard's write order with its log offset: a put with its
 value, a delete as a change with none. Resume by offset replays from the log
 and joins live delivery with no gap and no duplicate, by the same
@@ -486,8 +486,8 @@ nothing. See `docs/cache-on-log.md` and `docs/protocol.md`.
 > `crates/server/felix-broker/src/cache/watch/tests.rs::overflow_ends_the_watch_and_names_the_first_missed_offset`.
 
 **A watch can start from current state** (#349). A `retained` watch delivers
-each matching key's current value first — at the offset of the write that
-produced it — then live changes: MQTT's retained message, and the join
+each matching key's current value first, at the offset of the write that
+produced it, then live changes: MQTT's retained message, and the join
 primitive state-sync applications need. `retained_count` in the confirmation
 makes joining an empty key a definite zero rather than silence. Negotiated as
 `FEATURE_CACHE_WATCH_RETAINED`, a bit of its own so an older watch-capable
@@ -503,14 +503,14 @@ and the watch is live on it.
 
 **A counter folds deltas into a durable sum** (#350). `counter_add` /
 `counter_get`, negotiated as `FEATURE_COUNTERS` and offered only with durable
-storage. Scoped and routed exactly as a cache key — same scope, same shard,
-same owner, same forwarding — but stored beside the cache, so a counter and a
+storage. Scoped and routed exactly as a cache key (same scope, same shard,
+same owner, same forwarding) but stored beside the cache, so a counter and a
 cache value sharing a key are unrelated. Each add answers with the sum
 including itself; never-written is distinct from zero. The sum survives
 restart, compaction (checkpoints, offsets never renumbered), and leader
 failover, where the promoted replica folds the true sum from its shipped log
 and keeps counting. **At least once**: a retried add after a lost
-acknowledgement double-counts — deltas carry no dedupe identity, and
+acknowledgement double-counts, since deltas carry no dedupe identity, and
 `docs/projections.md` records the decision.
 
 > `services/felix-broker-service/tests/counters.rs`, including
@@ -554,7 +554,7 @@ the lease. See "Reads without the lease" in `docs/replication-design.md`.
 Enforced, contrary to what this document said for a long time. Tenant-scoped
 tokens are verified at the broker, and publish, subscribe and cache operations
 each check a permission. A forwarded publish is authorized at both the ingress
-broker and the owner — routing does not launder a credential.
+broker and the owner, so routing does not launder a credential.
 
 > `crates/testing/felix-cluster/src/scenarios.rs`, including
 > `unauthorized_publish_is_refused` across both ingress paths.
@@ -572,7 +572,7 @@ Stated because a guarantee without its failure model is a slogan.
 - **The failure model is process loss and partition.** Kill, graceful stop,
   freeze, and severing a broker from its peers while it keeps running are all
   injectable and tested. A partitioned leader keeps heartbeating, so the control
-  plane goes on believing it is healthy while it can reach nobody — and it
+  plane goes on believing it is healthy while it can reach nobody, and it
   cannot acknowledge a `Quorum` publish, because it is not a majority on its own.
 
   > `a_partitioned_leader_cannot_reach_a_quorum`,
@@ -587,7 +587,7 @@ Stated because a guarantee without its failure model is a slogan.
   the expiry timeout and a quarter more (`FELIX_NODE_REGRANT_MARGIN_MS`), so a
   step in the store's wall clock, or an election onto a machine whose clock
   runs ahead, cannot expire it early. The assumption that
-  *does* matter is bounded **process suspension**, and that is injectable — a
+  *does* matter is bounded **process suspension**, and that is injectable: a
   broker frozen past its lease and resumed is the test above.
 
   A broker suspended *between* the commit-time lease check and its write
@@ -597,8 +597,8 @@ Stated because a guarantee without its failure model is a slogan.
   id from the broker and numbers its batches can re-send a batch whose
   acknowledgement never arrived and have it land once: the shard's leader
   answers a sequence it already holds rather than appending it. On a durable
-  stream the sequences are in the log — each record carries its producer and
-  sequence, and is replicated with them — so this holds across a failover, a
+  stream the sequences are in the log (each record carries its producer and
+  sequence, and is replicated with them), so this holds across a failover, a
   planned move and a restart: whichever broker leads next answers from the
   records it holds. A producer whose batches retention has removed entirely is
   forgotten and told so (`unknown_producer`), which the client reports rather
@@ -632,7 +632,7 @@ Stated because a guarantee without its failure model is a slogan.
   group, and the earliest standing claim lapsing. It also looks again every
   100 ms on its own, which is what notices anything that does not signal.
   Only the broker leading a shard serves its groups, and ownership is re-checked
-  while a poll waits — a shard that moves mid-wait ends the wait rather than
+  while a poll waits. A shard that moves mid-wait ends the wait rather than
   being served by its former owner.
 
   **In flight is capped per group.** A group on a shard hands out at most
@@ -652,12 +652,12 @@ Stated because a guarantee without its failure model is a slogan.
   survives a restart. Above that position the broker tracks what has been handed
   out: a record claimed by one consumer is not handed to another while the claim
   stands, a claim that lapses makes the record owed again, and the cursor moves
-  only over a contiguous run of acknowledgements — never past a gap, which would
+  only over a contiguous run of acknowledgements and never past a gap, which would
   mark a record finished that nobody finished. Two groups over one shard are
   independent; each sees every record.
 
   **Retention outranks a group.** A record removed by retention before a group
-  reached it is skipped, and the group moves past it — leaving it owed would
+  reached it is skipped, and the group moves past it. Leaving it owed would
   stall the group for ever on a record that exists nowhere. That is the one case
   where a queue drops work, it is counted rather than silent, and it means a
   retention window shorter than a group is allowed to fall behind loses work.
@@ -669,8 +669,8 @@ Stated because a guarantee without its failure model is a slogan.
   delivery and still would not make delivery exactly-once.
 
   **Group state survives failover whole** (#314, and now the dead letters too).
-  Both of a shard's group logs — the cursors and the offsets its groups gave up
-  on — replicate beside the shard's records, on the same replica set at the
+  Both of a shard's group logs (the cursors and the offsets its groups gave up
+  on) replicate beside the shard's records, on the same replica set at the
   same generation. A promoted replica resumes each group where it had reached,
   lists what it had abandoned, and serves an operator's redrive. A redrive is
   itself recorded in the dead-letter log before it is acknowledged, so a record

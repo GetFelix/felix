@@ -3,7 +3,7 @@
 For application developers. What to configure, what the client does on its own,
 and what it will not do for you.
 
-`docs/client-config.md` covers the tuning knobs — pool sizes, windows, queue
+`docs/client-config.md` covers the tuning knobs: pool sizes, windows, queue
 policies. This page is about the cluster: how a client finds brokers, what
 happens when one dies, and which failures it retries.
 
@@ -32,7 +32,7 @@ config.auth_token = Some(std::env::var("FELIX_TOKEN")?);
 // For a long-running client, set `config.token_provider` so reconnects get a
 // fresh token. See docs/auth.md.
 
-// Every broker you know of. One is enough — see "Discovery" below.
+// Every broker you know of. One is enough; see "Discovery" below.
 let seeds = ["10.0.0.4:5000".parse()?, "10.0.0.5:5000".parse()?];
 
 let client = ClusterClient::connect_with_policy(
@@ -116,7 +116,7 @@ When the broker in use goes away:
   connection already replaced, so your next call goes somewhere live. Use it
   when a duplicate is worse than a gap, and handle the error.
 - **`publish_at_least_once` reconnects and resends.** It can therefore deliver
-  the record twice — the broker cannot tell, because only your application holds
+  the record twice. The broker cannot tell, because only your application holds
   an identity that would make deduplication possible. The name is the contract.
 
 **`idempotent_producer` reconnects, resends, and does not duplicate.** The
@@ -128,7 +128,7 @@ producer follows it. On a durable stream that holds across a leader change:
 the sequences are stored in the log and replicated with it, so the broker
 leading next answers the batch in flight, whether it got there by failover or
 by a planned move, and the producer carries on. What it does not cover is a
-producer the shard has forgotten — retention removed all its batches — or an
+producer the shard has forgotten (retention removed all its batches) or an
 in-memory stream's new leader: the broker says `unknown_producer`, and the
 producer ends on that stream with a typed refusal rather than guessing. See
 `docs/protocol.md`, "Idempotent producers".
@@ -138,7 +138,7 @@ connection it was created on. Record `Event.offset` as you go and resubscribe
 from `offset + 1`; that is what offsets are for, and it is the only way to
 resume without a gap.
 
-**A sharded subscription reconnects each shard on its own** — see below.
+**A sharded subscription reconnects each shard on its own**; see below.
 
 ## When a shard moves
 
@@ -243,7 +243,7 @@ have to make yourself:
 
 - **Ordering is per shard, and nothing more.** Two records from one shard arrive
   in the order they were written. Two records from different shards arrive in an
-  arbitrary order. Merging cannot restore an order that never existed — Felix
+  arbitrary order. Merging cannot restore an order that never existed. Felix
   orders per key, and a key always resolves to one shard. Do not infer
   stream-wide ordering from the fact that these arrive on one channel.
 
@@ -349,7 +349,7 @@ A subscribe or a consumer-group request sent to a broker that does not own the
 shard is answered with a redirect naming the one that does. `ClusterClient::subscribe`
 and the single-shard group calls (`ClusterClient::group_poll`, `group_poll_wait`,
 `group_ack`, `group_nack`, `group_dead_letters`, `group_discard`,
-`group_redrive`) follow it — up to three hops, never revisiting a broker within
+`group_redrive`) follow it, up to three hops, never revisiting a broker within
 one attempt, because a cluster mid-rebalance can otherwise bounce a client
 between two brokers that disagree. The group calls remember which broker served
 each shard and go straight there next time, until a call against it fails. This
@@ -369,7 +369,7 @@ needs nothing from you.
 Bounded by an attempt count and a jittered exponential backoff, and optionally
 by a deadline.
 
-- **The backoff is full jitter** — a delay uniform in `[0, ceiling]`, with the
+- **The backoff is full jitter**: a delay uniform in `[0, ceiling]`, with the
   ceiling doubling to `max_backoff`. Every client of a cluster notices a
   failover at the same instant, and an unjittered backoff would send all of them
   at the freshly promoted broker together.
@@ -421,10 +421,10 @@ right either way.
 
 Set per stream on the control plane, not on the client.
 
-- **`Leader`** — acknowledged once the owning broker has it durably. Fast, and
+- **`Leader`**: acknowledged once the owning broker has it durably. Fast, and
   loses whatever it had not yet replicated if that broker's storage is lost. The
   window is the broker's `felix_broker_replication_lag_records`.
-- **`Quorum`** — acknowledged once a majority of the replica set holds it. A
+- **`Quorum`**: acknowledged once a majority of the replica set holds it. A
   publish that cannot reach a majority comes back as `quorum_timeout`, retry
   class `outcome_unknown`. That is not the same as "it failed": the record may
   be on disk and may yet reach a majority. `publish` returns it; let

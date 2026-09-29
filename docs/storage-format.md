@@ -7,7 +7,7 @@ framing is allowed to change shape for latency reasons, while bytes already on
 disk must stay readable by every later build.
 
 Implementation: [`crates/server/felix-storage/src/segment/format.rs`](../crates/server/felix-storage/src/segment/format.rs).
-The two must move together — a change to one without the other is a bug.
+The two must move together: a change to one without the other is a bug.
 
 ## Goals
 
@@ -31,8 +31,8 @@ The two must move together — a change to one without the other is a bug.
 
 ### Magic numbers
 
-Both file kinds start with a four-byte ASCII magic sharing the prefix `FLS` —
-**F**e**L**ix **S**egment — with the last byte naming the kind:
+Both file kinds start with a four-byte ASCII magic sharing the prefix `FLS`
+(**F**e**L**ix **S**egment), with the last byte naming the kind:
 
 | Magic | ASCII | Expands to | File |
 | --- | --- | --- | --- |
@@ -41,8 +41,8 @@ Both file kinds start with a four-byte ASCII magic sharing the prefix `FLS` —
 
 They are deliberately distinct from `felix-wire`'s frame magic `0x464C5831`
 (`FLX1`): storage bytes and network bytes are separate formats with separate
-versioning, and a file that turned up on a socket — or a frame that turned up in
-a segment — should be rejected on its first four bytes rather than misparsed.
+versioning, and a file that turned up on a socket, or a frame that turned up in
+a segment, should be rejected on its first four bytes rather than misparsed.
 
 ## Directory layout
 
@@ -60,8 +60,8 @@ a segment — should be rejected on its first four bytes rather than misparsed.
 ```
 
 The directory name is a readable rendering of the `ShardKey` plus an FNV-1a hash
-of the exact key. The readable part is lossy — anything outside `[A-Za-z0-9-]`
-becomes `_`, and components are truncated — so the hash is what guarantees
+of the exact key. The readable part is lossy (anything outside `[A-Za-z0-9-]`
+becomes `_`, and components are truncated), so the hash is what guarantees
 uniqueness. Dots are excluded deliberately: with no dots in the name, a
 component like `..` is not merely escaped but unrepresentable.
 
@@ -70,7 +70,7 @@ Recovery still parses the number and sorts on it rather than trusting directory
 iteration order, which is filesystem-defined.
 
 A file name is a **segment id**, not an offset. The two coincide for the common
-log — segment 0 begins at offset 0 — but they are independent, and a shard's
+log (segment 0 begins at offset 0), but they are independent, and a shard's
 first segment may begin anywhere. That is what lets a replica be given a shard
 whose early history is already gone everywhere: its log *begins* at the oldest
 surviving offset, and the offset is read back from the segment's own header
@@ -103,7 +103,7 @@ file:
 | 28 | 4 | `reserved` | `0` |
 
 The header is written once and fsynced before any record claims to live in the
-segment, so damage here is never a torn write — it is always an error.
+segment, so damage here is never a torn write. It is always an error.
 
 ### Record
 
@@ -127,8 +127,8 @@ an idempotent producer.
 `header_crc` is what makes recovery decidable. It is verified *before* any other
 field is used, so `payload_len` is only ever acted on once it is known to be
 intact. Without it, a bit flip in the length field produced exactly the same
-symptom as an unfinished write — a record claiming more bytes than the file
-holds — and recovery had to guess. Guessing wrong meant silently truncating a
+symptom as an unfinished write (a record claiming more bytes than the file
+holds), and recovery had to guess. Guessing wrong meant silently truncating a
 record that had been fsynced and acknowledged.
 
 `payload_len` comes first and is covered by both checksums, so a reader can step
@@ -189,7 +189,7 @@ v4 segment, and later segments stay at v4. Indexes stay at v3.
 
 Index files accelerate reads and are **never trusted**. Every entry is used only
 as a starting position for a scan that re-validates real records, and any index
-that fails to load — missing, short, wrong generation, garbage — is rebuilt from
+that fails to load (missing, short, wrong generation, garbage) is rebuilt from
 its segment. Consequently they carry no checksums.
 
 ### Index header (24 bytes)
@@ -215,13 +215,13 @@ its segment. Consequently they carry no checksums.
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 8 | `offset` |
-| 8 | 8 | `position` — byte position of that record in the segment |
+| 8 | 8 | `position`: byte position of that record in the segment |
 
 Entries are emitted for the segment's first record and thereafter every
 `index_spacing_bytes` of segment data. They are strictly ascending by offset,
 which is what `seek_position`'s binary search relies on.
 
-A torn final entry — the signature of a crash mid-append — is tolerated on load:
+A torn final entry, the signature of a crash mid-append, is tolerated on load:
 the file is read up to the last whole entry.
 
 ## Compatibility and corruption behaviour
@@ -232,8 +232,8 @@ the file is read up to the last whole entry.
 | Unknown `version` | Reject: `SegmentVersion` / `IndexVersion`. Never "best effort" |
 | Non-zero `flags` | Reject: `SegmentFlags`. Unknown bits may change the layout behind them, so they are not masked off |
 | Bad header CRC | Reject: `SegmentHeaderChecksum` |
-| Short read | `Truncated { needed, available }` — the one shape recovery may repair |
-| Bad record header CRC | `RecordHeaderChecksum` — the length cannot be trusted |
+| Short read | `Truncated { needed, available }`: the one shape recovery may repair |
+| Bad record header CRC | `RecordHeaderChecksum`: the length cannot be trusted |
 | Bad record CRC | `RecordChecksum` |
 | More than one of the three kind bits set | `RecordFlags` |
 | `payload_len` over the limit | `RecordTooLarge`, raised *before* any allocation |
@@ -249,7 +249,7 @@ because only there can a record have been mid-write when the process died:
 
 - A `Truncated` failure is always repairable. The header verified, so
   `payload_len` is the length the writer intended, and a file ending short of it
-  is *provably* an unfinished write — nothing can have acknowledged a record that
+  is *provably* an unfinished write, because nothing can have acknowledged a record that
   was never finished. This is the ordinary crash case and needs no operator
   involvement.
 - A `RecordHeaderChecksum` failure is **not** repairable by default. The header
@@ -258,7 +258,7 @@ because only there can a record have been mid-write when the process died:
 - A `RecordChecksum` or `OffsetOutOfOrder` failure is likewise opt-in: the header
   verified, so the record is complete on disk and the damage is rot rather than a
   torn write.
-- A `RecordTooLarge` failure is opt-in for the same reason — the writer rejects
+- A `RecordTooLarge` failure is opt-in for the same reason: the writer rejects
   oversized records, so a verified header carrying an impossible length is damage
   the checksums did not catch.
 - Segment-header damage is never repairable.
@@ -350,15 +350,15 @@ encode_record(offset = 7, timestamp = 9, payload = "hi"):
 A v1 segment is rejected on open with `CorruptionKind::SegmentVersion`, naming
 the version found. v1 was only ever written by unreleased builds, so the
 migration path is to discard the data directory rather than carry a second
-decoder — and rejecting is the safe failure, because a v1 record read as v2
+decoder, and rejecting is the safe failure, because a v1 record read as v2
 would misparse every field after the length.
 
 ## Versioning policy
 
 `FORMAT_VERSION` is a single number covering both the segment and index layouts.
 
-- **Additive changes** that keep existing readers correct — new `flags` bits with
-  strictly appended data — still require a version bump, because current readers
+- **Additive changes** that keep existing readers correct (new `flags` bits with
+  strictly appended data) still require a version bump, because current readers
   reject unknown flags rather than skipping them. That is deliberate: silently
   ignoring a bit that changes the meaning of following bytes is how formats
   become unreadable.
@@ -373,10 +373,10 @@ would misparse every field after the length.
 | Max records per segment | `u64` offsets, so effectively unbounded | Rollover is driven by size, not count |
 | Oversized records | A record larger than `segment_size_bytes` is written to an otherwise-empty segment of its own | Splitting a record across segments would break the "offsets are contiguous within a segment" invariant that recovery depends on |
 
-## `epochs` — the generation history
+## `epochs`: the generation history
 
 A shard directory may hold an `epochs` file beside its segments. It records
-where each leadership generation began, as `(generation, start offset)` pairs —
+where each leadership generation began, as `(generation, start offset)` pairs,
 one entry per leadership change, not per record. An entry names the generation
 that wrote the records from its offset on, on a follower too: a follower copies
 the entries from the leader's batches rather than labelling what it is sent
@@ -392,7 +392,7 @@ with the generation of the leader that sent it.
 
 Written through a temporary and a rename, so a crash leaves either the old file
 or the new one. A half-written history is worse than none, because it would be
-read back as a confident answer about where a generation began — and that
+read back as a confident answer about where a generation began, and that
 answer becomes a truncation point.
 
 **Unlike the segments, this file is not authoritative and its loss is not
@@ -408,7 +408,7 @@ diverge within.
 See `docs/replication-design.md`, "Divergence and truncation", for what it is
 for.
 
-## `replica` — the accepted generation and the commit offset
+## `replica`: the accepted generation and the commit offset
 
 A shard directory that has been replicated to, or led, holds a `replica` file:
 the highest leadership generation this broker accepted a leader of the shard
@@ -450,7 +450,7 @@ The one thing that lowers the commit offset is a restore to a backup point
 offset here first, then cuts the log to it. See `docs/durable-storage.md`,
 "Restoring to a backup point".
 
-## `producers` — the producer snapshot
+## `producers`: the producer snapshot
 
 Each idempotent producer's place in the log is derived from the marks: for
 every producer, the newest sequence held and where its recent batches landed,
@@ -506,7 +506,7 @@ on every replica alike. Each producer keeps its last 64 batches, and past 4096
 producers the one whose newest batch is oldest is forgotten.
 
 
-## `durable.mark` — how far the log was synced
+## `durable.mark`: how far the log was synced
 
 A 32-byte file, rewritten in place after every flush:
 

@@ -14,7 +14,7 @@ It is **not** the place to look for current status. Two places are:
 
 ## What the MVP Achieved
 A single-node broker that accepts QUIC connections, supports publish/subscribe
-over a framed v1 protocol, and provides an in-memory TTL cache — focused on
+over a framed v1 protocol, and provides an in-memory TTL cache. It focuses on
 correctness and operability rather than durability, clustering, or advanced
 observability. Durability, clustering, replication, failover, the log-backed
 cache, and consumer groups all landed afterwards.
@@ -45,7 +45,7 @@ cache, and consumer groups all landed afterwards.
 - [X] QUIC server endpoint wrapper (quinn)
 - [X] QUIC client endpoint wrapper
 - [X] Connection info + stream helpers (bi/uni)
-- [X] Graceful shutdown hooks (drain connections on SIGTERM) — see
+- [X] Graceful shutdown hooks (drain connections on SIGTERM); see
       [Graceful Shutdown](../docs-site/src/content/docs/deployment/graceful-shutdown.md).
       Readiness flip, accept-loop cancellation, and a bounded per-connection drain
       (`TaskTracker` grace window, then the connection is closed) are done. Cancelling
@@ -80,45 +80,45 @@ cache, and consumer groups all landed afterwards.
 - [X] Client can publish to a named stream over QUIC
 - [X] Subscribers receive stream events over QUIC
 - [X] Cache `put/get` available over QUIC
-- [X] Latency target: p999 <= 1 ms for small payloads on localhost baseline —
+- [X] Latency target: p999 <= 1 ms for small payloads on localhost baseline,
       met with margin: 214–251 µs at fanout 1 and 340–483 µs at fanout 10. See
       [Benchmarks](https://gabloe.github.io/felix/features/benchmarks/).
 - [X] Basic metrics exist and show throughput/latency
 - [X] Unit tests cover wire encode/decode and broker fanout behavior
 
 ## Post-MVP (out of scope for the minimal MVP; since delivered)
-- [X] Queue semantics — consumer groups with poll, acknowledge, hand-back,
+- [X] Queue semantics: consumer groups with poll, acknowledge, hand-back,
       visibility-timeout redelivery, an attempt bound, and dead letters.
-- [X] Distributed cache — though **not** by Raft. A key routes to one owner and
+- [X] Distributed cache, though **not** by Raft. A key routes to one owner and
       the shard is replicated by leader leases and log shipping; per-shard Raft was
       considered and rejected in [replication-design.md](replication-design.md).
 - [X] Multi-node clustering and replication
-- [X] Design sharding/replication/quorum to move beyond single-node — settled in
+- [X] Design sharding/replication/quorum to move beyond single-node, settled in
       [replication-design.md](replication-design.md). Raft remains the intended
       answer for control-plane *metadata* and not for replicating records.
 
 ## Data scalability with sharding
 - [X] Streams should be defined with shard count
 - [X] Caches should be defined with shard count (`Cache::shards`)
-- [X] Ops should be directed to the correct shard leader — a publish or cache
+- [X] Ops should be directed to the correct shard leader. A publish or cache
       operation for a shard this broker does not own is forwarded to the owner.
-- [X] Leader election should be managed — the control plane assigns, and a lease
+- [X] Leader election should be managed. The control plane assigns, and a lease
       fences the assignment.
-- [X] Leader failover should be handled — by promotion of a replica that holds
+- [X] Leader failover should be handled by promotion of a replica that holds
       the log, not by Raft.
 
 ## Data durability and persistence
-- [X] Add durable backend for control plane — Postgres, with `sqlx::migrate!`.
-- [X] Add durable backend for data plane — segmented, checksummed, crash-safe
+- [X] Add durable backend for control plane: Postgres, with `sqlx::migrate!`.
+- [X] Add durable backend for data plane: a segmented, checksummed, crash-safe
       log behind `StreamMetadata::durable`. See
       [Durable Storage](durable-storage.md).
 - [X] Handle crash/recover of broker data-plane nodes (torn-tail repair on
       startup; loud failure on interior corruption). Control-plane recovery and
       re-sync from a new leader remain open.
-- [X] Enforce retention — sealed segments are deleted on age or size, `base_offset`
+- [X] Enforce retention. Sealed segments are deleted on age or size, `base_offset`
       advances, and offsets below it report `Trimmed` / `CursorTooOld`. Off by
       default. See [Durable Storage](durable-storage.md#retention).
-- [ ] Define requirements for tiered storage (hot/cold path, LCU?) — tracked as
+- [ ] Define requirements for tiered storage (hot/cold path, LCU?), tracked as
       [#172](https://github.com/gabloe/felix/issues/172)
 - [ ] Implement tiered storage primitives. `TieredStore` and friends are declared
       in `crates/server/felix-storage/src/tiered.rs` and nothing implements them; see
@@ -136,19 +136,19 @@ cache, and consumer groups all landed afterwards.
    verified on every read and during recovery. See
    [the format spec](storage-format.md).
 2. ~~How should data file segmentation and garbage collection work to honor per-segment size caps? What is a sane segment cap? 512MB?~~
-   **Answered:** segments roll at `segment_size_bytes`, default 256 MiB — chosen
+   **Answered:** segments roll at `segment_size_bytes`, default 256 MiB, chosen
    so a full scan of the active segment at startup stays under a second.
    Collection is whole-segment retention by age or size, off by default; see
    [Durable Storage](durable-storage.md#retention).
 3. What is the delete policy? Should we retain the last *N* versions per key for rollbacks, or can we drop them immediately?
 4. ~~What crash recovery guarantees do we need? We can’t mark an entry as committed until the payload bytes are actually persisted.~~
-   **Answered:** three policies with explicit windows — `OnCommit` acknowledges
+   **Answered:** three policies with explicit windows. `OnCommit` acknowledges
    only after a device flush, `Periodic` bounds loss by its interval, `None`
    makes no promise beyond the page cache. See
    [Durable Storage](durable-storage.md).
 
 ## Performance optimization
-- [X] Figure out how to handle backpressure — bounded queues at every stage with
+- [X] Figure out how to handle backpressure: bounded queues at every stage with
       an explicit overflow policy; defaults validated under sustained overload.
 - [X] Measure P999 tail latency and throughput
 - [ ] Identify optimizations and minspec clustering for optimization

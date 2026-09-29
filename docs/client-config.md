@@ -3,13 +3,13 @@
 This document describes the `felix-client` configuration options and how they are loaded.
 
 Transport-level tuning (QUIC I/O runtimes, ACK frequency, MTU discovery, UDP
-buffers) is process-wide and env-driven rather than part of `ClientConfig` —
+buffers) is process-wide and env-driven rather than part of `ClientConfig`;
 see the "QUIC Transport Tuning" section of
 [Environment Variables](../docs-site/src/content/docs/reference/environment-variables.md).
 The performance-critical defaults are already on; no tuning is required.
 
-**Running against a cluster** — seed brokers, discovery, failover, retries and
-redirects — is [Running a client against a cluster](multi-node-client.md). None
+**Running against a cluster** (seed brokers, discovery, failover, retries and
+redirects) is [Running a client against a cluster](multi-node-client.md). None
 of it is configured here: it is chosen by using `ClusterClient` rather than
 `Client`, and by the `ReconnectPolicy` handed to it.
 
@@ -51,7 +51,7 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
     goes out alone; the frame cap (`max_frame_bytes`) is what bounds its size.
   - An acked publish holds its budget until the broker's ack arrives (acked
     publishes are pipelined on the stream), so the budget also caps acked
-    data in flight — not just data queued for writing.
+    data in flight as well as data queued for writing.
 - `publish_sharding` (env: `FELIX_PUB_SHARDING`)
   - Sharding mode across publish streams.
   - Values: `rr` or `hash_stream`.

@@ -55,7 +55,7 @@ Three repeats agreed on the paced figures. Two findings, and the first
 corrected an assumption that had been driving the argument:
 
 **The hop is nearly free on latency.** With queues shallow it costs 1–4µs at p50
-and is indistinguishable at p99 and p999 — at fanout 10 and 100 the proxied tail
+and is indistinguishable at p99 and p999. At fanout 10 and 100 the proxied tail
 came in *lower* than direct, which is noise, not an effect. The intuition that an
 extra queue must show up in p999 was wrong, and the numbers say so plainly.
 
@@ -66,7 +66,7 @@ hundred times worse. That is the second bounded queue reaching its limit and
 
 Two caveats on that number. The relay is unbatched, so a production proxy would
 have a higher ceiling; the 23% is not a fixed property of proxying. And the
-measurement is in process, so it excludes the second QUIC hop entirely — the
+measurement is in process, so it excludes the second QUIC hop entirely, so the
 latency column is a lower bound.
 
 What survives both caveats is structural: proxying adds a second bounded queue
@@ -102,7 +102,7 @@ Not free, and these are the reasons to revisit it:
 - **Rebalance churn.** Every ownership change disconnects and reconnects the
   affected subscribers, at exactly the moment the cluster is already under
   stress. A proxy absorbs the move invisibly. This is the strongest argument for
-  proxying and it is unmeasured — M9 should quantify a mass reconnect at fanout
+  proxying and it is unmeasured; M9 should quantify a mass reconnect at fanout
   before rebalancing ships.
 - **Client complexity.** The client must discover topology, follow redirects, and
   reconnect across failover (M6: #117, #118, #119). Every future non-Rust SDK
@@ -128,7 +128,7 @@ Not free, and these are the reasons to revisit it:
   would move the failure from visible to invisible.
 - **Cache watches follow the same decision.** A `cache_watch` for a shard this
   broker does not own is redirected, not proxied, through the same dispatch the
-  subscribe path uses — a watch served off the owner would go quiet on writes it
+  subscribe path uses. A watch served off the owner would go quiet on writes it
   cannot see, which is the served-locally failure in a different costume.
 
 ## What this requires
@@ -136,12 +136,12 @@ Not free, and these are the reasons to revisit it:
 **Wire.** The client protocol has no way to say "not here, go there". Adding one:
 
 - A `NotLeader` variant on `Message`, carrying node id, advertised address, and
-  generation — mirroring the internal kind of the same name.
+  generation, mirroring the internal kind of the same name.
 - A negotiated bit for it. `Message` is `#[serde(tag = "type")]`, so an unknown
   variant fails to decode rather than being ignored: a client that predates this
   must be answered with the existing `Error` instead. The bit is offered in
   `Auth.client_flags` and confirmed in `AuthOk.server_flags`, and it is a new bit
-  — `ORIGINAL_V1_FLAGS` stays frozen.
+  (`ORIGINAL_V1_FLAGS` stays frozen).
 - Nothing else. No frame-layout flag, because the payload of an existing frame
   does not change; no version bump, because negotiation is the mechanism.
 
@@ -162,7 +162,7 @@ the publish path uses, so both agree on ownership by construction, and answers
 ## If this is revisited
 
 Proxying is additive. `NotLeader` is already the redirect primitive, and relay
-kinds slot into the internal protocol without a version bump — an unknown kind
+kinds slot into the internal protocol without a version bump, since an unknown kind
 is already a typed error rather than a misparse. The likely trigger is
 deployment reach rather than performance: a single-endpoint environment where
 clients cannot reach brokers directly. In that case the honest shape is an

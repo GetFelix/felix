@@ -12,7 +12,7 @@ Felix is **not** a Kafka clone. It deliberately optimizes for:
 - Strong cryptographic boundaries, including optional end-to-end encryption (planned)
 
 Region and data sovereignty as a first-class concept, with explicit, auditable
-cross-region data movement, is a design goal for a later milestone — not
+cross-region data movement, is a design goal for a later milestone, not
 current behavior. Today a stream created with a `region` is placed only in
 that region or one `FELIX_REGION_BRIDGES` bridges it to, and brokers forward
 only across bridged regions; nothing more. See [Status](#status) and
@@ -31,11 +31,11 @@ are projections over this core:
   position is itself a key → latest-value projection, the same one the cache
   is, so it reuses that machinery rather than adding a second store.
 
-What each of the three stores, keeps in memory, and rebuilds from the log — and
-the test behind every claim about them — is in
+What each of the three stores, keeps in memory, and rebuilds from the log, and
+the test behind every claim about them, is in
 [`projections.md`](projections.md). Claims about a semantic belong there, where
 `scripts/check_doc_evidence.py` checks that the tests cited still exist.
-- **Cache:** key → latest value with TTL, written to the same log as records and read back through an index rebuilt from it. Compaction reclaims superseded and expired entries. Cache operations route across brokers like a stream's do: a key hashes to a shard, and a broker that does not own it forwards — see `docs/cache-on-log.md`
+- **Cache:** key → latest value with TTL, written to the same log as records and read back through an index rebuilt from it. Compaction reclaims superseded and expired entries. Cache operations route across brokers like a stream's do: a key hashes to a shard, and a broker that does not own it forwards (see `docs/cache-on-log.md`)
 
 This drastically reduces operational complexity and consistency bugs compared to running Kafka,
 Redis, and a queueing system side-by-side.
@@ -121,7 +121,7 @@ Metadata is strongly consistent and minimal by design. It stores:
 
 The control plane exposes administrative APIs and is off the data path for
 reads, for subscribes, and for `Leader` publishes. A **`Quorum`** publish is the
-one exception, and it is deliberate — see "Routing & Placement" below.
+one exception, and it is deliberate; see "Routing & Placement" below.
 
 ### Routing & Placement
 Routing is region-aware and shard-aware. Clients are routed directly to shard leaders
@@ -146,12 +146,12 @@ Delivery guarantees:
 ## Security Architecture
 
 ### Transport Security
-- TLS 1.3 for client connections, with no unencrypted mode — QUIC has none
+- TLS 1.3 for client connections, with no unencrypted mode, since QUIC has none
 - Broker-to-broker QUIC is mutually authenticated when
   `FELIX_INTERNAL_TLS_CERT`, `_KEY` and `_CA` are set: every peer connection is
   verified against that CA and the certificate's name is checked against the
   node id in both directions. Left unset, the internal listener accepts any
-  certificate — encrypted, unauthenticated, and warned about at startup
+  certificate: encrypted, unauthenticated, and warned about at startup
 - All encryption uses modern, configurable cipher suites
 
 The rest of this section is the intended design, not what ships today. The
@@ -189,7 +189,7 @@ This model is designed to satisfy strict data residency and regulatory requireme
 - Real-time microservice backbones
 - Cache + event unification to reduce system sprawl
 - Edge-to-cloud data pipelines
-- Regionally-isolated SaaS platforms (finance, healthcare, government) — once region isolation ships; see [Multi-Region and Bridges](#multi-region-and-bridges)
+- Regionally-isolated SaaS platforms (finance, healthcare, government), once region isolation ships; see [Multi-Region and Bridges](#multi-region-and-bridges)
 - Regulated environments requiring strong auditability
 
 ---
@@ -219,8 +219,8 @@ two of them for a single request.
 
 **Ownership comes from the control plane and nowhere else.** Every shard of every
 stream and cache has exactly one leader, chosen by rendezvous hashing over the
-live nodes. Brokers watch the assignment feed — a snapshot, then a change stream
-— and never negotiate ownership among themselves.
+live nodes. Brokers watch the assignment feed (a snapshot, then a change stream)
+and never negotiate ownership among themselves.
 
 **No consensus protocol runs between brokers.** Placement is deterministic over
 the rows it reads, and control-plane instances do not coordinate a shared
@@ -231,16 +231,16 @@ that choice in full, including why per-shard Raft was rejected.
 
 That rejection is about replicating *records*. Making the control plane's own
 metadata highly available is a separate problem, and Raft is the decided
-answer there — designed in
+answer there. It is designed in
 [`metadata-raft-design.md`](metadata-raft-design.md) and tracked as milestone
 M13 under [#333](https://github.com/gabloe/felix/issues/333), and shipped:
 `FELIX_CONTROLPLANE_STORAGE_BACKEND=raft` selects it and the instances hold
 the metadata themselves, with no external database. Postgres remains fully
-supported — any number of stateless instances over one HA database, whose
+supported: any number of stateless instances over one HA database, whose
 required properties are spelled out in [`ha-postgres.md`](ha-postgres.md).
 
 Resolving an owner is an atomic load of a routing snapshot the broker already
-holds — no lock and no network call, because it is the hottest question a broker
+holds, with no lock and no network call, because it is the hottest question a broker
 is asked. The snapshot is refreshed in the background.
 
 **One path does reach the control plane, and it is not an oversight.** A
@@ -248,7 +248,7 @@ is asked. The snapshot is refreshed in the background.
 its replica report *before* moving that mark, awaiting the answer. Releasing the
 publish first would leave a window where a leader has told a client its record
 is on a majority while the control plane knows nothing about which replica holds
-it — and a leader dying in that window is replaced by whichever replica scores
+it, and a leader dying in that window is replaced by whichever replica scores
 highest, which may be the one without the record. The acknowledgement would then
 be a promise nothing could keep.
 
@@ -285,7 +285,7 @@ The `generation` travels with the request. The owner compares it against its own
 and answers a mismatch explicitly in either direction, so a stale routing view
 produces a typed answer rather than a write to a shard that has been reassigned.
 
-A broker asked for a shard it does not own answers `NotLeader` — it never
+A broker asked for a shard it does not own answers `NotLeader`. It never
 forwards onward on the requester's behalf, because a chain of relays would have
 unbounded latency and a failure mode nobody can reason about.
 

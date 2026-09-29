@@ -6,7 +6,7 @@ A *semantic* is a way of reading that log. Streams, caches and queues are three
 readings of the same bytes, not three subsystems.
 
 This page says what each one stores, what it keeps in memory, and what it
-rebuilds from the log — and cites the test behind every claim it makes. A claim
+rebuilds from the log, and cites the test behind every claim it makes. A claim
 here without a citation is a claim nothing checks, which is the failure this
 page exists to prevent. `scripts/check_doc_evidence.py` verifies that every test
 named below still exists.
@@ -16,7 +16,7 @@ named below still exists.
 </p>
 
 The three markers are the whole idea. A stream, a queue and a cache are not
-three stores — they are **three ways of pointing into one log**, running at the
+three stores. They are **three ways of pointing into one log**, running at the
 same time over the same bytes. Only the cache treats an older record as dead;
 compaction reclaims those, while a stream reading the same log still returns
 them until retention removes the segment they live in.
@@ -36,7 +36,7 @@ reimplements any of it:
 - **Replication.** The leader ships records at their offsets; a follower checks
   each batch begins at its tail.
 
-> `a_cache_value_survives_the_loss_of_its_owner` — a cache shard is replicated
+> `a_cache_value_survives_the_loss_of_its_owner`: a cache shard is replicated
 > by the machinery that replicates a stream, because it is the same log.
 
 ## Streams: read the log forward
@@ -55,7 +55,7 @@ Ordering is per shard. Two records in one shard are delivered in the order they
 were written; two records in different shards have no order between them,
 because they are different logs.
 
-> `a_publish_to_a_non_owner_is_still_forwarded` — a publish entering any broker
+> `a_publish_to_a_non_owner_is_still_forwarded`: a publish entering any broker
 > reaches the shard's owner.
 
 ## Caches: read the log through a key index
@@ -67,7 +67,7 @@ at that offset.
 - **In memory:** an index of key to the offset of its latest record, plus the
   bytes each record occupies, so compaction knows when it is worth running.
 - **Rebuilt from the log:** the whole index. It is never read from disk, and it
-  catches up to the log's tail whenever it is behind — which is what lets a
+  catches up to the log's tail whenever it is behind, which is what lets a
   follower be promoted and serve records that arrived by replication rather
   than through a put.
 
@@ -81,11 +81,11 @@ the log already holds and nothing is deleted until the copies are flushed.
 Counters compact the same way, with a checkpoint per counter as the copy. See
 `docs/durable-storage.md`, "Cache and counter compaction".
 
-> `a_cache_survives_a_restart` — the index is rebuilt from the log.
-> `the_index_catches_up_with_records_appended_behind_it` — records that arrive
+> `a_cache_survives_a_restart`: the index is rebuilt from the log.
+> `the_index_catches_up_with_records_appended_behind_it`: records that arrive
 > without going through a put are still found.
-> `compaction_does_not_rewind_the_offset_space` — an offset keeps its meaning.
-> `a_deleted_key_stays_deleted_across_a_restart` — a tombstone is a record like
+> `compaction_does_not_rewind_the_offset_space`: an offset keeps its meaning.
+> `a_deleted_key_stays_deleted_across_a_restart`: a tombstone is a record like
 > any other.
 
 ## Queues: read the log through a shared cursor
@@ -95,27 +95,27 @@ bookkeeping for what is currently handed out.
 
 - **In the log:** nothing of the group's own. The records are the stream's.
 - **On disk, beside the log:** the group's committed position, and the offsets
-  it has given up on. Both are themselves key-to-latest-value projections —
+  it has given up on. Both are themselves key-to-latest-value projections,
   the same reading the cache is, on their own roots.
 - **In memory:** what is handed out and to when, what is owed, and how many
   times each unsettled record has been tried.
 
 The in-memory part is deliberately not durable. A leader that dies loses it and
 the group resumes from its committed position, so those records are delivered
-again — which is at-least-once, the guarantee a queue offers anyway.
+again. That is at-least-once, the guarantee a queue offers anyway.
 
-> `a_position_survives_a_restart` — the committed position is durable.
-> `an_offset_in_flight_is_not_handed_out_again` — one consumer holds a record at
+> `a_position_survives_a_restart`: the committed position is durable.
+> `an_offset_in_flight_is_not_handed_out_again`: one consumer holds a record at
 > a time.
-> `a_lapsed_claim_is_handed_out_again` — a consumer that stops answering does
+> `a_lapsed_claim_is_handed_out_again`: a consumer that stops answering does
 > not hold a record for ever.
-> `the_cursor_does_not_advance_over_a_gap` — the position moves only over a
+> `the_cursor_does_not_advance_over_a_gap`: the position moves only over a
 > contiguous run of acknowledgements.
-> `a_record_is_given_up_on_after_the_attempt_bound` — one poison record does not
+> `a_record_is_given_up_on_after_the_attempt_bound`: one poison record does not
 > stop the queue.
-> `only_the_shard_owner_serves_a_group` — two brokers cannot both hand out the
+> `only_the_shard_owner_serves_a_group`: two brokers cannot both hand out the
 > same records.
-> `a_group_position_survives_a_leader_failover` — a promoted leader resumes
+> `a_group_position_survives_a_leader_failover`: a promoted leader resumes
 > where the group had got to.
 
 ### What a queue does not promise
@@ -140,36 +140,36 @@ of signed deltas**, exactly as a group's cursor is a fold over its
 acknowledgements and the cache index is a fold over its puts. `counter_add`
 appends a delta record; the running sum per key is the derived state, rebuilt
 by replaying the log on recovery and never trusted from memory; compaction
-collapses the applied deltas into one **checkpoint record** per key — the
-fold, restated — appended at the tail so the offset space continues and
+collapses the applied deltas into one **checkpoint record** per key (the
+fold, restated), appended at the tail so the offset space continues and
 replication stays coherent across it. A regression test asserts compaction
 changes neither the observable sum nor the log's numbering.
 
 Three decisions, recorded here because #350 asked for them explicitly:
 
-- **Scope.** A counter is addressed `(tenant, namespace, cache, key)` — the
+- **Scope.** A counter is addressed `(tenant, namespace, cache, key)`, with the
   registered cache scope, the same key-to-shard hash, the same owner and
-  forwarding — but lives in a store of its own beside the cache
+  forwarding, but lives in a store of its own beside the cache
   (`<root>/counters/`). Beside rather than inside, because a counter record
   is a new durable shape: mixed into the cache's logs it would make every one
   of them unreadable to a build that predates counters, promoted replicas
   included, with the cache's own puts as collateral. In its own store the
   blast radius is the counters. The corollary is that a counter and a cache
   value may share a key and are unrelated.
-- **Watch interplay.** A cache watch does not see counter changes — they are
+- **Watch interplay.** A cache watch does not see counter changes; they are
   different logs. A watch over counters (sums, not deltas, by the same
   argument retained delivery makes) is future work, not a silent half-feature
   of the cache watch.
 - **Idempotency.** Delivery is **at least once**, honestly: a client that
   retries an add after a lost acknowledgement counts twice, because deltas
-  carry no dedupe identity. The failure mode is exactly that — a lost ack
-  plus a retry equals a double-count — and an application that cannot
+  carry no dedupe identity. The failure mode is exactly that (a lost ack
+  plus a retry equals a double-count), and an application that cannot
   tolerate it keeps its own idempotency key outside the counter. A dedupe
   window was considered and deferred: it narrows the window without closing
   it, at a cost on every add.
 
 The sum survives what the cursors survive, proven the same way: restart
-(rebuilt fold), compaction (checkpoint), and leader failover — the counter
+(rebuilt fold), compaction (checkpoint), and leader failover. The counter
 log rides its cache shard's replica set the way group state rides a stream
 shard's, shipped by the same driver pass and gating nothing.
 
@@ -196,13 +196,13 @@ here has to be read as covering them:
 
 What used to be listed here and no longer applies: **dead letters are now
 replicated.** The list of offsets a group gave up on is one log per stream
-shard — the group folded into the entry key, exactly as the cursors are shaped
-— and it ships beside the cursors on the same replica set at the same
+shard (the group folded into the entry key, exactly as the cursors are shaped),
+and it ships beside the cursors on the same replica set at the same
 generation (`replicate_dead_letter_records` in the internal protocol). A
 promoted leader lists what its groups abandoned and an operator's redrive
 works there. The per-shard shape is what made this possible: the earlier
 layout kept one log per `(stream, group)`, a set the shipping driver cannot
-enumerate — groups appear whenever a consumer names one — where a log per
+enumerate (groups appear whenever a consumer names one), whereas a log per
 shard is exactly the unit the driver already walks. Entries recorded under
 that earlier layout are still read and can still be discarded, but they were
 never shipped, so only what is recorded under the per-shard layout survives a

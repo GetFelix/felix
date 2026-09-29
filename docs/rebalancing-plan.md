@@ -335,7 +335,7 @@ rather than written again. A producer is remembered while any of its batches
 is in the log, so retention decides when one is forgotten, on every replica
 alike.
 
-Evidence: `clients::idempotent` in `felix-cluster` —
+Evidence: `clients::idempotent` in `felix-cluster`:
 `a_producer_keeps_its_sequence_across_a_planned_move` and
 `a_producer_keeps_its_sequence_when_its_leader_dies` re-send the last batch to
 the new leader after a drain and after a kill, see it answered without a

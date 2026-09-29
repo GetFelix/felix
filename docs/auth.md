@@ -57,7 +57,7 @@ Minted by the control plane and verified by brokers.
 
 Claims:
 - `iss`: `felix-auth`
-- `aud`: `felix-broker` or `felix-controlplane` — see [Audiences](#audiences)
+- `aud`: `felix-broker` or `felix-controlplane` (see [Audiences](#audiences))
 - `sub`: `principal_id` (sha256 of `iss|sub`)
 - `tid`: tenant id
 - `exp`, `iat`
@@ -109,21 +109,21 @@ Objects:
 - Namespace: `namespace:{tenant_id}/{namespace}` or `namespace:{tenant_id}/*`
 - Stream: `stream:{tenant_id}/{namespace}/{stream}`, `stream:{tenant_id}/{namespace}/*`, or `stream:{tenant_id}/*/*`
 - Cache: `cache:{tenant_id}/{namespace}/{cache}`, `cache:{tenant_id}/{namespace}/*`, or `cache:{tenant_id}/*/*`
-- Cluster: `cluster:*` — see [Cluster scope](#cluster-scope)
-- Node: `node:{node_id}` — one broker
+- Cluster: `cluster:*` (see [Cluster scope](#cluster-scope))
+- Node: `node:{node_id}`, one broker
 
 Actions:
 - `rbac.view`, `rbac.policy.manage`, `rbac.assignment.manage`
-- `tenant.manage` — over `tenant:{tenant_id}` for the tenant's own settings, or
+- `tenant.manage`: over `tenant:{tenant_id}` for the tenant's own settings, or
   over `cluster:*` for the tenant catalog (create, list, delete)
-- `ns.manage`, `stream.manage`, `cache.manage` — the control plane's resource
+- `ns.manage`, `stream.manage`, `cache.manage`: the control plane's resource
   API, over the namespace, stream or cache being changed
 - `stream.publish`, `stream.subscribe`
 - `cache.read`, `cache.write`
-- `group.consume`, `group.manage` — consumer groups, over the stream's object
+- `group.consume`, `group.manage`: consumer groups, over the stream's object
   or one group's `group:{tenant_id}/{namespace}/{stream}/{group}`
-- `node.view` — cluster-scoped only
-- `node.manage` — over `node:{node_id}` or `cluster:*`
+- `node.view`: cluster-scoped only
+- `node.manage`: over `node:{node_id}` or `cluster:*`
 
 Consumer-group operations are split in two, over the stream's object:
 
@@ -145,7 +145,7 @@ The exact rule is in [security/rbac.md](security/rbac.md#granting-one-group).
 
 One object sits outside the tenant hierarchy:
 
-- Cluster: `cluster:*` — broker membership, liveness, and placement standing;
+- Cluster: `cluster:*`, covering broker membership, liveness, and placement standing;
   the tenant catalog; and the metadata feeds brokers seed from.
 
 It is an island in both directions, and that is the whole security property:
@@ -251,7 +251,7 @@ accepted within 30 seconds of its first use. Fetches time out after 10 seconds.
 The access token is deliberately short-lived (900s), because a leaked bearer
 token is only as dangerous as the time it stays valid. That is the right trade
 for a caller that can re-exchange freely and the wrong one for anything
-long-running — a broker holding a 900s node token drops out of the cluster in
+long-running. A broker holding a 900s node token drops out of the cluster in
 fifteen minutes. Raising the TTL trades the problem for a longer-lived secret.
 
 Refresh is the answer instead. Exchange hands back a refresh token; presenting
@@ -273,7 +273,7 @@ Three properties make that safe:
 Permissions are re-evaluated against current RBAC on every refresh, never
 carried over from the previous token. A grant removed after a token was issued
 stops working at the next refresh rather than whenever the caller happens to
-re-exchange — a refresh that froze its grants would turn the short access TTL
+re-exchange. A refresh that froze its grants would turn the short access TTL
 into a long one for authorization purposes, which is most of what the short TTL
 was for. If every grant is gone, the refresh is refused **and the chain ends**,
 so a principal whose access was removed cannot keep rotating.
@@ -291,7 +291,7 @@ narrowing was recorded refreshes to the principal's full RBAC rights, as it
 always did.
 
 `FELIX_REFRESH_TOKEN_TTL_SECONDS` (default 30 days) bounds a refresh token that
-is stolen and *never used* — one that is used produces a replay, which ends the
+is stolen and *never used*; one that is used produces a replay, which ends the
 chain immediately.
 
 To cut off a principal without waiting out any token's expiry, revoke its
@@ -369,8 +369,8 @@ Why it exists:
    - seeds RBAC policies + groupings
    - marks the tenant as bootstrapped
    All of it commits as one atomic store operation, exactly once per tenant:
-   racing the call against itself — including through different control-plane
-   instances behind one load balancer — produces one winner and `409` for
+   racing the call against itself, including through different control-plane
+   instances behind one load balancer, produces one winner and `409` for
    everyone else, and a failure part-way leaves the tenant retryable rather
    than half-initialized.
 4) Operator disables bootstrap after use.
@@ -468,7 +468,7 @@ only verify. Refresh tokens are not signed and are unaffected. To respond to a
 leaked key, do the same with no waits: stage, activate and retire back to
 back. New tokens stop being issued with the leaked key immediately, but
 brokers that already cached its JWKS may still accept tokens it signed for up
-to that same hour — there is no way to force an early refetch today, so
+to that same hour. There is no way to force an early refetch today, so
 budget that hour into how fast the response actually cuts the key off.
 
 ## Allowing Particular Upstream IdPs
@@ -663,8 +663,8 @@ Response:
 **Store the replacement before using the new access token.** The token you
 presented is already spent; losing the replacement means re-exchanging.
 
-Every failure answers `403` with the same message — unparseable, unknown,
-expired, revoked, wrong secret. Distinguishing them would let a caller probe
+Every failure answers `403` with the same message whether the token is unparseable, unknown,
+expired, revoked or has the wrong secret. Distinguishing them would let a caller probe
 which token ids exist.
 
 A wrong secret against a real token id also spends the token. Someone holding
