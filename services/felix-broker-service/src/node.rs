@@ -204,11 +204,17 @@ where
             crate::config::quorum_reads_by_lease()?,
         );
     }
+    // Bound before the spawn so a taken port fails startup. Inside the task
+    // the error waits in a handle nobody reads until shutdown, and the broker
+    // runs on with no `/ready` for anything to see.
+    let metrics_listener = tokio::net::TcpListener::bind(config.metrics_bind)
+        .await
+        .with_context(|| format!("bind metrics listener on {}", config.metrics_bind))?;
     let metrics_task = {
         let metrics_shutdown = metrics_shutdown.clone();
         tokio::spawn(crate::observability::serve_metrics(
             metrics_handle,
-            config.metrics_bind,
+            metrics_listener,
             readiness.clone(),
             Arc::clone(&halted_replicas),
             crate::observability::backup::BackupOffsets {

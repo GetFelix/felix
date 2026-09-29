@@ -58,6 +58,9 @@ pub enum Rule {
     Phantom,
     /// 6. An append answered as definitely failed is in a read.
     FailedWriteVisible,
+    /// 7. A cache get returned a value already overwritten, or missed a key
+    ///    already written, before it began.
+    StaleRead,
     /// The final read has a hole, so the lost-write rule cannot be trusted.
     IncompleteFinalRead,
     /// The history itself is malformed: the recorder is wrong, not the broker.
@@ -131,6 +134,7 @@ impl Rule {
             Rule::RealTimeOrder => "4 real-time-order",
             Rule::Phantom => "5 phantom",
             Rule::FailedWriteVisible => "6 failed-write-visible",
+            Rule::StaleRead => "7 stale-read",
             Rule::IncompleteFinalRead => "incomplete-final-read",
             Rule::MalformedHistory => "malformed-history",
         }
@@ -143,7 +147,7 @@ impl fmt::Display for Rule {
     }
 }
 
-/// Check every rule on every list.
+/// Check every rule on every list and every cache key.
 pub fn check(history: &History) -> Report {
     let mut violations = Vec::new();
     let appends = index_appends(history, &mut violations);
@@ -165,6 +169,7 @@ pub fn check(history: &History) -> Report {
         };
         checker.run();
     }
+    super::register::check(&history.registers, &mut violations);
     Report {
         violations,
         faults: history.faults.clone(),

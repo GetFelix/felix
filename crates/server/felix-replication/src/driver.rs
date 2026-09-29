@@ -502,7 +502,8 @@ async fn open_promoted<R: PeerRequester>(
     pending
 }
 
-/// Open a promoted shard whose fence has settled. False while it has not.
+/// Open a promoted shard whose fence has settled. False while it has not, or
+/// while the broker keeps it closed after it.
 async fn open_fenced(
     gate: &dyn PromotionGate,
     key: &ShardKey,
@@ -519,8 +520,7 @@ async fn open_fenced(
                 "a majority took the fence; opening the shard for writes",
             );
             metrics::record_promotion_opened(metrics::PATH_FENCED);
-            gate.open(&watch_key(key), generation).await;
-            true
+            gate.open(&watch_key(key), generation).await
         }
         Outcome::Lease { lacking } => {
             tracing::info!(
@@ -531,8 +531,7 @@ async fn open_fenced(
                 "a replica does not offer the fence; opening the shard on the lease",
             );
             metrics::record_promotion_opened(metrics::PATH_LEASE);
-            gate.open(&watch_key(key), generation).await;
-            true
+            gate.open(&watch_key(key), generation).await
         }
         Outcome::Pending(why) => {
             tracing::warn!(

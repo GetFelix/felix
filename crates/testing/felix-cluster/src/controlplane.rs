@@ -378,6 +378,29 @@ impl ControlPlane {
             .collect())
     }
 
+    /// The last replica report placement holds for a stream's shard, if any.
+    pub async fn replica_report(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Result<Option<felix_controlplane_service::model::ReplicaReport>> {
+        Ok(self
+            .store
+            .list_replica_reports()
+            .await
+            .context("list replica reports")?
+            .into_iter()
+            .find(|report| {
+                report.key.kind == felix_controlplane_service::model::ShardKind::Stream
+                    && report.key.tenant_id == tenant_id
+                    && report.key.namespace == namespace
+                    && report.key.stream == stream
+                    && report.key.shard == shard
+            }))
+    }
+
     /// Run placement the way a deployment does: on `interval`, and whenever a
     /// report a move waits on arrives. Off unless a test asks, because most
     /// tests step placement themselves.

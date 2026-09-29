@@ -6,6 +6,9 @@
 //! The plain ones are what exercise rule 6, since only they ever record a
 //! definite failure: an idempotent producer's error may follow an earlier
 //! attempt that landed, so every error it returns is recorded as unknown.
+//!
+//! Every client also puts to and gets keys of one `Quorum` cache, through a
+//! random broker, which is what exercises `Quorum` cache reads.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -16,9 +19,11 @@ use anyhow::{Context, Result, anyhow};
 use felix_client::{BrokerError, ClusterClient, IdempotentProducer, NotLeaderError, RetryClass};
 use felix_wire::AckMode;
 
+use super::campaign::Campaign;
 use super::model::{Action, AppendOutcome, Element, FOREIGN_PAYLOAD, FaultEvent, Op};
+use super::register::{RegisterAction, RegisterOp};
 use super::rng::Rng;
-use crate::client;
+use crate::{Cluster, client};
 
 /// Every workload payload starts with this, so a read can tell a value from
 /// anything else that reached the stream.
@@ -26,6 +31,9 @@ const PAYLOAD_PREFIX: &str = "felix-history-";
 
 /// Percent of operations that are reads.
 const READ_PERCENT: u64 = 20;
+
+/// Percent of operations that are cache puts or gets, half each.
+const CACHE_PERCENT: u64 = 20;
 
 /// How long a client may take to reach a broker before trying again.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -62,6 +70,9 @@ pub(super) struct Workload {
     namespace: String,
     token: String,
     lists: Vec<String>,
+    /// The `Quorum` cache, and the keys of it the clients use as registers.
+    cache: String,
+    keys: Vec<String>,
     /// Records below a list's base were there before the run.
     bases: RwLock<Vec<(String, u64)>>,
     op_timeout: Duration,
@@ -75,23 +86,19 @@ pub(super) struct Workload {
 }
 
 impl Workload {
-    pub(super) fn new(
-        tenant_id: String,
-        namespace: String,
-        token: String,
-        lists: Vec<String>,
-        op_timeout: Duration,
-        addrs: Vec<SocketAddr>,
-    ) -> Self {
+    pub(super) fn new(cluster: &Cluster, campaign: &Campaign) -> Self {
+        let lists = campaign.lists.clone();
         Self {
-            tenant_id,
-            namespace,
-            token,
+            tenant_id: cluster.tenant_id.clone(),
+            namespace: cluster.namespace.clone(),
+            token: cluster.client_token.clone(),
+            cache: campaign.cache.clone(),
+            keys: campaign.keys.clone(),
             bases: RwLock::new(Vec::new()),
             tails: lists.iter().map(|_| AtomicU64::new(0)).collect(),
             lists,
-            op_timeout,
-            addrs: RwLock::new(addrs),
+            op_timeout: campaign.op_timeout,
+            addrs: RwLock::new(cluster.broker_addrs()),
             recorder: Recorder::new(),
             stop: AtomicBool::new(false),
             next_value: AtomicU64::new(0),
@@ -122,7 +129,7 @@ impl Workload {
     }
 
     /// Everything recorded, in completion order.
-    pub(super) fn take(&self) -> (Vec<Op>, Vec<FaultEvent>) {
+    pub(super) fn take(&self) -> (Vec<Op>, Vec<RegisterOp>, Vec<FaultEvent>) {
         self.recorder.take()
     }
 
@@ -270,6 +277,7 @@ pub(super) struct Read {
 struct Recorder {
     start: Instant,
     ops: Mutex<Vec<Op>>,
+    registers: Mutex<Vec<RegisterOp>>,
     faults: Mutex<Vec<FaultEvent>>,
 }
 
@@ -278,6 +286,7 @@ impl Recorder {
         Self {
             start: Instant::now(),
             ops: Mutex::new(Vec::new()),
+            registers: Mutex::new(Vec::new()),
             faults: Mutex::new(Vec::new()),
         }
     }
@@ -293,6 +302,10 @@ impl Recorder {
         self.ops.lock().expect("history lock").push(op);
     }
 
+    fn record_register(&self, op: RegisterOp) {
+        self.registers.lock().expect("history lock").push(op);
+    }
+
     fn fault(&self, what: String) {
         let at = self.now();
         self.faults
@@ -301,9 +314,10 @@ impl Recorder {
             .push(FaultEvent { at, what });
     }
 
-    fn take(&self) -> (Vec<Op>, Vec<FaultEvent>) {
+    fn take(&self) -> (Vec<Op>, Vec<RegisterOp>, Vec<FaultEvent>) {
         (
             std::mem::take(&mut *self.ops.lock().expect("history lock")),
+            std::mem::take(&mut *self.registers.lock().expect("history lock")),
             std::mem::take(&mut *self.faults.lock().expect("history lock")),
         )
     }
@@ -341,8 +355,11 @@ impl Client<'_> {
         let mut producer: Option<IdempotentProducer<'_>> = None;
         let mut failures = 0;
         while !w.stopped() && failures < FAILURES_BEFORE_RECONNECT {
-            let ok = if self.rng.percent(READ_PERCENT) {
+            let roll = self.rng.below(100);
+            let ok = if roll < READ_PERCENT {
                 self.read().await
+            } else if roll < READ_PERCENT + CACHE_PERCENT {
+                self.cache_op().await
             } else {
                 match self.kind {
                     ClientKind::Plain => self.append_plain(cluster).await,
@@ -448,6 +465,63 @@ impl Client<'_> {
             },
         });
         true
+    }
+
+    /// A put of a fresh value, or a get, on one cache key through a random
+    /// broker. A broker that does not own the key forwards the operation.
+    async fn cache_op(&mut self) -> bool {
+        let w = self.workload;
+        let key = self.rng.pick(&w.keys).clone();
+        let addrs = w.addrs();
+        let addr = *self.rng.pick(&addrs);
+        let is_put = self.rng.percent(50);
+        let connected = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            client::connect(addr, &w.tenant_id, &w.token),
+        )
+        .await;
+        let Ok(Ok(client)) = connected else {
+            return false;
+        };
+        let invoke = w.now();
+        let (action, ok) = if is_put {
+            let value = w.next_value.fetch_add(1, Ordering::Relaxed);
+            let put = client.cache_put(
+                &w.tenant_id,
+                &w.namespace,
+                &w.cache,
+                &key,
+                encode(value).into(),
+                None,
+            );
+            let acknowledged = matches!(tokio::time::timeout(w.op_timeout, put).await, Ok(Ok(())));
+            (
+                RegisterAction::Put {
+                    value,
+                    acknowledged,
+                },
+                acknowledged,
+            )
+        } else {
+            let got = client.cache_get(&w.tenant_id, &w.namespace, &w.cache, &key);
+            match tokio::time::timeout(w.op_timeout, got).await {
+                Ok(Ok(value)) => (
+                    RegisterAction::Get {
+                        value: value.map(|bytes| decode(&bytes)),
+                    },
+                    true,
+                ),
+                _ => return false,
+            }
+        };
+        w.recorder.record_register(RegisterOp {
+            process: self.process,
+            invoke,
+            complete: w.now(),
+            key,
+            action,
+        });
+        ok
     }
 
     /// Where a read starts: mostly a little behind the furthest tail seen,

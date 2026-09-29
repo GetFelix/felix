@@ -351,8 +351,8 @@ the same:
 - **The record.** A leader appends a generation-start record at the offset
   where its generation begins, its first record at the generation, and only
   then serves. A promoted leader does it after its fence and catch-up; if the
-  append fails the shard stays closed and the next pass fences and tries
-  again. The record ships like any other and is labelled with the leader's
+  append fails the shard stays closed, and the driver fences and tries again
+  after a short back-off (`FENCE_RETRY`, 200 ms). The record ships like any other and is labelled with the leader's
   generation, so a replica holding it answers a later fence with that
   generation as its last. The format is in `docs/storage-format.md`.
 - **The mark.** A stream leader's mark counts a majority only once it reaches a
@@ -368,7 +368,10 @@ the same:
   inherited batch.
 - **Readers never see it.** It occupies a log offset, which subscriptions,
   replay, Kafka fetch, consumer groups and backups skip. How a subscriber tells
-  that offset from a dropped record is in `docs/protocol.md`.
+  that offset from a dropped record is in `docs/protocol.md`. A subscription's
+  `live_offset` stops short of any such records the log ends with, so a reader
+  that waits to reach it does not wait on an offset that never delivers an
+  event, which is every new leadership until a client writes.
 
 **Every leadership change, not only a promotion.** A move's cut-over hands the
 destination a log whose tail it did not write, and a cancelled move hands the
@@ -382,7 +385,13 @@ at a fresh placement over an existing log, at either end of a move, and on a
 hand-back. The control plane bumps the generation at each step of a move, so
 the leader that stays writes one at the staging and the fence too; they cost
 an offset each and nothing else. A reopen that finds the generation already
-has records writes none. A cache shard writes none and counts as before: its
+has records writes none, fenced or not: the leader led at this generation
+before and comes back to it after a restart or a lost lease, the mark already
+counts from the generation's recorded start, and every record past that start
+is the generation's own, so there is nothing inherited to cover. This is also
+how a shard whose generation began before the fleet finalized
+`generation_start` keeps serving: it has records at that generation and no
+start record, and it gets its first one at its next leadership change. A cache shard writes none and counts as before: its
 log is compacted and never fenced, so it never takes a longer log on
 promotion, which is what makes an inherited record unsafe to count.
 
@@ -483,10 +492,14 @@ owner) answers it read-index style, with one round and no clock:
    fence. The broker counts itself only while its own log (and for a cache its
    counter log) has accepted no newer generation, as `held_at_generation` does.
 
-Why it is enough: a newer leader fences a majority before it serves a stream
-shard, and any write it acknowledges is held by a majority that accepted its
-generation. Every majority the round could reach shares a replica with each,
-and that replica refuses the round from then on. A round that started after
+Why it is enough: any write a newer leader acknowledges is held by a majority
+that accepted its generation. For a stream shard the promotion fence gets there
+before the leader serves. A cache shard is not fenced on promotion, but a
+replica persists a newer leader's generation before it stores anything that
+leader sends (`accept_sender` in `replica.rs`), so every replica holding the
+successor's write has accepted its generation all the same. Every majority the
+round could reach shares a replica with that majority, and that replica refuses
+the round from then on. A round that started after
 the value was taken and reached a majority therefore proves no newer leader
 had acknowledged anything before the read began, so the value holds every
 write acknowledged before it. `ReadIndex` in
@@ -495,6 +508,15 @@ write acknowledged before it. `ReadIndex` in
 passes `NoStaleRead` with drifting clocks and no margin, and
 `FelixShardReadsNoRound.cfg` and `FelixShardReadsLease.cfg` find the stale
 read.
+
+The round confirms leadership, not the value, so the value must hold every
+write the leader acknowledged. A put or delete the leader's own cache store
+refuses (a failed fsync poisons the shard's log, and every later write fails
+until the shard reopens) is answered as a storage error. Were it acknowledged,
+the quorum wait would pass on the unchanged tail and the round would then
+confirm reads that lack it. `store_failure` in
+`services/felix-broker-service/src/serving/cache_routing/tests.rs` and
+`a_forwarded_cache_op_the_store_refused_is_an_error` cover both paths.
 
 Concurrent reads of a shard share rounds, but only forward in time: a read
 that arrives while a round is in flight waits for the next one, because the
@@ -988,6 +1010,7 @@ multi-instance work and not before.
 | --- | --- |
 | Leader fails | Lease lapses; a caught-up replica is promoted at `G+1` after the safety interval. Unavailable for at most `L + margin + promotion`. |
 | Leader fails before its first replica report | No report names a caught-up replica, so none is promoted. The shard is unavailable until that broker returns, or until an operator abandons the log. |
+| New leader, no client write since | Its log ends in its generation-start record, which never reaches a subscriber. A subscription's `live_offset` stops short of it, so a reader catching up to `live_offset` finishes instead of waiting for the next write. |
 | Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. With `majority_ack` finalized, a `Quorum` stream keeps taking and acknowledging writes its followers hold until a promoted successor's fence reaches them; with `lease_free_reads` too, `Quorum` cache reads its replicas confirm keep being served, and other reads stop with the lease. |
 | Leader partitioned from followers | `Quorum` writes fail — correctly, the majority is unreachable. `Leader` writes succeed and accumulate loss-window exposure, which the lag metric shows. |
 | Control plane unavailable | No new leases are granted. Existing leases run to expiry (5 to 11 s with the defaults), then shards go unavailable. Deliberate: granting without a functioning authority is how split-brain happens. When it comes back, brokers renew within about 3 s. The expiry sweep waits one expiry window after a restart, a Raft leader change, or regaining its store, so the outage does not mark the fleet down. With `majority_ack` finalized, `Quorum` streams go on acknowledging writes a majority of their replicas holds, since nothing on that path asks the control plane; `Leader` streams and caches stop as described, and reads too unless `lease_free_reads` is finalized, when `Quorum` cache reads go on as long as a majority of the shard's replicas answers. |

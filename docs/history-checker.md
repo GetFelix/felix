@@ -1,7 +1,8 @@
 # The history checker
 
 A Jepsen-style check of what clients actually observed. Concurrent clients
-append to and read `Quorum` streams on a real three-broker cluster while a
+append to and read `Quorum` streams, and put to and get keys of a `Quorum`
+cache, on a real three-broker cluster while a
 nemesis kills, pauses and partitions brokers, and in the long runs also cuts
 links, skews clocks and fails fsyncs. Every operation is recorded with
 when it started, when it ended and what it returned. Once the faults are healed,
@@ -12,7 +13,8 @@ It lives in `crates/testing/felix-cluster/src/history/`. The model is Elle's
 list-append: each list is a single-shard stream, and an append adds a unique
 value to it. Felix hands a reader the offset of every record, so the checker
 never has to infer an order the way Elle does. It reads positions directly,
-and most rules reduce to lookups against the final read.
+and most rules reduce to lookups against the final read. Cache keys are
+checked as registers (`history/register.rs`).
 
 ## The model
 
@@ -33,6 +35,12 @@ and most rules reduce to lookups against the final read.
   healed. It must reach that tail with no holes, or the campaign retries it.
 - Records below each list's **base** were in the stream before the run (the
   harness's readiness probe), and the checker ignores them.
+- **put(key, value)** stores a unique value under a cache key. It is **ok**
+  when acknowledged and **info** otherwise: a cache put has no answer that
+  says it applied nothing, so no put is ever a definite failure.
+- **get(key)** returns the value under the key, or a miss. A get that failed
+  observed nothing and is not recorded. Keys start absent and are never
+  deleted.
 
 Times come from one monotonic clock that every client shares, so "A completed
 before B was invoked" means the same thing to every client.
@@ -47,6 +55,17 @@ before B was invoked" means the same thing to every client.
 | 4 | Real-time order | A was acknowledged before B was invoked, both landed on the same list, and A's offset is after B's |
 | 5 | No phantoms | A read sees a value no append wrote, a value appended to another list, or a value before its append began |
 | 6 | Failed writes stay absent | A read sees a value whose append was answered as a definite failure |
+| 7 | No stale cache reads | A get returns the value of an ok put `u` although, before the get began, a value `w` whose put began after `u`'s was acknowledged was already in effect; or a get misses although some value was already in effect |
+
+Rule 5 covers cache gets too: a get that returns a value no put to that key
+wrote, or returns it before its put began, is a phantom.
+
+A value `w` is known to be in effect once its put is acknowledged, or once a
+get that returned it completes. Every linearization then orders `u` before
+`w` before the get, so returning `u` is stale. Rule 7 is sound, not complete:
+it reports only what no linearization explains and does not search for one.
+A deposed leader serving a value one write behind its successor is what it
+is for.
 
 Two more findings concern the harness rather than the broker.
 `incomplete-final-read` means the final read has a hole. When that happens,
@@ -80,13 +99,43 @@ violation.
 > `a_value_no_append_wrote_is_a_phantom`,
 > `a_definitely_failed_append_must_not_appear` — one hand-built violation per
 > rule, each reported under that rule and no other.
+> `random_linearizable_register_histories_are_valid` — cache histories from a
+> correct register, with overlapping and unknown puts, pass.
+> `a_planted_stale_get_is_caught` — a get returning the value one
+> acknowledged put behind is caught in such a history.
+> `a_get_of_an_overwritten_value_is_stale`,
+> `a_get_older_than_an_earlier_get_is_stale`,
+> `a_miss_after_an_acknowledged_put_is_stale`,
+> `a_value_nobody_put_is_a_phantom` — one hand-built violation per case.
 
 ## The campaign
 
 `Campaign::run` starts six clients, three plain and three idempotent, on three
-single-shard `Quorum` streams (`history-0..2`) replicated across all three
+single-shard `Quorum` streams (`history-0..2`) and three keys (`k0..k2`) of a
+single-shard `Quorum` cache (`history-cache`), all replicated across all three
 brokers. The control plane's placement loop runs every 500ms so failovers
-happen without anyone stepping them. The nemesis then loops:
+happen without anyone stepping them.
+
+### Modes
+
+`FELIX_HISTORY_MODE` picks which replication path the brokers take.
+`Campaign::start` starts the cluster and, in `lease-free` mode, finalizes the
+`generation_start`, `majority_ack` and `lease_free_reads` fleet features, then
+waits until every broker reports all three on
+(`felix_broker_fleet_feature_enabled`). A broker that does not turn them on
+fails the run before any fault, so a lease-free run cannot quietly test the
+lease. The features are described in
+[replication design](replication-design.md).
+
+| Mode | Stream writes are acknowledged | Cache reads confirm leadership |
+| --- | --- | --- |
+| `lease` | Once the control plane stored a majority report, with the lease re-checked | With the lease |
+| `lease-free` | Once a majority answers at the leader's generation | With a majority round after taking the value |
+
+Unset, the main campaign runs `lease-free` and the every-family campaign runs
+`lease`, so every PR exercises both paths. Set, it applies to both.
+
+The nemesis then loops:
 
 1. Wait 1-4s.
 2. Pick a fault. It targets a list leader 75% of the time and any broker
@@ -148,6 +197,10 @@ happen behind one.
 - **All clients** read 20% of the time, from a random broker. They follow one
   `not_leader` hop. A client reconnects from a fresh address book after three
   failures in a row, because a restarted broker listens on new ports.
+- **All clients** also put or get a cache key 20% of the time, half each,
+  through a random broker, which forwards the operation to the key's leader.
+
+The nemesis also counts the cache's leader among the list leaders it targets.
 
 **To add a fault**, add a `FaultKind` variant (with its family), a `Fault`
 variant, and its arms in `Fault::inject`, `Fault::heal` and `Display`
@@ -158,11 +211,12 @@ needs something of the cluster's configuration, say so through `Nemesis`'s
 campaign with something other than a random schedule, such as a replay of the
 faults a failing run printed, implement `Nemesis`.
 
-> `a_fault_campaign_keeps_quorum_histories_valid` — a 45-second campaign of
-> kills, pauses and partitions leaves a valid history, with at least 50
-> acknowledged appends and at least one fault injected and healed.
+> `a_fault_campaign_keeps_quorum_histories_valid` — a 45-second lease-free
+> campaign of kills, pauses and partitions leaves a valid history, with at
+> least 50 acknowledged appends, 10 acknowledged cache puts, 10 cache gets and
+> at least one fault injected and healed.
 > `every_fault_family_is_injected_and_healed_in_a_campaign` — a 75-second
-> campaign that goes round every kind in a fixed order leaves a valid history
+> campaign on the lease that goes round every kind in a fixed order leaves a valid history
 > and injects and heals at least one fault of each family.
 > `all_faults_never_steps_a_broker_clock_back` — the nemesis never asks for a
 > step the harness would refuse.
@@ -180,9 +234,10 @@ cargo test -p felix-cluster --test history -- --nocapture
 | --- | --- | --- |
 | `FELIX_HISTORY_SEED` | a fixed seed | The schedule's seed: a number, or `random` |
 | `FELIX_HISTORY_DURATION_SECS` | `45` | How long the nemesis runs. When set, the main campaign uses every fault family |
+| `FELIX_HISTORY_MODE` | `lease-free` for the main campaign, `lease` for the every-family one | `lease` or `lease-free`; see "Modes" |
 
 ```bash
-FELIX_HISTORY_SEED=1234 FELIX_HISTORY_DURATION_SECS=600 \
+FELIX_HISTORY_SEED=1234 FELIX_HISTORY_DURATION_SECS=600 FELIX_HISTORY_MODE=lease-free \
     cargo test -p felix-cluster --test history -- --nocapture
 ```
 
@@ -196,10 +251,15 @@ reserve full segments up front.
 
 The per-PR run uses the fixed seed and takes about a minute per test, cluster
 start-up included. The nightly workflow (`.github/workflows/history.yml`) runs
-it for 20 minutes with a random seed and every fault family, and prints the
-seed first, so a red night can be replayed. Setting
+it for 20 minutes with a random seed and every fault family, in `lease-free`
+mode unless a manual run picks `lease`, and prints the seed and mode first, and
+in the job summary, so a red night can be replayed. Setting
 `FELIX_HISTORY_DURATION_SECS` is what switches the main campaign to every
-family, so replay a nightly seed with it set.
+family, so replay a nightly seed with it and the mode set. A manual run:
+
+```bash
+gh workflow run history.yml -f mode=lease-free -f duration_secs=1200
+```
 
 ## Reading a violation
 

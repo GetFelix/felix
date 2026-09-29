@@ -285,8 +285,8 @@ impl ForwardingHandler {
                         op.value,
                         ttl,
                     )
-                    .await;
-                None
+                    .await
+                    .map(|()| None)
             }
             CacheOpKind::Get => {
                 cache
@@ -315,6 +315,23 @@ impl ForwardingHandler {
             }
         };
         drop(fenced);
+        // Refused by the store: never answered as a success, or the quorum
+        // wait would pass on the old tail and ack a put no read can see.
+        let value = match value {
+            Ok(value) => value,
+            Err(err) => {
+                metrics::record_served(metrics::OUTCOME_ERROR);
+                return InternalMessage::ForwardCacheError(ForwardCacheError {
+                    correlation_id,
+                    code: if writes {
+                        ErrorCode::StorageFailed
+                    } else {
+                        ErrorCode::Unavailable
+                    },
+                    detail: err.to_string(),
+                });
+            }
+        };
 
         // The same wait the requester's own path makes for a local write or
         // read: the client asked for the cache's guarantee, wherever the key

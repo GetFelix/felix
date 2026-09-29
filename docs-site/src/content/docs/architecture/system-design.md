@@ -272,7 +272,9 @@ at all: admission, commit and acknowledgement go by the followers' answers,
 and only `Leader` streams, caches and reads still stop when the lease lapses.
 With `lease_free_reads` finalized as well, `Quorum` cache reads confirm
 leadership read-index style instead: one round of fences at the leader's own
-generation, answered by a majority after the read took its value. A broker
+generation, answered by a majority after the read took its value. The round
+vouches for leadership, not for the value, so a cache write the leader's
+storage refuses is answered as an error rather than acknowledged. A broker
 started with `FELIX_QUORUM_READS=lease` keeps its reads on the lease.
 
 **Delivery guarantees:**

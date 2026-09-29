@@ -147,6 +147,11 @@ count as before and keep that exposure.
   first record rolls each log onto a v4 segment, which an older build cannot
   open (see [Storage format](#storage-format-the-one-that-does-not-roll-back)).
   Take a backup before finalizing.
+- **Shards already serving are not interrupted.** A shard keeps the
+  generation it had when you finalized, and its leader writes no record at
+  that generation, even when it restarts: the records it holds at that
+  generation are its own. Its first record comes with its next leadership
+  change.
 - **Subscribers see a gap.** The record takes an offset that no reader
   delivers. A client that negotiated `FLAG_EVENT_BATCH_SKIPPED` (`0x0800`, see
   [capability negotiation](/felix/architecture/wire-protocol/#capability-negotiation))

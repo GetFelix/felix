@@ -33,6 +33,10 @@ pub trait StorageApi: Debug + Send + Sync {
     /// table and storage must not depend on it. A caller that owns exactly one
     /// shard of everything passes `0`, which is what an unsharded cache always
     /// was.
+    ///
+    /// `Ok` only once the write is applied (and, for a log-backed store,
+    /// durable). A caller must not acknowledge a put this refused: the value
+    /// is in no read's future.
     async fn put(
         &self,
         tenant_id: &str,
@@ -42,8 +46,10 @@ pub trait StorageApi: Debug + Send + Sync {
         key: &str,
         value: Bytes,
         ttl: Option<Duration>,
-    );
+    ) -> Result<()>;
 
+    /// The key's current value. An error, never a miss, when the store cannot
+    /// answer: a miss is an answer, and a wrong one here.
     async fn get(
         &self,
         tenant_id: &str,
@@ -51,8 +57,9 @@ pub trait StorageApi: Debug + Send + Sync {
         cache: &str,
         shard: u32,
         key: &str,
-    ) -> Option<Bytes>;
+    ) -> Result<Option<Bytes>>;
 
+    /// Remove the key, returning the value it had. Fails as [`Self::put`] does.
     async fn delete(
         &self,
         tenant_id: &str,
@@ -60,7 +67,7 @@ pub trait StorageApi: Debug + Send + Sync {
         cache: &str,
         shard: u32,
         key: &str,
-    ) -> Option<Bytes>;
+    ) -> Result<Option<Bytes>>;
 
     /// The log backing one cache shard, when the cache is log-backed.
     ///

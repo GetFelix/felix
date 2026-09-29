@@ -11,11 +11,13 @@ async fn the_observer_sees_writes_in_log_order_with_offsets() {
 
     cache
         .put(T, NS, C, 0, "a", Bytes::from_static(b"1"), None)
-        .await;
+        .await
+        .unwrap();
     cache
         .put(T, NS, C, 0, "b", Bytes::from_static(b"2"), None)
-        .await;
-    cache.delete(T, NS, C, 0, "a").await;
+        .await
+        .unwrap();
+    cache.delete(T, NS, C, 0, "a").await.unwrap();
 
     let changes = observer.changes.lock();
     assert_eq!(changes.len(), 3);
@@ -50,7 +52,7 @@ async fn a_no_op_delete_is_not_observed() {
     let observer = Arc::new(RecordingObserver::default());
     assert!(cache.set_change_observer(observer.clone()));
 
-    assert!(cache.delete(T, NS, C, 0, "ghost").await.is_none());
+    assert!(cache.delete(T, NS, C, 0, "ghost").await.unwrap().is_none());
 
     assert!(
         observer.changes.lock().is_empty(),
@@ -70,7 +72,10 @@ async fn compaction_is_not_observed_as_changes() {
 
     let value = Bytes::from(vec![b'x'; 64 * 1024]);
     for _ in 0..40 {
-        cache.put(T, NS, C, 0, "hot", value.clone(), None).await;
+        cache
+            .put(T, NS, C, 0, "hot", value.clone(), None)
+            .await
+            .unwrap();
     }
     cache.compactor.idle().await;
 
@@ -99,14 +104,17 @@ async fn live_entries_reports_current_state_with_offsets() {
 
     cache
         .put(T, NS, C, 0, "kept", Bytes::from_static(b"old"), None)
-        .await;
+        .await
+        .unwrap();
     cache
         .put(T, NS, C, 0, "gone", Bytes::from_static(b"x"), None)
-        .await;
+        .await
+        .unwrap();
     cache
         .put(T, NS, C, 0, "kept", Bytes::from_static(b"new"), None)
-        .await;
-    cache.delete(T, NS, C, 0, "gone").await;
+        .await
+        .unwrap();
+    cache.delete(T, NS, C, 0, "gone").await.unwrap();
     cache
         .put(
             T,
@@ -117,7 +125,8 @@ async fn live_entries_reports_current_state_with_offsets() {
             Bytes::from_static(b"y"),
             Some(Duration::from_millis(1)),
         )
-        .await;
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     let mut entries = cache.live_entries(T, NS, C, 0).await.expect("snapshot");

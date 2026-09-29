@@ -2,7 +2,8 @@
 //! cut-over, or a cancelled move handing the shard back) writes a
 //! generation-start record once the fleet has finalized `generation_start`,
 //! and its quorum mark covers the records it inherited through that record
-//! rather than on their own.
+//! rather than on their own. A generation that already has records when the
+//! fleet finalizes keeps serving without one.
 //!
 //! Run with `cargo test -p felix-cluster --test routing generation_start::`.
 use std::time::Duration;
@@ -25,32 +26,36 @@ async fn start(finalize: bool) -> Cluster {
     .await
     .expect("start cluster");
     if finalize {
-        cluster
-            .control_plane
-            .as_ref()
-            .expect("control plane running")
-            .store
-            .finalize_fleet_feature(FEATURE)
-            .await
-            .expect("finalize generation_start");
-        for id in cluster.node_ids() {
-            felix_cluster::wait::until(Duration::from_secs(20), "the feature to turn on", || {
-                let id = id.clone();
-                let cluster = &cluster;
-                async move {
-                    cluster
-                        .metric(&id, "felix_broker_fleet_feature_enabled")
-                        .await
-                        .ok()
-                        .flatten()
-                        == Some(1.0)
-                }
-            })
-            .await
-            .expect("every broker enables generation_start");
-        }
+        finalize_on(&cluster).await;
     }
     cluster
+}
+
+/// Finalize `generation_start` and wait for every broker to turn it on.
+async fn finalize_on(cluster: &Cluster) {
+    cluster
+        .control_plane
+        .as_ref()
+        .expect("control plane running")
+        .store
+        .finalize_fleet_feature(FEATURE)
+        .await
+        .expect("finalize generation_start");
+    for id in cluster.node_ids() {
+        felix_cluster::wait::until(Duration::from_secs(20), "the feature to turn on", || {
+            let id = id.clone();
+            async move {
+                cluster
+                    .metric(&id, "felix_broker_fleet_feature_enabled")
+                    .await
+                    .ok()
+                    .flatten()
+                    == Some(1.0)
+            }
+        })
+        .await
+        .expect("every broker enables generation_start");
+    }
 }
 
 /// A broker that neither leads nor follows the stream.
@@ -281,5 +286,68 @@ async fn without_a_finalize_a_move_writes_no_generation_start_record() {
     let (_, offset, skipped) = after_the_change(&cluster, &destination, inherited - 1).await;
     assert_eq!(offset, inherited, "no record should take an offset");
     assert_eq!(skipped, 0);
+    cluster.shutdown().await;
+}
+
+/// **A generation older than the finalize reopens without a record.** A live
+/// fleet finalizes `generation_start` over a shard that already holds
+/// records at its current generation. When the leader comes back at that
+/// same generation, its fence opens the shard: every record past the
+/// generation's start is its own, so there is nothing inherited to cover.
+/// The shard serves, keeps what it acknowledged, and takes no offset for a
+/// record.
+#[serial]
+#[tokio::test]
+async fn a_generation_older_than_the_finalize_serves_again_after_a_restart() {
+    let mut cluster = start(false).await;
+    let owner = cluster.owner(STREAM).await.expect("owner");
+    let held = publish_before(&cluster, &owner).await;
+    let before = generation(&cluster).await;
+    finalize_on(&cluster).await;
+
+    // Placement is not stepped, so the leader comes back to the same
+    // generation and fences it as a new term.
+    cluster.stop_node(&owner).await.expect("stop the leader");
+    cluster
+        .restart_node(&owner)
+        .await
+        .expect("restart the leader");
+    assert_eq!(cluster.owner(STREAM).await.expect("owner"), owner);
+    assert_eq!(generation(&cluster).await, before);
+
+    cluster
+        .publish_keyed_via_settled(
+            &owner,
+            STREAM,
+            b"k",
+            b"after".to_vec(),
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("the restarted leader serves the shard");
+    let (_client, mut subscription) = cluster.replay_on(&owner, STREAM).await.expect("replay");
+    let mut payloads = Vec::new();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), subscription.next_event())
+            .await
+            .expect("the replay reaches the record published after")
+            .expect("subscription")
+            .expect("subscription open");
+        let payload = String::from_utf8_lossy(event.payload.as_ref()).into_owned();
+        if payload == "after" {
+            assert_eq!(event.offset, Some(held), "no record should take an offset");
+            assert_eq!(event.skipped_before, 0);
+            break;
+        }
+        // Start-up readiness can land a probe on this stream.
+        if payload != "harness-probe" {
+            payloads.push(payload);
+        }
+    }
+    let expected: Vec<String> = (0..10).map(|i| format!("before-{i}")).collect();
+    assert_eq!(
+        payloads, expected,
+        "the acknowledged records should survive"
+    );
     cluster.shutdown().await;
 }

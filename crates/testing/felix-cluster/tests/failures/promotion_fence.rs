@@ -53,6 +53,33 @@ async fn wait_for_metric(cluster: &Cluster, node: &str, name: &str, at_least: f6
     }
 }
 
+/// Wait for the control plane to hear that every replica of `stream` holds
+/// the leader's whole log.
+///
+/// A publish is acknowledged once a majority has it, so the report that
+/// releases it may still show the other follower a record short. Failover
+/// promotes the replica furthest ahead, and only on a tie does placement's
+/// fixed ranking decide.
+async fn wait_for_replicas_level(cluster: &Cluster, stream: &str, replicas: &[String]) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let report = cluster.replica_report(stream, 0).await.ok().flatten();
+        if let Some(report) = &report
+            && let Some(tail) = report.leader_offset
+            && replicas
+                .iter()
+                .all(|node| report.offsets.get(node) == Some(&tail))
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the control plane never saw {replicas:?} at the leader's tail: {report:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// Wait for placement to hand the shard to someone other than `gone`.
 async fn promoted_away_from(cluster: &Cluster, gone: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -242,11 +269,19 @@ async fn a_mixed_fleet_fails_over_on_the_lease() {
         .publish_via(&old, STREAM, b"acknowledged".to_vec())
         .await
         .expect("publish");
+    // Otherwise a report that has the fenceless broker one record ahead
+    // promotes it, and it opens without fencing anything.
+    let followers: Vec<String> = nodes.iter().filter(|id| **id != old).cloned().collect();
+    wait_for_replicas_level(&cluster, STREAM, &followers).await;
 
     for fault in Fault::partition(Endpoint::node(&old), Endpoint::ControlPlane) {
         cluster.inject(&fault).await.expect("inject");
     }
     let promoted = promoted_away_from(&cluster, &old).await;
+    assert_ne!(
+        promoted, nodes[0],
+        "the broker without the fence was promoted, so nothing opened on the lease"
+    );
     wait_for_metric(
         &cluster,
         &promoted,

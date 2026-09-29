@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::{Cluster, READY_TIMEOUT};
-use crate::node::{broker_binary, spawn_broker};
+use crate::node::{FAILURE_LOG_LINES, broker_binary, spawn_broker};
 use crate::proxy::Links;
 use crate::{ClusterConfig, ControlPlane, wait};
 
@@ -89,8 +89,21 @@ impl Cluster {
 
         // Two phases: the first needs the child handles, to tell "not ready yet"
         // from "already exited"; the rest only observes the cluster.
-        cluster.await_brokers_ready().await?;
-        cluster.await_cluster_ready(&config).await?;
+        let ready = async {
+            cluster.await_brokers_ready().await?;
+            cluster.await_cluster_ready(&config).await
+        }
+        .await;
+        // The cluster is dropped here without a panic, so its `Drop` prints
+        // nothing, and the logs go with the data root.
+        if let Err(err) = ready {
+            let logs: Vec<String> = cluster
+                .nodes
+                .iter()
+                .map(|node| node.failure_log(FAILURE_LOG_LINES))
+                .collect();
+            bail!("{err:#}\n--- broker logs ---\n{}", logs.join("\n"));
+        }
         Ok(cluster)
     }
 
@@ -100,7 +113,8 @@ impl Cluster {
         // has already exited can be reported as such, with its status, instead
         // of timing out.
         for index in 0..self.nodes.len() {
-            let deadline = Instant::now() + READY_TIMEOUT;
+            let budget = wait::budget(READY_TIMEOUT);
+            let deadline = Instant::now() + budget;
             let mut attempts = 1;
             loop {
                 // Re-read each pass: a respawn gives this broker new ports, and
@@ -133,7 +147,7 @@ impl Cluster {
                 }
                 if Instant::now() >= deadline {
                     let node_id = &self.nodes[index].node_id;
-                    bail!("timed out after {READY_TIMEOUT:?} waiting for {node_id} to be ready");
+                    bail!("timed out after {budget:?} waiting for {node_id} to be ready");
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }

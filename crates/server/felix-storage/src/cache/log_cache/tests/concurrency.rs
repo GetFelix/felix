@@ -66,6 +66,7 @@ async fn concurrent_writers_share_fsyncs() {
                 cache
                     .get(T, NS, C, 0, &format!("w{writer}-r{round}"))
                     .await
+                    .unwrap()
                     .as_deref(),
                 Some(format!("v{writer}-{round}").as_bytes()),
             );
@@ -129,7 +130,7 @@ async fn a_staged_write_is_invisible_until_committed() {
 
     // The record is on disk holding its offset, but not committed or applied.
     assert!(
-        cache.get(T, NS, C, 0, "k").await.is_none(),
+        cache.get(T, NS, C, 0, "k").await.unwrap().is_none(),
         "a staged, uncommitted write became readable",
     );
     assert!(
@@ -141,7 +142,7 @@ async fn a_staged_write_is_invisible_until_committed() {
     log.commit(&pending).await.expect("commit");
     drop(turn);
     assert_eq!(
-        cache.get(T, NS, C, 0, "k").await.as_deref(),
+        cache.get(T, NS, C, 0, "k").await.unwrap().as_deref(),
         Some(&b"staged"[..]),
         "a committed record must become readable once the sequence passes it",
     );
@@ -193,7 +194,7 @@ async fn a_writer_stages_behind_an_unfinished_commit() {
         .expect("join")
         .expect("put");
     assert_eq!(
-        cache.get(T, NS, C, 0, "second").await.as_deref(),
+        cache.get(T, NS, C, 0, "second").await.unwrap().as_deref(),
         Some(&b"two"[..]),
     );
 }
@@ -236,7 +237,7 @@ async fn a_cancelled_put_is_still_applied() {
     log.commit(&pending).await.expect("commit");
     drop(turn);
     let applied = async {
-        while cache.get(T, NS, C, 0, "k").await.is_none() {
+        while cache.get(T, NS, C, 0, "k").await.unwrap().is_none() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     };
@@ -275,7 +276,7 @@ async fn an_abandoned_write_does_not_strand_the_shard() {
     .expect("the abandoned write stranded the shard")
     .expect("put");
     assert_eq!(
-        cache.get(T, NS, C, 0, "after").await.as_deref(),
+        cache.get(T, NS, C, 0, "after").await.unwrap().as_deref(),
         Some(&b"lives"[..]),
     );
 }
@@ -328,7 +329,11 @@ async fn concurrent_writes_to_one_key_settle_on_the_highest_offset() {
         winner.value.clone().expect("a put carries its value")
     };
     assert_eq!(
-        cache.get(T, NS, C, 0, "contended").await.as_deref(),
+        cache
+            .get(T, NS, C, 0, "contended")
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&value[..]),
         "the index winner must be the highest offset, as the log reads",
     );
@@ -383,6 +388,7 @@ async fn compaction_under_concurrent_writers_loses_nothing() {
         let value = cache
             .get(T, NS, C, 0, &format!("key-{writer}"))
             .await
+            .unwrap()
             .expect("key survived");
         assert_eq!(value.len(), payload.len());
     }
@@ -404,6 +410,7 @@ async fn compaction_under_concurrent_writers_loses_nothing() {
         let value = reopened
             .get(T, NS, C, 0, &format!("key-{writer}"))
             .await
+            .unwrap()
             .expect("key survived a restart");
         assert_eq!(value.len(), payload.len());
     }

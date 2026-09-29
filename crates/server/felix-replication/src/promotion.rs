@@ -42,8 +42,9 @@ pub trait PromotionGate: Send + Sync {
     /// Open `key` for writes at `generation`.
     ///
     /// Once the fleet has finalized `generation_start`, the broker writes its
-    /// generation-start record first.
-    async fn open(&self, key: &crate::ShardKey, generation: u64);
+    /// generation-start record first. False when the shard stays closed and
+    /// waits for another fence.
+    async fn open(&self, key: &crate::ShardKey, generation: u64) -> bool;
 }
 
 /// A gate nothing waits at, for a broker that does not fence.
@@ -54,7 +55,9 @@ impl PromotionGate for NoGate {
     fn awaiting(&self, _key: &crate::ShardKey) -> Option<u64> {
         None
     }
-    async fn open(&self, _key: &crate::ShardKey, _generation: u64) {}
+    async fn open(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        true
+    }
 }
 
 /// How a promoted shard came to open, or why it has not yet.

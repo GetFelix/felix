@@ -14,7 +14,8 @@ reliably reaches. This page says what each one does and where the detail lives.
 
 The checker is a Jepsen-style test in `crates/testing/felix-cluster/src/history/`.
 Six clients append unique values to three single-shard `Quorum` streams and
-read them back, while a nemesis injects faults. Every operation is recorded
+read them back, and put and get three keys of a `Quorum` cache, while a
+nemesis injects faults. Every operation is recorded
 with its start time, its end time and its result. Once the faults are healed,
 the checker takes a final read of each stream from its leader and compares the
 history with what a replicated append-only log promises.
@@ -27,7 +28,7 @@ connection, `outcome_unknown`). Half the clients are idempotent producers that
 re-send under the same sequence, so the campaign also exercises deduplication
 across leader changes.
 
-It checks six rules:
+It checks seven rules:
 
 1. No acknowledged append is missing from the final read.
 2. No value sits at two offsets.
@@ -35,6 +36,9 @@ It checks six rules:
 4. An append acknowledged before another was sent sits at an earlier offset.
 5. A read never sees a value nobody appended, or appended to another stream.
 6. A value whose append definitely failed never appears.
+7. A cache get never returns a value that a later put had already replaced
+   before the get began, whether that put was acknowledged or an earlier get
+   saw it.
 
 A read that is missing records is allowed, because a subscriber may drop under
 `DropNew` and the offsets show the gap. What a read does hold has to match.
@@ -50,10 +54,12 @@ clock stepped 15 s forward) and disk faults (slow fsyncs, one failed fsync).
 It prints the seed first, so a failing night can be replayed with
 `FELIX_HISTORY_SEED`.
 
-The campaign does not finalize any fleet feature, so it tests the report and
-lease path that every stream uses by default. The lease-free paths behind
-`majority_ack` and `lease_free_reads` are covered by cluster tests and by the
-TLA+ models below, and are not yet run through the campaign.
+`FELIX_HISTORY_MODE` picks the replication path. In `lease` mode the campaign
+tests the report and lease path every stream uses by default. In `lease-free`
+mode it finalizes `generation_start`, `majority_ack` and `lease_free_reads`
+after start-up and fails at once if any broker does not turn them on. The
+nightly run and the per-PR main campaign use `lease-free`; the per-PR
+every-family campaign uses `lease`, so each pull request covers both.
 
 Detail, including how to read a violation and how to add a fault:
 [`docs/history-checker.md`](https://github.com/gabloe/felix/blob/main/docs/history-checker.md).

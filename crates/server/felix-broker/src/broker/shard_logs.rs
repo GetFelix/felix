@@ -191,20 +191,7 @@ impl Broker {
             });
         };
         let offset = log.append_generation_start(generation).await?;
-        let mut run = 1;
-        let mut at = offset;
-        // Walks back one record at a time, but only over generation starts
-        // with nothing between them, so a handful at most.
-        while at > log.base_offset() {
-            at -= 1;
-            let before = log.read_log_from(at, 1).await?;
-            match before.first() {
-                Some(record) if record.offset == at && record.mark.is_generation_start() => {
-                    run += 1;
-                }
-                _ => break,
-            }
-        }
+        let run = offset + 1 - log.event_end(0, offset + 1).await?;
         handle.state.skip_generation_start(offset, run);
         self.appended.notify_one();
         Ok(offset)

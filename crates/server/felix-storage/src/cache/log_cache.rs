@@ -70,7 +70,7 @@ impl LogCache {
         &self.root
     }
 
-    /// `put`, with the failure the trait cannot express.
+    /// The write behind [`StorageApi::put`].
     ///
     /// The write has two halves, and the state lock spans neither fsync nor
     /// wait. Stage under a short lock (claim an offset and a turn), commit
@@ -147,7 +147,7 @@ impl LogCache {
         Ok(())
     }
 
-    /// `get`, with the failure the trait cannot express.
+    /// The read behind [`StorageApi::get`].
     pub async fn get_checked(
         &self,
         tenant_id: &str,
@@ -170,7 +170,7 @@ impl LogCache {
         shard.read_value(&state, entry).await
     }
 
-    /// `delete`, with the failure the trait cannot express.
+    /// The delete behind [`StorageApi::delete`].
     ///
     /// Same two-half shape as [`LogCache::put_checked`]. The previous value is
     /// read at staging time; against concurrent writers to the same key, the
@@ -467,19 +467,9 @@ impl StorageApi for LogCache {
         key: &str,
         value: Bytes,
         ttl: Option<std::time::Duration>,
-    ) {
-        if let Err(err) = self
-            .put_checked(tenant_id, namespace, cache, shard, key, value, ttl)
+    ) -> Result<()> {
+        self.put_checked(tenant_id, namespace, cache, shard, key, value, ttl)
             .await
-        {
-            // The trait returns nothing, so a failed write can only be reported
-            // here. Worth a loud line: the caller has been told the write
-            // succeeded and it did not.
-            tracing::error!(
-                tenant_id, namespace, cache, key, error = %err,
-                "cache write failed after the client was acknowledged",
-            );
-        }
     }
 
     async fn get(
@@ -489,20 +479,9 @@ impl StorageApi for LogCache {
         cache: &str,
         shard: u32,
         key: &str,
-    ) -> Option<Bytes> {
-        match self
-            .get_checked(tenant_id, namespace, cache, shard, key)
+    ) -> Result<Option<Bytes>> {
+        self.get_checked(tenant_id, namespace, cache, shard, key)
             .await
-        {
-            Ok(value) => value,
-            Err(err) => {
-                tracing::error!(
-                    tenant_id, namespace, cache, key, error = %err,
-                    "cache read failed; reporting a miss",
-                );
-                None
-            }
-        }
     }
 
     async fn delete(
@@ -512,20 +491,9 @@ impl StorageApi for LogCache {
         cache: &str,
         shard: u32,
         key: &str,
-    ) -> Option<Bytes> {
-        match self
-            .delete_checked(tenant_id, namespace, cache, shard, key)
+    ) -> Result<Option<Bytes>> {
+        self.delete_checked(tenant_id, namespace, cache, shard, key)
             .await
-        {
-            Ok(value) => value,
-            Err(err) => {
-                tracing::error!(
-                    tenant_id, namespace, cache, key, error = %err,
-                    "cache delete failed",
-                );
-                None
-            }
-        }
     }
 
     async fn shard_log(

@@ -599,7 +599,10 @@ let live = sub.live_offset();   // the tail when you subscribed
 ```
 
 Events below `live_offset()` are catch-up; events from it on are new, and none
-are skipped between the two. From `Latest` the two offsets are equal. Both are
+are skipped between the two. A reader that has received an event at
+`live_offset() - 1`, or asked to start at `live_offset()`, has caught up: the
+offset leaves out any generation-start records at the end of the log, which
+never arrive as events. From `Latest` the two offsets are equal. Both are
 `None` for a plain tail subscribe, an in-memory stream, or an older broker.
 
 ### When a shard moves

@@ -11,7 +11,10 @@ async fn compaction_reclaims_overwritten_records() {
     // enough that the floor is crossed without writing for a minute.
     let value = Bytes::from(vec![b'x'; 64 * 1024]);
     for _ in 0..40 {
-        cache.put(T, NS, C, 0, "hot", value.clone(), None).await;
+        cache
+            .put(T, NS, C, 0, "hot", value.clone(), None)
+            .await
+            .unwrap();
     }
     cache.compactor.idle().await;
 
@@ -26,7 +29,11 @@ async fn compaction_reclaims_overwritten_records() {
     drop(state);
 
     assert_eq!(
-        cache.get(T, NS, C, 0, "hot").await.map(|v| v.len()),
+        cache
+            .get(T, NS, C, 0, "hot")
+            .await
+            .unwrap()
+            .map(|v| v.len()),
         Some(value.len()),
         "compaction must not lose the value it is compacting around",
     );
@@ -48,12 +55,16 @@ async fn compaction_drops_expired_entries() {
             Bytes::from(vec![b'y'; 32 * 1024]),
             Some(Duration::from_millis(1)),
         )
-        .await;
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     let value = Bytes::from(vec![b'x'; 64 * 1024]);
     for _ in 0..40 {
-        cache.put(T, NS, C, 0, "hot", value.clone(), None).await;
+        cache
+            .put(T, NS, C, 0, "hot", value.clone(), None)
+            .await
+            .unwrap();
     }
     cache.compactor.idle().await;
 
@@ -74,22 +85,30 @@ async fn a_compacted_cache_survives_a_restart() {
     {
         let cache = cache(dir.path()).await;
         for _ in 0..40 {
-            cache.put(T, NS, C, 0, "hot", value.clone(), None).await;
+            cache
+                .put(T, NS, C, 0, "hot", value.clone(), None)
+                .await
+                .unwrap();
         }
         cache
             .put(T, NS, C, 0, "cold", Bytes::from_static(b"kept"), None)
-            .await;
+            .await
+            .unwrap();
         cache.compactor.idle().await;
         cache.shutdown().await.expect("shutdown");
     }
 
     let reopened = cache(dir.path()).await;
     assert_eq!(
-        reopened.get(T, NS, C, 0, "hot").await.map(|v| v.len()),
+        reopened
+            .get(T, NS, C, 0, "hot")
+            .await
+            .unwrap()
+            .map(|v| v.len()),
         Some(value.len())
     );
     assert_eq!(
-        reopened.get(T, NS, C, 0, "cold").await.as_deref(),
+        reopened.get(T, NS, C, 0, "cold").await.unwrap().as_deref(),
         Some(&b"kept"[..])
     );
 }
@@ -220,11 +239,15 @@ async fn writes_do_not_wait_on_a_slow_compaction() {
         "the held compaction never ran once released: {log_bytes} bytes",
     );
     assert_eq!(
-        cache.get(T, NS, C, 0, "hot").await.map(|v| v.len()),
+        cache
+            .get(T, NS, C, 0, "hot")
+            .await
+            .unwrap()
+            .map(|v| v.len()),
         Some(value.len())
     );
     assert_eq!(
-        cache.get(T, NS, C, 0, "cold").await.as_deref(),
+        cache.get(T, NS, C, 0, "cold").await.unwrap().as_deref(),
         Some(&b"kept"[..])
     );
 }
@@ -365,7 +388,11 @@ async fn shutdown_abandons_a_held_compaction() {
     }
     let reopened = cache(dir.path()).await;
     assert_eq!(
-        reopened.get(T, NS, C, 0, "hot").await.map(|v| v.len()),
+        reopened
+            .get(T, NS, C, 0, "hot")
+            .await
+            .unwrap()
+            .map(|v| v.len()),
         Some(value.len())
     );
 }

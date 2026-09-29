@@ -18,12 +18,14 @@ async fn cache_ttl_expiry() {
             Bytes::from_static(b"v"),
             Some(Duration::from_millis(10)),
         )
-        .await;
+        .await
+        .unwrap();
     sleep(Duration::from_millis(15)).await;
     assert!(
         cache
             .get("t1", "default", "primary", 0, "k")
             .await
+            .unwrap()
             .is_none()
     );
 }
@@ -41,19 +43,24 @@ async fn put_get_delete_round_trip() {
             Bytes::from_static(b"value"),
             None,
         )
-        .await;
+        .await
+        .unwrap();
     assert_eq!(
-        cache.get("t1", "default", "primary", 0, "k").await,
+        cache.get("t1", "default", "primary", 0, "k").await.unwrap(),
         Some(Bytes::from_static(b"value"))
     );
     assert_eq!(
-        cache.delete("t1", "default", "primary", 0, "k").await,
+        cache
+            .delete("t1", "default", "primary", 0, "k")
+            .await
+            .unwrap(),
         Some(Bytes::from_static(b"value"))
     );
     assert!(
         cache
             .get("t1", "default", "primary", 0, "k")
             .await
+            .unwrap()
             .is_none()
     );
 }
@@ -73,10 +80,14 @@ async fn len_and_is_empty_reflect_state() {
             Bytes::from_static(b"a"),
             None,
         )
-        .await;
+        .await
+        .unwrap();
     assert!(!cache.is_empty().await);
     assert_eq!(cache.len().await, 1);
-    cache.delete("t1", "default", "primary", 0, "k1").await;
+    cache
+        .delete("t1", "default", "primary", 0, "k1")
+        .await
+        .unwrap();
     assert!(cache.is_empty().await);
     assert_eq!(cache.len().await, 0);
 }
@@ -94,7 +105,8 @@ async fn capacity_enforces_placeholder_eviction() {
             Bytes::from_static(b"a"),
             None,
         )
-        .await;
+        .await
+        .unwrap();
     cache
         .put(
             "t1",
@@ -105,7 +117,8 @@ async fn capacity_enforces_placeholder_eviction() {
             Bytes::from_static(b"b"),
             None,
         )
-        .await;
+        .await
+        .unwrap();
     assert_eq!(cache.len().await, 1);
 }
 
@@ -130,7 +143,13 @@ fn cache_key_equality() {
 #[tokio::test]
 async fn get_nonexistent_key_returns_none() {
     let cache = EphemeralCache::new();
-    assert!(cache.get("t1", "ns", "c", 0, "nonexistent").await.is_none());
+    assert!(
+        cache
+            .get("t1", "ns", "c", 0, "nonexistent")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -140,6 +159,7 @@ async fn delete_nonexistent_key_returns_none() {
         cache
             .delete("t1", "ns", "c", 0, "nonexistent")
             .await
+            .unwrap()
             .is_none()
     );
 }
@@ -149,12 +169,14 @@ async fn put_overwrites_existing_value() {
     let cache = EphemeralCache::new();
     cache
         .put("t1", "ns", "c", 0, "k", Bytes::from_static(b"v1"), None)
-        .await;
+        .await
+        .unwrap();
     cache
         .put("t1", "ns", "c", 0, "k", Bytes::from_static(b"v2"), None)
-        .await;
+        .await
+        .unwrap();
     assert_eq!(
-        cache.get("t1", "ns", "c", 0, "k").await,
+        cache.get("t1", "ns", "c", 0, "k").await.unwrap(),
         Some(Bytes::from_static(b"v2"))
     );
     assert_eq!(cache.len().await, 1);

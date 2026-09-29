@@ -5,18 +5,21 @@
 //! the same fault schedule. The nightly workflow runs it for longer with a
 //! random seed and every fault family. See `docs/history-checker.md`.
 //!
+//! Unless `FELIX_HISTORY_MODE` says otherwise, the main campaign runs
+//! lease-free and the every-family one on the lease, so each PR covers both.
+//!
 //! ```text
-//! FELIX_HISTORY_SEED=1234 FELIX_HISTORY_DURATION_SECS=300 \
+//! FELIX_HISTORY_SEED=1234 FELIX_HISTORY_DURATION_SECS=300 FELIX_HISTORY_MODE=lease-free \
 //!     cargo test -p felix-cluster --test history -- --nocapture
 //! ```
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use felix_cluster::Cluster;
 use felix_cluster::history::nemesis::ClusterView;
+use felix_cluster::history::register::RegisterAction;
 use felix_cluster::history::rng::Rng;
 use felix_cluster::history::{
-    self, Campaign, Fault, FaultFamily, FaultKind, History, Nemesis, RandomNemesis,
+    self, Campaign, Fault, FaultFamily, FaultKind, History, Mode, Nemesis, RandomNemesis,
 };
 use serial_test::serial;
 
@@ -33,7 +36,9 @@ const EVERY_FAMILY_DURATION: Duration = Duration::from_secs(75);
 
 /// **Acknowledged `Quorum` appends survive kills, pauses and partitions**,
 /// nothing is duplicated or reordered, reads are prefixes of the final log,
-/// and no read sees a value that was never written or was refused.
+/// no read sees a value that was never written or was refused, and no
+/// `Quorum` cache get is stale. Lease-free unless `FELIX_HISTORY_MODE` says
+/// otherwise.
 ///
 /// A run given `FELIX_HISTORY_DURATION_SECS`, as the nightly one is, also
 /// cuts links, skews clocks and fails fsyncs ([`RandomNemesis::all_faults`]).
@@ -42,15 +47,16 @@ const EVERY_FAMILY_DURATION: Duration = Duration::from_secs(75);
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fault_campaign_keeps_quorum_histories_valid() {
-    let campaign = Campaign::from_env(SEED, DURATION).expect("campaign settings");
+    let campaign = Campaign::from_env(SEED, DURATION, Mode::LeaseFree).expect("campaign settings");
     let (mut nemesis, faults) = if std::env::var_os(history::campaign::DURATION_VAR).is_some() {
         (RandomNemesis::all_faults(), "every fault family")
     } else {
         (RandomNemesis::process_faults(), "process faults")
     };
-    let seed = campaign.seed;
+    let (seed, mode) = (campaign.seed, campaign.mode);
     println!(
-        "history campaign: seed {seed}, {:?}, {faults}; rerun with FELIX_HISTORY_SEED={seed}",
+        "history campaign: seed {seed}, mode {mode}, {:?}, {faults}; rerun with \
+         FELIX_HISTORY_SEED={seed} FELIX_HISTORY_MODE={mode}",
         campaign.duration
     );
     let history = run_checked(&campaign, &mut nemesis).await;
@@ -63,15 +69,20 @@ async fn a_fault_campaign_keeps_quorum_histories_valid() {
 /// **Every fault family runs through the campaign and heals.** Link, clock
 /// and disk faults, one after another with the process faults, leave a
 /// valid history, and at least one fault of each family is injected and
-/// healed. What the long random schedule relies on, checked on every PR.
+/// healed. What the long random schedule relies on, checked on every PR, on
+/// the lease unless `FELIX_HISTORY_MODE` says otherwise.
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_fault_family_is_injected_and_healed_in_a_campaign() {
-    let mut campaign = Campaign::from_env(SEED, EVERY_FAMILY_DURATION).expect("campaign settings");
+    let mut campaign =
+        Campaign::from_env(SEED, EVERY_FAMILY_DURATION, Mode::Lease).expect("campaign settings");
     // Fixed: the nightly's long random run already covers these faults.
     campaign.duration = EVERY_FAMILY_DURATION;
-    let seed = campaign.seed;
-    println!("every-family campaign: seed {seed}; rerun with FELIX_HISTORY_SEED={seed}");
+    let (seed, mode) = (campaign.seed, campaign.mode);
+    println!(
+        "every-family campaign: seed {seed}, mode {mode}; rerun with \
+         FELIX_HISTORY_SEED={seed} FELIX_HISTORY_MODE={mode}"
+    );
     let mut nemesis = EveryFamily::new();
     let history = run_checked(&campaign, &mut nemesis).await;
 
@@ -103,9 +114,10 @@ async fn every_fault_family_is_injected_and_healed_in_a_campaign() {
 async fn run_checked(campaign: &Campaign, nemesis: &mut impl Nemesis) -> History {
     let seed = campaign.seed;
     let started = Instant::now();
-    let mut cluster = Cluster::start(campaign.cluster_config(&*nemesis))
+    let mut cluster = campaign
+        .start(&*nemesis)
         .await
-        .expect("start cluster");
+        .unwrap_or_else(|err| panic!("seed {seed}: start the cluster: {err:#}"));
     let history = campaign
         .run(&mut cluster, nemesis)
         .await
@@ -125,6 +137,20 @@ async fn run_checked(campaign: &Campaign, nemesis: &mut impl Nemesis) -> History
         history.acknowledged() >= 50,
         "seed {seed}: only {} appends were acknowledged",
         history.acknowledged()
+    );
+    let (puts, gets) = history
+        .registers
+        .iter()
+        .fold((0, 0), |(puts, gets), op| match op.action {
+            RegisterAction::Put {
+                acknowledged: true, ..
+            } => (puts + 1, gets),
+            RegisterAction::Put { .. } => (puts, gets),
+            RegisterAction::Get { .. } => (puts, gets + 1),
+        });
+    assert!(
+        puts >= 10 && gets >= 10,
+        "seed {seed}: only {puts} cache puts were acknowledged and {gets} gets answered"
     );
     cluster.shutdown().await;
     history

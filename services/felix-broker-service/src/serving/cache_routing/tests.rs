@@ -451,3 +451,60 @@ mod fence {
         );
     }
 }
+
+/// A write the cache store refused. Acknowledging it would tell the client a
+/// value is set that no read will ever return.
+mod store_failure {
+    use bytes::Bytes;
+
+    use super::*;
+    use crate::serving::forward::CacheRequest;
+    use crate::serving::quic::client_error::ClientError;
+
+    /// A log-backed cache whose shard can never open: its root was replaced
+    /// by a plain file after the store was created.
+    fn broken_cache(dir: &std::path::Path) -> felix_broker::Broker {
+        let root = dir.join("caches");
+        let cache = felix_storage::LogCache::open(&root, felix_storage::log::LogConfig::default())
+            .expect("open cache");
+        std::fs::remove_dir(&root).expect("remove root");
+        std::fs::write(&root, b"not a directory").expect("replace root");
+        felix_broker::Broker::new(Box::new(cache))
+    }
+
+    async fn cache_op(
+        broker: &felix_broker::Broker,
+        request: CacheRequest,
+    ) -> Result<Option<Bytes>, ClientError> {
+        apply_cache_op(
+            broker,
+            (None, std::time::Duration::from_secs(1)),
+            None,
+            None,
+            "",
+            TENANT,
+            NAMESPACE,
+            CACHE,
+            "k",
+            request,
+        )
+        .await
+        .map_err(|err| ClientError::from_anyhow(&err))
+    }
+
+    #[tokio::test]
+    async fn a_put_the_store_refused_is_not_acknowledged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let broker = broken_cache(dir.path());
+        for (what, request) in [
+            ("put", put_request(Bytes::from_static(b"v"), None)),
+            ("delete", CacheRequest::Delete),
+            ("get", CacheRequest::Get),
+        ] {
+            let refused = cache_op(&broker, request).await.expect_err(&format!(
+                "a {what} the store failed was answered as a success"
+            ));
+            assert_eq!(refused.code(), &felix_wire::ErrorCode::Storage, "{what}");
+        }
+    }
+}

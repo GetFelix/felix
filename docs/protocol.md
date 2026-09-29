@@ -206,7 +206,9 @@ it.
 `start_offset` is the first offset the subscription delivers. `live_offset` is
 the stream's tail when the subscriber was registered: anything below it was
 already in the stream, anything from it on was written after, and nothing falls
-between. For `latest` the two are equal. Both are sent only for a subscribe
+between. It leaves out generation-start records the log ends with (they hold an
+offset but never an event, so a reader waiting for the raw tail would wait
+forever), but is never below `start_offset`. For `latest` the two are equal. Both are sent only for a subscribe
 with a `start`, on a durable stream, to a client that negotiated
 `FLAG_EVENT_BATCH_OFFSETS`. Otherwise the frame is unchanged.
 

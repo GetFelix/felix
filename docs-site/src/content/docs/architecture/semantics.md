@@ -158,7 +158,9 @@ lease.
 **With `lease_free_reads` finalized** as well, a get or counter get on a
 replicated `Quorum` cache confirms leadership with a round instead of the
 lease; [Cache Semantics](#consistency-model) describes it. Stream readers and
-cache watches keep the lease.
+cache watches keep the lease. A cache write the owner's storage refuses is
+answered as an error and never acknowledged, so a read cannot miss a write it
+was told succeeded.
 
 #### What each one costs
 
