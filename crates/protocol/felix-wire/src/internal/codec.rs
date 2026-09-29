@@ -462,8 +462,11 @@ impl InternalMessage {
                     let log = ReplicaLog::from_u8(take_u8(&mut body)?)?;
                     let present = take_u8(&mut body)?;
                     let commit = take_u64(&mut body)?;
+                    // An absent offset still occupies the field, and it must be
+                    // zero: the encoder writes zero, so accepting anything else
+                    // lets two different frames decode to the same message.
                     let commit = match present {
-                        0 => None,
+                        0 if commit == 0 => None,
                         1 => Some(commit),
                         _ => return Err(Error::Incomplete),
                     };

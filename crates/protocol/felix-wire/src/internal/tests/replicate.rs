@@ -193,6 +193,38 @@ fn generations_travel_as_the_labelled_kind_for_every_log() {
     }
 }
 
+/// A labelled batch with no commit offset still carries the field, zeroed. A
+/// nonzero value there is refused rather than dropped, or the frame decodes to
+/// a message that re-encodes to different bytes.
+#[test]
+fn an_absent_commit_offset_must_be_zero() {
+    let message = InternalMessage::ReplicateCounterRecords(ReplicateRecords {
+        correlation_id: 42,
+        shard: shard(),
+        first_offset: 10,
+        checksum: 1,
+        payloads: vec![Bytes::from_static(b"x")],
+        marks: Vec::new(),
+        commit_offset: None,
+        generations: Some(Vec::new()),
+    });
+    let encoded = message.encode().expect("encode");
+    // The commit offset is the u64 just before the empty generations count.
+    let commit_at = encoded.len() - 4 - 8;
+    assert_eq!(&encoded[commit_at..commit_at + 8], &[0; 8]);
+    assert_eq!(
+        InternalMessage::decode(encoded.clone()).expect("decode"),
+        message
+    );
+
+    let mut tampered = BytesMut::from(encoded.as_ref());
+    tampered[commit_at + 1] = 0x59;
+    assert!(matches!(
+        InternalMessage::decode(tampered.freeze()),
+        Err(Error::Incomplete)
+    ));
+}
+
 /// A labelled fetch is its own kind with the plain fetch's body.
 #[test]
 fn a_labelled_fetch_is_its_own_kind() {
