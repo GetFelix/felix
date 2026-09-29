@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790648471537,
+  "lastUpdate": 1790650263863,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -25344,6 +25344,72 @@ window.BENCHMARK_DATA = {
             "range": "1041.27",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1539.00\nmean: 1574.60\nstdev: 1041.27\ncv: 66.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9305a2e4b83fabae05aaceed021e7ef752640561",
+          "message": "docs(site): fix setup, development, demo, deployment and reference pages (#834)\n\n* docs(site): make the local, compose and Kubernetes setup pages work\n\nBrokers exit without FELIX_CONTROLPLANE_URL, so the local quick start and\nthe compose examples start the control plane first and give the broker its\nURL, credential and a /var/lib/felix volume. Invented log output, /healthz\nand commands the images cannot run are gone. The quickstart SDK examples\nset a tenant and token. The Kubernetes page says the chart's appVersion is\nuntagged and that refreshTokenKey does not survive its read-only mount.\nPrometheus scrapes brokers on 8080.\n\nSpec-Unaffected: docs only\n\n* docs(site): rebuild the development pages from CONTRIBUTING.md\n\nContributing, building and project structure were a generic template\nthat contradicted CONTRIBUTING.md and the grouped crate layout. They now\ndescribe the real toolchain, CI jobs, layout rules and the two harness\ntraps. A new page covers the cluster harness, history checker and TLA+\nmodels. The internals pages gain the durability step and the resume path\nand use the current function names.\n\nSpec-Unaffected: docs only\n\n* docs(site): correct the demo pages\n\nFix the STEP numbers, say which demos run real processes, add\ndurable-restart-demo, and match the state-divergence framing to the\nstatus table.\n\nSpec-Unaffected: docs only\n\n* docs(site): correct the reference and operations pages\n\nMark FELIX_CONTROLPLANE_URL required, list the real health endpoints and\ndefaults, say the YAML file overrides the environment, and add the\nshutdown keys. Troubleshooting drops generic advice and gains a cluster\nsection quoting the broker's own errors. Moving shards documents admin\nabandon. The cache benchmark variables move to the not-operational list.\n\nSpec-Unaffected: docs only",
+          "timestamp": "2026-09-28T19:46:13-07:00",
+          "tree_id": "6563dc83cd82ced12661c52988ca8c7a334384f4",
+          "url": "https://github.com/gabloe/felix/commit/9305a2e4b83fabae05aaceed021e7ef752640561"
+        },
+        "date": 1790650260812,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 177,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 177.80\nstdev: 1.64\ncv: 0.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 240,
+            "range": "2.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 240.00\nmean: 240.20\nstdev: 2.05\ncv: 0.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 304,
+            "range": "8.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 304.00\nmean: 301.20\nstdev: 8.44\ncv: 2.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 214,
+            "range": "1.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 214.00\nmean: 214.20\nstdev: 1.79\ncv: 0.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 441,
+            "range": "20.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 441.00\nmean: 443.80\nstdev: 20.97\ncv: 4.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 743,
+            "range": "471.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 743.00\nmean: 880.40\nstdev: 471.13\ncv: 53.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
