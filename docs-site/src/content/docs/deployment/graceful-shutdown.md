@@ -2,17 +2,17 @@
 title: "Process lifecycle and graceful shutdown"
 ---
 
-Covers how the broker and control plane start, and — mostly — how they stop.
+Covers how the broker and control plane start, and mostly how they stop.
 Implemented in `crates/server/felix-common/src/lifecycle.rs`, which both services share.
 
 ## Termination signals
 
-Both services wait on **SIGTERM and SIGINT** on Unix, and Ctrl-C elsewhere.
+Both services wait on SIGTERM and SIGINT on Unix, and Ctrl-C elsewhere.
 
 SIGTERM is the one that matters operationally. Kubernetes, systemd, and
-`docker stop` all terminate a process with SIGTERM; SIGINT only covers an
+`docker stop` all terminate a process with SIGTERM. SIGINT only covers an
 interactive Ctrl-C. A process that handles only SIGINT has no shutdown path under
-any of those supervisors — the default SIGTERM handler kills it outright, so every
+any of those supervisors. The default SIGTERM handler kills it outright, so every
 rolling update drops in-flight publishes, acknowledgements, and subscription
 writes.
 
@@ -32,8 +32,8 @@ The order matters more than the individual steps.
    answering normally the whole time. Without this the listener closes in the same
    breath as the readiness flip, and a load balancer that has not polled yet is
    still sending requests to a socket that has gone away. A second SIGTERM ends the
-   wait early. The broker has the same hold-off but defaults it to off — see below.
-4. **Stop admitting new work.** The broker cancels its QUIC accept loop; the
+   wait early. The broker has the same hold-off but defaults it to off (see below).
+4. **Stop admitting new work.** The broker cancels its QUIC accept loop and the
    control plane stops accepting new HTTP connections. Already-accepted work is
    untouched.
 5. **Drain, bounded by a deadline.** In-flight connections and requests finish on
@@ -50,11 +50,11 @@ soon as it answers, so a broker that exited before writing the replacement to
 `FELIX_NODE_REFRESH_TOKEN_FILE` would present a spent token on its next start and
 the control plane would revoke the whole chain.
 
-`/live` stays `200` throughout. A draining process is alive and working correctly;
+`/live` stays `200` throughout. A draining process is alive and working correctly, and
 failing liveness would make Kubernetes restart a pod that is shutting down exactly
 as intended.
 
-Metrics are torn down **last**, after everything else has drained, so `/metrics`
+Metrics are torn down last, after everything else has drained, so `/metrics`
 and `/ready` remain scrapeable for the whole shutdown window. That window is the
 only chance an operator has to see what the process was doing while it stopped.
 
@@ -117,12 +117,12 @@ Moves run under the same limits as any other
 (see [Tuning](/felix/deployment/scaling/#tuning)). With the default
 `FELIX_SHARD_MOVES_MAX_CONCURRENT=1` they go one at a time. A move whose
 destination is already a caught-up follower copies nothing, only fences and
-cuts over, so replicated shards go quickly; watch
+cuts over, so replicated shards go quickly. Watch
 `felix_broker_shutdown_handoff_duration_ms` and size the timeout from it. A
 drain's leaderships are moved
 before its follower copies are replaced, so those copies do not hold the slots
-the leaders need. A shard with no follower has its whole log copied first;
-raise the timeout if brokers lead large unreplicated shards, or accept that
+the leaders need. A shard with no follower has its whole log copied first.
+Raise the timeout if brokers lead large unreplicated shards, or accept that
 those are unavailable until the broker is back: a durable shard with no
 follower is never handed to a broker that does not hold its log.
 
@@ -145,8 +145,8 @@ naming how many shards were left to fail over.
 
 ## The drain deadline
 
-`FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS` (default `25000`) is a **single budget shared by
-every subsystem**, not a per-subsystem timeout. Each subsystem gets whatever is left
+`FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS` (default `25000`) is a single budget shared by
+every subsystem, not a per-subsystem timeout. Each subsystem gets whatever is left
 when its turn comes, so N subsystems cannot stretch a 25s deadline into 25N seconds.
 Total shutdown time is bounded by this value regardless of how many things hang.
 
@@ -161,7 +161,7 @@ On a clean drain you get:
 INFO drain complete elapsed_ms=142
 ```
 
-On a forced one — work was dropped, and this is the line to alert on:
+On a forced one, work was dropped. This is the line to alert on:
 
 ```
 WARN drain deadline expired; forcing cancellation elapsed_ms=25001 deadline_ms=25000 unfinished=["quic_connections"]
@@ -169,15 +169,15 @@ WARN drain deadline expired; forcing cancellation elapsed_ms=25001 deadline_ms=2
 
 ## Watching a drain happen
 
-The log line dies with the pod; these survive on the metrics endpoint, which
+The log line dies with the pod. These metrics survive on the metrics endpoint, which
 is deliberately torn down last:
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_ready_state` | `1` in rotation, `0` draining — the same flag both `/ready` endpoints read |
+| `felix_ready_state` | `1` in rotation, `0` draining. The same flag both `/ready` endpoints read |
 | `felix_inflight_requests` | requests currently being served, so "waiting on what?" has an answer |
 | `felix_drain_duration_ms` | how long the last drain took |
-| `felix_drain_forced_total{subsystem}` | subsystems cut off by the deadline — non-zero means work was dropped, and this counter is the thing to alert on |
+| `felix_drain_forced_total{subsystem}` | subsystems cut off by the deadline. Non-zero means work was dropped, and this counter is the thing to alert on |
 
 ## Kubernetes configuration
 
@@ -193,7 +193,7 @@ There are two ways to cover that gap, and you want one of them, not both stacked
   readiness already false and the listener still admitting. Prefer this outside
   Kubernetes, where nothing removes an instance from rotation except its readiness
   probe failing and there is no preStop hook to configure. The control plane
-  defaults it to 5 s; the broker defaults it to 0, because the chart covers brokers
+  defaults it to 5 s. The broker defaults it to 0, because the chart covers brokers
   with a preStop sleep instead.
 
 The example below uses `preStop`, so it turns the in-process hold-off off:
@@ -221,12 +221,12 @@ spec:
       readinessProbe:
         httpGet:
           path: /ready
-          port: 9090
+          port: 8080
         periodSeconds: 2
       livenessProbe:
         httpGet:
           path: /live
-          port: 9090
+          port: 8080
 ```
 
 Budget the total: `preStop` sleep + `FELIX_SHUTDOWN_HANDOFF_TIMEOUT_MS` +
@@ -240,14 +240,14 @@ The Helm chart derives it from all three (`broker.shutdown.handoffTimeoutMs`).
 
 Tracked under [#139](https://github.com/gabloe/felix/issues/139):
 
-- Cancellation is coordinated at the **connection** boundary. The drain waits for
+- Cancellation is coordinated at the connection boundary. The drain waits for
   each connection task to finish, and then for the publish scheduler to empty its
   queue, but does not separately signal acknowledgement waiters or subscription
   writers to wind down early. A connection
   that would otherwise sit idle for its full timeout is only cut short by the
   overall deadline.
 - Subscription streams are not flushed or closed according to their delivery
-  contract; they end when their connection task ends.
+  contract. They end when their connection task ends.
 - The "an acknowledged publish is never lost solely because SIGTERM arrived"
   guarantee is verified only for a clustered broker that hands its shards off:
   `a_stopping_broker_hands_its_shard_over_under_load`
@@ -264,5 +264,5 @@ Tracked under [#139](https://github.com/gabloe/felix/issues/139):
   has both halves: `services/felix-controlplane-service/tests/main_runtime.rs` sends the real
   binary a SIGTERM and asserts the ordering above, and
   `services/felix-controlplane-service/tests/rolling_restart.rs` restarts every instance of a
-  two-instance deployment — and kills one outright — under continuous broker
+  two-instance deployment, and kills one outright, under continuous broker
   heartbeat and watch traffic, asserting zero failed calls.

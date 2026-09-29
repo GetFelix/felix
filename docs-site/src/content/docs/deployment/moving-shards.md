@@ -6,8 +6,8 @@ Placement moves shards on its own: off a draining broker, and from a broker
 leading more than its share to one leading less (see
 [Adding, draining and removing brokers](/felix/deployment/scaling/)). This
 page is for when you want to steer that: see what is moving and what would
-move next, move a shard yourself, cancel a move, or stop placement starting
-any.
+move next, move a shard yourself, cancel a move, stop placement starting any,
+or give up a shard whose log is out of reach.
 
 Every command below is `felix-controlplane admin`, a client of the control
 plane's HTTP API, so the same things can be done with `curl` against the
@@ -131,6 +131,40 @@ few shards by hand, while taking a backup point
 [Backup and restore](/felix/deployment/backup-and-restore/)), or before
 draining a broker you want to empty in a particular order. A drained broker keeps its shards while placement is
 paused, so resume before relying on a drain.
+
+## Abandoning a shard's log
+
+:::danger[This loses data]
+`abandon` discards a shard's log. Every record that only the old leader held
+is gone, acknowledged ones included, and the old leader does not get them back
+when it returns.
+:::
+
+```bash
+felix-controlplane admin abandon t1/ns/orders/0
+felix-controlplane admin abandon t1/ns/sessions/2 --cache
+```
+
+Placement holds a durable shard unplaced rather than lose records when its
+leader is not serving and no replica holds everything the leader may have
+acknowledged. That includes every durable shard with a replication factor of 1
+whose broker is down. `admin plan` shows it waiting with one of these reasons:
+
+```text
+the only copy of this shard's log is on broker-2, which is not serving; waiting for it to return
+the leader is gone and no replica holding this shard's log can take over
+```
+
+The shard comes back on its own when the old leader returns or a replica
+catches up. Use `abandon` only when that will not happen, for example when the
+broker's disk is lost and there is no backup to restore. The shard is then
+placed as a new one: the new leader starts from whatever it holds, usually
+nothing, at a new generation. The control plane logs a warning naming the
+shard.
+
+It is refused with `not_stranded` when the leader is serving or a replica can
+take over without loss, and with `unplaceable` when no node can take the
+shard. It needs `node.manage:cluster:*`.
 
 ## A worked example
 

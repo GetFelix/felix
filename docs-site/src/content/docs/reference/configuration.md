@@ -2,7 +2,7 @@
 title: "Configuration Reference"
 ---
 
-Complete reference for all Felix broker configuration options.
+Every key the broker's YAML config file accepts. Each has an environment variable, listed with it. Settings that exist only as environment variables are in the [Environment Variables](/felix/reference/environment-variables/) reference. The broker refuses a file with a key it does not know.
 
 ## Configuration Methods
 
@@ -99,19 +99,24 @@ quic_bind: "0.0.0.0:5000"
 metrics_bind: "0.0.0.0:8080"
 ```
 
-**Endpoints**:
-- `/healthz`: Health check
-- `/metrics`: Prometheus metrics (if enabled)
+**Endpoints** (no authentication):
+- `/live`: always `ok` while the process runs
+- `/ready`: `ok`, or 503 `draining` once shutdown starts
+- `/metrics`: Prometheus metrics
+- `/replication/halted`: replicas that stopped replicating, as JSON
+- `/backup/offsets`: the committed offset of every log, for backups
 
 ## Control Plane Configuration
 
 ### `controlplane_url`
 
-**Description**: Optional control plane base URL for metadata sync.
+**Description**: Control plane base URL for metadata sync. **Required.** The
+broker exits at startup with `FELIX_CONTROLPLANE_URL must be set for auth` when
+it is unset, single-node deployments included.
 
 **Type**: `String` (URL)
 
-**Default**: `None`
+**Default**: none (required)
 
 **Environment**: `FELIX_CONTROLPLANE_URL`
 
@@ -121,9 +126,8 @@ controlplane_url: "http://felix-controlplane:8443"
 ```
 
 **Notes**:
-- Optional for single-node deployments
-- Required for multi-node clusters
-- Should include scheme (`http://` or `https://`)
+- Include the scheme (`http://` or `https://`). Over `http://`, credentials
+  cross the network in clear text.
 
 ### `controlplane_sync_interval_ms`
 
@@ -206,7 +210,7 @@ max_frame_bytes: 16777216
 
 ### `preauth_max_streams_per_conn`
 
-**Description**: Unauthenticated streams one connection may have reading at once; more wait.
+**Description**: Unauthenticated streams one connection may have reading at once. More wait.
 
 **Type**: `usize`
 
@@ -260,7 +264,11 @@ publish_queue_wait_timeout_ms: 2000
 
 ### `ack_wait_timeout_ms`
 
-**Description**: Maximum time to wait for ack-on-commit completion.
+**Description**: How long the broker waits to answer an acknowledged publish
+whose answer depends on a commit: an `ack_on_commit` publish, a `Quorum`
+publish, a forwarded publish or an idempotent one. The value used is the larger
+of this and `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` + 500 ms, so a `Quorum` publish
+gets its full quorum wait and reports why it failed.
 
 **Type**: `u64` (milliseconds)
 
@@ -274,8 +282,8 @@ ack_wait_timeout_ms: 2000
 ```
 
 **Notes**:
-- Only applies when `ack_on_commit: true`
-- Publisher receives error if exceeded
+- The publisher receives an error if it is exceeded.
+- A forwarded publish is bounded to finish 500 ms inside it.
 
 ## Event Delivery Configuration
 
@@ -386,7 +394,7 @@ subscriber_queue_capacity: 512
 
 #### `max_subscriptions_per_conn`
 
-**Description**: Max concurrent subscriptions a single QUIC connection may hold. `subscriber_queue_capacity` bounds the size of *one* subscription's buffer; this bounds *how many* subscriptions one connection can open in total, which is otherwise unbounded — a connection issuing unlimited `Subscribe` requests could grow broker memory without limit.
+**Description**: Max concurrent subscriptions a single QUIC connection may hold. `subscriber_queue_capacity` bounds the size of one subscription's buffer. This bounds how many subscriptions one connection can open in total. Without it, a connection issuing unlimited `Subscribe` requests could grow broker memory without limit.
 
 **Type**: `usize` (count)
 
@@ -400,7 +408,7 @@ max_subscriptions_per_conn: 4096
 
 #### `subscriber_queue_policy`
 
-**Description**: Backpressure policy when a subscriber's broker-core queue (`subscriber_queue_capacity`) is full — this is the fanout enqueue path, upstream of the writer lanes below.
+**Description**: Backpressure policy when a subscriber's broker-core queue (`subscriber_queue_capacity`) is full. This is the fanout enqueue path, upstream of the writer lanes below.
 
 **Type**: `enum` (`block`, `drop_new`, `drop_old`)
 
@@ -413,9 +421,9 @@ subscriber_queue_policy: drop_new
 ```
 
 **Tuning**:
-- `drop_new` (default): sheds the newest event when the queue is full — bounds latency, overload becomes visible as drops (`felix_subscribe_dropped_total`).
-- `block`: publish waits for queue space — strongest delivery guarantee, but a single slow subscriber can add latency to publishers. Used by the benchmark harness's lossless throughput mode alongside `pub_ingress_wait`.
-- `drop_old`: currently emulated with `drop_new` semantics; tracked separately in metrics.
+- `drop_new` (default): sheds the newest event when the queue is full. This bounds latency, and overload becomes visible as drops (`felix_subscribe_dropped_total`).
+- `block`: publish waits for queue space. Strongest delivery guarantee, but a single slow subscriber can add latency to publishers. Used by the benchmark harness's lossless throughput mode alongside `pub_ingress_wait`.
+- `drop_old`: emulated with `drop_new` semantics, and tracked separately in metrics.
 
 #### `subscriber_writer_lanes`
 
@@ -490,10 +498,10 @@ subscriber_lane_shard: auto
 ```
 
 Policy guidance:
-- `auto`: Prefer connection-aware routing when connection id is available; fallback to subscriber id.
+- `auto`: Prefer connection-aware routing when connection id is available, else fall back to subscriber id.
 - `subscriber_id_hash`: Good general distribution independent of connection topology.
 - `connection_id_hash`: Useful when many subscribers share connections and connection-local contention dominates.
-- `round_robin_pin`: Pins lane at subscribe-time; preserves ordering, but can underperform in skewed workloads.
+- `round_robin_pin`: Pins lane at subscribe-time. Preserves ordering, but can underperform in skewed workloads.
 
 #### `subscriber_single_writer_per_conn`
 
@@ -509,7 +517,7 @@ Policy guidance:
 subscriber_single_writer_per_conn: false
 ```
 
-**Tuning**: The latency-focused benchmark profile (batch = 1) enables this for stable per-message ordering; the throughput profile leaves it off to use parallel lanes.
+**Tuning**: The latency-focused benchmark profile (batch = 1) enables this for stable per-message ordering. The throughput profile leaves it off to use parallel lanes.
 
 #### `subscriber_flush_max_items`
 
@@ -583,7 +591,7 @@ sub_streams_per_conn: 4
 sub_stream_mode: per_subscriber
 ```
 
-**Notes**: `hashed_pool` is not yet enabled — the broker currently falls back to `per_subscriber` and logs a debug warning if `hashed_pool` is requested.
+**Notes**: `hashed_pool` is not enabled. The broker falls back to `per_subscriber` and logs a debug warning if `hashed_pool` is requested.
 
 ## Cache Configuration
 
@@ -650,8 +658,8 @@ cache_send_window: 268435456
 
 ### `pub_workers_per_conn`
 
-**Description**: Executors of the broker's process-wide publish scheduler (the
-name predates it): how many shards' ordered publish steps may run at once.
+**Description**: Executors of the broker's process-wide publish scheduler:
+how many shards' ordered publish steps may run at once.
 
 **Type**: `usize` (count)
 
@@ -688,11 +696,11 @@ pub_queue_depth: 64
 ```
 
 **Tuning**:
-- Tenants are served by deficit round robin, weighted by bytes; a tenant past
+- Tenants are served by deficit round robin, weighted by bytes. A tenant past
   its share may borrow idle room but never the last `pub_queue_depth` slots.
 - A publish that finds no room is answered `overloaded`
   (`detail.reason = "publish_queue_full"`, retryable) if it asked for an ack,
-  and shed otherwise; both are counted in `felix_tenant_publish_queue_full_total`.
+  and shed otherwise. Both are counted in `felix_tenant_publish_queue_full_total`.
 - Larger values allow more buffering under burst but increase saturation latency
 - Consider with `publish_queue_wait_timeout_ms`
 
@@ -712,10 +720,10 @@ pub_inflight_bytes: 67108864
 ```
 
 **Tuning**:
-- `pub_queue_depth` bounds the number of queued *jobs*, but a job's payload can be as large as `max_frame_bytes`; `pub_inflight_bytes` bounds actual queued-or-processing *bytes* regardless of item count.
+- `pub_queue_depth` bounds the number of queued jobs, but a job's payload can be as large as `max_frame_bytes`. `pub_inflight_bytes` bounds actual queued-or-processing bytes regardless of item count.
 - The budget is acquired before a job is handed to a worker queue and released only once the job finishes processing, so it reflects real resident memory, not just admission-time bytes.
-- Should be set well above `max_frame_bytes` — a job larger than the remaining budget waits (and can time out under `EnqueuePolicy::Wait`) rather than being admitted.
-- Lower this to shrink worst-case ingress memory under large-payload workloads; raise it to allow more large batches in flight concurrently.
+- Should be set well above `max_frame_bytes`. A job larger than the remaining budget waits (and can time out under `EnqueuePolicy::Wait`) rather than being admitted.
+- Lower this to shrink worst-case ingress memory under large-payload workloads. Raise it to allow more large batches in flight concurrently.
 
 ### `pub_conn_inflight_bytes`
 
@@ -733,7 +741,7 @@ pub_conn_inflight_bytes: 16777216
 ```
 
 **Tuning**:
-- Must be smaller than `pub_inflight_bytes` to have any effect; setting it equal to or above `pub_inflight_bytes` means a single connection can once again claim the whole shared budget.
+- Set it below `pub_inflight_bytes` to have any effect. Equal lets one connection take the whole shared budget. Above is refused at startup.
 - Roughly `pub_inflight_bytes / N` for the expected number of concurrently active connections gives each a fair share while still allowing the shared budget to absorb bursts from fewer connections.
 
 ### `publish_window`
@@ -752,12 +760,12 @@ publish_window: 256
 ```
 
 **Tuning**:
-- `0` turns pipelining off; every client gets completion-order acks and no window.
+- `0` turns pipelining off, and every client gets completion-order acks and no window.
 - An idempotent producer keeps at most 64 batches in flight whatever this says, because a leader remembers 64 sequences per producer and a re-send has to find its batch remembered.
 
 ### `pub_ingress_wait`
 
-**Description**: When true, un-acked (fire-and-forget) publishes wait — bounded by `publish_queue_wait_timeout_ms` — for ingress capacity instead of being shed when the publish queue or byte budget is full.
+**Description**: When true, un-acked (fire-and-forget) publishes wait for ingress capacity, bounded by `publish_queue_wait_timeout_ms`, instead of being shed when the publish queue or byte budget is full.
 
 **Type**: `bool`
 
@@ -772,11 +780,11 @@ pub_ingress_wait: true
 
 **Tuning**:
 - Off (default): overload sheds fire-and-forget publishes visibly (`felix_broker_ingress_dropped_total`) and keeps latency bounded.
-- On: backpressure propagates through QUIC flow control to the publisher — nothing is shed, producers slow down. Use for lossless pipelines and sustainable-throughput benchmarking.
+- On: backpressure propagates through QUIC flow control to the publisher. Nothing is shed, and producers slow down. Use for lossless pipelines and sustainable-throughput benchmarking.
 
 ### `core_shards`
 
-**Description**: Number of core-pinned shard executors owning stream work (thread-per-core). Each stream's handle id deterministically selects an owning shard; that shard runs the stream's publish worker and its subscriptions' lane feeders on one dedicated single-threaded runtime (pinned to a CPU core on Linux). Publish append, fanout enqueue, and subscriber dequeue all stay core-local.
+**Description**: Number of core-pinned shard executors owning stream work (thread-per-core). Each stream's handle id deterministically selects an owning shard. That shard runs the stream's publish worker and its subscriptions' lane feeders on one dedicated single-threaded runtime (pinned to a CPU core on Linux). Publish append, fanout enqueue, and subscriber dequeue all stay core-local.
 
 **Type**: `usize` (count; `0` = disabled)
 
@@ -791,8 +799,8 @@ core_shards: 4
 
 **Tuning**:
 - When enabled, the publish queue is split per shard: each shard has its own queue and `pub_workers_per_conn` executors on its core, and a stream's publishes run on the shard that owns it.
-- Benefits scale with stream count: workloads spread across many streams gain parallel, contention-free per-core pipelines (measured +34% delivered throughput at 4 streams × 4 shards, unpinned). Single-stream workloads serialize on one shard by design — neutral to mildly positive.
-- Core pinning requires Linux (`sched_setaffinity`); elsewhere shards still get dedicated threads, preserving the single-writer ownership model without hard affinity.
+- Benefits scale with stream count: workloads spread across many streams gain parallel, contention-free per-core pipelines (measured +34% delivered throughput at 4 streams × 4 shards, unpinned). Single-stream workloads serialize on one shard by design, which is neutral to mildly positive.
+- Core pinning requires Linux (`sched_setaffinity`). Elsewhere, shards still get dedicated threads, preserving the single-writer ownership model without hard affinity.
 - Reasonable starting point: number of physical cores minus 2 (leaving headroom for QUIC I/O on the main runtime).
 
 ## Performance Configuration
@@ -838,7 +846,47 @@ control_stream_drain_timeout_ms: 50
 
 **Notes**:
 - Affects graceful connection shutdown
-- Balance between responsiveness and reliability
+
+### `shutdown_drain_timeout_ms`
+
+**Description**: Total budget for draining in-flight work after SIGTERM or
+SIGINT before remaining tasks are cancelled. One budget shared by every
+subsystem.
+
+**Type**: `u64` (milliseconds)
+
+**Default**: `25000`
+
+**Environment**: `FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS`
+
+Keep `terminationGracePeriodSeconds` above this plus the predrain and handoff
+times. See [Graceful Shutdown](/felix/deployment/graceful-shutdown/).
+
+### `shutdown_predrain_ms`
+
+**Description**: How long the broker keeps serving after `/ready` flips to
+`draining`, before it stops accepting connections. For a load balancer that
+learns about draining only by polling `/ready`.
+
+**Type**: `u64` (milliseconds); `0` skips the wait
+
+**Default**: `0` (the Helm chart uses a preStop sleep instead)
+
+**Environment**: `FELIX_SHUTDOWN_PREDRAIN_MS`
+
+### `shutdown_handoff_timeout_ms`
+
+**Description**: How long a clustered broker spends moving the shards it leads
+to other brokers after SIGTERM, before it closes its listener and drains.
+Shards still led when it expires fail over.
+
+**Type**: `u64` (milliseconds); `0` turns the handoff off
+
+**Default**: `30000`
+
+**Environment**: `FELIX_SHUTDOWN_HANDOFF_TIMEOUT_MS`
+
+See [Handing shards off](/felix/deployment/graceful-shutdown/#handing-shards-off).
 
 ## Client-Side Configuration
 
@@ -858,7 +906,7 @@ While this reference covers broker configuration, clients also have tunable para
 
 **Default**: `8`, `1024`
 
-**Description**: A `ClusterClient` holds one connection per broker and multiplexes every stream on it. The first is the most connections it will open to one broker; the second is how many streams a connection carries before another opens. The connection pool sizes here apply to a `Client` built with `Client::connect`.
+**Description**: A `ClusterClient` holds one connection per broker and multiplexes every stream on it. The first is the most connections it will open to one broker, and the second is how many streams a connection carries before another opens. The connection pool sizes here apply to a `Client` built with `Client::connect`.
 
 ### Cache Connection Pool
 
@@ -886,21 +934,17 @@ While this reference covers broker configuration, clients also have tunable para
 
 ## Configuration Validation
 
-Felix validates configuration at startup:
+`felix-broker --print-config` loads the environment and config file the way
+startup does, prints the result as YAML and exits without binding anything. A
+file that will not parse, an unknown key or a refused combination fails here
+with the message startup would give.
 
 ```bash
-# Test configuration
-cargo run --release -p felix-broker-service -- --dry-run
-
-# Explicit config file
-FELIX_BROKER_CONFIG=/path/to/config.yml cargo run --release -p felix-broker-service
+FELIX_BROKER_CONFIG=/path/to/config.yml felix-broker --print-config
 ```
 
-**Common validation errors**:
-
-- Invalid socket address format
-- Negative or zero values where positive required
-- Conflicting settings
+The combinations refused at startup are listed under
+[Settings that are wrong together](/felix/reference/environment-variables/#settings-that-are-wrong-together).
 
 ## Performance Profiles
 
@@ -964,6 +1008,7 @@ pub_queue_depth: 2048
 ```yaml
 quic_bind: "127.0.0.1:5000"
 metrics_bind: "127.0.0.1:8080"
+controlplane_url: "http://127.0.0.1:8443"
 disable_timings: false
 event_batch_max_events: 32
 ```
@@ -973,6 +1018,7 @@ event_batch_max_events: 32
 ```yaml
 quic_bind: "0.0.0.0:5000"
 metrics_bind: "0.0.0.0:8080"
+controlplane_url: "https://felix-controlplane:8443"
 ack_on_commit: true
 disable_timings: true
 event_batch_max_events: 64
