@@ -523,6 +523,7 @@ async fn pg_store_core_crud_and_auth() -> Result<()> {
             delivery: DeliveryGuarantee::AtLeastOnce,
             durable: false,
             region: None,
+            routing: Default::default(),
         })
         .await?;
     let conflict_stream = store
@@ -541,6 +542,7 @@ async fn pg_store_core_crud_and_auth() -> Result<()> {
             delivery: DeliveryGuarantee::AtLeastOnce,
             durable: false,
             region: None,
+            routing: Default::default(),
         })
         .await;
     assert!(matches!(
@@ -866,6 +868,7 @@ async fn pg_store_additional_paths() -> Result<()> {
             delivery: DeliveryGuarantee::AtLeastOnce,
             durable: false,
             region: None,
+            routing: Default::default(),
         })
         .await?;
     store
@@ -1049,6 +1052,7 @@ async fn pg_store_list_and_change_roundtrip() -> Result<()> {
             delivery: DeliveryGuarantee::AtLeastOnce,
             durable: true,
             region: None,
+            routing: Default::default(),
         })
         .await?;
     store
@@ -1067,6 +1071,7 @@ async fn pg_store_list_and_change_roundtrip() -> Result<()> {
             delivery: DeliveryGuarantee::AtMostOnce,
             durable: false,
             region: None,
+            routing: Default::default(),
         })
         .await?;
     let streams = store.list_streams("t1", "ns1").await?;
@@ -1206,6 +1211,7 @@ async fn pg_store_not_found_and_noop_paths() -> Result<()> {
             delivery: DeliveryGuarantee::AtLeastOnce,
             durable: false,
             region: None,
+            routing: Default::default(),
         })
         .await;
     assert!(matches!(
@@ -1325,6 +1331,7 @@ async fn pg_store_delete_tenant_with_dependents() -> Result<()> {
             delivery: DeliveryGuarantee::AtLeastOnce,
             durable: false,
             region: None,
+            routing: Default::default(),
         })
         .await?;
     store
@@ -1472,6 +1479,7 @@ async fn pg_store_full_surface_area() -> Result<()> {
             delivery: DeliveryGuarantee::AtLeastOnce,
             durable: false,
             region: None,
+            routing: Default::default(),
         })
         .await?;
     assert_eq!(store.list_streams("t1", "default").await?.len(), 1);
@@ -1760,6 +1768,7 @@ async fn pg_changes_monotonic_and_delete_not_found() -> Result<()> {
             delivery: DeliveryGuarantee::AtLeastOnce,
             durable: false,
             region: None,
+            routing: Default::default(),
         })
         .await?;
     store
@@ -2019,6 +2028,7 @@ async fn pg_assignment_long_polls_do_not_hold_connections() -> Result<()> {
             delivery: DeliveryGuarantee::AtMostOnce,
             durable: true,
             region: None,
+            routing: Default::default(),
         })
         .await?;
     let leader = format!("broker-lp-{}", std::process::id());

@@ -7,34 +7,38 @@ use super::{ClusterClient, Owner, ShardKey, StreamKey};
 
 impl ClusterClient {
     /// Which shard a routing key resolves to, using the same function the
-    /// broker routes with (`felix_wire::routing::shard_for`).
+    /// broker routes with (`felix_wire::routing::shard_for_routing`) and the
+    /// stream's own mapping.
     ///
-    /// The width is asked once per stream and cached. A broker that cannot
-    /// answer -- one predating `FEATURE_STREAM_SHARDS` -- yields shard 0, which
-    /// is the safe answer: everything shares one cache entry and the worst
-    /// case is the forwarding this exists to avoid.
+    /// The width and mapping are asked once per stream and cached. A broker
+    /// that cannot answer -- one predating `FEATURE_STREAM_SHARDS` -- yields
+    /// shard 0, which is the safe answer: everything shares one cache entry
+    /// and the worst case is the forwarding this exists to avoid.
     pub(super) async fn shard_of(&self, key: &StreamKey, routing_key: Option<&[u8]>) -> u32 {
-        if let Some(shards) = self.shards.read().await.get(key) {
-            return felix_wire::routing::shard_for(*shards, routing_key);
+        if let Some((shards, routing)) = self.shards.read().await.get(key) {
+            return felix_wire::routing::shard_for_routing(*routing, *shards, routing_key);
         }
-        let shards = match self
+        let (shards, routing) = match self
             .client()
             .await
-            .stream_shards(&key.0, &key.1, &key.2)
+            .stream_routing(&key.0, &key.1, &key.2)
             .await
         {
-            Ok(shards) => shards.max(1),
+            Ok((shards, routing)) => (shards.max(1), routing),
             Err(err) => {
                 tracing::debug!(
                     stream = %key.2,
                     error = %err,
                     "could not learn the stream's width; routing keyed publishes as shard 0",
                 );
-                1
+                (1, Default::default())
             }
         };
-        self.shards.write().await.insert(key.clone(), shards);
-        felix_wire::routing::shard_for(shards, routing_key)
+        self.shards
+            .write()
+            .await
+            .insert(key.clone(), (shards, routing));
+        felix_wire::routing::shard_for_routing(routing, shards, routing_key)
     }
 
     /// Record where a shard's publishes should go next time.

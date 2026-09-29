@@ -46,11 +46,22 @@ impl std::fmt::Display for FleetFeature {
     }
 }
 
+/// Streams created once this is enabled map keys to shards with jump
+/// consistent hashing. A broker reporting it routes by each stream's recorded
+/// mapping, so it can serve a jump-hash stream; the control plane only creates
+/// one after every broker can. Existing streams keep the mapping they have.
+pub const JUMP_HASH_ROUTING: FleetFeature = FleetFeature::new("jump_hash_routing");
+
 /// Every feature this build implements, which is what a broker reports.
 ///
 /// Add a feature here in the same change that makes the broker honour it,
 /// never before: the report is a promise that this build behaves that way.
-pub const IMPLEMENTED: &[FleetFeature] = &[GENERATION_START, MAJORITY_ACK, LEASE_FREE_READS];
+pub const IMPLEMENTED: &[FleetFeature] = &[
+    GENERATION_START,
+    MAJORITY_ACK,
+    LEASE_FREE_READS,
+    JUMP_HASH_ROUTING,
+];
 
 /// A leader writes a generation-start record whenever it starts leading a
 /// stream shard at a new generation, and its quorum mark counts only records

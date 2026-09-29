@@ -48,6 +48,7 @@ pub(super) fn publish_move(
             generation,
             draining: false,
             successor: successor.map(str::to_string),
+            routing: Default::default(),
         }],
         &nodes,
     );

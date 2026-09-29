@@ -35,6 +35,7 @@ fn a_stream_carries_its_level_as_a_field() {
         delivery: DeliveryGuarantee::AtLeastOnce,
         durable: true,
         region: None,
+        routing: Default::default(),
     };
     let json: serde_json::Value = serde_json::to_value(&stream).expect("serialize");
     assert_eq!(json["consistency"], "Quorum");

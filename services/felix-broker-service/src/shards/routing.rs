@@ -275,6 +275,42 @@ impl IngressRouter {
         )
     }
 
+    /// How the stream was placed, or `None` if the routing snapshot does not
+    /// know it. See [`felix_router::RoutingTable::placement_for`].
+    pub(crate) fn placement_for(
+        &self,
+        kind: ShardKind,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> Option<felix_router::StreamPlacement> {
+        self.view.load().routes.table().placement_for(
+            to_router_kind(kind),
+            tenant_id,
+            namespace,
+            stream,
+        )
+    }
+
+    /// The shard `routing_key` belongs to, by the stream's own width and
+    /// mapping. See [`felix_router::RoutingTable::shard_for_key`].
+    pub(crate) fn shard_for_key(
+        &self,
+        kind: ShardKind,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        routing_key: Option<&[u8]>,
+    ) -> u32 {
+        self.view.load().routes.table().shard_for_key(
+            to_router_kind(kind),
+            tenant_id,
+            namespace,
+            stream,
+            routing_key,
+        )
+    }
+
     /// The placed shard count, or `None` if the routing snapshot does not know
     /// this stream. See [`felix_router::RoutingTable::placed_shards_for`].
     pub fn placed_shards_for(
@@ -551,6 +587,7 @@ pub fn routing_table_from(
             generation: assignment.generation,
             draining: assignment.is_draining(),
             successor: assignment.successor.clone(),
+            routing: assignment.routing,
         }),
         nodes,
     )

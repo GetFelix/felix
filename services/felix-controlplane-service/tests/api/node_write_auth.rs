@@ -396,6 +396,7 @@ async fn seed_shard(store: &InMemoryStore, leader: &str, generation: u64) {
             delivery: DeliveryGuarantee::AtMostOnce,
             durable: true,
             region: None,
+            routing: Default::default(),
         })
         .await;
     for _ in 0..=generation {

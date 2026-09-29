@@ -198,6 +198,7 @@ impl Owner {
                 generation,
                 state: "active".to_string(),
                 successor: None,
+                routing: Default::default(),
             },
         )]
         .into_iter()

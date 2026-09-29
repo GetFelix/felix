@@ -3,18 +3,20 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
+use felix_wire::routing::{ShardRouting, shard_for_routing};
+
 use super::{ShardKey, ShardKind};
 
 /// An immutable set of routes.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RoutingTable {
     routes: HashMap<ShardKey, Route>,
-    /// How many shards each stream was placed with, by `tenant/namespace/stream`.
+    /// How each stream was placed, by `tenant/namespace/stream`.
     ///
     /// Derived once when the table is built rather than counted per publish: a
     /// publish needs it before it can resolve a routing key to a shard, and
     /// that is the hottest question the router is asked.
-    shards_per_stream: HashMap<String, u32>,
+    placements: HashMap<String, StreamPlacement>,
 }
 
 impl RoutingTable {
@@ -42,6 +44,7 @@ impl RoutingTable {
                     generation,
                     draining: false,
                     successor: None,
+                    routing: ShardRouting::Modulo,
                 }),
             nodes,
         )
@@ -53,7 +56,7 @@ impl RoutingTable {
         nodes: &HashMap<String, NodeRef>,
     ) -> Self {
         let mut routes = HashMap::new();
-        let mut shards_per_stream: HashMap<String, u32> = HashMap::new();
+        let mut placements: HashMap<String, StreamPlacement> = HashMap::new();
         for Placed {
             key,
             leader,
@@ -61,6 +64,7 @@ impl RoutingTable {
             generation,
             draining,
             successor,
+            routing,
         } in assignments
         {
             // The count is the highest shard index placed plus one, not the
@@ -69,8 +73,14 @@ impl RoutingTable {
             // stream's real width or the same key would move as placement
             // catches up.
             let stream_id = stream_id(key.kind, &key.tenant_id, &key.namespace, &key.stream);
-            let width = shards_per_stream.entry(stream_id).or_insert(0);
-            *width = (*width).max(key.shard + 1);
+            let placement = placements.entry(stream_id).or_default();
+            placement.shards = placement.shards.max(key.shard + 1);
+            // Every assignment of a stream carries the same routing. Letting
+            // jump hash win keeps the answer independent of iteration order
+            // should a feed ever disagree with itself.
+            if !routing.is_modulo() {
+                placement.routing = routing;
+            }
             let leader_ref = nodes.get(&leader).cloned().unwrap_or(NodeRef {
                 node_id: leader.clone(),
                 // A placeholder that can never be dialled, paired with
@@ -99,10 +109,7 @@ impl RoutingTable {
                 },
             );
         }
-        Self {
-            routes,
-            shards_per_stream,
-        }
+        Self { routes, placements }
     }
 
     /// How many shards this stream was placed with, for routing.
@@ -139,13 +146,45 @@ impl RoutingTable {
         namespace: &str,
         stream: &str,
     ) -> Option<u32> {
+        self.placement_for(kind, tenant_id, namespace, stream)
+            .map(|placement| placement.shards)
+    }
+
+    /// How this stream was placed, or `None` if this table has never heard of
+    /// it.
+    pub fn placement_for(
+        &self,
+        kind: ShardKind,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> Option<StreamPlacement> {
         let id = stream_id(kind, tenant_id, namespace, stream);
         // A placement of zero shards is not a placement; treating it as unknown
         // keeps every caller from having to special-case a count it cannot use.
-        self.shards_per_stream
+        self.placements
             .get(&id)
             .copied()
-            .filter(|shards| *shards > 0)
+            .filter(|placement| placement.shards > 0)
+    }
+
+    /// The shard a record with `routing_key` belongs to, under the stream's own
+    /// width and mapping.
+    ///
+    /// Shard 0 for a stream this table has never heard of, for the reason
+    /// [`RoutingTable::shards_for`] falls back to one shard.
+    pub fn shard_for_key(
+        &self,
+        kind: ShardKind,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        routing_key: Option<&[u8]>,
+    ) -> u32 {
+        self.placement_for(kind, tenant_id, namespace, stream)
+            .map_or(0, |placement| {
+                shard_for_routing(placement.routing, placement.shards, routing_key)
+            })
     }
 
     pub fn get(&self, key: &ShardKey) -> Option<&Route> {
@@ -203,9 +242,18 @@ pub struct Placed {
     pub generation: u64,
     pub draining: bool,
     pub successor: Option<String>,
+    /// How the stream maps keys to shards. Always modulo for a cache.
+    pub routing: ShardRouting,
 }
 
-/// The key `shards_per_stream` is built and looked up under.
+/// How a stream was placed: how many shards it has and how keys map onto them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamPlacement {
+    pub shards: u32,
+    pub routing: ShardRouting,
+}
+
+/// The key `placements` is built and looked up under.
 ///
 /// One function so the two cannot disagree, and the kind leads because a cache
 /// and a stream may share every other part of it.

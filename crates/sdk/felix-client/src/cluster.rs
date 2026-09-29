@@ -152,7 +152,8 @@ pub struct ClusterClient {
     /// `felix_wire::routing::shard_for` -- the function the broker routes
     /// with, shared so the two cannot drift.
     owners: RwLock<HashMap<ShardKey, Owner>>,
-    /// How many shards each stream was placed with, as the cluster last said.
+    /// How many shards each stream was placed with and how keys map onto
+    /// them, as the cluster last said.
     ///
     /// Asked once per stream rather than per publish. A stale width is not a
     /// correctness problem: the shard number is only a cache key for an owner
@@ -160,7 +161,7 @@ pub struct ClusterClient {
     /// the broker still routes to the right broker -- it just keys the entry
     /// differently. What the width buys is a cache bounded by shard count
     /// instead of by the number of distinct routing keys.
-    shards: RwLock<HashMap<StreamKey, u32>>,
+    shards: RwLock<HashMap<StreamKey, (u32, felix_wire::routing::ShardRouting)>>,
     /// The broker that last served each shard's consumer groups, found by
     /// following `NotLeader`. Apart from `owners` because it is learned from a
     /// different answer, and a group redirect carries no fresher generation

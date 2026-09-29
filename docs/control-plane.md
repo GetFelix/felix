@@ -1229,6 +1229,32 @@ a single-shard stream keeps total order. The key rides the binary frame under
 `FLAG_BINARY_PUBLISH_KEYED`, so routing a publish no longer costs the binary fast
 path; JSON remains the fallback for a broker that predates the bit.
 
+**Stream routing.** A stream records how its keys map to shards, and the
+choice is fixed when the stream is created (`streams.routing`, migration 0022).
+`modulo` is `hash(key) % shards`, the mapping every stream had before there was
+a choice. `jump_hash` is jump consistent hashing of the same key hash: growing
+a stream from `n - 1` to `n` shards would move about `1/n` of its keys instead
+of nearly all of them. A stream's shard count cannot change today, so this is
+groundwork: the mapping has to be right from creation for growth to be cheap
+later. Both live in `felix_wire::routing`, so a broker and a
+client can never compute different shards for the same key and mapping.
+
+A new stream gets `jump_hash` once the `jump_hash_routing` fleet feature is
+finalized and `modulo` before. The create request may pin `"routing":
+"modulo"`, and asking for `"jump_hash"` before the finalize is refused with
+`409`. The fleet gate is read before the create rather than in its transaction:
+a finalize landing in between only leaves the stream on modulo, which every
+broker serves. Finalizing never changes an existing stream, so no key of a
+live stream ever moves. A stream answer omits `routing` when it is `modulo`.
+
+Brokers learn the mapping from the shard assignments, not from the stream
+catalog: the snapshot, changes and list responses stamp each stream shard's
+assignment with its stream's `routing` (omitted for `modulo`, always omitted
+for a cache), so a broker takes a stream's width and mapping from the same
+records and can never pair one with the other's stale value. The broker's
+routing table resolves every keyed publish with it, and `stream_shards_view`
+passes it on to clients, which is how `ClusterClient` keys its owner cache.
+
 #### Referential integrity
 
 Two references, two different policies, chosen rather than inherited:

@@ -2,7 +2,7 @@
 use anyhow::anyhow;
 use sqlx::FromRow;
 
-use crate::model::{RetentionPolicy, Stream, StreamKind};
+use crate::model::{RetentionPolicy, Stream, StreamKind, StreamRouting};
 use crate::store::{StoreError, StoreResult};
 
 /// Row shape for the `streams` authoritative table.
@@ -26,6 +26,7 @@ pub(super) struct DbStream {
     pub(super) delivery: String,
     pub(super) durable: bool,
     pub(super) region: Option<String>,
+    pub(super) routing: Option<String>,
 }
 
 /// Row shape for `namespaces` table.
@@ -64,7 +65,16 @@ pub(super) fn stream_from_db(row: DbStream) -> StoreResult<Stream> {
         delivery: parse_delivery(&row.delivery)?,
         durable: row.durable,
         region: row.region,
+        routing: parse_routing(row.routing.as_deref())?,
     })
+}
+
+pub(super) fn parse_routing(value: Option<&str>) -> StoreResult<StreamRouting> {
+    match value {
+        None => Ok(StreamRouting::Modulo),
+        Some(value) => StreamRouting::parse(value)
+            .ok_or_else(|| StoreError::Unexpected(anyhow!("unknown stream routing '{value}'"))),
+    }
 }
 
 pub(super) fn parse_stream_kind(value: &str) -> StoreResult<StreamKind> {

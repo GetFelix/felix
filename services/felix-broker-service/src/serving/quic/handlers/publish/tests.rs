@@ -162,6 +162,7 @@ fn ingress_for(leader: &str, servable: bool) -> IngressRouter {
         generation: 1,
         state: "active".to_string(),
         successor: None,
+        routing: Default::default(),
     };
     let assignments: HashMap<crate::shards::ShardKey, crate::shards::watch::ShardAssignment> =
         [(watch_key(), assignment)].into_iter().collect();

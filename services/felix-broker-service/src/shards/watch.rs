@@ -52,6 +52,10 @@ pub struct ShardAssignment {
     /// Where a move in progress is taking the shard, if it has a destination.
     #[serde(default)]
     pub successor: Option<String>,
+    /// How the stream maps keys to shards, stamped by the control plane from
+    /// the stream. Absent is modulo, which is all an older control plane knows.
+    #[serde(default)]
+    pub routing: felix_wire::routing::ShardRouting,
 }
 
 impl ShardAssignment {

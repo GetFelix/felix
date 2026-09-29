@@ -317,6 +317,7 @@ async fn a_draining_cache_withholds_drained_until_its_counters_are_shipped() {
                 generation: 4,
                 draining: true,
                 successor: Some("broker-b".to_string()),
+                routing: Default::default(),
             }],
             &nodes,
         ),
