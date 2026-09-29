@@ -56,6 +56,14 @@ Stream, cache and queue are three ways of **reading** that log.
 The write happens once. There is no second system to copy it into, so there is no
 pair of systems that can disagree, and no glue whose job was to stop them.
 
+That single write is an [atomic commit](/felix/features/atomic-commits/): one
+call carries the event and the state that goes with it, and Felix stores them
+as one record. Subscribers see the event, a consumer group gets it as work, and
+a state read returns the new value, all at the same offset. A reader never sees
+one without the other. A commit covers one stream's shard; it is not a
+transaction across shards. Felix's standalone cache keeps its own log, so a
+plain cache `put` next to a `publish` is still two writes.
+
 ## Why one log can do all three
 
 Picture the records in a line, oldest on the left. A new write is added on the
