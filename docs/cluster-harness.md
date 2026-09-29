@@ -165,8 +165,8 @@ under coverage instrumentation, that setup takes longer for reasons that say
 nothing about the code, and the failure then reports as the semantic having
 broken. That has cost real investigation more than once.
 
-`FELIX_TEST_TIMEOUT_SCALE` multiplies every deadline in `wait::until`. Unset
-means 1, so a developer's run is unchanged and still fails fast on a genuine
+`FELIX_TEST_TIMEOUT_SCALE` multiplies every deadline in `wait::until`, and the
+wait for each broker's `/ready` at start and restart. Unset means 1, so a developer's run is unchanged and still fails fast on a genuine
 hang; CI sets `3` and the coverage job `5`. Raising the constants instead would
 have bought the same green at the cost of never noticing a hang on the machines
 that are fast enough to.
