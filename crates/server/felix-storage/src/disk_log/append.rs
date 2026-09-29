@@ -413,6 +413,13 @@ impl LogInner {
         }
     }
 
+    /// Whether a failure has stopped the log for good. Unlike
+    /// [`Self::check_healthy`], a clean close does not count.
+    pub(super) fn is_poisoned(&self) -> bool {
+        self.failure.lock().is_some()
+            || RollState::from_u8(self.roll_state.load(Ordering::Acquire)) == RollState::Failed
+    }
+
     /// The terminal error, if one has been recorded.
     ///
     /// Checked on every path that either accepts new work or reports

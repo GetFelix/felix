@@ -30,7 +30,11 @@ impl Readable {
         // Never below the log start: a mark behind retention's trim says
         // nothing new is readable, not that trimmed offsets are.
         let floor = self.log.base_offset().min(tail);
-        (self.committed)().map_or(tail, |committed| committed.clamp(floor, tail))
+        let committed = match ((self.committed)(), self.log.poisoned_read_end()) {
+            (Some(committed), Some(end)) => Some(committed.min(end)),
+            (committed, end) => committed.or(end),
+        };
+        committed.map_or(tail, |committed| committed.clamp(floor, tail))
     }
 }
 

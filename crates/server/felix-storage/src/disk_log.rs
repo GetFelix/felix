@@ -160,6 +160,14 @@ impl DiskLog {
         self.inner.durability.durable_upto()
     }
 
+    /// Whether a failed flush, sync, rollover or truncation has stopped the
+    /// log. It then refuses appends until reopened, and records past
+    /// [`Self::durable_offset`] may be ones whose append was never
+    /// acknowledged.
+    pub fn is_poisoned(&self) -> bool {
+        self.inner.is_poisoned()
+    }
+
     /// How many flushes this log has issued.
     ///
     /// Group commit means one flush serves many waiting appends, so N appends
