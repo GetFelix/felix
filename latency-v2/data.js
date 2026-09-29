@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790659537823,
+  "lastUpdate": 1790659951252,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -25872,6 +25872,72 @@ window.BENCHMARK_DATA = {
             "range": "861.97",
             "unit": "us",
             "extra": "trials: 5\nmedian: 583.00\nmean: 959.60\nstdev: 861.97\ncv: 89.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8a31c60546156fb04f16c2fab3dec5c4eddc6809",
+          "message": "ci: run the heavy jobs on self-hosted Azure runners (#854)\n\nTwo persistent 8-vCPU Azure VMs, labelled felix-azure, now take CI's test\njob, coverage, the nightly history campaign and the nightly fuzz matrix.\nThe TLA+ shards and the lighter jobs stay on GitHub-hosted runners.\n\nOnly trusted events reach them: pushes, schedules, dispatches and PRs from\nbranches in this repo. A fork PR falls back to ubuntu-latest, because a\npersistent machine that ran a fork's code would hand it the next job.\n\nOn the self-hosted path the jobs skip swatinem/rust-cache and keep a warm\nper-job target dir under ~/felix-cache (.github/actions/warm-target). The\ncoverage job clears old profiles first, since task coverage uses\n--no-clean. history.yml writes its output under runner.temp rather than a\nfixed /tmp path.\n\nscripts/ci/azure-runners/ has the az CLI script and cloud-init that build\nand register the machines; registration tokens are fetched at deploy time\nand never committed.\n\nSpec-Unaffected: CI only",
+          "timestamp": "2026-09-28T22:25:54-07:00",
+          "tree_id": "cbb018c4cf25d0379c5d64ba2bb796ce8bf245e1",
+          "url": "https://github.com/gabloe/felix/commit/8a31c60546156fb04f16c2fab3dec5c4eddc6809"
+        },
+        "date": 1790659948229,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 179,
+            "range": "2.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 178.40\nstdev: 2.51\ncv: 1.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 248,
+            "range": "5.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 248.00\nmean: 246.80\nstdev: 5.22\ncv: 2.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 312,
+            "range": "23.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 312.00\nmean: 315.20\nstdev: 23.76\ncv: 7.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 213,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 213.00\nmean: 213.60\nstdev: 1.34\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 440,
+            "range": "10.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 440.00\nmean: 440.60\nstdev: 10.14\ncv: 2.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 602,
+            "range": "30.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 602.00\nmean: 609.80\nstdev: 30.56\ncv: 5.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
