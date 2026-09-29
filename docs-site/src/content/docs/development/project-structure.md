@@ -88,7 +88,7 @@ published to crates.io.
 - `felix-cluster`: a real multi-node cluster on one machine, with fault
   injection and the history checker. A library for tests and a CLI
   (`task cluster:up`). See
-  [Testing Distributed Behaviour](/felix/development/testing/).
+  [How Felix Is Tested](/felix/architecture/testing/).
 - `felix-conformance`: the client conformance catalogue and verifier.
 - `felix-loadgen`: the load generator for the real-network performance suite.
 

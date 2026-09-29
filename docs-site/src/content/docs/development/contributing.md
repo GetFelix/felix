@@ -89,7 +89,7 @@ without the fix proves nothing.
 
 Changes to cluster behaviour need a cluster test, and changes to the modelled
 replication protocol need the TLA+ model to follow. See
-[Testing Distributed Behaviour](/felix/development/testing/).
+[How Felix Is Tested](/felix/architecture/testing/).
 
 ## Docs ship with the change
 

@@ -63,7 +63,7 @@ To point the Postgres tests at a database of your own, set
 interrupted run leaves test containers behind, `task pg:sweep` removes them.
 
 Cluster and distributed tests are covered in
-[Testing Distributed Behaviour](/felix/development/testing/).
+[How Felix Is Tested](/felix/architecture/testing/).
 
 ## Two traps
 
