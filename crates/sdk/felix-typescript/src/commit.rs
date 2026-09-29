@@ -29,22 +29,29 @@ pub struct CommitReceipt {
 }
 
 /// A key in a stream shard's state.
+///
+/// Fields are `Either<_, Null>` rather than `Option` because napi leaves an
+/// `Option` field `undefined`, and the typings promise `null`.
 #[napi(object)]
 pub struct StateValue {
-    /// Absent when the key was never written or was deleted.
-    pub value: Option<Buffer>,
+    /// Null when the key was never written or was deleted.
+    pub value: Either<Buffer, Null>,
     /// Offset of the commit that wrote `value`.
-    pub version: Option<BigInt>,
+    pub version: Either<BigInt, Null>,
     /// Offset of the last commit the answer reflects.
-    pub as_of: Option<BigInt>,
+    pub as_of: Either<BigInt, Null>,
+}
+
+fn or_null<T>(value: Option<T>) -> Either<T, Null> {
+    value.map_or(Either::B(Null), Either::A)
 }
 
 impl From<felix_client::StateValue> for StateValue {
     fn from(state: felix_client::StateValue) -> Self {
         Self {
-            value: state.value.map(|bytes| bytes.to_vec().into()),
-            version: state.version.map(BigInt::from),
-            as_of: state.as_of.map(BigInt::from),
+            value: or_null(state.value.map(|bytes| bytes.to_vec().into())),
+            version: or_null(state.version.map(BigInt::from)),
+            as_of: or_null(state.as_of.map(BigInt::from)),
         }
     }
 }
