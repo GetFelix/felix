@@ -1,0 +1,120 @@
+name: Power-loss sweep (nightly)
+
+# The power-loss suite (crates/server/felix-storage/src/disk_log/tests/power_loss.rs)
+# runs eight workload seeds per scenario on every pull request, plus the pinned
+# ones. That is enough to catch a regression most of the time, not every time:
+# removing the durable.mark directory sync survives the eight defaults and
+# first fails on 0x5eed0009. This runs many more seeds from a new base each
+# night.
+#
+# The base seed is printed before the run and in the job summary, so a red
+# night can be replayed with FELIX_POWER_LOSS_SEED and FELIX_POWER_LOSS_SEEDS.
+
+on:
+  schedule:
+    # Every night at 04:07 UTC, clear of the history and fuzz runs at 03:17.
+    - cron: "7 4 * * *"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Base workload seed (decimal or 0x hex, or empty for a random one)"
+        required: false
+        default: ""
+      seeds:
+        description: "Workload seeds per scenario"
+        required: false
+        default: "110"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: power-loss-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sweep:
+    # The suite is Linux only: the power-loss layer models Linux writeback.
+    runs-on: ubuntu-latest
+    # A cold build plus 110 seeds across nine scenarios, with room to spare.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.97.1"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Build the tests
+        run: cargo test -p felix-storage --lib --no-run
+
+      - name: Choose a seed
+        id: seed
+        # Inputs reach the script through the environment, never pasted into it.
+        env:
+          SEED_INPUT: ${{ inputs.seed }}
+          SEEDS_INPUT: ${{ inputs.seeds }}
+        run: |
+          seed="$SEED_INPUT"
+          if [ -z "$seed" ]; then
+            # 32 bits keeps the replay seed short to type.
+            seed=$(printf '0x%x' "$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')")
+          fi
+          seeds="${SEEDS_INPUT:-110}"
+          # The test falls back to its defaults on a value it cannot parse,
+          # which would quietly sweep the wrong seeds.
+          if ! [[ "$seed" =~ ^(0x[0-9a-fA-F]{1,16}|[0-9]{1,19})$ ]]; then
+            echo "seed must be a number: $seed"; exit 1
+          fi
+          if ! [[ "$seeds" =~ ^[1-9][0-9]{0,5}$ ]]; then
+            echo "seeds must be a positive number: $seeds"; exit 1
+          fi
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+          echo "seeds=$seeds" >> "$GITHUB_OUTPUT"
+          echo "power-loss base seed: $seed, seeds per scenario: $seeds"
+          echo "Power-loss base seed: \`$seed\`, seeds per scenario: \`$seeds\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run the sweep
+        env:
+          FELIX_POWER_LOSS_SEED: ${{ steps.seed.outputs.seed }}
+          FELIX_POWER_LOSS_SEEDS: ${{ steps.seed.outputs.seeds }}
+        run: |
+          set -o pipefail
+          cargo test -p felix-storage --lib disk_log::tests::power_loss -- --nocapture 2>&1 |
+            tee /tmp/power-loss-output.txt
+
+      - name: Report the seed
+        if: failure()
+        env:
+          SEED: ${{ steps.seed.outputs.seed }}
+          SEEDS: ${{ steps.seed.outputs.seeds }}
+        run: |
+          {
+            echo "## Power-loss sweep failed"
+            echo
+            echo "Base seed: \`$SEED\`, seeds per scenario: \`$SEEDS\`. Each failure names its"
+            echo "workload and crash seed; replay one workload seed with:"
+            echo
+            echo '```'
+            echo "FELIX_POWER_LOSS_SEED=<workload seed> FELIX_POWER_LOSS_SEEDS=1 cargo test -p felix-storage --lib disk_log::tests::power_loss"
+            echo '```'
+            echo
+            echo '```'
+            grep -A20 'panicked at' /tmp/power-loss-output.txt | head -80
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the output
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: power-loss-output
+          path: /tmp/power-loss-output.txt
+          retention-days: 30

@@ -29,11 +29,16 @@ const CRASHES_PER_CHECKPOINT: u64 = 6;
 const STEPS_PER_CHECKPOINT: u64 = 7;
 const CHECKPOINTS: u64 = 12;
 /// Workload seeds per test, from `FELIX_POWER_LOSS_SEED` upwards. Eight keeps
-/// the suite to a few seconds; `FELIX_POWER_LOSS_SEEDS` runs more.
+/// the suite to a few seconds; `FELIX_POWER_LOSS_SEEDS` runs more, and the
+/// nightly `power-loss-nightly.yml` sweep does.
 const DEFAULT_SEEDS: u64 = 8;
 /// The first workload seed: the one CI failed on, crash seed `0x5_5eed_0001`
 /// (checkpoint 5, trial 0), when a lost-race preparation came back mid-chain.
 const BASE_SEED: u64 = 0x5eed_0001;
+/// Seeds every run covers on top of the range, each one known to catch a bug
+/// the default range misses. `0x5eed_0009` is the first seed that fails with
+/// the directory sync after writing `durable.mark` removed.
+const PINNED_SEEDS: &[u64] = &[0x5eed_0009];
 
 #[derive(Debug, Clone, Copy)]
 struct Scenario {
@@ -215,7 +220,12 @@ async fn run_seeds(fsync_mode: FsyncMode, background_roll: bool, writeback: Writ
     let count = env_u64("FELIX_POWER_LOSS_SEEDS")
         .unwrap_or(DEFAULT_SEEDS)
         .max(1);
-    for seed in base..base.saturating_add(count) {
+    let range = base..base.saturating_add(count);
+    let pinned = PINNED_SEEDS
+        .iter()
+        .copied()
+        .filter(|seed| !range.contains(seed));
+    for seed in range.clone().chain(pinned) {
         run(Scenario {
             fsync_mode,
             background_roll,
