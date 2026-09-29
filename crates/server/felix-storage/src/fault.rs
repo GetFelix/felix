@@ -1,4 +1,5 @@
-//! Test-only faults at the I/O seam: a slow device, and one that fails.
+//! Test-only faults at the I/O seam: a slow device, one whose flushes fail,
+//! and one that refuses writes.
 //!
 //! Compiled into debug builds and into builds with the `fault-injection`
 //! feature, never into a plain release build. Nothing here does anything until
@@ -8,7 +9,8 @@
 //! Every flush the crate issues goes through `io` (`sync_data`, `sync_all`,
 //! `sync_dir`, and the `io_uring` submission), and each of those consults this
 //! module first. That is what makes a fault here reach every durability path,
-//! including the macOS `F_FULLFSYNC` branch and the ring.
+//! including the macOS `F_FULLFSYNC` branch and the ring. A segment append's
+//! write goes through `io::write_all` the same way.
 //!
 //! A process that cannot be called into, such as a broker under the cluster
 //! harness, takes its faults from the file `FELIX_STORAGE_FAULT_FILE` names,
@@ -19,6 +21,14 @@
 //! - `fsync=fail_once` fails the next flush only, the way Linux reports a
 //!   writeback error once and then lets a retry "succeed". A new
 //!   `generation=<n>` arms it again.
+//!
+//! - `write=enospc` or `write=eio` fails every segment write with that error
+//!   until the file changes; `write=eio_once` fails the next one only. A new
+//!   `write_generation=<n>` arms `eio_once` again.
+//!
+//! A failed write lands half its buffer first, the way a disk that fills
+//! mid-batch leaves a partial record behind, so the writer's rewind is what
+//! gets tested and not a write that conveniently did nothing.
 //!
 //! A missing file is no fault. An injected failure is reported instead of
 //! flushing, but the dirty pages are not dropped: whether data survives is the
@@ -36,6 +46,8 @@ const REREAD_AFTER: Duration = Duration::from_millis(50);
 static FSYNC_DELAY_MICROS: AtomicU64 = AtomicU64::new(0);
 /// A [`FsyncFailure`], as its discriminant.
 static FSYNC_FAILURE: AtomicU8 = AtomicU8::new(FsyncFailure::None as u8);
+/// A [`WriteFailure`], as its discriminant.
+static WRITE_FAILURE: AtomicU8 = AtomicU8::new(WriteFailure::None as u8);
 
 static FROM_ENV: Once = Once::new();
 static FOLLOWING: AtomicBool = AtomicBool::new(false);
@@ -51,6 +63,19 @@ pub enum FsyncFailure {
     /// The next flush fails with `EIO` and later ones succeed. The case that
     /// catches code which retries a failed fsync and trusts the retry.
     Once = 2,
+}
+
+/// Whether segment writes fail, with what, and for how long.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum WriteFailure {
+    None = 0,
+    /// Every write fails with `ENOSPC`: a full disk.
+    NoSpace = 1,
+    /// Every write fails with `EIO`: a device that has gone bad.
+    Io = 2,
+    /// The next write fails with `EIO` and later ones succeed.
+    IoOnce = 3,
 }
 
 /// Make every flush in this process wait `delay` before it reaches the device.
@@ -81,6 +106,17 @@ pub fn set_fsync_failure(failure: FsyncFailure) {
         tracing::warn!(
             ?failure,
             "storage fault injection: fsync failure set (test-only facility)",
+        );
+    }
+}
+
+/// Make segment writes in this process fail. Process-wide, like the flush
+/// faults.
+pub(crate) fn set_write_failure(failure: WriteFailure) {
+    if WRITE_FAILURE.swap(failure as u8, Ordering::AcqRel) != failure as u8 {
+        tracing::warn!(
+            ?failure,
+            "storage fault injection: write failure set (test-only facility)",
         );
     }
 }
@@ -127,6 +163,9 @@ pub(crate) fn refresh() {
     if rearms(follower.applied.as_ref(), &setting) {
         set_fsync_failure(setting.failure);
     }
+    if rearms_write(follower.applied.as_ref(), &setting) {
+        set_write_failure(setting.write);
+    }
     follower.applied = Some(setting);
 }
 
@@ -148,6 +187,25 @@ pub(crate) fn injected_failure() -> Option<std::io::Error> {
     failing.then(eio)
 }
 
+/// The error the next segment write should report, if any. Consumes a
+/// [`WriteFailure::IoOnce`].
+pub(crate) fn injected_write_failure() -> Option<std::io::Error> {
+    match WRITE_FAILURE.load(Ordering::Acquire) {
+        x if x == WriteFailure::NoSpace as u8 => Some(enospc()),
+        x if x == WriteFailure::Io as u8 => Some(eio()),
+        x if x == WriteFailure::IoOnce as u8 => WRITE_FAILURE
+            .compare_exchange(
+                WriteFailure::IoOnce as u8,
+                WriteFailure::None as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+            .then(eio),
+        _ => None,
+    }
+}
+
 /// Whether reading `next` after `applied` sets the failure again.
 ///
 /// Only a new failure mode or a new generation does. A `fail_once` the flush
@@ -160,6 +218,24 @@ fn rearms(applied: Option<&FileSetting>, next: &FileSetting) -> bool {
     })
 }
 
+/// [`rearms`] for the write failure, which has its own generation so that
+/// arming a flush fault does not re-fire a consumed `eio_once`.
+fn rearms_write(applied: Option<&FileSetting>, next: &FileSetting) -> bool {
+    applied.is_none_or(|applied| {
+        (applied.write, applied.write_generation) != (next.write, next.write_generation)
+    })
+}
+
+#[cfg(unix)]
+fn enospc() -> std::io::Error {
+    std::io::Error::from_raw_os_error(libc::ENOSPC)
+}
+
+#[cfg(not(unix))]
+fn enospc() -> std::io::Error {
+    std::io::Error::other("injected write failure (ENOSPC)")
+}
+
 #[cfg(unix)]
 fn eio() -> std::io::Error {
     std::io::Error::from_raw_os_error(libc::EIO)
@@ -167,7 +243,7 @@ fn eio() -> std::io::Error {
 
 #[cfg(not(unix))]
 fn eio() -> std::io::Error {
-    std::io::Error::other("injected fsync failure (EIO)")
+    std::io::Error::other("injected I/O failure (EIO)")
 }
 
 struct Follower {
@@ -182,6 +258,8 @@ pub(crate) struct FileSetting {
     pub(crate) delay: Duration,
     pub(crate) failure: FsyncFailure,
     pub(crate) generation: u64,
+    pub(crate) write: WriteFailure,
+    pub(crate) write_generation: u64,
 }
 
 impl Default for FileSetting {
@@ -190,6 +268,8 @@ impl Default for FileSetting {
             delay: Duration::ZERO,
             failure: FsyncFailure::None,
             generation: 0,
+            write: WriteFailure::None,
+            write_generation: 0,
         }
     }
 }
@@ -218,6 +298,15 @@ impl FileSetting {
                     }
                 }
                 "generation" => setting.generation = value.parse().unwrap_or(0),
+                "write" => {
+                    setting.write = match value {
+                        "enospc" => WriteFailure::NoSpace,
+                        "eio" => WriteFailure::Io,
+                        "eio_once" => WriteFailure::IoOnce,
+                        _ => WriteFailure::None,
+                    }
+                }
+                "write_generation" => setting.write_generation = value.parse().unwrap_or(0),
                 _ => {}
             }
         }

@@ -36,7 +36,7 @@ pub(crate) mod power_loss;
 pub(crate) mod uring_fsync;
 
 use std::fs::File;
-use std::io;
+use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
 #[cfg(windows)]
@@ -278,6 +278,23 @@ fn before_sync_dir(path: &std::path::Path) -> io::Result<()> {
     power_loss::observe_dir(path);
     let _ = path;
     Ok(())
+}
+
+/// Write all of `buf` at the file's cursor, for a segment append.
+///
+/// Passes the write fault from `crate::fault` first, which in a release build
+/// without `fault-injection` is compiled out. An injected failure writes half
+/// of `buf` before it reports, like a disk that fills mid-batch.
+pub(crate) fn write_all(mut file: &File, buf: &[u8]) -> io::Result<()> {
+    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+    {
+        crate::fault::refresh();
+        if let Some(err) = crate::fault::injected_write_failure() {
+            file.write_all(&buf[..buf.len() / 2])?;
+            return Err(err);
+        }
+    }
+    file.write_all(buf)
 }
 
 /// A slow or failing device, from `crate::fault`.

@@ -118,6 +118,7 @@ impl InMemoryStore {
             auth_bootstrapped: sorted_by_string_key(&*self.auth_bootstrapped.read().await),
             moves_paused: *self.moves_paused.read().await,
             fleet_enabled,
+            replica_reports: super::shards::sorted_replica_reports(self).await,
             placement_token,
             placement_holder,
             refresh_tokens,
@@ -168,6 +169,11 @@ impl InMemoryStore {
         *self.rbac_groupings.write().await = state.rbac_groupings.into_iter().collect();
         *self.auth_bootstrapped.write().await = state.auth_bootstrapped.into_iter().collect();
         *self.moves_paused.write().await = state.moves_paused;
+        *self.replica_reports.write().await = state
+            .replica_reports
+            .into_iter()
+            .map(|report| (report.key.clone(), report))
+            .collect();
         *self.refresh_tokens.write().await = state
             .refresh_tokens
             .into_iter()

@@ -41,7 +41,8 @@ const EVERY_FAMILY_DURATION: Duration = Duration::from_secs(75);
 /// otherwise.
 ///
 /// A run given `FELIX_HISTORY_DURATION_SECS`, as the nightly one is, also
-/// cuts links, skews clocks and fails fsyncs ([`RandomNemesis::all_faults`]).
+/// cuts links, skews clocks, fails fsyncs, moves shards and drains brokers
+/// ([`RandomNemesis::all_faults`]).
 /// The per-PR run keeps [`RandomNemesis::process_faults`], so its fixed seed
 /// replays the schedule it always has.
 #[serial]
@@ -66,8 +67,9 @@ async fn a_fault_campaign_keeps_quorum_histories_valid() {
     );
 }
 
-/// **Every fault family runs through the campaign and heals.** Link, clock
-/// and disk faults, one after another with the process faults, leave a
+/// **Every fault family runs through the campaign and heals.** Link, clock,
+/// disk and assignment faults, one after another with the process faults,
+/// leave a
 /// valid history, and at least one fault of each family is injected and
 /// healed. What the long random schedule relies on, checked on every PR, on
 /// the lease unless `FELIX_HISTORY_MODE` says otherwise.
@@ -100,6 +102,7 @@ async fn every_fault_family_is_injected_and_healed_in_a_campaign() {
         FaultFamily::Link,
         FaultFamily::Clock,
         FaultFamily::Disk,
+        FaultFamily::Assignment,
     ] {
         assert!(
             healed.contains(&family),
@@ -127,6 +130,9 @@ async fn run_checked(campaign: &Campaign, nemesis: &mut impl Nemesis) -> History
     let report = history::check(&history);
     println!("{report}");
     println!("campaign took {:?}", started.elapsed());
+    if !report.is_valid() {
+        println!("{}", campaign.state_dump(&cluster).await);
+    }
     assert!(
         report.is_valid(),
         "seed {seed}: the history broke the rules; rerun with FELIX_HISTORY_SEED={seed}\n{report}"
@@ -157,7 +163,7 @@ async fn run_checked(campaign: &Campaign, nemesis: &mut impl Nemesis) -> History
 }
 
 /// Goes round the fault kinds in a fixed order that visits every family in
-/// its first four picks, so a short run is sure to see each one. Targets are
+/// its first five picks, so a short run is sure to see each one. Targets are
 /// still drawn from the seed.
 struct EveryFamily {
     kinds: Vec<RandomNemesis>,
@@ -171,7 +177,9 @@ impl EveryFamily {
             FaultKind::DropOutbound,
             FaultKind::ClockRate,
             FaultKind::FsyncFailOnce,
+            FaultKind::MoveShard,
             FaultKind::Kill,
+            FaultKind::Drain,
             FaultKind::DelayOutbound,
             FaultKind::ControlPlaneClockStep,
             FaultKind::SlowFsync,

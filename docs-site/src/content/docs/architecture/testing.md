@@ -50,8 +50,9 @@ pause (`SIGSTOP`) and partition. The nightly workflow
 (`.github/workflows/history.yml`) runs for 20 minutes with a random seed and
 adds link faults (dropped or delayed peer traffic, lost control-plane replies),
 clock faults (a broker's lease clock at 0.5x or 20x, the control plane's wall
-clock stepped 15 s forward) and disk faults (slow fsyncs, one failed fsync).
-
+clock stepped 15 s forward), disk faults (slow fsyncs, one failed fsync) and
+assignment faults (an operator moving a shard to another replica, a broker
+drained and put back).
 
 `FELIX_HISTORY_MODE` picks the replication path. In `lease` mode the campaign
 tests the report and lease path every stream uses by default. In `lease-free`
@@ -122,6 +123,7 @@ scenario can cut a leader's links and speed up its clock at once.
 | `Suspend` | `SIGSTOP`: the broker stays alive, holds its lease and answers nothing | Signal (Unix only) |
 | `Clock` | Time stepped or running at a different rate | `FELIX_CLOCK_FAULT_FILE` |
 | `Fsync` | Flushes delayed, failing with `EIO`, or failing once | `FELIX_STORAGE_FAULT_FILE` |
+| `Write` | Segment writes failing with `ENOSPC` or `EIO`, or failing once | `FELIX_STORAGE_FAULT_FILE` |
 
 Process-level faults are methods: `stop_node`, `kill_node`, `pause_node`,
 `partition_node`, `restart_control_plane`, `drain_node` and `add_node`.

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::{Cluster, READY_TIMEOUT};
-use crate::fault::{ClockFault, Endpoint, Fault, FsyncFault};
+use crate::fault::{ClockFault, Endpoint, Fault, FsyncFault, WriteFault};
 use crate::node::{clock_fault_file, partition_file, storage_fault_file};
 use crate::proxy::Links;
 use crate::wait;
@@ -25,7 +25,7 @@ use crate::wait;
 const CLOCK_SETTLE: Duration = Duration::from_millis(250);
 
 /// The same for the storage fault file, which a broker re-reads on its next
-/// flush once 50ms have passed.
+/// flush or segment write once 50ms have passed.
 const STORAGE_SETTLE: Duration = Duration::from_millis(150);
 
 /// How long a broker may go on using its last reading of the partition file.
@@ -107,6 +107,19 @@ impl Cluster {
                 }
                 tokio::time::sleep(STORAGE_SETTLE).await;
             }
+            Fault::Write { node, fault } => {
+                self.require_node(node)?;
+                {
+                    let mut injected = self.injected();
+                    injected.disk_generation += 1;
+                    let generation = injected.disk_generation;
+                    let disk = injected.disks.entry(node.clone()).or_default();
+                    disk.write = Some(*fault);
+                    disk.write_generation = generation;
+                    self.write_disk(node, disk)?;
+                }
+                tokio::time::sleep(STORAGE_SETTLE).await;
+            }
         }
         self.injected().active.push(fault.clone());
         Ok(())
@@ -181,6 +194,15 @@ impl Cluster {
                         FsyncFault::Delay(_) => disk.delay = Duration::ZERO,
                         FsyncFault::Fail | FsyncFault::FailOnce => disk.failure = None,
                     }
+                    self.write_disk(node, disk)?;
+                }
+                tokio::time::sleep(STORAGE_SETTLE).await;
+            }
+            Fault::Write { node, .. } => {
+                {
+                    let mut injected = self.injected();
+                    let disk = injected.disks.entry(node.clone()).or_default();
+                    disk.write = None;
                     self.write_disk(node, disk)?;
                 }
                 tokio::time::sleep(STORAGE_SETTLE).await;
@@ -556,7 +578,7 @@ impl Cluster {
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
         let path = storage_fault_file(&node.data_dir);
-        if disk.delay.is_zero() && disk.failure.is_none() {
+        if disk.delay.is_zero() && disk.failure.is_none() && disk.write.is_none() {
             return remove_if_present(&path);
         }
         let failure = match disk.failure {
@@ -564,10 +586,18 @@ impl Cluster {
             Some(FsyncFault::FailOnce) => "fail_once",
             _ => "ok",
         };
+        let write = match disk.write {
+            Some(WriteFault::NoSpace) => "enospc",
+            Some(WriteFault::Io) => "eio",
+            Some(WriteFault::IoOnce) => "eio_once",
+            None => "ok",
+        };
         let body = format!(
-            "fsync_delay_ms={}\nfsync={failure}\ngeneration={}\n",
+            "fsync_delay_ms={}\nfsync={failure}\ngeneration={}\n\
+             write={write}\nwrite_generation={}\n",
             disk.delay.as_millis(),
             disk.generation,
+            disk.write_generation,
         );
         std::fs::write(&path, body)
             .with_context(|| format!("write the storage fault for {node_id}"))
@@ -583,7 +613,8 @@ pub(super) struct Injected {
     refused: HashMap<String, BTreeSet<String>>,
     clocks: HashMap<Endpoint, ClockSkew>,
     disks: HashMap<String, DiskFault>,
-    /// Bumped per fsync failure injected, so a second `FailOnce` fires again.
+    /// Bumped per disk failure injected, so a second `FailOnce` or `IoOnce`
+    /// fires again.
     disk_generation: u64,
     /// The file this process's clock follows for the control plane, once a
     /// test has skewed it.
@@ -618,6 +649,8 @@ struct DiskFault {
     delay: Duration,
     failure: Option<FsyncFault>,
     generation: u64,
+    write: Option<WriteFault>,
+    write_generation: u64,
 }
 
 /// Say so when a link fault may not have held: the proxy passed datagrams it

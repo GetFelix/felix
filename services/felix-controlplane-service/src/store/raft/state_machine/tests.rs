@@ -132,6 +132,24 @@ fn shard_assignment(
     }
 }
 
+/// A report that `broker-1` holds all of the shard's log.
+fn replica_report(
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    reported_at_millis: u64,
+) -> crate::model::ReplicaReport {
+    crate::model::ReplicaReport {
+        key: shard_assignment(tenant_id, namespace, stream, "broker-0").key,
+        generation: 0,
+        caught_up: ["broker-1".to_string()].into(),
+        offsets: [("broker-1".to_string(), 42)].into(),
+        reported_at_millis,
+        drained: false,
+        leader_offset: Some(42),
+    }
+}
+
 fn fixed_keys(seed: u8) -> crate::auth::felix_token::TenantSigningKeys {
     let private = [seed; 32];
     let signing = ed25519_dalek::SigningKey::from_bytes(&private);
@@ -221,6 +239,10 @@ fn script() -> Vec<MetaCommand> {
             expected_generation,
         });
     }
+    commands.push(MetaCommand::RecordReplicaReport {
+        report: replica_report("t-a", "ns-1", "orders", 1_000),
+        leader: None,
+    });
     commands.push(MetaCommand::UpsertIdpIssuer {
         tenant_id: "t-a".to_string(),
         issuer: IdpIssuerConfig {
