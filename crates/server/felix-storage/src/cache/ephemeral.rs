@@ -21,9 +21,10 @@ use crate::cache::StorageApi;
 /// rt.block_on(async {
 ///     cache
 ///         .put("t1", "default", "primary", 0, "k", Bytes::from_static(b"v"), None)
-///         .await;
+///         .await
+///         .expect("put");
 ///     assert_eq!(
-///         cache.get("t1", "default", "primary", 0, "k").await,
+///         cache.get("t1", "default", "primary", 0, "k").await.expect("get"),
 ///         Some(Bytes::from_static(b"v"))
 ///     );
 /// });
