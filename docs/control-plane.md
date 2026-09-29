@@ -191,7 +191,8 @@ of no return, and a rollback after it would fail.
 finalize only has to be serialized with registrations. The memory store holds
 its node lock across the check and the write, Postgres takes the same
 advisory lock in both, and Raft applies both in the log (`finalize_fleet_feature`
-and `register_node_in_fleet`, metadata version 2; see
+and `register_node_in_fleet`, metadata version 2, or 3 to finalize
+`jump_hash_routing`; see
 `docs/metadata-raft-design.md`). On Postgres a test holds each one between its
 check and its commit and fails without the lock
 (`a_finalize_waits_for_a_registration_in_flight`,

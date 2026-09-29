@@ -308,7 +308,8 @@ impl ControlPlaneStore for RaftStore {
     /// even when this member's copy lags.
     ///
     /// Until every member can apply `RegisterNodeInFleet` the node is
-    /// registered without its features, as an older member would store it.
+    /// registered without its features or zone, as an older member would
+    /// store it.
     /// Nothing can be enabled before then either, since finalizing is the
     /// same level. It reports them again when it next registers.
     async fn register_node_in_fleet(
@@ -322,12 +323,13 @@ impl ControlPlaneStore for RaftStore {
                 _ => Err(unexpected_shape("registered node")),
             };
         }
-        if !node.status.features.is_empty() {
+        if !node.status.features.is_empty() || node.spec.zone.is_some() {
             tracing::info!(
                 node_id = %node.node_id,
-                "registering without fleet features until every control-plane member supports them",
+                "registering without fleet features or zone until every control-plane member supports them",
             );
             node.status.features.clear();
+            node.spec.zone = None;
         }
         match self.propose(MetaCommand::RegisterNode { node }).await? {
             MetaResponse::Node { node } => Ok((node, Default::default())),
@@ -580,13 +582,19 @@ impl ControlPlaneStore for RaftStore {
         report: ReplicaReport,
         leader: &str,
     ) -> StoreResult<ReportWrite> {
-        match self
-            .propose(MetaCommand::RecordReplicaReport {
-                report,
-                leader: Some(leader.to_string()),
-            })
-            .await?
+        let mut command = MetaCommand::RecordReplicaReport {
+            report,
+            leader: Some(leader.to_string()),
+        };
+        // A member that predates the leadership check would apply the report
+        // unchecked while the others refuse it. Until every member has it,
+        // every member applies it unchecked.
+        if self.handle.cluster_version().await < command.version()
+            && let MetaCommand::RecordReplicaReport { leader, .. } = &mut command
         {
+            *leader = None;
+        }
+        match self.propose(command).await? {
             MetaResponse::Unit => Ok(ReportWrite::Stored),
             MetaResponse::StaleReport => Ok(ReportWrite::Stale),
             MetaResponse::NotLeaderReport => Ok(ReportWrite::NotLeader),

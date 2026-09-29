@@ -221,7 +221,10 @@ A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature
 can be finalized, only once every control-plane member is at metadata
 version 2; a broker registered before that reports them again on its next
-restart. Upgrade the control plane first.
+restart. `jump_hash_routing` needs metadata version 3, because a member
+before it would store a jump-hash stream as modulo: until every member is
+there the finalize, and any request for a `jump_hash` stream, is refused
+with 409. Upgrade the control plane first.
 
 ### Storage format: the one that does not roll back
 
@@ -281,6 +284,7 @@ finalize it. See the runbook above.
 | Internal protocol *kind* | Safe once every broker is back on the old build; see the note on credentialed forwards below |
 | Fleet feature, not finalized | Safe; broker by broker |
 | Fleet feature, finalized | **Not possible** to a build without it; a broker on such a build is refused. Roll back to a build that still has the feature |
+| Control-plane metadata version (Raft) | Safe until something at the new level is written, such as a jump-hash stream. After that, **not** below it: a member from metadata version 3 on refuses entries and snapshots with fields it does not know, and stops; an older one silently drops them. Roll the member forward |
 | `INTERNAL_VERSION` | Cutover again, in both directions |
 | `FORMAT_VERSION` | **Not possible.** Restore from backup |
 

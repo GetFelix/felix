@@ -258,3 +258,52 @@ async fn commands_round_trip_through_the_envelope() {
         );
     }
 }
+
+/// A newer build's field on a command this build knows is refused, not
+/// dropped: applying the rest would store a different stream than the
+/// leader did (a jump-hash stream as modulo, say) with nothing to show it.
+#[tokio::test]
+async fn a_field_this_build_does_not_know_is_refused_not_dropped() {
+    let machine = machine();
+    machine
+        .dispatch(MetaCommand::CreateTenant {
+            tenant: tenant("t1"),
+        })
+        .await
+        .expect("tenant");
+    machine
+        .dispatch(MetaCommand::CreateNamespace {
+            namespace: namespace("t1", "ns"),
+        })
+        .await
+        .expect("namespace");
+    let before = crate::raft::AppStateMachine::snapshot(&machine).await;
+
+    let mut envelope: serde_json::Value =
+        serde_json::from_slice(&encode_command(&MetaCommand::CreateStream {
+            stream: stream("t1", "ns", "orders"),
+        }))
+        .expect("json");
+    envelope["stream"]["placement_hint"] = serde_json::json!("rack-aware");
+    let bytes = serde_json::to_vec(&envelope).expect("bytes");
+
+    let response = crate::raft::AppStateMachine::apply(&machine, &bytes).await;
+    let result = decode_result(&response).expect("decodes");
+    assert!(
+        matches!(&result, Err(MetaError::Unsupported(message)) if message.contains("stream.placement_hint")),
+        "{result:?}"
+    );
+    assert_eq!(
+        crate::raft::AppStateMachine::snapshot(&machine).await,
+        before,
+        "a refused command must change nothing"
+    );
+
+    // The same field left empty says nothing this build misses.
+    envelope["stream"]["placement_hint"] = serde_json::Value::Null;
+    let bytes = serde_json::to_vec(&envelope).expect("bytes");
+    let response = crate::raft::AppStateMachine::apply(&machine, &bytes).await;
+    decode_result(&response)
+        .expect("decodes")
+        .expect("an empty unknown field is applied");
+}

@@ -255,3 +255,49 @@ async fn a_snapshot_without_replica_reports_still_restores() {
     let again: serde_json::Value = serde_json::from_slice(&again).expect("json");
     assert_eq!(again, value);
 }
+
+/// A jump-hash stream is still one after a restore.
+#[tokio::test]
+async fn a_restored_stream_keeps_its_routing() {
+    let original = machine();
+    run_script(&original).await;
+    let mut jumpy = stream("t-a", "ns-3", "jumpy");
+    jumpy.routing = crate::model::StreamRouting::JumpHash;
+    original
+        .dispatch(MetaCommand::CreateStream { stream: jumpy })
+        .await
+        .expect("create");
+    let snapshot = crate::raft::AppStateMachine::snapshot(&original).await;
+
+    let restored = machine();
+    crate::raft::AppStateMachine::restore(&restored, &snapshot).await;
+    let key = StreamKey {
+        tenant_id: "t-a".to_string(),
+        namespace: "ns-3".to_string(),
+        stream: "jumpy".to_string(),
+    };
+    assert_eq!(
+        restored
+            .store()
+            .get_stream(&key)
+            .await
+            .expect("stream")
+            .routing,
+        crate::model::StreamRouting::JumpHash
+    );
+}
+
+/// A snapshot from a newer build, carrying a field this one does not know,
+/// stops the member rather than restoring without it.
+#[tokio::test]
+#[should_panic(expected = "snapshot carries fields this build does not know")]
+async fn a_snapshot_with_a_field_this_build_does_not_know_is_refused() {
+    let original = machine();
+    run_script(&original).await;
+    let snapshot = crate::raft::AppStateMachine::snapshot(&original).await;
+    let mut value: serde_json::Value = serde_json::from_slice(&snapshot).expect("json");
+    value["state"]["streams"][0][1]["placement_hint"] = serde_json::json!("rack-aware");
+    let newer = serde_json::to_vec(&value).expect("json");
+
+    crate::raft::AppStateMachine::restore(&machine(), &newer).await;
+}

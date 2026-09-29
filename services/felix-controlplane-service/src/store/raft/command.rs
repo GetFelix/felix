@@ -22,10 +22,13 @@
 //! `felix_meta_raft_unsupported_commands_total`. That keeps members on the
 //! same build identical, but a newer leader applied the command, so in a
 //! mixed-version group the older member's state falls behind the leader's.
-//! That is why each variant has a level ([`MetaCommand::version`]) and is
-//! proposed only once every member reports at least that level
+//! That is why each variant and each field has a level
+//! ([`MetaCommand::version`], [`fields`]), and a command is proposed only
+//! once every member reports at least that level
 //! (`crate::raft::RaftHandle::cluster_version`); `docs/metadata-raft-design.md`
 //! ("Upgrading") has the rest.
+pub(crate) mod fields;
+
 use serde::{Deserialize, Serialize};
 
 use crate::auth::felix_token::{SigningKey, TenantSigningKeys};
@@ -49,10 +52,11 @@ pub const COMMAND_VERSION: u16 = 1;
 
 /// The highest [`MetaCommand::version`] this build can apply.
 ///
-/// A release that adds a variant gives it the next level and raises this,
-/// so nothing proposes it until every member runs that release. Never lower
-/// it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 2;
+/// A release that adds a variant, or a field to any replicated type, gives
+/// it the next level and raises this, so nothing proposes it until every
+/// member runs that release. New fields get their level in `fields.txt`.
+/// Never lower it: members report it, and the group's level is the minimum.
+pub const METADATA_VERSION: u16 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -312,9 +316,15 @@ pub enum MetaCommand {
 }
 
 impl MetaCommand {
-    /// The level a member must be at to apply this command. 0 is every
-    /// variant a member that reports no level already knows.
+    /// The level a member must be at to apply this command: its variant's,
+    /// or that of the newest field it carries if higher. 0 is everything a
+    /// member that reports no level already knows.
     pub fn version(&self) -> u16 {
+        let value = serde_json::to_value(self).expect("commands serialize by construction");
+        self.variant_level().max(fields::level_of(&value))
+    }
+
+    fn variant_level(&self) -> u16 {
         match self {
             Self::RemoveRbacPolicy { .. }
             | Self::RemoveRbacGrouping { .. }
@@ -323,6 +333,13 @@ impl MetaCommand {
             | Self::RetireSigningKey { .. }
             | Self::ExpireNodes { .. }
             | Self::CheckpointHeartbeats { .. } => 1,
+            // Finalizing jump-hash routing makes new streams jump-hash, which
+            // members before level 3 would store as modulo.
+            Self::FinalizeFleetFeature { feature }
+                if feature == felix_common::fleet::JUMP_HASH_ROUTING.name() =>
+            {
+                3
+            }
             Self::RegisterNodeInFleet { .. } | Self::FinalizeFleetFeature { .. } => 2,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
@@ -627,6 +644,10 @@ pub fn restamp(command: &[u8], now_millis: u64) -> Option<Vec<u8>> {
 /// Decode a committed command. An unreadable command is an error *response*,
 /// not a skip: every replica answers it identically, and the caller sees
 /// exactly what the log holds that this build cannot honour.
+///
+/// A command carrying a field this build does not know is refused the same
+/// way. Applying the rest would store something other than what the leader
+/// stored, with nothing to show for it.
 pub fn decode_command(bytes: &[u8]) -> Result<MetaCommand, MetaError> {
     let envelope: Envelope = serde_json::from_slice(bytes)
         .map_err(|err| MetaError::Unsupported(format!("undecodable command: {err}")))?;
@@ -634,6 +655,16 @@ pub fn decode_command(bytes: &[u8]) -> Result<MetaCommand, MetaError> {
         return Err(MetaError::Unsupported(format!(
             "command version {} is newer than this build's {}",
             envelope.v, COMMAND_VERSION
+        )));
+    }
+    let original: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|err| MetaError::Unsupported(format!("undecodable command: {err}")))?;
+    let decoded = serde_json::to_value(&envelope).expect("commands serialize by construction");
+    let dropped = fields::dropped_fields(&original, &decoded);
+    if !dropped.is_empty() {
+        return Err(MetaError::Unsupported(format!(
+            "command carries fields this build does not know: {}",
+            dropped.join(", ")
         )));
     }
     Ok(envelope.command)
