@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790662023409,
+  "lastUpdate": 1790666706832,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -20592,6 +20592,58 @@ window.BENCHMARK_DATA = {
             "range": "40766.39",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 825792.02\nmean: 810385.98\nstdev: 40766.39\ncv: 5.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b244f64582e60b19a8fa4556c70ccb876c50c89b",
+          "message": "build(deps): bump prom/prometheus in /docker in the base-images group (#861)\n\nBumps the base-images group in /docker with 1 update: prom/prometheus.\n\n\nUpdates `prom/prometheus` from v3.14.0 to v3.15.0\n\n---\nupdated-dependencies:\n- dependency-name: prom/prometheus\n  dependency-version: v3.15.0\n  dependency-type: direct:production\n  dependency-group: base-images\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-09-29T00:21:35-07:00",
+          "tree_id": "76ed5c4d245d96b6b4ae46b4a8e92f52081dc590",
+          "url": "https://github.com/gabloe/felix/commit/b244f64582e60b19a8fa4556c70ccb876c50c89b"
+        },
+        "date": 1790666705694,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 333260.25,
+            "range": "7057.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 333260.25\nmean: 331812.54\nstdev: 7057.27\ncv: 2.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 333260.25,
+            "range": "7057.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 333260.25\nmean: 331812.54\nstdev: 7057.27\ncv: 2.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82457.3,
+            "range": "602.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82457.30\nmean: 82596.62\nstdev: 602.25\ncv: 0.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 824572.98,
+            "range": "6022.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 824572.98\nmean: 825966.20\nstdev: 6022.48\ncv: 0.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
