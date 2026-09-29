@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790682122995,
+  "lastUpdate": 1790701737042,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -20696,6 +20696,58 @@ window.BENCHMARK_DATA = {
             "range": "32365.65",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1201774.16\nmean: 1186303.66\nstdev: 32365.65\ncv: 2.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6614a0227299fbfaeea396836a24c217397d8045",
+          "message": "feat: atomic event and state commits on one shard (#871)\n\n* feat: atomic event and state commits on one shard\n\nA commit writes an event and keyed state updates as one record on the\nstream shard an entity key routes to. Readers see the event at the\nrecord's offset; the shard's state view applies the updates under the\nring lock, held with the event on a Quorum stream until the mark passes\nit. Operations on another stream are refused on the client, never split.\n\nStorage format v5 (record bit 28), replication mark 4, wire requests\ncommit/state_get behind FEATURE_ATOMIC_COMMIT, fleet feature\natomic_commit. TLA+ model FelixAtomicCommit with two violating twins,\nand history-checker rule 8 (partial commit).\n\nPart of #620.\n\n* fix: replay a commit as its event after a restart\n\nThe ring is refilled from disk at startup, and it took commit records as\nstored, so a resumed subscriber got the record's payload instead of its\nevent. The history campaign found it as phantoms after a kill.\n\n* feat: atomic commits in the Python and TypeScript clients\n\nClient.commit/state_get and AsyncClient.commit/state_get in Python, and\nclient.commit/stateGet in Node, over the Rust client's checks, with typed\nNotOnOwningShardError and EventCountError. Conformance scenarios\ncommit.* in the catalogue, checked by the Rust suite (raw frames and the\nSDK, including an old peer's byte-identical ok) and by both bindings'\nsuites. The client fixture finalizes atomic_commit. Guides, READMEs and\ndocs-site client pages document the API.\n\n* docs(site): name atomic commits on the why-felix page\n\n* fix(typescript): return null, not undefined, for missing state fields",
+          "timestamp": "2026-09-29T10:05:49-07:00",
+          "tree_id": "5bf0419f503d7e396f9a0e6356b06c67ec914c92",
+          "url": "https://github.com/gabloe/felix/commit/6614a0227299fbfaeea396836a24c217397d8045"
+        },
+        "date": 1790701736151,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 479604.66,
+            "range": "32584.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 479604.66\nmean: 481015.31\nstdev: 32584.45\ncv: 6.77%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 479604.66,
+            "range": "32584.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 479604.66\nmean: 481015.31\nstdev: 32584.45\ncv: 6.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124355.17,
+            "range": "1005.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124355.17\nmean: 124033.43\nstdev: 1005.38\ncv: 0.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1243551.66,
+            "range": "10053.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1243551.66\nmean: 1240334.33\nstdev: 10053.83\ncv: 0.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
