@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790659210886,
+  "lastUpdate": 1790659540393,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -20332,6 +20332,58 @@ window.BENCHMARK_DATA = {
             "range": "6405.73",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 819356.92\nmean: 822137.57\nstdev: 6405.73\ncv: 0.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fb3e1ed417a56871a8e3a2efa0e91bc5923b5df6",
+          "message": "fix(placement): keep the replica set when a Quorum shard fails over (#855)\n\nFailover rebuilt the followers with choose_replicas, which drops the dead\nleader and adds live brokers that never held the shard. With majority_ack\nfinalized the promoted leader fences a majority of that new set: with a\nspare broker it could be the new leader and the spare alone, and with no\nother live broker the set was empty and it fenced nobody. Either way it\ncould open without a write the old leader and another follower\nacknowledged, and with the control plane on the minority side of a\npartition both sides acknowledged.\n\nA durable Quorum stream now keeps the previous set, the dead leader in it,\nminus any copy a move was still staging, so the fence needs a majority of\nthe set that acknowledged. A down member stays a follower, as a down\nfollower already does.\n\nThe model gains spare brokers, Promotion = \"any\" and ReplaceOnPromote:\nFelixShardFencedAckAnyKept passes, FelixShardFencedAckAnyReplaced loses\nthe record.",
+          "timestamp": "2026-09-28T22:19:31-07:00",
+          "tree_id": "4201abc329bac70623b6c8a5bfde68ed618e8f2e",
+          "url": "https://github.com/gabloe/felix/commit/fb3e1ed417a56871a8e3a2efa0e91bc5923b5df6"
+        },
+        "date": 1790659539841,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347658.61,
+            "range": "9157.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347658.61\nmean: 348696.12\nstdev: 9157.78\ncv: 2.63%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347658.61,
+            "range": "9157.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347658.61\nmean: 348696.12\nstdev: 9157.78\ncv: 2.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81914.51,
+            "range": "722.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81914.51\nmean: 82341.31\nstdev: 722.46\ncv: 0.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819145.11,
+            "range": "7224.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819145.11\nmean: 823413.12\nstdev: 7224.62\ncv: 0.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
