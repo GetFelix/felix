@@ -21,6 +21,6 @@
     "mermaid": "11.17.2"
   },
   "devDependencies": {
-    "jsdom": "30.1.0"
+    "jsdom": "30.1.1"
   }
 }
