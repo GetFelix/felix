@@ -156,3 +156,102 @@ async fn a_restored_machine_has_the_leaders_refresh_tokens() {
         RefreshTokenTake::Unusable
     );
 }
+
+/// A member restored from a snapshot holds the replica reports the leader
+/// had, so it can still promote a replica of a leader that died before the
+/// snapshot was taken: that leader will never report again.
+#[tokio::test]
+async fn a_restored_machine_can_fail_over_on_the_leaders_reports() {
+    use crate::cluster::placement::{CaughtUp, ReplicaPositions};
+
+    let leader = machine();
+    let mut assignment = shard_assignment("t-a", "ns-1", "orders", "broker-0");
+    assignment.replicas = vec!["broker-1".to_string()];
+    let report = replica_report("t-a", "ns-1", "orders", crate::clock::now_millis());
+    for command in [
+        MetaCommand::CreateTenant {
+            tenant: tenant("t-a"),
+        },
+        MetaCommand::CreateNamespace {
+            namespace: namespace("t-a", "ns-1"),
+        },
+        MetaCommand::CreateStream {
+            stream: stream("t-a", "ns-1", "orders"),
+        },
+        MetaCommand::RegisterNode {
+            node: node("broker-0", 7_000),
+        },
+        MetaCommand::RegisterNode {
+            node: node("broker-1", 7_001),
+        },
+        MetaCommand::PutShardAssignmentIf {
+            assignment: assignment.clone(),
+            expected_generation: None,
+        },
+    ] {
+        leader.dispatch(command).await.expect("apply");
+    }
+    let generation = leader
+        .store()
+        .get_shard_assignment(&assignment.key)
+        .await
+        .expect("assignment")
+        .generation;
+    let report = crate::model::ReplicaReport {
+        generation,
+        ..report
+    };
+    let stored = leader
+        .dispatch(MetaCommand::RecordReplicaReport {
+            report: report.clone(),
+            leader: Some("broker-0".to_string()),
+        })
+        .await
+        .expect("report");
+    assert!(matches!(stored, MetaResponse::Unit), "{stored:?}");
+
+    let snapshot = crate::raft::AppStateMachine::snapshot(&leader).await;
+    let follower = machine();
+    crate::raft::AppStateMachine::restore(&follower, &snapshot).await;
+
+    assert_eq!(
+        follower
+            .store()
+            .list_replica_reports()
+            .await
+            .expect("reports"),
+        vec![report],
+    );
+    let positions = ReplicaPositions::load(follower.store().as_ref(), &Default::default())
+        .await
+        .expect("positions");
+    assert!(positions.is_caught_up(&assignment.key, "broker-1"));
+}
+
+/// A snapshot from a member that predates snapshotted reports still loads,
+/// with no reports.
+#[tokio::test]
+async fn a_snapshot_without_replica_reports_still_restores() {
+    let original = machine();
+    run_script(&original).await;
+    let snapshot = crate::raft::AppStateMachine::snapshot(&original).await;
+    let mut value: serde_json::Value = serde_json::from_slice(&snapshot).expect("json");
+    let state = value["state"].as_object_mut().expect("state");
+    assert!(state.remove("replica_reports").is_some());
+    let old = serde_json::to_vec(&value).expect("json");
+
+    let restored = machine();
+    crate::raft::AppStateMachine::restore(&restored, &old).await;
+    assert!(
+        restored
+            .store()
+            .list_replica_reports()
+            .await
+            .expect("reports")
+            .is_empty()
+    );
+    // Everything else came back as it was.
+    let again = crate::raft::AppStateMachine::snapshot(&restored).await;
+    let again: serde_json::Value = serde_json::from_slice(&again).expect("json");
+    assert_eq!(again, value);
+}

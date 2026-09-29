@@ -211,9 +211,13 @@ Replica reports go through the log like everything else placement decides
 on — `RecordReplicaReport`, restamped with the leader's clock on the way in,
 exactly as a heartbeat is — so every member holds them and a new Raft leader
 promotes from what the old one knew rather than waiting for leaders to report
-to *it*. They are not in snapshots: a report expires within seconds and the
-next one replaces it, so a member restored from a snapshot has current
-reports again after one reporting interval.
+to *it*. They are in snapshots too (`replica_reports`, left out while
+empty, so an older snapshot without the field still loads). A live leader
+would replace them within one reporting interval, but a dead one never
+reports again, and its last report is exactly what failover needs to promote
+a replica. Without it, a member restored from a snapshot taken after that
+report could not replace the leader, and its state would differ from its
+peers' in a way the byte-for-byte snapshot comparison could not see.
 
 ### Snapshots, compaction, recovery
 

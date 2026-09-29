@@ -258,6 +258,11 @@ pub(super) async fn record_replica_report(
 }
 
 pub(super) async fn list_replica_reports(store: &InMemoryStore) -> StoreResult<Vec<ReplicaReport>> {
+    Ok(sorted_replica_reports(store).await)
+}
+
+/// Every report, in shard order.
+pub(super) async fn sorted_replica_reports(store: &InMemoryStore) -> Vec<ReplicaReport> {
     let mut reports: Vec<ReplicaReport> = store
         .replica_reports
         .read()
@@ -266,7 +271,7 @@ pub(super) async fn list_replica_reports(store: &InMemoryStore) -> StoreResult<V
         .cloned()
         .collect();
     reports.sort_by(|a, b| shard_order(&a.key).cmp(&shard_order(&b.key)));
-    Ok(reports)
+    reports
 }
 
 fn invalid_shard(err: crate::model::ShardValidationError) -> StoreError {
