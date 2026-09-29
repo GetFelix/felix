@@ -7,9 +7,9 @@ streams, caches, nodes — behind a REST API, decides shard placement, and
 publishes the assignment feed brokers follow. It is never on the data path.
 This page documents its endpoints and how brokers and operators use them.
 
-:::note[Current Status]
-The control plane HTTP API is implemented for metadata, placement, and authentication (token exchange and JWKS). Raft clustering has shipped and is selectable as a storage backend. This document covers the current endpoints; where it describes something unbuilt it says so.
-:::
+Every route is plain HTTP and JSON under `/v1`. The control plane also serves
+its OpenAPI document at `/v1/openapi.json` and a Swagger UI at `/docs`.
+
 ## Authentication and Token Exchange (HTTP)
 
 Felix uses upstream OIDC JWTs for authentication and exchanges them for tenant-scoped Felix tokens. Brokers validate Felix tokens locally.
@@ -37,13 +37,32 @@ Content-Type: application/json
 {
   "felix_token": "<jwt>",
   "expires_in": 900,
-  "token_type": "Bearer"
+  "token_type": "Bearer",
+  "refresh_token": "<opaque>",
+  "refresh_expires_in": 2592000
 }
 ```
 
-**Notes**:
-- `requested` and `resources` are optional hints to filter the issued permission set.
-- If no permissions remain after evaluation, the exchange returns `403`.
+`requested` and `resources` narrow the permissions RBAC grants and never widen
+them. If nothing is left, the exchange returns `403`. `audience` picks who the
+token is for: `felix-broker` (the default) or `felix-controlplane` for this
+API. A token is accepted by one of the two, never both.
+
+### POST /v1/tenants/{tenant_id}/token/refresh
+
+Trade a refresh token for a new Felix token without going back to the IdP.
+
+```http
+POST /v1/tenants/{tenant_id}/token/refresh
+Content-Type: application/json
+
+{ "refresh_token": "<opaque>" }
+```
+
+The answer has the same shape as the exchange's. A refresh token is single-use:
+each refresh returns its replacement. It lasts `FELIX_REFRESH_TOKEN_TTL_SECONDS`
+(30 days by default). The token keeps the audience its exchange chose, and
+naming a different `audience` is a `400`.
 
 ### Configuring Allowed IdPs
 
@@ -171,8 +190,12 @@ with the same permission, answers with the ones every live or draining broker
 supports and the ones an operator has enabled:
 
 ```json
-{ "supported": ["jump_hash_routing"], "enabled": [], "serving_nodes": 3 }
+{ "supported": ["generation_start", "jump_hash_routing", "lease_free_reads", "majority_ack"],
+  "enabled": [], "serving_nodes": 3 }
 ```
+
+This build implements four features: `generation_start`, `majority_ack`,
+`lease_free_reads` and `jump_hash_routing`.
 
 Support turns nothing on. `POST /v1/fleet/features/{feature}/finalize`
 (`node.manage:cluster:*`) enables a feature, and is refused with 409 unless
@@ -235,6 +258,7 @@ take `node.view:cluster:*`; the rest take `node.manage:cluster:*`.
 | `POST /v1/shard-moves` | start moving a shard's leadership to a node |
 | `DELETE /v1/shard-moves/{tenant_id}/{namespace}/{name}/{shard}` | cancel a shard's move; `?kind=cache` for a cache shard |
 | `POST /v1/placement/pause`, `POST /v1/placement/resume` | stop and restart placement's own moves |
+| `POST /v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}` | give up a stranded durable shard's log and place the shard afresh. **This loses data**: records only the old leader held are gone, acknowledged ones included. 409 `not_stranded` if the leader is serving or a replica can take over |
 
 ```http
 POST /v1/shard-moves
@@ -300,7 +324,9 @@ Content-Type: application/json
 
 A stream may also name a `region`, such as `"region": "eu-west-1"`, and is
 then placed only on brokers in that region or in one the control plane's
-`FELIX_REGION_BRIDGES` bridges it to. The region is fixed at creation, an empty
+`FELIX_REGION_BRIDGES` bridges it to. That variable takes comma-separated
+`source>dest` pairs, such as `eu-west-1>us-east-1`, and each pair allows one
+direction only. The region is fixed at creation, an empty
 one is refused with `400`, and omitting it places the stream anywhere. An
 operator move to a broker outside the allowed regions is refused with `409`
 and code `region_not_allowed`.
@@ -315,8 +341,9 @@ move. Stream answers and shard assignments omit `routing` when it is
 `modulo`.
 
 A cache takes `consistency` the same way, `"Leader"` when omitted. Under
-`"Quorum"` a put or delete is acknowledged only once a majority of the shard's
-replicas hold it; counter updates are acknowledged by the leader either way.
+`"Quorum"`, puts, deletes and counter adds are acknowledged only once a
+majority of the shard's replicas hold them. How gets confirm the leader is set
+by the broker's `FELIX_QUORUM_READS`.
 
 ```http
 POST /v1/tenants/t1/namespaces/payments/caches
@@ -335,7 +362,7 @@ Listings are paged. `limit` is 1 to 10000, default 1000; a response with more
 to come carries `next_cursor`, which goes back as `cursor` for the next page.
 This applies to tenants, namespaces, streams, caches, `/v1/nodes` and
 `/v1/shard-assignments`. The RBAC policy and grouping listings answer with the
-full bare array when neither parameter is given, as they always have, and with
+full bare array when neither parameter is given, and with
 `{ "items": [...], "next_cursor": ... }` when either is.
 
 ```http
@@ -401,691 +428,119 @@ Fetch tenant signing keys (public JWKS) used by brokers to verify Felix tokens.
 }
 ```
 
-## Architecture Overview
+### Other endpoints
 
-The control plane is a separate service holding the metadata brokers read:
-tenants, namespaces, streams, caches, the node catalog, and shard assignments.
+The endpoints not covered above:
 
-It is a **REST service**, and where its consistency comes from depends on the
-backend. On Postgres the instances are stateless and do not know about each
-other: consistency comes from the shared database, and you run several against
-one highly available one — each answering `/v1/system/ready` only when it can
-reach a database whose schema matches its build. On the Raft backend the
-instances hold the metadata themselves and consistency comes from the consensus
-between them. The API below is identical either way.
+| Endpoint | What it does | Requires |
+| --- | --- | --- |
+| `PATCH /v1/tenants/{t}/namespaces/{ns}/streams/{s}` | change `retention`, `consistency`, `delivery` or `durable`; every field is optional | `stream.manage` |
+| `PATCH /v1/tenants/{t}/namespaces/{ns}/caches/{c}` | change `display_name` | `cache.manage` |
+| `POST /v1/nodes` | register a broker; the answer carries the heartbeat interval, the expiry timeout and the enabled fleet features | `node.manage` over the node |
+| `POST /v1/nodes/{node_id}/heartbeat` | renew a broker's liveness; the body is `{"incarnation": n}` from its last registration | `node.manage` over the node |
+| `POST /v1/nodes/{node_id}/replica-status` | a leader reports which replicas hold each shard it leads, which failover reads to pick a successor; 409 if any shard's report was refused | `node.manage` over the node |
+| `GET /v1/shard-assignments` | list shard assignments, paged | `node.view:cluster:*` |
+| `GET /v1/shard-assignments/{snapshot,changes}` | the assignment feed brokers follow | `node.view:cluster:*` |
+| `GET /v1/regions`, `GET /v1/regions/{region_id}` | the region this control plane serves (`FELIX_REGION_ID`, default `local`) | none |
+| `GET /v1/system/info` | region, API version and feature flags | none |
+| `GET /v1/system/live` | 200 while the process runs | none |
+| `GET /v1/system/ready`, `GET /v1/system/health` | 200 when the instance can serve metadata, 503 `not_ready` otherwise | none |
+| `GET /v1/openapi.json`, `/docs` | the OpenAPI document and a Swagger UI for it | none |
 
-A Raft backend makes this metadata highly available without depending on
-Postgres for it: the instances replicate it between themselves and survive
-losing one without losing an acknowledged write. Both backends serve the same
-API, so nothing below changes with the choice.
+Errors share one body: `{"code": "...", "message": "...", "request_id": ...}`.
 
-The Postgres shape, with the database holding what the Raft group otherwise does:
+## Storage backends
+
+The control plane keeps its metadata in one of three backends, chosen with
+`FELIX_CONTROLPLANE_STORAGE_BACKEND`. The API is the same on all of them.
+
+- `memory` is the default. It keeps everything in the process and loses it on
+  restart, so it is for tests and local runs.
+- `postgres` keeps the metadata in a shared database. The instances are
+  stateless and don't know about each other, so you run several against one
+  highly available database. Each answers `/v1/system/ready` only when it can
+  reach a database whose schema matches its build.
+- `raft` keeps the metadata in an openraft group embedded in the instances
+  (`FELIX_RAFT_NODE_ID`, `FELIX_RAFT_DATA_DIR`, `FELIX_RAFT_PEERS`). Writes go
+  through the Raft leader, and a follower forwards the writes it receives. The
+  group survives losing a minority of its members without losing an
+  acknowledged write, and there is no external database. See
+  [Metadata Raft](/felix/architecture/metadata-raft/).
 
 ```mermaid
 graph TB
-    subgraph CONTROLPLANE["Control Plane (stateless instances)"]
-        CONTROLPLANE1["controlplane-0"]
-        CONTROLPLANE2["controlplane-1"]
-        CONTROLPLANE3["controlplane-2"]
-        PG[("Postgres<br/>metadata and placement")]
-
-        CONTROLPLANE1 --> PG
-        CONTROLPLANE2 --> PG
-        CONTROLPLANE3 --> PG
+    subgraph CP["Control plane instances"]
+        CP1["controlplane-0"]
+        CP2["controlplane-1"]
+        CP3["controlplane-2"]
     end
-    
-    subgraph Brokers["Broker Data Plane"]
-        B1[Broker 1]
-        B2[Broker 2]
-        B3[Broker 3]
-    end
-    
-    subgraph Clients["Administrative Clients"]
-        Admin[Admin CLI]
-        Ops[Ops Dashboard]
-    end
-    
-    CONTROLPLANE1 -->|metadata sync| Brokers
-    Clients -->|Admin API| CONTROLPLANE1
-    
-    style CONTROLPLANE1 fill:#ffeb3b,stroke:#334155,color:#111827
-    style CONTROLPLANE2 fill:#e3f2fd,stroke:#334155,color:#111827
-    style CONTROLPLANE3 fill:#e3f2fd,stroke:#334155,color:#111827
-    style Brokers fill:#c8e6c9,stroke:#334155,color:#111827
+    Store[("Postgres, or the Raft group<br/>the instances form")]
+    Brokers["Brokers"]
+    Operators["Operators<br/>(felix-controlplane admin, curl)"]
+
+    CP1 --> Store
+    CP2 --> Store
+    CP3 --> Store
+    Brokers -->|register, heartbeat, poll feeds| CP
+    Operators -->|REST| CP
 ```
 
-### Design Goals
+Stream payloads and cache entries are not control-plane data. Brokers keep
+them in their own logs and replicate them between themselves.
 
-1. **Strong consistency**: Metadata changes are linearizable
-2. **Off the hot path**: Data plane never waits for control plane
-3. **Simple propagation**: Brokers consume metadata, don't participate in consensus
-4. **Fast recovery**: Snapshot-based catch-up for new/restarted brokers
-5. **Kubernetes-native**: Leverages K8s for node identity and discovery
+## How brokers follow the metadata
 
-### RAFT Scope
+A broker registers with `POST /v1/nodes` at startup, then heartbeats every
+`FELIX_NODE_HEARTBEAT_INTERVAL_MS` (5 s by default). A broker silent for
+`FELIX_NODE_EXPIRY_TIMEOUT_MS` (15 s by default) is marked `down`, and must
+register again when its next heartbeat answer says so.
 
-The RAFT log stores:
-- **Node membership**: Broker registration and health status
-- **Stream definitions**: Tenant, namespace, stream, retention policies
-- **Shard placement**: Which broker owns which shards
-- **Configuration**: Cluster-wide settings and feature flags
-- **Quotas**: Rate limits and resource quotas (future; RBAC policies live in
-  the auth store today)
+Metadata reaches brokers through snapshot and changes feeds, one pair per
+resource: tenants, namespaces, streams, caches and shard assignments. Each
+change carries a `seq`, an `op` (`created`, `updated` or `deleted`), the key,
+and the resource as it now stands:
 
-The RAFT log **does not** store:
-- Stream payloads (handled by data plane)
-- Cache entries (ephemeral, local to brokers)
-- Client connections (transient state)
-
-## Core Data Model
-
-### Tenant
-
-```yaml
-apiVersion: felix.io/v1
-kind: Tenant
-metadata:
-  name: acme-corp
-spec:
-  description: "ACME Corporation production tenant"
-  quotas:
-    max_streams: 1000
-    max_publish_rate: 100000  # msg/sec
-    max_storage: 1TB
-  encryption:
-    key_id: "tenant-key-acme-v1"
-    rotation_period: 90d
+```http
+GET /v1/streams/changes?since=41
+Authorization: Bearer <FELIX_NODE_TOKEN>
 ```
-
-### Namespace
-
-```yaml
-apiVersion: felix.io/v1
-kind: Namespace
-metadata:
-  name: production
-  tenant: acme-corp
-spec:
-  description: "Production environment"
-  quotas:
-    max_streams: 500
-    max_publish_rate: 50000
-```
-
-### Stream
-
-```yaml
-apiVersion: felix.io/v1
-kind: Stream
-metadata:
-  name: orders
-  namespace: production
-  tenant: acme-corp
-spec:
-  shards: 4
-  retention:
-    time: 7d
-    size: 100GB
-  durability: durable  # or ephemeral
-  replication_factor: 3
-  ack_policy: quorum  # or leader_only
-```
-
-### Shard Placement
-
-```yaml
-apiVersion: felix.io/v1
-kind: ShardPlacement
-metadata:
-  stream: orders
-  namespace: production
-  tenant: acme-corp
-spec:
-  placements:
-    - shard_id: 0
-      leader: broker-1
-      replicas: [broker-2, broker-3]
-    - shard_id: 1
-      leader: broker-2
-      replicas: [broker-3, broker-1]
-    - shard_id: 2
-      leader: broker-3
-      replicas: [broker-1, broker-2]
-    - shard_id: 3
-      leader: broker-1
-      replicas: [broker-2, broker-3]
-```
-
-### Broker Registration
-
-```yaml
-apiVersion: felix.io/v1
-kind: Broker
-metadata:
-  name: broker-1
-spec:
-  address: "broker-1.felix.svc.cluster.local:5000"
-  region: us-west-2
-  availability_zone: us-west-2a
-  capacity:
-    max_shards: 100
-    max_connections: 10000
-  status: active  # active, draining, down
-```
-
-## Admin API
-
-The control plane exposes a gRPC API for administrative operations.
-
-### Stream Management
-
-#### CreateStream
-
-Create a new stream.
-
-**Request**:
-
-```protobuf
-message CreateStreamRequest {
-  string tenant_id = 1;
-  string namespace = 2;
-  string stream = 3;
-  StreamSpec spec = 4;
-}
-
-message StreamSpec {
-  uint32 shards = 1;
-  RetentionPolicy retention = 2;
-  Durability durability = 3;
-  uint32 replication_factor = 4;
-  AckPolicy ack_policy = 5;
-}
-```
-
-**Response**:
-
-```protobuf
-message CreateStreamResponse {
-  string stream_id = 1;
-  StreamStatus status = 2;
-}
-```
-
-**Example** (conceptual CLI):
-
-```bash
-felix-admin stream create \
-  --tenant acme-corp \
-  --namespace production \
-  --stream orders \
-  --shards 4 \
-  --retention 7d \
-  --durability durable \
-  --replication 3
-```
-
-#### DeleteStream
-
-Delete a stream and all its data.
-
-**Request**:
-
-```protobuf
-message DeleteStreamRequest {
-  string tenant_id = 1;
-  string namespace = 2;
-  string stream = 3;
-  bool force = 4;  // Skip safety checks
-}
-```
-
-**Safety checks**:
-- Stream has no active subscribers (unless force=true)
-- Confirm deletion of durable data
-- Grace period for accidental deletions
-
-#### ListStreams
-
-List streams in a namespace.
-
-**Request**:
-
-```protobuf
-message ListStreamsRequest {
-  string tenant_id = 1;
-  string namespace = 2;
-  string filter = 3;  // Optional name filter
-  uint32 page_size = 4;
-  string page_token = 5;
-}
-```
-
-**Response**:
-
-```protobuf
-message ListStreamsResponse {
-  repeated StreamInfo streams = 1;
-  string next_page_token = 2;
-}
-
-message StreamInfo {
-  string name = 1;
-  StreamSpec spec = 2;
-  StreamMetrics metrics = 3;
-}
-```
-
-### Shard Management
-
-Shard moves are not part of a gRPC API: they are the HTTP endpoints in
-[Shard moves and placement](#shard-moves-and-placement).
-
-### Broker Management
-
-#### RegisterBroker
-
-Register a new broker node.
-
-**Request**:
-
-```protobuf
-message RegisterBrokerRequest {
-  string broker_id = 1;
-  string address = 2;
-  BrokerCapacity capacity = 3;
-  map<string, string> metadata = 4;
-}
-```
-
-**Automatic registration**:
-
-Brokers can auto-register on startup:
-
-```yaml
-# Broker startup config
-broker_id: "auto"  # Generate from pod name
-controlplane_url: "https://controlplane.felix.svc.cluster.local:9000"
-controlplane_register_on_startup: true
-```
-
-#### ReportHealth
-
-Brokers periodically report health to control plane.
-
-**Request**:
-
-```protobuf
-message ReportHealthRequest {
-  string broker_id = 1;
-  HealthStatus status = 2;
-  BrokerMetrics metrics = 3;
-  repeated ShardStatus shard_status = 4;
-}
-
-message HealthStatus {
-  bool healthy = 1;
-  string message = 2;
-  int64 uptime_seconds = 3;
-}
-```
-
-**Heartbeat interval**: 5 seconds (configurable)
-
-**Failure detection**: Broker marked down after 3 missed heartbeats
-
-## Metadata Synchronization API
-
-Brokers consume metadata via watch streams. Today that is the HTTP
-`/v1/{tenants,namespaces,streams,caches}/snapshot` and `/changes?since=` feeds
-above, read with the broker's credential; the gRPC shape below is the design
-sketch.
-
-### GetSnapshot
-
-Get full metadata snapshot at a specific version.
-
-**Request**:
-
-```protobuf
-message GetSnapshotRequest {
-  uint64 version = 1;  // 0 = latest
-}
-```
-
-**Response**:
-
-```protobuf
-message GetSnapshotResponse {
-  uint64 version = 1;
-  Metadata metadata = 2;
-}
-
-message Metadata {
-  repeated Tenant tenants = 1;
-  repeated Namespace namespaces = 2;
-  repeated Stream streams = 3;
-  repeated ShardPlacement placements = 4;
-  repeated Broker brokers = 5;
-}
-```
-
-**Usage**:
-
-```rust
-// Broker startup: load full metadata snapshot
-let snapshot = controlplane.get_snapshot(0).await?;
-broker.apply_metadata(snapshot.metadata).await?;
-```
-
-### WatchUpdates
-
-Stream incremental metadata updates.
-
-**Request**:
-
-```protobuf
-message WatchUpdatesRequest {
-  uint64 from_version = 1;
-}
-```
-
-**Response stream**:
-
-```protobuf
-message MetadataUpdate {
-  uint64 version = 1;
-  UpdateType type = 2;
-  oneof payload {
-    Tenant tenant = 3;
-    Namespace namespace = 4;
-    Stream stream = 5;
-    ShardPlacement placement = 6;
-    Broker broker = 7;
-  }
-}
-
-enum UpdateType {
-  CREATE = 0;
-  UPDATE = 1;
-  DELETE = 2;
-}
-```
-
-**Usage**:
-
-```rust
-// Broker: watch for metadata changes
-let mut watch = controlplane.watch_updates(current_version).await?;
-
-while let Some(update) = watch.next().await {
-    match update.type {
-        UpdateType::CREATE => broker.apply_create(update).await?,
-        UpdateType::UPDATE => broker.apply_update(update).await?,
-        UpdateType::DELETE => broker.apply_delete(update).await?,
-    }
-    broker.set_metadata_version(update.version);
-}
-```
-
-### Broker Watch Lifecycle
-
-```mermaid
-sequenceDiagram
-    participant B as Broker
-    participant CONTROLPLANE as Control Plane
-    
-    Note over B: Broker starts up
-    B->>CONTROLPLANE: GetSnapshot(version=0)
-    CONTROLPLANE-->>B: Snapshot at version 42
-    
-    Note over B: Apply snapshot
-    B->>B: current_version = 42
-    
-    B->>CONTROLPLANE: WatchUpdates(from_version=42)
-    Note over CONTROLPLANE: Long-lived stream
-    
-    loop Metadata changes
-        Note over CONTROLPLANE: Stream CREATE at v43
-        CONTROLPLANE->>B: Update (version=43)
-        B->>B: Apply update, current_version=43
-        
-        Note over CONTROLPLANE: Placement UPDATE at v44
-        CONTROLPLANE->>B: Update (version=44)
-        B->>B: Apply update, current_version=44
-    end
-    
-    Note over B,CONTROLPLANE: Connection lost
-    Note over B: Reconnect
-    B->>CONTROLPLANE: WatchUpdates(from_version=44)
-    CONTROLPLANE->>B: Resume from v44
-```
-
-## Consistency Guarantees
-
-### Linearizable Reads and Writes
-
-All control plane operations are linearizable:
-
-- **Writes**: Only the RAFT leader accepts writes
-- **Reads**: Leader reads are linearizable
-- **Follower reads**: Stale by up to heartbeat interval (optional)
-
-### Broker Metadata Consistency
-
-Brokers operate with **eventually consistent** metadata:
-
-- Brokers cache metadata locally
-- Updates arrive via watch stream
-- Lag is typically < 100ms
-- New streams may not be immediately available
-
-**Staleness handling**:
-
-```rust
-// Broker rejects operations for unknown streams
-match broker.lookup_stream(tenant, namespace, stream) {
-    Some(stream_info) => {
-        // Process operation
-    }
-    None => {
-        // Return error: "Unknown stream"
-        // Client should retry after brief delay
-    }
-}
-```
-
-## Failure Scenarios
-
-### Control Plane Leader Failure
-
-```mermaid
-sequenceDiagram
-    participant B as Broker
-    participant CONTROLPLANE1 as CONTROLPLANE Leader
-    participant CONTROLPLANE2 as CONTROLPLANE Follower
-    
-    B->>CONTROLPLANE1: WatchUpdates
-    CONTROLPLANE1->>B: Updates stream
-    
-    Note over CONTROLPLANE1: Leader crashes
-    Note over B: Detect connection loss
-    
-    Note over CONTROLPLANE2: RAFT elects new leader
-    
-    B->>CONTROLPLANE2: WatchUpdates(from_version=N)
-    CONTROLPLANE2->>B: Resume updates
-```
-
-**Recovery time**: < 5 seconds (RAFT election + reconnect)
-
-**Impact**: No data plane disruption, admin API briefly unavailable
-
-### Broker Disconnection from Control Plane
-
-Broker continues operating with cached metadata:
-
-- Existing streams continue serving
-- New stream creation fails
-- Shard placement updates delayed
-- Broker reconciles on reconnection
-
-**Acceptable downtime**: Hours (for stable environments)
-
-### Control Plane Quorum Loss
-
-If RAFT loses quorum (majority of nodes down):
-
-- **Read operations**: Fail (no leader)
-- **Write operations**: Fail (no quorum)
-- **Broker data plane**: Continues operating normally
-- **Admin operations**: Unavailable until quorum restored
-
-**Prevention**: Deploy 3 or 5 control plane nodes across availability zones
-
-## Planned Features
-
-### ACL Management
-
-```protobuf
-message ACL {
-  string tenant_id = 1;
-  string namespace = 2;
-  string resource = 3;  // stream name or "*"
-  string principal = 4;  // service account or user
-  repeated Permission permissions = 5;
-}
-
-enum Permission {
-  PUBLISH = 0;
-  SUBSCRIBE = 1;
-  CACHE_READ = 2;
-  CACHE_WRITE = 3;
-  ADMIN = 4;
-}
-```
-
-### Quota Enforcement
-
-```protobuf
-message Quota {
-  string tenant_id = 1;
-  string namespace = 2;
-  QuotaLimits limits = 3;
-}
-
-message QuotaLimits {
-  uint64 max_publish_rate = 1;  // msg/sec
-  uint64 max_subscribe_connections = 2;
-  uint64 max_storage_bytes = 3;
-  uint64 max_cache_memory = 4;
-}
-```
-
-### Audit Logging
-
-All control plane operations are logged:
 
 ```json
-{
-  "timestamp": "2026-01-15T10:30:00Z",
-  "operation": "DeleteStream",
-  "principal": "admin@acme.com",
-  "tenant": "acme-corp",
-  "namespace": "production",
-  "stream": "old-events",
-  "result": "success"
-}
+{ "items": [ { "seq": 42, "op": "created",
+               "key": { "tenant_id": "t1", "namespace": "payments", "stream": "orders" },
+               "stream": { "tenant_id": "t1", "namespace": "payments", "stream": "orders", "...": "..." } } ],
+  "next_seq": 43 }
 ```
 
-### Region and Bridge Management
+A broker loads each snapshot once, then asks for changes since the last `seq`
+it applied. It polls the tenant, namespace, stream and cache feeds every
+`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS` (2 s by default), so a new stream can take
+that long to reach every broker. The shard-assignment feed is a long poll:
+`wait_ms` (at most 25000) holds the request open until a change lands, so a
+leadership change reaches brokers without waiting for the next poll.
 
-```yaml
-apiVersion: felix.io/v1
-kind: Bridge
-metadata:
-  name: us-to-eu
-spec:
-  source_region: us-west-2
-  target_region: eu-central-1
-  streams:
-    - tenant: acme-corp
-      namespace: production
-      stream: replicated-events
-  encryption:
-    key_id: "bridge-key-us-eu-v1"
-```
+The control plane is not on the data path, so publishes and subscriptions
+never wait on it. A broker that can't reach it keeps the metadata it last saw.
+New streams and placement changes reach it once it can reach the control plane
+again.
 
-## Deployment Considerations
+## Consistency
 
-### Kubernetes StatefulSet
+A write is acknowledged once the backend has it: committed in Postgres, or
+committed by a majority of the Raft group. On Raft, reads are answered by the
+instance that receives them, so a follower can be a moment behind the leader.
+Brokers see changes later still, by up to the poll interval above.
 
-```yaml
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: felix-controlplane
-spec:
-  replicas: 3
-  serviceName: felix-controlplane
-  template:
-    spec:
-      containers:
-      - name: controlplane
-        image: felix/controlplane:latest
-        volumeMounts:
-        - name: data
-          mountPath: /var/lib/felix/raft
-  volumeClaimTemplates:
-  - metadata:
-      name: data
-    spec:
-      accessModes: ["ReadWriteOnce"]
-      resources:
-        requests:
-          storage: 10Gi
-```
-
-### Anti-Affinity
-
-Spread control plane pods across nodes/AZs:
-
-```yaml
-affinity:
-  podAntiAffinity:
-    requiredDuringSchedulingIgnoredDuringExecution:
-    - labelSelector:
-        matchLabels:
-          app: felix-controlplane
-      topologyKey: kubernetes.io/hostname
-```
-
-### Resource Requirements
-
-**Minimum**:
-- CPU: 1 core
-- Memory: 2 GB
-- Disk: 10 GB SSD
-
-**Recommended production**:
-- CPU: 2-4 cores
-- Memory: 4-8 GB
-- Disk: 50 GB SSD with high IOPS
-
-### Monitoring
-
-Key metrics to monitor:
-
-- RAFT leadership changes
-- Commit latency
-- Snapshot size and frequency
-- Broker metadata sync lag
-- Admin API request rate and latency
+Audit records are written for bootstrap only: every initialization attempt,
+accepted or rejected, is logged with the tenant and the outcome. Other
+operations are traced but not audit-logged.
 
 ## Running it well
 
-The short version: run an odd number of instances (3 or 5) so Raft has a
-quorum, give them persistent volumes, and keep them off the broker nodes so
-data-plane load can't starve consensus. The full operational guidance —
-disruption budgets, failover drills, the Postgres-to-Raft migration — is in
-[Control-plane HA](/felix/deployment/control-plane-ha/). The workload itself
-is metadata-only and light; it is not on the data path.
+On Raft, run an odd number of instances (3 or 5) so the group keeps a
+majority through a failure, give them persistent volumes, and keep them off
+the broker nodes so data-plane load can't starve consensus. On Postgres, run
+two or more instances and make the database itself highly available. The
+workload is metadata only and light. Disruption budgets, failover drills and
+the Postgres-to-Raft migration are in
+[Control-plane HA](/felix/deployment/control-plane-ha/).
