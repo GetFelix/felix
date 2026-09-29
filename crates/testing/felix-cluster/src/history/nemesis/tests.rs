@@ -2,8 +2,19 @@ use super::*;
 
 fn view() -> ClusterView {
     let nodes: Vec<String> = (0..3).map(|i| format!("broker-{i}")).collect();
+    let shard = |kind, name: &str, leader: &str| ShardView {
+        kind,
+        name: name.to_string(),
+        shard: 0,
+        leader: leader.to_string(),
+    };
     ClusterView {
-        leaders: vec![nodes[0].clone()],
+        leaders: vec![nodes[0].clone(), nodes[1].clone()],
+        shards: vec![
+            shard("stream", "history-0", &nodes[0]),
+            shard("stream", "history-1", &nodes[0]),
+            shard("cache", "history-cache", &nodes[1]),
+        ],
         nodes,
     }
 }
@@ -50,8 +61,53 @@ fn all_faults_covers_every_family() {
             FaultFamily::Link,
             FaultFamily::Clock,
             FaultFamily::Disk,
+            FaultFamily::Assignment,
         ],
     );
+}
+
+/// A move names a shard of the workload, its current leader, and another
+/// broker to take it; when the target leads shards, it is one of those.
+#[test]
+fn a_move_goes_from_the_leader_to_another_broker() {
+    let view = view();
+    let mut nemesis = RandomNemesis::new(vec![FaultKind::MoveShard]);
+    let mut seen = std::collections::BTreeSet::new();
+    for seed in 0..200 {
+        let mut rng = Rng::new(seed);
+        let Some(Fault::MoveShard {
+            kind,
+            name,
+            shard,
+            from,
+            to,
+        }) = nemesis.next_fault(&mut rng, &view)
+        else {
+            panic!("seed {seed}: not a move");
+        };
+        let target = view
+            .shards
+            .iter()
+            .find(|s| s.kind == kind && s.name == name && s.shard == shard)
+            .unwrap_or_else(|| panic!("{kind} {name}/{shard} is not the workload's"));
+        assert_eq!(from, target.leader);
+        assert_ne!(to, from);
+        assert!(view.nodes.contains(&to));
+        seen.insert(name);
+    }
+    assert_eq!(
+        seen.len(),
+        view.shards.len(),
+        "every shard gets moved: {seen:?}"
+    );
+}
+
+#[test]
+fn no_move_without_a_shard_to_move() {
+    let mut view = view();
+    view.shards.clear();
+    let mut nemesis = RandomNemesis::new(vec![FaultKind::MoveShard]);
+    assert_eq!(nemesis.next_fault(&mut Rng::new(1), &view), None);
 }
 
 /// The per-PR campaign runs `process_faults` on a cluster with no proxies
@@ -59,6 +115,9 @@ fn all_faults_covers_every_family() {
 #[test]
 fn only_the_faults_that_need_it_ask_for_proxies_or_on_commit_flushes() {
     let process = RandomNemesis::process_faults();
+    let assignment = RandomNemesis::new(vec![FaultKind::MoveShard, FaultKind::Drain]);
+    assert!(!assignment.needs_proxy_links());
+    assert!(!assignment.needs_fsync_on_commit());
     assert!(!process.needs_proxy_links());
     assert!(!process.needs_fsync_on_commit());
 

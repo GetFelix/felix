@@ -8,7 +8,8 @@
 //! This [`Fault`] is the campaign's: a fault with its target already chosen.
 //! Most of them are built from the harness's own [`crate::Fault`] values and
 //! injected through [`Cluster::inject`]; kill, pause and partition use the
-//! older primitives directly.
+//! older primitives directly. Moves and drains go through the control
+//! plane's operator API, as an operator would.
 //!
 //! Faults are injected one at a time and each is healed before the next, so a
 //! three-node cluster always has a majority that is only ever one fault away
@@ -17,12 +18,12 @@
 use std::fmt;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use super::rng::Rng;
-use crate::Cluster;
 use crate::Fault as HarnessFault;
 use crate::fault::{ClockFault, Endpoint, FsyncFault};
+use crate::{Cluster, wait};
 
 /// How late a delayed link delivers.
 const LINK_DELAY: Duration = Duration::from_millis(250);
@@ -37,6 +38,11 @@ const CONTROL_PLANE_STEP: Duration = Duration::from_secs(15);
 
 /// How long each flush waits under [`FaultKind::SlowFsync`].
 const FSYNC_DELAY: Duration = Duration::from_millis(200);
+
+/// How long the moves a [`FaultKind::MoveShard`] or [`FaultKind::Drain`]
+/// started may take to finish once it is healed. A move still running after
+/// this is a stall, and fails the campaign.
+const MOVE_SETTLE: Duration = Duration::from_secs(60);
 
 /// Chooses the next fault.
 ///
@@ -69,6 +75,18 @@ pub struct ClusterView {
     /// The brokers leading at least one of the workload's lists. Faulting a
     /// leader is what forces a failover, so a nemesis should favour these.
     pub leaders: Vec<String>,
+    /// The workload's shards and who leads each, for the faults that move one.
+    pub shards: Vec<ShardView>,
+}
+
+/// One of the workload's shards, as the control plane assigns it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardView {
+    /// `stream` or `cache`.
+    pub kind: &'static str,
+    pub name: String,
+    pub shard: u32,
+    pub leader: String,
 }
 
 /// A kind of fault a [`RandomNemesis`] may pick.
@@ -100,6 +118,12 @@ pub enum FaultKind {
     /// One broker's next flush fails with `EIO`. That log is poisoned for
     /// good, so healing restarts the broker.
     FsyncFailOnce,
+    /// An operator moves one of the workload's shards to another of its
+    /// replicas, online. Healing waits for the move to finish.
+    MoveShard,
+    /// An operator drains one broker, so placement moves its leaderships
+    /// off. Healing puts it back and waits for the moves in flight.
+    Drain,
 }
 
 impl FaultKind {
@@ -112,6 +136,7 @@ impl FaultKind {
             | FaultKind::DropControlPlaneReplies => FaultFamily::Link,
             FaultKind::ClockRate | FaultKind::ControlPlaneClockStep => FaultFamily::Clock,
             FaultKind::SlowFsync | FaultKind::FsyncFailOnce => FaultFamily::Disk,
+            FaultKind::MoveShard | FaultKind::Drain => FaultFamily::Assignment,
         }
     }
 }
@@ -126,6 +151,8 @@ pub enum FaultFamily {
     Link,
     Clock,
     Disk,
+    /// Who leads what: operator moves and drains.
+    Assignment,
 }
 
 /// One fault in effect.
@@ -170,6 +197,16 @@ pub enum Fault {
     FsyncFailOnce {
         node: String,
     },
+    MoveShard {
+        kind: &'static str,
+        name: String,
+        shard: u32,
+        from: String,
+        to: String,
+    },
+    Drain {
+        node: String,
+    },
 }
 
 impl Fault {
@@ -191,6 +228,8 @@ impl Fault {
             Fault::ControlPlaneClockStep { .. } => FaultKind::ControlPlaneClockStep,
             Fault::SlowFsync { .. } => FaultKind::SlowFsync,
             Fault::FsyncFailOnce { .. } => FaultKind::FsyncFailOnce,
+            Fault::MoveShard { .. } => FaultKind::MoveShard,
+            Fault::Drain { .. } => FaultKind::Drain,
         }
     }
 
@@ -200,6 +239,17 @@ impl Fault {
             Fault::Kill { node } => cluster.kill_node(node),
             Fault::Pause { node } => pause(cluster, node, true),
             Fault::Partition { node } => cluster.partition_node(node),
+            Fault::MoveShard {
+                kind,
+                name,
+                shard,
+                to,
+                ..
+            } => cluster
+                .start_move_of(kind, name, *shard, to)
+                .await
+                .map(drop),
+            Fault::Drain { node } => cluster.drain_node(node).await,
             _ => {
                 for fault in self.harness_faults() {
                     cluster.inject(&fault).await?;
@@ -215,6 +265,11 @@ impl Fault {
             Fault::Kill { node } => cluster.restart_node(node).await,
             Fault::Pause { node } => pause(cluster, node, false),
             Fault::Partition { .. } => cluster.heal_partitions(),
+            Fault::MoveShard { .. } => settle_moves(cluster).await,
+            Fault::Drain { node } => {
+                cluster.undrain_node(node).await?;
+                settle_moves(cluster).await
+            }
             _ => {
                 for fault in self.harness_faults() {
                     cluster.heal(&fault).await?;
@@ -230,11 +285,15 @@ impl Fault {
         }
     }
 
-    /// The harness faults this one is made of. Empty for kill, pause and
-    /// partition, which use the cluster's own primitives.
+    /// The harness faults this one is made of. Empty for the ones that use
+    /// the cluster's own primitives or its operator API.
     pub(crate) fn harness_faults(&self) -> Vec<HarnessFault> {
         match self {
-            Fault::Kill { .. } | Fault::Pause { .. } | Fault::Partition { .. } => Vec::new(),
+            Fault::Kill { .. }
+            | Fault::Pause { .. }
+            | Fault::Partition { .. }
+            | Fault::MoveShard { .. }
+            | Fault::Drain { .. } => Vec::new(),
             Fault::DropOutbound { node, peers } => peers
                 .iter()
                 .map(|peer| HarnessFault::Drop {
@@ -299,6 +358,14 @@ impl fmt::Display for Fault {
             }
             Fault::SlowFsync { node, by } => write!(f, "slow {node}'s fsync by {by:?}"),
             Fault::FsyncFailOnce { node } => write!(f, "fail {node}'s next fsync"),
+            Fault::MoveShard {
+                kind,
+                name,
+                shard,
+                from,
+                to,
+            } => write!(f, "move {kind} {name}/{shard} from {from} to {to}"),
+            Fault::Drain { node } => write!(f, "drain {node}"),
         }
     }
 }
@@ -331,7 +398,8 @@ impl RandomNemesis {
         ])
     }
 
-    /// Every fault kind: processes, links, clocks and disks. Start the
+    /// Every fault kind: processes, links, clocks, disks and assignments.
+    /// Start the
     /// cluster from [`Campaign::cluster_config`](super::Campaign::cluster_config)
     /// with this nemesis, so links are proxied and brokers flush on commit.
     pub fn all_faults() -> Self {
@@ -346,6 +414,8 @@ impl RandomNemesis {
             FaultKind::ControlPlaneClockStep,
             FaultKind::SlowFsync,
             FaultKind::FsyncFailOnce,
+            FaultKind::MoveShard,
+            FaultKind::Drain,
         ])
     }
 }
@@ -394,6 +464,33 @@ impl Nemesis for RandomNemesis {
                 by: FSYNC_DELAY,
             },
             FaultKind::FsyncFailOnce => Fault::FsyncFailOnce { node },
+            FaultKind::MoveShard => {
+                // A shard the target leads if it leads any, so the move is
+                // off the broker the other faults favour.
+                let led: Vec<&ShardView> =
+                    view.shards.iter().filter(|s| s.leader == node).collect();
+                let shard = match led.as_slice() {
+                    [] if view.shards.is_empty() => return None,
+                    [] => rng.pick(&view.shards),
+                    led => *rng.pick(led),
+                };
+                let others: Vec<&String> = view
+                    .nodes
+                    .iter()
+                    .filter(|peer| **peer != shard.leader)
+                    .collect();
+                if others.is_empty() {
+                    return None;
+                }
+                Fault::MoveShard {
+                    kind: shard.kind,
+                    name: shard.name.clone(),
+                    shard: shard.shard,
+                    from: shard.leader.clone(),
+                    to: (*rng.pick(&others)).clone(),
+                }
+            }
+            FaultKind::Drain => Fault::Drain { node },
         })
     }
 
@@ -408,6 +505,29 @@ impl Nemesis for RandomNemesis {
             .iter()
             .any(|kind| kind.family() == FaultFamily::Disk)
     }
+}
+
+/// Wait until no shard is moving: every move the fault started, and any
+/// placement started on its own meanwhile, has cut over or been dropped.
+async fn settle_moves(cluster: &Cluster) -> Result<()> {
+    let last = std::sync::Mutex::new(Vec::new());
+    wait::until(MOVE_SETTLE, "the shard moves to finish", || async {
+        match cluster.moving_shards().await {
+            Ok(moving) => {
+                let done = moving.is_empty();
+                *last.lock().expect("moving lock") = moving;
+                done
+            }
+            Err(_) => false,
+        }
+    })
+    .await
+    .with_context(|| {
+        format!(
+            "still moving: {}",
+            last.lock().expect("moving lock").join(", ")
+        )
+    })
 }
 
 #[cfg(unix)]
