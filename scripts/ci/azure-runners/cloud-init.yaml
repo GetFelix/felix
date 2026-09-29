@@ -1,0 +1,101 @@
+#cloud-config
+# A persistent GitHub Actions runner host for the heavy Felix jobs. This
+# installs the toolchain and the runner binaries only; registration needs a
+# short-lived token, so deploy.sh does it afterwards over run-command and no
+# credential ever lands in custom data.
+package_update: true
+package_upgrade: true
+packages:
+  - build-essential
+  - clang
+  - lld
+  - pkg-config
+  - libssl-dev
+  - cmake
+  - git
+  - curl
+  - jq
+  - unzip
+  - zip
+  - python3
+  - python3-pip
+  - python3-venv
+  - python3-yaml
+  - openjdk-21-jdk-headless
+  - docker.io
+  - postgresql-client
+  - gh
+  - ca-certificates
+  - gnupg
+
+users:
+  - default
+  # Unprivileged: no sudo. It is in the docker group because the test and
+  # coverage jobs use a Postgres service container, which is root-equivalent
+  # on this host; that is why only trusted events are routed here.
+  - name: runner
+    shell: /bin/bash
+    groups: [docker]
+    lock_passwd: true
+
+write_files:
+  # Cluster tests run many QUIC brokers at once; the defaults clamp socket
+  # buffers to ~208 KB.
+  - path: /etc/sysctl.d/99-felix-ci.conf
+    content: |
+      net.core.rmem_max = 26214400
+      net.core.wmem_max = 26214400
+      fs.inotify.max_user_watches = 524288
+      fs.file-max = 2097152
+  - path: /etc/security/limits.d/99-runner.conf
+    content: |
+      runner soft nofile 1048576
+      runner hard nofile 1048576
+  # Images pile up across months of jobs; persistent disk means someone has to
+  # take the rubbish out.
+  - path: /etc/cron.weekly/docker-prune
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      docker system prune -af --filter until=168h >/dev/null 2>&1 || true
+  - path: /usr/local/sbin/felix-runner-provision.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      RUST_TOOLCHAIN=1.97.1
+      # No debconf or needrestart dialogs: there is no terminal to answer them.
+      export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+
+      # Node 20 from NodeSource; Ubuntu's is older.
+      curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+      apt-get install -y nodejs
+
+      systemctl enable --now docker
+
+      # rustup, the pinned toolchain, and nightly for the fuzz jobs. Not
+      # sudo -i: it escapes the command and mangles a multi-line script.
+      sudo -u runner -H bash -lc "
+        set -euo pipefail
+        curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN}
+        . \$HOME/.cargo/env
+        rustup component add clippy rustfmt llvm-tools-preview --toolchain ${RUST_TOOLCHAIN}
+        rustup toolchain install nightly --profile minimal
+        curl -fsSL https://github.com/taiki-e/cargo-llvm-cov/releases/latest/download/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz | tar xz -C \$HOME/.cargo/bin
+      "
+
+      # The runner binaries. The runner updates itself after registration.
+      version="$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | jq -r .tag_name | sed 's/^v//')"
+      sudo -u runner -H bash -lc "
+        set -euo pipefail
+        mkdir -p \$HOME/actions-runner \$HOME/felix-cache
+        cd \$HOME/actions-runner
+        curl -fsSL -o runner.tgz https://github.com/actions/runner/releases/download/v${version}/actions-runner-linux-x64-${version}.tar.gz
+        tar xzf runner.tgz && rm runner.tgz
+      "
+      /home/runner/actions-runner/bin/installdependencies.sh
+      echo "felix-runner-provision: done"
+
+runcmd:
+  - sysctl --system
+  - /usr/local/sbin/felix-runner-provision.sh > /var/log/felix-runner-provision.log 2>&1

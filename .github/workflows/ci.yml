@@ -103,8 +103,11 @@ jobs:
           docker logs smoke
           docker rm -f smoke
 
+  # Heavy, so it runs on the self-hosted Azure runners for pushes and
+  # same-repo PRs. Fork PRs stay on GitHub-hosted: code from a fork must never
+  # run on a persistent machine. See docs-site development/building.md.
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
     timeout-minutes: 120
     env:
       CARGO_TERM_COLOR: always
@@ -133,7 +136,14 @@ jobs:
           components: rustfmt, clippy
 
       - name: Rust Cache
+        if: runner.environment == 'github-hosted'
         uses: swatinem/rust-cache@v2
+
+      - name: Warm target dir
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/warm-target
+        with:
+          slot: ci-test
 
       - name: Install Task
         uses: arduino/setup-task@v3

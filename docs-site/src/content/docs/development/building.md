@@ -120,7 +120,8 @@ pull requests.
 
 ## What CI runs
 
-`ci.yml` runs on ubuntu only. Its jobs:
+`ci.yml` runs on Linux only. `test` runs on the self-hosted runners described
+below; the rest run on GitHub-hosted `ubuntu-latest`. Its jobs:
 
 | Job | Runs |
 | --- | --- |
@@ -148,6 +149,48 @@ Other workflows:
   PR run is advisory and never fails a check.
 - `release.yml`: builds and publishes a tagged release.
 - `cla.yml`: the CLA Assistant bot.
+
+## Self-hosted runners
+
+Two persistent Azure VMs (8 vCPU each, label `felix-azure`) take the jobs that
+are too slow for a GitHub-hosted runner:
+
+- `ci.yml`'s `test` job
+- `coverage.yml`
+- `history.yml`, the nightly history campaign
+- `fuzz-nightly.yml`
+- `power-loss-nightly.yml`
+
+Everything else, including the four TLA+ shards, stays on GitHub-hosted
+runners. The shards run in parallel there, which two machines could not match.
+
+There are two runners and each takes one job at a time, so when both are busy
+jobs wait in the queue. The nightly fuzz matrix and the history campaign start
+at the same time and keep both runners busy for a few hours.
+
+**Fork pull requests never run on them.** The repository is public, and a
+persistent machine that ran a stranger's code would hand it to the next job.
+Each of those jobs picks its runner like this:
+
+```yaml
+runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
+```
+
+Pushes, schedules, manual runs and pull requests from branches in this
+repository go to `felix-azure`. A pull request from a fork gets
+`ubuntu-latest`. On top of that, the repository requires a maintainer to
+approve workflow runs for every outside contributor's pull request.
+
+On the self-hosted path the jobs skip `swatinem/rust-cache` and keep a warm
+target directory per job under `~/felix-cache` instead, through
+`.github/actions/warm-target`. The coverage job clears old profiles before it
+runs, so a warm directory does not skew the numbers.
+
+To rebuild, re-register or tear down the machines, use
+`scripts/ci/azure-runners/deploy.sh` (`up`, `register`, `status`, `down`).
+Its README covers the network rules, what is installed and how registration
+tokens are handled. A runner that shows offline after a reboot or a runner
+update usually needs only `./deploy.sh register`.
 
 ## Docs site
 

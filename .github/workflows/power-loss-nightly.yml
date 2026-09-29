@@ -38,7 +38,8 @@ env:
 jobs:
   sweep:
     # The suite is Linux only: the power-loss layer models Linux writeback.
-    runs-on: ubuntu-latest
+    # Self-hosted like history.yml.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
     # A cold build plus 110 seeds across nine scenarios, with room to spare.
     timeout-minutes: 60
     steps:
@@ -50,7 +51,14 @@ jobs:
           toolchain: "1.97.1"
 
       - name: Rust cache
+        if: runner.environment == 'github-hosted'
         uses: swatinem/rust-cache@v2
+
+      - name: Warm target dir
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/warm-target
+        with:
+          slot: power-loss
 
       - name: Build the tests
         run: cargo test -p felix-storage --lib --no-run
@@ -88,7 +96,7 @@ jobs:
         run: |
           set -o pipefail
           cargo test -p felix-storage --lib disk_log::tests::power_loss -- --nocapture 2>&1 |
-            tee /tmp/power-loss-output.txt
+            tee ${{ runner.temp }}/power-loss-output.txt
 
       - name: Report the seed
         if: failure()
@@ -107,7 +115,7 @@ jobs:
             echo '```'
             echo
             echo '```'
-            grep -A20 'panicked at' /tmp/power-loss-output.txt | head -80
+            grep -A20 'panicked at' ${{ runner.temp }}/power-loss-output.txt | head -80
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -116,5 +124,5 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: power-loss-output
-          path: /tmp/power-loss-output.txt
+          path: ${{ runner.temp }}/power-loss-output.txt
           retention-days: 30
