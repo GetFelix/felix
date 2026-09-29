@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790659954094,
+  "lastUpdate": 1790660215927,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -20436,6 +20436,58 @@ window.BENCHMARK_DATA = {
             "range": "2969.11",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 820247.06\nmean: 819930.20\nstdev: 2969.11\ncv: 0.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a586a602bb543230799e808d0dd526fc472d21fb",
+          "message": "ci(fuzz): run the nightly fuzz matrix on GitHub-hosted runners again (#856)\n\nEach target fuzzes on one core, so the Azure runners' eight cores bought it\nlittle, and it started with the history campaign and held both runners for\nhours. The warm-target step already checks the runner kind, so it just skips.\n\nSpec-Unaffected: CI only",
+          "timestamp": "2026-09-28T22:33:00-07:00",
+          "tree_id": "c9a99f542a07ea34fb5397f5fefdd65829746b08",
+          "url": "https://github.com/gabloe/felix/commit/a586a602bb543230799e808d0dd526fc472d21fb"
+        },
+        "date": 1790660215262,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 345828.63,
+            "range": "10139.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345828.63\nmean: 345228.94\nstdev: 10139.13\ncv: 2.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 345828.63,
+            "range": "10139.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345828.63\nmean: 345228.94\nstdev: 10139.13\ncv: 2.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 85112.37,
+            "range": "493.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 85112.37\nmean: 84990.45\nstdev: 493.99\ncv: 0.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 851123.71,
+            "range": "4939.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 851123.71\nmean: 849904.53\nstdev: 4939.95\ncv: 0.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
