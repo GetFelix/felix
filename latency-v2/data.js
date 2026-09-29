@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790666702997,
+  "lastUpdate": 1790682119850,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -26202,6 +26202,72 @@ window.BENCHMARK_DATA = {
             "range": "240.53",
             "unit": "us",
             "extra": "trials: 5\nmedian: 718.00\nmean: 847.60\nstdev: 240.53\ncv: 28.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7311b0fad2f2b116313a44fb048519f7539e4feb",
+          "message": "fix(placement): seat a Quorum replacement only once it holds what the old set held (#862)\n\nReplacing a follower adds the newcomer beside the one leaving, then drops\nthe one leaving once the newcomer is within the move lag bound or a report\nnames it caught up. A leader names every follower caught up at a new\ngeneration until something is counted there, so the seat could fire with\nthe newcomer holding nothing. A record acknowledged on the leader and the\nleaving follower was then held by neither the newcomer nor the lagging\nfollower, a majority of the new set, and a failover lost it.\n\nOn a durable Quorum stream the seat now also waits, on a report at the\njoining generation, until the newcomer holds at least what a majority of\nthe set it joined holds, counting a member the report leaves out as level\nwith the leader.\n\nThe model gains follower replacement (Reseat, Seat) under MaxMoves with\nspares, and SeatHoldsCopy. FelixShardFencedAckSeat passes and\nFelixShardFencedAckSeatEarly violates AckedHeldByLeader.",
+          "timestamp": "2026-09-29T04:38:41-07:00",
+          "tree_id": "d9cb8049b10ac1e484db75cc54fbc70637c94093",
+          "url": "https://github.com/gabloe/felix/commit/7311b0fad2f2b116313a44fb048519f7539e4feb"
+        },
+        "date": 1790682115536,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 87,
+            "range": "4.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 87.00\nmean: 89.00\nstdev: 4.18\ncv: 4.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 124,
+            "range": "14.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 124.00\nmean: 126.20\nstdev: 14.58\ncv: 11.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 153,
+            "range": "18.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 159.80\nstdev: 18.89\ncv: 11.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 102,
+            "range": "5.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 102.00\nmean: 104.20\nstdev: 5.54\ncv: 5.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 220,
+            "range": "41.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 240.00\nstdev: 41.18\ncv: 17.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 337,
+            "range": "787.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 337.00\nmean: 889.20\nstdev: 787.55\ncv: 88.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
