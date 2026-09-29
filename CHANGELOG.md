@@ -627,6 +627,11 @@ for what the current release actually guarantees.
 
 ### Fixed
 
+- **A subscription's `live_offset` is reachable after a leadership change.**
+  It was the raw log tail, so when the log ended in a new leader's
+  generation-start record, which is never delivered, a reader waiting to reach
+  `live_offset` waited until the next client write. It now stops short of
+  trailing generation-start records, never below `start_offset`.
 - **A cache write the store refused is no longer acknowledged.** A put or
   delete whose log write failed (a failed fsync poisons the shard) was
   logged and answered as a success, so a `Quorum` cache could acknowledge

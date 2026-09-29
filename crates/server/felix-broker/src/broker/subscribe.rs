@@ -189,6 +189,14 @@ impl Broker {
             return Err(BrokerError::CursorInFuture { requested, tail });
         }
 
+        // Where a reader of the history has everything that was in the stream.
+        // Reported past a trailing generation-start record, a reader that
+        // caught up would wait at it for an event that never comes.
+        let live = match &durable {
+            Some(log) => log.event_end(requested, tail).await?,
+            None => tail,
+        };
+
         let (backlog, backlog_start, subscriber_id, receiver) =
             stream_state.register_clamped(requested);
         // Built the moment the subscriber exists, so every error path below
@@ -238,7 +246,7 @@ impl Broker {
             // is at or past it and already captured: the join has no gap.
             join: durable.as_ref().map(|_| JoinOffsets {
                 start_offset: requested,
-                live_offset: tail,
+                live_offset: live,
             }),
             subscription: Subscription {
                 receiver,
@@ -445,9 +453,10 @@ pub struct HistoryRange {
 pub struct JoinOffsets {
     /// The first offset delivered.
     pub start_offset: u64,
-    /// The tail when the subscriber was registered. Records in
-    /// `[start_offset, live_offset)` were already written at join; everything
-    /// from `live_offset` on was written after.
+    /// The tail when the subscriber was registered, less any generation-start
+    /// records the log ended with (they carry no event), never below
+    /// `start_offset`. Records in `[start_offset, live_offset)` were already
+    /// written at join; every event from `live_offset` on was written after.
     pub live_offset: u64,
 }
 

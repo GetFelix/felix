@@ -67,7 +67,9 @@ impl Subscription {
     /// The stream's tail when this subscription was registered.
     ///
     /// An event below it was already in the stream; one at or past it was
-    /// written after, and none are skipped in between. From `Latest` this
+    /// written after, and none are skipped in between. Generation-start
+    /// records at the end of the log are left out, since they never arrive as
+    /// events, so a reader that reaches it has caught up. From `Latest` this
     /// equals [`Self::start_offset`].
     pub fn live_offset(&self) -> Option<u64> {
         self.live_offset

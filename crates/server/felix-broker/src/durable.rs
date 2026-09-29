@@ -285,6 +285,27 @@ impl StreamLog {
             })
     }
 
+    /// Just past the last client record below `tail`, stepping back over the
+    /// generation-start records the log ends with, but never below `floor`.
+    ///
+    /// Those records hold offsets no reader is ever handed, so a reader
+    /// waiting to reach `tail` itself would wait for an event that never
+    /// comes.
+    pub async fn event_end(&self, floor: Offset, tail: Offset) -> Result<Offset> {
+        let floor = floor.max(self.base_offset());
+        let mut end = tail;
+        while end > floor {
+            let records = self.read_log_from(end - 1, 1).await?;
+            match records.first() {
+                Some(record) if record.offset == end - 1 && record.mark.is_generation_start() => {
+                    end -= 1;
+                }
+                _ => break,
+            }
+        }
+        Ok(end)
+    }
+
     /// Append the generation-start record for `generation` at the tail,
     /// durably, and return its offset.
     ///
