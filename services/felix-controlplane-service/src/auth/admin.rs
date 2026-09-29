@@ -5,9 +5,10 @@
 //! - Policy writes require `rbac.policy.manage`.
 //! - Assignment writes require `rbac.assignment.manage`.
 //! - Non-RBAC tenant settings (IdP issuer config, refresh-token revocation)
-//!   require `tenant.manage`. Changing where an existing issuer's keys come
-//!   from, or deleting an issuer, also requires `tenant.manage:cluster:*`, as
-//!   creating a tenant does.
+//!   require `tenant.manage`. Changing anything about an existing issuer's
+//!   trust (keys, audiences, claim mapping), registering an issuer another
+//!   tenant already trusts, or deleting an issuer, also requires
+//!   `tenant.manage:cluster:*`, as creating a tenant does.
 //!
 //! # Delegation model
 //! Callers can only read/mutate rules within the scope encoded in their token
@@ -86,17 +87,21 @@ pub async fn upsert_idp_issuer(
         state.oidc_validator.allow_private(),
     )
     .map_err(|err| api_validation_error(&err))?;
-    // Principal ids are derived from (issuer, subject), and grants, cluster
-    // ones included, hang off them. Whoever re-points an existing issuer's keys
-    // can mint tokens as any of its subjects, so that takes cluster rights.
+    // An issuer's keys, audiences and claim mapping decide which principals
+    // and IdP groups its tokens become, and grants, cluster ones included,
+    // hang off those. So only an operator may change them once the issuer is
+    // trusted, or register an issuer another tenant already trusts, where the
+    // tenant admin would be picking the mapping for someone else's users.
     let issuers = state
         .store
         .list_idp_issuers(&tenant_id)
         .await
         .map_err(|err| api_internal("failed to load issuers", &err))?;
-    if let Some(current) = issuers.iter().find(|item| item.issuer == body.issuer)
-        && (current.jwks_url != body.jwks_url || current.discovery_url() != body.discovery_url())
-    {
+    let needs_cluster = match issuers.iter().find(|item| item.issuer == body.issuer) {
+        Some(current) => !same_trust(current, &body),
+        None => issuer_used_elsewhere(&state, &tenant_id, &body.issuer).await?,
+    };
+    if needs_cluster {
         require_cluster_action(&state, &headers, ACTION_TENANT_MANAGE).await?;
     }
     state
@@ -105,6 +110,45 @@ pub async fn upsert_idp_issuer(
         .await
         .map_err(|err| api_internal("failed to upsert issuer", &err))?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Whether `next` would accept exactly the tokens `current` does and read the
+/// same identity out of them.
+fn same_trust(current: &IdpIssuerConfig, next: &IdpIssuerConfig) -> bool {
+    fn audiences(config: &IdpIssuerConfig) -> HashSet<&str> {
+        config.audiences.iter().map(String::as_str).collect()
+    }
+    current.jwks_url == next.jwks_url
+        && current.discovery_url() == next.discovery_url()
+        && audiences(current) == audiences(next)
+        && current.claim_mappings.subject_claim == next.claim_mappings.subject_claim
+        && current.claim_mappings.groups_claim == next.claim_mappings.groups_claim
+}
+
+async fn issuer_used_elsewhere(
+    state: &AppState,
+    tenant_id: &str,
+    issuer: &str,
+) -> Result<bool, ApiError> {
+    let tenants = state
+        .store
+        .list_tenants()
+        .await
+        .map_err(|err| api_internal("failed to load tenants", &err))?;
+    for tenant in tenants
+        .iter()
+        .filter(|tenant| tenant.tenant_id != tenant_id)
+    {
+        let issuers = state
+            .store
+            .list_idp_issuers(&tenant.tenant_id)
+            .await
+            .map_err(|err| api_internal("failed to load issuers", &err))?;
+        if issuers.iter().any(|item| item.issuer == issuer) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[utoipa::path(

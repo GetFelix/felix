@@ -11,7 +11,7 @@ use felix_controlplane_service::auth::keys::generate_signing_keys;
 use felix_controlplane_service::auth::oidc::UpstreamOidcValidator;
 use felix_controlplane_service::auth::rbac::policy_store::{GroupingRule, PolicyRule};
 use felix_controlplane_service::store::{
-    AuthStore, ControlPlaneAuthStore, StoreConfig, memory::InMemoryStore,
+    AuthStore, ControlPlaneAuthStore, ControlPlaneStore, StoreConfig, memory::InMemoryStore,
 };
 use tower::ServiceExt;
 
@@ -423,6 +423,101 @@ async fn re_pointing_an_existing_issuer_needs_cluster_rights() {
     assert_eq!(stored[0].jwks_url.as_deref(), Some(hostile));
 
     let response = delete(&operator).await.expect("operator delete");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+/// Remapping the subject or groups claim, or widening the audiences, changes
+/// which principals and IdP groups an issuer's tokens become, so a tenant admin
+/// could pose as an operator group. Once an issuer is trusted, or when another
+/// tenant already trusts it, that takes cluster rights.
+#[tokio::test]
+async fn claim_mapping_on_a_trusted_issuer_needs_cluster_rights() {
+    let (app, store, keys) = setup().await;
+    let tenant_admin = token(&keys, vec!["tenant.manage:tenant:t1"]);
+    let operator = token(
+        &keys,
+        vec!["tenant.manage:tenant:t1", "tenant.manage:cluster:*"],
+    );
+    let issuer = |issuer: &str, audiences: &[&str], subject: &str, groups: &str| {
+        json_request(
+            "POST",
+            "/v1/tenants/t1/idp-issuers",
+            serde_json::json!({
+                "issuer": issuer,
+                "audiences": audiences,
+                "discovery_url": null,
+                "jwks_url": format!("{issuer}/jwks"),
+                "claim_mappings": { "subject_claim": subject, "groups_claim": groups }
+            }),
+        )
+    };
+    let post = |request, token: &str| app.clone().oneshot(add_auth(request, token));
+    let corp = "https://corp.example.com";
+    let aud = ["felix-controlplane"];
+
+    // A new issuer no other tenant trusts is the tenant's own business.
+    let response = post(issuer(corp, &aud, "sub", "groups"), &tenant_admin)
+        .await
+        .expect("create");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    for change in [
+        issuer(corp, &aud, "sub", "email"),
+        issuer(corp, &aud, "preferred_username", "groups"),
+        issuer(corp, &["felix-controlplane", "other-app"], "sub", "groups"),
+    ] {
+        let response = post(change, &tenant_admin).await.expect("remap");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+    let stored = store.list_idp_issuers("t1").await.expect("issuers");
+    assert_eq!(stored[0].claim_mappings.subject_claim, "sub");
+    assert_eq!(
+        stored[0].claim_mappings.groups_claim.as_deref(),
+        Some("groups")
+    );
+    assert_eq!(stored[0].audiences, aud);
+
+    let response = post(issuer(corp, &aud, "sub", "email"), &operator)
+        .await
+        .expect("operator remap");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let stored = store.list_idp_issuers("t1").await.expect("issuers");
+    assert_eq!(
+        stored[0].claim_mappings.groups_claim.as_deref(),
+        Some("email")
+    );
+
+    // An issuer another tenant already trusts can't be registered here with a
+    // mapping of the tenant admin's choosing.
+    store
+        .create_tenant(felix_controlplane_service::model::Tenant {
+            tenant_id: "t2".to_string(),
+            display_name: "Tenant Two".to_string(),
+        })
+        .await
+        .expect("t2");
+    let shared = "https://shared.example.com";
+    store
+        .upsert_idp_issuer(
+            "t2",
+            serde_json::from_value(serde_json::json!({
+                "issuer": shared,
+                "audiences": aud,
+                "discovery_url": null,
+                "jwks_url": format!("{shared}/jwks"),
+                "claim_mappings": { "subject_claim": "sub", "groups_claim": "groups" }
+            }))
+            .expect("config"),
+        )
+        .await
+        .expect("t2 issuer");
+    let response = post(issuer(shared, &aud, "sub", "email"), &tenant_admin)
+        .await
+        .expect("shared");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = post(issuer(shared, &aud, "sub", "email"), &operator)
+        .await
+        .expect("operator shared");
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
 
