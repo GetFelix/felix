@@ -1,6 +1,6 @@
 ---
 title: "Demo: Queue Semantics"
-description: "Work distribution, redelivery after a crash, dead letters — and the duplicate cost of at-least-once."
+description: "Work distribution, redelivery after a crash, dead letters, and the duplicate cost of at-least-once."
 ---
 
 ## What this shows
@@ -20,13 +20,13 @@ task demo:queues
 ## The four acts
 
 **1. Work is distributed.** Two workers poll the same group. No offset is handed
-to both — a claimed record is withheld from every other consumer while the claim
+to both: a claimed record is withheld from every other consumer while the claim
 holds. This is the whole difference from `subscribe`, which would have given
 every job to both workers.
 
 **2. A worker dies holding work.** It claims two jobs and vanishes without
 acknowledging them. Polling again returns *nothing*: the claims are still live.
-Once the visibility timeout lapses, another worker gets them — at
+Once the visibility timeout lapses, another worker gets them, at
 `attempts = 2`.
 
 Nothing was lost. But those jobs were done by the first worker and done **again**
@@ -39,18 +39,18 @@ by the second, and that is the honest half of this act:
 A consumer must be idempotent. `attempts > 1` is the signal it can key off.
 
 **3. A job that always fails.** One job fails every time it is handled. It is
-retried up to `max_attempts`, then dead-lettered — and the point of the whole
+retried up to `max_attempts`, then dead-lettered. The point of the whole
 mechanism is what happens next: **the two jobs queued behind it run anyway**.
 
-Before there was an attempt bound, a poison record was redelivered for ever and
-nothing behind it ever ran. One bad record stalled the queue.
+Without an attempt bound a poison record would be redelivered for ever, and
+nothing behind it would run.
 
 The dead-lettered record is untouched: it is still in the stream's log at its
 offset, readable by an ordinary replay. A dead letter is a **pointer, not a
 copy**, so nothing is duplicated and nothing is thrown away.
 
 **4. The ledger.** The demo asserts `published = completed + dead-lettered`.
-Every job is accounted for — finished, or explicitly given up on. Nothing is in
+Every job is accounted for: finished, or explicitly given up on. Nothing is in
 limbo.
 
 ## Why it has no sleeps
@@ -61,7 +61,7 @@ identical on every run instead of depending on how loaded the machine is.
 
 That matters more than tidiness: a demo that sometimes fails to show its own
 point is worse than no demo. It also means this doubles as a behavioural test,
-which is why `task demo:check` runs it — every guarantee narrated above is an
+which is why `task demo:check` runs it. Every guarantee narrated above is an
 assertion, and the demo exits non-zero if one breaks.
 
 ## Notes
@@ -78,16 +78,16 @@ assertion, and the demo exits non-zero if one breaks.
 
 - **One shard.** A group is bound to the shard the caller names, so consuming a
   multi-shard stream means polling each shard's group separately.
-- **One broker.** A group's position *is* replicated with its shard and survives
-  a failover — [`task cluster:failover`](/felix/demos/cross-broker-cluster/) is
-  where the replicated side is shown — but the dead-letter list is not
-  replicated yet, so a promotion loses it.
+- **One broker.** A group's position and its dead-letter list replicate with the
+  shard and survive a failover (see
+  [Queues and Consumer Groups](/felix/features/queues/#what-a-queue-does-not-promise)),
+  but this demo runs a single in-process broker and does not show it.
 - **No competing brokers.** Only the shard's leader serves its group. That is
   what stops two brokers handing out the same record, and it is why a poll is
   refused rather than forwarded when it reaches the wrong broker.
 
 ## See also
 
-- [Queues and Consumer Groups](/felix/features/queues/) — the API and the rules
-- [Projections](/felix/architecture/projections/) — how a cursor is a log
-- [Semantics](/felix/architecture/semantics/) — where at-least-once sits
+- [Queues and Consumer Groups](/felix/features/queues/): the API and the rules
+- [Projections](/felix/architecture/projections/): how a cursor is a log
+- [Semantics](/felix/architecture/semantics/): where at-least-once sits
