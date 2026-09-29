@@ -48,6 +48,8 @@ SeededInit ==
     /\ fencing = [m \in Brokers |-> FALSE]
     /\ answered = (a :> {} @@ b :> {c} @@ c :> {})
     /\ confirmed = [m \in Brokers |-> [n \in Brokers |-> 0]]
+    /\ out = {}
+    /\ mine = [m \in Brokers |-> Brokers]
 \* The same history one leadership further, with no start records in it: the
 \* fleet finalized `generation_start` only after c's promotion. c was
 \* promoted at 3, fenced a and took x, acknowledged nothing, and is now
@@ -87,6 +89,8 @@ SeededCutOverInit ==
     /\ fencing = [m \in Brokers |-> FALSE]
     /\ answered = (a :> {} @@ b :> {c} @@ c :> {a})
     /\ confirmed = [m \in Brokers |-> [n \in Brokers |-> 0]]
+    /\ out = {}
+    /\ mine = [m \in Brokers |-> Brokers]
 \* The code moves no mark while it fences: nothing ships until it opens.
 NoAckWhileFencing == \A m \in Brokers : fencing[m] => hwm'[m] = hwm[m]
 SeededSpec == SeededInit /\ [][Next /\ NoAckWhileFencing]_vars

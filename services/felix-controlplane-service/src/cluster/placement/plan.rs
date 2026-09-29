@@ -7,7 +7,8 @@ use super::rendezvous::{choose, choose_replicas, promote};
 use super::zones;
 use super::{Blocked, CaughtUp, Decision, MoveStep, Unplaceable};
 use crate::model::{
-    Cache, Node, NodeLifecycle, ShardAssignment, ShardKey, ShardKind, ShardState, Stream,
+    Cache, ConsistencyLevel, Node, NodeLifecycle, ShardAssignment, ShardKey, ShardKind, ShardState,
+    Stream,
 };
 
 /// The full result of one reconciliation pass.
@@ -234,6 +235,7 @@ pub(super) fn plan_abandoning(
         let placeable = placeable_of.get(owner_of(&key).as_str()).copied();
         let replication_factor = placeable.map_or(1, |p| p.replication_factor);
         let durable = placeable.is_none_or(|p| p.durable);
+        let fenced = placeable.is_some_and(|p| p.fenced);
 
         // A node in a region this shard may not be in is, for this shard,
         // draining: it is given nothing, and whatever it holds is moved off
@@ -293,13 +295,17 @@ pub(super) fn plan_abandoning(
             && let Some(promoted) = promote(&key, previous, &eligible, caught_up)
         {
             *load.entry(promoted).or_default() += 1;
-            let replicas = choose_replicas(
-                &key,
-                &eligible,
-                &mut load,
-                &[promoted],
-                replication_factor.saturating_sub(1),
-            );
+            let replicas = if fenced {
+                keep_replicas(previous, promoted, &is_live, &mut load)
+            } else {
+                choose_replicas(
+                    &key,
+                    &eligible,
+                    &mut load,
+                    &[promoted],
+                    replication_factor.saturating_sub(1),
+                )
+            };
             shards.push(ShardPlan {
                 key,
                 decision: Decision::Place(promoted.to_string(), replicas),
@@ -415,6 +421,40 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
     }
 }
 
+/// The followers of a fenced shard promoted to `promoted`: the previous set,
+/// the dead leader included, without a copy still being staged.
+///
+/// The new leader serves once a majority of this set has taken its fence, and
+/// that majority must meet every majority the old set acknowledged on. Swap
+/// the dead leader for a fresh node and the new leader and the fresh node are
+/// a majority on their own, missing whatever the old leader and the third
+/// replica held. A down member is kept like any down follower, and a drain
+/// replaces it later through the joining path. `FencedAckAnyReplaced` in
+/// `docs/formal/FelixShard.tla`.
+fn keep_replicas<'a>(
+    previous: &'a ShardAssignment,
+    promoted: &str,
+    is_live: &dyn Fn(&str) -> bool,
+    load: &mut HashMap<&'a str, u32>,
+) -> Vec<String> {
+    // A staged copy was never counted toward an acknowledgement, so the fence
+    // does not need it, and failover ends the move it belonged to.
+    let staged = |node: &str| {
+        previous.successor.as_deref() == Some(node) || previous.joining.as_deref() == Some(node)
+    };
+    let kept: Vec<&'a str> = previous
+        .replicas
+        .iter()
+        .map(String::as_str)
+        .filter(|node| *node != promoted && !staged(node))
+        .chain(std::iter::once(previous.leader.as_str()))
+        .collect();
+    for node in kept.iter().filter(|node| is_live(node)) {
+        *load.entry(node).or_default() += 1;
+    }
+    kept.into_iter().map(str::to_string).collect()
+}
+
 /// Which shards get a move slot first. Only matters for shards that may
 /// start a move; one already moving holds its slot whatever its class.
 ///
@@ -468,6 +508,9 @@ struct Placeable<'a> {
     durable: bool,
     /// The home region, for a stream that has one.
     region: Option<&'a String>,
+    /// A durable `Quorum` stream: a promoted leader fences a majority of the
+    /// replica set before it serves, so failover keeps the set.
+    fenced: bool,
 }
 
 impl<'a> Placeable<'a> {
@@ -481,6 +524,7 @@ impl<'a> Placeable<'a> {
             replication_factor: stream.replication_factor.max(1),
             durable: stream.durable,
             region: stream.region.as_ref(),
+            fenced: stream.durable && matches!(stream.consistency, ConsistencyLevel::Quorum),
         }
     }
 
@@ -495,6 +539,8 @@ impl<'a> Placeable<'a> {
             // A cache is durable wherever the broker is; assume it is.
             durable: true,
             region: None,
+            // Never fenced: its successor is only as good as its report.
+            fenced: false,
         }
     }
 

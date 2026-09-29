@@ -329,6 +329,24 @@ impl ControlPlane {
         .await
     }
 
+    /// What a placement pass would decide if `down` had stopped heartbeating,
+    /// from the reports held now. Nothing is written.
+    pub async fn plan_if_down(
+        &self,
+        down: &str,
+    ) -> Result<felix_controlplane_service::cluster::placement::Plan> {
+        use felix_controlplane_service::cluster::placement::{MovePolicy, PlacementRead};
+        use felix_controlplane_service::model::NodeLifecycle;
+
+        let mut read = PlacementRead::load(self.store.as_ref(), &LIVENESS)
+            .await
+            .context("read placement")?;
+        for node in read.nodes.iter_mut().filter(|node| node.node_id == down) {
+            node.status.lifecycle = NodeLifecycle::Down;
+        }
+        Ok(read.plan(MovePolicy::default()))
+    }
+
     /// Step placement once under an explicit move policy.
     pub async fn place_shards_with(
         &self,
