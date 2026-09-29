@@ -86,6 +86,11 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         ..Default::default()
     })
     .await?;
+    // Commits are refused until the fleet finalizes the feature, as in any
+    // real cluster.
+    cluster
+        .finalize_fleet_features(&["atomic_commit"], Duration::from_secs(30))
+        .await?;
 
     // Each broker wrote its own certificate; a client needs to trust all of
     // them, and a PEM bundle holding several is exactly how that is spelled.

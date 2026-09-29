@@ -59,6 +59,21 @@ The client refuses a commit before sending it, with
   record, and a record has one offset.
 - the broker did not advertise `FEATURE_ATOMIC_COMMIT` (`Unsupported`).
 
+The same API in every client:
+
+- Rust: the [Rust client guide](../docs-site/src/content/docs/clients/rust.md#atomic-commits)
+  and [`felix-client`](../crates/sdk/felix-client/README.md).
+- Python: `Client.commit` / `AsyncClient.commit` with `felix.CommitOp`, raising
+  `NotOnOwningShardError` and `EventCountError`
+  ([guide](../docs-site/src/content/docs/clients/python.md#atomic-commits),
+  [README](../crates/sdk/felix-python/README.md)).
+- TypeScript: `client.commit` / `client.stateGet` with `CommitOp`, rejecting
+  with `NotOnOwningShardError` and `EventCountError`
+  ([guide](../docs-site/src/content/docs/clients/typescript.md#atomic-commits),
+  [README](../crates/sdk/felix-typescript/README.md)).
+- The conformance catalogue's `commit.*` scenarios hold all three to the same
+  behaviour (`crates/testing/felix-conformance/scenarios.toml`).
+
 `Client::commit` talks to one broker and reports a shard led elsewhere as a
 `NotLeaderError`. `ClusterClient::commit` follows the redirect to the leader.
 A commit is never forwarded between brokers.

@@ -2,6 +2,7 @@
 //! built by hand over raw QUIC, once through `felix-client`.
 
 mod checks;
+mod commit;
 mod faults;
 mod fixture;
 mod frames;
@@ -18,6 +19,7 @@ use felix_storage::EphemeralCache;
 use felix_storage::log::LogConfig;
 use felix_transport::{QuicClient, QuicServer, TransportConfig};
 
+use commit::{COMMIT_STREAM, run_client_commit, run_commit};
 use faults::run_link_faults;
 use fixture::{
     build_auth_fixture, build_client_config, build_quinn_client_config, build_server_config,
@@ -47,6 +49,17 @@ pub(crate) async fn run_protocol_suite() -> Result<()> {
     broker
         .register_stream("t1", "default", MOVED_STREAM, Default::default())
         .await?;
+    broker
+        .register_stream(
+            "t1",
+            "default",
+            COMMIT_STREAM,
+            felix_broker::StreamMetadata {
+                durable: true,
+                ..Default::default()
+            },
+        )
+        .await?;
     let (server_config, cert) = build_server_config().context("build server config")?;
     let server = Arc::new(QuicServer::bind(
         "127.0.0.1:0".parse()?,
@@ -73,6 +86,8 @@ pub(crate) async fn run_protocol_suite() -> Result<()> {
     run_cache(&connection, &auth).await?;
     run_client_pubsub(addr, cert.clone(), &auth).await?;
     run_client_cache(addr, cert.clone(), &auth).await?;
+    run_commit(&connection, &auth).await?;
+    run_client_commit(addr, cert.clone(), &auth).await?;
     run_shard_move(&connection, &auth, &broker).await?;
     run_link_faults(&broker, addr, build_client_config(cert, &auth)?).await?;
 

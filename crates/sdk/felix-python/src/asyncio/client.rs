@@ -205,6 +205,61 @@ impl AsyncClient {
         })
     }
 
+    /// Commit `ops` as one record on the shard `entity_key` routes to. See
+    /// the synchronous `Client.commit`.
+    fn commit<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        entity_key: &[u8],
+        ops: Vec<PyRef<'py, crate::commit::CommitOp>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let ops = crate::commit::ops(ops);
+        let (tenant_id, namespace, entity_key) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            entity_key.to_vec(),
+        );
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let receipt = inner
+                .commit(&tenant_id, &namespace, &entity_key, ops)
+                .await
+                .map_err(to_py_err)?;
+            Ok(crate::commit::CommitReceipt {
+                offset: receipt.offset,
+            })
+        })
+    }
+
+    /// `key` in the state of `stream`'s shard that `entity_key` routes to.
+    fn state_get<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        entity_key: &[u8],
+        key: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, key) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+            key.to_string(),
+        );
+        let entity_key = entity_key.to_vec();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let state = inner
+                .state_get(&tenant_id, &namespace, &stream, &entity_key, &key)
+                .await
+                .map_err(to_py_err)?;
+            Ok(crate::commit::OwnedStateValue(state))
+        })
+    }
+
     fn cache_delete<'py>(
         &self,
         py: Python<'py>,

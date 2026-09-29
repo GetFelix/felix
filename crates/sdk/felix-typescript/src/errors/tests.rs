@@ -19,6 +19,7 @@ fn every_code_maps_to_a_kind_that_matches_its_retry_class() {
         ("draining", KIND_CONNECTION),
         ("internal", KIND_OUTCOME_UNKNOWN),
         ("storage", KIND_OUTCOME_UNKNOWN),
+        ("stale_claim", KIND_GENERIC),
     ];
     assert_eq!(expected.len(), ErrorCode::ALL.len(), "a code is unmapped");
     for code in ErrorCode::ALL {
@@ -85,4 +86,26 @@ fn a_lost_subscription_is_a_connection_error() {
     })
     .context("resubscribe to shard 0 of orders");
     assert!(encode(&err).starts_with(&format!("{KIND_CONNECTION}{KIND_SEPARATOR}")));
+}
+
+#[test]
+fn a_commit_refusal_carries_its_fields() {
+    let split = encode(&anyhow::Error::new(CommitError::NotOnOwningShard {
+        index: 1,
+        stream: "inventory".to_string(),
+        owner: "orders".to_string(),
+    }));
+    assert!(
+        split.starts_with(
+            r#"FELIX_NOT_ON_OWNING_SHARD {"index":1,"owner":"orders","stream":"inventory"}"#
+        ),
+        "{split}"
+    );
+    let count = encode(&anyhow::Error::new(CommitError::EventCount(2)));
+    assert!(
+        count.starts_with(r#"FELIX_EVENT_COUNT {"count":2}"#),
+        "{count}"
+    );
+    let old = encode(&anyhow::Error::new(CommitError::Unsupported));
+    assert!(old.starts_with("FELIX_COMMIT: "), "{old}");
 }

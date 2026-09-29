@@ -963,6 +963,46 @@ log at that offset, readable by an ordinary replay.
   before acknowledging is indistinguishable from a crash before handling, so the
   record comes back.
 
+## Atomic commits
+
+`commit` writes an event and the state it changes as one record on the shard
+an entity key routes to; `state_get` reads that state back with the commit's
+offset as its version. `Client` answers a shard led elsewhere with
+`NotLeaderError`, and `ClusterClient` follows it.
+
+```rust
+use felix_client::{CommitError, CommitOp};
+
+let receipt = cluster
+    .commit("acme", "orders", b"order-42", vec![
+        CommitOp::enqueue("order-events", r#"{"type":"placed"}"#),
+        CommitOp::put("order-events", "order-42", r#"{"status":"placed"}"#),
+    ])
+    .await?;
+let state = cluster
+    .state_get("acme", "orders", "order-events", b"order-42", "order-42")
+    .await?;
+assert_eq!(state.version, Some(receipt.offset));
+
+// Refused before anything is sent: another stream is another log.
+let err = cluster
+    .commit("acme", "orders", b"order-42", vec![
+        CommitOp::publish("order-events", "placed"),
+        CommitOp::put("inventory", "sku-1", "3"),
+    ])
+    .await
+    .unwrap_err();
+assert!(matches!(
+    err.downcast_ref::<CommitError>(),
+    Some(CommitError::NotOnOwningShard { index: 1, .. })
+));
+```
+
+`CommitError::EventCount` refuses a commit without exactly one event, and
+`CommitError::Unsupported` a broker that did not advertise
+`FEATURE_ATOMIC_COMMIT`. What atomic does and does not cover is in
+[`docs/atomic-commit.md`](https://github.com/gabloe/felix/blob/main/docs/atomic-commit.md).
+
 ## Clusters
 
 `Client` talks to one broker. `ClusterClient` follows the cluster: it takes

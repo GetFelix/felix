@@ -31,6 +31,7 @@ import registerSharded from "./scenarios/sharded.mjs";
 import registerCluster from "./scenarios/cluster.mjs";
 import registerRetry from "./scenarios/retry.mjs";
 import registerFaults from "./scenarios/faults.mjs";
+import registerCommit from "./scenarios/commit.mjs";
 
 // Filled in by `before`, read by the tests at run time. The tests cannot close
 // over a fixture that does not exist yet, so they close over this instead.
@@ -69,6 +70,7 @@ describe("multi-shard streams", () => registerSharded(ctx));
 describe("cluster semantics", () => registerCluster(ctx));
 describe("retry classification", () => registerRetry(ctx));
 describe("connection faults", () => registerFaults(ctx));
+describe("atomic commits", () => registerCommit(ctx));
 
 // Semantics this binding does not wrap. Recorded rather than left out, because
 // `verify` distinguishes "not claimed" from "claimed and broken", and a reason

@@ -10,7 +10,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use felix_controlplane_service::store::ControlPlaneStore;
 
 use super::model::{Consistency, History, ListSpec, millis};
 use super::nemesis::{ClusterView, Nemesis, ShardView};
@@ -184,42 +183,10 @@ impl Campaign {
     /// features, returning once every broker has turned them on.
     pub async fn start(&self, nemesis: &impl Nemesis) -> Result<Cluster> {
         let cluster = Cluster::start(self.cluster_config(nemesis)).await?;
-        let features = self.mode.features();
-        if features.is_empty() {
-            return Ok(cluster);
-        }
-        let store = &cluster
-            .control_plane
-            .as_ref()
-            .context("finalizing fleet features needs the control plane")?
-            .store;
-        for feature in features {
-            store
-                .finalize_fleet_feature(feature)
-                .await
-                .map_err(|err| anyhow!("finalize {feature}: {err}"))?;
-        }
-        let enabled = features.len() as f64;
-        for id in cluster.node_ids() {
-            wait::until(
-                FEATURES_TIMEOUT,
-                &format!("{id} to enable {features:?}"),
-                || {
-                    let id = id.clone();
-                    let cluster = &cluster;
-                    async move {
-                        cluster
-                            .metric(&id, "felix_broker_fleet_feature_enabled")
-                            .await
-                            .ok()
-                            .flatten()
-                            == Some(enabled)
-                    }
-                },
-            )
+        cluster
+            .finalize_fleet_features(self.mode.features(), FEATURES_TIMEOUT)
             .await
             .with_context(|| format!("mode {}: the fleet features did not turn on", self.mode))?;
-        }
         Ok(cluster)
     }
 

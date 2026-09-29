@@ -31,6 +31,41 @@ class ShardUnavailableError(FelixError): ...
 class OverloadedError(FelixError): ...
 class OutcomeUnknownError(FelixError): ...
 
+class CommitError(FelixError):
+    """A commit was refused before it was sent."""
+
+class NotOnOwningShardError(CommitError):
+    """An op names a stream other than the commit's: a second log."""
+
+    index: int
+    stream: str
+    owner: str
+
+class EventCountError(CommitError):
+    """A commit carries exactly one event; this one had ``count``."""
+
+    count: int
+
+class CommitOp:
+    """One part of an atomic commit."""
+
+    @staticmethod
+    def publish(stream: str, payload: bytes) -> "CommitOp": ...
+    @staticmethod
+    def enqueue(queue: str, payload: bytes) -> "CommitOp": ...
+    @staticmethod
+    def put(stream: str, key: str, value: bytes) -> "CommitOp": ...
+    @staticmethod
+    def delete(stream: str, key: str) -> "CommitOp": ...
+
+class CommitReceipt:
+    offset: int
+
+class StateValue:
+    value: bytes | None
+    version: int | None
+    as_of: int | None
+
 class Event:
     tenant_id: str
     namespace: str
@@ -227,6 +262,12 @@ class Client:
     def cache_delete(
         self, tenant_id: str, namespace: str, cache: str, key: str
     ) -> bytes | None: ...
+    def commit(
+        self, tenant_id: str, namespace: str, entity_key: bytes, ops: list[CommitOp]
+    ) -> CommitReceipt: ...
+    def state_get(
+        self, tenant_id: str, namespace: str, stream: str, entity_key: bytes, key: str
+    ) -> StateValue: ...
     def counter_add(
         self, tenant_id: str, namespace: str, cache: str, key: str, delta: int
     ) -> int: ...
@@ -353,6 +394,12 @@ class AsyncClient:
     async def cache_delete(
         self, tenant_id: str, namespace: str, cache: str, key: str
     ) -> bytes | None: ...
+    async def commit(
+        self, tenant_id: str, namespace: str, entity_key: bytes, ops: list[CommitOp]
+    ) -> CommitReceipt: ...
+    async def state_get(
+        self, tenant_id: str, namespace: str, stream: str, entity_key: bytes, key: str
+    ) -> StateValue: ...
     async def counter_add(
         self, tenant_id: str, namespace: str, cache: str, key: str, delta: int
     ) -> int: ...

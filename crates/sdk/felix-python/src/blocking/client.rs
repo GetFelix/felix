@@ -246,6 +246,64 @@ impl Client {
         Ok(value.map(|bytes| PyBytes::new(py, &bytes).unbind()))
     }
 
+    /// Commit `ops` as one record on the shard `entity_key` routes to.
+    ///
+    /// Every reader sees all of it or none of it. `ops` must carry exactly
+    /// one event (`CommitOp.publish` or `CommitOp.enqueue`) and name one
+    /// stream; otherwise `EventCountError` or `NotOnOwningShardError` is
+    /// raised before anything is sent. Returns a `CommitReceipt` whose
+    /// `offset` is the event's offset and the version of every key written.
+    fn commit(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        entity_key: &[u8],
+        ops: Vec<PyRef<'_, crate::commit::CommitOp>>,
+    ) -> PyResult<crate::commit::CommitReceipt> {
+        let inner = Arc::clone(&self.inner);
+        let ops = crate::commit::ops(ops);
+        let (tenant_id, namespace, entity_key) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            entity_key.to_vec(),
+        );
+        let receipt = block_on(py, async move {
+            inner
+                .commit(&tenant_id, &namespace, &entity_key, ops)
+                .await
+                .map_err(to_py_err)
+        })?;
+        Ok(crate::commit::CommitReceipt {
+            offset: receipt.offset,
+        })
+    }
+
+    /// `key` in the state of `stream`'s shard that `entity_key` routes to,
+    /// as a `StateValue` (value, version, as_of).
+    fn state_get(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        entity_key: &[u8],
+        key: &str,
+    ) -> PyResult<Py<crate::commit::StateValue>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, key) = owned4(tenant_id, namespace, stream, key);
+        let entity_key = entity_key.to_vec();
+        let state = block_on(py, async move {
+            inner
+                .state_get(&tenant_id, &namespace, &stream, &entity_key, &key)
+                .await
+                .map_err(to_py_err)
+        })?;
+        Ok(crate::commit::OwnedStateValue(state)
+            .into_pyobject(py)?
+            .unbind())
+    }
+
     /// Remove a key, returning the value it held, or `None` if it held none.
     fn cache_delete(
         &self,

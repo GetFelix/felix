@@ -181,6 +181,59 @@ export declare class OverloadedError extends FelixError {}
  */
 export declare class OutcomeUnknownError extends FelixError {}
 
+/** A commit was refused before it was sent. Nothing was written. */
+export declare class CommitError extends FelixError {}
+/**
+ * An op names a stream other than the commit's: a different stream is a
+ * different log, and a commit writes one.
+ */
+export declare class NotOnOwningShardError extends CommitError {
+  /** Which op, counting from 0. */
+  readonly index: number;
+  /** The stream that op named. */
+  readonly stream: string;
+  /** The commit's own stream. */
+  readonly owner: string;
+}
+/** A commit carries exactly one event (publish or enqueue). */
+export declare class EventCountError extends CommitError {
+  readonly count: number;
+}
+
+/**
+ * One part of an atomic commit. Exactly one op per commit is an event
+ * (`publish` or `enqueue`); every op names the same stream.
+ */
+export type CommitOp =
+  | { op: "publish"; stream: string; payload: Buffer }
+  | { op: "enqueue"; queue: string; payload: Buffer }
+  | { op: "put"; stream: string; key: string; value: Buffer }
+  | { op: "delete"; stream: string; key: string };
+
+/** Builders for `CommitOp`s; each returns the plain object. */
+export declare const CommitOp: {
+  publish(stream: string, payload: Buffer | string): CommitOp;
+  enqueue(queue: string, payload: Buffer | string): CommitOp;
+  put(stream: string, key: string, value: Buffer | string): CommitOp;
+  delete(stream: string, key: string): CommitOp;
+};
+
+/** A commit the broker made durable. */
+export interface CommitReceipt {
+  /** Where the event is read, and the version of every key the commit wrote. */
+  offset: bigint;
+}
+
+/** A key in a stream shard's state. */
+export interface StateValue {
+  /** Absent when the key was never written or was deleted. */
+  value: Buffer | null;
+  /** Offset of the commit that wrote `value`. */
+  version: bigint | null;
+  /** Offset of the last commit the answer reflects. */
+  asOf: bigint | null;
+}
+
 /** A live subscription. Read it with `nextEvent`, and `close` it when done. */
 export declare class SubscriptionHandle {
   /**
@@ -371,6 +424,28 @@ export declare class Client {
     cache: string,
     key: string,
   ): Promise<Buffer | null>;
+
+  /**
+   * Commit `ops` as one record on the shard `entityKey` routes to. Every
+   * reader sees all of it or none of it. Rejects with `EventCountError` or
+   * `NotOnOwningShardError` before anything is sent when `ops` does not carry
+   * exactly one event or names two streams. See docs/atomic-commit.md.
+   */
+  commit(
+    tenantId: string,
+    namespace: string,
+    entityKey: Buffer,
+    ops: CommitOp[],
+  ): Promise<CommitReceipt>;
+
+  /** `key` in the state of `stream`'s shard that `entityKey` routes to. */
+  stateGet(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    entityKey: Buffer,
+    key: string,
+  ): Promise<StateValue>;
 
   /** Add to a counter and return its new value. `delta` may be negative. */
   counterAdd(

@@ -110,6 +110,31 @@ class OverloadedError extends FelixError {
  */
 class OutcomeUnknownError extends FelixError {}
 
+/** A commit was refused before it was sent. Nothing was written. */
+class CommitError extends FelixError {}
+
+/**
+ * An op names a stream other than the commit's. A different stream is a
+ * different log, and a commit writes one. `index` is the op, `stream` what it
+ * named, `owner` the commit's stream.
+ */
+class NotOnOwningShardError extends CommitError {
+  constructor(kind, message, meta = null) {
+    super(kind, message, null);
+    this.index = meta?.index;
+    this.stream = meta?.stream;
+    this.owner = meta?.owner;
+  }
+}
+
+/** A commit carries exactly one event (publish or enqueue); this had `count`. */
+class EventCountError extends CommitError {
+  constructor(kind, message, meta = null) {
+    super(kind, message, null);
+    this.count = meta?.count;
+  }
+}
+
 const CLASSES = new Map([
   ["FELIX_CONNECTION", ConnectionError],
   ["FELIX_AUTH", AuthError],
@@ -119,6 +144,9 @@ const CLASSES = new Map([
   ["FELIX_SHARD_UNAVAILABLE", ShardUnavailableError],
   ["FELIX_OVERLOADED", OverloadedError],
   ["FELIX_OUTCOME_UNKNOWN", OutcomeUnknownError],
+  ["FELIX_COMMIT", CommitError],
+  ["FELIX_NOT_ON_OWNING_SHARD", NotOnOwningShardError],
+  ["FELIX_EVENT_COUNT", EventCountError],
   ["FELIX_ERROR", FelixError],
 ]);
 
@@ -154,5 +182,8 @@ module.exports = {
   ShardUnavailableError,
   OverloadedError,
   OutcomeUnknownError,
+  CommitError,
+  NotOnOwningShardError,
+  EventCountError,
   typed,
 };

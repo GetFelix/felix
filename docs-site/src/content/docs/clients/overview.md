@@ -172,7 +172,9 @@ worth writing code for.
 | **[TypeScript](/felix/clients/typescript/)** | `felix-client` on npm | A napi-rs addon. One asynchronous surface, because blocking Node's event loop is not something a library may do. |
 
 Python and TypeScript both pass every required scenario in the catalogue, and
-CI is gated on both. Each leaves a couple of optional scenarios unclaimed
+CI is gated on both. That includes the `commit.*` scenarios: all three clients
+offer [atomic commits](/felix/features/atomic-commits/) with the same typed
+refusals. Each leaves a couple of optional scenarios unclaimed
 rather than passing over them in silence; their pages say which.
 
 ## Planned

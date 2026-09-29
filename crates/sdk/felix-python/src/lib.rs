@@ -24,6 +24,7 @@
 mod args;
 mod asyncio;
 mod blocking;
+mod commit;
 mod errors;
 mod runtime;
 mod tls;
@@ -55,6 +56,9 @@ fn _felix(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<types::ShardLost>()?;
     module.add_class::<types::ShardRecovered>()?;
     module.add_class::<types::ShardMoved>()?;
+    module.add_class::<commit::CommitOp>()?;
+    module.add_class::<commit::CommitReceipt>()?;
+    module.add_class::<commit::StateValue>()?;
 
     errors::register(module)?;
     Ok(())
