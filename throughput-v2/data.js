@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790660215927,
+  "lastUpdate": 1790661443561,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -20488,6 +20488,58 @@ window.BENCHMARK_DATA = {
             "range": "4939.95",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 851123.71\nmean: 849904.53\nstdev: 4939.95\ncv: 0.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "725a84914a2b7336e4a0255e18c9b57107603cb6",
+          "message": "ci: run PRs on hosted runners and add two Azure runners in westus2 (#858)\n\nPull requests now run the test and coverage jobs on ubuntu-latest, so PR CI\nnever waits in the Azure queue. The self-hosted runners take pushes to main,\nschedules and manual runs only. The routing expression gets simpler and stays\nfork-safe, since a fork PR is a pull_request event.\n\nTwo more runners, felix-ci-runner-3 and -4, run in westus2 in their own\nresource group, because eastus is at its 20-vCPU regional cap. deploy.sh takes\nFIRST so the numbering continues across regions.\n\nSpec-Unaffected: CI only",
+          "timestamp": "2026-09-28T22:53:01-07:00",
+          "tree_id": "1e6d62fed7d5dee5d9b5f1466e1148e86388b8a1",
+          "url": "https://github.com/gabloe/felix/commit/725a84914a2b7336e4a0255e18c9b57107603cb6"
+        },
+        "date": 1790661442152,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358748.55,
+            "range": "11763.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358748.55\nmean: 353481.84\nstdev: 11763.93\ncv: 3.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358748.55,
+            "range": "11763.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358748.55\nmean: 353481.84\nstdev: 11763.93\ncv: 3.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81875.25,
+            "range": "449.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81875.25\nmean: 81828.66\nstdev: 449.90\ncv: 0.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 818752.5,
+            "range": "4499.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 818752.50\nmean: 818286.64\nstdev: 4499.07\ncv: 0.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
