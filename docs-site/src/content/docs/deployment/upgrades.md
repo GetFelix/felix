@@ -171,6 +171,13 @@ streams, caches and reads keep the lease.
 
 - **Finalize `generation_start` first, or in the same change window.**
   `majority_ack` has no effect until both are finalized.
+- **Upgrade every control-plane instance first.** Don't finalize
+  `majority_ack` while any control plane runs a build that rebuilds a
+  failed-over `Quorum` shard's replica set (see the changelog entry "A
+  `Quorum` failover keeps its replica set"). Such a control plane swaps the
+  dead leader for a spare broker, and the promoted leader's fence can then
+  open without a write the old set acknowledged: when the cluster has more
+  brokers than the replication factor, or when a majority of the set is down.
 - **Every broker must fence on promotion.** A broker running with
   `FELIX_INTERNAL_FENCE=false` does not report `majority_ack`, so the dry run
   names it and the finalize is refused until it runs with the fence. After

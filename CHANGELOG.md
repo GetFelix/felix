@@ -636,6 +636,17 @@ for what the current release actually guarantees.
 
 ### Fixed
 
+- **A `Quorum` failover keeps its replica set.** Failover used to rebuild the
+  followers from live brokers, dropping the dead leader and adding a broker
+  that had never held the shard. With `majority_ack` finalized the promoted
+  leader fences a majority of that new set, which it could make with the
+  newcomer alone, or with nobody when no other broker was live, and so open
+  without a write the old leader and another follower acknowledged. A
+  durable `Quorum` stream now keeps the previous set, the dead leader in it,
+  so the fence needs a majority of the set that acknowledged. The dead
+  member stays a follower until it returns or is drained. Upgrade the
+  control plane before finalizing `majority_ack`.
+
 - **A subscription's `live_offset` is reachable after a leadership change.**
   It was the raw log tail, so when the log ended in a new leader's
   generation-start record, which is never delivered, a reader waiting to reach

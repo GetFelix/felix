@@ -103,6 +103,61 @@ fn promotion_rebuilds_the_replica_set_without_the_new_leader() {
     );
 }
 
+/// **A `Quorum` failover keeps the replica set, the dead leader in it.** The
+/// new leader fences a majority of its set before it serves. With a spare
+/// swapped in for the dead leader, the new leader and the spare would be that
+/// majority, and a record acknowledged on the dead leader and the other
+/// follower would be missing from both.
+#[test]
+fn a_quorum_failover_keeps_the_dead_leader_in_the_replica_set() {
+    let streams = vec![Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 3)
+    }];
+    let nodes = vec![
+        node("broker-b", NodeLifecycle::Live, None),
+        node("broker-c", NodeLifecycle::Live, None),
+        node("broker-d", NodeLifecycle::Live, None),
+    ];
+    let existing = vec![assigned("orders", "broker-a", &["broker-b", "broker-c"])];
+    let caught_up = CaughtUpNodes(["broker-c".to_string()].into());
+
+    let plan = plan(&streams, &[], &nodes, &existing, &caught_up);
+    let (_, leader, replicas) = plan.to_place().next().expect("placed");
+    assert_eq!(leader, "broker-c");
+    assert_eq!(
+        replicas.iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([&"broker-a".to_string(), &"broker-b".to_string()]),
+        "the spare took the dead leader's place in the fence's set",
+    );
+}
+
+/// A staged copy was never counted toward an acknowledgement, so a `Quorum`
+/// failover leaves it out along with the move it belonged to.
+#[test]
+fn a_quorum_failover_drops_a_staged_copy() {
+    let streams = vec![Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 3)
+    }];
+    let nodes = vec![
+        node("broker-b", NodeLifecycle::Live, None),
+        node("broker-c", NodeLifecycle::Live, None),
+        node("broker-d", NodeLifecycle::Live, None),
+    ];
+    let mut moving = assigned("orders", "broker-a", &["broker-b", "broker-c", "broker-d"]);
+    moving.successor = Some("broker-d".to_string());
+    let caught_up = CaughtUpNodes(["broker-b".to_string()].into());
+
+    let plan = plan(&streams, &[], &nodes, &[moving], &caught_up);
+    let (_, leader, replicas) = plan.to_place().next().expect("placed");
+    assert_eq!(leader, "broker-b");
+    assert_eq!(
+        replicas.iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([&"broker-a".to_string(), &"broker-c".to_string()]),
+    );
+}
+
 /// **A replicated shard is never handed to a node that does not hold it.**
 ///
 /// The leader is gone and no replica is caught up. Placing the shard on a node

@@ -21,6 +21,16 @@ impl Cluster {
         self.control_plane().place_shards().await
     }
 
+    /// What placement would decide if `down` had stopped heartbeating, from
+    /// the reports held now. A dry run: nothing is written. For a test that
+    /// has to know the promoted replica before the failover happens.
+    pub async fn plan_if_down(
+        &self,
+        down: &str,
+    ) -> Result<felix_controlplane_service::cluster::placement::Plan> {
+        self.control_plane().plan_if_down(down).await
+    }
+
     /// Run the control plane's placement loop on `interval` and on the wakes a
     /// move's reports send, as a deployment does. For a test that measures a
     /// move rather than stepping it.

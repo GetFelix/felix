@@ -17,8 +17,13 @@ const LEASE_HELD: &str = "felix_broker_lease_held";
 /// Three brokers, a `Quorum` stream on all three, and both features the
 /// follower acks need finalized.
 async fn start(quorum_timeout: Duration) -> Cluster {
+    start_nodes(3, quorum_timeout).await
+}
+
+/// `nodes` brokers and an RF 3 `Quorum` stream, both features finalized.
+async fn start_nodes(nodes: usize, quorum_timeout: Duration) -> Cluster {
     let cluster = Cluster::start(ClusterConfig {
-        nodes: 3,
+        nodes,
         streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
         proxy_links: true,
         broker_env: vec![(
@@ -294,5 +299,418 @@ async fn a_leader_cut_off_from_the_control_plane_loses_nothing_it_acknowledged()
             "{new} lost {record}, which {old} acknowledged: it holds {held:?}"
         );
     }
+    cluster.shutdown().await;
+}
+
+/// The shard's current assignment: its leader and followers.
+async fn assignment(cluster: &Cluster) -> felix_cluster::Assignment {
+    let key = format!("{}/{}/{STREAM}/0", cluster.tenant_id, cluster.namespace);
+    cluster
+        .shard_assignments()
+        .await
+        .expect("assignments")
+        .remove(&key)
+        .expect("the stream is placed")
+}
+
+/// Publish through `leader` and wait for the report that names every one of
+/// `followers` level with it, so promotion can pick any of them.
+async fn level_report(
+    cluster: &Cluster,
+    leader: &str,
+    followers: &[String],
+) -> felix_controlplane_service::model::ReplicaReport {
+    let before = cluster
+        .replica_report(STREAM, 0)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|report| report.leader_offset);
+    cluster
+        .publish_via(leader, STREAM, b"before".to_vec())
+        .await
+        .expect("publish while whole");
+    let level = std::sync::Mutex::new(None);
+    felix_cluster::wait::until(Duration::from_secs(10), "a level report", || {
+        let level = &level;
+        async move {
+            let Some(report) = cluster.replica_report(STREAM, 0).await.ok().flatten() else {
+                return false;
+            };
+            let tail = report.leader_offset;
+            let ok = tail > before
+                && followers.iter().all(|id| {
+                    report.caught_up.contains(id) && report.offsets.get(id).copied() == tail
+                });
+            if ok {
+                *level.lock().expect("unpoisoned") = Some(report);
+            }
+            ok
+        }
+    })
+    .await
+    .expect("every follower reports level");
+    level
+        .into_inner()
+        .expect("unpoisoned")
+        .expect("the report the wait saw")
+}
+
+/// Store `report` again, stamped now, as the old leader's level report
+/// arriving late would be. The harness judges a report stale about a second
+/// after the leader is marked down, where a deployment has several; the
+/// content is exactly what the old leader last said, so this only widens
+/// that window, it does not invent a position.
+async fn restamp(
+    cluster: &Cluster,
+    mut report: felix_controlplane_service::model::ReplicaReport,
+    leader: &str,
+) {
+    let store = &cluster
+        .control_plane
+        .as_ref()
+        .expect("control plane running")
+        .store;
+    report.reported_at_millis = store.now_millis().await.expect("store clock");
+    let written = store
+        .record_replica_report(report, leader)
+        .await
+        .expect("record the report");
+    assert!(
+        matches!(
+            written,
+            felix_controlplane_service::store::ReportWrite::Stored
+        ),
+        "a newer report landed after the level one: {written:?}"
+    );
+}
+
+/// Step placement until someone other than `old` leads, and return who.
+async fn promote_away_from(cluster: &Cluster, old: &str) -> String {
+    let promoted = felix_cluster::wait::until(Duration::from_secs(10), "a new leader", || async {
+        cluster.place_shards().await;
+        cluster.owner(STREAM).await.is_ok_and(|owner| owner != old)
+    })
+    .await;
+    if let Err(err) = promoted {
+        let plan = cluster.plan_if_down(old).await.map(|plan| {
+            plan.shards
+                .into_iter()
+                .filter(|shard| shard.key.stream == STREAM)
+                .map(|shard| shard.decision)
+                .collect::<Vec<_>>()
+        });
+        panic!("the control plane promotes a follower: {err:#}; placement decides {plan:?}");
+    }
+    cluster.owner(STREAM).await.expect("owner")
+}
+
+/// Cut `node` off from the control plane: no heartbeat, no report.
+async fn cut_from_control_plane(cluster: &Cluster, node: &str) {
+    for fault in Fault::partition(Endpoint::node(node), Endpoint::ControlPlane) {
+        cluster.inject(&fault).await.expect("partition");
+    }
+}
+
+/// Assert `node` holds every record in `acknowledged`.
+async fn assert_holds(cluster: &Cluster, node: &str, acknowledged: &[String]) {
+    let held = held_by(cluster, node).await;
+    for record in acknowledged {
+        assert!(
+            held.contains(record),
+            "{node} lost {record}, which was acknowledged: it holds {held:?}"
+        );
+    }
+}
+
+/// **A failover that brings in a spare broker loses nothing a majority of the
+/// old replica set acknowledged.** Four brokers, RF 3: the old leader
+/// acknowledges records held by itself and `other` alone while `promoted`
+/// lags, and `promoted` is the replica placement names, from a report taken
+/// before the lag. Were the spare swapped in for the old leader, `promoted`
+/// and the spare would be a majority of the new set that never saw those
+/// records. `promoted` is cut off from `other` while it fences, so only the
+/// replica set decides whether it waits for `other`.
+#[serial]
+#[tokio::test]
+async fn a_failover_onto_a_spare_broker_keeps_what_the_old_set_acknowledged() {
+    use felix_controlplane_service::cluster::placement::Decision;
+
+    let mut cluster = start_nodes(4, Duration::from_secs(2)).await;
+    let assignment = assignment(&cluster).await;
+    let old = assignment.leader.clone();
+    assert_eq!(assignment.replicas.len(), 2, "RF 3: {assignment:?}");
+    let report = level_report(&cluster, &old, &assignment.replicas).await;
+
+    let plan = cluster.plan_if_down(&old).await.expect("dry-run placement");
+    let promoted = plan
+        .shards
+        .iter()
+        .find_map(|shard| match &shard.decision {
+            Decision::Place(leader, _) if shard.key.stream == STREAM => Some(leader.clone()),
+            _ => None,
+        })
+        .expect("placement promotes a follower once the leader is gone");
+    let other = assignment
+        .replicas
+        .iter()
+        .find(|id| **id != promoted)
+        .expect("the other follower")
+        .clone();
+
+    // From here the old leader's report is frozen, and `promoted` gets
+    // nothing more from it: what follows is acknowledged on {old, other}.
+    cut_from_control_plane(&cluster, &old).await;
+    cluster
+        .inject(&Fault::Refuse {
+            node: old.clone(),
+            peers: vec![promoted.clone()],
+        })
+        .await
+        .expect("cut the promoted replica off");
+    let mut acknowledged = vec!["before".to_string()];
+    for i in 0..5 {
+        let payload = format!("on-a-majority-{i}");
+        cluster
+            .publish_via(&old, STREAM, payload.clone().into_bytes())
+            .await
+            .unwrap_or_else(|err| panic!("{payload} is held by {old} and {other}: {err:#}"));
+        acknowledged.push(payload);
+    }
+    cluster.kill_node(&old).expect("kill the old leader");
+    let fence_cut = Fault::Refuse {
+        node: promoted.clone(),
+        peers: vec![other.clone()],
+    };
+    cluster
+        .inject(&fence_cut)
+        .await
+        .expect("cut promoted -> other");
+
+    restamp(&cluster, report, &old).await;
+    let new = promote_away_from(&cluster, &old).await;
+    assert_eq!(new, promoted, "the dry run named the promoted replica");
+
+    // Long enough for the fence to settle on whatever majority it can reach.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    cluster.heal(&fence_cut).await.expect("heal");
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the new leader to serve",
+        || async {
+            cluster
+                .publish_via(&new, STREAM, b"after".to_vec())
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("the new leader serves");
+    assert_holds(&cluster, &new, &acknowledged).await;
+    cluster.shutdown().await;
+}
+
+/// **A promotion waits for a majority of the old replica set.** Three
+/// brokers, RF 3: the old leader acknowledges a record held by itself and one
+/// follower, then both die. The last follower is promoted from a report that
+/// named it level, and there is nobody live to put beside it. It must not
+/// serve until one of the two holders is back, and then it serves with the
+/// record.
+#[serial]
+#[tokio::test]
+async fn a_promotion_waits_while_a_majority_of_the_old_set_is_down() {
+    let mut cluster = start(Duration::from_secs(2)).await;
+    let assignment = assignment(&cluster).await;
+    let old = assignment.leader.clone();
+    let report = level_report(&cluster, &old, &assignment.replicas).await;
+    let (holder, lagging) = (
+        assignment.replicas[0].clone(),
+        assignment.replicas[1].clone(),
+    );
+
+    // The holder goes quiet first, so the control plane never sees it live
+    // with the old leader down: its backstop pass would promote it.
+    cut_from_control_plane(&cluster, &holder).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    cut_from_control_plane(&cluster, &old).await;
+    cluster
+        .inject(&Fault::Refuse {
+            node: old.clone(),
+            peers: vec![lagging.clone()],
+        })
+        .await
+        .expect("cut the lagging follower off");
+    cluster
+        .publish_via(&old, STREAM, b"on-two-of-three".to_vec())
+        .await
+        .expect("held by the old leader and one follower");
+    let acknowledged = vec!["before".to_string(), "on-two-of-three".to_string()];
+    cluster.kill_node(&old).expect("kill the old leader");
+    cluster.kill_node(&holder).expect("kill the other holder");
+    felix_cluster::wait::until(Duration::from_secs(20), "both holders down", || async {
+        cluster
+            .placeable_nodes()
+            .await
+            .is_ok_and(|live| !live.contains(&old) && !live.contains(&holder))
+    })
+    .await
+    .expect("both holders are marked down");
+
+    restamp(&cluster, report, &old).await;
+    let new = promote_away_from(&cluster, &old).await;
+    assert_eq!(
+        new,
+        lagging,
+        "the only live follower is promoted: old {old}, holder {holder}, now {:?}, live {:?}",
+        cluster.shard_assignments().await,
+        cluster.placeable_nodes().await
+    );
+
+    // Without a majority of {old, holder, lagging} it cannot fence, so it
+    // takes nothing. Serving here would be serving without the record.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+    while tokio::time::Instant::now() < deadline {
+        cluster
+            .publish_via(&new, STREAM, b"too-early".to_vec())
+            .await
+            .expect_err("the new leader served with a majority of its set down");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    for fault in Fault::partition(Endpoint::node(&holder), Endpoint::ControlPlane) {
+        cluster.heal(&fault).await.expect("heal the holder's link");
+    }
+    cluster
+        .restart_node(&holder)
+        .await
+        .expect("bring a holder back");
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the new leader to serve",
+        || async {
+            cluster
+                .publish_via(&new, STREAM, b"after".to_vec())
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("the new leader serves once it can fence a majority");
+    assert_holds(&cluster, &new, &acknowledged).await;
+    cluster.shutdown().await;
+}
+
+/// **A partition with the control plane on the minority of the replica set
+/// does not give the shard two leaders.** Four brokers, RF 3, split
+/// {old, holder} | {promoted, spare, control plane}. The old leader goes on
+/// acknowledging on {old, holder}, since nothing on that path asks the
+/// control plane. The control plane promotes `promoted`, which must not open
+/// with the spare as its majority. Once healed, whoever leads holds every
+/// write acknowledged on either side.
+#[serial]
+#[tokio::test]
+async fn a_partitioned_minority_with_the_control_plane_does_not_open() {
+    let cluster = start_nodes(4, Duration::from_secs(2)).await;
+    let assignment = assignment(&cluster).await;
+    let old = assignment.leader.clone();
+    let report = level_report(&cluster, &old, &assignment.replicas).await;
+    // The follower to promote is whichever the report would pick once the
+    // holder is down too: the one left on the control plane's side.
+    let (holder, promoted) = (
+        assignment.replicas[0].clone(),
+        assignment.replicas[1].clone(),
+    );
+    let spare = cluster
+        .node_ids()
+        .into_iter()
+        .find(|id| *id != old && !assignment.replicas.contains(id))
+        .expect("a fourth broker");
+
+    let minority = [old.clone(), holder.clone()];
+    let majority = [promoted.clone(), spare.clone()];
+    let mut cuts = Vec::new();
+    for (side, others) in [(&minority, &majority), (&majority, &minority)] {
+        for node in side {
+            cuts.push(Fault::Refuse {
+                node: node.clone(),
+                peers: others.to_vec(),
+            });
+        }
+    }
+    for node in &minority {
+        cut_from_control_plane(&cluster, node).await;
+    }
+    for cut in &cuts {
+        cluster.inject(cut).await.expect("partition the brokers");
+    }
+
+    // Writes on both sides, for as long as the promotion takes and a while
+    // after. Only a side holding a majority of the old set may acknowledge.
+    let promoted_yet = std::sync::atomic::AtomicBool::new(false);
+    let writes = async {
+        let mut acknowledged = vec!["before".to_string()];
+        let mut after = 0;
+        for i in 0.. {
+            if after >= 20 {
+                break;
+            }
+            if promoted_yet.load(std::sync::atomic::Ordering::SeqCst) {
+                after += 1;
+            }
+            for node in [&old, &promoted] {
+                let payload = format!("{node}-{i}");
+                if cluster
+                    .publish_via(node, STREAM, payload.clone().into_bytes())
+                    .await
+                    .is_ok()
+                {
+                    acknowledged.push(payload);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        acknowledged
+    };
+    let promotion = async {
+        // The minority's heartbeats stop with the partition; wait for both
+        // to be marked down, then give placement the level report.
+        felix_cluster::wait::until(Duration::from_secs(20), "the minority down", || async {
+            cluster
+                .placeable_nodes()
+                .await
+                .is_ok_and(|live| !live.contains(&old) && !live.contains(&holder))
+        })
+        .await
+        .expect("the minority is marked down");
+        restamp(&cluster, report, &old).await;
+        let new = promote_away_from(&cluster, &old).await;
+        promoted_yet.store(true, std::sync::atomic::Ordering::SeqCst);
+        new
+    };
+    let (acknowledged, new) = tokio::join!(writes, promotion);
+    assert_eq!(new, promoted, "the follower on the control plane's side");
+    assert!(
+        !acknowledged
+            .iter()
+            .any(|record| record.starts_with(&format!("{promoted}-"))),
+        "{promoted} acknowledged writes with {old} still acknowledging on {holder}: {acknowledged:?}"
+    );
+
+    // The minority registers again once it reaches the control plane, and
+    // the new leader can then reach it to fence.
+    cluster.heal_all().await.expect("heal");
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the new leader to serve",
+        || async {
+            cluster
+                .publish_via(&new, STREAM, b"after".to_vec())
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("the new leader serves once it reaches the old set");
+    assert_holds(&cluster, &new, &acknowledged).await;
     cluster.shutdown().await;
 }
