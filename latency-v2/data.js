@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790682119850,
+  "lastUpdate": 1790701733124,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -26268,6 +26268,72 @@ window.BENCHMARK_DATA = {
             "range": "787.55",
             "unit": "us",
             "extra": "trials: 5\nmedian: 337.00\nmean: 889.20\nstdev: 787.55\ncv: 88.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6614a0227299fbfaeea396836a24c217397d8045",
+          "message": "feat: atomic event and state commits on one shard (#871)\n\n* feat: atomic event and state commits on one shard\n\nA commit writes an event and keyed state updates as one record on the\nstream shard an entity key routes to. Readers see the event at the\nrecord's offset; the shard's state view applies the updates under the\nring lock, held with the event on a Quorum stream until the mark passes\nit. Operations on another stream are refused on the client, never split.\n\nStorage format v5 (record bit 28), replication mark 4, wire requests\ncommit/state_get behind FEATURE_ATOMIC_COMMIT, fleet feature\natomic_commit. TLA+ model FelixAtomicCommit with two violating twins,\nand history-checker rule 8 (partial commit).\n\nPart of #620.\n\n* fix: replay a commit as its event after a restart\n\nThe ring is refilled from disk at startup, and it took commit records as\nstored, so a resumed subscriber got the record's payload instead of its\nevent. The history campaign found it as phantoms after a kill.\n\n* feat: atomic commits in the Python and TypeScript clients\n\nClient.commit/state_get and AsyncClient.commit/state_get in Python, and\nclient.commit/stateGet in Node, over the Rust client's checks, with typed\nNotOnOwningShardError and EventCountError. Conformance scenarios\ncommit.* in the catalogue, checked by the Rust suite (raw frames and the\nSDK, including an old peer's byte-identical ok) and by both bindings'\nsuites. The client fixture finalizes atomic_commit. Guides, READMEs and\ndocs-site client pages document the API.\n\n* docs(site): name atomic commits on the why-felix page\n\n* fix(typescript): return null, not undefined, for missing state fields",
+          "timestamp": "2026-09-29T10:05:49-07:00",
+          "tree_id": "5bf0419f503d7e396f9a0e6356b06c67ec914c92",
+          "url": "https://github.com/gabloe/felix/commit/6614a0227299fbfaeea396836a24c217397d8045"
+        },
+        "date": 1790701729553,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 103,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 103.00\nmean: 103.20\nstdev: 0.84\ncv: 0.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 140,
+            "range": "24.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 140.00\nmean: 149.60\nstdev: 24.32\ncv: 16.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 199,
+            "range": "28.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 205.40\nstdev: 28.55\ncv: 13.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 135,
+            "range": "5.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 135.00\nmean: 137.80\nstdev: 5.72\ncv: 4.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 271,
+            "range": "567.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 271.00\nmean: 526.20\nstdev: 567.40\ncv: 107.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 369,
+            "range": "1151.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 369.00\nmean: 964.60\nstdev: 1151.72\ncv: 119.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
