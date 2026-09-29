@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790641926268,
+  "lastUpdate": 1790648474999,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -19916,6 +19916,58 @@ window.BENCHMARK_DATA = {
             "range": "6145.15",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 822991.68\nmean: 823432.30\nstdev: 6145.15\ncv: 0.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0bd3f3905238e3e7ead8cc58d5484471e01fc7db",
+          "message": "ci(tla): split the model check across four parallel jobs (#833)\n\nThe TLA+ job has run past its 60-minute limit on main since the reads\nconfigurations landed in #829 (FelixShardReadsRound alone takes about 15\nminutes), so every run since 19f56237 was cancelled. check_tla.sh takes\nTLA_SHARD=i/n and checks every nth configuration; CI runs four shards.\n\nSpec-Unaffected: CI and script only; no configuration changes",
+          "timestamp": "2026-09-28T19:16:54-07:00",
+          "tree_id": "9413552a16f176420408a836b3f84ae817e445fe",
+          "url": "https://github.com/gabloe/felix/commit/0bd3f3905238e3e7ead8cc58d5484471e01fc7db"
+        },
+        "date": 1790648474285,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 328233.43,
+            "range": "4894.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 328233.43\nmean: 326544.10\nstdev: 4894.47\ncv: 1.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 328233.43,
+            "range": "4894.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 328233.43\nmean: 326544.10\nstdev: 4894.47\ncv: 1.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81966.89,
+            "range": "1109.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81966.89\nmean: 81396.45\nstdev: 1109.52\ncv: 1.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819668.93,
+            "range": "11095.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819668.93\nmean: 813964.50\nstdev: 11095.19\ncv: 1.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
