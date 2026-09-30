@@ -508,12 +508,15 @@ cursors, dead letters, or counters), and the leader's oldest surviving offset.
 A follower of that shard at that generation discards its copy of that log,
 generation history included, and answers `ReplicateOk` with the offset it was
 given, where its new copy begins. Shipping then resumes from there as if the
-follower had been bootstrapped.
+follower had been bootstrapped. A follower never discards a record below its
+commit offset: it keeps those, and the records shipped from `base_offset`
+compare them with the leader's as they arrive.
 
 | The follower | Answer |
 | --- | --- |
 | follows the shard at that generation | discards the log, `ReplicateOk` at `base_offset` |
-| holds records below its commit offset at or above `base_offset` | `LogConflict`; it stays halted |
+| holds records below its commit offset at or above `base_offset` | keeps them, drops only what lies past the commit offset, `ReplicateOk` at `base_offset` |
+| found a committed record that disagreed with this generation's leader | `LogConflict`; it stays halted |
 | knows a newer generation | `FencedEpoch` |
 | is outside the replica set | `Unauthorized` |
 | predates the kind | `UnsupportedKind`; it stays halted |

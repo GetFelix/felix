@@ -40,6 +40,10 @@ pub struct ReplicaHandler {
     /// generation have been compared with it, while that takes more than one
     /// batch. See [`unverified_from`].
     verified: parking_lot::Mutex<HashMap<felix_router::ShardKey, Verified>>,
+    /// The generation whose leader shipped a record that disagreed with one
+    /// this broker holds as committed, per log. A rebuild from that leader
+    /// would only find the same disagreement again.
+    mismatched: parking_lot::Mutex<HashMap<(felix_router::ShardKey, felix_broker::LogKind), u64>>,
 }
 
 /// Progress comparing a follower's older records with a newer leader's.
@@ -55,6 +59,7 @@ impl ReplicaHandler {
             broker,
             router,
             verified: parking_lot::Mutex::new(HashMap::new()),
+            mismatched: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -125,52 +130,17 @@ impl ReplicaHandler {
         // what this broker holds from there up is at stake.
         let from = log.base_offset().max(request.base_offset);
         if let Some(commit) = cuts_committed(&log, from).await {
-            tracing::error!(
-                stream = %key.stream,
-                shard = key.shard,
-                log = ?request.log,
-                generation = request.shard.generation,
-                base_offset = request.base_offset,
-                commit_offset = commit,
-                "refusing to rebuild: it would discard records this broker \
-                 knows are committed, so the leader asking may not hold them",
-            );
-            metrics::record_replicated(metrics::OUTCOME_BELOW_COMMIT);
-            return refused(
-                correlation_id,
-                ErrorCode::LogConflict,
-                0,
-                format!(
-                    "this broker holds committed records below {commit} that a rebuild \
-                     from {} would discard",
-                    request.base_offset
-                ),
-            );
+            return self
+                .rebuild_above_commit(correlation_id, &key, log_kind, &log, &request, from, commit)
+                .await;
         }
         if let Err(err) = log.rebuild_at(request.base_offset).await {
             metrics::record_replicated(metrics::OUTCOME_ERROR);
             return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
         }
         // The in-memory tail was built from the records that just went.
-        if log_kind == felix_broker::LogKind::Stream
-            && let Err(err) = self
-                .broker
-                .reset_replicated(
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                    request.base_offset,
-                )
-                .await
-        {
-            tracing::warn!(
-                stream = %key.stream,
-                shard = key.shard,
-                error = %err,
-                "rebuilt the log but could not reset the stream's tail",
-            );
-        }
+        self.reset_stream_tail(&key, log_kind, request.base_offset)
+            .await;
         tracing::warn!(
             stream = %key.stream,
             shard = key.shard,
@@ -184,6 +154,118 @@ impl ReplicaHandler {
             correlation_id,
             durable_offset: request.base_offset,
         })
+    }
+
+    /// A rebuild that reaches below this broker's commit offset keeps the
+    /// committed records and drops only what lies past them.
+    ///
+    /// The answer is `from`, so the leader ships again from there and every
+    /// kept record is compared byte for byte with the leader's before
+    /// anything lands after it. A committed record the leader disagrees with
+    /// shows up as a conflict below the commit offset, which halts and is
+    /// remembered, so the next rebuild at that generation is refused instead
+    /// of repeating the transfer (#863).
+    #[allow(clippy::too_many_arguments)]
+    async fn rebuild_above_commit(
+        &self,
+        correlation_id: u64,
+        key: &felix_router::ShardKey,
+        log_kind: felix_broker::LogKind,
+        log: &felix_broker::StreamLog,
+        request: &ReplicateRebuild,
+        from: u64,
+        commit: u64,
+    ) -> InternalMessage {
+        let generation = request.shard.generation;
+        if self.committed_mismatch(key, log_kind) == Some(generation) {
+            tracing::error!(
+                stream = %key.stream,
+                shard = key.shard,
+                log = ?request.log,
+                generation,
+                base_offset = request.base_offset,
+                commit_offset = commit,
+                "refusing to rebuild: this leader disagreed with a record this broker \
+                 holds as committed, so it may not hold every committed record",
+            );
+            metrics::record_replicated(metrics::OUTCOME_BELOW_COMMIT);
+            return refused(
+                correlation_id,
+                ErrorCode::LogConflict,
+                0,
+                format!(
+                    "this broker holds committed records below {commit} that generation \
+                     {generation} disagreed with"
+                ),
+            );
+        }
+        let tail = match log.tail_offset().await {
+            Ok(tail) => tail,
+            Err(err) => {
+                metrics::record_replicated(metrics::OUTCOME_ERROR);
+                return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
+            }
+        };
+        let keep = commit.min(tail);
+        if keep < tail {
+            if let Err(err) = log.truncate(keep).await {
+                metrics::record_replicated(metrics::OUTCOME_ERROR);
+                return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
+            }
+            self.reset_stream_tail(key, log_kind, keep).await;
+        }
+        tracing::warn!(
+            stream = %key.stream,
+            shard = key.shard,
+            log = ?request.log,
+            generation,
+            base_offset = request.base_offset,
+            commit_offset = commit,
+            dropped = tail - keep,
+            "kept the committed records at the leader's request to rebuild; \
+             they are compared again as the leader re-ships them",
+        );
+        metrics::record_replicated(metrics::OUTCOME_REBUILT);
+        InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id,
+            durable_offset: from,
+        })
+    }
+
+    /// The generation whose leader last disagreed with a committed record of
+    /// this log, if any.
+    fn committed_mismatch(
+        &self,
+        key: &felix_router::ShardKey,
+        log_kind: felix_broker::LogKind,
+    ) -> Option<u64> {
+        self.mismatched
+            .lock()
+            .get(&(key.clone(), log_kind))
+            .copied()
+    }
+
+    /// A stream's replay ring and next offset describe the records a rebuild
+    /// or truncation just dropped, so they are reset to where the log ends now.
+    async fn reset_stream_tail(
+        &self,
+        key: &felix_router::ShardKey,
+        log_kind: felix_broker::LogKind,
+        tail: u64,
+    ) {
+        if log_kind == felix_broker::LogKind::Stream
+            && let Err(err) = self
+                .broker
+                .reset_replicated(&key.tenant_id, &key.namespace, &key.stream, key.shard, tail)
+                .await
+        {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                error = %err,
+                "dropped records from the log but could not reset the stream's tail",
+            );
+        }
     }
 
     pub async fn bootstrap(
@@ -424,12 +506,14 @@ impl ReplicaHandler {
                     && verified.is_none_or(|through| diverged_at >= through)
             });
             // A suffix that reaches below the commit offset is not a dead
-            // leader's leftovers: a majority acknowledged part of it.
-            let below_commit = match repairable {
-                Some(_) => cuts_committed(&log, diverged_at).await,
-                None => None,
-            };
+            // leader's leftovers: a majority acknowledged part of it. Nor is it
+            // anything a rebuild from this leader could repair, so the next
+            // one at this generation is refused.
+            let below_commit = cuts_committed(&log, diverged_at).await;
             if let Some(commit) = below_commit {
+                self.mismatched
+                    .lock()
+                    .insert((key.clone(), log_kind), batch.shard.generation);
                 tracing::error!(
                     stream = %key.stream,
                     shard = key.shard,
@@ -457,25 +541,7 @@ impl ReplicaHandler {
                         // dropped records, and the apply below only moves them
                         // forward, so a tail that ends lower than before would
                         // leave them for readers if this broker is promoted.
-                        if log_kind == felix_broker::LogKind::Stream
-                            && let Err(err) = self
-                                .broker
-                                .reset_replicated(
-                                    &key.tenant_id,
-                                    &key.namespace,
-                                    &key.stream,
-                                    key.shard,
-                                    diverged_at,
-                                )
-                                .await
-                        {
-                            tracing::warn!(
-                                stream = %key.stream,
-                                shard = key.shard,
-                                error = %err,
-                                "dropped a divergent suffix but could not reset the stream's tail",
-                            );
-                        }
+                        self.reset_stream_tail(&key, log_kind, diverged_at).await;
                         outcome = replication::apply(
                             &log,
                             batch.first_offset,
