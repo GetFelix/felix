@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790803980109,
+  "lastUpdate": 1790804417064,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -21008,6 +21008,58 @@ window.BENCHMARK_DATA = {
             "range": "7119.45",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 945754.65\nmean: 946467.77\nstdev: 7119.45\ncv: 0.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bb08df45f59bd4ec19756705b03f988ac681b5ab",
+          "message": "fix(replication): a new leader names no follower short of its inherited log (#882) (#883)\n\n* fix(replication): count a follower only for what it has answered (#878)\n\nA leader's quorum mark and replica report counted a follower it had not\nheard from at the offset its fresh cursor starts at, one record below where\nthe leader's own generation begins. A leader that could reach none of its\nfollowers (a move's destination cut off as it took over, or the source at\nits draining generation) published a mark over records it inherited and no\nfollower held, and raised its commit offset to it. Once a follower without\nthose records was promoted, the broker came back holding them below its\ncommit offset, refused to drop them, and refused every rebuild.\n\nquorum_offset_without and caught_up now count FollowerCursor::confirmed,\nas held_at_generation already did. The new cluster test kills a move's\ndestination as it takes over and the old leader with it, promotes a\nfollower that lacks the old leader's last records, and checks both\nbrokers rejoin and the move finishes.\n\nSpec-Unaffected: FelixShard.tla's MajorityLen and Report count what each follower's log actually holds (HoldsPrefix); the implementation counted a guessed position, and now counts only what a follower answered, which refines the modelled action.\n\n* fix(replication): a new leader names no follower short of its inherited log (#882)\n\nAt a new generation nothing is counted until a majority holds a record of\nit, so a leader measured its report against 0 and named every follower\ncaught up, answered or not. Where promotion trusts the report (lease-mode\nQuorum caches, unfenced stream promotions), two quick failovers could\npromote a follower that lacks a record the first leader acknowledged.\n\nThe report's bound, and a cache's counter level, are now floored at where\nthe leader's generation begins in its log, or its whole log with no\nrecorded start. A stream shard acknowledging by its followers is left as\nit was: its promoted leader fences a majority and takes the furthest log.\n\nFelixShard.tla gains ReportFromAnswers (the report counts followers by\ntheir answers, as the broker does) and ReportFloor.\nFelixShardReportFromAnswers.cfg finds the loss over two promotions;\nFelixShardReportFloor.cfg is the fix.",
+          "timestamp": "2026-09-30T14:36:58-07:00",
+          "tree_id": "112b03dc788a4815c1de8e54af78653812ba05c6",
+          "url": "https://github.com/gabloe/felix/commit/bb08df45f59bd4ec19756705b03f988ac681b5ab"
+        },
+        "date": 1790804415711,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 488147.78,
+            "range": "21427.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 488147.78\nmean: 482591.27\nstdev: 21427.08\ncv: 4.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 488147.78,
+            "range": "21427.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 488147.78\nmean: 482591.27\nstdev: 21427.08\ncv: 4.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 112958.23,
+            "range": "1435.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 112958.23\nmean: 113195.93\nstdev: 1435.78\ncv: 1.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1129582.33,
+            "range": "14357.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1129582.33\nmean: 1131959.28\nstdev: 14357.80\ncv: 1.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
