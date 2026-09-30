@@ -171,7 +171,10 @@ fn a_replacement_is_copied_in_before_the_departing_follower_leaves() {
     );
     match decision_for(&plan, "orders", 0) {
         Decision::Move(MoveStep::Seat { from, to }, next) => {
-            assert_eq!((from.as_str(), to.as_str()), ("broker-b", "broker-c"));
+            assert_eq!(
+                (from.as_deref(), to.as_str()),
+                (Some("broker-b"), "broker-c")
+            );
             assert_eq!(next.replicas, vec!["broker-c"]);
             assert_eq!(next.joining, None);
             assert_eq!(next.move_started_at_millis, None);

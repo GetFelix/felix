@@ -260,6 +260,7 @@ take `node.view:cluster:*`; the rest take `node.manage:cluster:*`.
 | --- | --- |
 | `GET /v1/shard-moves` | moves and follower replacements in progress, and whether placement is paused |
 | `GET /v1/placement/plan` | what the next placement pass would write, without writing it |
+| `GET /v1/placement/replication` | each shard's copies on serving brokers (`current_replicas`) against its replication factor (`desired_replicas`), the members whose broker is not serving, and the copy being added by a restore; `?under_replicated=true` lists only the shards that are short |
 | `POST /v1/shard-moves` | start moving a shard's leadership to a node |
 | `DELETE /v1/shard-moves/{tenant_id}/{namespace}/{name}/{shard}` | cancel a shard's move; `?kind=cache` for a cache shard |
 | `POST /v1/placement/pause`, `POST /v1/placement/resume` | stop and restart placement's own moves |
@@ -296,7 +297,8 @@ it, when the leader that stopped serves again at a new generation; with no
 move in progress it is 409 `not_moving`.
 
 `GET /v1/shard-moves` lists each move's `step` (`staged`, `fenced`,
-`replacing`), `reason` (`drain`, `balance`, `operator`, `replace`), start
+`replacing`, `restoring`), `reason` (`drain`, `balance`, `operator`,
+`replace`, `restore`), start
 time, and from the leader's latest report `lag_records`, `caught_up` and
 `drained`. `GET /v1/placement/plan` lists each shard the next pass would act
 on with its `action` (`place`, a move step, `waiting` or `unplaceable`) and

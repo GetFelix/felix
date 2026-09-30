@@ -9,6 +9,7 @@ use std::sync::Arc;
 use felix_router::RegionRouter;
 
 use super::rendezvous::{choose_replicas, promote, score};
+use super::restore::{newcomer, restore, restore_step};
 use super::zones::{Domain, domain, domain_of, keep_spread};
 use super::{Blocked, CaughtUp, Decision, MoveStep};
 use crate::model::{MoveReason, Node, ShardAssignment, ShardKey, ShardState};
@@ -28,6 +29,11 @@ pub const DEFAULT_FENCE_MAX_LAG_RECORDS: u64 = 1_000;
 /// gives its slot back the same hour.
 pub const DEFAULT_MOVE_TIMEOUT_MILLIS: u64 = 30 * 60 * 1_000;
 
+/// How long a follower's broker may be gone before placement copies the
+/// shard somewhere else: longer than a broker restart takes, so a rolling
+/// restart does not copy every shard once per broker.
+pub const DEFAULT_RESTORE_AFTER_MILLIS: u64 = 5 * 60 * 1_000;
+
 /// How moves are paced, and which regions a shard may be placed in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MovePolicy {
@@ -46,6 +52,11 @@ pub struct MovePolicy {
     /// How long a move may copy before the fence, or a replacement before it
     /// has caught up, before it is abandoned. `None` never gives up.
     pub timeout_millis: Option<u64>,
+    /// How long a follower's broker must have been down or gone before
+    /// placement replaces the copy it held, restoring the replication factor.
+    /// `None` never replaces one; a replica set short of the factor is still
+    /// topped up.
+    pub restore_after_millis: Option<u64>,
     /// Placement starts no moves or replacements of its own; those in flight
     /// go on, and an operator may still start one. Not configuration: each
     /// pass reads it from the store (`POST /v1/placement/pause`).
@@ -63,6 +74,7 @@ impl Default for MovePolicy {
             max_per_node: None,
             fence_max_lag_records: DEFAULT_FENCE_MAX_LAG_RECORDS,
             timeout_millis: Some(DEFAULT_MOVE_TIMEOUT_MILLIS),
+            restore_after_millis: Some(DEFAULT_RESTORE_AFTER_MILLIS),
             paused: false,
             regions: Arc::new(RegionRouter::new(String::new())),
         }
@@ -97,7 +109,7 @@ impl Moves {
 
     /// Take a slot for a copy placement wants from `from` to `to`, if
     /// placement is not paused and both nodes and the cluster have one free.
-    fn begin(&mut self, from: &str, to: &str) -> Result<(), Blocked> {
+    pub(super) fn begin(&mut self, from: &str, to: &str) -> Result<(), Blocked> {
         if self.policy.paused {
             return Err(Blocked::Paused);
         }
@@ -145,7 +157,7 @@ impl Moves {
 
     /// Whether a copy started at `started` has run past the timeout, on the
     /// clock the reports were read at.
-    fn timed_out(&self, caught_up: &dyn CaughtUp, started: Option<u64>) -> bool {
+    pub(super) fn timed_out(&self, caught_up: &dyn CaughtUp, started: Option<u64>) -> bool {
         match (
             self.policy.timeout_millis,
             started,
@@ -179,6 +191,7 @@ pub(super) fn move_step<'a>(
     leader_share: u32,
     moves: &mut Moves,
     fenced: bool,
+    is_lost: &dyn Fn(&str) -> bool,
 ) -> Decision {
     let leader = existing.leader.as_str();
     let leader_live = is_live(leader);
@@ -320,6 +333,18 @@ pub(super) fn move_step<'a>(
     }
 
     if let Some(joining) = existing.joining.as_deref() {
+        if existing.move_reason == Some(MoveReason::Restore) {
+            return restore_step(
+                existing,
+                joining,
+                replication_factor,
+                is_live,
+                is_lost,
+                caught_up,
+                moves,
+                fenced,
+            );
+        }
         return replacement_step(
             existing,
             joining,
@@ -332,7 +357,24 @@ pub(super) fn move_step<'a>(
         );
     }
 
-    // Nothing in progress. Should a move start?
+    // Nothing in progress. A shard missing a copy gets one before anything
+    // moves for balance: one more failure could cost it its majority.
+    if leader_live
+        && let Some(decision) = restore(
+            key,
+            existing,
+            replication_factor,
+            eligible,
+            is_lost,
+            caught_up,
+            load,
+            moves,
+        )
+    {
+        return decision;
+    }
+
+    // Should a move start?
     let over_share = leaders.get(leader).copied().unwrap_or(0) > leader_share;
     let wanted = if !leader_live {
         // Draining: a caught-up live replica under its share is cheapest, the
@@ -498,33 +540,10 @@ fn reseat<'a>(
         return Decision::Kept;
     };
     // Swapped only when someone can take its place; dropping it costs a copy.
-    let taken: Vec<&str> = existing.nodes().map(String::as_str).collect();
-    let held: BTreeSet<Domain<'_>> = existing
-        .nodes()
-        .filter(|node| *node != departing)
-        .map(|node| domain(eligible, node))
-        .collect();
-    let candidates = || {
-        eligible
-            .iter()
-            .copied()
-            .filter(|node| !taken.contains(&node.node_id.as_str()))
-            .filter(|node| match node.spec.capacity.max_shards {
-                Some(max) => load.get(node.node_id.as_str()).copied().unwrap_or(0) < max,
-                None => true,
-            })
-    };
-    let best = |nodes: &mut dyn Iterator<Item = &'a Node>| {
-        nodes.max_by(|a, b| {
-            score(key, &a.node_id)
-                .cmp(&score(key, &b.node_id))
-                .then_with(|| a.node_id.cmp(&b.node_id))
-        })
-    };
-    let widening = best(&mut candidates().filter(|node| !held.contains(&domain_of(node))));
+    let (widening, best) = newcomer(key, existing, eligible, load, Some(departing.as_str()));
     // A crowded follower is only worth a copy if the shard gains a zone.
     let replacement = match draining {
-        Some(_) => widening.or_else(|| best(&mut candidates())),
+        Some(_) => widening.or(best),
         None => widening,
     };
     let Some(replacement) = replacement else {
@@ -596,7 +615,7 @@ fn replacement_step(
         replicas.retain(|replica| replica != departing);
         return Decision::Move(
             MoveStep::Seat {
-                from: departing.clone(),
+                from: Some(departing.clone()),
                 to: joining.to_string(),
             },
             ShardAssignment {
@@ -634,7 +653,7 @@ fn replacement_step(
 ///
 /// A member the report leaves out is taken to be level with the leader: its
 /// position is unknown, and assuming less could pass a record it holds.
-fn holds_what_the_set_held(
+pub(super) fn holds_what_the_set_held(
     existing: &ShardAssignment,
     joining: &str,
     caught_up: &dyn CaughtUp,

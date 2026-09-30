@@ -19,6 +19,14 @@ pub const SHARDS_UNPLACEABLE: &str = "felix_shards_unplaceable";
 /// move that would spread the shard is waiting for a slot.
 pub const SHARDS_ZONE_UNSPREAD: &str = "felix_shards_zone_unspread";
 
+/// Shards with fewer copies on serving brokers than their replication
+/// factor. Non-zero for longer than the restore delay and a copy's catch-up
+/// means placement has nowhere to put the copy, or is paused.
+pub const SHARDS_UNDER_REPLICATED: &str = "felix_shards_under_replicated";
+
+/// The copies under-replicated shards are missing between them.
+pub const SHARD_REPLICAS_MISSING: &str = "felix_shard_replicas_missing";
+
 /// Passes that could not read the catalog at all.
 pub const RECONCILE_FAILURES_TOTAL: &str = "felix_shard_reconcile_failures_total";
 
@@ -466,6 +474,8 @@ pub(super) async fn apply_pass(
     metrics::gauge!(SHARDS_UNPLACEABLE).set(outcome.unplaceable as f64);
     metrics::gauge!(SHARD_MOVES_WAITING).set(outcome.waiting as f64);
     metrics::gauge!(SHARDS_ZONE_UNSPREAD).set(plan.unspread.len() as f64);
+    metrics::gauge!(SHARDS_UNDER_REPLICATED).set(plan.under_replicated.len() as f64);
+    metrics::gauge!(SHARD_REPLICAS_MISSING).set(f64::from(plan.missing_copies));
     outcome
 }
 
