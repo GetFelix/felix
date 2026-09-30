@@ -817,3 +817,131 @@ async fn seating_a_replacement_keeps_what_the_old_set_acknowledged() {
     assert_holds(&cluster, &new, &acknowledged).await;
     cluster.shutdown().await;
 }
+
+/// **A lost follower is replaced, and the shard gets back to three copies,
+/// even when the first broker it is copied to dies mid-copy.** Five brokers,
+/// RF 3. A follower is killed; once it has been gone past the restore delay,
+/// placement copies the shard to a spare. That spare is killed before its
+/// copy is seated, so placement drops it and copies to the other spare. The
+/// set ends at three live brokers, and the new copy holds every record
+/// acknowledged before the loss.
+#[serial]
+#[tokio::test]
+async fn a_lost_follower_is_restored_even_when_its_first_replacement_dies() {
+    use felix_controlplane_service::cluster::placement::MovePolicy;
+    use felix_controlplane_service::model::{MoveReason, ShardKey, ShardKind};
+
+    let mut cluster = start_nodes(5, Duration::from_secs(2)).await;
+    let before = assignment(&cluster).await;
+    let leader = before.leader.clone();
+    level_report(&cluster, &leader, &before.replicas).await;
+    let (lost, kept) = (before.replicas[0].clone(), before.replicas[1].clone());
+
+    let mut acknowledged = vec!["before".to_string()];
+    for i in 0..20 {
+        let payload = format!("acknowledged-{i}");
+        cluster
+            .publish_via(&leader, STREAM, payload.clone().into_bytes())
+            .await
+            .unwrap_or_else(|err| panic!("{payload}: {err:#}"));
+        acknowledged.push(payload);
+    }
+
+    cluster.kill_node(&lost).expect("kill a follower");
+    felix_cluster::wait::until(Duration::from_secs(20), "the follower down", || async {
+        cluster
+            .placeable_nodes()
+            .await
+            .is_ok_and(|live| !live.contains(&lost))
+    })
+    .await
+    .expect("the follower is marked down");
+
+    let control_plane = cluster.control_plane.as_ref().expect("control plane");
+    let store = &control_plane.store;
+    let key = ShardKey {
+        tenant_id: cluster.tenant_id.clone(),
+        namespace: cluster.namespace.clone(),
+        stream: STREAM.to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let restoring = MovePolicy {
+        restore_after_millis: Some(1_000),
+        ..MovePolicy::default()
+    };
+
+    // One pass at a time, so nothing seats the first copy before it dies.
+    let first = felix_cluster::wait::until(Duration::from_secs(20), "a restore", || async {
+        control_plane.place_shards_with(restoring.clone()).await;
+        store
+            .get_shard_assignment(&key)
+            .await
+            .is_ok_and(|now| now.move_reason == Some(MoveReason::Restore))
+    })
+    .await;
+    first.expect("placement starts restoring the lost follower");
+    let started = store.get_shard_assignment(&key).await.expect("assignment");
+    let first = started.joining.clone().expect("a copy joining");
+    assert!(
+        !before.replicas.contains(&first) && first != leader,
+        "{first} is not a spare"
+    );
+    // Wait for the leader to be shipping to it, then kill it mid-copy.
+    felix_cluster::wait::until(Duration::from_secs(20), "the copy to start", || async {
+        cluster
+            .replica_report(STREAM, 0)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|report| report.generation == started.generation)
+    })
+    .await
+    .expect("the leader reports at the restore's generation");
+    cluster
+        .kill_node(&first)
+        .expect("kill the first destination");
+
+    let control_plane = cluster.control_plane.as_ref().expect("control plane");
+    let store = &control_plane.store;
+    let restored = felix_cluster::wait::until(Duration::from_secs(60), "three live copies", || {
+        let restoring = restoring.clone();
+        let (lost, first, key) = (lost.clone(), first.clone(), key.clone());
+        async move {
+            control_plane.place_shards_with(restoring).await;
+            store.get_shard_assignment(&key).await.is_ok_and(|now| {
+                now.joining.is_none()
+                    && now.replicas.len() == 2
+                    && !now.nodes().any(|node| *node == lost || *node == first)
+            })
+        }
+    })
+    .await;
+    let now = store.get_shard_assignment(&key).await.expect("assignment");
+    restored.unwrap_or_else(|err| panic!("the shard gets back to three copies: {err:#}; {now:?}"));
+    assert_eq!(now.leader, leader);
+    assert!(now.replicas.contains(&kept));
+    let replacement = now
+        .replicas
+        .iter()
+        .find(|node| **node != kept)
+        .expect("a new follower")
+        .clone();
+
+    // The new copy is complete: move leadership onto it and read it back.
+    cluster
+        .start_move(STREAM, 0, &replacement)
+        .await
+        .expect("move to the restored copy");
+    felix_cluster::wait::until(Duration::from_secs(30), "the move to finish", || async {
+        cluster.place_shards().await;
+        cluster
+            .owner(STREAM)
+            .await
+            .is_ok_and(|owner| owner == replacement)
+    })
+    .await
+    .expect("the restored copy takes over");
+    assert_holds(&cluster, &replacement, &acknowledged).await;
+    cluster.shutdown().await;
+}

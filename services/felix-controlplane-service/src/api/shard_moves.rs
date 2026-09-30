@@ -14,7 +14,7 @@ use crate::api::error::{ApiError, api_conflict, api_error, api_internal};
 use crate::api::nodes::require_cluster_node_view;
 use crate::api::types::{
     PlacementPlanResponse, PlacementStatusResponse, PlannedShard, ShardMove, ShardMoveListResponse,
-    ShardMoveRequest, ShardMoveResponse, ShardMoveStep,
+    ShardMoveRequest, ShardMoveResponse, ShardMoveStep, ShardReplication, ShardReplicationResponse,
 };
 use crate::auth::bearer::require_cluster_action;
 use crate::auth::rbac::authorize::ACTION_NODE_MANAGE;
@@ -22,7 +22,7 @@ use crate::cluster::placement::{
     CaughtUp, Decision, OperatorError, OperatorStep, PlacementRead, Refused, abandon_log,
     cancel_move, preview_operator, run_operator, start_move,
 };
-use crate::model::{ShardKey, ShardKind, ShardState};
+use crate::model::{MoveReason, ShardKey, ShardKind, ShardState};
 
 #[utoipa::path(
     get,
@@ -295,6 +295,61 @@ pub(crate) async fn placement_plan(
     }))
 }
 
+/// Which shards `GET /v1/placement/replication` lists.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct ReplicationQuery {
+    /// Only the under-replicated ones.
+    #[serde(default)]
+    under_replicated: bool,
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/placement/replication",
+    tag = "placement",
+    params(("under_replicated" = Option<bool>, Query, description = "List only under-replicated shards")),
+    responses((status = 200, description = "Each shard's copies against its replication factor", body = ShardReplicationResponse))
+)]
+/// Each assigned shard's copies on serving brokers against its replication
+/// factor, and the copy being added to any that is short.
+///
+/// # Errors
+/// - 500 when the store cannot be read.
+pub(crate) async fn shard_replication(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ReplicationQuery>,
+) -> Result<Json<ShardReplicationResponse>, ApiError> {
+    require_cluster_node_view(&state, &headers).await?;
+    let read = PlacementRead::load(state.store.as_ref(), &state.node_liveness)
+        .await
+        .map_err(|ref err| api_internal("read placement state", err))?;
+    let shards = crate::cluster::placement::replication(
+        &read.streams,
+        &read.caches,
+        &read.nodes,
+        &read.existing,
+    );
+    let under_replicated = shards.iter().filter(|s| s.under_replicated()).count();
+    let items = shards
+        .into_iter()
+        .filter(|shard| !query.under_replicated || shard.under_replicated())
+        .map(|shard| ShardReplication {
+            under_replicated: shard.under_replicated(),
+            key: shard.key,
+            leader: shard.leader,
+            desired_replicas: shard.desired,
+            current_replicas: shard.current,
+            unavailable: shard.unavailable,
+            restoring: shard.restoring,
+        })
+        .collect();
+    Ok(Json(ShardReplicationResponse {
+        under_replicated,
+        items,
+    }))
+}
+
 #[utoipa::path(
     post,
     path = "/v1/placement/pause",
@@ -407,6 +462,12 @@ fn shard_move(
         (ShardMoveStep::Fenced, assignment.successor.clone(), None)
     } else if let Some(successor) = &assignment.successor {
         (ShardMoveStep::Staged, Some(successor.clone()), None)
+    } else if let Some(joining) = &assignment.joining
+        && assignment.move_reason == Some(MoveReason::Restore)
+    {
+        // Which follower it stands in for, if any, is in
+        // `/v1/placement/replication`, which reads the brokers.
+        (ShardMoveStep::Restoring, Some(joining.clone()), None)
     } else if let Some(joining) = &assignment.joining {
         let replacing = assignment
             .replicas

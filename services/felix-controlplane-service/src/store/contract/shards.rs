@@ -588,6 +588,7 @@ async fn why_a_move_started_is_persisted(store: &dyn ControlPlaneStore) {
         MoveReason::Balance,
         MoveReason::Operator,
         MoveReason::Replace,
+        MoveReason::Restore,
     ] {
         let mut staged = assignment(0, "broker-x");
         staged.replicas = vec!["broker-y".to_string()];

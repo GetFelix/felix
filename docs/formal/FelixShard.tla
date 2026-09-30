@@ -134,6 +134,10 @@
 (* lagging follower, a majority of the new set that never saw it           *)
 (* (AckedHeldByLeader).                                                    *)
 (*                                                                         *)
+(* `Grow` tops up a set a failover left short of the replication factor:   *)
+(* a spare joins with nobody leaving, and `Seat` makes it a member. A set  *)
+(* that starts with spares outside it is such a short set.                 *)
+(*                                                                         *)
 (* Under `AckByFollowers` a planned move and a cancel name a leader without *)
 (* the fence, as the broker opens them: the cut-over waits for the drained *)
 (* leader's whole log, and a cancel hands the shard back to the leader that *)
@@ -150,6 +154,15 @@
 (* record it inherited once a majority holds it, and a later leader whose  *)
 (* last record is newer overwrites it: Raft's Figure 8, which             *)
 (* FelixShardFigure8NoStartRecord.cfg finds.                               *)
+(*                                                                         *)
+(* `ReportFromAnswers` has the report count a follower by what it last     *)
+(* answered holding at the leader's generation (`confirmed`), as the       *)
+(* broker does, rather than by what its log holds. A new leader that has   *)
+(* heard from nobody then counts nothing, and names every follower. With   *)
+(* two failovers in a row TLC finds the second promoting a follower that   *)
+(* lacks a record the first leader acknowledged (AckedSurvive).            *)
+(* `ReportFloor` names a follower only once it holds everything the leader *)
+(* inherited, which is a bound on what any earlier leader acknowledged.    *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -190,6 +203,9 @@ CONSTANTS
     Spares,         \* brokers outside the replica set that a failover may bring in
     ReplaceOnPromote, \* whether a promotion swaps the old leader for a spare
     SeatHoldsCopy,  \* whether a replacement is seated only once it holds what the old set held
+    ReportFromAnswers, \* whether the report counts a follower by its answers, or by its log
+    ReportFloor,    \* whether the report never names a follower short of the leader's inherited log
+    Grow,           \* whether placement may add a spare to the set with nobody leaving
     PromoteDestination \* whether a failover may name a move's destination leader
 
 ASSUME Promotion \in {"leader-report", "log-order", "any"}
@@ -205,10 +221,12 @@ ASSUME AckChecksLease \in BOOLEAN /\ AckOnResponse \in BOOLEAN
 ASSUME AckByFollowers \in BOOLEAN /\ FenceOnPromote \in BOOLEAN
 ASSUME LabelOnReceipt \in BOOLEAN
 ASSUME StartRecord \in BOOLEAN
+ASSUME ReportFromAnswers \in BOOLEAN /\ ReportFloor \in BOOLEAN
 ASSUME PromoteDestination \in BOOLEAN
 \* Only a promotion or a replacement changes the set, so spares are checked
 \* with follower acks (no handoff, no cancel) and no staged copy.
 ASSUME Spares \subseteq Brokers /\ ReplaceOnPromote \in BOOLEAN /\ SeatHoldsCopy \in BOOLEAN
+ASSUME Grow \in BOOLEAN
 ASSUME Spares /= {} => AckByFollowers /\ ~StageMove /\ ~Handoff /\ ~Cancel
 ASSUME ReplaceOnPromote => Spares /= {} /\ MaxMoves = 0
 \* No lease anywhere on a `Quorum` write's path: not at admission (see
@@ -277,6 +295,13 @@ NoReport == [holders |-> {}, len |-> 0, drained |-> FALSE, gen |-> 0]
 \* is a majority of this set, unless `LearnerVotes`.
 ReplicaSet == Brokers \ (staged \cup out \cup joining)
 QuorumSet == IF LearnerVotes THEN Brokers ELSE ReplicaSet
+
+\* The set plus a copy joining it, where that copy may be part of every
+\* majority that acknowledged. The leader counts the newcomer, and beside an
+\* even number of members a majority of the larger set can be the leader and
+\* the newcomer alone, so a failover keeps it (`keep_replicas`). Beside an
+\* odd number every majority still holds a majority of the old set.
+Counted == ReplicaSet \cup (IF Cardinality(ReplicaSet) % 2 = 0 THEN joining ELSE {})
 
 MajorityOf(S, of) == Cardinality(S \cap of) * 2 > Cardinality(of)
 Majority(S) == MajorityOf(S, QuorumSet)
@@ -545,7 +570,8 @@ Diverge(a, c) ==
 \* (crates/server/felix-replication/src/ship.rs) and counts it later, by
 \* which time the follower may have taken a newer leader's fence.
 Confirm(b, f, k) ==
-    confirmed' = IF AckByFollowers THEN [confirmed EXCEPT ![b][f] = k] ELSE confirmed
+    confirmed' = IF AckByFollowers \/ ReportFromAnswers
+                 THEN [confirmed EXCEPT ![b][f] = k] ELSE confirmed
 
 \* Under `AckByFollowers` or `FenceOnPromote` the follower also refuses a
 \* leader older than the generation it persisted, and persists the leader's:
@@ -689,13 +715,23 @@ LearnHwm(b, f) ==
 HoldsPrefix(m, b, k) ==
     Len(log[m]) >= k /\ \A j \in 1..k : Same(log[m][j], log[b][j])
 
+\* Whether `b` counts `m` as holding its first `k` records in a report: by
+\* `m`'s log, or with `ReportFromAnswers` by what `m` last answered, as
+\* `quorum_offset_without` and `caught_up` read `FollowerCursor::confirmed`.
+Counted(m, b, k) ==
+    IF ReportFromAnswers THEN confirmed[b][m] >= k ELSE HoldsPrefix(m, b, k)
+
+\* How much of `b`'s log it inherited: the records written before its own
+\* generation. Any record an earlier leader acknowledged is among them.
+Inherited(b) == Cardinality({ i \in 1..Len(log[b]) : log[b][i].g < bgen[b] })
+
 \* The most of `b`'s log a majority holds, `b` included and halted followers
 \* not: `quorum_offset_without`. With `StartRecord`, only up to a record of
 \* `b`'s own generation, as the mark.
 MajorityLen(b) ==
     LET held == { k \in 0..Len(log[b]) :
                     /\ k > 0 => OwnGen(b, k)
-                    /\ MajorityOf({ m \in Brokers \ halted : HoldsPrefix(m, b, k) } \cup {b},
+                    /\ MajorityOf({ m \in Brokers \ halted : Counted(m, b, k) } \cup {b},
                                   QuorumSet) }
     IN IF held = {} THEN 0 ELSE CHOOSE k \in held : \A j \in held : j <= k
 
@@ -703,9 +739,12 @@ MajorityLen(b) ==
 \* records the mark sent with this report may release, and never below the
 \* mark already out; otherwise, and once the leader has stopped for a move,
 \* all of it.
+\* With `ReportFloor`, never below the log the leader inherited either:
+\* `acknowledged` in crates/server/felix-replication/src/driver/shard.rs.
+Max(x, y) == IF x >= y THEN x ELSE y
 ReportAt(b) ==
     IF ReportBound /= "tail" /\ Quorum /\ ~stopped[b]
-    THEN IF MajorityLen(b) >= hwm[b] THEN MajorityLen(b) ELSE hwm[b]
+    THEN Max(Max(MajorityLen(b), hwm[b]), IF ReportFloor THEN Inherited(b) ELSE 0)
     ELSE Len(log[b])
 
 \* With follower acks and a promotion that does not read it, nothing reads the
@@ -718,7 +757,7 @@ Report(b) ==
     /\ leader = b /\ bgen[b] = gen
     /\ inflight = <<>>
     /\ inflight' = << [holders |-> { f \in Brokers \ {b} :
-                                        HoldsPrefix(f, b, ReportAt(b)) /\ f \notin halted },
+                                        Counted(f, b, ReportAt(b)) /\ f \notin halted },
                        len     |-> IF ReportBound = "unpaired" THEN Len(log[b])
                                                              ELSE ReportAt(b),
                        drained |-> stopped[b] /\ pending[b] = 0 /\ (Held => queued[b] = 0),
@@ -823,13 +862,14 @@ Promote(v, f, views) ==
     /\ staged' = staged \ {f}
     \* What `choose_replicas` in placement/plan.rs would write: the old set
     \* without the dead leader, plus a spare. `keep_replicas` keeps the set,
-    \* without a replacement still joining, which failover ends.
+    \* without a replacement still joining unless it is `Counted`; failover
+    \* ends the replacement either way.
     /\ IF ReplaceOnPromote /\ out /= {}
        THEN \E d \in out :
               /\ out' = (out \ {d}) \cup {v.leader}
               /\ mine' = [mine EXCEPT ![f] = (ReplicaSet \ {v.leader}) \cup {d}]
-       ELSE /\ mine' = [mine EXCEPT ![f] = ReplicaSet \cup {f}]
-            /\ out' = out \cup (joining \ {f})
+       ELSE /\ mine' = [mine EXCEPT ![f] = Counted \cup {f}]
+            /\ out' = out \cup (joining \ (Counted \cup {f}))
     /\ joining' = {}
     /\ leaving' = {}
     /\ joinedAt' = 0
@@ -1057,11 +1097,29 @@ Reseat(v, o, views) ==
     /\ moves < MaxMoves
     /\ joining = {}
     /\ o \in ReplicaSet \ {leader}
+    \* A restore grows a set short of the factor before it replaces anyone,
+    \* so with `Grow` a replacement only ever joins an odd set.
+    /\ Grow => Cardinality(ReplicaSet) % 2 = 1
     /\ \E d \in out :
         /\ Regenerate(v, views, mine[leader] \cup {d})
         /\ joining' = {d}
         /\ out' = out \ {d}
     /\ leaving' = {o}
+    /\ joinedAt' = OldSetLen(leader)
+    /\ moves' = moves + 1
+
+\* A spare joins a set short of the replication factor, and counts toward
+\* the quorum from here. Nobody leaves, so its seat changes nothing but the
+\* generation.
+GrowSet(v, d, views) ==
+    /\ Grow
+    /\ moves < MaxMoves
+    /\ joining = {}
+    /\ d \in out
+    /\ Regenerate(v, views, mine[leader] \cup {d})
+    /\ joining' = {d}
+    /\ out' = out \ {d}
+    /\ leaving' = {}
     /\ joinedAt' = OldSetLen(leader)
     /\ moves' = moves + 1
 
@@ -1082,7 +1140,7 @@ Seat(v, j, views) ==
 \* planner has held since.
 Decide(v, f, views) ==
     \/ Promote(v, f, views) \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
-    \/ Reseat(v, f, views) \/ Seat(v, f, views)
+    \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
 
 -----------------------------------------------------------------------------
 
@@ -1174,13 +1232,14 @@ NoTruncationBelowHwm ==
 
 \* Every acknowledged record is on a majority of the stream's replica set, so
 \* it survives any minority loss. The one set of four, a promoted replacement
-\* leading the three it joined, needs two: every fence there takes three.
+\* leading the three it joined, needs two: every fence there takes three. A
+\* copy joining an even set is counted with it (`Counted`).
 AckedOnMajority ==
     Quorum =>
         \A id \in acked :
-            LET holders == { b \in ReplicaSet : \E i \in 1..Len(log[b]) : log[b][i].id = id }
-            IN \/ Cardinality(holders) * 2 > Cardinality(ReplicaSet)
-               \/ Cardinality(ReplicaSet) = 4 /\ Cardinality(holders) = 2
+            LET holders == { b \in Counted : \E i \in 1..Len(log[b]) : log[b][i].id = id }
+            IN \/ Cardinality(holders) * 2 > Cardinality(Counted)
+               \/ Cardinality(Counted) = 4 /\ Cardinality(holders) = 2
 
 \* A `Quorum` write is never held back by a destination's copy: whenever the
 \* stream's own replica set would acknowledge it, the leader can. A latency

@@ -52,6 +52,25 @@ for what the current release guarantees.
 
 ### Added
 
+- **Placement restores a shard's replication factor.** A follower whose broker
+  has been down or gone for `FELIX_SHARD_RESTORE_AFTER_MS` (`shard_restore_after_ms`,
+  five minutes by default, `0` to turn it off) is replaced by a copy on a live
+  broker. A replica set a failover left short of its factor is topped up once a
+  broker is free, which covers a cache or `Leader` stream whose failover dropped
+  the dead leader. The copy joins and is seated the way a drain's replacement
+  is, so a `Quorum` stream keeps the old set's majority rule. The restore is
+  stored in the assignment (move reason `restore`) and resumes across
+  control-plane restarts, and a destination that dies mid-copy is replaced.
+  A short set grows before a lost follower in it is replaced, nothing starts
+  until the leader has reported at its generation, and a failover keeps a copy
+  that was joining a set of two, since the leader counted it.
+  New: `felix_shards_under_replicated`, `felix_shard_replicas_missing`,
+  `GET /v1/placement/replication` and `felix-controlplane admin replication`.
+  The move step `Seat` now names the follower it replaces as optional, and
+  `MoveStep::Restore` and `MoveReason::Restore` are new. A control plane that
+  predates `restore` cannot read an assignment with that move reason, so
+  upgrade every control-plane instance before relying on it.
+
 - **Adversarial history campaign and liveness checks.** The history
   checker's nemesis gains compound faults on four brokers: two brokers killed
   at once, a leader isolated from its peers and the control plane until it
@@ -664,6 +683,18 @@ for what the current release guarantees.
   once the shard moved back to it every publish timed out with
   `publish commit timeout`. The commit order now never moves backwards on a
   replicated batch. See `docs/replication-design.md`, "Replication".
+- **A new leader names no follower short of the log it inherited (#882).**
+  Until a majority held a record of the new generation, a leader measured its
+  replica report against offset 0 and named every follower caught up,
+  answered or not. In lease mode, where promotion trusts the report, two
+  failovers in quick succession could promote a follower missing a record the
+  first leader acknowledged. Stream shards promoted with the fence were
+  covered by it; `Quorum` caches and unfenced stream promotions were not.
+  The report, and a cache's counter level, now never name a follower short
+  of where the leader's generation begins. Right after a failover, a new
+  leader that dies before any follower has copied its inherited log leaves
+  the shard unplaced until a broker holding that log returns. See
+  `docs/replication-design.md`, "Who may be promoted".
 
 - **A leader counts a follower only for what it has answered (#878).** The
   quorum mark and the replica report counted a follower the leader had not yet

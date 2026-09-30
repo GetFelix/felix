@@ -17,6 +17,8 @@ usage: felix-controlplane admin [--url URL] [--token TOKEN] [--json] <command>
 commands:
   moves                                    moves in progress
   plan                                     what placement would do next
+  replication                              shards short of their replication
+                                           factor, and any copy being added
   move <tenant>/<namespace>/<name>/<shard> <node> [--cache] [--dry-run]
                                            move a shard's leadership to <node>;
                                            --dry-run shows what it would do
@@ -102,6 +104,12 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     let (response, render): (Value, fn(&Value) -> String) = match words.as_slice() {
         ["moves"] => (admin.get("/v1/shard-moves").await?, render_moves),
         ["plan"] => (admin.get("/v1/placement/plan").await?, render_plan),
+        ["replication"] => (
+            admin
+                .get("/v1/placement/replication?under_replicated=true")
+                .await?,
+            render_replication,
+        ),
         ["move", shard, destination] => {
             let key = ShardPath::parse(shard, cache)?;
             let body = serde_json::json!({
@@ -381,6 +389,38 @@ fn render_plan(response: &Value) -> String {
         .collect();
     out.push_str(&table(&["SHARD", "ACTION", "DETAIL"], rows));
     out
+}
+
+fn render_replication(response: &Value) -> String {
+    let items = response["items"].as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        return "every shard has its replication factor\n".to_string();
+    }
+    let rows = items
+        .iter()
+        .map(|item| {
+            let unavailable = item["unavailable"]
+                .as_array()
+                .map(|nodes| nodes.iter().map(text).collect::<Vec<_>>().join(","))
+                .filter(|nodes| !nodes.is_empty())
+                .unwrap_or_else(|| "-".to_string());
+            vec![
+                shard_name(item),
+                text(&item["leader"]),
+                format!(
+                    "{}/{}",
+                    text(&item["current_replicas"]),
+                    text(&item["desired_replicas"])
+                ),
+                unavailable,
+                text(&item["restoring"]),
+            ]
+        })
+        .collect();
+    table(
+        &["SHARD", "LEADER", "COPIES", "UNAVAILABLE", "RESTORING"],
+        rows,
+    )
 }
 
 fn render_step(response: &Value) -> String {
