@@ -647,6 +647,14 @@ for what the current release guarantees.
 
 ### Fixed
 
+- **A `Quorum` failover no longer promotes a move's destination.** Its broker
+  opened the shard as the move's cut-over, without the promotion fence, and
+  under `majority_ack` the report that named it caught up could predate a
+  record the old leader acknowledged on its followers, so that record was
+  lost. Failover on a durable `Quorum` stream now ends the move instead. A
+  promoted leader that gets a new generation while still fencing also keeps
+  replication paused until it reopens, rather than shipping its unfenced log
+  at the old generation in between.
 - **A cache leader that loses its leadership rejoins as a follower (#863).**
   Cache leaders now record where their generation began, on the cache and
   counter logs, and accept the generation on both. Before, a cache leader that
