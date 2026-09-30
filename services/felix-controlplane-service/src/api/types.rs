@@ -418,6 +418,9 @@ pub enum ShardMoveStep {
     Fenced,
     /// A follower on a draining node is being replaced; leadership stays.
     Replacing,
+    /// A copy is being added to bring the shard back to its replication
+    /// factor; leadership stays.
+    Restoring,
 }
 
 /// One move or follower replacement in progress.
@@ -516,6 +519,34 @@ pub struct PlannedShard {
 pub struct PlacementPlanResponse {
     pub paused: bool,
     pub items: Vec<PlannedShard>,
+}
+
+/// One shard's copies against its replication factor.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct ShardReplication {
+    #[serde(flatten)]
+    pub key: crate::model::ShardKey,
+    pub leader: String,
+    /// The replication factor the stream or cache asks for.
+    pub desired_replicas: u32,
+    /// Copies on a serving broker, the leader's included. A copy still being
+    /// added does not count until it is seated.
+    pub current_replicas: u32,
+    /// `current_replicas < desired_replicas`.
+    pub under_replicated: bool,
+    /// Members of the replica set whose broker is not serving.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unavailable: Vec<String>,
+    /// The broker a copy is being added on, while a restore is under way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restoring: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ShardReplicationResponse {
+    /// How many shards are under-replicated, whatever the filter.
+    pub under_replicated: usize,
+    pub items: Vec<ShardReplication>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

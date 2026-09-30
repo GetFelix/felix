@@ -355,3 +355,48 @@ async fn abandoning_a_log_takes_the_cluster_operator_and_a_lost_leader() {
     assert_eq!(after.leader, "broker-y");
     assert!(after.generation > before.generation);
 }
+
+/// Each shard's copies against its replication factor, readable with view.
+/// `orders` asks for two copies; led by broker-x alone it is one short, and
+/// with broker-y seated it is whole and drops out of the filtered list.
+#[tokio::test]
+async fn replication_shows_current_against_desired_copies() {
+    let fixture = fixture().await;
+    fixture.assign(ShardState::Active, None).await;
+    let (status, body) = fixture
+        .call(
+            "GET",
+            "/v1/placement/replication",
+            &fixture.viewer,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["under_replicated"], 1);
+    let item = &body["items"][0];
+    assert_eq!(item["stream"], "orders");
+    assert_eq!(item["leader"], "broker-x");
+    assert_eq!(item["desired_replicas"], 2);
+    assert_eq!(item["current_replicas"], 1);
+    assert_eq!(item["under_replicated"], true);
+
+    let whole = fixture.assign(ShardState::Active, None).await;
+    fixture
+        .store
+        .put_shard_assignment(ShardAssignment {
+            replicas: vec!["broker-y".to_string()],
+            ..whole
+        })
+        .await
+        .expect("seat broker-y");
+    let (status, body) = fixture
+        .call(
+            "GET",
+            "/v1/placement/replication?under_replicated=true",
+            &fixture.viewer,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"under_replicated": 0, "items": []}));
+}

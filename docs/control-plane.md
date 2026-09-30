@@ -810,6 +810,7 @@ does not run placement (a Raft follower) waits for the leader's next tick.
 | `max_shard_moves_per_node` | `FELIX_SHARD_MOVES_MAX_PER_NODE` | unset (no per-node limit) |
 | `shard_move_fence_max_lag_records` | `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` | 1000 |
 | `shard_move_timeout_ms` | `FELIX_SHARD_MOVE_TIMEOUT_MS` | 1800000 (30 min); `0` never gives up |
+| `shard_restore_after_ms` | `FELIX_SHARD_RESTORE_AFTER_MS` | 300000 (5 min); `0` never replaces a lost follower |
 
 #### Moving a shard
 
@@ -916,6 +917,34 @@ still fenced generation, the leader reports drained against the followers it
 has, and the cut-over picks one of them or hands the shard back to the
 leader.
 
+#### Restoring the replication factor
+
+Placement brings a shard back to its replication factor without an operator.
+A follower whose broker has been down or gone for `shard_restore_after_ms` is
+replaced. A replica set that a failover left smaller than the factor, because
+too few brokers were live to fill it, is topped up once a live broker is free.
+The new copy goes on a live broker outside the set, in a zone the shard lacks
+if there is one. It joins as a follower replacement does, with the move reason
+`restore`, and is seated once it has caught up. On a durable `Quorum` stream
+it must also hold what a majority of the old set holds. The seat removes the
+lost follower, if there was one.
+
+The delay exists because a broker that restarts is not lost. Set it above the
+longest restart you expect, or a rolling restart copies every shard once per
+broker. With `0`, lost followers are never replaced and only short sets are
+topped up.
+
+Everything a restore needs is in the assignment, so it survives a
+control-plane restart or a change of placement lease holder. If the broker
+being copied to goes down, the copy is dropped (`abandon`) and the next pass
+picks another. If the lost broker comes back before the copy is seated, the
+copy is dropped as well. A copy that does not catch up within
+`shard_move_timeout_ms` is `timed_out` like any move. Restores take move
+slots after drains and before rebalancing, and pausing placement stops new
+ones. The details, and why a restore never happens inside a promotion, are in
+[replication-design.md](replication-design.md#who-may-be-promoted) under
+"Restoring the replication factor".
+
 The copy's bandwidth is limited on the broker that ships it: see
 `FELIX_SHARD_MOVE_BYTES_PER_SEC` in the broker configuration. It applies
 only to a destination the quorum does not need, so a `Quorum` publish never
@@ -924,7 +953,9 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `timed_out`, `reseat`, `seat`, and an operator's `cancel`, `retake` and `discard` |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `timed_out`, `reseat`, `restore`, `seat`, and an operator's `cancel`, `retake` and `discard` |
+| `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
+| `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout; a steady count means a copy that cannot finish |
 | `felix_shard_moves_waiting` | moves that could not advance in the last pass: a destination not catching up, a leader not reporting drained, or a move limit holding a drain back |
 | `felix_shard_assignment_write_conflicts_total` | placements and move steps not written because another instance changed the shard after this pass read it; the next pass re-plans |
@@ -964,13 +995,15 @@ a move takes `node.manage:cluster:*`, the permission that drains a node.
 | --- | --- |
 | `GET /v1/shard-moves` | moves and follower replacements in progress, and whether placement is paused |
 | `GET /v1/placement/plan` | what the next pass would write, shard by shard, without writing it |
+| `GET /v1/placement/replication` | each shard's copies on serving brokers against its replication factor; `?under_replicated=true` lists only the shards that are short |
 | `POST /v1/shard-moves` | start moving a shard's leadership to a node |
 | `DELETE /v1/shard-moves/{tenant_id}/{namespace}/{name}/{shard}` | cancel a shard's move or replacement; `?kind=cache` for a cache shard |
 | `POST /v1/placement/pause`, `POST /v1/placement/resume` | stop and restart placement's own moves |
 | `POST /v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}` | give up a stranded shard's log and place it afresh; `?kind=cache` for a cache shard. **Loses data** |
 
-A listed move has a `step` (`staged`, `fenced` or `replacing`), the `reason`
-it started (`drain`, `balance`, `operator` or `replace`, stored on the
+A listed move has a `step` (`staged`, `fenced`, `replacing` or `restoring`),
+the `reason` it started (`drain`, `balance`, `operator`, `replace` or
+`restore`, stored on the
 assignment as `move_reason`), `started_at_millis`, and from the leader's
 latest report at the assignment's generation `lag_records`, `caught_up` and,
 for a fenced move, `drained`:
@@ -981,6 +1014,16 @@ for a fenced move, `drained`:
                "leader": "broker-1", "destination": "broker-3", "step": "staged", "reason": "operator",
                "started_at_millis": 1790000000000, "generation": 12, "lag_records": 4210,
                "caught_up": false, "drained": false } ] }
+```
+
+The replication listing counts a copy once it is seated, so a copy being
+added shows under `restoring` and not in `current_replicas`:
+
+```json
+{ "under_replicated": 1,
+  "items": [ { "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0, "kind": "stream",
+               "leader": "broker-1", "desired_replicas": 3, "current_replicas": 2,
+               "under_replicated": true, "unavailable": ["broker-2"], "restoring": "broker-4" } ] }
 ```
 
 **Starting a move** takes the shard's key and a `destination`. It is refused
@@ -1298,6 +1341,8 @@ Control plane:
 | `felix_shards_placed_total` | shards given a leader by reconciliation |
 | `felix_shards_unplaceable` | shards with no eligible leader right now; non-zero needs attention |
 | `felix_shards_zone_unspread` | shards whose copies share a zone although brokers in other zones could hold them; non-zero means a zone is out of room or a spreading move is waiting for a slot |
+| `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor |
+| `felix_shard_replicas_missing` | the copies under-replicated shards are missing between them |
 | `felix_shard_move_steps_total{step}` | planned-move steps written |
 | `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout |
 | `felix_shard_moves_waiting` | moves that could not advance in the last pass |

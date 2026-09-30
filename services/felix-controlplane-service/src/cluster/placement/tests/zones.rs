@@ -355,7 +355,7 @@ fn a_follower_crowding_a_zone_is_moved_to_one_the_shard_lacks() {
     );
     match only_decision(&plan_b) {
         Decision::Move(MoveStep::Seat { from, to }, next) => {
-            assert_eq!((from.as_str(), to.as_str()), ("a2", "b1"));
+            assert_eq!((from.as_deref(), to.as_str()), (Some("a2"), "b1"));
             assert_eq!(next.replicas, vec!["b1".to_string()]);
         }
         other => panic!("expected a seat, got {other:?}"),
