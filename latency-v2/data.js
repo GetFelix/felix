@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790701733124,
+  "lastUpdate": 1790796513835,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -26334,6 +26334,72 @@ window.BENCHMARK_DATA = {
             "range": "1151.72",
             "unit": "us",
             "extra": "trials: 5\nmedian: 369.00\nmean: 964.60\nstdev: 1151.72\ncv: 119.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "58d3e5f5f442bf7982867802ea2846101fa9ab08",
+          "message": "fix(replication): cache leaders record their term start; rebuilds keep the committed prefix (#863) (#873)\n\nA cache leader never recorded where its generation began, because\nDurableShardStore::open returned early for cache shards. When such a\nleader died holding a record no majority had and came back as a follower,\nit had no generation history, so its divergence at that record halted it.\nThe new leader's rebuild from base 0 was then refused (it would discard\ncommitted records), and the refusal was pinned for the whole generation.\n\n- Cache leaders open the cache and counter logs on open, record the term\n  start on both and accept the generation, as stream leaders do. Caches\n  write no generation-start record, so a failure to record is logged, not\n  fatal.\n- A rebuild below the follower's commit offset keeps the committed records,\n  drops only the suffix past them, and answers at the leader's base, so the\n  re-shipped records are compared with the kept ones. A committed record\n  that disagrees halts (below_commit) and refuses further rebuilds from\n  that generation's leader.\n- A refused rebuild is retried with a backoff (5 s doubling to 5 min)\n  instead of never at that generation.\n\nSpec-Unaffected: the TLA+ models cover stream shards' fence, labels and quorum mark; recording a cache leader's term start and keeping the committed prefix in a rebuild change no modelled action, and the rebuild still never cuts below the commit offset.",
+          "timestamp": "2026-09-30T12:22:00-07:00",
+          "tree_id": "0603ac3be5dfffaed928e718fd1dae97eb76d310",
+          "url": "https://github.com/gabloe/felix/commit/58d3e5f5f442bf7982867802ea2846101fa9ab08"
+        },
+        "date": 1790796510237,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 176,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 176.00\nmean: 175.60\nstdev: 2.07\ncv: 1.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 241,
+            "range": "22.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 241.00\nmean: 249.40\nstdev: 22.26\ncv: 8.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 301,
+            "range": "733.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 301.00\nmean: 627.40\nstdev: 733.79\ncv: 116.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 211,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 211.00\nmean: 210.80\nstdev: 1.48\ncv: 0.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 424,
+            "range": "7.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 424.00\nmean: 422.80\nstdev: 7.92\ncv: 1.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 575,
+            "range": "100.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 575.00\nmean: 634.60\nstdev: 100.47\ncv: 15.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
