@@ -718,7 +718,7 @@ HoldsPrefix(m, b, k) ==
 \* Whether `b` counts `m` as holding its first `k` records in a report: by
 \* `m`'s log, or with `ReportFromAnswers` by what `m` last answered, as
 \* `quorum_offset_without` and `caught_up` read `FollowerCursor::confirmed`.
-Counted(m, b, k) ==
+ReportCounts(m, b, k) ==
     IF ReportFromAnswers THEN confirmed[b][m] >= k ELSE HoldsPrefix(m, b, k)
 
 \* How much of `b`'s log it inherited: the records written before its own
@@ -731,7 +731,7 @@ Inherited(b) == Cardinality({ i \in 1..Len(log[b]) : log[b][i].g < bgen[b] })
 MajorityLen(b) ==
     LET held == { k \in 0..Len(log[b]) :
                     /\ k > 0 => OwnGen(b, k)
-                    /\ MajorityOf({ m \in Brokers \ halted : Counted(m, b, k) } \cup {b},
+                    /\ MajorityOf({ m \in Brokers \ halted : ReportCounts(m, b, k) } \cup {b},
                                   QuorumSet) }
     IN IF held = {} THEN 0 ELSE CHOOSE k \in held : \A j \in held : j <= k
 
@@ -757,7 +757,7 @@ Report(b) ==
     /\ leader = b /\ bgen[b] = gen
     /\ inflight = <<>>
     /\ inflight' = << [holders |-> { f \in Brokers \ {b} :
-                                        Counted(f, b, ReportAt(b)) /\ f \notin halted },
+                                        ReportCounts(f, b, ReportAt(b)) /\ f \notin halted },
                        len     |-> IF ReportBound = "unpaired" THEN Len(log[b])
                                                              ELSE ReportAt(b),
                        drained |-> stopped[b] /\ pending[b] = 0 /\ (Held => queued[b] = 0),
