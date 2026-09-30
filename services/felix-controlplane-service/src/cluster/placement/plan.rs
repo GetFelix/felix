@@ -311,7 +311,7 @@ pub(super) fn plan_abandoning(
         {
             *load.entry(promoted).or_default() += 1;
             let replicas = if fenced {
-                keep_replicas(previous, promoted, &is_live, &mut load)
+                keep_replicas(previous, promoted, replication_factor, &is_live, &mut load)
             } else {
                 choose_replicas(
                     &key,
@@ -437,7 +437,7 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
 }
 
 /// The followers of a fenced shard promoted to `promoted`: the previous set,
-/// the dead leader included, without a copy still being staged.
+/// the dead leader included, without a copy staged on top of it.
 ///
 /// The new leader serves once a majority of this set has taken its fence, and
 /// that majority must meet every majority the old set acknowledged on. Swap
@@ -449,13 +449,19 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
 fn keep_replicas<'a>(
     previous: &'a ShardAssignment,
     promoted: &str,
+    replication_factor: u32,
     is_live: &dyn Fn(&str) -> bool,
     load: &mut HashMap<&'a str, u32>,
 ) -> Vec<String> {
     // A staged copy was never counted toward an acknowledgement, so the fence
-    // does not need it, and failover ends the move it belonged to.
+    // does not need it, and failover ends the move it belonged to. A move's
+    // destination that was already one of the stream's replicas did count and
+    // stays: dropping it can leave the dead leader holding the only other vote.
+    // Told apart by the set's size, as `undo_staged` does.
+    let added_successor = previous.replicas.len() >= replication_factor.max(1) as usize;
     let staged = |node: &str| {
-        previous.successor.as_deref() == Some(node) || previous.joining.as_deref() == Some(node)
+        (added_successor && previous.successor.as_deref() == Some(node))
+            || previous.joining.as_deref() == Some(node)
     };
     let kept: Vec<&'a str> = previous
         .replicas

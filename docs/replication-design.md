@@ -978,7 +978,10 @@ only works if the majority that takes the fence and the majority that
 acknowledged are majorities of the same set. On a durable `Quorum` stream,
 failover names the new leader and keeps every other member of the previous
 set, the dead leader included, and drops only a copy a move was still staging,
-which no acknowledgement counted (`keep_replicas` in `placement/plan.rs`).
+which no acknowledgement counted (`keep_replicas` in `placement/plan.rs`). A
+move's destination that was already a replica is not such a copy and stays;
+dropped, a three-broker set would leave the dead leader holding the only other
+vote, and the new leader could never finish its fence.
 Rebuilding the set with `choose_replicas`, as other shards do, swaps the dead
 leader for a node that has never held the shard whenever there are more
 brokers than the replication factor: {A, B, C} becomes {B, C, N}. A fresh

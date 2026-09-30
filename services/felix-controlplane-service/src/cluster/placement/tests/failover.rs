@@ -158,6 +158,35 @@ fn a_quorum_failover_drops_a_staged_copy() {
     );
 }
 
+/// A move's destination that was already a replica counted toward every
+/// acknowledgement, so a `Quorum` failover that promotes another follower keeps
+/// it. Dropped, the new leader's fence would need the dead leader's vote and
+/// the shard would never serve again.
+#[test]
+fn a_quorum_failover_keeps_a_destination_that_was_already_a_replica() {
+    let streams = vec![Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 3)
+    }];
+    let nodes = vec![
+        node("broker-b", NodeLifecycle::Live, None),
+        node("broker-c", NodeLifecycle::Live, None),
+        node("broker-d", NodeLifecycle::Live, None),
+    ];
+    let mut moving = assigned("orders", "broker-a", &["broker-b", "broker-c"]);
+    moving.successor = Some("broker-c".to_string());
+    let caught_up = CaughtUpNodes(["broker-b".to_string(), "broker-c".to_string()].into());
+
+    let plan = plan(&streams, &[], &nodes, &[moving], &caught_up);
+    let (_, leader, replicas) = plan.to_place().next().expect("placed");
+    assert_eq!(leader, "broker-b");
+    assert_eq!(
+        replicas.iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([&"broker-a".to_string(), &"broker-c".to_string()]),
+        "the destination was dropped from the fence's set",
+    );
+}
+
 /// A move's destination is never promoted on a `Quorum` shard, however caught
 /// up its last report says it is. Its broker opens the shard as the move's
 /// cut-over, without the promotion fence, and that report can predate a record
