@@ -33,9 +33,9 @@ pub struct FollowerCursor {
     /// shipped from the leader's base. Holds one of the policy's slots until
     /// it reaches the tail.
     pub rebuilding: bool,
-    /// This follower refused, or did not understand, a rebuild. Asked once per
-    /// generation: nothing about a refusal changes with the next pass.
-    pub rebuild_refused: bool,
+    /// This follower refused, or did not understand, a rebuild, and is not
+    /// asked again until the backoff runs out.
+    pub rebuild_refused: Option<RebuildBackoff>,
     /// Bytes this follower has stored from this leader, for pacing a copy.
     pub shipped_bytes: u64,
     /// The last batch did not reach the follower, or it refused it, or it has
@@ -57,10 +57,43 @@ impl FollowerCursor {
             confirmed: 0,
             halted: None,
             rebuilding: false,
-            rebuild_refused: false,
+            rebuild_refused: None,
             shipped_bytes: 0,
             stalled: true,
             legacy_frames: false,
+        }
+    }
+}
+
+/// When a follower that refused a rebuild is asked again.
+///
+/// A refusal can resolve: the follower may have been restarted onto a build
+/// that accepts, or have dropped the records it would not discard. Asking again
+/// is harmless, since a rebuild either keeps a follower's committed records or
+/// refuses, so the only cost of asking is the round trip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RebuildBackoff {
+    /// Refusals in a row from this follower at this generation.
+    pub refusals: u32,
+    /// No rebuild is requested before this.
+    pub retry_at: tokio::time::Instant,
+}
+
+impl RebuildBackoff {
+    /// The first wait after a refusal. Doubles with each refusal in a row.
+    pub const FIRST: std::time::Duration = std::time::Duration::from_secs(5);
+    /// The longest wait between two requests.
+    pub const MAX: std::time::Duration = std::time::Duration::from_secs(300);
+
+    /// The backoff after one more refusal than `previous`.
+    pub fn after(previous: Option<Self>, now: tokio::time::Instant) -> Self {
+        let refusals = previous.map_or(0, |backoff| backoff.refusals) + 1;
+        let wait = Self::FIRST
+            .saturating_mul(1 << (refusals - 1).min(16))
+            .min(Self::MAX);
+        Self {
+            refusals,
+            retry_at: now + wait,
         }
     }
 }

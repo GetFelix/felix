@@ -55,7 +55,7 @@ mod shard;
 mod ship;
 mod throttle;
 
-pub use follower::{CATCH_UP_BOUND, FollowerCursor, Halt, caught_up, lag_records};
+pub use follower::{CATCH_UP_BOUND, FollowerCursor, Halt, RebuildBackoff, caught_up, lag_records};
 pub use quorum::{majority_of, quorum_offset, quorum_offset_without};
 pub use rebuild::{RebuildPolicy, Rebuilds};
 pub use replica::ReplicaHandler;

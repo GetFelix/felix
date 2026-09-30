@@ -932,19 +932,59 @@ impl DurableShardStore {
     }
 }
 
+impl DurableShardStore {
+    /// Open a cache shard's record and counter logs, record where this
+    /// leadership begins in each, and accept the generation.
+    ///
+    /// Without the term start, a leader that dies holding an uncommitted
+    /// record comes back as a follower with no generation history, so the
+    /// divergence at its tail cannot be told apart from one reaching further
+    /// back and the replica halts instead of dropping the suffix (#863).
+    ///
+    /// Caches never write a generation-start record, since their quorum mark
+    /// does not count from one, so a failure to record the start is logged
+    /// rather than fatal, as it is for a stream before `generation_start`.
+    async fn open_cache(
+        &self,
+        key: &ShardKey,
+        generation: u64,
+        begins_here: bool,
+    ) -> anyhow::Result<()> {
+        // Only a broker-backed store has the cache store to open.
+        let Some(broker) = self.generation_starts.as_ref().map(|starts| &starts.broker) else {
+            return Ok(());
+        };
+        for kind in [
+            felix_broker::LogKind::Cache,
+            felix_broker::LogKind::Counters,
+        ] {
+            // No counter store configured means no counter log to mark.
+            let Some(log) = broker
+                .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .await
+            else {
+                if kind == felix_broker::LogKind::Cache {
+                    anyhow::bail!("open cache shard log");
+                }
+                continue;
+            };
+            if begins_here {
+                record_term_start(&log, key, generation, false).await?;
+            }
+            accept_led_generation(&log, generation).await?;
+        }
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 impl ShardStore for DurableShardStore {
     async fn open(&self, key: &ShardKey, generation: u64, begins_here: bool) -> anyhow::Result<()> {
-        // A cache's log lives under the cache root, not this one, so opening a
-        // stream log here would create an empty directory nothing ever reads
-        // while leaving the real log untouched. It is opened lazily instead, on
-        // the first request that touches the shard.
-        //
-        // The cost is that a cache log too corrupt to open is found then rather
-        // than now, which is later than a stream's — see the cache-warming item
-        // in the cache-routing work.
+        // A cache's logs live in the cache and counter stores, which only the
+        // broker reaches; opening a stream log here would create an empty
+        // directory nothing reads.
         if key.kind == ShardKind::Cache {
-            return Ok(());
+            return self.open_cache(key, generation, begins_here).await;
         }
         // Recovery happens here: validating the tail and rebuilding indexes is
         // exactly the cost the `Opening` phase is holding writes back for.
@@ -973,16 +1013,7 @@ impl ShardStore for DurableShardStore {
         // Leading at a generation accepts it, as following does: once this
         // broker has led at it, a leader older than it is not taken as a
         // follower, even after a restart.
-        match log.accept_generation(generation).await {
-            Ok(felix_storage::disk_log::GenerationCheck::Superseded { accepted }) => {
-                anyhow::bail!(
-                    "this broker already accepted generation {accepted} for the shard, \
-                     newer than the {generation} it was assigned to lead"
-                );
-            }
-            Ok(_) => {}
-            Err(err) => anyhow::bail!("persist the accepted generation: {err}"),
-        }
+        accept_led_generation(&log, generation).await?;
         // A promotion's record is written when its fence opens the shard.
         if begins_here && let Some(starts) = starts {
             start_generation(&starts.broker, &log, key, generation).await?;
@@ -1250,6 +1281,24 @@ pub async fn record_term_start(
         );
     }
     Ok(())
+}
+
+/// Accept `generation` on a log this broker is about to lead, failing if the
+/// log already took a newer leader's.
+async fn accept_led_generation(
+    log: &felix_broker::StreamLog,
+    generation: u64,
+) -> anyhow::Result<()> {
+    match log.accept_generation(generation).await {
+        Ok(felix_storage::disk_log::GenerationCheck::Superseded { accepted }) => {
+            anyhow::bail!(
+                "this broker already accepted generation {accepted} for the shard, \
+                 newer than the {generation} it was assigned to lead"
+            );
+        }
+        Ok(_) => Ok(()),
+        Err(err) => anyhow::bail!("persist the accepted generation: {err}"),
+    }
 }
 
 /// Write this leader's generation-start record, unless the log already starts
