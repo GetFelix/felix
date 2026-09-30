@@ -8,6 +8,23 @@ use super::Cluster;
 use crate::wait;
 
 impl Cluster {
+    /// The replicas `node_id` has stopped shipping to as a leader, from its
+    /// `/replication/halted` listing. A halted replica is out of every quorum
+    /// until it is rebuilt.
+    pub(crate) async fn halted_replicas(&self, node_id: &str) -> Result<Vec<HaltedReplica>> {
+        let node = self
+            .node(node_id)
+            .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
+        self.http
+            .get(format!("http://{}/replication/halted", node.metrics_addr))
+            .send()
+            .await
+            .context("read /replication/halted")?
+            .json()
+            .await
+            .context("decode /replication/halted")
+    }
+
     /// Read one counter or gauge from a broker's `/metrics`.
     ///
     /// `None` when the metric has never been recorded, which for a counter is
@@ -97,4 +114,16 @@ impl Cluster {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
+}
+
+/// One entry of a broker's `/replication/halted`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(crate) struct HaltedReplica {
+    /// `stream` or `cache`.
+    pub(crate) kind: String,
+    pub(crate) stream: String,
+    pub(crate) shard: u32,
+    /// The follower that stopped.
+    pub(crate) node_id: String,
+    pub(crate) reason: String,
 }

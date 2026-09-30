@@ -7,14 +7,17 @@
 //!
 //! Unless `FELIX_HISTORY_MODE` says otherwise, the main campaign runs
 //! lease-free and the every-family one on the lease, so each PR covers both.
+//! The adversarial one runs lease-free on four brokers.
 //!
 //! ```text
 //! FELIX_HISTORY_SEED=1234 FELIX_HISTORY_DURATION_SECS=300 FELIX_HISTORY_MODE=lease-free \
+//!     FELIX_HISTORY_NEMESIS=adversarial \
 //!     cargo test -p felix-cluster --test history -- --nocapture
 //! ```
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
+use felix_cluster::history::model::{Action, AppendOutcome};
 use felix_cluster::history::nemesis::ClusterView;
 use felix_cluster::history::register::RegisterAction;
 use felix_cluster::history::rng::Rng;
@@ -30,9 +33,13 @@ const SEED: u64 = 0x5eed_0001;
 /// Long enough for several faults of each kind, short enough for the PR job.
 const DURATION: Duration = Duration::from_secs(45);
 
-/// Long enough for [`EveryFamily`] to go once round the families, faults
+/// Long enough for [`RoundRobin::every_family`] to go once round the families, faults
 /// that restart a broker included.
 const EVERY_FAMILY_DURATION: Duration = Duration::from_secs(75);
+
+/// Long enough for [`RoundRobin`] to go once round the adversarial kinds,
+/// each followed by the wait for every shard to serve again.
+const ADVERSARIAL_DURATION: Duration = Duration::from_secs(120);
 
 /// **Acknowledged `Quorum` appends survive kills, pauses and partitions**,
 /// nothing is duplicated or reordered, reads are prefixes of the final log,
@@ -42,17 +49,32 @@ const EVERY_FAMILY_DURATION: Duration = Duration::from_secs(75);
 ///
 /// A run given `FELIX_HISTORY_DURATION_SECS`, as the nightly one is, also
 /// cuts links, skews clocks, fails fsyncs, moves shards and drains brokers
-/// ([`RandomNemesis::all_faults`]).
+/// ([`RandomNemesis::all_faults`]), or with `FELIX_HISTORY_NEMESIS=adversarial`
+/// injects the compound faults on four brokers
+/// ([`RandomNemesis::adversarial`]).
 /// The per-PR run keeps [`RandomNemesis::process_faults`], so its fixed seed
 /// replays the schedule it always has.
+///
+/// After every heal each shard must serve again within a bound, or the run
+/// fails naming the shards that are stuck.
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fault_campaign_keeps_quorum_histories_valid() {
-    let campaign = Campaign::from_env(SEED, DURATION, Mode::LeaseFree).expect("campaign settings");
-    let (mut nemesis, faults) = if std::env::var_os(history::campaign::DURATION_VAR).is_some() {
-        (RandomNemesis::all_faults(), "every fault family")
-    } else {
-        (RandomNemesis::process_faults(), "process faults")
+    let mut campaign =
+        Campaign::from_env(SEED, DURATION, Mode::LeaseFree).expect("campaign settings");
+    let long = std::env::var_os(history::campaign::DURATION_VAR).is_some();
+    let nemesis_var = std::env::var(history::campaign::NEMESIS_VAR).ok();
+    let (mut nemesis, faults) = match nemesis_var.as_deref() {
+        Some("adversarial") => {
+            campaign = campaign.with_spare_broker();
+            (RandomNemesis::adversarial(), "adversarial faults")
+        }
+        Some("all") | None if long => (RandomNemesis::all_faults(), "every fault family"),
+        None => (RandomNemesis::process_faults(), "process faults"),
+        Some(other) => panic!(
+            "{}={other:?} is not `all` or `adversarial`",
+            history::campaign::NEMESIS_VAR
+        ),
     };
     let (seed, mode) = (campaign.seed, campaign.mode);
     println!(
@@ -85,7 +107,7 @@ async fn every_fault_family_is_injected_and_healed_in_a_campaign() {
         "every-family campaign: seed {seed}, mode {mode}; rerun with \
          FELIX_HISTORY_SEED={seed} FELIX_HISTORY_MODE={mode}"
     );
-    let mut nemesis = EveryFamily::new();
+    let mut nemesis = RoundRobin::every_family();
     let history = run_checked(&campaign, &mut nemesis).await;
 
     let healed: BTreeSet<FaultFamily> = nemesis
@@ -107,6 +129,57 @@ async fn every_fault_family_is_injected_and_healed_in_a_campaign() {
         assert!(
             healed.contains(&family),
             "seed {seed}: no {family:?} fault was injected and healed; picked {:?}",
+            nemesis.picked,
+        );
+    }
+}
+
+/// **The adversarial faults run through the campaign, and the cluster
+/// recovers from each.** Two brokers killed at once, a leader isolated
+/// until it fails over, a partition beside a delayed link, two random faults
+/// together, a move cut short by a kill, a restart loop, a torn write and a
+/// drain that replaces follower copies, one after another on four brokers
+/// with the clients writing throughout. The history stays valid, and after
+/// each heal every shard serves again within the liveness bound.
+///
+/// Ignored on PRs until the cache rebuild fix (#873) lands: a cache follower
+/// that diverged in a failover refuses its rebuild (#863), and the next move
+/// to it never finishes. The nightly workflow runs it anyway.
+#[serial]
+#[ignore = "known failing until #873: a diverged cache replica refuses its rebuild (#863)"]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn adversarial_faults_heal_and_every_shard_serves_again() {
+    let mut campaign = Campaign::from_env(SEED, ADVERSARIAL_DURATION, Mode::LeaseFree)
+        .expect("campaign settings")
+        .with_spare_broker();
+    campaign.duration = ADVERSARIAL_DURATION;
+    let (seed, mode) = (campaign.seed, campaign.mode);
+    println!(
+        "adversarial campaign: seed {seed}, mode {mode}; rerun with \
+         FELIX_HISTORY_SEED={seed} FELIX_HISTORY_MODE={mode}"
+    );
+    let mut nemesis = RoundRobin::new(RandomNemesis::adversarial().kinds().to_vec());
+    let history = run_checked(&campaign, &mut nemesis).await;
+
+    let healed: BTreeSet<String> = nemesis
+        .picked
+        .iter()
+        .filter(|fault| {
+            let line = format!("healed {fault}");
+            history.faults.iter().any(|f| f.what == line)
+        })
+        .map(|fault| format!("{:?}", fault.kind()))
+        .collect();
+    // An isolation that forced no failover is logged as one that could not
+    // be injected, so a healed one is a partition that caused a failover.
+    for kind in [
+        FaultKind::Isolate,
+        FaultKind::KillTwo,
+        FaultKind::RestartLoop,
+    ] {
+        assert!(
+            healed.contains(&format!("{kind:?}")),
+            "seed {seed}: no {kind:?} was injected and healed; picked {:?}",
             nemesis.picked,
         );
     }
@@ -158,22 +231,35 @@ async fn run_checked(campaign: &Campaign, nemesis: &mut impl Nemesis) -> History
         puts >= 10 && gets >= 10,
         "seed {seed}: only {puts} cache puts were acknowledged and {gets} gets answered"
     );
+    // The rule that an append sits where its acknowledgement said can only
+    // fire for appends acknowledged with an offset, which today are commits.
+    let at_known_offsets = history
+        .ops
+        .iter()
+        .filter(|op| {
+            matches!(
+                op.action,
+                Action::Append {
+                    outcome: AppendOutcome::Ok { offset: Some(_) },
+                    ..
+                }
+            )
+        })
+        .count();
+    assert!(
+        at_known_offsets >= 5,
+        "seed {seed}: only {at_known_offsets} appends were acknowledged with an offset"
+    );
     cluster.shutdown().await;
     history
 }
 
-/// Goes round the fault kinds in a fixed order that visits every family in
-/// its first five picks, so a short run is sure to see each one. Targets are
-/// still drawn from the seed.
-struct EveryFamily {
-    kinds: Vec<RandomNemesis>,
-    next: usize,
-    picked: Vec<Fault>,
-}
-
-impl EveryFamily {
-    fn new() -> Self {
-        let order = [
+impl RoundRobin {
+    /// Goes round the single fault kinds in a fixed order that visits every
+    /// family in its first five picks, so a short run is sure to see each
+    /// one.
+    fn every_family() -> Self {
+        Self::new(vec![
             FaultKind::DropOutbound,
             FaultKind::ClockRate,
             FaultKind::FsyncFailOnce,
@@ -186,7 +272,20 @@ impl EveryFamily {
             FaultKind::Pause,
             FaultKind::DropControlPlaneReplies,
             FaultKind::Partition,
-        ];
+        ])
+    }
+}
+
+/// Goes round `kinds` in order, one fault of each, drawing targets from the
+/// seed.
+struct RoundRobin {
+    kinds: Vec<RandomNemesis>,
+    next: usize,
+    picked: Vec<Fault>,
+}
+
+impl RoundRobin {
+    fn new(order: Vec<FaultKind>) -> Self {
         Self {
             kinds: order
                 .into_iter()
@@ -198,7 +297,7 @@ impl EveryFamily {
     }
 }
 
-impl Nemesis for EveryFamily {
+impl Nemesis for RoundRobin {
     fn next_fault(&mut self, rng: &mut Rng, view: &ClusterView) -> Option<Fault> {
         let slot = self.next % self.kinds.len();
         let fault = self.kinds[slot].next_fault(rng, view)?;

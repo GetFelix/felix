@@ -26,6 +26,10 @@ pub const DURATION_VAR: &str = "FELIX_HISTORY_DURATION_SECS";
 /// Which replication path the brokers take: `lease` or `lease-free`.
 pub const MODE_VAR: &str = "FELIX_HISTORY_MODE";
 
+/// Which faults a long run injects: `all` for every single fault kind (the
+/// default), or `adversarial` for the compound ones on four brokers.
+pub const NEMESIS_VAR: &str = "FELIX_HISTORY_NEMESIS";
+
 /// The fleet features the lease-free mode finalizes.
 pub const LEASE_FREE_FEATURES: &[&str] = &[
     "generation_start",
@@ -97,6 +101,9 @@ pub struct Campaign {
     pub mode: Mode,
     /// How long the nemesis runs. The clients start before it and stop after.
     pub duration: Duration,
+    /// How many brokers. Every list and the cache have three replicas, so a
+    /// fourth broker is one a replica set can change to.
+    pub nodes: usize,
     pub clients: usize,
     /// One single-shard `Quorum` stream per list.
     pub lists: Vec<String>,
@@ -141,6 +148,7 @@ impl Campaign {
             seed,
             mode: Mode::from_env(default_mode)?,
             duration,
+            nodes: 3,
             clients: 6,
             lists: (0..3).map(|i| format!("history-{i}")).collect(),
             cache: "history-cache".to_string(),
@@ -151,9 +159,18 @@ impl Campaign {
         })
     }
 
-    /// Three brokers, every list a `Quorum` stream and the cache a `Quorum`
-    /// cache on all three, set up
-    /// for whatever `nemesis` may inject: proxied links for link faults, and
+    /// Four brokers rather than three, so a drain replaces follower copies
+    /// and two brokers down at once can leave some shards a majority. What
+    /// [`RandomNemesis::adversarial`](super::RandomNemesis::adversarial) is
+    /// meant to run against.
+    pub fn with_spare_broker(mut self) -> Self {
+        self.nodes = 4;
+        self
+    }
+
+    /// [`Self::nodes`] brokers, every list a `Quorum` stream and the cache a
+    /// `Quorum` cache on three of them, set up for whatever `nemesis` may
+    /// inject: proxied links for link faults, and
     /// flush-and-acknowledge-on-commit for fsync faults.
     pub fn cluster_config(&self, nemesis: &impl Nemesis) -> ClusterConfig {
         let mut broker_env = Vec::new();
@@ -166,7 +183,7 @@ impl Campaign {
             }
         }
         ClusterConfig {
-            nodes: 3,
+            nodes: self.nodes,
             streams: self
                 .lists
                 .iter()
@@ -308,15 +325,22 @@ impl Campaign {
                 // effect, so heal anyway rather than leave it behind.
                 workload.fault(format!("could not {fault}: {err:#}"));
                 let _ = fault.heal(cluster).await;
-                continue;
+                workload.set_addrs(cluster.broker_addrs());
+            } else {
+                tokio::time::sleep(rng.between(self.hold.0, self.hold.1)).await;
+                fault
+                    .heal(cluster)
+                    .await
+                    .with_context(|| format!("heal {fault}"))?;
+                workload.set_addrs(cluster.broker_addrs());
+                workload.fault(format!("healed {fault}"));
             }
-            tokio::time::sleep(rng.between(self.hold.0, self.hold.1)).await;
-            fault
-                .heal(cluster)
+            // Nothing is drawn from `rng` here, so the check does not change
+            // which faults a seed picks.
+            let took = super::liveness::await_recovery(cluster, self, workload)
                 .await
-                .with_context(|| format!("heal {fault}"))?;
-            workload.set_addrs(cluster.broker_addrs());
-            workload.fault(format!("healed {fault}"));
+                .with_context(|| format!("after {fault}"))?;
+            workload.fault(format!("every shard serving {} later", millis_of(took)));
         }
     }
 
@@ -402,6 +426,10 @@ async fn settled_read(
     .await;
     let last = last.into_inner().expect("last error lock");
     found.with_context(|| format!("last attempt: {last}"))
+}
+
+fn millis_of(elapsed: Duration) -> String {
+    millis(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
 }
 
 fn random_seed() -> u64 {

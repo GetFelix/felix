@@ -4,10 +4,13 @@ A Jepsen-style check of what clients actually observed. Concurrent clients
 append to and read `Quorum` streams, and put to and get keys of a `Quorum`
 cache, on a real three-broker cluster while a
 nemesis kills, pauses and partitions brokers, and in the long runs also cuts
-links, skews clocks, fails fsyncs, moves shards and drains brokers. Every operation is recorded with
+links, skews clocks, fails fsyncs, moves shards and drains brokers. An
+adversarial nemesis overlaps faults, forces failovers and cuts moves and
+restarts short. Every operation is recorded with
 when it started, when it ended and what it returned. Once the faults are healed,
 the checker compares that history with what a replicated append-only log
-promises.
+promises. During the run, after every heal, the campaign also checks that the
+cluster serves again (see "Liveness").
 
 It lives in `crates/testing/felix-cluster/src/history/`. The model is Elle's
 list-append: each list is a single-shard stream, and an append adds a unique
@@ -163,9 +166,12 @@ The nemesis then loops:
 3. Hold the fault for 2-6s.
 4. Heal it.
 
-Faults never overlap, so a majority is always one fault from whole. That is
-also what makes a broker clock at half speed safe to inject: it runs slow only
-while its heartbeats keep landing, never alongside a partition.
+5. Wait until every shard serves again (see "Liveness").
+
+The single fault kinds never overlap, so a majority is always one fault from
+whole. That is also what makes a broker clock at half speed safe to inject: it
+runs slow only while its heartbeats keep landing, never alongside a partition.
+The compound kinds below break that rule on purpose.
 
 `RandomNemesis::process_faults` picks from the first three kinds below, and is
 what the per-PR run uses. `RandomNemesis::all_faults` picks from all of them,
@@ -238,6 +244,94 @@ happen behind one.
 
 The nemesis also counts the cache's leader among the list leaders it targets.
 
+### Compound faults
+
+`RandomNemesis::adversarial` picks from the kinds below. They cover what a
+single fault healed before the next cannot reach: failures at the same time, a
+leader lost while clients write, replica sets that change, moves cut short,
+recovery from a half-finished state, partitions beside slow links, and
+brokers restarted over and over. Their code is in
+`history/nemesis/compound.rs`.
+
+| Kind | Injected | Healed |
+| --- | --- | --- |
+| `Isolate` | A leader is cut off from its peers (partition file) and from the control plane (proxy, both ways), then the nemesis waits up to 20s for the control plane to fail its shards over | Links restored |
+| `KillTwo` | Two brokers killed at once | Both restarted |
+| `PartitionAndDelay` | One broker partitioned, and everything another sends its peers 250ms late | Both healed |
+| `Overlap` | Two faults at once on different brokers, from kill, pause, partition, a dropped or delayed link, slow fsync, a move and a drain | Both healed, the move or drain last |
+| `InterruptedMove` | A move of one of the workload's shards starts, and 300ms later its source or its destination is killed | Restarted, then wait for moves to finish |
+| `RestartLoop` | A broker is killed | Restarted and killed again 500ms later, twice, then restarted for good |
+| `TornWrite` | The broker's next segment write lands half its batch and fails with `EIO` | Fault removed, broker restarted |
+| `Drain` | As above | As above |
+
+The adversarial nemesis runs on four brokers (`Campaign::with_spare_broker`)
+with every list and the cache on three of them. The fourth broker matters in
+two ways. A drain now has somewhere to move a follower copy, so it changes the
+shard's replica set through a follower replacement (the `joining` path in
+[the control plane](control-plane.md)). And two brokers down at once take a
+majority of some shards and not of others, so some keep serving while the rest
+stop.
+
+An `Isolate` that does not cause a failover within 20s is logged as a fault
+that could not be injected, with the shards the broker still leads, and then
+healed. A healed `Isolate` in the timeline is therefore a partition that did
+cause one. That is the difference from `Partition`, which leaves the broker
+heartbeating: the control plane keeps it as leader, and writes to its shards
+stall until the heal.
+
+A compound fault is healed in reverse order, except that a move or drain is
+healed last, because waiting for its moves to finish needs the brokers the
+other fault took away. If one part fails to heal, the rest are still healed
+and the first error is reported.
+
+### Liveness
+
+The checker judges safety once the run is over. Liveness is judged during it:
+after every heal, `history/liveness.rs` waits up to 60s (times
+`FELIX_TEST_TIMEOUT_SCALE`) for each of the workload's shards to meet all of
+these:
+
+- its leader is a running broker;
+- no move, cut-over or follower replacement is in flight for it;
+- if it has replicas, its leader has reported one caught up at the current
+  generation, so it could fail over again;
+- no running broker lists one of its replicas in `/replication/halted`, since
+  a halted replica is out of every quorum until it is rebuilt;
+- its leader takes an append (a list) or answers a get (the cache).
+
+The probe append and get are recorded in the history under a client number of
+their own, one past the workload's clients, so the checker holds them to the
+same rules. After each heal, each shard is probed until it answers once.
+Nothing in the check draws from the seed, so it does not change which faults a
+seed picks.
+
+When the bound passes, the run stops with one line per stuck shard, naming its
+leader, its generation and what it is stuck in, followed by the fault timeline
+and the state dump:
+
+```text
+liveness: 1 shard(s) not serving 60s after the heal:
+  cache history-cache/0 (leader broker-2, generation 9): replacing a follower with broker-3 (drain)
+```
+
+The timeline records how long each recovery took, as `every shard serving
+1840.2ms later` after each heal.
+
+Two stalls are known, and both show up as a halted replica. A cache replica
+that diverged in a failover refuses the new leader's rebuild (issue 863), and
+so can a stream replica on a move's destination killed mid-move (issue 878).
+Until they are fixed, an adversarial run may fail on them.
+
+### Acknowledged offsets
+
+Rule 3 includes "an append acknowledged at an offset is found at another", and
+that part can only fire for an append whose acknowledgement named an offset.
+A publish acknowledgement does not carry one on the wire, so plain and
+idempotent appends are recorded without it. Atomic commits do: `CommitOk`
+returns the commit's offset, and the workload records it. About one operation
+in ten is a commit, and every campaign test fails unless at least five appends
+were acknowledged at a known offset, so the rule is exercised on every run.
+
 **To add a fault**, add a `FaultKind` variant (with its family), a `Fault`
 variant, and its arms in `Fault::inject`, `Fault::heal` and `Display`
 (`history/nemesis.rs`). A fault the harness already has as a
@@ -255,8 +349,20 @@ faults a failing run printed, implement `Nemesis`.
 > campaign on the lease that goes round every kind in a fixed order leaves a valid history
 > and injects and heals at least one fault of each family. The order puts a
 > shard move fourth and a drain sixth, so both run on every PR.
+> `adversarial_faults_heal_and_every_shard_serves_again`: a 120-second
+> lease-free campaign on four brokers that goes round the compound kinds
+> leaves a valid history, every shard serves again after each heal, and at
+> least one `Isolate`, one `KillTwo` and one `RestartLoop` are injected and
+> healed. The healed `Isolate` means a partition caused a failover. It is
+> `#[ignore]`d for now, because a cache replica that diverged in a failover
+> refuses its rebuild and the next move to it never finishes (issue 863,
+> fixed by PR 873). The nightly workflow runs it with `--include-ignored`.
 > `all_faults_never_steps_a_broker_clock_back`: the nemesis never asks for a
 > step the harness would refuse.
+> `overlapping_faults_are_aimed_at_different_brokers`,
+> `an_isolation_is_aimed_at_a_leader`, `an_interrupted_move_kills_one_end_of_it`
+> and `assignment_faults_are_healed_last`: the compound kinds pick what they
+> say they pick.
 > `a_move_goes_from_the_leader_to_another_broker`: a move names one of the
 > workload's shards, its current leader, and a different broker.
 
@@ -274,6 +380,7 @@ cargo test -p felix-cluster --test history -- --nocapture
 | `FELIX_HISTORY_SEED` | a fixed seed | The schedule's seed: a number, or `random` |
 | `FELIX_HISTORY_DURATION_SECS` | `45` | How long the nemesis runs. When set, the main campaign uses every fault family |
 | `FELIX_HISTORY_MODE` | `lease-free` for the main campaign, `lease` for the every-family one | `lease` or `lease-free`; see "Modes" |
+| `FELIX_HISTORY_NEMESIS` | `all` | Which faults the main campaign injects when `FELIX_HISTORY_DURATION_SECS` is set: `all` for every single kind on three brokers, `adversarial` for the compound kinds on four |
 
 ```bash
 FELIX_HISTORY_SEED=1234 FELIX_HISTORY_DURATION_SECS=600 FELIX_HISTORY_MODE=lease-free \
@@ -290,14 +397,16 @@ reserve full segments up front.
 
 The per-PR run uses the fixed seed and takes about a minute per test, cluster
 start-up included. The nightly workflow (`.github/workflows/history.yml`) runs
-it for 20 minutes with a random seed and every fault family, in `lease-free`
-mode unless a manual run picks `lease`, and prints the seed and mode first, and
-in the job summary, so a red night can be replayed. Setting
-`FELIX_HISTORY_DURATION_SECS` is what switches the main campaign to every
-family, so replay a nightly seed with it and the mode set. A manual run:
+it for 20 minutes as two jobs, one per nemesis (`all` and `adversarial`), each
+with its own random seed, in `lease-free` mode unless a manual run picks
+`lease`. Each prints its seed, mode and nemesis first, and in the job summary,
+so a red night can be replayed. Setting `FELIX_HISTORY_DURATION_SECS` is what
+switches the main campaign off the per-PR schedule, so replay a nightly seed
+with it, the mode and the nemesis set. A manual run takes `nemesis=both`,
+`all` or `adversarial`:
 
 ```bash
-gh workflow run history.yml -f mode=lease-free -f duration_secs=1200
+gh workflow run history.yml -f mode=lease-free -f duration_secs=1200 -f nemesis=adversarial
 ```
 
 ## Reading a violation
