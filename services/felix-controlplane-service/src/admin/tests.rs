@@ -50,6 +50,28 @@ fn moves_are_a_table_with_the_pause_above_it() {
 }
 
 #[test]
+fn replication_lists_the_short_shards() {
+    let response = json!({
+        "under_replicated": 1,
+        "items": [{
+            "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+            "kind": "stream", "leader": "broker-a", "desired_replicas": 3,
+            "current_replicas": 2, "under_replicated": true,
+            "unavailable": ["broker-c"], "restoring": "broker-d",
+        }],
+    });
+    assert_eq!(
+        render_replication(&response),
+        "SHARD           LEADER    COPIES  UNAVAILABLE  RESTORING\n\
+         t1/ns/orders/0  broker-a  2/3     broker-c     broker-d\n"
+    );
+    assert_eq!(
+        render_replication(&json!({ "under_replicated": 0, "items": [] })),
+        "every shard has its replication factor\n"
+    );
+}
+
+#[test]
 fn a_plan_says_what_each_shard_would_get() {
     let response = json!({
         "paused": false,

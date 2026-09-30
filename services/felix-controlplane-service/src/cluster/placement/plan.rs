@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use super::moves::{MovePolicy, Moves, move_step};
 use super::rendezvous::{choose, choose_replicas, promote};
+use super::restore::{self, replication};
 use super::zones;
 use super::{Blocked, CaughtUp, Decision, MoveStep, Unplaceable};
 use crate::model::{
@@ -21,6 +22,11 @@ pub struct Plan {
     /// was in a missing zone, or the move that would spread it is waiting for
     /// a slot.
     pub unspread: Vec<ShardKey>,
+    /// Shards with fewer copies on serving brokers than their replication
+    /// factor, as the pass found them.
+    pub under_replicated: Vec<ShardKey>,
+    /// The copies those shards are missing between them.
+    pub missing_copies: u32,
 }
 
 impl Plan {
@@ -140,6 +146,34 @@ pub(super) fn plan_abandoning(
             .any(|node| node.node_id == id && node.status.lifecycle == NodeLifecycle::Draining)
     };
     let is_serving = |id: &str| is_live(id) || is_draining(id);
+    // A follower whose broker has been down or gone long enough that
+    // placement copies the shard elsewhere. Only by the reports' clock: with
+    // no clock nothing is lost, and nothing is copied.
+    let now = caught_up.as_of_millis();
+    let restore_after = policy.restore_after_millis;
+    let is_lost = |id: &str| {
+        let (Some(after), Some(now)) = (restore_after, now) else {
+            return false;
+        };
+        match nodes.iter().find(|node| node.node_id == id) {
+            // Removed from the catalog: nothing will bring it back.
+            None => true,
+            Some(node) => {
+                !node.status.lifecycle.is_serving()
+                    && now.saturating_sub(node.status.last_heartbeat_at_millis) >= after
+            }
+        }
+    };
+    let found = replication(streams, caches, nodes, existing);
+    let under_replicated: Vec<ShardKey> = found
+        .iter()
+        .filter(|shard| shard.under_replicated())
+        .map(|shard| shard.key.clone())
+        .collect();
+    let missing_copies = found
+        .iter()
+        .map(|shard| shard.desired.saturating_sub(shard.current))
+        .sum();
 
     let current: HashMap<&ShardKey, &ShardAssignment> =
         existing.iter().map(|a| (&a.key, a)).collect();
@@ -218,9 +252,14 @@ pub(super) fn plan_abandoning(
     // previous move timed out; see `start_order`. Planned in that order, and
     // listed in key order.
     let class = |key: &ShardKey| {
-        current
-            .get(key)
-            .map_or(0, |existing| start_order(existing, &is_live, &is_draining))
+        let replication_factor = placeable_of
+            .get(owner_of(key).as_str())
+            .map_or(1, |p| p.replication_factor);
+        current.get(key).map_or(0, |existing| {
+            start_order(existing, &is_live, &is_draining, &|existing| {
+                restore::wanted(existing, replication_factor, &is_lost)
+            })
+        })
     };
     keys.sort_by(|a, b| {
         class(a)
@@ -275,6 +314,7 @@ pub(super) fn plan_abandoning(
                 leader_share,
                 &mut moves,
                 fenced,
+                &is_lost,
             );
             shards.push(ShardPlan { key, decision });
             note_spread(&mut unspread, shards.last(), &current, &eligible);
@@ -388,7 +428,12 @@ pub(super) fn plan_abandoning(
 
     shards.sort_by(|a, b| order(&a.key).cmp(&order(&b.key)));
     unspread.sort_by(|a, b| order(a).cmp(&order(b)));
-    Plan { shards, unspread }
+    Plan {
+        shards,
+        unspread,
+        under_replicated,
+        missing_copies,
+    }
 }
 
 /// Record `planned` in `unspread` if the copies it leaves span fewer zones
@@ -437,14 +482,15 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
 }
 
 /// The followers of a fenced shard promoted to `promoted`: the previous set,
-/// the dead leader included, without a copy staged on top of it.
+/// the dead leader included, without a copy staged on top of it, and without
+/// a joining copy unless an acknowledgement may have needed it.
 ///
 /// The new leader serves once a majority of this set has taken its fence, and
 /// that majority must meet every majority the old set acknowledged on. Swap
 /// the dead leader for a fresh node and the new leader and the fresh node are
 /// a majority on their own, missing whatever the old leader and the third
-/// replica held. A down member is kept like any down follower, and a drain
-/// replaces it later through the joining path. `FencedAckAnyReplaced` in
+/// replica held. A down member is kept like any down follower, and a
+/// restore or a drain replaces it later through the joining path. `FencedAckAnyReplaced` in
 /// `docs/formal/FelixShard.tla`.
 fn keep_replicas<'a>(
     previous: &'a ShardAssignment,
@@ -453,15 +499,21 @@ fn keep_replicas<'a>(
     is_live: &dyn Fn(&str) -> bool,
     load: &mut HashMap<&'a str, u32>,
 ) -> Vec<String> {
-    // A staged copy was never counted toward an acknowledgement, so the fence
-    // does not need it, and failover ends the move it belonged to. A move's
-    // destination that was already one of the stream's replicas did count and
-    // stays: dropping it can leave the dead leader holding the only other vote.
-    // Told apart by the set's size, as `undo_staged` does.
+    // A copy staged on top of the set never counted toward an acknowledgement,
+    // so it goes, and failover ends its move. A destination that was already a
+    // replica did count and stays; told apart by the set's size, as
+    // `undo_staged` does. A joining copy counted too: beside an odd set every
+    // acknowledging majority still holds a majority without it, but beside an
+    // even one (a restore topping up two) the leader and the newcomer were a
+    // majority alone, so it stays. `Counted` in `docs/formal/FelixShard.tla`.
     let added_successor = previous.replicas.len() >= replication_factor.max(1) as usize;
+    let seated = previous
+        .nodes()
+        .filter(|node| previous.joining.as_ref() != Some(*node))
+        .count();
     let staged = |node: &str| {
         (added_successor && previous.successor.as_deref() == Some(node))
-            || previous.joining.as_deref() == Some(node)
+            || (seated % 2 == 1 && previous.joining.as_deref() == Some(node))
     };
     let kept: Vec<&'a str> = previous
         .replicas
@@ -480,7 +532,8 @@ fn keep_replicas<'a>(
 /// start a move; one already moving holds its slot whatever its class.
 ///
 /// A draining node is waiting to leave, where an imbalance only costs
-/// evenness, so drains go before rebalancing. Within a drain the leaders go
+/// evenness, so drains go before rebalancing. A shard missing a copy goes
+/// with the draining followers: both are a copy short or about to be. Within a drain the leaders go
 /// first: clients feel a leader, not a missing follower, and a broker
 /// stopping for a restart waits only until it leads nothing. A shard whose
 /// last move timed out goes behind all of these, or the one move that keeps
@@ -489,6 +542,7 @@ fn start_order(
     existing: &ShardAssignment,
     is_live: &dyn Fn(&str) -> bool,
     is_draining: &dyn Fn(&str) -> bool,
+    wants_restore: &dyn Fn(&ShardAssignment) -> bool,
 ) -> u8 {
     let moving = existing.successor.is_some()
         || existing.joining.is_some()
@@ -498,7 +552,9 @@ fn start_order(
     }
     let class = if !is_live(&existing.leader) {
         0
-    } else if existing.replicas.iter().any(|replica| is_draining(replica)) {
+    } else if existing.replicas.iter().any(|replica| is_draining(replica))
+        || wants_restore(existing)
+    {
         1
     } else {
         2
@@ -576,10 +632,25 @@ impl<'a> Placeable<'a> {
     }
 }
 
+/// Each stream's and cache's replication factor, keyed by [`owner_of`].
+pub(super) fn replication_factors(streams: &[Stream], caches: &[Cache]) -> HashMap<String, u32> {
+    streams
+        .iter()
+        .map(Placeable::of_stream)
+        .chain(caches.iter().map(Placeable::of_cache))
+        .map(|p| {
+            (
+                format!("{}/{}/{}/{}", p.kind, p.tenant_id, p.namespace, p.name),
+                p.replication_factor,
+            )
+        })
+        .collect()
+}
+
 /// The stream or cache a shard belongs to, as `kind/tenant/namespace/name`.
 ///
 /// The kind leads because a cache and a stream may share every other field.
-fn owner_of(key: &ShardKey) -> String {
+pub(super) fn owner_of(key: &ShardKey) -> String {
     format!(
         "{}/{}/{}/{}",
         key.kind, key.tenant_id, key.namespace, key.stream
@@ -588,7 +659,7 @@ fn owner_of(key: &ShardKey) -> String {
 
 /// Kind sorts last so the relative order of stream shards is what it always
 /// was, and a cache sharing a stream's name is never an unstable tie.
-fn order(key: &ShardKey) -> (&str, &str, &str, u32, ShardKind) {
+pub(super) fn order(key: &ShardKey) -> (&str, &str, &str, u32, ShardKind) {
     (
         &key.tenant_id,
         &key.namespace,

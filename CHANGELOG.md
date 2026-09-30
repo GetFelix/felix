@@ -52,6 +52,25 @@ for what the current release guarantees.
 
 ### Added
 
+- **Placement restores a shard's replication factor.** A follower whose broker
+  has been down or gone for `FELIX_SHARD_RESTORE_AFTER_MS` (`shard_restore_after_ms`,
+  five minutes by default, `0` to turn it off) is replaced by a copy on a live
+  broker. A replica set a failover left short of its factor is topped up once a
+  broker is free, which covers a cache or `Leader` stream whose failover dropped
+  the dead leader. The copy joins and is seated the way a drain's replacement
+  is, so a `Quorum` stream keeps the old set's majority rule. The restore is
+  stored in the assignment (move reason `restore`) and resumes across
+  control-plane restarts, and a destination that dies mid-copy is replaced.
+  A short set grows before a lost follower in it is replaced, nothing starts
+  until the leader has reported at its generation, and a failover keeps a copy
+  that was joining a set of two, since the leader counted it.
+  New: `felix_shards_under_replicated`, `felix_shard_replicas_missing`,
+  `GET /v1/placement/replication` and `felix-controlplane admin replication`.
+  The move step `Seat` now names the follower it replaces as optional, and
+  `MoveStep::Restore` and `MoveReason::Restore` are new. A control plane that
+  predates `restore` cannot read an assignment with that move reason, so
+  upgrade every control-plane instance before relying on it.
+
 - **Atomic commits on one shard.** `Client::commit(tenant, namespace,
   entity_key, [publish | enqueue, put, delete])` writes an event and state
   updates as one record on the stream shard `entity_key` routes to, and

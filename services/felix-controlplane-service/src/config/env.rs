@@ -187,6 +187,12 @@ fn shard_moves_from_env() -> crate::cluster::placement::MovePolicy {
             Some(millis) => Some(millis),
             None => defaults.timeout_millis,
         },
+        // Zero never replaces a lost follower.
+        restore_after_millis: match parse("FELIX_SHARD_RESTORE_AFTER_MS") {
+            Some(0) => None,
+            Some(millis) => Some(millis),
+            None => defaults.restore_after_millis,
+        },
         // Read from the store each pass, not configured.
         paused: false,
         regions: defaults.regions,

@@ -1000,11 +1000,13 @@ and `FelixShardFencedAckAnyKept.cfg`, the same promotion keeping the set,
 passes.
 
 The dead leader stays a follower like any follower that goes down. It rejoins
-when it comes back, or a drain replaces it through the joining path, which
-copies the new member in before the old one leaves. Until then the shard runs
-with one copy fewer, and a `Quorum` write needs every live member of an RF 3
-set. `Leader` streams and caches, which the fence does not decide, still get a
-fresh follower in the dead leader's place.
+when it comes back. If it stays gone past the restore delay, placement replaces
+it through the joining path, which copies the new member in before the old one
+leaves (see "Restoring the replication factor" below); a drain replaces it the
+same way. Until then the shard runs with one copy fewer, and a `Quorum` write
+needs every live member of an RF 3 set. `Leader` streams and caches, which the
+fence does not decide, get a fresh follower in the dead leader's place when a
+live broker is free, and are topped up later when none is.
 
 **Replacing a follower waits for what the old set holds.** A drain replaces a
 follower in two steps, each a new generation: the new member joins beside the
@@ -1027,6 +1029,65 @@ three of the four, so either survives dropping one.
 without this. `FelixShardFencedAckSeatEarly.cfg` finds the same loss and
 `FelixShardFencedAckSeat.cfg`, with the wait, passes. `Leader` streams and
 caches keep the lag bound alone.
+
+**Restoring the replication factor.** A shard can end up with fewer copies than
+its replication factor in two ways. A follower's broker dies and stays dead, or
+a failover had too few live brokers to fill the set. The second is how a cache
+or a `Leader` stream ends up after its leader dies in a three-broker cluster:
+the promoted leader and the one other live broker are all there is. Placement
+restores both on its own. A follower whose broker has been down or gone for
+`FELIX_SHARD_RESTORE_AFTER_MS` (five minutes by default) is lost, and a set with
+fewer seated members than the factor is short. For either, placement picks a
+live broker outside the set (widening the zone spread where it can, never a
+down or draining broker) and adds it as `joining` with the move reason
+`restore`. From there the restore is the replacement above: the copy counts
+toward the quorum, and it is seated once it is within the lag bound. On a
+durable `Quorum` stream it must also hold what a majority of the old set holds.
+The seat drops the lost follower in the same write, or drops nobody when the
+set was short. A short set is grown before any lost follower in it is
+replaced, for the reason given two paragraphs down: beside a set of two, a
+newcomer and the leader are a majority on their own. Nothing starts until the
+leader has reported at its current generation, which it does only once its
+promotion fence is done. A set written while it is still fencing becomes the
+set it fences, and a set of two grown to three would let it open on itself
+and an empty newcomer. The model's `Regenerate` has the same guard. The delay is there because a restart is not a loss. A rolling
+restart takes every broker down in turn, and copying each shard once per
+restart would cost far more than waiting.
+
+The restore is stored in the assignment like any move, so a control plane that
+restarts, or another instance that takes the placement lease, carries on from
+where it was. If the broker being copied to goes down, the copy is dropped and
+the next pass picks another live broker. If the lost broker comes back first,
+the copy is dropped too, because the returning broker still holds the shard. A
+copy that cannot catch up within the move timeout is dropped and waits behind
+other moves. Restores use the move slots, after drains and before rebalancing,
+and a pause stops them from starting. Leadership never changes during a
+restore, and it never happens inside a promotion. A failover writes the set
+first, and the restore is a later write at its own generation.
+
+A failover in the middle of a restore usually ends it: the joining copy is
+dropped from the set, as for a drain's replacement, and the restore starts
+again from the new leader's set. The exception is a copy joining a set with an
+even number of members, which is what topping up a set of two looks like. The
+leader counts the newcomer, and with three members the leader and the
+newcomer alone are a majority, so a record can be acknowledged without the
+other follower. Dropping the newcomer then would leave that record on the dead
+leader alone among the set the next leader fences. So a failover keeps a
+copy that joined an even set, as a member (`keep_replicas` in
+`placement/plan.rs`). Beside an odd set, every majority of the larger set still
+holds a majority of the old one, and dropping the copy loses nothing. The TLA+
+model's `GrowSet` action adds a spare with nobody leaving, and `Counted` is the
+set plus a copy joining an even set. Leaving the copy out of the set until it
+is seated, TLC finds a record acknowledged on the leader and the newcomer that
+is on no majority of the set a failover would keep (`AckedOnMajority`).
+`FelixShardFencedAckGrow.cfg`, with the copy kept, passes.
+
+The placement side is `placement/restore.rs`.
+`a_lost_follower_is_restored_even_when_its_first_replacement_dies` kills a
+follower of an RF 3 `Quorum` stream on five brokers, then kills the first
+broker the shard is copied to before it is seated. It checks that the set gets
+back to three live members and that the new copy holds every acknowledged
+record.
 
 The replication factor of a stream cannot be changed once it is created, and a
 planned move hands the shard to a destination that holds the stopped leader's
@@ -1071,6 +1132,7 @@ multi-instance work and not before.
 | Leader fails | Lease lapses; a caught-up replica is promoted at `G+1` after the safety interval. Unavailable for at most `L + margin + promotion`. |
 | Leader of a `Quorum` stream fails | The promoted replica keeps the previous replica set, the dead leader in it, so its fence needs a majority of the set that acknowledged. A spare broker with an empty log cannot make up that majority, and with a majority of the set down the new leader waits rather than opening alone. The dead leader rejoins as a follower, or a drain replaces it. `Leader` streams and caches get a fresh follower in its place. |
 | A follower of a `Quorum` stream is replaced | The newcomer joins beside the follower leaving and counts toward the quorum. The one leaving goes only once a report at the joining generation shows the newcomer holding what a majority of the set holds, so a leader that dies right after still has a record acknowledged before the join on the next leader's fence. Until then the shard waits with four copies, and the replacement times out like a move. |
+| A follower is lost | Once its broker has been down or gone for `FELIX_SHARD_RESTORE_AFTER_MS`, placement copies the shard to a live broker outside the set and seats that copy by the replacement rule above, dropping the lost one. A set a failover left short of the factor is topped up the same way as soon as a live broker is free. `felix_shards_under_replicated` counts the shards short of their factor meanwhile, and `GET /v1/placement/replication` lists them. |
 | Leader fails before its first replica report | No report names a caught-up replica, so none is promoted. The shard is unavailable until that broker returns, or until an operator abandons the log. |
 | New leader, no client write since | Its log ends in its generation-start record, which never reaches a subscriber. A subscription's `live_offset` stops short of it, so a reader catching up to `live_offset` finishes instead of waiting for the next write. |
 | Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. With `majority_ack` finalized, a `Quorum` stream keeps taking and acknowledging writes its followers hold until a promoted successor's fence reaches them; with `lease_free_reads` too, `Quorum` cache reads its replicas confirm keep being served, and other reads stop with the lease. |

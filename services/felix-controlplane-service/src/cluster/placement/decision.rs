@@ -40,8 +40,16 @@ pub enum MoveStep {
     /// A follower on a draining node starts being replaced: `to` joins the
     /// replica set beside it.
     Reseat { from: String, to: String },
+    /// A follower's broker has been gone past
+    /// `MovePolicy::restore_after_millis` (`replacing`), or the replica set
+    /// is short of the replication factor: `to` joins the set.
+    Restore {
+        replacing: Option<String>,
+        to: String,
+    },
     /// The replacement has caught up, and the follower it replaces leaves.
-    Seat { from: String, to: String },
+    /// A restore that only tops the set up replaces nobody.
+    Seat { from: Option<String>, to: String },
     /// An operator cancelled a move or replacement before the fence: its
     /// destination is dropped, as for `TimedOut`.
     Cancel { successor: String },
@@ -63,6 +71,7 @@ impl MoveStep {
             Self::Abandon { .. } => "abandon",
             Self::TimedOut { .. } => "timed_out",
             Self::Reseat { .. } => "reseat",
+            Self::Restore { .. } => "restore",
             Self::Seat { .. } => "seat",
             Self::Cancel { .. } => "cancel",
             Self::Retake { .. } => "retake",

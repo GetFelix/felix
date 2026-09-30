@@ -225,6 +225,28 @@ neither `FELIX_NODE_REFRESH_TOKEN_FILE` nor `FELIX_NODE_TOKEN_FILE` is set, so
 the commonest way to reach that state is caught at rollout rather than an hour
 in.
 
+### Under-replicated shards
+
+The control plane counts the shards with fewer copies on serving brokers than
+their replication factor:
+
+```prometheus
+felix_shards_under_replicated   # shards short of their replication factor
+felix_shard_replicas_missing    # the copies they are missing between them
+```
+
+A broker restart makes these non-zero for as long as the broker is down. Once
+a follower's broker has been gone for `FELIX_SHARD_RESTORE_AFTER_MS`,
+placement copies the shard elsewhere, and the count falls when the copy is
+seated. Alert when either stays above zero for longer than the restore delay
+plus the time a shard takes to copy. `felix-controlplane admin replication`
+(or `GET /v1/placement/replication`) lists which shards, which members are
+unavailable, and where a copy is going. See
+[Restoring the replication factor](/felix/deployment/moving-shards/#restoring-the-replication-factor).
+
+A halted replica (below) still counts as a copy here: placement does not yet
+see halts.
+
 ### Which replica stopped
 
 `felix_broker_replication_halted` is a count, and stays one: a label per shard

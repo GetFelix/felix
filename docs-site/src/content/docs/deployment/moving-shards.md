@@ -37,12 +37,46 @@ t1/ns/orders/5  fenced  drain     broker-2  broker-1     0     1789999990000
 
 | Column | Meaning |
 | --- | --- |
-| `STEP` | `staged`: the destination is copying and the leader still serves. `fenced`: the leader has stopped; the cut-over follows its drained report. `replacing`: a follower on a draining broker is being replaced; leadership does not move. The old follower leaves once the new one is within the lag bound, and on a `Quorum` stream once it also holds what a majority of the replica set holds, so a record acknowledged before the swap is never left on too few copies. |
-| `REASON` | `drain`, `balance`, `operator` (you asked), or `replace` |
+| `STEP` | `staged`: the destination is copying and the leader still serves. `fenced`: the leader has stopped; the cut-over follows its drained report. `restoring`: a copy is being added to bring the shard back to its replication factor; see below. `replacing`: a follower on a draining broker is being replaced; leadership does not move. The old follower leaves once the new one is within the lag bound, and on a `Quorum` stream once it also holds what a majority of the replica set holds, so a record acknowledged before the swap is never left on too few copies. |
+| `REASON` | `drain`, `balance`, `operator` (you asked), `replace`, or `restore` |
 | `LAG` | records the destination is behind, from the leader's latest report; `-` without one |
 | `STARTED_MS` | when the move started, on the control plane's clock |
 
 If placement is paused, a line above the table says so.
+
+## Restoring the replication factor
+
+```bash
+felix-controlplane admin replication
+```
+
+```text
+SHARD           LEADER    COPIES  UNAVAILABLE  RESTORING
+t1/ns/orders/0  broker-1  2/3     broker-2     broker-4
+t1/ns/orders/3  broker-3  2/3     broker-2     -
+```
+
+The shards with fewer copies on serving brokers than their replication factor.
+`COPIES` is current over desired. A copy being added does not count until it
+is seated. `UNAVAILABLE` lists members whose broker is not serving, and
+`RESTORING` is the broker a copy is going to. `--json` prints the full listing
+from `GET /v1/placement/replication`, every shard included.
+
+Placement fills these in on its own. Once a follower's broker has been down or
+gone for `FELIX_SHARD_RESTORE_AFTER_MS` (five minutes by default), the shard
+is copied to a live broker outside its set. A set that a failover left short
+because too few brokers were live is topped up as soon as one is free. The copy
+is seated once it has caught up, and on a `Quorum` stream once it also holds
+what a majority of the old set holds. The seat drops the lost follower in the
+same write. If the broker being copied to fails, the copy is dropped and
+another broker is picked. If the lost broker comes back first, its copy is
+kept and the new one dropped. Restores take move slots after drains and before
+rebalancing, and `pause` stops new ones.
+
+A shard that stays in this list past the delay has nowhere to go. Every live
+broker outside its set may be at `max_shards` or in a region the stream may not
+use. The restore may also be waiting for a move slot, or placement may be
+paused. `plan` says which.
 
 ## What placement would do next
 
