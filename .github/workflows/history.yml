@@ -11,6 +11,12 @@ name: History checker (nightly)
 # The mode picks the replication path. `lease-free` (the default) finalizes the
 # generation_start, majority_ack and lease_free_reads fleet features once the
 # cluster is up; `lease` finalizes none.
+#
+# The nemesis picks the faults. `all` injects every single fault kind, one at a
+# time, on three brokers; `adversarial` injects the compound ones (overlapping
+# faults, a partition that forces a failover, moves cut short, restart loops,
+# torn writes, drains that change replica sets) on four. The nightly run does
+# both, as two jobs with their own seeds.
 
 on:
   schedule:
@@ -34,12 +40,23 @@ on:
           - lease-free
           - lease
         default: lease-free
+      nemesis:
+        description: "Which faults"
+        required: false
+        type: choice
+        options:
+          - both
+          - all
+          - adversarial
+        default: both
 
 permissions:
   contents: read
 
 concurrency:
-  group: history-${{ github.ref }}
+  # Keyed on the inputs too, so two dispatches on one branch (a lease and a
+  # lease-free run, or a seed replay beside a fresh seed) do not cancel each other.
+  group: history-${{ github.ref }}-${{ inputs.mode }}-${{ inputs.nemesis }}-${{ inputs.seed }}
   cancel-in-progress: true
 
 env:
@@ -51,11 +68,16 @@ env:
 
 jobs:
   campaign:
+    name: campaign (${{ matrix.nemesis }})
     # Only schedule and dispatch trigger this, so it always lands on the
     # self-hosted runners; the expression is the same as ci.yml's for one rule.
     runs-on: ${{ github.event_name != 'pull_request' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
     # 20 minutes of faults, plus a build that may be cold and the start-up.
     timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        nemesis: ${{ fromJSON((inputs.nemesis || 'both') == 'both' && '["all","adversarial"]' || format('["{0}"]', inputs.nemesis)) }}
     steps:
       - uses: actions/checkout@v7
 
@@ -83,6 +105,7 @@ jobs:
         env:
           SEED_INPUT: ${{ inputs.seed }}
           MODE_INPUT: ${{ inputs.mode }}
+          NEMESIS: ${{ matrix.nemesis }}
         run: |
           seed="$SEED_INPUT"
           if [ -z "$seed" ]; then
@@ -95,44 +118,46 @@ jobs:
           esac
           echo "seed=$seed" >> "$GITHUB_OUTPUT"
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
-          echo "history campaign seed: $seed, mode: $mode"
-          echo "History campaign seed: \`$seed\`, mode: \`$mode\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "history campaign seed: $seed, mode: $mode, nemesis: $NEMESIS"
+          echo "History campaign seed: \`$seed\`, mode: \`$mode\`, nemesis: \`$NEMESIS\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run the campaign
         env:
           FELIX_HISTORY_SEED: ${{ steps.seed.outputs.seed }}
           FELIX_HISTORY_MODE: ${{ steps.seed.outputs.mode }}
+          FELIX_HISTORY_NEMESIS: ${{ matrix.nemesis }}
           FELIX_HISTORY_DURATION_SECS: ${{ inputs.duration_secs || '1200' }}
         run: |
           set -o pipefail
-          cargo test -p felix-cluster --test history -- --nocapture 2>&1 | tee ${{ runner.temp }}/history-output.txt
+          cargo test -p felix-cluster --test history -- --nocapture --include-ignored 2>&1 | tee ${{ runner.temp }}/history-output.txt
 
       - name: Report the seed
         if: failure()
         env:
           SEED: ${{ steps.seed.outputs.seed }}
           MODE: ${{ steps.seed.outputs.mode }}
+          NEMESIS: ${{ matrix.nemesis }}
           DURATION: ${{ inputs.duration_secs || '1200' }}
         run: |
           {
             echo "## History campaign failed"
             echo
-            echo "Seed: \`$SEED\`, mode: \`$MODE\`. Replay with:"
+            echo "Seed: \`$SEED\`, mode: \`$MODE\`, nemesis: \`$NEMESIS\`. Replay with:"
             echo
             echo '```'
-            echo "FELIX_HISTORY_SEED=$SEED FELIX_HISTORY_MODE=$MODE FELIX_HISTORY_DURATION_SECS=$DURATION cargo test -p felix-cluster --test history -- --nocapture"
+            echo "FELIX_HISTORY_SEED=$SEED FELIX_HISTORY_MODE=$MODE FELIX_HISTORY_NEMESIS=$NEMESIS FELIX_HISTORY_DURATION_SECS=$DURATION cargo test -p felix-cluster --test history -- --nocapture --include-ignored"
             echo '```'
             echo
             echo '```'
-            sed -n '/violation(s)\|could not finish/,/^test /p' ${{ runner.temp }}/history-output.txt | head -150
+            sed -n '/violation(s)\|could not finish\|panicked/,/^test /p' ${{ runner.temp }}/history-output.txt | head -150
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "history campaign seed: $SEED, mode: $MODE"
+          echo "history campaign seed: $SEED, mode: $MODE, nemesis: $NEMESIS"
 
       - name: Upload the output
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: history-output
+          name: history-output-${{ matrix.nemesis }}
           path: ${{ runner.temp }}/history-output.txt
           retention-days: 30

@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn a_follower_level_with_the_leader_is_caught_up() {
-    assert_eq!(caught_up(10, &[cursor(10)]), vec!["broker-b".to_string()]);
+    assert_eq!(caught_up(10, &[answered(10)]), vec!["broker-b".to_string()]);
 }
 
 /// **Behind is not caught up.** The bound is zero, so a follower missing
@@ -13,7 +13,7 @@ fn a_follower_level_with_the_leader_is_caught_up() {
 /// nobody has made.
 #[test]
 fn a_follower_missing_even_one_record_is_not_caught_up() {
-    assert!(caught_up(10, &[cursor(9)]).is_empty());
+    assert!(caught_up(10, &[answered(9)]).is_empty());
 }
 
 /// **A halted follower never qualifies**, however close it was. It has
@@ -22,7 +22,7 @@ fn a_follower_missing_even_one_record_is_not_caught_up() {
 #[test]
 fn a_halted_follower_is_never_reported_as_caught_up() {
     for halt in [Halt::Diverged, Halt::Fenced, Halt::NeedsBootstrap] {
-        let mut stopped = cursor(10);
+        let mut stopped = answered(10);
         stopped.halted = Some(halt);
 
         assert!(
@@ -36,16 +36,16 @@ fn a_halted_follower_is_never_reported_as_caught_up() {
 /// rejected: it happens while an answer is in flight.
 #[test]
 fn a_follower_ahead_of_the_tail_is_caught_up() {
-    assert_eq!(caught_up(10, &[cursor(11)]), vec!["broker-b".to_string()]);
+    assert_eq!(caught_up(10, &[answered(11)]), vec!["broker-b".to_string()]);
 }
 
 #[test]
 fn only_the_caught_up_followers_are_named() {
-    let mut behind = cursor(3);
+    let mut behind = answered(3);
     behind.node_id = "broker-c".to_string();
 
     assert_eq!(
-        caught_up(10, &[cursor(10), behind]),
+        caught_up(10, &[answered(10), behind]),
         vec!["broker-b".to_string()]
     );
 }
@@ -54,4 +54,12 @@ fn only_the_caught_up_followers_are_named() {
 #[test]
 fn a_shard_with_no_followers_reports_nobody() {
     assert!(caught_up(10, &[]).is_empty());
+}
+
+/// **A follower this leader has not heard from is not caught up.** A new
+/// leader starts its cursor one record below where its own generation
+/// begins, which is a guess about the follower, not something it said.
+#[test]
+fn a_follower_not_yet_heard_from_is_not_caught_up() {
+    assert!(caught_up(10, &[cursor(9), cursor(10)]).is_empty());
 }

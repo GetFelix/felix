@@ -71,6 +71,15 @@ for what the current release guarantees.
   predates `restore` cannot read an assignment with that move reason, so
   upgrade every control-plane instance before relying on it.
 
+- **Adversarial history campaign and liveness checks.** The history
+  checker's nemesis gains compound faults on four brokers: two brokers killed
+  at once, a leader isolated from its peers and the control plane until it
+  fails over, a partition beside a delayed link, two random faults together,
+  a move whose source or destination is killed, restart loops, torn segment
+  writes, and drains that replace follower copies. After every heal the
+  campaign now waits for each shard to serve again and fails naming any shard
+  that is stuck and why. `FELIX_HISTORY_NEMESIS` picks the nemesis, and the
+  nightly workflow runs both.
 - **Atomic commits on one shard.** `Client::commit(tenant, namespace,
   entity_key, [publish | enqueue, put, delete])` writes an event and state
   updates as one record on the stream shard `entity_key` routes to, and
@@ -665,6 +674,19 @@ for what the current release guarantees.
   instead.
 
 ### Fixed
+
+- **A leader counts a follower only for what it has answered (#878).** The
+  quorum mark and the replica report counted a follower the leader had not yet
+  heard from at the offset its cursor starts at, one record below where the
+  leader's own generation begins. A new leader, or a move's source, that could
+  reach none of its followers then published a mark over records it inherited
+  and no follower held: its commit offset covered them, and readers could be
+  handed them as committed. Deposed, the broker refused to drop them and
+  refused every rebuild, so it never rejoined. Both now count
+  `FollowerCursor::confirmed`, what the follower answered holding at this
+  generation. No acknowledged write was affected: a publish waiting on the
+  mark is dropped when its generation ends. See `docs/replication-design.md`,
+  "Replica reports and the committed mark".
 
 - **A `Quorum` failover no longer promotes a move's destination.** Its broker
   opened the shard as the move's cut-over, without the promotion fence, and

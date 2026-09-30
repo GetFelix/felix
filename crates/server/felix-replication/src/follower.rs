@@ -132,6 +132,10 @@ impl Halt {
 /// follower never qualifies however close its last position was: it has stopped
 /// rather than fallen behind, and its position is no longer moving toward the
 /// leader's.
+///
+/// A follower counts only as far as it has answered holding at this
+/// generation (`confirmed`). Before it answers, `next_offset` is the leader's
+/// guess, one record below where its own generation begins.
 // The bound is zero today, so "within it" is an equality and clippy says so.
 // Written as a comparison because the bound is the thing meant to change: if it
 // is ever raised, this reads correctly without being rediscovered.
@@ -140,7 +144,7 @@ pub fn caught_up(tail: u64, followers: &[FollowerCursor]) -> Vec<String> {
     followers
         .iter()
         .filter(|follower| follower.halted.is_none())
-        .filter(|follower| tail.saturating_sub(follower.next_offset) <= CATCH_UP_BOUND)
+        .filter(|follower| tail.saturating_sub(follower.confirmed) <= CATCH_UP_BOUND)
         .map(|follower| follower.node_id.clone())
         .collect()
 }
