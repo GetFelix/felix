@@ -10,7 +10,7 @@
 //! Run with `cargo test -p felix-cluster --test caches cache_failover::`.
 use std::time::Duration;
 
-use felix_cluster::{CacheSpec, Cluster, ClusterConfig, StreamSpec};
+use felix_cluster::{CacheSpec, Cluster, ClusterConfig, Fault, StreamSpec};
 use serial_test::serial;
 
 const CACHE: &str = "sessions";
@@ -436,5 +436,161 @@ async fn a_quorum_acknowledged_cache_write_survives_its_leader() {
         Some(&b"survives"[..]),
         "a quorum-acknowledged cache write did not survive its leader",
     );
+    cluster.shutdown().await;
+}
+
+/// **A deposed cache leader rejoins and keeps what was committed (#863).**
+///
+/// The leader is cut off from its followers and takes one more write, so it
+/// dies holding a record no majority has. The follower promoted in its place
+/// writes at that offset too. When the old leader comes back it has to drop
+/// that one record and follow; before cache leaders recorded where their
+/// generation began, it could not tell the record from committed history,
+/// halted, and refused the rebuild the new leader then asked for, for good.
+#[serial]
+#[tokio::test]
+async fn a_deposed_cache_leader_rejoins_after_a_failover() {
+    let mut cluster = Cluster::start(quorum_cache()).await.expect("start cluster");
+    let old = cluster
+        .shard_owner_of("cache", CACHE, 0)
+        .await
+        .expect("cache shard owner");
+    let followers: Vec<String> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|id| id != &old)
+        .collect();
+
+    let mut committed = Vec::new();
+    for i in 0..5 {
+        let key = format!("before-{i}");
+        cluster
+            .cache_put_via(&old, CACHE, &key, key.as_bytes())
+            .await
+            .expect("cache put under quorum");
+        committed.push(key);
+    }
+
+    // One more write that only the old leader holds.
+    let cut = Fault::Refuse {
+        node: old.clone(),
+        peers: followers.clone(),
+    };
+    cluster.inject(&cut).await.expect("cut the followers off");
+    let alone = tokio::time::timeout(
+        Duration::from_secs(20),
+        cluster.cache_put_via(&old, CACHE, "alone", b"no-majority"),
+    )
+    .await;
+    assert!(
+        !matches!(alone, Ok(Ok(()))),
+        "a write only the leader holds was acknowledged",
+    );
+    cluster.kill_node(&old).expect("kill the old leader");
+    cluster.heal(&cut).await.expect("heal");
+
+    assert!(
+        failover_from(&cluster, &old, Duration::from_secs(30)).await,
+        "no replica was promoted after {old} died",
+    );
+    let new = cluster
+        .shard_owner_of("cache", CACHE, 0)
+        .await
+        .expect("new owner");
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the promoted leader to take writes",
+        || async {
+            cluster
+                .cache_put_via(&new, CACHE, "after-0", b"after-0")
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("the promoted leader never took a write");
+    committed.push("after-0".to_string());
+    for i in 1..5 {
+        let key = format!("after-{i}");
+        cluster
+            .cache_put_via(&new, CACHE, &key, key.as_bytes())
+            .await
+            .expect("cache put on the promoted leader");
+        committed.push(key);
+    }
+
+    cluster
+        .restart_node(&old)
+        .await
+        .expect("restart the old leader");
+
+    // Failover left the dead broker out of the replica set. Draining the other
+    // follower brings it back as the replacement, so the new leader ships to
+    // it and has to get past the record it holds alone.
+    let other = followers
+        .iter()
+        .find(|id| **id != new)
+        .expect("a third broker")
+        .clone();
+    cluster
+        .drain_node(&other)
+        .await
+        .expect("drain the other follower");
+    let level = felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "the old leader to rejoin the replica set",
+        || async {
+            cluster.place_shards().await;
+            let halted = cluster
+                .metric(&new, "felix_broker_replication_halted")
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(0.0);
+            let report = cluster.cache_replica_report(CACHE, 0).await.ok().flatten();
+            // The report leaves out a halted or stalled follower.
+            halted == 0.0
+                && report.is_some_and(|report| {
+                    report.leader_offset.is_some()
+                        && report.offsets.get(&old).copied() == report.leader_offset
+                })
+        },
+    )
+    .await;
+    let report = cluster.cache_replica_report(CACHE, 0).await.ok().flatten();
+    assert!(
+        level.is_ok(),
+        "{old} did not rejoin after the failover; last report {report:?}",
+    );
+
+    // Drain the new leader too, so the only place the shard can go is the
+    // broker that rejoined, and read every committed key from it there.
+    cluster
+        .drain_node(&new)
+        .await
+        .expect("drain the new leader");
+    cluster
+        .drain_until_empty(&new, 1, Duration::from_secs(60))
+        .await
+        .expect("the drain completes");
+    let owner = cluster
+        .shard_owner_of("cache", CACHE, 0)
+        .await
+        .expect("owner after the drain");
+    assert_eq!(owner, old, "the drain did not hand the shard to {old}");
+    for key in &committed {
+        let value = read_until(
+            &cluster,
+            std::slice::from_ref(&owner),
+            key,
+            Duration::from_secs(30),
+        )
+        .await;
+        assert_eq!(
+            value.as_deref(),
+            Some(key.as_bytes()),
+            "{owner} lost the committed key {key}",
+        );
+    }
     cluster.shutdown().await;
 }
