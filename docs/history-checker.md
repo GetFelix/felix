@@ -317,10 +317,10 @@ liveness: 1 shard(s) not serving 60s after the heal:
 The timeline records how long each recovery took, as `every shard serving
 1840.2ms later` after each heal.
 
-Two stalls are known, and both show up as a halted replica. A cache replica
-that diverged in a failover refuses the new leader's rebuild (issue 863), and
-so can a stream replica on a move's destination killed mid-move (issue 878).
-Until they are fixed, an adversarial run may fail on them.
+One stall is known, and it shows up as a halted replica: a stream replica on
+a move's destination killed mid-move can refuse the new leader's rebuild
+(issue 878). Until it is fixed, an adversarial run may fail on it. The cache
+version of this stall (issue 863) is fixed.
 
 ### Acknowledged offsets
 
@@ -353,10 +353,7 @@ faults a failing run printed, implement `Nemesis`.
 > lease-free campaign on four brokers that goes round the compound kinds
 > leaves a valid history, every shard serves again after each heal, and at
 > least one `Isolate`, one `KillTwo` and one `RestartLoop` are injected and
-> healed. The healed `Isolate` means a partition caused a failover. It is
-> `#[ignore]`d for now, because a cache replica that diverged in a failover
-> refuses its rebuild and the next move to it never finishes (issue 863,
-> fixed by PR 873). The nightly workflow runs it with `--include-ignored`.
+> healed. The healed `Isolate` means a partition caused a failover.
 > `all_faults_never_steps_a_broker_clock_back`: the nemesis never asks for a
 > step the harness would refuse.
 > `overlapping_faults_are_aimed_at_different_brokers`,

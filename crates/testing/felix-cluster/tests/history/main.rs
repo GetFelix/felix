@@ -141,12 +141,7 @@ async fn every_fault_family_is_injected_and_healed_in_a_campaign() {
 /// drain that replaces follower copies, one after another on four brokers
 /// with the clients writing throughout. The history stays valid, and after
 /// each heal every shard serves again within the liveness bound.
-///
-/// Ignored on PRs until the cache rebuild fix (#873) lands: a cache follower
-/// that diverged in a failover refuses its rebuild (#863), and the next move
-/// to it never finishes. The nightly workflow runs it anyway.
 #[serial]
-#[ignore = "known failing until #873: a diverged cache replica refuses its rebuild (#863)"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn adversarial_faults_heal_and_every_shard_serves_again() {
     let mut campaign = Campaign::from_env(SEED, ADVERSARIAL_DURATION, Mode::LeaseFree)
