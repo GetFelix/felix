@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
+use felix_cluster::{Cluster, ClusterConfig, Fault, StreamSpec};
 use serial_test::serial;
 use tokio::sync::Mutex;
 
@@ -341,5 +341,195 @@ async fn a_paused_placement_does_not_move_a_draining_nodes_shard() {
     )
     .await
     .expect("move after resuming");
+    cluster.shutdown().await;
+}
+
+/// **A move cut short by a kill leaves no broker that cannot rejoin (#878).**
+///
+/// The old leader writes records no follower gets, and the move copies them
+/// to the destination. The destination takes over unable to reach any
+/// follower and is killed, and so is the old leader, so a follower without
+/// those records is promoted and writes over them. Both come back holding
+/// them past their commit offset but below where their own last generation
+/// began, so each halts and takes the new leader's rebuild. A leader used to
+/// count a follower it had not heard from as holding everything below its own
+/// generation, so the old leader's mark, and with it its commit offset,
+/// covered records nobody else had; it then refused every rebuild for good.
+#[serial]
+#[tokio::test]
+async fn a_move_cut_short_by_kills_leaves_no_replica_halted() {
+    let mut cluster = Cluster::start(ClusterConfig {
+        nodes: 4,
+        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    let before = cluster
+        .shard_assignments()
+        .await
+        .expect("assignments")
+        .into_values()
+        .next()
+        .expect("an assignment for the shard");
+    let old = before.leader.clone();
+    let destination = cluster
+        .node_ids()
+        .into_iter()
+        .find(|id| *id != old && !before.replicas.contains(id))
+        .expect("a fourth broker");
+    let others: Vec<String> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|id| *id != destination)
+        .collect();
+    let mut acknowledged = publish_before(&cluster, &old, 3).await;
+
+    // Records only the old leader holds: nobody acknowledged them.
+    let alone = Fault::Refuse {
+        node: old.clone(),
+        peers: before.replicas.clone(),
+    };
+    cluster.inject(&alone).await.expect("cut the followers off");
+    // Two of them: the destination's mark must not cover the first one on
+    // the strength of followers it never heard from.
+    for i in 0..2 {
+        let unacknowledged = tokio::time::timeout(
+            Duration::from_secs(5),
+            cluster.publish_via(&old, STREAM, format!("alone-{i}").into_bytes()),
+        )
+        .await;
+        assert!(
+            !matches!(unacknowledged, Ok(Ok(()))),
+            "a write no follower holds was acknowledged",
+        );
+    }
+
+    let unheard = Fault::Refuse {
+        node: destination.clone(),
+        peers: others,
+    };
+    cluster
+        .inject(&unheard)
+        .await
+        .expect("keep the destination from its followers");
+    cluster
+        .start_move(STREAM, 0, &destination)
+        .await
+        .expect("start the move");
+    felix_cluster::wait::until(Duration::from_secs(60), "the move to cut over", || async {
+        cluster.place_shards().await;
+        cluster
+            .owner(STREAM)
+            .await
+            .is_ok_and(|now| now == destination)
+    })
+    .await
+    .expect("cut over");
+    let generation = cluster
+        .shard_assignments()
+        .await
+        .expect("assignments")
+        .into_values()
+        .next()
+        .expect("the assignment")
+        .generation;
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the destination's first replica report",
+        || async {
+            cluster
+                .replica_report(STREAM, 0)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|report| report.generation == generation)
+        },
+    )
+    .await
+    .expect("report");
+    // The pass that sent the report also writes any mark it published through
+    // to the log's commit offset.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    cluster
+        .kill_node(&destination)
+        .expect("kill the destination");
+    cluster.kill_node(&old).expect("kill the old leader");
+    cluster.heal_all().await.expect("heal");
+
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "a follower to be promoted",
+        || async {
+            cluster.place_shards().await;
+            cluster
+                .owner(STREAM)
+                .await
+                .is_ok_and(|owner| owner != destination && owner != old)
+        },
+    )
+    .await
+    .expect("promotion");
+    cluster
+        .restart_node(&old)
+        .await
+        .expect("restart the old leader, so the promoted one has a majority");
+    let promoted = cluster.owner(STREAM).await.expect("owner");
+    for i in 0..3 {
+        let payload = format!("after-{i}").into_bytes();
+        cluster
+            .publish_keyed_via_settled(
+                &promoted,
+                STREAM,
+                b"k",
+                payload.clone(),
+                Duration::from_secs(30),
+            )
+            .await
+            .expect("publish on the promoted leader");
+        acknowledged.push(payload);
+    }
+
+    cluster
+        .restart_node(&destination)
+        .await
+        .expect("restart the destination");
+    let rejoined = felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "the destination and the old leader to rejoin",
+        || async {
+            cluster.place_shards().await;
+            let halted = cluster
+                .metric(&promoted, "felix_broker_replication_halted")
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(0.0);
+            let level = cluster
+                .replica_report(STREAM, 0)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|report| {
+                    report.caught_up.contains(&destination) && report.caught_up.contains(&old)
+                });
+            halted == 0.0
+                && level
+                && cluster
+                    .moving_shards()
+                    .await
+                    .is_ok_and(|moving| moving.is_empty())
+        },
+    )
+    .await;
+    let report = cluster.replica_report(STREAM, 0).await.ok().flatten();
+    assert!(
+        rejoined.is_ok(),
+        "{destination} and {old} did not both rejoin behind {promoted}; last report {report:?}",
+    );
+    assert_eq!(
+        stored_on(&cluster, &promoted, &acknowledged).await,
+        acknowledged
+    );
     cluster.shutdown().await;
 }
