@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790801196913,
+  "lastUpdate": 1790801415541,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -20852,6 +20852,58 @@ window.BENCHMARK_DATA = {
             "range": "38163.83",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1625133.35\nmean: 1621228.91\nstdev: 38163.83\ncv: 2.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8f8e26eb7c8f80969a21eb9a4025b67286e36fab",
+          "message": "test(history): adversarial nemesis and liveness checks (#879)\n\n* test(history): adversarial nemesis and liveness checks\n\nThe history campaign now has a second nemesis, RandomNemesis::adversarial,\nrun on four brokers. It injects compound faults: two brokers killed at\nonce, a leader isolated from its peers and the control plane until the\ncontrol plane fails it over, a partition beside a delayed link, two random\nfaults together, a move whose source or destination is killed 300ms in, a\nrestart loop, a torn segment write, and a drain that replaces follower\ncopies on the spare broker.\n\nAfter every heal the campaign checks liveness: within 60s each workload\nshard must have a running leader that takes a probe append or answers a\nprobe get, no move or follower replacement in flight, a replica reported\ncaught up at its generation, and no halted replica. Otherwise the run\nstops with one line per stuck shard naming what it is stuck in. The probes\nare recorded in the history, so the checker holds them to its rules.\n\nEvery campaign test now also requires at least five appends acknowledged\nat a known offset (atomic commits), so the acknowledged-offset rule is\nexercised. Publish acks carry no offset yet (#876).\n\nFELIX_HISTORY_NEMESIS picks the nemesis for long runs, and the nightly\nworkflow runs both. The per-PR round-robin over the compound kinds is\nignored until #873 lands.\n\nPart of #846\n\nSpec-Unaffected: test harness, CI workflow and docs only; no broker, replication or control-plane code changes.\n\n* test(history): run the adversarial round-robin on PRs now that #873 is in\n\n* ci(history): a seed replay no longer cancels a fresh-seed run on the same branch",
+          "timestamp": "2026-09-30T13:46:53-07:00",
+          "tree_id": "035d396bd1cb48248261698b7a0d07428d99031a",
+          "url": "https://github.com/gabloe/felix/commit/8f8e26eb7c8f80969a21eb9a4025b67286e36fab"
+        },
+        "date": 1790801414107,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 506693.03,
+            "range": "27019.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 506693.03\nmean: 512657.48\nstdev: 27019.01\ncv: 5.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 506693.03,
+            "range": "27019.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 506693.03\nmean: 512657.48\nstdev: 27019.01\ncv: 5.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124895.44,
+            "range": "2652.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124895.44\nmean: 124441.82\nstdev: 2652.17\ncv: 2.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1248954.35,
+            "range": "26521.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1248954.35\nmean: 1244418.18\nstdev: 26521.67\ncv: 2.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
