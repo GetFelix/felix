@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790804413667,
+  "lastUpdate": 1790810193668,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -26730,6 +26730,72 @@ window.BENCHMARK_DATA = {
             "range": "38.78",
             "unit": "us",
             "extra": "trials: 5\nmedian: 367.00\nmean: 349.80\nstdev: 38.78\ncv: 11.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b0bb59cc7464773fafc107c86d7d3c835ab5832a",
+          "message": "ci: model-check TLA+ changes under docs/formal (#893)\n\nCI ignored docs/**, and the specs live in docs/formal, so a change to a spec alone\nwas never model-checked. #892 merged that way while the combined spec on main was\nstill unchecked. CI now runs for docs/formal changes; other docs still skip it.\n\nSpec-Unaffected: CI trigger only.",
+          "timestamp": "2026-09-30T16:10:43-07:00",
+          "tree_id": "5316dd6108f2fbbbdc2d4de0a62071d6e9c4acee",
+          "url": "https://github.com/gabloe/felix/commit/b0bb59cc7464773fafc107c86d7d3c835ab5832a"
+        },
+        "date": 1790810190210,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 105,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 105.00\nmean: 104.80\nstdev: 0.84\ncv: 0.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 142,
+            "range": "8.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 142.00\nmean: 144.80\nstdev: 8.17\ncv: 5.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 191,
+            "range": "9.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 191.00\nmean: 186.60\nstdev: 9.56\ncv: 5.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 138,
+            "range": "7.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 138.00\nmean: 141.40\nstdev: 7.06\ncv: 4.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 279,
+            "range": "603.23",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 279.00\nmean: 544.00\nstdev: 603.23\ncv: 110.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 364,
+            "range": "1201.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 364.00\nmean: 911.40\nstdev: 1201.82\ncv: 131.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
