@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790801825758,
+  "lastUpdate": 1790803977170,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -26598,6 +26598,72 @@ window.BENCHMARK_DATA = {
             "range": "62.92",
             "unit": "us",
             "extra": "trials: 5\nmedian: 472.00\nmean: 492.60\nstdev: 62.92\ncv: 12.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "068a2b8419912169273881d4bfb8e545131f6c7a",
+          "message": "feat(placement): restore a shard's replication factor (#850) (#877)\n\n* fix(placement): a Quorum failover never promotes a move's destination (#840)\n\nModel planned moves, staged moves and cancels under follower acks\n(majority_ack), and a second promotion with start records.\n\nTLC found an acknowledged record lost: a report names a move's\ndestination caught up, the leader then acknowledges a record on itself\nand another follower (nothing waits for the report under majority_ack),\nand dies. Failover promoted the destination from that report, and its\nbroker, which cannot tell that from the cut-over it expected, opened the\nshard without the promotion fence and without the record. Failover on a\ndurable Quorum stream now leaves the destination out and ends the move.\n\nA promoted leader that gets a new generation while still fencing now\nkeeps replication paused until the reopen lands, instead of shipping its\nunfenced log at the old generation in between.\n\nThe model gains PromoteDestination, has a cut-over and a cancel persist\nthe new leader's generation, gates a planned fence on a report from the\ngeneration placement read, and stops a leader still fencing from\nreporting. The formal CI job moves to six shards filled by measured\ntime, and the workflow can be dispatched with a list of configurations.\n\n* fix(placement): a Quorum failover keeps a destination that was already a replica\n\n`keep_replicas` dropped a move's successor from the promoted leader's set as\na staged copy even when the drain had picked an existing follower as the\ndestination. That follower counted toward every acknowledgement. Now that a\nQuorum failover promotes another follower instead of the destination, a\nthree-broker set was left as the new leader and the dead one, so the\npromotion fence needed the dead leader's vote and the shard never served\nagain after a shutdown handoff timed out.\n\nOnly a successor added on top of the stream's replicas is dropped, told\napart by the set's size as `undo_staged` does. This matches the model, whose\nfailover set leaves out only a `staged` destination.\n\n* feat(placement): restore a shard's replication factor (#850)\n\nA follower whose broker has been down or gone for\nFELIX_SHARD_RESTORE_AFTER_MS (five minutes by default) is replaced by a\ncopy on a live broker, and a replica set a failover left short of its\nfactor is topped up once a broker is free. The copy joins through the\nexisting joining path and is seated by the same rule as a drain's\nreplacement, so a Quorum stream keeps the old set's majority rule. The\nrestore lives in the assignment (move reason `restore`), so it resumes\nacross control-plane restarts and placement-lease changes, and a\ndestination that dies mid-copy is dropped and replaced.\n\nA short set grows before a lost follower in it is replaced, nothing starts\nuntil the leader has reported at its generation, and a failover keeps a\ncopy that was joining a set of two. The TLA+ model gains `GrowSet` and\n`Counted`; FelixShardFencedAckGrow.cfg passes.\n\nOperators see it in felix_shards_under_replicated,\nfelix_shard_replicas_missing, GET /v1/placement/replication and\n`felix-controlplane admin replication`.",
+          "timestamp": "2026-09-30T14:28:29-07:00",
+          "tree_id": "02abb753486aadfbe1460446bca8900cf4ccf163",
+          "url": "https://github.com/gabloe/felix/commit/068a2b8419912169273881d4bfb8e545131f6c7a"
+        },
+        "date": 1790803972249,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 114,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 114.00\nmean: 114.00\nstdev: 1.22\ncv: 1.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 153,
+            "range": "3.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 153.00\nstdev: 3.67\ncv: 2.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 196,
+            "range": "10.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 196.00\nmean: 189.40\nstdev: 10.69\ncv: 5.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 146,
+            "range": "10.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 146.00\nmean: 150.60\nstdev: 10.31\ncv: 6.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 311,
+            "range": "539.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 311.00\nmean: 559.00\nstdev: 539.76\ncv: 96.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 507,
+            "range": "2573.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 507.00\nmean: 2331.00\nstdev: 2573.66\ncv: 110.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
