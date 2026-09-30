@@ -199,7 +199,10 @@ about a second.
 `restart_control_plane` takes the control plane down for a given time and
 brings it back on the same address over the same store, so brokers see a
 restart: cut connections, failed requests, and a fresh expiry sweep facing
-heartbeat stamps as old as the outage. `stop_control_plane` stops it for good.
+heartbeat stamps as old as the outage. `crash_control_plane` and
+`recover_control_plane` do the same in two steps, so a test can act while it
+is down. If `run_placement` was running, it runs again after either restart.
+`stop_control_plane` stops it for good.
 
 `kill_node` kills without waiting for the control plane to react. A test
 measuring how long failover takes has to start its clock at the kill, not after
@@ -397,6 +400,26 @@ that fills mid-write does, so the test exercises the writer's rewind rather
 than a write that did nothing. Index writes, flushes and the small metadata
 files are not affected. The file is re-read on the next write or flush once
 50 ms have passed.
+
+The same file cuts the power, for a broker started with
+`FELIX_STORAGE_POWER_LOSS_ROOT` naming its storage directory. That variable
+puts the storage under the power-loss model from `io/power_loss.rs` at
+startup, so every flush records what it made durable, and starts a thread
+that reads the fault file every 20 ms:
+
+```text
+power_loss=7                   # seeds which unflushed writes survive
+power_loss_into=/path/image    # where to build the tree a reboot would find
+```
+
+On it, the broker builds that tree into the directory and kills itself
+without releasing the model's lock, so no flush finishes after the image was
+taken. Debug brokers on Linux only. `ClusterConfig::power_loss` sets the
+variable, and `Cluster::power_off` writes the directive to every broker,
+swaps each image in for its storage and leaves the brokers down until
+`Cluster::restart_stopped_nodes`. A broker's storage is the `storage`
+directory inside its data directory (`BrokerNode::storage_dir`), so the fault
+files, logs and certificates beside it are not part of the image.
 
 Only debug builds and builds with the storage crate's `fault-injection`
 feature compile the hooks in. The fsync and write tests run under

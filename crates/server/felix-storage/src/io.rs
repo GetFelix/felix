@@ -30,7 +30,10 @@
 //! submitted to `io_uring` instead (`uring_fsync`).
 
 pub(crate) mod flusher;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(
+    target_os = "linux",
+    any(test, debug_assertions, feature = "fault-injection")
+))]
 pub(crate) mod power_loss;
 #[cfg(target_os = "linux")]
 pub(crate) mod uring_fsync;
@@ -254,7 +257,13 @@ pub(crate) enum SyncKind {
     /// `sync_all`.
     All,
     /// An `fdatasync` submitted to `io_uring`.
-    #[cfg_attr(any(not(test), not(target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(
+        not(all(
+            target_os = "linux",
+            any(test, debug_assertions, feature = "fault-injection")
+        )),
+        allow(dead_code)
+    )]
     Uring,
 }
 
@@ -265,7 +274,10 @@ pub(crate) enum SyncKind {
 /// layer sees it: a flush that reported `EIO` made nothing durable.
 fn before_sync(file: &File, kind: SyncKind) -> io::Result<()> {
     injected_fault()?;
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(
+        target_os = "linux",
+        any(test, debug_assertions, feature = "fault-injection")
+    ))]
     power_loss::observe_file(file, kind);
     let _ = (file, kind);
     Ok(())
@@ -274,7 +286,10 @@ fn before_sync(file: &File, kind: SyncKind) -> io::Result<()> {
 /// [`before_sync`] for a directory flush.
 fn before_sync_dir(path: &std::path::Path) -> io::Result<()> {
     injected_fault()?;
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(
+        target_os = "linux",
+        any(test, debug_assertions, feature = "fault-injection")
+    ))]
     power_loss::observe_dir(path);
     let _ = path;
     Ok(())

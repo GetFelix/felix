@@ -84,6 +84,7 @@ impl Cluster {
             config: config.clone(),
             links,
             faults: Default::default(),
+            crashed_control_plane: None,
             _root: root,
         };
 

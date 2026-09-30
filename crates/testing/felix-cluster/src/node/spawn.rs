@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, anyhow};
 
-use super::{BrokerNode, clock_fault_file, partition_file, storage_fault_file};
+use super::{BrokerNode, clock_fault_file, partition_file, storage_dir, storage_fault_file};
 use crate::proxy::Links;
 use crate::{ClusterConfig, ControlPlane, pki, ports};
 
@@ -36,8 +36,9 @@ pub(crate) fn spawn_broker(
     };
     let metrics_addr = ports::free_tcp()?;
     let data_dir = root.join(&node_id);
-    std::fs::create_dir_all(&data_dir)
-        .with_context(|| format!("create data dir {}", data_dir.display()))?;
+    let storage = storage_dir(&data_dir);
+    std::fs::create_dir_all(&storage)
+        .with_context(|| format!("create storage dir {}", storage.display()))?;
 
     let token = control_plane.node_token(&config.tenant_id, &node_id)?;
     // Through a file rather than the environment, which is how a deployment
@@ -84,7 +85,7 @@ pub(crate) fn spawn_broker(
         .env("FELIX_TLS_CERT_EXPORT", data_dir.join("broker-cert.pem"))
         .env("FELIX_INTERNAL_BIND", internal_addr.to_string())
         .env("FELIX_BROKER_METRICS_BIND", metrics_addr.to_string())
-        .env("FELIX_DURABLE_STORAGE_DIR", &data_dir)
+        .env("FELIX_DURABLE_STORAGE_DIR", &storage)
         .env(
             "FELIX_CONTROLPLANE_SYNC_INTERVAL_MS",
             config.sync_interval_ms.to_string(),
@@ -106,6 +107,9 @@ pub(crate) fn spawn_broker(
     };
     if let Some(zone) = config.zones.get(index) {
         command.env("FELIX_NODE_ZONE", zone);
+    }
+    if config.power_loss {
+        command.env("FELIX_STORAGE_POWER_LOSS_ROOT", &storage);
     }
     command.envs(config.broker_env.iter().map(|(key, value)| (key, value)));
     if let Some(env) = config.node_env.get(index) {

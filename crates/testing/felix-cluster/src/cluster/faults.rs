@@ -263,6 +263,28 @@ impl Cluster {
         Ok(())
     }
 
+    /// Stop the control plane the way a crash does, keeping its state for
+    /// [`Self::recover_control_plane`]. Brokers keep serving on the authority
+    /// they hold until their leases lapse, and nothing is placed meanwhile.
+    pub async fn crash_control_plane(&mut self) -> Result<()> {
+        let control_plane = self
+            .control_plane
+            .take()
+            .ok_or_else(|| anyhow!("the control plane is not running"))?;
+        self.crashed_control_plane = Some(control_plane.stop().await?);
+        Ok(())
+    }
+
+    /// Bring back a control plane [`Self::crash_control_plane`] stopped, on the
+    /// same address over the same store, with placement running again if it
+    /// was. Does nothing if it was not crashed.
+    pub async fn recover_control_plane(&mut self) -> Result<()> {
+        if let Some(stopped) = self.crashed_control_plane.take() {
+            self.control_plane = Some(stopped.start().await?);
+        }
+        Ok(())
+    }
+
     /// Whether the control plane is still running. `false` once
     /// [`Self::stop_control_plane`] has been called, after which the assignment
     /// and node endpoints are unreachable.

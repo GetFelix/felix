@@ -80,6 +80,16 @@ for what the current release guarantees.
   campaign now waits for each shard to serve again and fails naming any shard
   that is stuck and why. `FELIX_HISTORY_NEMESIS` picks the nemesis, and the
   nightly workflow runs both.
+- **Power loss, control-plane crashes and delivery checks in the history
+  campaign.** The adversarial nemesis can cut power to every broker at once,
+  keeping only what each one flushed, and crash the control plane while a
+  move, drain or failover is in flight. Live subscribers now follow each list
+  for the whole run, and three new rules check that delivery follows offset
+  order, that nothing delivered is later lost, and that every record is
+  either delivered or skipped visibly. Debug and `fault-injection` brokers
+  take the power loss from `FELIX_STORAGE_POWER_LOSS_ROOT` and the storage
+  fault file, on Linux. The harness keeps broker storage in `storage/` under
+  each node's data directory.
 - **Atomic commits on one shard.** `Client::commit(tenant, namespace,
   entity_key, [publish | enqueue, put, delete])` writes an event and state
   updates as one record on the stream shard `entity_key` routes to, and

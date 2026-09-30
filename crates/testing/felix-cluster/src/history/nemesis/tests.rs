@@ -265,3 +265,58 @@ fn adversarial_asks_for_proxies_and_on_commit_flushes() {
     assert!(adversarial.needs_proxy_links());
     assert!(adversarial.needs_fsync_on_commit());
 }
+
+/// A power loss keeps only what was flushed, so it needs acknowledgements
+/// that wait for the flush, and brokers running under the power-loss model.
+#[test]
+fn a_power_loss_needs_on_commit_flushes_and_the_model() {
+    assert!(FaultKind::PowerLoss.needs_fsync_on_commit());
+    assert!(FaultKind::PowerLoss.needs_power_loss());
+    assert!(!FaultKind::PowerLoss.needs_proxy_links());
+    assert!(!FaultKind::ControlPlaneCrash.needs_power_loss());
+    assert!(RandomNemesis::adversarial().needs_power_loss());
+    assert!(!RandomNemesis::all_faults().needs_power_loss());
+    assert!(!RandomNemesis::process_faults().needs_power_loss());
+}
+
+/// A control plane crash lands during each kind of work it can interrupt,
+/// and a kill it lands during is of a leader, so a failover is pending.
+#[test]
+fn a_control_plane_crash_interrupts_a_move_a_drain_or_a_failover() {
+    let view = four_brokers();
+    let mut seen = std::collections::BTreeSet::new();
+    for fault in sample_adversarial() {
+        let Fault::ControlPlaneCrash { during } = &fault else {
+            continue;
+        };
+        if let Fault::Kill { node } = during.as_ref() {
+            assert!(view.leaders.contains(node), "{fault}");
+        }
+        assert_eq!(fault.targets(), during.targets());
+        seen.insert(format!("{:?}", during.kind()));
+    }
+    let expected: std::collections::BTreeSet<String> = compound::IN_FLIGHT_KINDS
+        .iter()
+        .map(|kind| format!("{kind:?}"))
+        .collect();
+    assert_eq!(seen, expected);
+}
+
+#[test]
+fn the_new_compound_faults_say_what_they_do() {
+    assert_eq!(
+        Fault::PowerLoss { seed: 7 }.to_string(),
+        "cut the power to every broker (image seed 7)"
+    );
+    let crash = Fault::ControlPlaneCrash {
+        during: Box::new(Fault::Drain {
+            node: "broker-1".to_string(),
+        }),
+    };
+    assert_eq!(
+        crash.to_string(),
+        "crash the control plane during: drain broker-1"
+    );
+    assert_eq!(crash.kind(), FaultKind::ControlPlaneCrash);
+    assert_eq!(crash.family(), FaultFamily::Compound);
+}

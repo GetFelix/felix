@@ -153,3 +153,74 @@ fn directory_entries_and_contents_follow_their_flushes() {
     }
     assert!(saw_missing, "an unflushed create never went missing");
 }
+
+/// A large file is read from the page its last capture ended in, so a change
+/// before that page is not seen, while one that shrank is read whole again.
+/// Small files are always read whole, since they may be rewritten in place.
+#[test]
+fn a_growing_large_file_is_captured_from_where_the_last_capture_ended() {
+    let root = tempfile::tempdir().expect("dir");
+    let observer = PowerLoss::install(root.path()).expect("install");
+    let captured = |file: &File| {
+        let meta = file.metadata().expect("stat");
+        let inode = Inode {
+            dev: meta.dev(),
+            ino: meta.ino(),
+        };
+        observer
+            .state
+            .lock()
+            .files
+            .get(&inode)
+            .cloned()
+            .expect("captured")
+    };
+    let rewrite_first_byte = |file: &File, byte: u8| {
+        std::os::unix::fs::FileExt::write_at(file, &[byte], 0).expect("rewrite");
+    };
+
+    let large = File::options()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(root.path().join("segment"))
+        .expect("create");
+    let first = bytes(WHOLE_FILE_UP_TO as usize + 100, 1);
+    std::io::Write::write_all(&mut &large, &first).expect("write");
+    crate::io::sync_data(&large).expect("sync");
+    assert_eq!(captured(&large), first);
+
+    rewrite_first_byte(&large, 9);
+    std::io::Write::write_all(&mut &large, &bytes(PAGE, 2)).expect("append");
+    crate::io::sync_data(&large).expect("sync");
+    let after = captured(&large);
+    assert_eq!(after.len(), first.len() + PAGE);
+    assert_eq!(after[0], 1, "the page before the last capture was re-read");
+    assert_eq!(&after[first.len()..], &bytes(PAGE, 2)[..]);
+
+    large.set_len(10).expect("shrink");
+    crate::io::sync_data(&large).expect("sync");
+    assert_eq!(captured(&large), [9, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+
+    let small = File::create(root.path().join("index")).expect("create");
+    std::io::Write::write_all(&mut &small, &bytes(PAGE, 1)).expect("write");
+    crate::io::sync_data(&small).expect("sync");
+    rewrite_first_byte(&small, 9);
+    crate::io::sync_data(&small).expect("sync");
+    assert_eq!(captured(&small)[0], 9);
+}
+
+#[test]
+fn the_power_loss_directive_needs_a_seed_and_a_directory() {
+    use super::trigger::directive;
+    assert_eq!(
+        directive("fsync_delay_ms=0\npower_loss=7\npower_loss_into=/tmp/image\n"),
+        Some((7, "/tmp/image".into()))
+    );
+    assert_eq!(directive("power_loss=7\n"), None);
+    assert_eq!(
+        directive("power_loss=x\npower_loss_into=/tmp/image\n"),
+        None
+    );
+    assert_eq!(directive("power_loss_into=/tmp/image\n"), None);
+}

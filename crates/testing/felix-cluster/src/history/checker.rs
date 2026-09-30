@@ -11,6 +11,10 @@
 //! reported on its own rule rather than as a pile of lost writes, because the
 //! fault is in the read, not necessarily in the log.
 
+mod delivery;
+
+pub(super) use delivery::dropped;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
@@ -64,6 +68,16 @@ pub enum Rule {
     /// 8. A reader saw an atomic commit's event without its state, or its
     ///    state without its event.
     PartialCommit,
+    /// 9. A subscriber was delivered an offset at or below one it already
+    ///    had, across resumes too, or below where it asked to start.
+    DeliveryOrder,
+    /// 10. A subscriber was delivered a record the final log does not hold
+    ///     at that offset: delivered, then lost.
+    LostDelivery,
+    /// 11. A record in the final log was neither delivered to a subscriber
+    ///     nor visibly dropped: it sat under a skip the subscriber was told
+    ///     holds no event, or past where the subscriber stopped.
+    MissingDelivery,
     /// The final read has a hole, so the lost-write rule cannot be trusted.
     IncompleteFinalRead,
     /// The history itself is malformed: the recorder is wrong, not the broker.
@@ -139,6 +153,9 @@ impl Rule {
             Rule::FailedWriteVisible => "6 failed-write-visible",
             Rule::StaleRead => "7 stale-read",
             Rule::PartialCommit => "8 partial-commit",
+            Rule::DeliveryOrder => "9 delivery-order",
+            Rule::LostDelivery => "10 lost-delivery",
+            Rule::MissingDelivery => "11 missing-delivery",
             Rule::IncompleteFinalRead => "incomplete-final-read",
             Rule::MalformedHistory => "malformed-history",
         }
@@ -179,6 +196,7 @@ pub fn check(history: &History) -> Report {
         &history.commit_values,
         &mut violations,
     );
+    delivery::check(history, &mut violations);
     Report {
         violations,
         faults: history.faults.clone(),

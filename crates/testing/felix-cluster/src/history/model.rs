@@ -36,6 +36,8 @@ pub struct History {
     pub commit_reads: Vec<CommitRead>,
     /// The nemesis's timeline, so a violation can be read against it.
     pub faults: Vec<FaultEvent>,
+    /// What each list's live subscriber was delivered over the whole run.
+    pub subscriptions: Vec<Subscription>,
 }
 
 /// What the checker may assume of one list.
@@ -107,6 +109,36 @@ pub struct Element {
     pub skipped_before: u64,
 }
 
+/// Everything one live subscriber was delivered from one list, across every
+/// session it opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Subscription {
+    pub subscriber: usize,
+    pub list: String,
+    /// The offset its first session started at: the list's base.
+    pub start: u64,
+    /// Every event, in delivery order.
+    pub delivered: Vec<Element>,
+    /// The sessions after the first, in the order they opened.
+    pub resumes: Vec<Resume>,
+    /// The offset it was waiting for when the campaign stopped it.
+    pub next: u64,
+}
+
+/// A subscriber opening a fresh session after the last one failed or ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resume {
+    /// When the session opened, on the clients' clock.
+    pub at: u64,
+    /// The offset it asked to start at.
+    pub from: u64,
+    /// How many events earlier sessions had delivered: the index in
+    /// [`Subscription::delivered`] of this session's first event.
+    pub first: usize,
+    /// Why the previous session ended.
+    pub reason: String,
+}
+
 /// A fault starting or ending, at a time on the clients' clock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FaultEvent {
@@ -157,10 +189,22 @@ impl History {
             }
         }
         let records: usize = self.final_reads.values().map(Vec::len).sum();
+        let (mut deliveries, mut dropped, mut resumes) = (0, 0, 0);
+        for subscription in &self.subscriptions {
+            deliveries += subscription.delivered.len();
+            resumes += subscription.resumes.len();
+            if let (Some(final_read), Some(spec)) = (
+                self.final_reads.get(&subscription.list),
+                self.lists.get(&subscription.list),
+            ) {
+                dropped += super::checker::dropped(subscription, spec.base, final_read);
+            }
+        }
         format!(
             "{} ops: {} appends ok (median {}), {fail} failed, {info} unknown; {} reads \
              (median {}); {records} records in the final reads; {} cache puts ok (median {}), \
-             {} cache gets (median {}); {} fault events",
+             {} cache gets (median {}); {deliveries} deliveries to {} subscribers ({dropped} \
+             dropped, {resumes} resumes); {} fault events",
             self.ops.len(),
             ok.len(),
             median(&mut ok),
@@ -170,6 +214,7 @@ impl History {
             median(&mut puts),
             gets.len(),
             median(&mut gets),
+            self.subscriptions.len(),
             self.faults.len(),
         )
     }

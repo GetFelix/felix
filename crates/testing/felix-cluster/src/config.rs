@@ -47,6 +47,11 @@ pub struct ClusterConfig {
     /// a test that injects no link fault talks over the direct path it always
     /// did.
     pub proxy_links: bool,
+    /// Run every broker's storage under the simulated power-loss model, so
+    /// [`Cluster::power_off`](crate::Cluster::power_off) can cut the power.
+    /// Off by default: every flush then also reads what it made durable. Needs
+    /// brokers built with debug assertions, on Linux.
+    pub power_loss: bool,
 }
 
 impl Default for ClusterConfig {
@@ -66,6 +71,7 @@ impl Default for ClusterConfig {
             node_env: Vec::new(),
             kafka: false,
             proxy_links: false,
+            power_loss: false,
         }
     }
 }
