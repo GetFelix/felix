@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790804417064,
+  "lastUpdate": 1790810197798,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -21060,6 +21060,58 @@ window.BENCHMARK_DATA = {
             "range": "14357.80",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1129582.33\nmean: 1131959.28\nstdev: 14357.80\ncv: 1.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b0bb59cc7464773fafc107c86d7d3c835ab5832a",
+          "message": "ci: model-check TLA+ changes under docs/formal (#893)\n\nCI ignored docs/**, and the specs live in docs/formal, so a change to a spec alone\nwas never model-checked. #892 merged that way while the combined spec on main was\nstill unchecked. CI now runs for docs/formal changes; other docs still skip it.\n\nSpec-Unaffected: CI trigger only.",
+          "timestamp": "2026-09-30T16:10:43-07:00",
+          "tree_id": "5316dd6108f2fbbbdc2d4de0a62071d6e9c4acee",
+          "url": "https://github.com/gabloe/felix/commit/b0bb59cc7464773fafc107c86d7d3c835ab5832a"
+        },
+        "date": 1790810196511,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 483296.58,
+            "range": "28866.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 483296.58\nmean: 477423.16\nstdev: 28866.53\ncv: 6.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 483296.58,
+            "range": "28866.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 483296.58\nmean: 477423.16\nstdev: 28866.53\ncv: 6.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120882.04,
+            "range": "706.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120882.04\nmean: 121103.80\nstdev: 706.85\ncv: 0.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1208820.44,
+            "range": "7068.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1208820.44\nmean: 1211038.02\nstdev: 7068.44\ncv: 0.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
