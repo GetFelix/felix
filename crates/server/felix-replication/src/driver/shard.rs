@@ -240,6 +240,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // records it inherited is Raft's Figure 8. A cache shard is never fenced
     // and so never takes a longer log on promotion, which is what makes an
     // inherited record unsafe to count; see `docs/replication-design.md`.
+    // Where this leader's generation begins: everything below it was
+    // inherited. `u64::MAX` when no start was recorded, which reads as the
+    // whole log.
+    let inherited = own_start(&log, route.generation, &mut entry.own_start);
     let own_start = (key.kind == felix_router::ShardKind::Stream && marks.own_generation_only())
         .then(|| own_start(&log, route.generation, &mut entry.own_start));
     let counted = |majority: u64| crate::quorum::counted_offset(majority, own_start);
@@ -318,8 +322,18 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         }
         // Never below a mark already published, even if a follower's
         // position went back since: that mark's records were promised.
-        held_offset(tail, followers)
-            .max(marks.offset(&watch_key(key), route.generation).unwrap_or(0))
+        let promised = held_offset(tail, followers)
+            .max(marks.offset(&watch_key(key), route.generation).unwrap_or(0));
+        // Nor below the log this leader inherited, while promotion trusts the
+        // report: an earlier leader may have acknowledged any of it. Without
+        // the floor, a new leader whose followers have not answered yet names
+        // all of them. Acknowledging by the followers, the promoted leader
+        // fences a majority and takes the furthest log instead.
+        if by_followers {
+            promised
+        } else {
+            promised.max(inherited.min(tail))
+        }
     };
     // Counters on a `Quorum` cache are acknowledged at their own mark, under
     // the same rule as the shard's: shipped first, so the reports below can
@@ -825,9 +839,17 @@ async fn counter_level<R: PeerRequester>(
             .offset(&watch_key(key), route.generation)
             .unwrap_or(0),
     );
+    // Named only once it holds the updates this leader inherited, as for the
+    // shard's own log; with no recorded start, all of them.
+    let inherited = log
+        .generations()
+        .iter()
+        .rev()
+        .find(|epoch| epoch.generation == route.generation)
+        .map_or(tail, |epoch| epoch.start_offset.min(tail));
     Some(CounterLevel {
         acknowledged,
-        level: caught_up(acknowledged, &aux.counters.followers),
+        level: caught_up(acknowledged.max(inherited), &aux.counters.followers),
     })
 }
 

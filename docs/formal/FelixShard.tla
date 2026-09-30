@@ -140,6 +140,15 @@
 (* record it inherited once a majority holds it, and a later leader whose  *)
 (* last record is newer overwrites it: Raft's Figure 8, which             *)
 (* FelixShardFigure8NoStartRecord.cfg finds.                               *)
+(*                                                                         *)
+(* `ReportFromAnswers` has the report count a follower by what it last     *)
+(* answered holding at the leader's generation (`confirmed`), as the       *)
+(* broker does, rather than by what its log holds. A new leader that has   *)
+(* heard from nobody then counts nothing, and names every follower. With   *)
+(* two failovers in a row TLC finds the second promoting a follower that   *)
+(* lacks a record the first leader acknowledged (AckedSurvive).            *)
+(* `ReportFloor` names a follower only once it holds everything the leader *)
+(* inherited, which is a bound on what any earlier leader acknowledged.    *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -179,7 +188,9 @@ CONSTANTS
     StartRecord,    \* whether a new leader writes a generation-start record and the mark waits for it
     Spares,         \* brokers outside the replica set that a failover may bring in
     ReplaceOnPromote, \* whether a promotion swaps the old leader for a spare
-    SeatHoldsCopy   \* whether a replacement is seated only once it holds what the old set held
+    SeatHoldsCopy,  \* whether a replacement is seated only once it holds what the old set held
+    ReportFromAnswers, \* whether the report counts a follower by its answers, or by its log
+    ReportFloor     \* whether the report never names a follower short of the leader's inherited log
 
 ASSUME Promotion \in {"leader-report", "log-order", "any"}
 ASSUME ReportBeforeAck \in BOOLEAN
@@ -194,6 +205,7 @@ ASSUME AckChecksLease \in BOOLEAN /\ AckOnResponse \in BOOLEAN
 ASSUME AckByFollowers \in BOOLEAN /\ FenceOnPromote \in BOOLEAN
 ASSUME LabelOnReceipt \in BOOLEAN
 ASSUME StartRecord \in BOOLEAN
+ASSUME ReportFromAnswers \in BOOLEAN /\ ReportFloor \in BOOLEAN
 \* Only a promotion or a replacement changes the set, so spares are checked
 \* with follower acks (no handoff, no cancel) and no staged copy.
 ASSUME Spares \subseteq Brokers /\ ReplaceOnPromote \in BOOLEAN /\ SeatHoldsCopy \in BOOLEAN
@@ -531,7 +543,8 @@ Diverge(a, c) ==
 \* (crates/server/felix-replication/src/ship.rs) and counts it later, by
 \* which time the follower may have taken a newer leader's fence.
 Confirm(b, f, k) ==
-    confirmed' = IF AckByFollowers THEN [confirmed EXCEPT ![b][f] = k] ELSE confirmed
+    confirmed' = IF AckByFollowers \/ ReportFromAnswers
+                 THEN [confirmed EXCEPT ![b][f] = k] ELSE confirmed
 
 \* Under `AckByFollowers` or `FenceOnPromote` the follower also refuses a
 \* leader older than the generation it persisted, and persists the leader's:
@@ -675,13 +688,23 @@ LearnHwm(b, f) ==
 HoldsPrefix(m, b, k) ==
     Len(log[m]) >= k /\ \A j \in 1..k : Same(log[m][j], log[b][j])
 
+\* Whether `b` counts `m` as holding its first `k` records in a report: by
+\* `m`'s log, or with `ReportFromAnswers` by what `m` last answered, as
+\* `quorum_offset_without` and `caught_up` read `FollowerCursor::confirmed`.
+Counted(m, b, k) ==
+    IF ReportFromAnswers THEN confirmed[b][m] >= k ELSE HoldsPrefix(m, b, k)
+
+\* How much of `b`'s log it inherited: the records written before its own
+\* generation. Any record an earlier leader acknowledged is among them.
+Inherited(b) == Cardinality({ i \in 1..Len(log[b]) : log[b][i].g < bgen[b] })
+
 \* The most of `b`'s log a majority holds, `b` included and halted followers
 \* not: `quorum_offset_without`. With `StartRecord`, only up to a record of
 \* `b`'s own generation, as the mark.
 MajorityLen(b) ==
     LET held == { k \in 0..Len(log[b]) :
                     /\ k > 0 => OwnGen(b, k)
-                    /\ MajorityOf({ m \in Brokers \ halted : HoldsPrefix(m, b, k) } \cup {b},
+                    /\ MajorityOf({ m \in Brokers \ halted : Counted(m, b, k) } \cup {b},
                                   QuorumSet) }
     IN IF held = {} THEN 0 ELSE CHOOSE k \in held : \A j \in held : j <= k
 
@@ -689,9 +712,12 @@ MajorityLen(b) ==
 \* records the mark sent with this report may release, and never below the
 \* mark already out; otherwise, and once the leader has stopped for a move,
 \* all of it.
+\* With `ReportFloor`, never below the log the leader inherited either:
+\* `acknowledged` in crates/server/felix-replication/src/driver/shard.rs.
+Max(x, y) == IF x >= y THEN x ELSE y
 ReportAt(b) ==
     IF ReportBound /= "tail" /\ Quorum /\ ~stopped[b]
-    THEN IF MajorityLen(b) >= hwm[b] THEN MajorityLen(b) ELSE hwm[b]
+    THEN Max(Max(MajorityLen(b), hwm[b]), IF ReportFloor THEN Inherited(b) ELSE 0)
     ELSE Len(log[b])
 
 \* With follower acks and a promotion that does not read it, nothing reads the
@@ -702,7 +728,7 @@ Report(b) ==
     /\ leader = b /\ bgen[b] = gen
     /\ inflight = <<>>
     /\ inflight' = << [holders |-> { f \in Brokers \ {b} :
-                                        HoldsPrefix(f, b, ReportAt(b)) /\ f \notin halted },
+                                        Counted(f, b, ReportAt(b)) /\ f \notin halted },
                        len     |-> IF ReportBound = "unpaired" THEN Len(log[b])
                                                              ELSE ReportAt(b),
                        drained |-> stopped[b] /\ pending[b] = 0 /\ (Held => queued[b] = 0),

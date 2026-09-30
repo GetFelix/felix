@@ -647,6 +647,19 @@ for what the current release guarantees.
 
 ### Fixed
 
+- **A new leader names no follower short of the log it inherited (#882).**
+  Until a majority held a record of the new generation, a leader measured its
+  replica report against offset 0 and named every follower caught up,
+  answered or not. In lease mode, where promotion trusts the report, two
+  failovers in quick succession could promote a follower missing a record the
+  first leader acknowledged. Stream shards promoted with the fence were
+  covered by it; `Quorum` caches and unfenced stream promotions were not.
+  The report, and a cache's counter level, now never name a follower short
+  of where the leader's generation begins. Right after a failover, a new
+  leader that dies before any follower has copied its inherited log leaves
+  the shard unplaced until a broker holding that log returns. See
+  `docs/replication-design.md`, "Who may be promoted".
+
 - **A leader counts a follower only for what it has answered (#878).** The
   quorum mark and the replica report counted a follower the leader had not yet
   heard from at the offset its cursor starts at, one record below where the
