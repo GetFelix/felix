@@ -656,6 +656,19 @@ for what the current release guarantees.
 
 ### Fixed
 
+- **A leader counts a follower only for what it has answered (#878).** The
+  quorum mark and the replica report counted a follower the leader had not yet
+  heard from at the offset its cursor starts at, one record below where the
+  leader's own generation begins. A new leader, or a move's source, that could
+  reach none of its followers then published a mark over records it inherited
+  and no follower held: its commit offset covered them, and readers could be
+  handed them as committed. Deposed, the broker refused to drop them and
+  refused every rebuild, so it never rejoined. Both now count
+  `FollowerCursor::confirmed`, what the follower answered holding at this
+  generation. No acknowledged write was affected: a publish waiting on the
+  mark is dropped when its generation ends. See `docs/replication-design.md`,
+  "Replica reports and the committed mark".
+
 - **A `Quorum` failover no longer promotes a move's destination.** Its broker
   opened the shard as the move's cut-over, without the promotion fence, and
   under `majority_ack` the report that named it caught up could predate a

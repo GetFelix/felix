@@ -711,6 +711,22 @@ passes the old one, and its `Quorum` publishes wait meanwhile. That is a
 liveness cost, not a safety one: the held report describes records the
 followers do have.
 
+**A follower counts only for what it has answered.** The mark and the report
+count each follower up to the last offset it answered holding at the leader's
+generation. A new leader starts its cursor for a follower it has not heard
+from one record below where its own generation begins, so that the first batch
+overlaps a record the follower holds. That start is a guess, and it used to be
+counted as if the follower had said it. A leader that could reach none of its
+followers, such as a move's destination cut off as it took over, or the move's
+source at its draining generation, then published a mark over records it had
+inherited and no follower held. Its commit offset rose to the mark, and
+readers could be handed those records as committed. Once a follower without
+them was promoted, the broker came back holding them below its commit offset,
+refused to drop them, and refused every rebuild, so it never rejoined (issue
+878, `a_move_cut_short_by_kills_leaves_no_replica_halted`). A leader that has
+heard from nobody now moves no mark. A publish waiting on the mark was never
+acknowledged this way, because a generation change drops it.
+
 Across versions: a broker that predates per-shard answers treats 409 as the
 whole batch failing and holds every mark in it for a pass, which is safe. A
 new broker talking to a control plane that predates them gets 204 and treats

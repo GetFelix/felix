@@ -976,7 +976,9 @@ pub fn majority_of(replicas: usize) -> usize {
 ///
 /// The leader is counted as holding everything up to `leader_tail`: it wrote the
 /// records, and a record it has not written is not a candidate for a quorum in
-/// the first place.
+/// the first place. A follower is counted up to what it has answered holding
+/// at this generation (`confirmed`), never up to where the leader guessed it
+/// stands before it answered.
 ///
 /// **A halted follower counts for nothing.** It is not slow, it has stopped —
 /// its log has diverged, or this broker has been superseded — and letting a
@@ -1014,7 +1016,7 @@ pub fn quorum_offset_without(
         .chain(
             voters()
                 .filter(|follower| follower.halted.is_none())
-                .map(|follower| follower.next_offset.min(leader_tail)),
+                .map(|follower| follower.confirmed.min(leader_tail)),
         )
         .collect();
     // Descending, so the `needed`-th is the highest offset that many hold.
