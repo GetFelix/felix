@@ -1,6 +1,6 @@
 //! What leaders report about their replicas, as every backend must keep it.
 use super::shards::{assignment, key};
-use crate::model::ReplicaReport;
+use crate::model::{HaltedCopy, ReplicaReport};
 use crate::store::{ControlPlaneStore, ReportWrite, StoreError};
 
 /// The leader every case assigns, and so the node its reports come from.
@@ -224,6 +224,67 @@ pub(super) async fn the_leader_offset_is_kept(store: &dyn ControlPlaneStore) {
     assert_eq!(report_for(store, shard).await, Some(unstamped(with_tail)));
 }
 
+/// Halted copies ride the report, and keep the time the store first saw them
+/// across reports that restate them.
+pub(super) async fn halted_copies_are_kept_with_when_they_began(store: &dyn ControlPlaneStore) {
+    // Follows `the_leader_offset_is_kept` on the same shard: a stream has four.
+    let shard = 3;
+    store
+        .put_shard_assignment(assignment(shard, "broker-x"))
+        .await
+        .expect("assign");
+    let at = generation(store, shard).await;
+    let halted = |at_millis| {
+        let mut halted = report(shard, at, &["broker-y"], at_millis);
+        halted.halted.insert(
+            "broker-z".to_string(),
+            HaltedCopy {
+                reason: "diverged".to_string(),
+                generation: at,
+                since_millis: at_millis,
+            },
+        );
+        halted
+    };
+
+    let mut since = Vec::new();
+    for at_millis in [7_000, 9_000] {
+        assert_eq!(
+            store
+                .record_replica_report(halted(at_millis), LEADER)
+                .await
+                .expect("record"),
+            ReportWrite::Stored
+        );
+        let held = stored(store, shard).await;
+        let copy = &held.halted["broker-z"];
+        assert_eq!((copy.reason.as_str(), copy.generation), ("diverged", at));
+        since.push(copy.since_millis);
+    }
+    // Under Raft the stamp is the leader's clock rather than the caller's,
+    // so the check is that the second report kept the first one's.
+    assert_eq!(since[0], since[1], "the halt's start moved");
+
+    // Following again: no longer halted.
+    let following = report(shard, at, &["broker-y", "broker-z"], 11_000);
+    store
+        .record_replica_report(following, LEADER)
+        .await
+        .expect("record");
+    assert!(stored(store, shard).await.halted.is_empty());
+}
+
+/// `shard`'s report as held, stamps and all.
+async fn stored(store: &dyn ControlPlaneStore, shard: u32) -> ReplicaReport {
+    store
+        .list_replica_reports()
+        .await
+        .expect("list reports")
+        .into_iter()
+        .find(|report| report.key == key(shard))
+        .expect("a report")
+}
+
 fn report(shard: u32, generation: u64, caught_up: &[&str], at: u64) -> ReplicaReport {
     ReplicaReport {
         key: key(shard),
@@ -233,6 +294,7 @@ fn report(shard: u32, generation: u64, caught_up: &[&str], at: u64) -> ReplicaRe
         reported_at_millis: at,
         drained: false,
         leader_offset: None,
+        halted: Default::default(),
     }
 }
 

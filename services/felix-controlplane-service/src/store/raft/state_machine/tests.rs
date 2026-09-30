@@ -147,6 +147,7 @@ fn replica_report(
         reported_at_millis,
         drained: false,
         leader_offset: Some(42),
+        halted: Default::default(),
     }
 }
 

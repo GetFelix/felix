@@ -140,6 +140,13 @@ The leader rebuilds `diverged` and `needs_bootstrap` followers itself, as many
 at once as `FELIX_REPLICATION_REBUILD_MAX_CONCURRENT` allows (default `1`;
 `0` leaves them all to an operator). The entry clears once the rebuild is done.
 
+The control plane sees the same halts through the leader's replica reports:
+`felix-controlplane admin replication` lists them in `HALTED`, and
+`felix_shard_replicas_halted` counts them. Placement never moves a shard onto a
+halted copy, and replaces a copy that stays halted for
+`FELIX_SHARD_RESTORE_AFTER_MS`. A move to one by hand is refused with
+`destination_halted`.
+
 ### `shard_unavailable`
 
 The error's `detail.reason` says why:

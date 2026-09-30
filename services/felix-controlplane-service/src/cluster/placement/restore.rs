@@ -1,8 +1,9 @@
 //! Bringing a shard back to its replication factor.
 //!
 //! A follower whose broker has been down or gone for
-//! `MovePolicy::restore_after_millis`, or a replica set a failover left short
-//! of the factor, gets a new copy on a live broker. The copy joins the way a
+//! `MovePolicy::restore_after_millis`, one its leader has reported halted for
+//! that long, or a replica set a failover left short of the factor, gets a new
+//! copy on a live broker. The copy joins the way a
 //! draining follower's replacement does (`joining`), and is seated only once
 //! it holds what a majority of the set held, so a fenced stream keeps the old
 //! set's majority rule. Each step is one assignment write, so a pass on any
@@ -14,7 +15,7 @@ use super::plan::{owner_of, replication_factors};
 use super::rendezvous::score;
 use super::zones::{Domain, domain, domain_of};
 use super::{Blocked, CaughtUp, Decision, MoveStep};
-use crate::model::{Cache, MoveReason, Node, ShardAssignment, ShardKey, Stream};
+use crate::model::{Cache, HaltedCopy, MoveReason, Node, ShardAssignment, ShardKey, Stream};
 
 /// How many copies a shard has against its replication factor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,10 +24,14 @@ pub struct Replication {
     pub leader: String,
     /// The replication factor.
     pub desired: u32,
-    /// Seated copies on a serving broker, the leader's included.
+    /// Seated copies on a serving broker that are following, the leader's
+    /// included.
     pub current: u32,
     /// Seated copies whose broker is not serving.
     pub unavailable: Vec<String>,
+    /// Seated copies on a serving broker that the leader has stopped shipping
+    /// to, by node. Not counted in `current`: they are in no quorum.
+    pub halted: Vec<(String, HaltedCopy)>,
     /// The copy being added to bring the shard back to `desired`.
     pub restoring: Option<String>,
 }
@@ -38,12 +43,14 @@ impl Replication {
 }
 
 /// Every assigned shard's copies against its replication factor, in key
-/// order. A copy still being added is not counted until it is seated.
+/// order. A copy still being added is not counted until it is seated, and one
+/// its leader reports halted is not counted at all.
 pub fn replication(
     streams: &[Stream],
     caches: &[Cache],
     nodes: &[Node],
     existing: &[ShardAssignment],
+    caught_up: &dyn CaughtUp,
 ) -> Vec<Replication> {
     let factors = replication_factors(streams, caches);
     let serving = |id: &str| {
@@ -57,12 +64,21 @@ pub fn replication(
             let desired = *factors.get(&owner_of(&assignment.key))?;
             let (up, down): (Vec<&String>, Vec<&String>) =
                 seated(assignment).partition(|node| serving(node));
+            let halted: Vec<(String, HaltedCopy)> = up
+                .iter()
+                .filter_map(|node| {
+                    caught_up
+                        .halted_member(&assignment.key, node, assignment.generation)
+                        .map(|halt| ((*node).clone(), halt.clone()))
+                })
+                .collect();
             Some(Replication {
                 key: assignment.key.clone(),
                 leader: assignment.leader.clone(),
                 desired,
-                current: up.len() as u32,
+                current: (up.len() - halted.len()) as u32,
                 unavailable: down.into_iter().cloned().collect(),
+                halted,
                 restoring: assignment
                     .joining
                     .clone()
@@ -83,6 +99,7 @@ pub(super) fn restore<'a>(
     replication_factor: u32,
     eligible: &[&'a Node],
     is_lost: &dyn Fn(&str) -> bool,
+    is_halted: &dyn Fn(&str) -> bool,
     caught_up: &dyn CaughtUp,
     load: &mut HashMap<&'a str, u32>,
     moves: &mut Moves,
@@ -99,7 +116,7 @@ pub(super) fn restore<'a>(
     if caught_up.reported_generation(key) != Some(existing.generation) {
         return None;
     }
-    let (widening, best) = newcomer(key, existing, eligible, load, replacing);
+    let (widening, best) = newcomer(key, existing, eligible, is_halted, load, replacing);
     let to = widening.or(best)?;
     if let Err(blocked) = moves.begin(&existing.leader, &to.node_id) {
         return Some(Decision::Waiting(blocked));
@@ -204,11 +221,13 @@ pub(super) fn wanted(
 
 /// The live broker to copy a shard into beside its current copies: the best
 /// by score in a zone the shard has no copy in, and the best by score at all.
-/// `departing` is the copy it stands in for, whose zone does not count.
+/// `departing` is the copy it stands in for, whose zone does not count. A node
+/// whose copy of the shard `is_halted` is never one.
 pub(super) fn newcomer<'a>(
     key: &ShardKey,
     existing: &ShardAssignment,
     eligible: &[&'a Node],
+    is_halted: &dyn Fn(&str) -> bool,
     load: &HashMap<&'a str, u32>,
     departing: Option<&str>,
 ) -> (Option<&'a Node>, Option<&'a Node>) {
@@ -223,6 +242,7 @@ pub(super) fn newcomer<'a>(
             .iter()
             .copied()
             .filter(|node| !taken.contains(&node.node_id.as_str()))
+            .filter(|node| !is_halted(&node.node_id))
             .filter(|node| match node.spec.capacity.max_shards {
                 Some(max) => load.get(node.node_id.as_str()).copied().unwrap_or(0) < max,
                 None => true,

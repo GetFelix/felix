@@ -232,3 +232,106 @@ fn a_change_round_trips_with_and_without_a_body() {
         assert_eq!(decoded, change);
     }
 }
+
+fn report_at(generation: u64, at: u64) -> ReplicaReport {
+    ReplicaReport {
+        key: assignment().key,
+        generation,
+        caught_up: BTreeSet::new(),
+        offsets: BTreeMap::new(),
+        reported_at_millis: at,
+        drained: false,
+        leader_offset: None,
+        halted: BTreeMap::new(),
+    }
+}
+
+fn halted(generation: u64, since_millis: u64) -> HaltedCopy {
+    HaltedCopy {
+        reason: "diverged".to_string(),
+        generation,
+        since_millis,
+    }
+}
+
+/// A halt keeps the time it was first reported, so placement can tell how
+/// long a copy has been stuck across reports that each restate it.
+#[test]
+fn a_halt_keeps_when_it_was_first_reported() {
+    let mut first = report_at(3, 100);
+    first.halted.insert("b".to_string(), halted(3, 0));
+    first.carry_halts(&BTreeMap::new());
+    assert_eq!(first.halted["b"].since_millis, 100);
+
+    let mut later = report_at(3, 900);
+    later.halted.insert("b".to_string(), halted(3, 0));
+    later.carry_halts(&first.halted);
+    assert_eq!(later.halted["b"].since_millis, 100);
+}
+
+/// A node the next report does not mention stays listed for two more
+/// generations, so the passes that replace it do not pick it again, and then
+/// goes.
+#[test]
+fn a_dropped_halt_is_carried_for_two_generations() {
+    let mut held = report_at(3, 100);
+    held.halted.insert("b".to_string(), halted(3, 100));
+
+    let mut next = report_at(4, 200);
+    next.carry_halts(&held.halted);
+    assert_eq!(next.halted["b"], halted(3, 100));
+
+    let mut same = report_at(4, 300);
+    same.carry_halts(&next.halted);
+    assert!(same.halted.contains_key("b"));
+
+    let mut after = report_at(5, 400);
+    after.carry_halts(&same.halted);
+    assert!(after.halted.contains_key("b"));
+
+    let mut gone = report_at(6, 500);
+    gone.carry_halts(&after.halted);
+    assert!(gone.halted.is_empty());
+}
+
+/// A new generation's leader may hear from a halted follower before it finds
+/// it halted again: that is not a recovery, and the halt keeps its start.
+#[test]
+fn a_halt_survives_the_first_answer_at_a_new_generation() {
+    let mut held = report_at(3, 100);
+    held.halted.insert("b".to_string(), halted(3, 100));
+
+    let mut answered = report_at(4, 200);
+    answered.offsets.insert("b".to_string(), 1);
+    answered.carry_halts(&held.halted);
+    assert_eq!(answered.halted["b"], halted(3, 100));
+
+    let mut again = report_at(4, 300);
+    again.halted.insert("b".to_string(), halted(4, 300));
+    again.carry_halts(&answered.halted);
+    assert_eq!(again.halted["b"], halted(4, 100));
+
+    let mut level = report_at(5, 400);
+    level.caught_up.insert("b".to_string());
+    level.carry_halts(&again.halted);
+    assert!(level.halted.is_empty(), "caught up is following");
+}
+
+/// A node that follows again is no longer halted.
+#[test]
+fn a_halt_that_clears_is_not_carried() {
+    let mut held = report_at(3, 100);
+    held.halted.insert("b".to_string(), halted(3, 100));
+
+    let mut next = report_at(3, 200);
+    next.offsets.insert("b".to_string(), 7);
+    next.carry_halts(&held.halted);
+    assert!(next.halted.is_empty());
+}
+
+/// A report with nothing halted is written the way it always was.
+#[test]
+fn a_report_with_nothing_halted_omits_the_field() {
+    let json = serde_json::to_string(&report_at(3, 100)).expect("write");
+    assert!(!json.contains("halted"), "{json}");
+}

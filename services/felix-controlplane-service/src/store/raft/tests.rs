@@ -458,3 +458,103 @@ async fn a_zone_is_kept_only_once_every_member_has_zones() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
+
+/// A member before halted copies would drop them from a report it applies.
+/// So while one is in the group the report is recorded without them, and it
+/// is not refused: placement needs the rest of it. Once every member has the
+/// level, halts are kept.
+#[tokio::test]
+async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
+    use crate::model::{
+        HaltedCopy, ReplicaReport, ShardAssignment, ShardKey, ShardKind, ShardState,
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 3).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (id, port) in [("broker-x", 7101), ("broker-y", 7102)] {
+        store
+            .register_node(crate::store::contract::nodes::node(id, port))
+            .await
+            .expect("register");
+    }
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let assigned = store
+        .put_shard_assignment(ShardAssignment {
+            key: key.clone(),
+            leader: "broker-x".to_string(),
+            replicas: vec!["broker-y".to_string()],
+            generation: 0,
+            state: ShardState::Active,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+        })
+        .await
+        .expect("assign");
+    let report = ReplicaReport {
+        key: key.clone(),
+        generation: assigned.generation,
+        caught_up: Default::default(),
+        offsets: Default::default(),
+        reported_at_millis: 1,
+        drained: false,
+        leader_offset: None,
+        halted: [(
+            "broker-y".to_string(),
+            HaltedCopy {
+                reason: "diverged".to_string(),
+                generation: assigned.generation,
+                since_millis: 1,
+            },
+        )]
+        .into(),
+    };
+    let held = || async {
+        store
+            .list_replica_reports()
+            .await
+            .expect("reports")
+            .into_iter()
+            .find(|held| held.key == key)
+            .expect("the report was recorded")
+    };
+
+    assert_eq!(
+        store
+            .record_replica_report(report.clone(), "broker-x")
+            .await
+            .expect("recorded without the halts"),
+        crate::store::ReportWrite::Stored
+    );
+    assert!(held().await.halted.is_empty());
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        store
+            .record_replica_report(report.clone(), "broker-x")
+            .await
+            .expect("record");
+        if held().await.halted.contains_key("broker-y") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "halts still dropped after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}

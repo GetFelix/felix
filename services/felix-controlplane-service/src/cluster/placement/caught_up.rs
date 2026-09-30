@@ -1,6 +1,6 @@
 //! What placement may assume about how much of a shard's log each replica
 //! holds.
-use crate::model::ShardKey;
+use crate::model::{HaltedCopy, ShardKey};
 
 /// Which replicas hold enough of a shard's log to lead it.
 ///
@@ -54,6 +54,29 @@ pub trait CaughtUp {
     /// no move times out.
     fn as_of_millis(&self) -> Option<u64> {
         None
+    }
+
+    /// Whether the last report for `key` names `node_id`'s copy halted,
+    /// whatever generation it was reported at. A node that has just been
+    /// dropped from the set for a halt is still listed; see
+    /// [`ReplicaReport::carry_halts`](crate::model::ReplicaReport::carry_halts).
+    fn halted(&self, _key: &ShardKey, _node_id: &str) -> Option<&HaltedCopy> {
+        None
+    }
+
+    /// [`Self::halted`], only where the leader at `generation` reported it:
+    /// a member of that generation's replica set that has stopped following.
+    fn halted_at(&self, key: &ShardKey, node_id: &str, generation: u64) -> Option<&HaltedCopy> {
+        self.halted(key, node_id)
+            .filter(|halt| halt.generation == generation)
+    }
+
+    /// [`Self::halted`], where the halt still speaks for a member of the set
+    /// at `generation`: reported at it, or carried into it from one of the
+    /// generations just before and not yet contradicted.
+    fn halted_member(&self, key: &ShardKey, node_id: &str, generation: u64) -> Option<&HaltedCopy> {
+        self.halted(key, node_id)
+            .filter(|halt| halt.holds_at(generation))
     }
 }
 

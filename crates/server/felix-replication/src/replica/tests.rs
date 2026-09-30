@@ -332,6 +332,35 @@ mod bootstrap {
         assert_eq!(log.base_offset(), BASE);
     }
 
+    /// **An empty log already open still takes the offer.** A new copy is
+    /// opened at 0 by the leader's first batch before the leader learns it
+    /// needs placing; it holds nothing, so there is nothing to refuse for.
+    #[tokio::test]
+    async fn an_empty_log_already_open_is_placed_at_the_offered_base() {
+        let (broker, _dir) = broker_with_storage().await;
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+        broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("an empty log at 0");
+
+        let answer = handler
+            .bootstrap(offer(4, BASE), felix_broker::LogKind::Stream)
+            .await;
+
+        match answer {
+            InternalMessage::ReplicateOk(ok) => assert_eq!(ok.durable_offset, BASE),
+            other => panic!("expected an acknowledgement, got {:?}", other.kind()),
+        }
+        let answer = handler
+            .apply(batch(4, BASE, &["a"]), felix_broker::LogKind::Stream)
+            .await;
+        match answer {
+            InternalMessage::ReplicateOk(ok) => assert_eq!(ok.durable_offset, BASE + 1),
+            other => panic!("expected an acknowledgement, got {:?}", other.kind()),
+        }
+    }
+
     /// Records shipped after a bootstrap land at the leader's offsets, which is
     /// the whole point of placing the log rather than starting at zero.
     #[tokio::test]

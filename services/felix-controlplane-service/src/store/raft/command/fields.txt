@@ -263,6 +263,11 @@
 3 import_state.state.replica_reports[].caught_up
 3 import_state.state.replica_reports[].drained
 3 import_state.state.replica_reports[].generation
+4 import_state.state.replica_reports[].halted
+4 import_state.state.replica_reports[].halted.*
+4 import_state.state.replica_reports[].halted.*.generation
+4 import_state.state.replica_reports[].halted.*.reason
+4 import_state.state.replica_reports[].halted.*.since_millis
 3 import_state.state.replica_reports[].key
 3 import_state.state.replica_reports[].key.kind
 3 import_state.state.replica_reports[].key.namespace
@@ -480,6 +485,11 @@
 0 record_replica_report.report.caught_up
 0 record_replica_report.report.drained
 0 record_replica_report.report.generation
+4 record_replica_report.report.halted
+4 record_replica_report.report.halted.*
+4 record_replica_report.report.halted.*.generation
+4 record_replica_report.report.halted.*.reason
+4 record_replica_report.report.halted.*.since_millis
 0 record_replica_report.report.key
 0 record_replica_report.report.key.kind
 0 record_replica_report.report.key.namespace
@@ -709,6 +719,11 @@
 3 snapshot.state.replica_reports[].caught_up
 3 snapshot.state.replica_reports[].drained
 3 snapshot.state.replica_reports[].generation
+4 snapshot.state.replica_reports[].halted
+4 snapshot.state.replica_reports[].halted.*
+4 snapshot.state.replica_reports[].halted.*.generation
+4 snapshot.state.replica_reports[].halted.*.reason
+4 snapshot.state.replica_reports[].halted.*.since_millis
 3 snapshot.state.replica_reports[].key
 3 snapshot.state.replica_reports[].key.kind
 3 snapshot.state.replica_reports[].key.namespace

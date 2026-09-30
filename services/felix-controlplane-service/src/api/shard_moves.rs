@@ -13,8 +13,9 @@ use crate::api::AppState;
 use crate::api::error::{ApiError, api_conflict, api_error, api_internal};
 use crate::api::nodes::require_cluster_node_view;
 use crate::api::types::{
-    PlacementPlanResponse, PlacementStatusResponse, PlannedShard, ShardMove, ShardMoveListResponse,
-    ShardMoveRequest, ShardMoveResponse, ShardMoveStep, ShardReplication, ShardReplicationResponse,
+    HaltedReplica, PlacementPlanResponse, PlacementStatusResponse, PlannedShard, ShardMove,
+    ShardMoveListResponse, ShardMoveRequest, ShardMoveResponse, ShardMoveStep, ShardReplication,
+    ShardReplicationResponse,
 };
 use crate::auth::bearer::require_cluster_action;
 use crate::auth::rbac::authorize::ACTION_NODE_MANAGE;
@@ -329,6 +330,7 @@ pub(crate) async fn shard_replication(
         &read.caches,
         &read.nodes,
         &read.existing,
+        &read.positions,
     );
     let under_replicated = shards.iter().filter(|s| s.under_replicated()).count();
     let items = shards
@@ -341,6 +343,16 @@ pub(crate) async fn shard_replication(
             desired_replicas: shard.desired,
             current_replicas: shard.current,
             unavailable: shard.unavailable,
+            halted: shard
+                .halted
+                .into_iter()
+                .map(|(node_id, halt)| HaltedReplica {
+                    node_id,
+                    reason: halt.reason,
+                    generation: halt.generation,
+                    since_millis: halt.since_millis,
+                })
+                .collect(),
             restoring: shard.restoring,
         })
         .collect();

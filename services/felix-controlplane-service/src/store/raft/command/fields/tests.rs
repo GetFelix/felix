@@ -188,6 +188,11 @@ fn report() -> ReplicaReport {
         reported_at_millis: 1,
         drained: true,
         leader_offset: Some(1),
+        halted: any_map(crate::model::HaltedCopy {
+            reason: s("diverged"),
+            generation: 1,
+            since_millis: 1,
+        }),
     }
 }
 

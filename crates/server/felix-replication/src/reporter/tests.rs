@@ -67,6 +67,7 @@ fn report(stream: &str) -> ShardReport {
         offsets: vec![("broker-b".to_string(), 10)],
         drained: false,
         tail: 0,
+        halted: Vec::new(),
     }
 }
 
@@ -226,6 +227,30 @@ fn a_follower_that_has_not_answered_yet_is_not_reported_as_close() {
         report.offsets.is_empty(),
         "an unheard follower was reported"
     );
+}
+
+/// A halted follower is named with its reason, so placement can keep copies
+/// off it. A fenced halt is this leader's own problem and is not.
+#[test]
+fn a_halted_follower_is_reported_with_its_reason() {
+    let addr: std::net::SocketAddr = "10.0.0.1:7000".parse().expect("addr");
+    let mut diverged = FollowerCursor::new("broker-b", addr, 9);
+    diverged.halted = Some(crate::Halt::Diverged);
+    let mut bootstrap = FollowerCursor::new("broker-c", addr, 3);
+    bootstrap.halted = Some(crate::Halt::NeedsBootstrap);
+    let mut fenced = FollowerCursor::new("broker-d", addr, 9);
+    fenced.halted = Some(crate::Halt::Fenced);
+    let key = report("orders").key;
+
+    let report = shard_report(&key, 4, 10, 10, &[diverged, bootstrap, fenced], false);
+    assert_eq!(
+        report.halted,
+        vec![
+            ("broker-b".to_string(), "diverged"),
+            ("broker-c".to_string(), "needs_bootstrap"),
+        ]
+    );
+    assert!(report.offsets.is_empty());
 }
 
 /// A control plane that stores reports for streams named `led-*` and refuses

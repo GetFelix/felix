@@ -364,9 +364,69 @@ pub struct ReplicaReport {
     /// it; placement then waits for an exact catch-up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leader_offset: Option<u64>,
+    /// Copies of this shard replication has stopped for, by node. Absent from
+    /// brokers that predate it, which is read as nothing halted.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub halted: BTreeMap<String, HaltedCopy>,
+}
+
+/// A copy of a shard its leader has stopped shipping to.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct HaltedCopy {
+    /// The broker's reason: `diverged` or `needs_bootstrap`.
+    pub reason: String,
+    /// The generation the leader last reported it halted at. Older than the
+    /// report's own while it is carried; see [`ReplicaReport::carry_halts`].
+    pub generation: u64,
+    /// The store's clock when a report first named it halted.
+    pub since_millis: u64,
+}
+
+/// How many generations a halt outlives the last report that named it,
+/// unless the node is caught up meanwhile.
+///
+/// Every assignment write is a new generation, and a leader's cursors start
+/// over at each one: the first reports at a new generation can show a halted
+/// follower answering before the leader has found it halted again. Two covers
+/// the placement write that follows a halt and the one after it.
+pub(crate) const HALT_CARRIED_GENERATIONS: u64 = 2;
+
+impl HaltedCopy {
+    /// Whether this halt still speaks for the node's copy at `generation`.
+    pub fn holds_at(&self, generation: u64) -> bool {
+        self.generation <= generation && generation - self.generation <= HALT_CARRIED_GENERATIONS
+    }
 }
 
 impl ReplicaReport {
+    /// Fill in what the store knows about this report's halts from the
+    /// report it replaces.
+    ///
+    /// A halt keeps the time it was first reported, so placement can tell how
+    /// long a copy has been stuck. One an earlier generation reported stays
+    /// listed for [`HALT_CARRIED_GENERATIONS`] unless this report has the node
+    /// caught up: a new generation's first reports may not have found it
+    /// halted again yet, and a node just dropped from the set for a halt must
+    /// not be picked again by the pass that replaces it.
+    pub fn carry_halts(&mut self, held: &BTreeMap<String, HaltedCopy>) {
+        for (node, halt) in &mut self.halted {
+            halt.since_millis = held
+                .get(node)
+                .map_or(self.reported_at_millis, |earlier| earlier.since_millis);
+        }
+        let carried: Vec<(String, HaltedCopy)> = held
+            .iter()
+            .filter(|(node, halt)| {
+                !self.halted.contains_key(*node)
+                    && !self.caught_up.contains(*node)
+                    && halt.generation < self.generation
+                    && halt.holds_at(self.generation)
+            })
+            .map(|(node, halt)| (node.clone(), halt.clone()))
+            .collect();
+        self.halted.extend(carried);
+    }
+
     /// Whether this report may replace `held` in the store.
     ///
     /// Reports only move forward: a later generation, or at the same one a

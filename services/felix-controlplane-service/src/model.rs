@@ -21,8 +21,8 @@ pub use node::{
     NodeStatus, NodeValidationError,
 };
 pub use shard::{
-    MoveReason, ReplicaReport, ShardAssignment, ShardAssignmentChange, ShardAssignmentChangeOp,
-    ShardKey, ShardKind, ShardState, ShardValidationError,
+    HaltedCopy, MoveReason, ReplicaReport, ShardAssignment, ShardAssignmentChange,
+    ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, ShardValidationError,
 };
 pub(crate) use stream::default_replication_factor;
 pub use stream::{

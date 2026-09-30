@@ -12,7 +12,7 @@ use super::rendezvous::{choose_replicas, promote, score};
 use super::restore::{newcomer, restore, restore_step};
 use super::zones::{Domain, domain, domain_of, keep_spread};
 use super::{Blocked, CaughtUp, Decision, MoveStep};
-use crate::model::{MoveReason, Node, ShardAssignment, ShardKey, ShardState};
+use crate::model::{HaltedCopy, MoveReason, Node, ShardAssignment, ShardKey, ShardState};
 
 /// One at a time, like the broker's rebuild limit: a move is a full copy of
 /// a shard's log.
@@ -52,8 +52,9 @@ pub struct MovePolicy {
     /// How long a move may copy before the fence, or a replacement before it
     /// has caught up, before it is abandoned. `None` never gives up.
     pub timeout_millis: Option<u64>,
-    /// How long a follower's broker must have been down or gone before
-    /// placement replaces the copy it held, restoring the replication factor.
+    /// How long a follower's broker must have been down or gone, or its copy
+    /// reported halted, before placement replaces the copy it held, restoring
+    /// the replication factor.
     /// `None` never replaces one; a replica set short of the factor is still
     /// topped up.
     pub restore_after_millis: Option<u64>,
@@ -207,6 +208,15 @@ pub(super) fn move_step<'a>(
             .map(|node| node.node_id.as_str())
     };
     let started = caught_up.as_of_millis();
+    // A copy in this generation's set that its leader has stopped shipping to
+    // will never catch up, so a move waiting on it is given up.
+    let halted_now = |node: &str| {
+        caught_up
+            .halted_at(key, node, existing.generation)
+            .map(|halt| halt.reason.clone())
+    };
+    // Kept off as a destination, as of any report still believed.
+    let is_halted = |node: &str| caught_up.halted(key, node).is_some();
 
     if existing.state == ShardState::Draining {
         // No timeout from here. The leader has stopped serving, and going
@@ -218,13 +228,16 @@ pub(super) fn move_step<'a>(
             // died first never will be: drop it, still fenced, and the leader
             // reports drained against the followers it has. The cut-over then
             // picks one of them, or hands the shard back to the leader.
-            if let Some(successor) = existing.successor.as_deref().filter(|s| !is_live(s)) {
+            // A halted one never will either.
+            if let Some(successor) = existing
+                .successor
+                .as_deref()
+                .filter(|s| !is_live(s) || halted_now(s).is_some())
+            {
                 let mut replicas = existing.replicas.clone();
                 replicas.retain(|replica| replica != successor);
                 return Decision::Move(
-                    MoveStep::Abandon {
-                        successor: successor.to_string(),
-                    },
+                    given_up(successor, halted_now(successor)),
                     ShardAssignment {
                         successor: None,
                         replicas,
@@ -290,15 +303,14 @@ pub(super) fn move_step<'a>(
     }
 
     if let Some(successor) = existing.successor.as_deref() {
-        if !is_live(successor) {
-            // Gone before it led. Undone rather than waited out, or the move
-            // holds its slot for as long as the node is away.
+        let halted = halted_now(successor);
+        if !is_live(successor) || halted.is_some() {
+            // Gone or halted before it led. Undone rather than waited out, or
+            // the move holds its slot until it times out.
             let mut replicas = existing.replicas.clone();
             replicas.retain(|replica| replica != successor);
             return Decision::Move(
-                MoveStep::Abandon {
-                    successor: successor.to_string(),
-                },
+                given_up(successor, halted),
                 ShardAssignment {
                     successor: None,
                     move_started_at_millis: None,
@@ -333,6 +345,18 @@ pub(super) fn move_step<'a>(
     }
 
     if let Some(joining) = existing.joining.as_deref() {
+        if let Some(reason) = halted_now(joining) {
+            return Decision::Move(
+                MoveStep::Halted {
+                    successor: joining.to_string(),
+                    reason,
+                },
+                ShardAssignment {
+                    move_started_at_millis: None,
+                    ..undo_replacement(existing, joining)
+                },
+            );
+        }
         if existing.move_reason == Some(MoveReason::Restore) {
             return restore_step(
                 existing,
@@ -366,6 +390,7 @@ pub(super) fn move_step<'a>(
             replication_factor,
             eligible,
             is_lost,
+            &is_halted,
             caught_up,
             load,
             moves,
@@ -380,20 +405,28 @@ pub(super) fn move_step<'a>(
         // Draining: a caught-up live replica under its share is cheapest, the
         // copy already exists; otherwise the bounded choice, or any live node
         // with room.
-        promote_under_share(key, existing, eligible, caught_up, leaders, leader_share).or_else(
-            || {
-                choose_destination(
-                    key,
-                    existing,
-                    replication_factor,
-                    eligible,
-                    leaders,
-                    load,
-                    leader_share,
-                    false,
-                )
-            },
+        promote_under_share(
+            key,
+            existing,
+            eligible,
+            &is_halted,
+            caught_up,
+            leaders,
+            leader_share,
         )
+        .or_else(|| {
+            choose_destination(
+                key,
+                existing,
+                replication_factor,
+                eligible,
+                &is_halted,
+                leaders,
+                load,
+                leader_share,
+                false,
+            )
+        })
     } else if leader_live && over_share {
         // Only from over share to under share, so moves converge instead of
         // trading shards back and forth.
@@ -402,6 +435,7 @@ pub(super) fn move_step<'a>(
             existing,
             replication_factor,
             eligible,
+            &is_halted,
             leaders,
             load,
             leader_share,
@@ -434,8 +468,45 @@ pub(super) fn move_step<'a>(
                 start(existing, destination, reason, caught_up, started, moves);
             Decision::Move(step, assignment)
         }
-        None if !leader_live => Decision::Waiting(Blocked::NoDestination),
-        None => reseat(key, existing, eligible, is_draining, caught_up, load, moves),
+        None if !leader_live => Decision::Waiting(
+            // Say so when a halted copy is what stands in the way, since that
+            // is something an operator can act on.
+            eligible
+                .iter()
+                .filter(|node| node.node_id != leader)
+                .find_map(|node| {
+                    caught_up
+                        .halted(key, &node.node_id)
+                        .map(|halt| Blocked::DestinationHalted {
+                            node: node.node_id.clone(),
+                            reason: halt.reason.clone(),
+                        })
+                })
+                .unwrap_or(Blocked::NoDestination),
+        ),
+        None => reseat(
+            key,
+            existing,
+            eligible,
+            is_draining,
+            &is_halted,
+            caught_up,
+            load,
+            moves,
+        ),
+    }
+}
+
+/// The step that drops a destination that stopped being live, or halted.
+fn given_up(successor: &str, halted: Option<String>) -> MoveStep {
+    match halted {
+        Some(reason) => MoveStep::Halted {
+            successor: successor.to_string(),
+            reason,
+        },
+        None => MoveStep::Abandon {
+            successor: successor.to_string(),
+        },
     }
 }
 
@@ -528,6 +599,7 @@ fn reseat<'a>(
     existing: &ShardAssignment,
     eligible: &[&'a Node],
     is_draining: &dyn Fn(&str) -> bool,
+    is_halted: &dyn Fn(&str) -> bool,
     caught_up: &dyn CaughtUp,
     load: &mut HashMap<&'a str, u32>,
     moves: &mut Moves,
@@ -540,7 +612,14 @@ fn reseat<'a>(
         return Decision::Kept;
     };
     // Swapped only when someone can take its place; dropping it costs a copy.
-    let (widening, best) = newcomer(key, existing, eligible, load, Some(departing.as_str()));
+    let (widening, best) = newcomer(
+        key,
+        existing,
+        eligible,
+        is_halted,
+        load,
+        Some(departing.as_str()),
+    );
     // A crowded follower is only worth a copy if the shard gains a zone.
     let replacement = match draining {
         Some(_) => widening.or(best),
@@ -758,6 +837,7 @@ fn promote_under_share<'a>(
     key: &ShardKey,
     existing: &ShardAssignment,
     eligible: &[&'a Node],
+    is_halted: &dyn Fn(&str) -> bool,
     caught_up: &dyn CaughtUp,
     leaders: &HashMap<&str, u32>,
     leader_share: u32,
@@ -765,6 +845,7 @@ fn promote_under_share<'a>(
     let under_share: Vec<&'a Node> = eligible
         .iter()
         .copied()
+        .filter(|node| !is_halted(&node.node_id))
         .filter(|node| leaders.get(node.node_id.as_str()).copied().unwrap_or(0) < leader_share)
         .collect();
     promote(key, existing, &under_share, caught_up)
@@ -784,6 +865,7 @@ fn choose_destination<'a>(
     existing: &ShardAssignment,
     replication_factor: u32,
     eligible: &[&'a Node],
+    is_halted: &dyn Fn(&str) -> bool,
     leaders: &HashMap<&str, u32>,
     load: &HashMap<&str, u32>,
     leader_share: u32,
@@ -795,6 +877,7 @@ fn choose_destination<'a>(
         .iter()
         .copied()
         .filter(|node| node.node_id != existing.leader)
+        .filter(|node| !is_halted(&node.node_id))
         .filter(|node| match node.spec.capacity.max_shards {
             Some(max) => {
                 existing.replicas.contains(&node.node_id)
@@ -921,5 +1004,11 @@ impl CaughtUp for AtGeneration<'_> {
 
     fn as_of_millis(&self) -> Option<u64> {
         self.inner.as_of_millis()
+    }
+
+    // Not held to the generation: a copy that halted under the previous one
+    // is no better a destination for this one.
+    fn halted(&self, key: &ShardKey, node_id: &str) -> Option<&HaltedCopy> {
+        self.inner.halted(key, node_id)
     }
 }

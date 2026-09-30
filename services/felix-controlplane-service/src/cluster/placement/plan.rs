@@ -27,6 +27,9 @@ pub struct Plan {
     pub under_replicated: Vec<ShardKey>,
     /// The copies those shards are missing between them.
     pub missing_copies: u32,
+    /// Seated copies their leader reports halted. Counted in
+    /// `missing_copies` too.
+    pub halted_copies: u32,
 }
 
 impl Plan {
@@ -164,7 +167,18 @@ pub(super) fn plan_abandoning(
             }
         }
     };
-    let found = replication(streams, caches, nodes, existing);
+    // A follower its leader has reported halted for as long: out of every
+    // quorum, and replaced the same way. The wait gives the leader's own
+    // rebuild the chance to bring it back first.
+    let is_halted_lost = |existing: &ShardAssignment, id: &str| {
+        let (Some(after), Some(now)) = (restore_after, now) else {
+            return false;
+        };
+        caught_up
+            .halted_member(&existing.key, id, existing.generation)
+            .is_some_and(|halt| now.saturating_sub(halt.since_millis) >= after)
+    };
+    let found = replication(streams, caches, nodes, existing, caught_up);
     let under_replicated: Vec<ShardKey> = found
         .iter()
         .filter(|shard| shard.under_replicated())
@@ -174,6 +188,7 @@ pub(super) fn plan_abandoning(
         .iter()
         .map(|shard| shard.desired.saturating_sub(shard.current))
         .sum();
+    let halted_copies = found.iter().map(|shard| shard.halted.len() as u32).sum();
 
     let current: HashMap<&ShardKey, &ShardAssignment> =
         existing.iter().map(|a| (&a.key, a)).collect();
@@ -257,7 +272,9 @@ pub(super) fn plan_abandoning(
             .map_or(1, |p| p.replication_factor);
         current.get(key).map_or(0, |existing| {
             start_order(existing, &is_live, &is_draining, &|existing| {
-                restore::wanted(existing, replication_factor, &is_lost)
+                restore::wanted(existing, replication_factor, &|id| {
+                    is_lost(id) || is_halted_lost(existing, id)
+                })
             })
         })
     };
@@ -301,6 +318,7 @@ pub(super) fn plan_abandoning(
             && is_serving(&existing.leader)
             && (durable || is_live(&existing.leader))
         {
+            let is_lost = |id: &str| is_lost(id) || is_halted_lost(existing, id);
             let decision = move_step(
                 &key,
                 existing,
@@ -433,6 +451,7 @@ pub(super) fn plan_abandoning(
         unspread,
         under_replicated,
         missing_copies,
+        halted_copies,
     }
 }
 

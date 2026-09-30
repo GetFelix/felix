@@ -237,6 +237,7 @@ fn a_report_body_is_the_shape_the_control_plane_parses() {
             }],
             drained: false,
             leader_offset: Some(44),
+            halted: Vec::new(),
         }],
     };
 

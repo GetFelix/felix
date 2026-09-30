@@ -4,6 +4,7 @@ mod abandon;
 mod caches;
 mod departed;
 mod failover;
+mod halted;
 mod lease;
 mod moves;
 mod operator;

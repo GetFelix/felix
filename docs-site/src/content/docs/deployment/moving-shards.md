@@ -51,15 +51,19 @@ felix-controlplane admin replication
 ```
 
 ```text
-SHARD           LEADER    COPIES  UNAVAILABLE  RESTORING
-t1/ns/orders/0  broker-1  2/3     broker-2     broker-4
-t1/ns/orders/3  broker-3  2/3     broker-2     -
+SHARD           LEADER    COPIES  UNAVAILABLE  HALTED                      RESTORING
+t1/ns/orders/0  broker-1  2/3     broker-2     -                           broker-4
+t1/ns/orders/3  broker-3  2/3     -            broker-2 (needs_bootstrap)  -
 ```
 
 The shards with fewer copies on serving brokers than their replication factor.
 `COPIES` is current over desired. A copy being added does not count until it
-is seated. `UNAVAILABLE` lists members whose broker is not serving, and
-`RESTORING` is the broker a copy is going to. `--json` prints the full listing
+is seated. `UNAVAILABLE` lists members whose broker is not serving. `HALTED`
+lists members whose broker is serving but whose leader has stopped shipping to
+them, with the reason: `diverged` (its bytes disagree with the leader's) or
+`needs_bootstrap` (it needs records the leader's retention has removed). A
+halted copy is in no quorum, so it does not count either. `RESTORING` is the
+broker a copy is going to. `--json` prints the full listing
 from `GET /v1/placement/replication`, every shard included.
 
 Placement fills these in on its own. Once a follower's broker has been down or
@@ -72,6 +76,17 @@ same write. If the broker being copied to fails, the copy is dropped and
 another broker is picked. If the lost broker comes back first, its copy is
 kept and the new one dropped. Restores take move slots after drains and before
 rebalancing, and `pause` stops new ones.
+
+A halted copy is replaced the same way once it has been halted for the restore
+delay. The wait gives its leader time to rebuild it, which usually clears the
+halt on its own; `GET /replication/halted` on the leader's metrics listener
+says what the leader is doing about it. Placement never picks a broker whose
+copy of the shard is halted as a destination, and a move whose destination
+halts is given up and started again elsewhere: `plan` and the logs show the
+step as `halted`. Moving a shard onto a halted copy by hand is refused with
+`destination_halted`. If a drain has nowhere to go but a halted copy, `plan`
+says `no live node can take this shard: the copy on broker-2 is halted
+(diverged)`.
 
 A shard that stays in this list past the delay has nowhere to go. Every live
 broker outside its set may be at `max_shards` or in a region the stream may not

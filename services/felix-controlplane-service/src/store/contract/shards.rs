@@ -149,6 +149,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     a_replacement_in_progress_is_persisted(store).await;
     replica_reports::a_drained_report_is_kept(store).await;
     replica_reports::the_leader_offset_is_kept(store).await;
+    replica_reports::halted_copies_are_kept_with_when_they_began(store).await;
     a_conditional_write_lands_only_at_the_expected_generation(store).await;
     a_fence_planned_before_a_cut_over_is_refused_after_it(store).await;
     why_a_move_started_is_persisted(store).await;

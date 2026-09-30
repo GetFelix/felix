@@ -315,14 +315,28 @@ impl ReplicaHandler {
             return refusal;
         }
 
-        let base = log.base_offset();
-        let tail = match log.tail_offset().await {
+        let mut base = log.base_offset();
+        let mut tail = match log.tail_offset().await {
             Ok(tail) => tail,
             Err(err) => {
                 metrics::record_replicated(metrics::OUTCOME_ERROR);
                 return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
             }
         };
+
+        // An empty log has nothing to keep, so it moves to the leader's base.
+        // A new copy of a trimmed shard is usually one: the leader's first
+        // batch opened it at 0 before the leader found it needed this offer.
+        // Refused, it would wait for a rebuild slot, or for ever with none.
+        if tail == base && base < request.base_offset {
+            if let Err(err) = log.rebuild_at(request.base_offset).await {
+                metrics::record_replicated(metrics::OUTCOME_ERROR);
+                return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
+            }
+            self.reset_stream_tail(&key, log_kind, request.base_offset)
+                .await;
+            (base, tail) = (request.base_offset, request.base_offset);
+        }
 
         // What matters is whether the two logs meet, not whether they start in
         // the same place. Retention and cache compaction trim brokers at their
