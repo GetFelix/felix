@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790801193550,
+  "lastUpdate": 1790801411302,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -26466,6 +26466,72 @@ window.BENCHMARK_DATA = {
             "range": "1750.50",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1416.00\nmean: 1905.80\nstdev: 1750.50\ncv: 91.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8f8e26eb7c8f80969a21eb9a4025b67286e36fab",
+          "message": "test(history): adversarial nemesis and liveness checks (#879)\n\n* test(history): adversarial nemesis and liveness checks\n\nThe history campaign now has a second nemesis, RandomNemesis::adversarial,\nrun on four brokers. It injects compound faults: two brokers killed at\nonce, a leader isolated from its peers and the control plane until the\ncontrol plane fails it over, a partition beside a delayed link, two random\nfaults together, a move whose source or destination is killed 300ms in, a\nrestart loop, a torn segment write, and a drain that replaces follower\ncopies on the spare broker.\n\nAfter every heal the campaign checks liveness: within 60s each workload\nshard must have a running leader that takes a probe append or answers a\nprobe get, no move or follower replacement in flight, a replica reported\ncaught up at its generation, and no halted replica. Otherwise the run\nstops with one line per stuck shard naming what it is stuck in. The probes\nare recorded in the history, so the checker holds them to its rules.\n\nEvery campaign test now also requires at least five appends acknowledged\nat a known offset (atomic commits), so the acknowledged-offset rule is\nexercised. Publish acks carry no offset yet (#876).\n\nFELIX_HISTORY_NEMESIS picks the nemesis for long runs, and the nightly\nworkflow runs both. The per-PR round-robin over the compound kinds is\nignored until #873 lands.\n\nPart of #846\n\nSpec-Unaffected: test harness, CI workflow and docs only; no broker, replication or control-plane code changes.\n\n* test(history): run the adversarial round-robin on PRs now that #873 is in\n\n* ci(history): a seed replay no longer cancels a fresh-seed run on the same branch",
+          "timestamp": "2026-09-30T13:46:53-07:00",
+          "tree_id": "035d396bd1cb48248261698b7a0d07428d99031a",
+          "url": "https://github.com/gabloe/felix/commit/8f8e26eb7c8f80969a21eb9a4025b67286e36fab"
+        },
+        "date": 1790801407542,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 104,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 104.00\nmean: 103.80\nstdev: 0.45\ncv: 0.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 139,
+            "range": "34.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 139.00\nmean: 155.60\nstdev: 34.13\ncv: 21.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 181,
+            "range": "66.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 223.60\nstdev: 66.31\ncv: 29.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 136,
+            "range": "7.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 136.00\nmean: 139.80\nstdev: 7.53\ncv: 5.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 275,
+            "range": "215.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 275.00\nmean: 371.20\nstdev: 215.17\ncv: 57.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 383,
+            "range": "779.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 383.00\nmean: 735.40\nstdev: 779.70\ncv: 106.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
