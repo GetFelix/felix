@@ -8,7 +8,7 @@ use felix_wire::internal::{
     ShardRef, batch_checksum,
 };
 
-use super::follower::{FollowerCursor, Halt};
+use super::follower::{FollowerCursor, Halt, RebuildBackoff};
 use super::metrics;
 use super::rebuild::{Rebuild, Rebuilds, offer_bootstrap, request_rebuild};
 use crate::peer::{PeerError, PeerRequester};
@@ -53,12 +53,16 @@ pub async fn ship_once_with<R: PeerRequester>(
     commit_offset: Option<u64>,
 ) -> Progress {
     if let Some(halt) = cursor.halted {
-        if !halt.rebuildable() || cursor.rebuild_refused || !rebuilds.try_begin() {
+        let backing_off = cursor
+            .rebuild_refused
+            .is_some_and(|backoff| tokio::time::Instant::now() < backoff.retry_at);
+        if !halt.rebuildable() || backing_off || !rebuilds.try_begin() {
             return Progress::Halted(halt);
         }
         match request_rebuild(requester, log, shard, log_kind, cursor).await {
             Rebuild::Accepted { base_offset } => {
                 cursor.halted = None;
+                cursor.rebuild_refused = None;
                 cursor.next_offset = base_offset;
                 cursor.confirmed = 0;
                 cursor.rebuilding = true;
@@ -78,7 +82,10 @@ pub async fn ship_once_with<R: PeerRequester>(
                 return Progress::Halted(halt);
             }
             Rebuild::Refused => {
-                cursor.rebuild_refused = true;
+                cursor.rebuild_refused = Some(RebuildBackoff::after(
+                    cursor.rebuild_refused,
+                    tokio::time::Instant::now(),
+                ));
                 rebuilds.finish();
                 metrics::record_rebuild(metrics::OUTCOME_REBUILD_REFUSED);
                 return Progress::Halted(halt);
@@ -167,8 +174,7 @@ pub async fn ship_once_with<R: PeerRequester>(
         commit_offset: commit_offset.filter(|_| !cursor.legacy_frames),
         // Without them the follower labels the records with this leader's
         // generation, including any this leader inherited. Only a stream
-        // log's labels are compared by a fence; the other logs' histories are
-        // not recorded on the leader, so labels from it would say nothing.
+        // log's labels are compared by a fence, so the other logs go without.
         generations: (!cursor.legacy_frames
             && log_kind == felix_broker::LogKind::Stream
             && requester

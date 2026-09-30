@@ -92,8 +92,8 @@ pub(super) enum Rebuild {
     Accepted { base_offset: u64 },
     /// Not answered. Asked again next pass.
     Unreachable,
-    /// Answered no, or with something that was not an answer. Not asked again
-    /// at this generation.
+    /// Answered no, or with something that was not an answer. Asked again
+    /// after a backoff; see [`crate::RebuildBackoff`].
     Refused,
 }
 

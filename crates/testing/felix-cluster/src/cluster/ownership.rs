@@ -67,6 +67,23 @@ impl Cluster {
             .await
     }
 
+    /// [`Self::replica_report`] for shard `shard` of cache `cache`.
+    pub async fn cache_replica_report(
+        &self,
+        cache: &str,
+        shard: u32,
+    ) -> Result<Option<felix_controlplane_service::model::ReplicaReport>> {
+        self.control_plane()
+            .replica_report_of(
+                felix_controlplane_service::model::ShardKind::Cache,
+                &self.tenant_id,
+                &self.namespace,
+                cache,
+                shard,
+            )
+            .await
+    }
+
     /// Who owns each shard of `stream`, by shard index.
     ///
     /// The point of a multi-shard test: a stream placed across brokers has

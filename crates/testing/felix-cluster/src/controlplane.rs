@@ -404,6 +404,25 @@ impl ControlPlane {
         stream: &str,
         shard: u32,
     ) -> Result<Option<felix_controlplane_service::model::ReplicaReport>> {
+        self.replica_report_of(
+            felix_controlplane_service::model::ShardKind::Stream,
+            tenant_id,
+            namespace,
+            stream,
+            shard,
+        )
+        .await
+    }
+
+    /// [`Self::replica_report`] for a shard of either kind.
+    pub async fn replica_report_of(
+        &self,
+        kind: felix_controlplane_service::model::ShardKind,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+    ) -> Result<Option<felix_controlplane_service::model::ReplicaReport>> {
         Ok(self
             .store
             .list_replica_reports()
@@ -411,10 +430,10 @@ impl ControlPlane {
             .context("list replica reports")?
             .into_iter()
             .find(|report| {
-                report.key.kind == felix_controlplane_service::model::ShardKind::Stream
+                report.key.kind == kind
                     && report.key.tenant_id == tenant_id
                     && report.key.namespace == namespace
-                    && report.key.stream == stream
+                    && report.key.stream == name
                     && report.key.shard == shard
             }))
     }

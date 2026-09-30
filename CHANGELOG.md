@@ -655,6 +655,20 @@ for what the current release guarantees.
   promoted leader that gets a new generation while still fencing also keeps
   replication paused until it reopens, rather than shipping its unfenced log
   at the old generation in between.
+- **A cache leader that loses its leadership rejoins as a follower (#863).**
+  Cache leaders now record where their generation began, on the cache and
+  counter logs, and accept the generation on both. Before, a cache leader that
+  died holding a record no majority had came back with no generation history,
+  halted on that record, and refused the new leader's rebuild for the rest of
+  the generation, so a later drain could wait out the 30-minute move timeout.
+  A rebuild now keeps the follower's records below its commit offset and drops
+  only what lies past them; the leader re-ships from its base, so those records
+  are compared as they arrive, and a committed record that disagrees halts
+  loudly (`below_commit`) and refuses further rebuilds from that leader. A
+  refused rebuild is asked again after a backoff (5 s, doubling, capped at
+  5 min) instead of never. `FollowerCursor::rebuild_refused` is now an
+  `Option<RebuildBackoff>`. See `docs/replication-design.md`, "Rebuilding a
+  halted follower".
 
 - **A `Quorum` failover keeps its replica set.** Failover used to rebuild the
   followers from live brokers, dropping the dead leader and adding a broker

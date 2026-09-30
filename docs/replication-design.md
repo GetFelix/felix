@@ -784,7 +784,19 @@ two records) behind its own (generation 2, one record), so x2 is never taken
 `a_follower_keeps_the_generation_a_record_was_written_at`).
 
 So a stream shard's batch carries the labels; the shard's other logs are not
-compared by a fence, and their leader keeps no history of its own to send.
+compared by a fence, so their batches carry only the sender's generation.
+
+**Every leader records where its generation began.** A stream leader does it
+when its shard opens or its fence completes. A cache leader records it on the
+cache log and the counter log when the shard opens, and accepts the generation
+on both, since caches are never fenced. Without that record, a cache leader
+that died holding a record no majority had came back as a follower with no
+history at all. Its divergence at that record then looked like one that could
+reach anywhere, so it halted instead of dropping the record, and it refused the
+rebuild that followed because the rebuild would have discarded its committed
+records too (#863). A cache log written before this change still has no
+history; the rebuild below keeps its committed records, so it rejoins that way
+instead.
 `ReplicateLabelledRecords` is a replication batch with the sender's history
 over its records: the generation the first
 record belongs to, and every later one that starts by the batch's end, which
@@ -1263,13 +1275,28 @@ same fence applies as to storing records: a superseded leader cannot make a
 follower discard anything, which is the most damage a stale leader could do and
 the one thing the check most has to stop.
 
-A follower also refuses a rebuild that would discard a record it holds below its
-commit offset and at or above the leader's base. Those records were acknowledged
-on a majority; a leader asking to replace them may not hold them, and this copy
-may be the last. The halt stands for an operator, and the refusal counts as
-`below_commit`. Records below the leader's base are gone from the leader
-already, so a follower that is merely too far behind (`needs_bootstrap`) is
-rebuilt as before.
+**A rebuild never discards a record below the follower's commit offset.**
+Those records were acknowledged on a majority; a leader asking to replace them
+may not hold them, and this copy may be the last. So when the leader's base is
+below the follower's commit offset, the follower keeps everything below the
+commit offset, drops only what lies past it, and answers with the base as
+usual. The leader then ships from the base, and every kept record is compared
+byte for byte with the leader's before anything lands after it. When they
+agree, which is the normal case, the follower is level and was never at risk.
+When a committed record disagrees, that is a real fault: the follower halts
+with an error and counts it as `below_commit`, and refuses any further rebuild
+from that generation's leader with the same error and count, rather than
+repeating the transfer. Records below the leader's base are gone from the
+leader already, so a follower that is merely too far behind
+(`needs_bootstrap`) is rebuilt as before.
+
+**A refused rebuild is asked again after a backoff**, not left for the rest of
+the generation: 5 seconds after the first refusal, doubling with each refusal
+in a row, up to 5 minutes. A refusal can stop being true: the follower may have
+been upgraded, or have an operator's repair behind it. Asking again is safe
+because a rebuild either keeps the follower's committed records or refuses.
+The backoff lives on the leader's cursor for the follower, so a leader restart
+or a new generation starts it over, which costs one early request.
 
 It happens under a policy, because a rebuild is a full transfer of the shard,
 and every halted follower at once, across every shard a failed broker led, is

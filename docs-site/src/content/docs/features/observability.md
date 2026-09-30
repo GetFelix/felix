@@ -254,8 +254,14 @@ curl -s http://broker:8080/replication/halted | jq
 ]
 ```
 
-A halt does not clear on its own. That replica is out of every quorum until
-someone acts, so any non-zero count is worth waking for. `reason` is stable
+A halt that a rebuild cannot resolve does not clear on its own. That replica is
+out of every quorum until someone acts, so a count that stays non-zero is worth
+waking for. A rebuild keeps the follower's committed records, so the one a
+follower refuses is from a leader that disagreed with one of them: the
+follower's log says so at `ERROR` ("refusing to rebuild"), and
+`felix_broker_replicated_total{outcome="below_commit"}` counts it. The leader
+asks again after a backoff that grows to 5 minutes, so an entry that clears
+after an upgrade or a repair needs nothing more. `reason` is stable
 and safe to key a runbook off; `remedy` is prose and says whether the
 follower's data is wrong or merely incomplete, which is what decides whether a
 rebuild is the right move.
