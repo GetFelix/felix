@@ -536,3 +536,104 @@ async fn the_catch_up_wait_does_not_end_while_every_follower_is_behind() {
     );
     driver.stop().await;
 }
+
+/// **A new `Quorum` cache leader names no follower missing the counter adds
+/// it inherited.** Its counter mark counts nothing at the new generation
+/// until a majority answers, and an earlier leader may have acknowledged any
+/// of those adds. A cache promotion is never fenced, so a follower promoted
+/// without them loses them from the sum.
+#[tokio::test]
+async fn a_new_cache_leader_names_no_follower_missing_inherited_counters() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    let counters_store = Arc::new(
+        felix_storage::CounterStore::open(dir.path().join("counters"), config.clone())
+            .expect("counters"),
+    );
+    let broker = Arc::new(
+        Broker::new(Box::new(
+            felix_storage::LogCache::open(dir.path().join("caches"), config.clone())
+                .expect("cache"),
+        ))
+        .with_durable_storage(
+            DurableStorage::open(dir.path().join("streams"), config).expect("storage"),
+        )
+        .with_counters(Arc::clone(&counters_store)),
+    );
+    broker.register_tenant(TENANT).await.expect("tenant");
+    broker
+        .register_namespace(TENANT, NAMESPACE)
+        .await
+        .expect("namespace");
+    broker
+        .register_cache(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            felix_broker::CacheMetadata {
+                consistency: felix_broker::ConsistencyLevel::Quorum,
+            },
+        )
+        .await
+        .expect("cache");
+    counters_store
+        .add(TENANT, NAMESPACE, STREAM, 0, "hits", 5)
+        .await
+        .expect("add");
+    // Generation 4 began here after the add: the add was inherited. The
+    // cache log itself is empty, so only the counters can hold the follower
+    // back.
+    for kind in [
+        felix_broker::LogKind::Cache,
+        felix_broker::LogKind::Counters,
+    ] {
+        let log = broker
+            .shard_log(kind, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log");
+        let tail = log.tail_offset().await.expect("tail");
+        log.record_generation(4, tail).expect("record");
+    }
+
+    let cache = ShardKey {
+        kind: felix_router::ShardKind::Cache,
+        ..key()
+    };
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    ));
+    let nodes = nodes();
+    router.publish(
+        RoutingTable::build_with(
+            [felix_router::Placed {
+                key: cache,
+                leader: LOCAL.to_string(),
+                replicas: vec!["broker-b".to_string(), "broker-c".to_string()],
+                generation: 4,
+                draining: false,
+                successor: None,
+                routing: Default::default(),
+            }],
+            &nodes,
+        ),
+        &nodes,
+    );
+    let follower = AuxRefusingFollower::default();
+    follower.refusing.store(true, SeqCst);
+    let mut cursors = AllCursors::default();
+
+    let reports = aux_pass(&follower, &broker, &router, &mut cursors).await;
+    let report = reports.last().expect("a report");
+    assert!(
+        report.caught_up.is_empty(),
+        "followers without the inherited counter add were offered for promotion: {:?}",
+        report.caught_up,
+    );
+}

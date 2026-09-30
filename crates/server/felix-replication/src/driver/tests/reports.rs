@@ -475,6 +475,14 @@ async fn pass_with_a_publish_behind_the_report(
 #[tokio::test]
 async fn a_quorum_follower_holding_every_acknowledged_record_can_lead() {
     let (broker, _dir) = registered_leader(3, felix_broker::ConsistencyLevel::Quorum).await;
+    // It wrote every record itself. With no recorded start the whole log
+    // would count as inherited, and nobody short of the tail is named.
+    broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .record_generation(4, 0)
+        .expect("record");
     let marks = QuorumMarks::new();
 
     let report = pass_with_a_publish_behind_the_report(&broker, &marks).await;
@@ -505,4 +513,74 @@ async fn a_leader_stream_follower_missing_the_newest_record_cannot_lead() {
         "the publish should have landed after shipping"
     );
     assert!(report.caught_up.is_empty());
+}
+
+/// A `Quorum` leader of `records` at generation 4, which began at `records`:
+/// every record it holds was inherited from an earlier leader.
+async fn inheriting_leader(records: usize) -> (Arc<Broker>, TempDir) {
+    let (broker, dir) = registered_leader(records, felix_broker::ConsistencyLevel::Quorum).await;
+    broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .record_generation(4, records as u64)
+        .expect("record");
+    (broker, dir)
+}
+
+/// **A new leader names no follower that has not shown it holds what the
+/// leader inherited.** Nothing of the new generation is counted yet, so the
+/// mark bounds nothing, and an earlier leader may have acknowledged any of
+/// the inherited records. A follower named before it answered could be
+/// promoted without them, and on a promotion that is not fenced they are
+/// gone.
+#[tokio::test]
+async fn a_new_leader_names_no_follower_before_it_answers() {
+    let (broker, _dir) = inheriting_leader(3).await;
+    let requester = UnreachableFollowers {
+        handshake: Duration::from_millis(20),
+    };
+
+    let pass = replicate_once(
+        &requester,
+        &broker,
+        &router(LOCAL, &["broker-b", "broker-c"], 4),
+        &QuorumMarks::new(),
+        None,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+    )
+    .await;
+
+    let report = pass.reports.last().expect("a report");
+    assert!(
+        report.caught_up.is_empty(),
+        "followers that never answered were offered for promotion: {:?}",
+        report.caught_up,
+    );
+}
+
+/// The same leader names a follower once it answers holding the inherited
+/// log.
+#[tokio::test]
+async fn a_new_leader_names_a_follower_holding_what_it_inherited() {
+    let (broker, _dir) = inheriting_leader(3).await;
+
+    let pass = replicate_once(
+        &AcceptingFollower::default(),
+        &broker,
+        &router(LOCAL, &["broker-b"], 4),
+        &QuorumMarks::new(),
+        None,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+    )
+    .await;
+
+    let report = pass.reports.last().expect("a report");
+    assert_eq!(report.caught_up, vec!["broker-b".to_string()]);
 }

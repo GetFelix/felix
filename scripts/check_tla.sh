@@ -108,6 +108,8 @@ expectations=(
   "FelixShardNoReportOrder violates AckedSurvive"
   "FelixShardReportAtTail violates QuorumReportNamesASuccessor"
   "FelixShardReportUnpaired violates AckedSurvive"
+  "FelixShardReportFromAnswers violates AckedSurvive"
+  "FelixShardReportFloor pass"
   "FelixShard pass"
   "FelixShardHandoff pass"
   "FelixShardHandoffNoWait violates AtMostOneServing"

@@ -971,6 +971,33 @@ the promotion fence, to the first replication pass.
 A halted follower is never reported, however close its last position was. It has
 stopped rather than fallen behind.
 
+**A new leader names nobody short of the log it inherited.** At a new
+generation nothing is counted until a majority holds a record of that
+generation, so the offset a majority holds is 0 and says nothing about the
+records the leader inherited. An earlier leader may have acknowledged any of
+them. Measured against 0, the first report named every follower, including
+ones that had not answered yet and ones that lacked those records. Two
+failovers in quick succession could then lose an acknowledged record: A
+acknowledges a record on A and B while C lags, A dies and B is promoted, B
+reports before C answers and names C, B dies, and C is promoted without the
+record. So wherever promotion trusts the report, the bound is never below
+where the leader's generation begins in its own log, or its whole log if no
+start was recorded. A cache's counter log gets the same floor. A stream shard
+that acknowledges by its followers skips it, because its promoted leader
+fences a majority and takes the furthest log before it serves.
+
+The cost is availability. Right after a failover no follower is named until
+one has copied everything the new leader inherited, including a tail the old
+leader wrote but never acknowledged. A new leader that dies in that window
+leaves the shard unplaced until a broker holding the log returns, where
+before a follower could have been promoted at once. In issue 878 broker-2 held
+every acknowledged record but not the old leader's unacknowledged tail, and
+with the floor it would not have been named until it had copied that tail.
+`FelixShardReportFromAnswers.cfg` counts followers by their answers without
+the floor and loses the record, and `FelixShardReportFloor.cfg` passes
+(`a_new_leader_names_no_follower_before_it_answers`,
+`a_new_cache_leader_names_no_follower_missing_inherited_counters`).
+
 The last report is the one promotion reads, so a leader that stops on purpose
 has to make it a good one. A stopping broker stops taking forwarded writes,
 ships until each shard it leads has a follower level with it, and only then
@@ -1045,8 +1072,9 @@ the leader and the leaving follower alone. If the newcomer is seated before it
 holds that record, and the leader then dies, the newcomer and the lagging
 follower are a majority of the new set and the next leader opens without it.
 Placement used to seat once the newcomer was within the move lag bound, or once
-a report named it caught up, and a leader names every follower caught up at a
-new generation until something is counted there. So on a durable `Quorum`
+a report named it caught up, and a leader acknowledging by its followers names
+every follower caught up at a new generation until something is counted there.
+So on a durable `Quorum`
 stream the seat now waits, on a report at the joining generation, until the
 newcomer holds at least what a majority of the set it joined holds, counting a
 member the report leaves out as level with the leader
