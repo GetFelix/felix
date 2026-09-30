@@ -658,6 +658,16 @@ pub trait ShardStore: Send + Sync {
     }
 }
 
+/// Where a reader of a shard this broker stopped serving resumes: nowhere
+/// named, so the client finds the shard again through its entry broker.
+fn no_owner(generation: u64) -> felix_broker::ShardHandoff {
+    felix_broker::ShardHandoff {
+        node_id: None,
+        addr: None,
+        generation,
+    }
+}
+
 /// Ends the readers of a released shard, for the stores that serve them.
 #[derive(Clone)]
 pub struct ShardReaders {
@@ -682,8 +692,8 @@ impl ShardReaders {
         self
     }
 
-    /// End the readers of every shard this broker serves, each time the
-    /// lease lapses, until `shutdown`.
+    /// End the readers of the shards this broker may no longer serve, until
+    /// `shutdown`.
     ///
     /// A lapsed lease means another broker may lead these shards by now, so a
     /// reader here could be following a log the new leader has moved past.
@@ -693,31 +703,97 @@ impl ShardReaders {
     /// back (`redirect_for`). What a `Quorum` stream held back stays held: if
     /// the lease is renewed at the same generation the mark releases it, and
     /// if the shard goes, releasing it drops it.
-    pub async fn end_on_lapse(
+    ///
+    /// A shard whose sessions need no lease ([`ShardFence::sessions_lease_free`])
+    /// is left serving at the lapse. Its readers end instead when a follower
+    /// refuses it for a newer leader ([`ShardFence::depose`]), or when no
+    /// majority has confirmed it for a lease duration. The rounds that check
+    /// run only while the lease is lapsed; while it holds, a new assignment
+    /// reaches this broker the usual way.
+    ///
+    /// [`ShardFence::sessions_lease_free`]: fence::ShardFence::sessions_lease_free
+    /// [`ShardFence::depose`]: fence::ShardFence::depose
+    pub async fn watch_leadership(
         self,
-        lease: Arc<crate::cluster::lease::LeaseState>,
+        fence: Arc<fence::ShardFence>,
+        marks: Arc<felix_replication::quorum::QuorumMarks>,
         lifecycle: Arc<tokio::sync::Mutex<ShardLifecycle>>,
         shutdown: tokio_util::sync::CancellationToken,
     ) {
+        let Some(lease) = fence.lease().cloned() else {
+            return;
+        };
+        // Lease-free shards kept serving past the lapse, and when a majority
+        // last confirmed each.
+        let mut unleased: HashMap<ShardKey, (u64, tokio::time::Instant)> = HashMap::new();
         loop {
+            let probe = (lease.usable() / 4).max(std::time::Duration::from_millis(100));
             tokio::select! {
                 _ = shutdown.cancelled() => return,
-                _ = lease.lapsed() => {}
+                _ = lease.lapsed() => {
+                    let led: Vec<(ShardKey, u64)> = {
+                        let lifecycle = lifecycle.lock().await;
+                        lifecycle
+                            .active()
+                            .filter_map(|key| Some((key.clone(), lifecycle.generation(key)?)))
+                            .collect()
+                    };
+                    let now = tokio::time::Instant::now();
+                    for (key, generation) in led {
+                        if fence.sessions_lease_free(&key, generation) {
+                            unleased.entry(key).or_insert((generation, now));
+                        } else {
+                            self.end(&key, Some(no_owner(generation)), false).await;
+                        }
+                    }
+                }
+                _ = fence.deposed() => {
+                    for (key, generation) in fence.take_deposals() {
+                        unleased.remove(&key);
+                        let current = lifecycle.lock().await.generation(&key);
+                        if current == Some(generation) {
+                            self.end(&key, Some(no_owner(generation)), false).await;
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(probe), if !unleased.is_empty() => {
+                    if lease.is_valid_now() {
+                        unleased.clear();
+                        continue;
+                    }
+                    self.probe(&fence, &marks, &mut unleased, lease.usable()).await;
+                }
             }
-            let led: Vec<(ShardKey, u64)> = {
-                let lifecycle = lifecycle.lock().await;
-                lifecycle
-                    .active()
-                    .filter_map(|key| Some((key.clone(), lifecycle.generation(key)?)))
-                    .collect()
+        }
+    }
+
+    /// One round for each lease-free shard kept past the lapse. A shard no
+    /// majority has confirmed for `silence` is deposed, which ends its readers
+    /// on the next turn of [`Self::watch_leadership`].
+    async fn probe(
+        &self,
+        fence: &fence::ShardFence,
+        marks: &felix_replication::quorum::QuorumMarks,
+        unleased: &mut HashMap<ShardKey, (u64, tokio::time::Instant)>,
+        silence: std::time::Duration,
+    ) {
+        let check = marks.reads_by_round();
+        let rounds = unleased.iter().map(|(key, (generation, _))| async move {
+            let confirmed = match check {
+                Some(check) => check.confirm(key, *generation).await.is_ok(),
+                None => false,
             };
-            for (key, generation) in led {
-                let to = felix_broker::ShardHandoff {
-                    node_id: None,
-                    addr: None,
-                    generation,
-                };
-                self.end(&key, Some(to), false).await;
+            (key.clone(), confirmed)
+        });
+        let now = tokio::time::Instant::now();
+        for (key, confirmed) in futures::future::join_all(rounds).await {
+            let Some((generation, heard)) = unleased.get_mut(&key) else {
+                continue;
+            };
+            if confirmed {
+                *heard = now;
+            } else if now.saturating_duration_since(*heard) >= silence {
+                fence.depose(&key, *generation);
             }
         }
     }

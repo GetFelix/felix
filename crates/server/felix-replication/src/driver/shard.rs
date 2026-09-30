@@ -306,6 +306,18 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     if by_followers {
         fence.serve_without_lease(mark_key, route.generation);
     }
+    if quorum_shard && marks.reads_by_round().is_some() {
+        fence.sessions_without_lease(mark_key, route.generation);
+    }
+    // Read from the cursors the last pass left: a follower halted this way
+    // stays halted until the assignment changes.
+    if entry
+        .followers
+        .iter()
+        .any(|cursor| cursor.halted == Some(crate::Halt::Fenced))
+    {
+        fence.deposed(mark_key, route.generation);
+    }
     let held_offset = |tail: u64, followers: &[FollowerCursor]| {
         let held = if by_followers {
             // Read after the tail, which `held_at_generation` relies on.

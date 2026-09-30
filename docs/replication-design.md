@@ -537,7 +537,8 @@ What is left on the lease:
 - **Stream readers** (subscriptions, replay, group polls, Kafka fetches) and
   cache watches still stop at the lease. They never see a record past the
   quorum mark, so what they deliver is never taken back; the lease is what
-  moves them off a leader that has lost the shard.
+  moves them off a leader that has lost the shard. The next section is the
+  design for taking them, and consumer-group writes, off the lease.
 
 **Across versions: the `lease_free_reads` fleet feature.** The round is the
 existing `Fence`, so nothing on the wire changes. A broker reports the
@@ -545,6 +546,116 @@ feature only when it fences (`FELIX_INTERNAL_FENCE` not `false`), because the
 argument rests on every newer leader fencing before it serves; and only this
 build refuses a cache round on its counter log's generation. Until the
 feature is finalized every read is on the lease, as before.
+
+### Readers and group sessions without the lease
+
+Built once the fleet finalizes `lease_free_reads` (#885), for replicated
+`Quorum` shards, and not for a broker started with `FELIX_QUORUM_READS=lease`.
+
+On the lease, a lapse ends every subscription and cache watch on the broker,
+refuses new ones (`redirect_for`), makes the committed mark answer `Refused`
+to every reader (`committed_bound`), and refuses every consumer-group write
+(`require_lease`). A leader cut off from the control plane but not from its
+replicas would keep its writes and its `Quorum` reads and still drop all its
+readers and group consumers. On a lease-free shard none of that happens.
+
+The replication driver marks such a shard in its write fence on each pass
+(`WriteFence::sessions_without_lease`), and the broker reads that mark in
+`redirect_for`, in the group path and in `ShardReaders::watch_leadership`.
+`committed_bound` decides the same from the marks: the fleet reads by round,
+and the stream's mark was decided by its followers, or the shard is a cache.
+
+**What a subscriber needs.** It must never see a record that is later lost,
+it must see records in offset order, and a record it misses must show up as
+a gap in the offsets. The last two hold without any leader check, because
+delivery is by offset. The first is what the committed mark gives. A `Quorum`
+shard hands out nothing past it (`CommitHold`), and under follower acks the
+mark covers only records a majority held at the leader's generation, which
+every later leader holds at the same offsets. That is as true on a deposed
+leader as on a current one. A deposed leader's mark stops moving because no
+majority answers it any more, so its readers see less, never something
+wrong. A reader's safety needs neither the lease nor a round.
+
+A cache's mark is not decided by its followers: it moves only once the control
+plane has stored a report naming who holds the records, and promotion picks
+from those reports. A deposed cache leader cannot move it without the control
+plane, so its watches get the same promise. The model covers the stream case.
+
+For readers the lease only provides liveness: it moves them off a leader that
+has lost the shard. Without it the broker learns another way:
+
+- A replica that accepted a newer generation refuses the leader's ships with
+  `FencedEpoch`, and the follower's cursor halts (`Halt::Fenced`). The driver
+  reports it (`WriteFence::deposed`), and the first report at a generation
+  ends the shard's readers the way a move does: each gets the offset to resume
+  from and no named owner, and the client finds the shard again. From then on
+  the shard's readers need the lease again, so a broker that has lost it
+  refuses new ones.
+- The new assignment reaching the broker does the same, as it always has.
+- A leader that hears from no majority for a lease duration ends its readers
+  too. A shard with nothing to ship exchanges nothing with its followers, so
+  while the lease is lapsed the broker runs a round for each such shard every
+  quarter lease, and treats a lease duration without a confirmed round as a
+  deposal. That is the only clock left, and it decides only when a quiet feed
+  gives up, never what it delivers. While the lease holds no rounds run: a new
+  assignment reaches the broker the usual way.
+
+A `Latest` subscription on a deposed leader starts at that leader's mark,
+which may be behind the real tail. That errs on the safe side: the reader may
+see records it could have skipped, and misses none. No round is taken at
+subscribe time.
+
+**What a group write needs.** Group state (a poll's claims, acks, nacks,
+dead-letter changes) is acknowledged on the leader's own durability and
+replicated behind it. A failover that loses the unshipped tail redelivers
+those records, and that stays as it is. What must not happen is a coordinator
+acknowledging a group write after a newer coordinator has opened, because
+then two coordinators of one group are both handing out claims and taking
+acks. The lease prevents that only while the clocks keep their margins.
+
+So each group write is confirmed the way a `Quorum` read is. Once the write
+is durable here, the broker runs the same `ReadIndex` round at the shard's
+generation, and answers the client only once a majority has taken it
+(`Owned::confirm` in `serving/group_ops.rs`). Concurrent group writes of a
+shard share rounds, as reads do. A refused round answers the client with
+`leadership_lost`. It does not end the readers by itself, because a round
+that timed out looks the same as one that was refused; the ship refusal or
+the silence above does that. A deposal does not put group writes back on the
+lease either: they keep going to the round, which is what refuses them.
+
+A poll whose round is refused has already recorded its claims. They were never
+handed out, so they lapse and are delivered again, as after any failover.
+
+The alternative was to acknowledge group state on a majority. That would stop
+the redelivery after a failover, but the promotion fence catches up only the
+stream's own log, so a new leader could open without a group write a majority
+held. The fence would have to carry the group logs' tails too, which is a
+separate change.
+
+**What the lease still does**:
+
+- It gates `Leader` shards and unreplicated shards, which have no majority to
+  ask.
+- It gates reads under `FELIX_QUORUM_READS=lease`.
+- It gates writes to caches, and cache watches only where the fleet does not
+  read by round. Kafka produce goes through the shard fence like a native
+  publish, so a `majority_ack` shard takes Kafka writes without the lease.
+- It sets the control plane's wait before it promotes, which decides how soon
+  a failover starts but not whether it is safe.
+
+**The model.** `docs/formal/FelixShardSessions.tla` extends
+`FelixShardReads.tla` with a subscriber and a group write, on
+`FelixShardReadsRound.cfg`'s writes and clocks: follower acks, the promotion
+fence, the start record, drifting clocks and no margin. The subscriber reads
+in offset order from any broker that believes it leads, and resumes at its
+next offset when it moves. `NoLostDelivery` says every record it was handed
+is at its offset in the current leader's log. `NoStaleGroupCommit` says no
+group write is acknowledged at a generation older than one that had opened
+before the write began. `FelixShardSessionsSubscriber.cfg` and
+`FelixShardSessionsGroupRound.cfg` pass. `FelixShardSessionsPastMark.cfg`
+delivers past the mark, `FelixShardSessionsGroupNoRound.cfg` acknowledges on
+belief alone and `FelixShardSessionsGroupLease.cfg` on the lease, and TLC
+finds the violation in each.
 
 ### The clock assumption, stated precisely
 

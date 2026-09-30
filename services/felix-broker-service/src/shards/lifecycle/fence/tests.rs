@@ -177,3 +177,37 @@ async fn a_shard_acknowledging_by_its_followers_admits_without_the_lease() {
     fence.open(&cache, 1);
     assert_eq!(fence.admit(&cache, 1).err(), Some(Fenced::LeaseLapsed));
 }
+
+/// Sessions go on without the lease at the generation the driver named, until
+/// this broker learns it was deposed there. The first deposal at a generation
+/// is queued once.
+#[tokio::test]
+async fn sessions_leave_the_lease_until_the_shard_is_deposed() {
+    use felix_replication::driver::WriteFence;
+
+    let fence = ShardFence::default();
+    let stream = key(ShardKind::Stream);
+    assert!(!fence.sessions_lease_free(&stream, 1), "never opened");
+    fence.open(&stream, 1);
+    assert!(!fence.sessions_lease_free(&stream, 1), "not named yet");
+
+    fence.sessions_without_lease(&stream, 1);
+    assert!(fence.sessions_lease_free(&stream, 1));
+    assert!(!fence.sessions_lease_free(&stream, 2), "another generation");
+
+    WriteFence::deposed(&fence, &stream, 1);
+    WriteFence::deposed(&fence, &stream, 1);
+    assert!(!fence.sessions_lease_free(&stream, 1));
+    assert!(
+        fence.confirms_by_round(&stream, 1),
+        "group writes still go to the round, which refuses them"
+    );
+    fence.deposed().await;
+    assert_eq!(fence.take_deposals(), vec![(stream.clone(), 1)]);
+    assert!(fence.take_deposals().is_empty(), "queued once");
+
+    // A deposal at the old generation says nothing about the next one.
+    fence.open(&stream, 2);
+    fence.sessions_without_lease(&stream, 2);
+    assert!(fence.sessions_lease_free(&stream, 2));
+}

@@ -253,7 +253,6 @@ where
         listeners::KafkaClusterView {
             ingress: &ingress_router,
             client_endpoints: &client_endpoints,
-            lease: &lease,
             quorum_marks: &quorum_marks,
             quotas: &limits.tenant_rates,
         },

@@ -747,9 +747,10 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
 /// [`read_bound`] with two more answers. `Settling` while this broker leads
 /// the shard but has no mark for its generation: zero would tell a new reader
 /// to start at the beginning of the log. `Refused` once it may not serve the
-/// shard at all -- its lease lapsed, or the shard is led elsewhere -- so a
-/// reader waiting on the mark stops and resumes where the shard is served.
-/// Only asked for `Quorum` shards.
+/// shard at all -- the shard is led elsewhere, or its lease lapsed on a
+/// shard that still needs it ([`sessions_skip_lease`]) -- so a reader
+/// waiting on the mark stops and resumes where the shard is served. Only
+/// asked for `Quorum` shards.
 pub fn committed_bound<S: ShardServing + ?Sized>(
     key: &crate::ShardKey,
     marks: &QuorumMarks,
@@ -762,13 +763,27 @@ pub fn committed_bound<S: ShardServing + ?Sized>(
     let Some(generation) = ingress.generation(key) else {
         return ReadBound::Refused;
     };
-    if !ingress.lease_valid() {
+    if !sessions_skip_lease(key, generation, marks) && !ingress.lease_valid() {
         return ReadBound::Refused;
     }
     match marks.offset(key, generation) {
         Some(mark) => ReadBound::Committed(mark),
         None => ReadBound::Settling,
     }
+}
+
+/// Whether readers of `key` at `generation` may go on past a lapsed lease:
+/// the fleet reads by round, and the mark is one a deposed leader cannot
+/// overstate. A stream's mark must have been decided by its followers at this
+/// generation, which every later leader's fence takes up. A cache's mark is
+/// released only on a report the control plane stored, which promotion reads.
+///
+/// Delivery up to the mark needs no leader check; the lease only moved
+/// readers off a leader that lost the shard. See "Readers and group sessions
+/// without the lease" in `docs/replication-design.md`.
+fn sessions_skip_lease(key: &crate::ShardKey, generation: u64, marks: &QuorumMarks) -> bool {
+    marks.reads_by_round().is_some()
+        && (key.kind == crate::ShardKind::Cache || marks.decided_by_followers(key, generation))
 }
 
 /// [`committed_bound`] for the broker core's stream readers.

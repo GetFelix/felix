@@ -19,8 +19,8 @@
 //! a lapsed lease refuse all of them rather than whichever paths remembered to
 //! ask. See "Leases" in `docs/replication-design.md`. The exception is a
 //! `Quorum` stream shard whose acknowledgements its followers decide: its
-//! writes get in without the lease, and only group state still asks for it
-//! ([`ShardFence::require_lease`]).
+//! writes get in without the lease. Its group state does too once the fleet
+//! reads by round, confirmed by a round instead ([`ShardFence::sessions_lease_free`]).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst};
@@ -50,6 +50,10 @@ pub struct ShardFence {
     /// `Active`; kept here so replication, which runs the fence, can read it
     /// without the lifecycle's lock.
     promotions: RwLock<HashMap<ShardKey, u64>>,
+    /// Shards found deposed at a generation, not yet taken by
+    /// [`Self::take_deposals`].
+    deposals: parking_lot::Mutex<Vec<(ShardKey, u64)>>,
+    deposal: Notify,
 }
 
 impl ShardFence {
@@ -147,6 +151,55 @@ impl ShardFence {
         self.check_lease()
     }
 
+    /// Whether `key`'s readers at `generation` go on without the lease:
+    /// [`Self::confirms_by_round`], and this broker has not learned it was
+    /// deposed at that generation.
+    pub fn sessions_lease_free(&self, key: &ShardKey, generation: u64) -> bool {
+        self.confirms_by_round(key, generation)
+            && self
+                .gates
+                .read()
+                .get(key)
+                .is_some_and(|gate| gate.deposed_at.load(SeqCst) != generation)
+    }
+
+    /// Whether `key` at `generation` is a replicated `Quorum` shard in a fleet
+    /// that reads by round, so a group write confirms leadership by a round
+    /// before it is acknowledged instead of asking for the lease. Holds on a
+    /// deposed broker too: its round is refused, which is the answer.
+    pub fn confirms_by_round(&self, key: &ShardKey, generation: u64) -> bool {
+        self.gates
+            .read()
+            .get(key)
+            .is_some_and(|gate| gate.sessions_free_at.load(SeqCst) == generation)
+    }
+
+    /// Note that `key` has a newer leader than `generation`, or that no
+    /// majority answered this broker for a lease duration. Its sessions stop
+    /// going on without the lease, and the first report at a generation is
+    /// queued for [`Self::take_deposals`].
+    pub fn depose(&self, key: &ShardKey, generation: u64) {
+        let Some(gate) = self.gates.read().get(key).cloned() else {
+            return;
+        };
+        if gate.deposed_at.swap(generation, SeqCst) == generation {
+            return;
+        }
+        self.deposals.lock().push((key.clone(), generation));
+        self.deposal.notify_one();
+    }
+
+    /// Resolves once a deposal is queued, or at once if one was queued with
+    /// no one waiting.
+    pub async fn deposed(&self) {
+        self.deposal.notified().await;
+    }
+
+    /// The deposals queued since the last call.
+    pub fn take_deposals(&self) -> Vec<(ShardKey, u64)> {
+        std::mem::take(&mut *self.deposals.lock())
+    }
+
     fn check_lease(&self) -> Result<(), Fenced> {
         if self.lease_valid() {
             Ok(())
@@ -193,6 +246,16 @@ impl felix_replication::driver::WriteFence for ShardFence {
         if let Some(gate) = self.gates.read().get(key) {
             gate.lease_free_at.store(generation, SeqCst);
         }
+    }
+
+    fn sessions_without_lease(&self, key: &ShardKey, generation: u64) {
+        if let Some(gate) = self.gates.read().get(key) {
+            gate.sessions_free_at.store(generation, SeqCst);
+        }
+    }
+
+    fn deposed(&self, key: &ShardKey, generation: u64) {
+        self.depose(key, generation);
     }
 }
 
@@ -291,6 +354,11 @@ struct Gate {
     /// The generation whose writes need no lease, or [`CLOSED`]: see
     /// [`felix_replication::driver::WriteFence::serve_without_lease`].
     lease_free_at: AtomicU64,
+    /// The generation whose readers and group sessions need no lease, or
+    /// [`CLOSED`]: see [`ShardFence::sessions_lease_free`].
+    sessions_free_at: AtomicU64,
+    /// The generation this broker learned it was deposed at, or [`CLOSED`].
+    deposed_at: AtomicU64,
     in_flight: AtomicUsize,
     idle: Notify,
 }
@@ -300,6 +368,8 @@ impl Default for Gate {
         Self {
             open_at: AtomicU64::new(CLOSED),
             lease_free_at: AtomicU64::new(CLOSED),
+            sessions_free_at: AtomicU64::new(CLOSED),
+            deposed_at: AtomicU64::new(CLOSED),
             in_flight: AtomicUsize::new(0),
             idle: Notify::new(),
         }

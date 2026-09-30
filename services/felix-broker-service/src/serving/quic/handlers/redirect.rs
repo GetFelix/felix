@@ -11,7 +11,11 @@ use crate::serving::quic::client_error::ClientError;
 ///
 /// A shard this broker owns but whose lease has lapsed is refused like a
 /// write: another broker may be leading it, and a reader here would follow a
-/// log that one has moved past. The refusal is retryable.
+/// log that one has moved past. The refusal is retryable. A shard whose
+/// readers need no lease ([`ShardFence::sessions_lease_free`]) is served
+/// anyway: they only ever see its committed mark.
+///
+/// [`ShardFence::sessions_lease_free`]: crate::shards::lifecycle::fence::ShardFence::sessions_lease_free
 ///
 /// A redirect needs the owner's *client-facing* address, which is a different
 /// listener from the one brokers forward to each other on and is known only
@@ -47,8 +51,10 @@ pub(crate) fn redirect_for(
     };
 
     let dispatched = dispatch(ingress, &key);
-    if matches!(dispatched, crate::shards::routing::Dispatch::Local { .. })
-        && ingress.is_some_and(|ingress| !ingress.fence().lease_valid())
+    if let crate::shards::routing::Dispatch::Local { generation } = dispatched
+        && ingress.is_some_and(|ingress| {
+            !ingress.fence().lease_valid() && !ingress.fence().sessions_lease_free(&key, generation)
+        })
     {
         use crate::cluster::lease::metrics;
         metrics::record_refusal(metrics::BOUNDARY_READ);

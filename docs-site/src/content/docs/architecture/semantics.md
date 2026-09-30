@@ -153,8 +153,14 @@ lease.
 
 **With `lease_free_reads` finalized** as well, a get or counter get on a
 replicated `Quorum` cache confirms leadership with a round instead of the
-lease; [Cache Semantics](#consistency-model) describes it. Stream readers and
-cache watches keep the lease. A cache write the owner's storage refuses is
+lease; [Cache Semantics](#consistency-model) describes it. Subscriptions,
+replay, Kafka fetches and cache watches on a replicated `Quorum` shard no
+longer stop when the lease lapses: they only ever see the committed mark, which
+a replaced leader cannot overstate. They end when the broker learns it was
+replaced (a replica refuses it for a newer leader) or when no majority has
+confirmed it for a lease duration. A consumer-group poll, ack, nack or
+dead-letter change on such a shard is confirmed by the same round before it is
+acknowledged, so a replaced coordinator cannot acknowledge one. A cache write the owner's storage refuses is
 answered as an error and never acknowledged, so a read cannot miss a write it
 was told succeeded.
 
@@ -440,8 +446,10 @@ brokers' clocks. Once an operator finalizes `lease_free_reads` (with
 confirms instead with one round of fences at the owner's generation, answered
 by a majority after the read began. That makes the read linearizable without
 relying on clocks. Setting `FELIX_QUORUM_READS=lease` on a broker keeps its
-reads on the lease. Writes and cache watches keep the lease in every mode:
-`majority_ack` applies to `Quorum` streams only.
+reads on the lease. Cache writes keep the lease in every mode: `majority_ack`
+applies to `Quorum` streams only. Cache watches on a replicated `Quorum` cache
+keep going through a lapsed lease once `lease_free_reads` is finalized, since
+they deliver only what the control plane has recorded as committed.
 
 At every level one owner applies each key's changes in order, so there are no
 torn writes. Not provided:
@@ -662,7 +670,15 @@ In a clustered deployment:
 
 - Broker continues serving with cached metadata
 - New stream creation fails
-- Existing streams continue operating
+- Its lease lapses after the control plane's expiry window. From then on it
+  refuses writes to `Leader` streams and caches, and ends their readers, since
+  another broker may lead those shards by now
+- With `majority_ack` finalized, a replicated `Quorum` stream keeps taking
+  writes, acknowledged by its followers. With `lease_free_reads` as well, its
+  subscribers, cache watches and consumer groups keep going: they end only
+  once a replica refuses the broker for a newer leader, or no majority has
+  confirmed it for a lease duration, and clients then find the new leader as
+  they do after a move
 - Broker reconciles when connection restored
 
 ### Broker Failure
