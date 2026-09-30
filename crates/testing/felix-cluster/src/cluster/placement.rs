@@ -312,6 +312,44 @@ impl Cluster {
             .collect())
     }
 
+    /// Every shard's placement, with what a liveness check needs to say why
+    /// a shard is stuck: the transition it is in, and whether its leader has
+    /// reported a caught-up replica at the current generation.
+    pub(crate) async fn shard_statuses(&self) -> Result<Vec<ShardStatus>> {
+        use felix_controlplane_service::model::ShardState;
+        use felix_controlplane_service::store::ControlPlaneStore;
+        let store = &self.control_plane().store;
+        let assignments = store
+            .list_shard_assignments()
+            .await
+            .map_err(|err| anyhow!("list shard assignments: {err}"))?;
+        let reports: std::collections::HashMap<_, _> = store
+            .list_replica_reports()
+            .await
+            .map_err(|err| anyhow!("list replica reports: {err}"))?
+            .into_iter()
+            .map(|report| (report.key.clone(), report))
+            .collect();
+        Ok(assignments
+            .into_iter()
+            .map(|a| ShardStatus {
+                kind: a.key.kind.as_str(),
+                caught_up_reported: reports.get(&a.key).is_some_and(|report| {
+                    report.generation == a.generation && !report.caught_up.is_empty()
+                }),
+                name: a.key.stream,
+                shard: a.key.shard,
+                leader: a.leader,
+                generation: a.generation,
+                replicas: a.replicas,
+                successor: a.successor,
+                joining: a.joining,
+                fenced: a.state == ShardState::Draining,
+                move_reason: a.move_reason.map(|reason| reason.as_str()),
+            })
+            .collect())
+    }
+
     /// Stop placement starting moves of its own.
     pub async fn pause_placement(&self) -> Result<()> {
         let url = format!("{}/v1/placement/pause", self.control_plane_url());
@@ -355,6 +393,29 @@ impl Cluster {
         }
         Ok(())
     }
+}
+
+/// One shard's placement, as [`Cluster::shard_statuses`] reads it.
+#[derive(Debug, Clone)]
+pub(crate) struct ShardStatus {
+    /// `stream` or `cache`.
+    pub(crate) kind: &'static str,
+    pub(crate) name: String,
+    pub(crate) shard: u32,
+    pub(crate) leader: String,
+    pub(crate) generation: u64,
+    pub(crate) replicas: Vec<String>,
+    /// The broker a move is handing leadership to.
+    pub(crate) successor: Option<String>,
+    /// The broker a follower replacement is copying the log to.
+    pub(crate) joining: Option<String>,
+    /// Fenced for a move's cut-over: the leader has stopped serving.
+    pub(crate) fenced: bool,
+    /// Why the move or replacement in flight was started.
+    pub(crate) move_reason: Option<&'static str>,
+    /// Whether the leader has reported a caught-up replica at `generation`.
+    /// Without one the shard cannot fail over.
+    pub(crate) caught_up_reported: bool,
 }
 
 fn step_of(response: serde_json::Value) -> Result<String> {

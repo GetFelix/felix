@@ -52,6 +52,15 @@ for what the current release guarantees.
 
 ### Added
 
+- **Adversarial history campaign and liveness checks.** The history
+  checker's nemesis gains compound faults on four brokers: two brokers killed
+  at once, a leader isolated from its peers and the control plane until it
+  fails over, a partition beside a delayed link, two random faults together,
+  a move whose source or destination is killed, restart loops, torn segment
+  writes, and drains that replace follower copies. After every heal the
+  campaign now waits for each shard to serve again and fails naming any shard
+  that is stuck and why. `FELIX_HISTORY_NEMESIS` picks the nemesis, and the
+  nightly workflow runs both.
 - **Atomic commits on one shard.** `Client::commit(tenant, namespace,
   entity_key, [publish | enqueue, put, delete])` writes an event and state
   updates as one record on the stream shard `entity_key` routes to, and
@@ -673,6 +682,14 @@ for what the current release guarantees.
   mark is dropped when its generation ends. See `docs/replication-design.md`,
   "Replica reports and the committed mark".
 
+- **A `Quorum` failover no longer promotes a move's destination.** Its broker
+  opened the shard as the move's cut-over, without the promotion fence, and
+  under `majority_ack` the report that named it caught up could predate a
+  record the old leader acknowledged on its followers, so that record was
+  lost. Failover on a durable `Quorum` stream now ends the move instead. A
+  promoted leader that gets a new generation while still fencing also keeps
+  replication paused until it reopens, rather than shipping its unfenced log
+  at the old generation in between.
 - **A cache leader that loses its leadership rejoins as a follower (#863).**
   Cache leaders now record where their generation began, on the cache and
   counter logs, and accept the generation on both. Before, a cache leader that

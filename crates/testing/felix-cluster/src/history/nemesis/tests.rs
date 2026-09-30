@@ -150,3 +150,118 @@ fn process_faults_draw_three_numbers_per_fault() {
     assert_eq!(fault, wanted);
     assert_eq!(rng.next_u64(), expected.next_u64());
 }
+
+fn four_brokers() -> ClusterView {
+    let mut view = view();
+    view.nodes.push("broker-3".to_string());
+    view
+}
+
+/// Every fault `adversarial` picks on four brokers, over enough seeds to see
+/// each kind many times.
+fn sample_adversarial() -> Vec<Fault> {
+    let mut nemesis = RandomNemesis::adversarial();
+    let view = four_brokers();
+    let mut faults = Vec::new();
+    for seed in 0..100 {
+        let mut rng = Rng::new(seed);
+        for _ in 0..20 {
+            faults.extend(nemesis.next_fault(&mut rng, &view));
+        }
+    }
+    faults
+}
+
+#[test]
+fn adversarial_picks_every_kind_it_lists() {
+    let picked: std::collections::BTreeSet<String> = sample_adversarial()
+        .iter()
+        .map(|fault| format!("{:?}", fault.kind()))
+        .collect();
+    let listed: std::collections::BTreeSet<String> = RandomNemesis::adversarial()
+        .kinds
+        .iter()
+        .map(|kind| format!("{kind:?}"))
+        .collect();
+    assert_eq!(picked, listed);
+}
+
+/// Two faults in effect together are aimed at different brokers; otherwise
+/// an overlap is one fault with extra steps.
+#[test]
+fn overlapping_faults_are_aimed_at_different_brokers() {
+    let mut several = 0;
+    for fault in sample_adversarial() {
+        let Fault::Several { faults, .. } = &fault else {
+            continue;
+        };
+        several += 1;
+        assert_eq!(faults.len(), 2, "{fault}");
+        let (first, second) = (faults[0].targets(), faults[1].targets());
+        assert!(
+            first.iter().all(|node| !second.contains(node)),
+            "{fault} aims both faults at one broker"
+        );
+    }
+    assert!(several > 100, "only {several} overlapping faults");
+}
+
+/// Isolating a follower forces no failover, so an isolation goes to a leader.
+#[test]
+fn an_isolation_is_aimed_at_a_leader() {
+    let view = four_brokers();
+    for fault in sample_adversarial() {
+        if let Fault::Isolate { node } = &fault {
+            assert!(view.leaders.contains(node), "{fault}");
+        }
+    }
+}
+
+#[test]
+fn an_interrupted_move_kills_one_end_of_it() {
+    let mut victims = std::collections::BTreeSet::new();
+    for fault in sample_adversarial() {
+        if let Fault::InterruptedMove {
+            from, to, victim, ..
+        } = &fault
+        {
+            assert_ne!(from, to);
+            assert!(victim == from || victim == to, "{fault}");
+            victims.insert(victim == from);
+        }
+    }
+    assert_eq!(
+        victims.len(),
+        2,
+        "both the source and the destination get killed"
+    );
+}
+
+/// A drain healed before the kill beside it would wait for moves that need
+/// the killed broker back.
+#[test]
+fn assignment_faults_are_healed_last() {
+    let faults = vec![
+        Fault::Drain {
+            node: "broker-0".to_string(),
+        },
+        Fault::Kill {
+            node: "broker-1".to_string(),
+        },
+        Fault::Pause {
+            node: "broker-2".to_string(),
+        },
+    ];
+    let order: Vec<String> = compound::heal_order(&faults)
+        .iter()
+        .map(|fault| fault.to_string())
+        .collect();
+    assert_eq!(order, ["pause broker-2", "kill broker-1", "drain broker-0"]);
+}
+
+#[test]
+fn adversarial_asks_for_proxies_and_on_commit_flushes() {
+    let adversarial = RandomNemesis::adversarial();
+    assert!(adversarial.needs_proxy_links());
+    assert!(adversarial.needs_fsync_on_commit());
+}

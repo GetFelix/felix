@@ -163,8 +163,8 @@ impl Moves {
 /// bound, which stops the leader; cut over once the leader reports drained,
 /// which it does only once the destination holds everything. A leader that
 /// dies mid-move is handled by the failover path, where the successor is a
-/// candidate like any other replica. Every input is in the store or a fresh
-/// report, so any pass resumes where the last left off.
+/// candidate like any other replica unless the shard is fenced. Every input is
+/// in the store or a fresh report, so any pass resumes where the last left off.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn move_step<'a>(
     key: &ShardKey,

@@ -8,10 +8,13 @@
 # finding the design has not yet acted on, and a "violation" that quietly
 # turned into a pass would be a model that stopped saying anything.
 #
-# `scripts/check_tla.sh FelixShardFigure8 FelixShardLease` checks only those.
+# `scripts/check_tla.sh FelixShardFigure8 FelixShardLease` checks only those;
+# a named configuration not registered below must pass. The CI workflow's
+# manual dispatch takes such a list, for the runs too long for every PR.
 # `TLC_WORKERS=4` caps TLC's worker threads; the default is one per core.
-# `TLA_SHARD=1/3` checks every third configuration starting with the second,
-# so CI can split the set across parallel jobs.
+# `TLA_SHARD=1/3` checks the second of three shards, balanced by the time each
+# configuration takes (`weights` below), so CI can split the set across
+# parallel jobs.
 #
 # Needs Java 11+ on PATH, or Docker. The TLA+ tools are fetched once, pinned
 # by release and checksum, into target/tla/.
@@ -136,6 +139,12 @@ expectations=(
   "FelixAtomicCommit pass"
   "FelixAtomicCommitSplitRecords violates NoPartialCommit"
   "FelixAtomicCommitPartialApply violates NoPartialCommit"
+  "FelixShardFencedAckTwoPromotionsStart pass"
+  "FelixShardFencedAckStagedMoveDestination violates AckedHeldByLeader"
+  "FelixShardFencedAckMoveShort pass"
+  "FelixShardFencedAckStagedMoveShort pass"
+  "FelixShardFencedAckMoveCancelShort pass"
+  "FelixShardFencedAckMoveDestination violates AckedHeldByLeader"
 )
 
 shard_index=0
@@ -145,16 +154,79 @@ if [ -n "${TLA_SHARD:-}" ]; then
   shard_count="${TLA_SHARD#*/}"
 fi
 
+# Configurations named on the command line, when any are, and no others. A
+# named one that is not registered above is run by hand and must pass.
+selected=("${expectations[@]}")
+if [ "$#" -gt 0 ]; then
+  selected=()
+  for name in "$@"; do
+    entry="$name pass"
+    for known in "${expectations[@]}"; do
+      if [ "${known%% *}" = "$name" ]; then entry="$known"; fi
+    done
+    selected+=("$entry")
+  done
+fi
+
+# Minutes each of the longer configurations takes on a four-core CI runner;
+# anything not listed is taken as one. Shards are filled longest first, each
+# configuration going to the least loaded, so one long run does not land on
+# top of others and push a job past its hour.
+weights=(
+  "FelixShardFencedAckMoveCancelShort 35"
+  "FelixShardFencedAckMoveShort 22"
+  "FelixShardFencedAckStagedMoveShort 20"
+  "FelixShardFencedAckTwoPromotionsStart 20"
+  "FelixShardReadsRound 11"
+  "FelixShardFencedAck 6"
+  "FelixShardCancel 5"
+  "FelixShardCancelResend 5"
+  "FelixShardFigure8FollowerAcks 5"
+  "FelixShardFigure8CutOver 5"
+  "FelixShard 4"
+  "FelixShardAckWithoutLease 3"
+  "FelixShardRealMargins 3"
+  "FelixShardFigure8 3"
+  "FelixShardFencedPromotion 3"
+  "FelixShardLogOrder 2"
+  "FelixShardFencedAckSeat 2"
+  "FelixShardRealMarginsLease 2"
+  "FelixShardHandoff 2"
+  "FelixShardIdempotentHandoff 2"
+  "FelixShardStalePlannerCas 2"
+)
+
+weight_of() {
+  local w
+  for w in "${weights[@]}"; do
+    if [ "${w%% *}" = "$1" ]; then echo "${w#* }"; return; fi
+  done
+  echo 1
+}
+
+# Print the shard for each selected configuration, in order.
+assign_shards() {
+  local entry position=0
+  for entry in "${selected[@]}"; do
+    echo "$(weight_of "${entry%% *}") $position"
+    position=$((position + 1))
+  done | sort -k1,1nr -k2,2n | awk -v n="$shard_count" '
+    { best = 0
+      for (i = 1; i < n; i++) if (load[i] < load[best]) best = i
+      load[best] += $1; shard[$2] = best }
+    END { for (p = 0; p < NR; p++) print shard[p] }'
+}
+shards=()
+while read -r s; do shards+=("$s"); done < <(assign_shards)
+
 fetch_tools
 failed=0
 position=-1
-for entry in "${expectations[@]}"; do
+for entry in "${selected[@]}"; do
   cfg="${entry%% *}"
   expect="${entry#* }"
   position=$((position + 1))
-  if [ $((position % shard_count)) -ne "$shard_index" ]; then continue; fi
-  # Configurations named on the command line, when any are, and no others.
-  if [ "$#" -gt 0 ] && [[ " $* " != *" $cfg "* ]]; then continue; fi
+  if [ "${shards[$position]}" -ne "$shard_index" ]; then continue; fi
   echo "== $cfg (expected: $expect)"
   output="$(tlc "$cfg" 2>&1)" && status=0 || status=$?
   summary="$(echo "$output" | grep -E "states generated|depth of the complete|Error:|is violated|Finished in" | tail -5)"
