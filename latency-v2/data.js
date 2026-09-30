@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790801411302,
+  "lastUpdate": 1790801825758,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -26532,6 +26532,72 @@ window.BENCHMARK_DATA = {
             "range": "779.70",
             "unit": "us",
             "extra": "trials: 5\nmedian: 383.00\nmean: 735.40\nstdev: 779.70\ncv: 106.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5cde7b89637a655880580adf1559992b6472f33f",
+          "message": "fix(replication): count a follower only for what it has answered (#878) (#880)\n\nA leader's quorum mark and replica report counted a follower it had not\nheard from at the offset its fresh cursor starts at, one record below where\nthe leader's own generation begins. A leader that could reach none of its\nfollowers (a move's destination cut off as it took over, or the source at\nits draining generation) published a mark over records it inherited and no\nfollower held, and raised its commit offset to it. Once a follower without\nthose records was promoted, the broker came back holding them below its\ncommit offset, refused to drop them, and refused every rebuild.\n\nquorum_offset_without and caught_up now count FollowerCursor::confirmed,\nas held_at_generation already did. The new cluster test kills a move's\ndestination as it takes over and the old leader with it, promotes a\nfollower that lacks the old leader's last records, and checks both\nbrokers rejoin and the move finishes.\n\nSpec-Unaffected: FelixShard.tla's MajorityLen and Report count what each follower's log actually holds (HoldsPrefix); the implementation counted a guessed position, and now counts only what a follower answered, which refines the modelled action.",
+          "timestamp": "2026-09-30T13:48:50-07:00",
+          "tree_id": "66344b3d4e29e0130f8f3471bd5ea99d6026febe",
+          "url": "https://github.com/gabloe/felix/commit/5cde7b89637a655880580adf1559992b6472f33f"
+        },
+        "date": 1790801822894,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 134.00\nstdev: 1.22\ncv: 0.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 182,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 181.60\nstdev: 1.67\ncv: 0.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 239,
+            "range": "6.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 239.00\nmean: 240.00\nstdev: 6.20\ncv: 2.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 176,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 176.00\nmean: 175.60\nstdev: 0.55\ncv: 0.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 347,
+            "range": "5.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 347.00\nmean: 349.00\nstdev: 5.61\ncv: 1.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 472,
+            "range": "62.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 472.00\nmean: 492.60\nstdev: 62.92\ncv: 12.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
