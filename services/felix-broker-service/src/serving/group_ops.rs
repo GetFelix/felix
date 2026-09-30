@@ -136,6 +136,9 @@ async fn poll_rechecking(
         drop(fenced);
         let claimed = claimed?;
         if !claimed.is_empty() {
+            // Claims the consumer never hears of lapse and are handed out
+            // again.
+            owned.confirm(publish_ctx).await?;
             return Ok(claimed
                 .into_iter()
                 .map(|claimed| GroupRecord {
@@ -230,7 +233,7 @@ pub(crate) async fn manage_dead_letter(
     }
     .map_err(storage)?;
     if taken {
-        return Ok(());
+        return owned.confirm(publish_ctx).await;
     }
     // Refused rather than silently accepted. An operator told a redrive
     // succeeded when the offset was never dead-lettered would wait for a
@@ -273,7 +276,7 @@ pub(crate) async fn settle(
         reader.nack(&key, offset).await
     };
     let Err(err) = settled else {
-        return Ok(());
+        return owned.confirm(publish_ctx).await;
     };
     // Past the tracker's inherited tail, but inside the log now: written
     // after the tracker was built and not yet polled. Told apart from past
@@ -293,6 +296,9 @@ pub(crate) async fn settle(
 struct Owned {
     key: ShardKey,
     generation: u64,
+    /// Whether the last [`Owned::enter`] skipped the lease, so the write must
+    /// be confirmed by a round.
+    by_round: std::sync::atomic::AtomicBool,
 }
 
 impl Owned {
@@ -311,12 +317,55 @@ impl Owned {
             self.generation,
         )
         .map_err(ClientError::from)?;
-        // The shard's own writes may get in without the lease; group state
-        // does not.
-        if let Some(ingress) = publish_ctx.ingress.as_deref() {
+        // Group state is acknowledged on this broker alone. Where the shard's
+        // sessions need no lease, [`Self::confirm`] stands in for it.
+        let by_round = self.sessions_by_round(publish_ctx);
+        self.by_round
+            .store(by_round, std::sync::atomic::Ordering::Relaxed);
+        if let Some(ingress) = publish_ctx.ingress.as_deref()
+            && !by_round
+        {
             ingress.fence().require_lease().map_err(ClientError::from)?;
         }
         Ok(guard)
+    }
+
+    /// Whether a group write confirms leadership by a round rather than the
+    /// lease.
+    fn sessions_by_round(&self, publish_ctx: &PublishContext) -> bool {
+        publish_ctx.ingress.as_deref().is_some_and(|ingress| {
+            ingress
+                .fence()
+                .confirms_by_round(&self.key, self.generation)
+        }) && publish_ctx
+            .marks
+            .as_deref()
+            .is_some_and(|marks| marks.reads_by_round().is_some())
+    }
+
+    /// Confirm, once a group write is durable and before it is acknowledged,
+    /// that no newer coordinator had opened when it began: a round of fences
+    /// a majority answers at this generation, as a `Quorum` read takes. Only
+    /// where [`Self::enter`] skipped the lease. `NoStaleGroupCommit` in
+    /// `docs/formal/FelixShardSessions.tla`.
+    async fn confirm(&self, publish_ctx: &PublishContext) -> Result<(), ClientError> {
+        if !self.by_round.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(());
+        }
+        let Some(check) = publish_ctx
+            .marks
+            .as_deref()
+            .and_then(|marks| marks.reads_by_round())
+        else {
+            return match publish_ctx.ingress.as_deref() {
+                Some(ingress) => ingress.fence().require_lease().map_err(ClientError::from),
+                None => Ok(()),
+            };
+        };
+        check
+            .confirm(&self.key, self.generation)
+            .await
+            .map_err(|err| ClientError::from_anyhow(&err.into()))
     }
 }
 
@@ -336,7 +385,11 @@ fn owned_here(
         kind: ShardKind::Stream,
     };
     match dispatch(publish_ctx.ingress.as_deref(), &key) {
-        Dispatch::Local { generation } => Ok(Owned { key, generation }),
+        Dispatch::Local { generation } => Ok(Owned {
+            key,
+            generation,
+            by_round: Default::default(),
+        }),
         Dispatch::Forward { node_id, .. } => Err(ClientError::new(
             felix_wire::ErrorCode::NotLeader,
             format!("shard {shard} of {stream} is served by {node_id}"),

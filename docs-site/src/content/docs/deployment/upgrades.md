@@ -196,7 +196,15 @@ Once finalized, together with `majority_ack` and `generation_start`, a get or
 counter get on a replicated `Quorum` cache no longer trusts the lease. After
 the read takes its value, the broker sends the promotion fence at its own
 generation to the shard's replicas and answers once a majority, itself
-included, has taken it. Stream readers and cache watches keep the lease.
+included, has taken it.
+
+It also takes readers and consumer groups on replicated `Quorum` shards off the
+lease. Subscriptions, replay, Kafka fetches and cache watches keep going
+through a lapsed lease, because they only see the committed mark. They end when
+a replica refuses the broker for a newer leader, or when no majority has
+confirmed it for a lease duration, and the client finds the shard again as it
+does after a move. A group poll, ack, nack or dead-letter change is confirmed
+by the same round before it is acknowledged.
 
 - **Finalize `generation_start` and `majority_ack` first, or in the same
   change window.** `lease_free_reads` has no effect until all three are
@@ -208,6 +216,10 @@ included, has taken it. Stream readers and cache watches keep the lease.
 - **Nothing changes on the wire or on disk.** The round is the existing
   `Fence`, sent at a generation the replica already accepted, which writes
   nothing.
+- **What clients see.** A broker cut off from the control plane keeps its
+  subscribers, watches and group consumers. A group operation on a broker
+  whose replicas no longer answer it fails with `leadership_lost` instead of
+  `shard_unavailable`, and each group write waits for one round.
 - **What clients see.** A read costs a round trip to the nearest majority
   (concurrent reads of a shard share rounds). A leader that loses the control
   plane keeps serving reads its replicas confirm. One cut off from its

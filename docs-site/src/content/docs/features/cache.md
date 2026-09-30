@@ -228,8 +228,10 @@ By default a `Quorum` read confirms leadership by the owner's lease, which
 trusts the clocks. Once an operator finalizes the `lease_free_reads` fleet
 feature, it confirms with a round of fences answered by a majority instead,
 which makes the read linearizable without clocks. `FELIX_QUORUM_READS=lease`
-keeps a broker's reads on the lease. Writes and watches use the lease in every
-mode. [Upgrades](/felix/deployment/upgrades/) has the finalize runbook, and
+keeps a broker's reads on the lease. Writes use the lease in every mode.
+Watches on a replicated `Quorum` cache stop needing it once `lease_free_reads`
+is finalized: a watch sees only committed changes, and ends when its broker
+learns it was replaced or has heard from no majority for a lease duration. [Upgrades](/felix/deployment/upgrades/) has the finalize runbook, and
 [Delivery Semantics](/felix/architecture/semantics/#consistency-model) the full
 contract.
 

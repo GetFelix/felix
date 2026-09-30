@@ -171,6 +171,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardReadsRound.cfg` | `FelixShardReads.tla`: `FelixShardFencedAck.cfg`'s writes with one read, confirmed by a round of fences at the leader's generation after it takes its value (`ReadConfirm = "round"`); `L = 2`, time to 2, one write | pass `NoStaleRead`, `AckedHeldByLeader`, `AckedOnMajority` (22.1M distinct states, depth 27, 6 min on four workers) |
 | `FelixShardReadsNoRound.cfg` | the same with the round skipped | violate `NoStaleRead` |
 | `FelixShardReadsLease.cfg` | the same with the lease in place of the round | violate `NoStaleRead` |
+| `FelixShardSessionsSubscriber.cfg` | `FelixShardSessions.tla`: `FelixShardReadsRound.cfg`'s writes and clocks with a subscriber that reads up to the committed mark of any broker that believes it leads, and resumes at its next offset when it moves; no lease on its path | pass `NoLostDelivery` (1.46M distinct states, depth 25, 58 s) |
+| `FelixShardSessionsPastMark.cfg` | the same with the subscriber reading to the end of the broker's log | violate `NoLostDelivery` (18.0K distinct states, depth 10) |
+| `FelixShardSessionsGroupRound.cfg` | the same writes with one group commit, written to the coordinator's log and confirmed by a round of fences at its generation before it is acknowledged | pass `NoStaleGroupCommit` (13.9M distinct states, depth 27, 14 min) |
+| `FelixShardSessionsGroupNoRound.cfg` | the same with the round skipped | violate `NoStaleGroupCommit` (5.7K distinct states, depth 8) |
+| `FelixShardSessionsGroupLease.cfg` | the same with the lease in place of the round | violate `NoStaleGroupCommit` (6.4K distinct states, depth 8) |
 | `FelixShardFigure8FollowerAcks.cfg` | `FelixShardFencedAck.cfg`'s acknowledgement from the seeded Figure 8 history, promotion still reading the report | pass every invariant it checks (7.67M distinct states, depth 36, 58 s on sixteen cores) |
 | `FelixShardFigure8FollowerAcksNoStartRecord.cfg` | the same without the start record: follower acks count a record the leader inherited | violate `AckedOnMajority` |
 | `FelixShardFigure8.cfg` | the broker as built (`FelixShardFencedPromotion.cfg`) with the generation start record (`StartRecord`), started from a history two leaderships in (`FelixShardFigure8.tla`) | pass every invariant it checks (5.99M distinct states, depth 39, 35 s on sixteen cores) |
@@ -498,6 +503,23 @@ answering without its successor's write in both, 14 steps in. The model has
 one log per broker, so the counter log a cache replica also checks is not in
 it, and the read's wait for the mark is left out: that keeps a read from
 returning a record a failover can take back, a different property.
+
+### Readers and group commits without the lease
+
+`FelixShardSessions.tla` extends `FelixShardReads.tla` with a subscriber and
+a group commit. The subscriber reads in offset order from any broker that
+believes it leads, up to that broker's mark, and resumes at its next offset
+when it moves; `NoLostDelivery` says everything it was handed is at the same
+offset in the current leader's log. A deposed leader keeps delivering until it
+learns, and that is safe because its mark covers only records a majority held
+at its generation, which every later leader's fence takes up.
+`FelixShardSessionsPastMark.cfg` reads past the mark and TLC finds a record
+handed out that the successor replaced. A group commit is written to the
+coordinator's own log and confirmed by the same round a read uses before it
+is acknowledged; `NoStaleGroupCommit` says none is acknowledged at a
+generation older than one that had opened before it began. Without the round,
+or with the lease in its place under drift and no margin, TLC finds the
+deposed coordinator acknowledging after its successor opened.
 
 ### The check that is load-bearing
 

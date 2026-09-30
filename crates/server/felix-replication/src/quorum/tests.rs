@@ -406,3 +406,68 @@ fn reads_by_round_need_the_fleet_and_no_lease_opt_in() {
         "no round to confirm with"
     );
 }
+
+/// A shard this broker leads at generation 3, with no lease.
+struct Unleased;
+
+impl ShardServing for Unleased {
+    fn replicated(&self, _key: &ShardKey) -> bool {
+        true
+    }
+
+    fn generation(&self, _key: &ShardKey) -> Option<u64> {
+        Some(3)
+    }
+
+    fn lease_valid(&self) -> bool {
+        false
+    }
+
+    fn record_ack_refusal(&self) {}
+}
+
+/// Readers keep the committed mark past a lapsed lease once the fleet reads
+/// by round and the stream's mark was decided by its followers; a mark the
+/// report decided still needs the lease, and so does a fleet on the lease.
+#[test]
+fn readers_keep_the_mark_without_the_lease_where_followers_decide_it() {
+    use felix_broker::ReadBound;
+    use felix_common::fleet::{FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
+    let names = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        LEASE_FREE_READS.name(),
+    ];
+    let fleet = Arc::new(FleetGate::new(names));
+    fleet.observe(names);
+    let stream = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: crate::ShardKind::Stream,
+    };
+
+    let marks = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    marks.set_read_check(Arc::new(AlwaysConfirms), false);
+    marks.publish(&stream, 3, 5);
+    assert_eq!(
+        committed_bound(&stream, &marks, &Unleased),
+        ReadBound::Refused,
+        "the report decided this mark"
+    );
+    marks.publish_by_followers(&stream, 3, 7);
+    assert_eq!(
+        committed_bound(&stream, &marks, &Unleased),
+        ReadBound::Committed(7)
+    );
+
+    let kept = QuorumMarks::with_fleet(fleet);
+    kept.set_read_check(Arc::new(AlwaysConfirms), true);
+    kept.publish_by_followers(&stream, 3, 7);
+    assert_eq!(
+        committed_bound(&stream, &kept, &Unleased),
+        ReadBound::Refused,
+        "the operator kept reads on the lease"
+    );
+}

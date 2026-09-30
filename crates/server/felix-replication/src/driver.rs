@@ -249,6 +249,15 @@ pub trait WriteFence: Send + Sync {
     /// `key` acknowledges by its followers at `generation`, so its writes at
     /// that generation no longer need the lease to get in.
     fn serve_without_lease(&self, _key: &crate::ShardKey, _generation: u64) {}
+
+    /// `key`'s readers and group sessions at `generation` no longer need the
+    /// lease: the shard is `Quorum` and the fleet reads by round
+    /// ([`crate::quorum::QuorumMarks::reads_by_round`]).
+    fn sessions_without_lease(&self, _key: &crate::ShardKey, _generation: u64) {}
+
+    /// A follower refused `key`'s ships at `generation` because it accepted a
+    /// newer leader. Called on every pass while the refusal stands.
+    fn deposed(&self, _key: &crate::ShardKey, _generation: u64) {}
 }
 
 /// A fence that holds nothing back: every shard is quiet.

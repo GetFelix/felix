@@ -161,7 +161,6 @@ pub(super) fn spawn_accept_loops(
 pub(super) struct KafkaClusterView<'a> {
     pub(super) ingress: &'a Option<Arc<IngressRouter>>,
     pub(super) client_endpoints: &'a Arc<ClientEndpoints>,
-    pub(super) lease: &'a Option<Arc<LeaseState>>,
     pub(super) quorum_marks: &'a Arc<QuorumMarks>,
     pub(super) quotas: &'a Arc<TenantRates>,
 }
@@ -180,7 +179,6 @@ pub(super) async fn bind_kafka(
     let KafkaClusterView {
         ingress,
         client_endpoints,
-        lease,
         quorum_marks,
         quotas,
     } = view;
@@ -202,7 +200,6 @@ pub(super) async fn bind_kafka(
         &kafka.advertise,
     )?
     .with_writes(
-        lease.clone(),
         Some(Arc::clone(quorum_marks)),
         std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
     )

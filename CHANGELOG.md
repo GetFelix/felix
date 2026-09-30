@@ -81,6 +81,22 @@ for what the current release guarantees.
   streams, the broker resolves keyed publishes by it, and `ClusterClient`
   routes by it. `Client::stream_routing` is new; `felix_router::Placed` gains
   a `routing` field.
+- **Readers and consumer groups on `Quorum` shards without the lease** once
+  `lease_free_reads` is finalized (#885). Subscriptions, replay, Kafka fetches
+  and cache watches on a replicated `Quorum` shard keep going when the lease
+  lapses, since they see only the committed mark. They end when a follower
+  refuses the leader for a newer one, or when no majority has confirmed it for
+  a lease duration (a round runs every quarter lease while the lease is
+  lapsed). Group polls, acks, nacks and dead-letter changes skip the lease and
+  are confirmed by a read-index round after they are durable and before they
+  are acknowledged; a refused round answers `leadership_lost`. Kafka produce
+  now takes its lease check from the shard fence, like a native publish, so a
+  `majority_ack` shard takes Kafka writes without the lease too.
+  `BrokerCluster::with_writes` loses its lease argument. TLA+:
+  `FelixShardSessions.tla`, with `Subscriber` and `GroupRound` passing
+  `NoLostDelivery` and `NoStaleGroupCommit`, and `PastMark`, `GroupNoRound`
+  and `GroupLease` violating them. See `docs/replication-design.md`, "Readers
+  and group sessions without the lease".
 - **`Quorum` cache reads without the lease once the `lease_free_reads` fleet
   feature is finalized** (with `majority_ack` and `generation_start`). A get
   or counter get on a replicated `Quorum` cache, local or forwarded, takes its
@@ -91,7 +107,7 @@ for what the current release guarantees.
   the round when its counter log accepted a newer leader. A same-generation
   fence is now counted as `fence_confirmed` and not logged. New
   `FELIX_QUORUM_READS` (`majority` or `lease`) keeps a broker on the lease. No
-  wire change. Stream readers and watches keep the lease. TLA+:
+  wire change. TLA+:
   `FelixShardReads.tla`, with `FelixShardReadsRound` passing `NoStaleRead`
   under drift and no margin and `FelixShardReadsNoRound` /
   `FelixShardReadsLease` violating it; `check_tla.sh` takes `TLC_WORKERS`.

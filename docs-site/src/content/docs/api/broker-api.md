@@ -888,8 +888,10 @@ records', so neither names a record past the records offset. `generation` is
 the leadership the offsets belong to.
 
 A shard this broker leads but has no committed answer for is under `skipped`,
-with a `reason`: `settling` (just taken, no quorum mark yet), `refused` (its
-lease lapsed or it no longer serves the shard), `moved` (its leadership changed
+with a `reason`: `settling` (just taken, no quorum mark yet), `refused` (it
+no longer serves the shard, or its lease lapsed on a shard whose readers still
+need it; with `lease_free_reads` finalized a replicated `Quorum` shard does
+not), `moved` (its leadership changed
 while it was read), `error` (with a `detail`), or `not_durable` (an in-memory
 stream, with nothing on disk to back up). All but the last are worth asking
 again shortly. A broker with no cluster leads nothing and answers with empty

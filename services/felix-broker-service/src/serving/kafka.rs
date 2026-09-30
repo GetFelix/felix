@@ -23,7 +23,6 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::cluster::client_endpoints::ClientEndpoints;
-use crate::cluster::lease::LeaseState;
 use crate::config::KafkaListenerConfig;
 use crate::observability::tenants;
 use crate::serving::auth::BrokerAuth;
@@ -46,7 +45,6 @@ pub struct BrokerCluster {
     ingress: Option<Arc<IngressRouter>>,
     endpoints: Option<Arc<ClientEndpoints>>,
     local: Endpoint,
-    lease: Option<Arc<LeaseState>>,
     marks: Option<Arc<QuorumMarks>>,
     quorum_timeout: Duration,
     quotas: Arc<TenantRates>,
@@ -69,7 +67,6 @@ impl BrokerCluster {
             ingress,
             endpoints,
             local,
-            lease: None,
             marks: None,
             quorum_timeout: Duration::from_secs(5),
             quotas: Arc::new(TenantRates::unlimited()),
@@ -83,16 +80,13 @@ impl BrokerCluster {
         self
     }
 
-    /// What a write checks and waits on, as the QUIC publish path does: the
-    /// lease that lets this broker lead, and the quorum marks a `Quorum`
-    /// stream's write waits for. Both `None` outside a cluster.
+    /// What a write waits on, as the QUIC publish path does: the quorum marks
+    /// a `Quorum` stream's write waits for. `None` outside a cluster.
     pub fn with_writes(
         mut self,
-        lease: Option<Arc<LeaseState>>,
         marks: Option<Arc<QuorumMarks>>,
         quorum_timeout: Duration,
     ) -> Self {
-        self.lease = lease;
         self.marks = marks;
         self.quorum_timeout = quorum_timeout;
         self
@@ -203,19 +197,9 @@ impl Cluster for BrokerCluster {
 
     async fn admit_write(&self, shard: &ShardRef<'_>) -> Result<WritePermit, WriteError> {
         // The same gates as a QUIC publish (`route.rs`, then the worker's
-        // commit fence): a valid lease, the shard dispatched here, and a
-        // place in its fence so a move waits for this write. Checked right
-        // before the write, so the authoritative lease check is the only one.
-        if self
-            .lease
-            .as_ref()
-            .is_some_and(|lease| !lease.is_valid_now())
-        {
-            crate::cluster::lease::metrics::record_refusal(
-                crate::cluster::lease::metrics::BOUNDARY_COMMIT,
-            );
-            return Err(WriteError::NotLeader);
-        }
+        // commit fence): the shard dispatched here, and a place in its fence
+        // so a move waits for this write. The fence checks the lease against
+        // the clock, except on a shard whose followers decide its acks.
         let key = Self::key(shard);
         let ingress = self.ingress.as_deref();
         match dispatch_write(ingress, &key).await {

@@ -217,14 +217,14 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
         (Some((router, ingress, lifecycle, ownership)), Some(base_url), storage) => {
             let readers = shard_lifecycle::ShardReaders::new(Arc::clone(broker))
                 .with_endpoints(Arc::clone(client_endpoints));
-            // A lapsed lease ends the readers of every shard this broker led.
-            if let Some(lease) = ingress.fence().lease() {
-                tokio::spawn(readers.clone().end_on_lapse(
-                    Arc::clone(lease),
-                    Arc::clone(lifecycle),
-                    sync_shutdown.clone(),
-                ));
-            }
+            // Ends readers on a lapsed lease, or, where they need none, once
+            // this broker learns it was deposed.
+            tokio::spawn(readers.clone().watch_leadership(
+                Arc::clone(ingress.fence()),
+                Arc::clone(quorum_marks),
+                Arc::clone(lifecycle),
+                sync_shutdown.clone(),
+            ));
             // A promoted shard waits for replication to fence its replicas,
             // so only where replication runs: a peer transport to fence over,
             // and durable logs to fence.

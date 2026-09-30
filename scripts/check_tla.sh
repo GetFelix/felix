@@ -57,6 +57,7 @@ tlc() {
     FelixPlacementPacing*) module="FelixPlacementPacing" ;;
     FelixShardFigure8*) module="FelixShardFigure8" ;;
     FelixShardReads*) module="FelixShardReads" ;;
+    FelixShardSessions*) module="FelixShardSessions" ;;
     FelixAtomicCommit*) module="FelixAtomicCommit" ;;
   esac
   local flags=(-deadlock -workers "${TLC_WORKERS:-auto}" -checkpoint 0 -config "$cfg.cfg" "$module.tla")
@@ -102,6 +103,11 @@ expectations=(
   "FelixShardReadsRound pass"
   "FelixShardReadsNoRound violates NoStaleRead"
   "FelixShardReadsLease violates NoStaleRead"
+  "FelixShardSessionsSubscriber pass"
+  "FelixShardSessionsPastMark violates NoLostDelivery"
+  "FelixShardSessionsGroupRound pass"
+  "FelixShardSessionsGroupNoRound violates NoStaleGroupCommit"
+  "FelixShardSessionsGroupLease violates NoStaleGroupCommit"
   "FelixShardFencedPromotion pass"
   "FelixShardNoCommitCheck violates NoStaleCommit"
   "FelixShardNoReportOrder violates AckedSurvive"
@@ -175,6 +181,7 @@ weights=(
   "FelixShardFencedAckMoveShort 22"
   "FelixShardFencedAckStagedMoveShort 20"
   "FelixShardFencedAckTwoPromotionsStart 20"
+  "FelixShardSessionsGroupRound 14"
   "FelixShardReadsRound 11"
   "FelixShardFencedAck 6"
   "FelixShardCancel 5"
