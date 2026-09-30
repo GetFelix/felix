@@ -66,7 +66,6 @@ VARIABLES
 sessionVars == << snext, sdel, committing, cgen, cvotes, ctop, commits, staleGroup >>
 sessAllVars == << allVars, sessionVars, topOpen >>
 
-Max(a, b) == IF a >= b THEN a ELSE b
 
 \* The newest generation a broker serves at right now. `Serving` under
 \* follower acks: it believes it leads and has finished its fence.
