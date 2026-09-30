@@ -52,6 +52,15 @@ for what the current release guarantees.
 
 ### Added
 
+- **Adversarial history campaign and liveness checks.** The history
+  checker's nemesis gains compound faults on four brokers: two brokers killed
+  at once, a leader isolated from its peers and the control plane until it
+  fails over, a partition beside a delayed link, two random faults together,
+  a move whose source or destination is killed, restart loops, torn segment
+  writes, and drains that replace follower copies. After every heal the
+  campaign now waits for each shard to serve again and fails naming any shard
+  that is stuck and why. `FELIX_HISTORY_NEMESIS` picks the nemesis, and the
+  nightly workflow runs both.
 - **Atomic commits on one shard.** `Client::commit(tenant, namespace,
   entity_key, [publish | enqueue, put, delete])` writes an event and state
   updates as one record on the stream shard `entity_key` routes to, and

@@ -15,7 +15,9 @@ mod restarts;
 mod startup;
 mod streams;
 
+pub(crate) use metrics::HaltedReplica;
 pub use ownership::Assignment;
+pub(crate) use placement::ShardStatus;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
