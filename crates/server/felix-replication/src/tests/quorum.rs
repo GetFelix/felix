@@ -40,7 +40,7 @@ fn the_leader_alone_is_a_quorum_of_one() {
 /// not the slower one.
 #[test]
 fn a_set_of_three_advances_with_its_faster_follower() {
-    let followers = vec![cursor(8), cursor(3)];
+    let followers = vec![answered(8), answered(3)];
 
     assert_eq!(quorum_offset(10, &followers), 8);
 }
@@ -49,14 +49,14 @@ fn a_set_of_three_advances_with_its_faster_follower() {
 /// two needs both.
 #[test]
 fn a_set_of_two_waits_for_its_only_follower() {
-    assert_eq!(quorum_offset(10, &[cursor(4)]), 4);
+    assert_eq!(quorum_offset(10, &[answered(4)]), 4);
 }
 
 /// A follower reporting past the leader's tail does not drag the quorum
 /// point beyond what the leader actually holds.
 #[test]
 fn a_follower_ahead_of_the_leader_does_not_overstate_the_quorum() {
-    assert_eq!(quorum_offset(10, &[cursor(50), cursor(9)]), 10);
+    assert_eq!(quorum_offset(10, &[answered(50), answered(9)]), 10);
 }
 
 /// **A halted follower counts for nothing.** It has stopped rather than
@@ -64,9 +64,9 @@ fn a_follower_ahead_of_the_leader_does_not_overstate_the_quorum() {
 /// makes an acknowledgement mean less than it says.
 #[test]
 fn a_halted_follower_does_not_count_toward_the_majority() {
-    let mut halted = cursor(10);
+    let mut halted = answered(10);
     halted.halted = Some(Halt::Diverged);
-    let followers = vec![halted, cursor(3)];
+    let followers = vec![halted, answered(3)];
 
     assert_eq!(
         quorum_offset(10, &followers),
@@ -79,9 +79,9 @@ fn a_halted_follower_does_not_count_toward_the_majority() {
 /// of three — so nothing new reaches the quorum point.
 #[test]
 fn a_shard_with_every_follower_halted_stops_acknowledging() {
-    let mut a = cursor(10);
+    let mut a = answered(10);
     a.halted = Some(Halt::Diverged);
-    let mut b = cursor(10);
+    let mut b = answered(10);
     b.halted = Some(Halt::Fenced);
 
     assert_eq!(
@@ -95,5 +95,16 @@ fn a_shard_with_every_follower_halted_stops_acknowledging() {
 /// with one empty follower still has a quorum through the other.
 #[test]
 fn an_empty_follower_holds_nothing_but_still_counts_as_a_member() {
-    assert_eq!(quorum_offset(10, &[cursor(0), cursor(7)]), 7);
+    assert_eq!(quorum_offset(10, &[answered(0), answered(7)]), 7);
+}
+
+/// **A follower counts toward the majority only as far as it has answered**,
+/// not from where the leader guessed it stands (#878). Counted from the guess,
+/// a new leader that reached none of its followers published a mark over the
+/// records it inherited, raised its own commit offset to it, and once
+/// deposed refused to drop those records, so it never rejoined.
+#[test]
+fn a_follower_not_yet_heard_from_counts_for_nothing() {
+    assert_eq!(quorum_offset(10, &[cursor(9), cursor(9)]), 0);
+    assert_eq!(quorum_offset(10, &[cursor(9), answered(10)]), 10);
 }

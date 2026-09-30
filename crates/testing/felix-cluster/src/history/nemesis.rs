@@ -11,18 +11,21 @@
 //! older primitives directly. Moves and drains go through the control
 //! plane's operator API, as an operator would.
 //!
-//! Faults are injected one at a time and each is healed before the next, so a
-//! three-node cluster always has a majority that is only ever one fault away
-//! from whole. Overlapping faults would mostly measure unavailability.
+//! The single faults are injected one at a time and each is healed before the
+//! next. The compound kinds are the exception on purpose: two
+//! faults at once, a fault in the middle of a move, or one broker restarted
+//! over and over. They are what [`RandomNemesis::adversarial`] picks from.
 
 use std::fmt;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+mod compound;
+
 use super::rng::Rng;
 use crate::Fault as HarnessFault;
-use crate::fault::{ClockFault, Endpoint, FsyncFault};
+use crate::fault::{ClockFault, Endpoint, FsyncFault, WriteFault};
 use crate::{Cluster, wait};
 
 /// How late a delayed link delivers.
@@ -122,8 +125,33 @@ pub enum FaultKind {
     /// replicas, online. Healing waits for the move to finish.
     MoveShard,
     /// An operator drains one broker, so placement moves its leaderships
-    /// off. Healing puts it back and waits for the moves in flight.
+    /// off. Healing puts it back and waits for the moves in flight. With a
+    /// broker to spare, its follower copies are replaced as well, which
+    /// changes the shards' replica sets.
     Drain,
+    /// One broker's next segment write lands half its batch and fails.
+    /// Healing restarts it, so recovery finds the torn record.
+    TornWrite,
+    /// Cut one leader off from its peers and from the control plane, so the
+    /// control plane stops hearing from it and fails its shards over while
+    /// the clients keep writing. Needs proxied links.
+    Isolate,
+    /// Kill two brokers at once. On three brokers that is a majority, and
+    /// every shard stops until they are back.
+    KillTwo,
+    /// Partition one broker and delay everything another one sends. Needs
+    /// proxied links.
+    PartitionAndDelay,
+    /// Two faults at once on different brokers: any two of kill, pause,
+    /// partition, a dropped or delayed link, a slow fsync, a move and a
+    /// drain.
+    Overlap,
+    /// Start a move of one of the workload's shards, then kill its source or
+    /// its destination before the move can finish.
+    InterruptedMove,
+    /// Kill one broker, then restart it and kill it again before it has
+    /// caught up, a few times, before letting it stay up.
+    RestartLoop,
 }
 
 impl FaultKind {
@@ -135,9 +163,34 @@ impl FaultKind {
             | FaultKind::DelayOutbound
             | FaultKind::DropControlPlaneReplies => FaultFamily::Link,
             FaultKind::ClockRate | FaultKind::ControlPlaneClockStep => FaultFamily::Clock,
-            FaultKind::SlowFsync | FaultKind::FsyncFailOnce => FaultFamily::Disk,
+            FaultKind::SlowFsync | FaultKind::FsyncFailOnce | FaultKind::TornWrite => {
+                FaultFamily::Disk
+            }
             FaultKind::MoveShard | FaultKind::Drain => FaultFamily::Assignment,
+            FaultKind::Isolate
+            | FaultKind::KillTwo
+            | FaultKind::PartitionAndDelay
+            | FaultKind::Overlap
+            | FaultKind::InterruptedMove
+            | FaultKind::RestartLoop => FaultFamily::Compound,
         }
+    }
+
+    /// Whether a fault of this kind may act on a proxied link.
+    pub fn needs_proxy_links(self) -> bool {
+        self.family() == FaultFamily::Link
+            || matches!(
+                self,
+                FaultKind::Isolate | FaultKind::PartitionAndDelay | FaultKind::Overlap
+            )
+    }
+
+    /// Whether a fault of this kind may act on fsync.
+    pub fn needs_fsync_on_commit(self) -> bool {
+        matches!(
+            self,
+            FaultKind::SlowFsync | FaultKind::FsyncFailOnce | FaultKind::Overlap
+        )
     }
 }
 
@@ -153,6 +206,9 @@ pub enum FaultFamily {
     Disk,
     /// Who leads what: operator moves and drains.
     Assignment,
+    /// Several faults at once, a fault in the middle of a move, or one
+    /// broker restarted over and over.
+    Compound,
 }
 
 /// One fault in effect.
@@ -207,6 +263,31 @@ pub enum Fault {
     Drain {
         node: String,
     },
+    TornWrite {
+        node: String,
+    },
+    Isolate {
+        node: String,
+    },
+    /// Faults in effect together. `kind` is the kind that chose them.
+    Several {
+        kind: FaultKind,
+        faults: Vec<Fault>,
+    },
+    InterruptedMove {
+        kind: &'static str,
+        name: String,
+        shard: u32,
+        from: String,
+        to: String,
+        /// `from` or `to`: the broker killed once the move has started.
+        victim: String,
+    },
+    RestartLoop {
+        node: String,
+        /// How many times it is started again before it is left up.
+        restarts: u32,
+    },
 }
 
 impl Fault {
@@ -230,6 +311,36 @@ impl Fault {
             Fault::FsyncFailOnce { .. } => FaultKind::FsyncFailOnce,
             Fault::MoveShard { .. } => FaultKind::MoveShard,
             Fault::Drain { .. } => FaultKind::Drain,
+            Fault::TornWrite { .. } => FaultKind::TornWrite,
+            Fault::Isolate { .. } => FaultKind::Isolate,
+            Fault::Several { kind, .. } => *kind,
+            Fault::InterruptedMove { .. } => FaultKind::InterruptedMove,
+            Fault::RestartLoop { .. } => FaultKind::RestartLoop,
+        }
+    }
+
+    /// The brokers this fault is aimed at, so a second fault in effect at
+    /// the same time can be aimed elsewhere.
+    pub fn targets(&self) -> Vec<String> {
+        match self {
+            Fault::Kill { node }
+            | Fault::Pause { node }
+            | Fault::Partition { node }
+            | Fault::DropOutbound { node, .. }
+            | Fault::DelayOutbound { node, .. }
+            | Fault::DropControlPlaneReplies { node }
+            | Fault::ClockRate { node, .. }
+            | Fault::SlowFsync { node, .. }
+            | Fault::FsyncFailOnce { node }
+            | Fault::Drain { node }
+            | Fault::TornWrite { node }
+            | Fault::Isolate { node }
+            | Fault::RestartLoop { node, .. } => vec![node.clone()],
+            Fault::ControlPlaneClockStep { .. } => Vec::new(),
+            Fault::MoveShard { from, to, .. } | Fault::InterruptedMove { from, to, .. } => {
+                vec![from.clone(), to.clone()]
+            }
+            Fault::Several { faults, .. } => faults.iter().flat_map(Fault::targets).collect(),
         }
     }
 
@@ -250,6 +361,17 @@ impl Fault {
                 .await
                 .map(drop),
             Fault::Drain { node } => cluster.drain_node(node).await,
+            Fault::Isolate { node } => compound::isolate(cluster, node).await,
+            Fault::Several { faults, .. } => compound::inject_all(cluster, faults).await,
+            Fault::InterruptedMove {
+                kind,
+                name,
+                shard,
+                to,
+                victim,
+                ..
+            } => compound::interrupt_move(cluster, kind, name, *shard, to, victim).await,
+            Fault::RestartLoop { node, .. } => cluster.kill_node(node),
             _ => {
                 for fault in self.harness_faults() {
                     cluster.inject(&fault).await?;
@@ -262,7 +384,7 @@ impl Fault {
     /// Take the cluster out of it again.
     pub async fn heal(&self, cluster: &mut Cluster) -> Result<()> {
         match self {
-            Fault::Kill { node } => cluster.restart_node(node).await,
+            Fault::Kill { node } => restart_if_down(cluster, node).await,
             Fault::Pause { node } => pause(cluster, node, false),
             Fault::Partition { .. } => cluster.heal_partitions(),
             Fault::MoveShard { .. } => settle_moves(cluster).await,
@@ -270,13 +392,23 @@ impl Fault {
                 cluster.undrain_node(node).await?;
                 settle_moves(cluster).await
             }
+            Fault::Isolate { node } => compound::rejoin(cluster, node).await,
+            Fault::Several { faults, .. } => compound::heal_all(cluster, faults).await,
+            Fault::InterruptedMove { victim, .. } => {
+                restart_if_down(cluster, victim).await?;
+                settle_moves(cluster).await
+            }
+            Fault::RestartLoop { node, restarts } => {
+                compound::restart_loop(cluster, node, *restarts).await
+            }
             _ => {
                 for fault in self.harness_faults() {
                     cluster.heal(&fault).await?;
                 }
-                if let Fault::FsyncFailOnce { node } = self {
+                if let Fault::FsyncFailOnce { node } | Fault::TornWrite { node } = self {
                     // A failed fsync poisons the log until the process
-                    // restarts; healing the disk alone leaves it refusing.
+                    // restarts, and a torn write is only repaired by the
+                    // recovery a restart runs.
                     cluster.kill_node(node)?;
                     cluster.restart_node(node).await?;
                 }
@@ -293,7 +425,17 @@ impl Fault {
             | Fault::Pause { .. }
             | Fault::Partition { .. }
             | Fault::MoveShard { .. }
-            | Fault::Drain { .. } => Vec::new(),
+            | Fault::Drain { .. }
+            | Fault::Isolate { .. }
+            | Fault::InterruptedMove { .. }
+            | Fault::RestartLoop { .. } => Vec::new(),
+            Fault::Several { faults, .. } => {
+                faults.iter().flat_map(Fault::harness_faults).collect()
+            }
+            Fault::TornWrite { node } => vec![HarnessFault::Write {
+                node: node.clone(),
+                fault: WriteFault::IoOnce,
+            }],
             Fault::DropOutbound { node, peers } => peers
                 .iter()
                 .map(|peer| HarnessFault::Drop {
@@ -366,6 +508,28 @@ impl fmt::Display for Fault {
                 to,
             } => write!(f, "move {kind} {name}/{shard} from {from} to {to}"),
             Fault::Drain { node } => write!(f, "drain {node}"),
+            Fault::TornWrite { node } => write!(f, "tear {node}'s next segment write"),
+            Fault::Isolate { node } => {
+                write!(f, "isolate {node} from its peers and the control plane")
+            }
+            Fault::Several { faults, .. } => {
+                let each: Vec<String> = faults.iter().map(Fault::to_string).collect();
+                f.write_str(&each.join(" and "))
+            }
+            Fault::InterruptedMove {
+                kind,
+                name,
+                shard,
+                from,
+                to,
+                victim,
+            } => write!(
+                f,
+                "move {kind} {name}/{shard} from {from} to {to} and kill {victim} mid-move"
+            ),
+            Fault::RestartLoop { node, restarts } => {
+                write!(f, "kill {node} and restart it {restarts} times in a row")
+            }
         }
     }
 }
@@ -385,6 +549,11 @@ impl RandomNemesis {
             kinds,
             leader_bias: 75,
         }
+    }
+
+    /// The kinds this nemesis picks from.
+    pub fn kinds(&self) -> &[FaultKind] {
+        &self.kinds
     }
 
     /// Kill, pause and partition: the faults that need nothing from the
@@ -415,6 +584,24 @@ impl RandomNemesis {
             FaultKind::SlowFsync,
             FaultKind::FsyncFailOnce,
             FaultKind::MoveShard,
+            FaultKind::Drain,
+        ])
+    }
+
+    /// The compound faults: failures that overlap, a partition that forces a
+    /// failover, moves cut short, replica sets changed by drains, torn
+    /// writes and restart loops. Run it on four brokers
+    /// ([`Campaign::adversarial`](super::Campaign::adversarial)), so a drain
+    /// has somewhere to move a follower copy to.
+    pub fn adversarial() -> Self {
+        Self::new(vec![
+            FaultKind::Isolate,
+            FaultKind::KillTwo,
+            FaultKind::PartitionAndDelay,
+            FaultKind::Overlap,
+            FaultKind::InterruptedMove,
+            FaultKind::RestartLoop,
+            FaultKind::TornWrite,
             FaultKind::Drain,
         ])
     }
@@ -491,19 +678,27 @@ impl Nemesis for RandomNemesis {
                 }
             }
             FaultKind::Drain => Fault::Drain { node },
+            FaultKind::TornWrite => Fault::TornWrite { node },
+            FaultKind::Isolate => compound::pick_isolate(rng, view, node),
+            FaultKind::KillTwo => compound::pick_kill_two(rng, node, &peers),
+            FaultKind::PartitionAndDelay => {
+                compound::pick_partition_and_delay(rng, view, node, &peers)
+            }
+            FaultKind::Overlap => compound::pick_overlap(rng, view)?,
+            FaultKind::InterruptedMove => compound::pick_interrupted_move(rng, view)?,
+            FaultKind::RestartLoop => Fault::RestartLoop {
+                node,
+                restarts: compound::RESTARTS,
+            },
         })
     }
 
     fn needs_proxy_links(&self) -> bool {
-        self.kinds
-            .iter()
-            .any(|kind| kind.family() == FaultFamily::Link)
+        self.kinds.iter().any(|kind| kind.needs_proxy_links())
     }
 
     fn needs_fsync_on_commit(&self) -> bool {
-        self.kinds
-            .iter()
-            .any(|kind| kind.family() == FaultFamily::Disk)
+        self.kinds.iter().any(|kind| kind.needs_fsync_on_commit())
     }
 }
 
@@ -528,6 +723,18 @@ async fn settle_moves(cluster: &Cluster) -> Result<()> {
             last.lock().expect("moving lock").join(", ")
         )
     })
+}
+
+/// Start `node` again unless it is already running: a compound fault that
+/// failed half way may never have stopped it.
+async fn restart_if_down(cluster: &mut Cluster, node: &str) -> Result<()> {
+    if cluster
+        .node(node)
+        .is_some_and(crate::BrokerNode::is_running)
+    {
+        return Ok(());
+    }
+    cluster.restart_node(node).await
 }
 
 #[cfg(unix)]

@@ -44,7 +44,8 @@ A read that is missing records is allowed, because a subscriber may drop under
 `DropNew` and the offsets show the gap. What a read does hold has to match.
 
 The nemesis waits 1-4 s, injects one fault for 2-6 s, heals it, and repeats.
-Faults never overlap, so a majority is always one fault from whole. The per-PR
+The single faults never overlap, so a majority is always one fault from whole.
+The per-PR
 run lasts 45 seconds with a fixed seed and uses process faults only: kill,
 pause (`SIGSTOP`) and partition. The nightly workflow
 (`.github/workflows/history.yml`) runs for 20 minutes with a random seed and
@@ -53,6 +54,23 @@ clock faults (a broker's lease clock at 0.5x or 20x, the control plane's wall
 clock stepped 15 s forward), disk faults (slow fsyncs, one failed fsync) and
 assignment faults (an operator moving a shard to another replica, a broker
 drained and put back).
+
+A second nemesis, the adversarial one, injects compound faults on four
+brokers: two brokers killed at once, a leader cut off from its peers and the
+control plane until its shards fail over, a partition beside a delayed link,
+two random faults together, a move whose source or destination is killed
+300 ms in, a broker restarted and killed again before it catches up, a torn
+segment write, and a drain that replaces follower copies on the spare broker.
+The nightly workflow runs it for 20 minutes beside the single-fault one, each
+with its own seed, and also goes round each compound kind once in a
+two-minute campaign.
+
+After every heal the campaign also checks liveness. Within 60 s each shard
+must have a running leader that takes a write or answers a get, no move or
+follower replacement in flight, no replica its leader has stopped shipping
+to, and a replica reported caught up so it could fail over again. If one does not get there, the run fails with a line per
+stuck shard that names its leader, its generation and the transition it is
+stuck in.
 
 `FELIX_HISTORY_MODE` picks the replication path. In `lease` mode the campaign
 tests the report and lease path every stream uses by default. In `lease-free`
@@ -68,12 +86,13 @@ cargo test -p felix-cluster --test history -- --nocapture
 
 `FELIX_HISTORY_SEED` takes a number or `random`. Setting
 `FELIX_HISTORY_DURATION_SECS` changes how long the nemesis runs and also
-switches the main campaign to every fault family. The nightly job prints its
-seed and mode first, so a red night replays with:
+switches the main campaign to the long schedule: every single fault family,
+or the compound faults with `FELIX_HISTORY_NEMESIS=adversarial`. The nightly
+jobs print their seed, mode and nemesis first, so a red night replays with:
 
 ```bash
-FELIX_HISTORY_SEED=<seed> FELIX_HISTORY_MODE=lease-free FELIX_HISTORY_DURATION_SECS=1200 \
-    cargo test -p felix-cluster --test history -- --nocapture
+FELIX_HISTORY_SEED=<seed> FELIX_HISTORY_MODE=lease-free FELIX_HISTORY_NEMESIS=adversarial \
+    FELIX_HISTORY_DURATION_SECS=1200 cargo test -p felix-cluster --test history -- --nocapture
 ```
 
 The seed fixes the fault schedule and the clients' choices but not thread

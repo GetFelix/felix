@@ -52,6 +52,15 @@ for what the current release guarantees.
 
 ### Added
 
+- **Adversarial history campaign and liveness checks.** The history
+  checker's nemesis gains compound faults on four brokers: two brokers killed
+  at once, a leader isolated from its peers and the control plane until it
+  fails over, a partition beside a delayed link, two random faults together,
+  a move whose source or destination is killed, restart loops, torn segment
+  writes, and drains that replace follower copies. After every heal the
+  campaign now waits for each shard to serve again and fails naming any shard
+  that is stuck and why. `FELIX_HISTORY_NEMESIS` picks the nemesis, and the
+  nightly workflow runs both.
 - **Atomic commits on one shard.** `Client::commit(tenant, namespace,
   entity_key, [publish | enqueue, put, delete])` writes an event and state
   updates as one record on the stream shard `entity_key` routes to, and
@@ -656,6 +665,27 @@ for what the current release guarantees.
   `publish commit timeout`. The commit order now never moves backwards on a
   replicated batch. See `docs/replication-design.md`, "Replication".
 
+- **A leader counts a follower only for what it has answered (#878).** The
+  quorum mark and the replica report counted a follower the leader had not yet
+  heard from at the offset its cursor starts at, one record below where the
+  leader's own generation begins. A new leader, or a move's source, that could
+  reach none of its followers then published a mark over records it inherited
+  and no follower held: its commit offset covered them, and readers could be
+  handed them as committed. Deposed, the broker refused to drop them and
+  refused every rebuild, so it never rejoined. Both now count
+  `FollowerCursor::confirmed`, what the follower answered holding at this
+  generation. No acknowledged write was affected: a publish waiting on the
+  mark is dropped when its generation ends. See `docs/replication-design.md`,
+  "Replica reports and the committed mark".
+
+- **A `Quorum` failover no longer promotes a move's destination.** Its broker
+  opened the shard as the move's cut-over, without the promotion fence, and
+  under `majority_ack` the report that named it caught up could predate a
+  record the old leader acknowledged on its followers, so that record was
+  lost. Failover on a durable `Quorum` stream now ends the move instead. A
+  promoted leader that gets a new generation while still fencing also keeps
+  replication paused until it reopens, rather than shipping its unfenced log
+  at the old generation in between.
 - **A cache leader that loses its leadership rejoins as a follower (#863).**
   Cache leaders now record where their generation began, on the cache and
   counter logs, and accept the generation on both. Before, a cache leader that

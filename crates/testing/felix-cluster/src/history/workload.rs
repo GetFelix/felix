@@ -241,6 +241,88 @@ impl Workload {
         })
     }
 
+    /// Append a fresh value to `list` through `addr`, recorded as process
+    /// `process` like any other append. The liveness check's write probe: a
+    /// value the history did not know about would read as a phantom.
+    ///
+    /// Nothing is recorded when no connection could be had, since then
+    /// nothing was sent.
+    pub(super) async fn probe_append(
+        &self,
+        process: usize,
+        addr: SocketAddr,
+        list: &str,
+    ) -> Result<()> {
+        let publisher = tokio::time::timeout(CONNECT_TIMEOUT, async {
+            let client = client::connect(addr, &self.tenant_id, &self.token).await?;
+            client.publisher().await
+        })
+        .await
+        .map_err(|_| anyhow!("connecting timed out"))??;
+        let value = self.next_value.fetch_add(1, Ordering::Relaxed);
+        let invoke = self.now();
+        let published = tokio::time::timeout(
+            self.op_timeout,
+            publisher.publish(
+                &self.tenant_id,
+                &self.namespace,
+                list,
+                encode(value),
+                AckMode::PerMessage,
+            ),
+        )
+        .await;
+        let (outcome, result) = match published {
+            Ok(Ok(())) => (AppendOutcome::Ok { offset: None }, Ok(())),
+            Ok(Err(err)) => (classify(&err), Err(err)),
+            Err(_) => (AppendOutcome::Info, Err(anyhow!("no answer in time"))),
+        };
+        self.recorder.record(Op {
+            process,
+            invoke,
+            complete: self.now(),
+            action: Action::Append {
+                list: list.to_string(),
+                value,
+                outcome,
+            },
+        });
+        result
+    }
+
+    /// Get `key` of the cache through `addr`, recorded as process `process`.
+    /// The liveness check's probe for a cache shard.
+    pub(super) async fn probe_get(
+        &self,
+        process: usize,
+        addr: SocketAddr,
+        key: &str,
+    ) -> Result<()> {
+        let client = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            client::connect(addr, &self.tenant_id, &self.token),
+        )
+        .await
+        .map_err(|_| anyhow!("connecting timed out"))??;
+        let invoke = self.now();
+        let got = tokio::time::timeout(
+            self.op_timeout,
+            client.cache_get(&self.tenant_id, &self.namespace, &self.cache, key),
+        )
+        .await
+        .map_err(|_| anyhow!("no answer in time"))??;
+        self.recorder.record_register(RegisterOp {
+            process,
+            invoke,
+            complete: self.now(),
+            key: key.to_string(),
+            action: RegisterAction::Get {
+                value: got.map(|bytes| decode(&bytes)),
+            },
+        });
+        Ok(())
+    }
+
     fn base(&self, list: &str) -> u64 {
         self.bases
             .read()

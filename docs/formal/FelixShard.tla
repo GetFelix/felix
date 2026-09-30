@@ -134,6 +134,16 @@
 (* lagging follower, a majority of the new set that never saw it           *)
 (* (AckedHeldByLeader).                                                    *)
 (*                                                                         *)
+(* Under `AckByFollowers` a planned move and a cancel name a leader without *)
+(* the fence, as the broker opens them: the cut-over waits for the drained *)
+(* leader's whole log, and a cancel hands the shard back to the leader that *)
+(* had it. A failover that names the move's destination is opened the same *)
+(* way, because its broker cannot tell it from the cut-over it expected.   *)
+(* With `PromoteDestination` placement may name it, and TLC finds the      *)
+(* destination opening without a record the old leader acknowledged after *)
+(* its last report (AckedHeldByLeader). Without it a `Quorum` failover     *)
+(* ends the move instead.                                                  *)
+(*                                                                         *)
 (* `StartRecord` has a leader write a generation-start record before any   *)
 (* client write, and lets the mark and the report's length stop only at a  *)
 (* record of its own generation. Without it, a leader acknowledges a       *)
@@ -179,7 +189,8 @@ CONSTANTS
     StartRecord,    \* whether a new leader writes a generation-start record and the mark waits for it
     Spares,         \* brokers outside the replica set that a failover may bring in
     ReplaceOnPromote, \* whether a promotion swaps the old leader for a spare
-    SeatHoldsCopy   \* whether a replacement is seated only once it holds what the old set held
+    SeatHoldsCopy,  \* whether a replacement is seated only once it holds what the old set held
+    PromoteDestination \* whether a failover may name a move's destination leader
 
 ASSUME Promotion \in {"leader-report", "log-order", "any"}
 ASSUME ReportBeforeAck \in BOOLEAN
@@ -194,17 +205,13 @@ ASSUME AckChecksLease \in BOOLEAN /\ AckOnResponse \in BOOLEAN
 ASSUME AckByFollowers \in BOOLEAN /\ FenceOnPromote \in BOOLEAN
 ASSUME LabelOnReceipt \in BOOLEAN
 ASSUME StartRecord \in BOOLEAN
+ASSUME PromoteDestination \in BOOLEAN
 \* Only a promotion or a replacement changes the set, so spares are checked
 \* with follower acks (no handoff, no cancel) and no staged copy.
 ASSUME Spares \subseteq Brokers /\ ReplaceOnPromote \in BOOLEAN /\ SeatHoldsCopy \in BOOLEAN
-ASSUME Spares /= {} => AckByFollowers /\ ~StageMove
+ASSUME Spares /= {} => AckByFollowers /\ ~StageMove /\ ~Handoff /\ ~Cancel
 ASSUME ReplaceOnPromote => Spares /= {} /\ MaxMoves = 0
-\* The fence is modelled on promotion only, as the broker fences: a planned
-\* move and a cancel name a leader without one, so neither is checked
-\* alongside follower acks. The fence without follower acks is the broker as
-\* built: acknowledgements still come from the report and the lease.
-ASSUME AckByFollowers => ~Handoff /\ ~Cancel
-\* And no lease anywhere on a `Quorum` write's path: not at admission (see
+\* No lease anywhere on a `Quorum` write's path: not at admission (see
 \* Serving), not at the commit, not at the acknowledgement.
 ASSUME AckByFollowers => Quorum /\ ~CheckAtCommit /\ ~AckChecksLease
 ASSUME Eps < L /\ Margin >= 0
@@ -322,6 +329,13 @@ Opened(b, g) == IF StartRecord THEN Append(log[b], Start(g)) ELSE log[b]
 OwnGen(b, k) == StartRecord => log[b][k].g = bgen[b]
 
 LastGen(b) == IF Len(log[b]) = 0 THEN 0 ELSE log[b][Len(log[b])].lg
+
+\* A move's destination: staged and copying, or named successor by the fence.
+\* The broker opens it without the promotion fence whichever write names it
+\* leader (`begin_open` in services/felix-broker-service/src/shards/lifecycle.rs
+\* skips a shard it expects as `incoming`), because a cut-over only names it
+\* once it holds the drained leader's whole log.
+Incoming(f) == f \in staged \/ (draining /\ successor = f)
 
 -----------------------------------------------------------------------------
 
@@ -699,6 +713,8 @@ ReportAt(b) ==
 Report(b) ==
     /\ AckByFollowers => Promotion = "leader-report"
     /\ LeaseValid(b)
+    \* Nothing runs the shard's replication pass until the fence is done.
+    /\ ~fencing[b]
     /\ leader = b /\ bgen[b] = gen
     /\ inflight = <<>>
     /\ inflight' = << [holders |-> { f \in Brokers \ {b} :
@@ -783,6 +799,10 @@ Promote(v, f, views) ==
     /\ f /= v.leader
     /\ v.lapsed
     /\ f \notin out
+    \* With it off, a `Quorum` failover never names the destination: it ends
+    \* the move instead (`promote` in services/felix-controlplane-service/src/
+    \* cluster/placement/plan.rs).
+    /\ Quorum /\ ~PromoteDestination => ~Incoming(f)
     /\ CASE Promotion = "leader-report" -> ByLeaderReport(v.report, f)
           [] Promotion = "log-order"     -> ByLogOrder(v.leader, f)
           [] Promotion = "any"           -> ByAny(f)
@@ -816,13 +836,13 @@ Promote(v, f, views) ==
     \* The new leader persists its generation itself first; with
     \* `FenceOnPromote` it then fences the others before it serves.
     /\ promised' = IF Promises THEN [promised EXCEPT ![f] = gen + 1] ELSE promised
-    /\ fencing' = [fencing EXCEPT ![f] = FenceOnPromote]
+    /\ fencing' = [fencing EXCEPT ![f] = FenceOnPromote /\ ~Incoming(f)]
     /\ answered' = [answered EXCEPT ![f] = {}]
     \* Cursors belong to a generation: the new leader starts with none.
     /\ confirmed' = [confirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
     \* A fenced leader may still take another log; it writes its start record
     \* when it opens.
-    /\ log' = IF FenceOnPromote THEN log ELSE [log EXCEPT ![f] = Opened(f, gen + 1)]
+    /\ log' = IF FenceOnPromote /\ ~Incoming(f) THEN log ELSE [log EXCEPT ![f] = Opened(f, gen + 1)]
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
                     staleCommit, successor, moves >>
 
@@ -897,6 +917,10 @@ Fence(v, f, views) ==
     /\ f /= v.leader
     /\ f \notin halted
     /\ staged /= {} => f \in staged
+    \* Placement fences only on a report from the generation it read
+    \* (`ready_to_fence` in moves.rs), and a leader still in its promotion fence
+    \* sends none, so a move never catches one mid-fence.
+    /\ v.report.gen = v.gen
     /\ Cas(v)
     /\ ver' = ver + 1
     /\ cpView' = views
@@ -932,6 +956,13 @@ ObserveFence(b) ==
                     joining, leaving, joinedAt >>
     /\ UNCHANGED fenceVars
 
+\* A leader named without the fence still persists its generation before its
+\* start record (`accept_generation` in `open`, lifecycle.rs), and its cursors
+\* start empty at the new generation.
+Takes(f) ==
+    /\ promised' = IF Promises THEN [promised EXCEPT ![f] = gen + 1] ELSE promised
+    /\ confirmed' = [confirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
+
 CutOver(v, f, views) ==
     /\ v.draining /\ v.successor = f
     /\ f \notin halted
@@ -951,9 +982,10 @@ CutOver(v, f, views) ==
     /\ stopped' = [stopped EXCEPT ![f] = FALSE]
     /\ staged' = staged \ {f}
     /\ log' = [log EXCEPT ![f] = Opened(f, gen + 1)]
+    /\ Takes(f)
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
                     staleCommit, successor, moves, out, mine, joining, leaving, joinedAt >>
-    /\ UNCHANGED fenceVars
+    /\ UNCHANGED << fencing, answered >>
 
 \* An operator cancels a fenced move (`cancel_move` in
 \* services/felix-controlplane-service/src/cluster/placement/operator.rs): the
@@ -979,10 +1011,11 @@ Retake(v, f, views) ==
     /\ draining' = FALSE
     /\ stopped' = [stopped EXCEPT ![f] = FALSE]
     /\ log' = [log EXCEPT ![f] = Opened(f, gen + 1)]
+    /\ Takes(f)
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, queued, pending,
                     acked, writes, staleCommit, successor, moves, staged, out, mine,
                     joining, leaving, joinedAt >>
-    /\ UNCHANGED fenceVars
+    /\ UNCHANGED << fencing, answered >>
 
 -----------------------------------------------------------------------------
 (* Replacing a follower (`reseat` and `replacement_step` in                 *)

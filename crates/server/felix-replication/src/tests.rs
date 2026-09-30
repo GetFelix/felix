@@ -138,6 +138,14 @@ fn cursor(next_offset: u64) -> FollowerCursor {
     )
 }
 
+/// A follower that has answered, at this generation, that it holds the log up
+/// to `offset`.
+fn answered(offset: u64) -> FollowerCursor {
+    let mut cursor = cursor(offset);
+    cursor.confirmed = offset;
+    cursor
+}
+
 fn stored(durable_offset: u64) -> InternalMessage {
     InternalMessage::ReplicateOk(ReplicateOk {
         correlation_id: 0,
