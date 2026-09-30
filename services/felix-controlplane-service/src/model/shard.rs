@@ -225,6 +225,9 @@ pub enum MoveReason {
     Operator,
     /// A follower on a draining node is being replaced.
     Replace,
+    /// A follower's broker is gone, or the replica set is short of the
+    /// replication factor: a copy is being added to restore it.
+    Restore,
 }
 
 impl MoveReason {
@@ -235,14 +238,21 @@ impl MoveReason {
             Self::Balance => "balance",
             Self::Operator => "operator",
             Self::Replace => "replace",
+            Self::Restore => "restore",
         }
     }
 
     /// The reverse of [`Self::as_str`].
     pub fn parse(value: &str) -> Option<Self> {
-        [Self::Drain, Self::Balance, Self::Operator, Self::Replace]
-            .into_iter()
-            .find(|reason| reason.as_str() == value)
+        [
+            Self::Drain,
+            Self::Balance,
+            Self::Operator,
+            Self::Replace,
+            Self::Restore,
+        ]
+        .into_iter()
+        .find(|reason| reason.as_str() == value)
     }
 }
 

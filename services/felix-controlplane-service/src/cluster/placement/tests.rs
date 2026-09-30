@@ -12,6 +12,7 @@ mod reconciler;
 mod regions;
 mod rendezvous;
 mod replicas;
+mod restore;
 mod wakes;
 mod zones;
 

@@ -99,6 +99,7 @@ expectations=(
   "FelixShardFencedAckAnyKept pass"
   "FelixShardFencedAckAnyReplaced violates AckedHeldByLeader"
   "FelixShardFencedAckSeat pass"
+  "FelixShardFencedAckGrow pass"
   "FelixShardFencedAckSeatEarly violates AckedHeldByLeader"
   "FelixShardReadsRound pass"
   "FelixShardReadsNoRound violates NoStaleRead"
