@@ -1462,6 +1462,12 @@ has, and reports even when that is none. A
 leader that dies mid-move is a failover, and the successor is a candidate
 there like any other replica. Neither path can name a broker holding less
 than the report said, because the report is the only input either reads.
+On a durable `Quorum` stream that is not enough: the leader acknowledges on
+its followers' answers without waiting for the report, so the last report
+can predate a record the followers hold. A promoted follower fences a
+majority and takes that record, but a move's destination opens the shard as
+its cut-over, without the fence, so failover on such a stream never
+promotes the destination.
 
 > `a_move_switches_over_in_well_under_a_second`: with every broker on the
 > default sync interval and placement on a slow timer, the destination accepts

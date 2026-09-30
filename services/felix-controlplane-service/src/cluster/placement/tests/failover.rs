@@ -158,6 +158,44 @@ fn a_quorum_failover_drops_a_staged_copy() {
     );
 }
 
+/// A move's destination is never promoted on a `Quorum` shard, however caught
+/// up its last report says it is. Its broker opens the shard as the move's
+/// cut-over, without the promotion fence, and that report can predate a record
+/// the dead leader acknowledged on its followers.
+#[test]
+fn a_quorum_failover_does_not_promote_a_move_destination() {
+    let streams = vec![Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 3)
+    }];
+    let nodes = vec![
+        node("broker-b", NodeLifecycle::Live, None),
+        node("broker-c", NodeLifecycle::Live, None),
+        node("broker-d", NodeLifecycle::Live, None),
+    ];
+    let mut moving = assigned("orders", "broker-a", &["broker-b", "broker-c", "broker-d"]);
+    moving.successor = Some("broker-d".to_string());
+
+    let only_destination = CaughtUpNodes(["broker-d".to_string()].into());
+    let planned = plan(
+        &streams,
+        &[],
+        &nodes,
+        std::slice::from_ref(&moving),
+        &only_destination,
+    );
+    assert_eq!(
+        planned.to_place().count(),
+        0,
+        "the move's destination was promoted",
+    );
+
+    let both = CaughtUpNodes(["broker-b".to_string(), "broker-d".to_string()].into());
+    let planned = plan(&streams, &[], &nodes, &[moving], &both);
+    let (_, leader, _) = planned.to_place().next().expect("placed");
+    assert_eq!(leader, "broker-b");
+}
+
 /// **A replicated shard is never handed to a node that does not hold it.**
 ///
 /// The leader is gone and no replica is caught up. Placing the shard on a node

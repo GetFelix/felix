@@ -10,9 +10,21 @@ on:
     paths-ignore:
       - "docs/**"
       - "**/*.md"
+  # Model-check chosen TLA+ configurations on a branch, including the ones too
+  # big for the per-PR budget. Only the formal job runs.
+  workflow_dispatch:
+    inputs:
+      tla_configs:
+        description: "Configurations to check, space-separated, split across the jobs; empty checks the registered set"
+        required: false
+        default: ""
+      tla_timeout_minutes:
+        description: "Per-job timeout, in minutes (at most 360)"
+        default: "60"
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # A manual model-check run stands alone, so a second one does not cancel it.
+  group: ci-${{ github.ref }}${{ github.event_name == 'workflow_dispatch' && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 permissions:
@@ -36,7 +48,7 @@ jobs:
     # but changing anything either binary compiles from should.
     if: >-
       github.event_name == 'push' ||
-      github.event.pull_request.draft == false
+      (github.event_name == 'pull_request' && github.event.pull_request.draft == false)
     strategy:
       fail-fast: false
       matrix:
@@ -107,6 +119,7 @@ jobs:
   # runs on GitHub-hosted: that keeps PRs out of the Azure queue, and fork code
   # never reaches a persistent machine. See docs-site development/building.md.
   test:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ${{ github.event_name != 'pull_request' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
     timeout-minutes: 120
     env:
@@ -227,6 +240,7 @@ jobs:
   # what a pull request needs to know is that the chart still says what the
   # docs say it does.
   chart:
+    if: github.event_name != 'workflow_dispatch'
     name: Helm chart
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -257,6 +271,7 @@ jobs:
   # anyway -- the binding wraps the Rust client, so a change anywhere under
   # `crates/sdk/felix-client` can break it just as surely.
   python:
+    if: github.event_name != 'workflow_dispatch'
     name: Python client conformance
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -305,6 +320,7 @@ jobs:
   # break it. Unconditional for the same reason too -- a job behind a path
   # filter is a job that breaks silently.
   typescript:
+    if: github.event_name != 'workflow_dispatch'
     name: Node client conformance
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -363,15 +379,15 @@ jobs:
   # whether it must pass or which invariant it must violate, so the trace
   # that shows a check is load-bearing stays a trace.
   formal:
-    name: TLA+ model (${{ matrix.shard }}/4)
+    name: TLA+ model (${{ matrix.shard }}/6)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    # One job ran past its hour once the reads configurations landed; four
-    # shards keep each well inside it.
+    timeout-minutes: ${{ fromJSON(inputs.tla_timeout_minutes || '60') }}
+    # Six shards, filled by each configuration's measured time
+    # (scripts/check_tla.sh), keep every job near half an hour.
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -396,8 +412,10 @@ jobs:
 
       - name: Model-check
         env:
-          TLA_SHARD: ${{ matrix.shard }}/4
-        run: scripts/check_tla.sh
+          TLA_SHARD: ${{ matrix.shard }}/6
+          TLA_CONFIGS: ${{ inputs.tla_configs }}
+        # Word splitting is wanted: the input is a list of names.
+        run: scripts/check_tla.sh $TLA_CONFIGS
 
   # The decoders that parse input from outside the process, on a time budget.
   #
@@ -410,6 +428,7 @@ jobs:
   # The deep runs are fuzz-nightly.yml's; what a pull request needs to know is that the committed seeds and everything a minute of
   # mutation reaches still decode or refuse cleanly.
   fuzz:
+    if: github.event_name != 'workflow_dispatch'
     name: Fuzz the decoders
     runs-on: ubuntu-latest
     timeout-minutes: 45

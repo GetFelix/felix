@@ -578,9 +578,12 @@ impl ShardLifecycle {
         } else {
             self.fence.close(key);
         }
+        // A reopen keeps an unfinished promotion pending: until it finishes,
+        // the published routes still name the generation being fenced, and
+        // replication would otherwise ship the unfenced log at it.
         if phase == Phase::Fencing {
             self.fence.await_promotion(key, generation);
-        } else {
+        } else if phase != Phase::Opening {
             self.fence.promotion_settled(key);
         }
         let previous = self.shards.get(key).map(|shard| shard.phase);

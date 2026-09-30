@@ -860,7 +860,9 @@ A move stops safely at every step. A destination that stops being live is
 dropped from the move (`abandon`) or, after the fence, passed over for
 another caught-up replica or the old leader itself, which takes the shard
 back at a new generation. A leader that dies mid-move is a failover, where
-the successor is a candidate like any other replica. An ephemeral stream has
+the successor is a candidate like any other replica, except on a durable
+`Quorum` stream: there the successor would open the shard as a cut-over,
+without the promotion fence, so failover passes it over. An ephemeral stream has
 no log to hand off and is reassigned as it always was.
 
 Between the fence and the new owner opening, nobody serves the shard. A

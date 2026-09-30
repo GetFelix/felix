@@ -85,6 +85,31 @@ fn a_cancelled_move_is_not_held_for_the_fence() {
     ));
 }
 
+/// A new generation reaching a shard still fencing starts the fence again at
+/// that generation. Until the reopen finishes the routes still name the old
+/// one, and the shard keeps waiting at it, so replication does not ship the
+/// unfenced log to followers that may hold records it lacks.
+#[test]
+fn a_new_generation_while_fencing_keeps_the_promotion_pending() {
+    let mut own = fencing_lifecycle();
+    own.observe(&key(0), Some(&assigned_to("broker-a", 3)));
+    assert_eq!(own.opened(&key(0), 3), Opened::Fencing);
+
+    assert_eq!(
+        own.observe(&key(0), Some(&assigned_to("broker-a", 4))),
+        Action::Open {
+            key: key(0),
+            generation: 4,
+            new_term: true,
+            fence: true,
+        }
+    );
+    assert_eq!(own.fence().awaiting_promotion(&key(0)), Some(3));
+
+    assert_eq!(own.opened(&key(0), 4), Opened::Fencing);
+    assert_eq!(own.fence().awaiting_promotion(&key(0)), Some(4));
+}
+
 /// Reassigned away while fencing: it never served, and it lets go like an
 /// open shard does.
 #[test]

@@ -153,7 +153,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardRealMargins.cfg` | the same margins and drift with one `Quorum` write carried across a promotion, acknowledged on the report's answer and a valid lease, as the code does | pass every invariant (2.38M distinct states) |
 | `FelixShardAckWithoutLease.cfg` | the same with the lease taken out of the acknowledgement: the report alone releases it | pass every invariant (2.38M distinct states, the same ones: the report is only sent on a valid lease) |
 | `FelixShardFencedAck.cfg` | the broker once `majority_ack` is finalized: acknowledged by follower acks at the leader's generation, no lease anywhere on the write's path and no report, the promotion fence, and the start record; no margin on either side of the lease, drifting clocks, two writes | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (13.0M distinct states, depth 31, 100 s on sixteen cores) |
-| `FelixShardFencedAckTwoPromotions.cfg` | the same with two promotions (`L = 2`) and no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (14.3M distinct states, depth 35, 80 s on ten cores, before acks counted follower answers and not re-run since; by hand only, see below). With the start record on too it had not finished at 80M distinct states after nine minutes on sixteen cores |
+| `FelixShardFencedAckTwoPromotions.cfg` | the same with two promotions (`L = 2`) and no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (36.7M distinct states, depth 36, 28.5 min on a four-core CI runner; by hand only, see below) |
+| `FelixShardFencedAckTwoPromotionsStart.cfg` | the same with the start record on and one write | pass, the same invariants (28.8M distinct states, depth 36, 18.5 min on a CI runner) |
 | `FelixShardFollowerLabels.cfg` | the same with followers labelling a shipped record with the sender's generation rather than the one that wrote it (`LabelOnReceipt`) | violate `AckedOnMajority` |
 | `FelixShardUnfencedAck.cfg` | the same without the fence | violate `AckedHeldByLeader` |
 | `FelixShardFencedAckAnyKept.cfg` | `FelixShardFencedAck.cfg` with a spare fourth broker outside the replica set (`Spares`), promotion of any replica however far behind (`Promotion = "any"`), and the promotion keeping the replica set, the old leader in it; no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (0.48M distinct states, depth 31, 27 s on four workers; with `Drift = 1`, 39.0M distinct states in 35 min on four workers, by hand) |
@@ -161,6 +162,12 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardFencedAckSeat.cfg` | `FelixShardFencedAckAnyKept.cfg` with one follower replacement (`MaxMoves = 1`): a spare joins beside a leaving follower at one generation, counting toward the quorum, and the leaving one goes at the next, once the newcomer holds what a majority of the set held when it joined (`SeatHoldsCopy`); one write, `L = 2`, time to 3, no start records | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (2.20M distinct states, depth 27, 90 s on a four-core CI runner) |
 | `FelixShardFencedAckSeatLonger.cfg` | the same with start records, `L = 4` and time to 4 | pass, the same invariants (34.9M distinct states, depth 37, 36 min on a four-core CI runner; by hand only) |
 | `FelixShardFencedAckSeatEarly.cfg` | the same with the seat not waiting, as placement did when a report named the newcomer caught up before anything was counted at the joining generation | violate `AckedHeldByLeader`: a record acknowledged on the leader and the leaving follower, the newcomer seated without it, and the next leader fencing the newcomer and the lagging follower |
+| `FelixShardFencedAckMoveShort.cfg` | `FelixShardFencedAck.cfg`'s acknowledgement with a planned move toward a follower: fence, drained report, cut-over without the promotion fence; a failover during the move never names the destination (`PromoteDestination = FALSE`); report-read promotion, start records, one write, `L = 1`, time to 1 | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (32.7M distinct states, depth 43, 22 min on a CI runner) |
+| `FelixShardFencedAckStagedMoveShort.cfg` | the same from a staged move: two replicas and a destination copying outside the quorum | pass, the same invariants (25.2M distinct states, depth 43, 20 min) |
+| `FelixShardFencedAckMoveCancelShort.cfg` | the move with the operator's cancel on: the fenced leader takes the shard back without the fence | pass, the same invariants (42.2M distinct states, depth 43, 35 min) |
+| `FelixShardFencedAckMove.cfg`, `FelixShardFencedAckStagedMove.cfg`, `FelixShardFencedAckMoveCancel.cfg` | the three above with `L = 2` and time to 2 | pass, the same invariants: 66.0M distinct states, depth 44, 58 min, and 54.7M, depth 44, 31 min, on a CI runner; the cancel had not finished at 54M after 25 min. By hand only |
+| `FelixShardFencedAckMoveDestination.cfg` | the move with a failover free to name the destination, as placement did | violate `AckedHeldByLeader`: the destination opens as if cut over, without the fence and without a record the old leader acknowledged after its last report |
+| `FelixShardFencedAckStagedMoveDestination.cfg` | the same from a staged move | violate `AckedHeldByLeader` |
 | `FelixShardReadsRound.cfg` | `FelixShardReads.tla`: `FelixShardFencedAck.cfg`'s writes with one read, confirmed by a round of fences at the leader's generation after it takes its value (`ReadConfirm = "round"`); `L = 2`, time to 2, one write | pass `NoStaleRead`, `AckedHeldByLeader`, `AckedOnMajority` (22.1M distinct states, depth 27, 6 min on four workers) |
 | `FelixShardReadsNoRound.cfg` | the same with the round skipped | violate `NoStaleRead` |
 | `FelixShardReadsLease.cfg` | the same with the lease in place of the round | violate `NoStaleRead` |
@@ -386,13 +393,17 @@ the new leader not taking the log ahead of its own, TLC finds a record a
 majority acknowledged before the fence missing from the new leader.
 
 `FelixShardFencedAck.cfg` allows one promotion. `FelixShardFencedAckTwoPromotions.cfg`
-allows two (`L = 2`, without drift, which did not finish). Neither tells a
+allows two (`L = 2`, without drift). Neither tells a
 leader that counts only records of its own generation from one that counts
 any it holds; that takes a third leadership (below). The two-promotion
-configuration takes eight and a half minutes on a CI runner, which would put
-the job near its hour, so it is run by hand:
+configuration takes 28 minutes on a CI runner, so it is run by hand;
+`FelixShardFencedAckTwoPromotionsStart.cfg`, with the start record on and one
+write, fits CI. The manual dispatch of the CI workflow takes a list of
+configurations for runs like these:
 
 ```bash
+gh workflow run ci.yml --ref <branch> -f tla_timeout_minutes=120 \
+  -f tla_configs="FelixShardFencedAckTwoPromotions FelixShardFencedAckMove"
 java -jar target/tla/tla2tools-v1.7.4.jar -deadlock -workers auto \
   -config docs/formal/FelixShardFencedAckTwoPromotions.cfg docs/formal/FelixShard.tla
 ```
@@ -447,6 +458,27 @@ b's y in its fence, and AckedOnMajority fails. With it
 covered as well) the new leader's start record has to reach a majority before
 x counts, and every later fence prefers that log to b's. 12.9M distinct
 states, 90 s.
+
+### A move under follower acks
+
+The broker opens a planned move's cut-over, and a cancel's hand-back, without
+the promotion fence: the destination takes over only once the drained leader's
+whole log is on it, and a cancel returns the shard to the leader that had it.
+The model does the same, and persists the new leader's generation before its
+start record, as `open` does. Placement fences a move only on a report from the
+generation it read, and a leader still in its own promotion fence sends none,
+so a move never catches one mid-fence.
+
+What TLC found is the failover in between. The destination's broker cannot
+tell a failover that names it from the cut-over it expects, so it opens that
+without the fence too. A report can name the destination caught up and the
+leader then acknowledge a record on itself and another follower, since under
+`majority_ack` nothing waits for the report. The leader dies, placement
+promotes the destination from that report, and the destination serves
+without the record (`FelixShardFencedAckMoveDestination.cfg`,
+`FelixShardFencedAckStagedMoveDestination.cfg`, twelve steps). Placement now
+leaves a move's destination out of a `Quorum` failover, which ends the move
+(`PromoteDestination = FALSE`), and the move configurations pass.
 
 ### The round that makes a read linearizable
 

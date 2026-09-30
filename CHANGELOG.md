@@ -647,6 +647,15 @@ for what the current release guarantees.
 
 ### Fixed
 
+- **A `Quorum` failover no longer promotes a move's destination.** Its broker
+  opened the shard as the move's cut-over, without the promotion fence, and
+  under `majority_ack` the report that named it caught up could predate a
+  record the old leader acknowledged on its followers, so that record was
+  lost. Failover on a durable `Quorum` stream now ends the move instead. A
+  promoted leader that gets a new generation while still fencing also keeps
+  replication paused until it reopens, rather than shipping its unfenced log
+  at the old generation in between.
+
 - **A `Quorum` failover keeps its replica set.** Failover used to rebuild the
   followers from live brokers, dropping the dead leader and adding a broker
   that had never held the shard. With `majority_ack` finalized the promoted

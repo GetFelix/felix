@@ -292,8 +292,22 @@ pub(super) fn plan_abandoning(
 
         // The leader is gone. Prefer one of its followers -- but only one that
         // actually holds the log, or the failover is the data loss.
+        //
+        // On a fenced shard a move's destination is never promoted: its broker
+        // takes the new leadership as the cut-over and serves without the
+        // promotion fence, and its last report can predate records the old
+        // leader acknowledged on its followers. `PromoteDestination` in
+        // `docs/formal/FelixShard.tla`.
+        let promotable: Vec<&Node> = match current.get(&key) {
+            Some(previous) if fenced => eligible
+                .iter()
+                .copied()
+                .filter(|node| previous.successor.as_deref() != Some(node.node_id.as_str()))
+                .collect(),
+            _ => eligible.clone(),
+        };
         if let Some(previous) = current.get(&key)
-            && let Some(promoted) = promote(&key, previous, &eligible, caught_up)
+            && let Some(promoted) = promote(&key, previous, &promotable, caught_up)
         {
             *load.entry(promoted).or_default() += 1;
             let replicas = if fenced {
