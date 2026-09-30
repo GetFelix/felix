@@ -183,8 +183,8 @@ async fn a_refused_rebuild_keeps_the_halt_and_frees_the_slot() {
     assert_eq!(refusing_cursor.halted, Some(Halt::Diverged));
     assert!(!refusing_cursor.rebuilding);
 
-    // And it is not asked again: nothing about a refusal changes with the
-    // next pass, and asking would be a warning per pass for nothing.
+    // And it is not asked again on the next pass: asking every pass would be
+    // a warning per pass for nothing.
     ship(&refusing, &log, &mut refusing_cursor, &rebuilds).await;
     assert_eq!(
         refusing.rebuilds(),
@@ -194,6 +194,68 @@ async fn a_refused_rebuild_keeps_the_halt_and_frees_the_slot() {
 
     ship(&willing, &log, &mut willing_cursor, &rebuilds).await;
     assert_eq!(willing.rebuilds(), vec![0], "the refusal kept the slot");
+}
+
+/// **A refusal is asked again once its backoff runs out**, rather than
+/// standing for the rest of the generation, and the wait grows with each
+/// refusal in a row. A follower restarted onto a build that accepts, or one
+/// that has since dropped what it would not discard, then rejoins by itself.
+#[tokio::test(start_paused = true)]
+async fn a_refused_rebuild_is_asked_again_after_a_backoff() {
+    let (log, _dir) = leader_log(&["a"]).await;
+    let rebuilds = policy(1);
+    let follower = ScriptedFollower::new([
+        Ok(refused(ErrorCode::LogConflict, 0)),
+        Ok(refused(ErrorCode::LogConflict, 0)),
+        Ok(stored(0)),
+    ]);
+    let mut cursor = diverged(0);
+
+    ship(&follower, &log, &mut cursor, &rebuilds).await;
+    let first = cursor.rebuild_refused.expect("backing off");
+    assert_eq!(first.refusals, 1);
+
+    tokio::time::advance(RebuildBackoff::FIRST - std::time::Duration::from_millis(1)).await;
+    ship(&follower, &log, &mut cursor, &rebuilds).await;
+    assert_eq!(
+        follower.rebuilds(),
+        vec![0],
+        "asked before the backoff ran out"
+    );
+
+    tokio::time::advance(std::time::Duration::from_millis(1)).await;
+    ship(&follower, &log, &mut cursor, &rebuilds).await;
+    assert_eq!(follower.rebuilds(), vec![0, 0]);
+    let second = cursor.rebuild_refused.expect("backing off");
+    assert_eq!(second.refusals, 2);
+    assert_eq!(
+        second.retry_at - tokio::time::Instant::now(),
+        RebuildBackoff::FIRST * 2,
+        "the wait did not grow"
+    );
+
+    tokio::time::advance(RebuildBackoff::FIRST * 2).await;
+    ship(&follower, &log, &mut cursor, &rebuilds).await;
+    assert_eq!(follower.rebuilds(), vec![0, 0, 0]);
+    assert_eq!(cursor.halted, None);
+    assert!(cursor.rebuilding);
+    assert_eq!(
+        cursor.rebuild_refused, None,
+        "an accepted rebuild resets the backoff"
+    );
+}
+
+/// The wait is capped, however many refusals in a row.
+#[test]
+fn the_rebuild_backoff_is_capped() {
+    let now = tokio::time::Instant::now();
+    let mut backoff = None;
+    for _ in 0..40 {
+        backoff = Some(RebuildBackoff::after(backoff, now));
+    }
+    let backoff = backoff.expect("backoff");
+    assert_eq!(backoff.refusals, 40);
+    assert_eq!(backoff.retry_at - now, RebuildBackoff::MAX);
 }
 
 /// **A peer that predates rebuilds stays halted.** It answers a kind it
@@ -236,7 +298,7 @@ async fn an_unreachable_follower_is_asked_again() {
 
     let progress = ship(&follower, &log, &mut cursor, &rebuilds).await;
     assert_eq!(progress, Progress::Halted(Halt::Diverged));
-    assert!(!cursor.rebuild_refused);
+    assert_eq!(cursor.rebuild_refused, None);
 
     ship(&follower, &log, &mut cursor, &rebuilds).await;
     assert_eq!(follower.rebuilds(), vec![0, 0]);

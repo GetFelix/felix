@@ -1042,10 +1042,28 @@ mod replica_state {
         assert_eq!(stored(&broker).await, vec!["a", "b", "acked"]);
     }
 
+    fn rebuild_from(generation: u64, base_offset: u64) -> felix_wire::internal::ReplicateRebuild {
+        felix_wire::internal::ReplicateRebuild {
+            correlation_id: 1,
+            shard: batch(generation, 0, &[]).shard,
+            log: felix_wire::internal::ReplicaLog::Stream,
+            base_offset,
+        }
+    }
+
+    fn resumes_at(answer: &InternalMessage) -> u64 {
+        match answer {
+            InternalMessage::ReplicateOk(ok) => ok.durable_offset,
+            other => panic!("expected an acknowledgement, got {:?}", other.kind()),
+        }
+    }
+
     /// **A rebuild does not discard committed records either.** The leader
-    /// asking may not hold them, and this copy may be the last one.
+    /// asking may not hold them, and this copy may be the last one. What lies
+    /// past the commit offset goes, and the leader re-ships from its base so
+    /// the committed records are compared before anything lands after them.
     #[tokio::test]
-    async fn a_rebuild_that_would_discard_committed_records_is_refused() {
+    async fn a_rebuild_keeps_the_committed_records_and_drops_the_rest() {
         let (broker, _dir) = broker_with_storage().await;
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
         handler
@@ -1055,17 +1073,81 @@ mod replica_state {
             )
             .await;
 
-        let answer = handler
-            .rebuild(felix_wire::internal::ReplicateRebuild {
-                correlation_id: 1,
-                shard: batch(4, 0, &[]).shard,
-                log: felix_wire::internal::ReplicaLog::Stream,
-                base_offset: 0,
-            })
-            .await;
+        let answer = handler.rebuild(rebuild_from(4, 0)).await;
 
+        assert_eq!(resumes_at(&answer), 0, "the leader re-ships from its base");
+        assert_eq!(stored(&broker).await, vec!["a", "b"]);
+
+        let answer = handler
+            .apply(batch(4, 0, &["a", "b", "x"]), felix_broker::LogKind::Stream)
+            .await;
+        assert_eq!(resumes_at(&answer), 3);
+        assert_eq!(stored(&broker).await, vec!["a", "b", "x"]);
+    }
+
+    /// **The shape of #863.** A leader that never recorded where its
+    /// generation began comes back as a follower holding one record past the
+    /// commit offset. With no history its divergence halts, and the rebuild the
+    /// new leader then asks for keeps what was committed rather than being
+    /// refused for the rest of the generation.
+    #[tokio::test]
+    async fn a_follower_with_no_history_is_rebuilt_above_its_commit_offset() {
+        let (broker, _dir) = broker_with_storage().await;
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
+        let log = broker
+            .durable_storage()
+            .expect("storage")
+            .open_stream(TENANT, NAMESPACE, STREAM, 0)
+            .expect("open");
+        log.append(&[
+            Bytes::from_static(b"a"),
+            Bytes::from_static(b"b"),
+            Bytes::from_static(b"unacked"),
+        ])
+        .await
+        .expect("append");
+        log.advance_commit_offset(2).await.expect("commit");
+
+        let answer = handler
+            .apply(batch(5, 2, &["other"]), felix_broker::LogKind::Stream)
+            .await;
         assert_eq!(refusal(&answer).code, ErrorCode::LogConflict);
-        assert_eq!(stored(&broker).await, vec!["a", "b", "c"]);
+
+        let answer = handler.rebuild(rebuild_from(5, 0)).await;
+        assert_eq!(resumes_at(&answer), 0);
+        let answer = handler
+            .apply(
+                batch(5, 0, &["a", "b", "other"]),
+                felix_broker::LogKind::Stream,
+            )
+            .await;
+        assert_eq!(resumes_at(&answer), 3);
+        assert_eq!(stored(&broker).await, vec!["a", "b", "other"]);
+    }
+
+    /// **A leader that disagrees with a committed record is refused, loudly.**
+    /// The re-shipped records reach the conflict, and the next rebuild from
+    /// that leader is refused rather than repeating the transfer.
+    #[tokio::test]
+    async fn a_rebuild_from_a_leader_that_disagreed_with_a_committed_record_is_refused() {
+        let (broker, _dir) = broker_with_storage().await;
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+        handler
+            .apply(
+                committed(4, 0, &["a", "b", "c"], 2),
+                felix_broker::LogKind::Stream,
+            )
+            .await;
+        assert_eq!(resumes_at(&handler.rebuild(rebuild_from(4, 0)).await), 0);
+
+        let answer = handler
+            .apply(batch(4, 0, &["A", "b", "x"]), felix_broker::LogKind::Stream)
+            .await;
+        assert_eq!(refusal(&answer).code, ErrorCode::LogConflict);
+
+        let answer = handler.rebuild(rebuild_from(4, 0)).await;
+        assert_eq!(refusal(&answer).code, ErrorCode::LogConflict);
+        assert_eq!(stored(&broker).await, vec!["a", "b"]);
     }
 }
 
