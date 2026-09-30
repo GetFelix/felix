@@ -54,9 +54,9 @@ permissions:
   contents: read
 
 concurrency:
-  # Keyed on the inputs too, so dispatching a lease and a lease-free run on
-  # one branch does not cancel the first.
-  group: history-${{ github.ref }}-${{ inputs.mode }}-${{ inputs.nemesis }}
+  # Keyed on the inputs too, so two dispatches on one branch (a lease and a
+  # lease-free run, or a seed replay beside a fresh seed) do not cancel each other.
+  group: history-${{ github.ref }}-${{ inputs.mode }}-${{ inputs.nemesis }}-${{ inputs.seed }}
   cancel-in-progress: true
 
 env:
