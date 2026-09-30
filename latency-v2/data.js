@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790796513835,
+  "lastUpdate": 1790801193550,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -26400,6 +26400,72 @@ window.BENCHMARK_DATA = {
             "range": "100.47",
             "unit": "us",
             "extra": "trials: 5\nmedian: 575.00\nmean: 634.60\nstdev: 100.47\ncv: 15.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3be9fc84f4492c9bc6682b3fcead68740a97719f",
+          "message": "formal: moves under follower acks and a second promotion (#840) (#875)\n\n* fix(placement): a Quorum failover never promotes a move's destination (#840)\n\nModel planned moves, staged moves and cancels under follower acks\n(majority_ack), and a second promotion with start records.\n\nTLC found an acknowledged record lost: a report names a move's\ndestination caught up, the leader then acknowledges a record on itself\nand another follower (nothing waits for the report under majority_ack),\nand dies. Failover promoted the destination from that report, and its\nbroker, which cannot tell that from the cut-over it expected, opened the\nshard without the promotion fence and without the record. Failover on a\ndurable Quorum stream now leaves the destination out and ends the move.\n\nA promoted leader that gets a new generation while still fencing now\nkeeps replication paused until the reopen lands, instead of shipping its\nunfenced log at the old generation in between.\n\nThe model gains PromoteDestination, has a cut-over and a cancel persist\nthe new leader's generation, gates a planned fence on a report from the\ngeneration placement read, and stops a leader still fencing from\nreporting. The formal CI job moves to six shards filled by measured\ntime, and the workflow can be dispatched with a list of configurations.\n\n* fix(placement): a Quorum failover keeps a destination that was already a replica\n\n`keep_replicas` dropped a move's successor from the promoted leader's set as\na staged copy even when the drain had picked an existing follower as the\ndestination. That follower counted toward every acknowledgement. Now that a\nQuorum failover promotes another follower instead of the destination, a\nthree-broker set was left as the new leader and the dead one, so the\npromotion fence needed the dead leader's vote and the shard never served\nagain after a shutdown handoff timed out.\n\nOnly a successor added on top of the stream's replicas is dropped, told\napart by the set's size as `undo_staged` does. This matches the model, whose\nfailover set leaves out only a `staged` destination.",
+          "timestamp": "2026-09-30T13:41:10-07:00",
+          "tree_id": "55c3155935ae4a3fe42e8ad717fae9c862f68f75",
+          "url": "https://github.com/gabloe/felix/commit/3be9fc84f4492c9bc6682b3fcead68740a97719f"
+        },
+        "date": 1790801190676,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 73,
+            "range": "1.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 73.00\nmean: 73.00\nstdev: 1.87\ncv: 2.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 109,
+            "range": "56.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 109.00\nmean: 142.80\nstdev: 56.57\ncv: 39.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 681,
+            "range": "255.11",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 681.00\nmean: 583.60\nstdev: 255.11\ncv: 43.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 89,
+            "range": "2.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 89.00\nmean: 89.60\nstdev: 2.41\ncv: 2.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 227,
+            "range": "329.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 227.00\nmean: 421.00\nstdev: 329.42\ncv: 78.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1416,
+            "range": "1750.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1416.00\nmean: 1905.80\nstdev: 1750.50\ncv: 91.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
