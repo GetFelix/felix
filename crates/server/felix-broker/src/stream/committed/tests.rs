@@ -214,6 +214,33 @@ async fn held_batches_are_dropped_when_the_shard_is_given_up() {
     assert_eq!(&next(&mut live).await[..], b"next");
 }
 
+/// **A batch shipped again after the hold was dropped does not wind the
+/// commit order back.** The dropped batches are still on disk, so the commit
+/// order stands past them while the ring's position does not. A leader that
+/// ships a batch this broker already has is answered with that batch's end,
+/// below the tail. Moved back to it, the order waits for a turn below the tail
+/// that nobody will take, and every later publish hangs.
+#[tokio::test]
+async fn a_batch_shipped_again_after_the_hold_was_dropped_does_not_wedge_publishes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bounds) = broker_with(dir.path(), ReadBound::Committed(0)).await;
+    publish(&broker, "quorum", b"first").await;
+    publish(&broker, "quorum", b"second").await;
+    assert_eq!(broker.discard_uncommitted("t1", "ns", "quorum", 0).await, 2);
+
+    // The next leader ships the first batch, which this broker already holds.
+    broker
+        .adopt_replicated("t1", "ns", "quorum", 0, 1)
+        .await
+        .expect("adopt");
+
+    bounds.set(ReadBound::Unbounded);
+    let outcome = tokio::time::timeout(Duration::from_secs(5), publish(&broker, "quorum", b"next"))
+        .await
+        .expect("the publish waited on a turn nobody holds");
+    assert_eq!(outcome.offsets, Some((2, 2)));
+}
+
 /// **A resume joins at the committed mark, not at the tail**, and history is
 /// read only up to the mark, waiting for it to move.
 #[tokio::test]

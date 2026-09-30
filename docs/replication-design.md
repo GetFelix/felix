@@ -731,6 +731,20 @@ would have a hole nothing downstream could detect, and it is halted. The leader
 then rebuilds it under the policy below, or leaves it to an operator when the
 policy says so.
 
+**A batch shipped again never winds the commit order back.** A follower
+answers a batch it already holds with that batch's end, and a broker moves its
+stream's commit order to what it was answered, so the first publish it takes as
+leader claims the offset after the log's end. A leader that loses its lease
+while batches are held for the quorum drops them, but they stay in its log and
+the commit order stays past them, while the stream's own position does not.
+When the next leader ships the first of them again, the answer lands below the
+log's end. Moving the commit order back to it left a turn below the tail that
+no publish would take, so once the shard came back to this broker every publish
+on it timed out (issue 881). The commit order now moves only forward
+(`a_batch_shipped_again_after_the_hold_was_dropped_does_not_wedge_publishes`).
+Lease-free brokers were not affected, because a leader's generation-start record
+resets the order when it opens.
+
 ### Idempotent producers across a leader change
 
 An idempotent producer's sequence has to be wherever the shard's leader is, or

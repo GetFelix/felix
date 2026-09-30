@@ -247,7 +247,11 @@ impl StreamState {
     /// live edge, skipping everything in between.
     pub(crate) fn advance_to(&self, next_seq: u64) {
         let mut state = self.log_state.lock();
-        if next_seq <= state.next_seq {
+        // The commit order can stand past the ring: dropping a hold releases
+        // turns for records that stay on disk but never reach the ring. A
+        // batch shipped again answers with its own end, below those records,
+        // and moving the order back to it would leave a turn nobody takes.
+        if next_seq <= state.next_seq.max(self.commit_sequencer.next_offset()) {
             return;
         }
         state.log.clear();

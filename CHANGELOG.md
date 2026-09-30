@@ -691,6 +691,14 @@ for what the current release guarantees.
 
 ### Fixed
 
+- **A broker handed a shard back after dropping held batches takes writes
+  (#881).** Liveness only: no acknowledged write was lost. A lease-mode leader
+  that lost its lease with `Quorum` batches still held dropped them, followed
+  the new leader, and answered a batch shipped again with that batch's end.
+  Its stream's commit order moved back below records already in its log, so
+  once the shard moved back to it every publish timed out with
+  `publish commit timeout`. The commit order now never moves backwards on a
+  replicated batch. See `docs/replication-design.md`, "Replication".
 - **A new leader names no follower short of the log it inherited (#882).**
   Until a majority held a record of the new generation, a leader measured its
   replica report against offset 0 and named every follower caught up,
