@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790701737042,
+  "lastUpdate": 1790796517729,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -20748,6 +20748,58 @@ window.BENCHMARK_DATA = {
             "range": "10053.83",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1243551.66\nmean: 1240334.33\nstdev: 10053.83\ncv: 0.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "58d3e5f5f442bf7982867802ea2846101fa9ab08",
+          "message": "fix(replication): cache leaders record their term start; rebuilds keep the committed prefix (#863) (#873)\n\nA cache leader never recorded where its generation began, because\nDurableShardStore::open returned early for cache shards. When such a\nleader died holding a record no majority had and came back as a follower,\nit had no generation history, so its divergence at that record halted it.\nThe new leader's rebuild from base 0 was then refused (it would discard\ncommitted records), and the refusal was pinned for the whole generation.\n\n- Cache leaders open the cache and counter logs on open, record the term\n  start on both and accept the generation, as stream leaders do. Caches\n  write no generation-start record, so a failure to record is logged, not\n  fatal.\n- A rebuild below the follower's commit offset keeps the committed records,\n  drops only the suffix past them, and answers at the leader's base, so the\n  re-shipped records are compared with the kept ones. A committed record\n  that disagrees halts (below_commit) and refuses further rebuilds from\n  that generation's leader.\n- A refused rebuild is retried with a backoff (5 s doubling to 5 min)\n  instead of never at that generation.\n\nSpec-Unaffected: the TLA+ models cover stream shards' fence, labels and quorum mark; recording a cache leader's term start and keeping the committed prefix in a rebuild change no modelled action, and the rebuild still never cuts below the commit offset.",
+          "timestamp": "2026-09-30T12:22:00-07:00",
+          "tree_id": "0603ac3be5dfffaed928e718fd1dae97eb76d310",
+          "url": "https://github.com/gabloe/felix/commit/58d3e5f5f442bf7982867802ea2846101fa9ab08"
+        },
+        "date": 1790796516934,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 335619.66,
+            "range": "7683.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 335619.66\nmean: 336701.26\nstdev: 7683.97\ncv: 2.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 335619.66,
+            "range": "7683.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 335619.66\nmean: 336701.26\nstdev: 7683.97\ncv: 2.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83176.78,
+            "range": "287.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83176.78\nmean: 83187.29\nstdev: 287.46\ncv: 0.35%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 831767.81,
+            "range": "2874.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 831767.81\nmean: 831872.92\nstdev: 2874.59\ncv: 0.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
