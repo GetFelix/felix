@@ -3,13 +3,21 @@ name: CI
 on:
   push:
     branches: ["main"]
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
+    # Docs alone skip CI, but the TLA+ specs live under docs/formal and must be
+    # model-checked when they change. The last matching pattern wins.
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**/*.md"
+      - "docs/formal/**"
   pull_request:
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
+    # Docs alone skip CI, but the TLA+ specs live under docs/formal and must be
+    # model-checked when they change. The last matching pattern wins.
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**/*.md"
+      - "docs/formal/**"
   # Model-check chosen TLA+ configurations on a branch, including the ones too
   # big for the per-PR budget. Only the formal job runs.
   workflow_dispatch:
