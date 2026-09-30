@@ -289,7 +289,15 @@ pub enum Message {
         ack: Option<AckMode>,
     },
     /// Publish ack with request id.
-    PublishOk { request_id: u64 },
+    PublishOk {
+        request_id: u64,
+        /// The log offset of the batch's first record; the rest follow it
+        /// contiguously. Sent only to a client that offered
+        /// `FLAG_BINARY_PUBLISH_ACK_OFFSET` in `Auth.client_flags`, and only
+        /// when the broker answered after writing the batch to a log.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
+    },
     /// Publish error with request id. The optional fields are `Error`'s, under
     /// the same negotiation.
     PublishError {
@@ -843,6 +851,18 @@ impl Message {
     /// payload is not a JSON object with a string `type`.
     pub fn unknown_request(frame: &Frame) -> Option<UnknownRequest> {
         serde_json::from_slice(&frame.payload).ok()
+    }
+
+    /// Drop a `PublishOk`'s offset, for a client that did not offer
+    /// `FLAG_BINARY_PUBLISH_ACK_OFFSET`. Anything else is returned unchanged.
+    pub fn without_ack_offset(self) -> Self {
+        match self {
+            Message::PublishOk { request_id, .. } => Message::PublishOk {
+                request_id,
+                offset: None,
+            },
+            other => other,
+        }
     }
 
     /// Drop the error-code fields, for a client that did not offer

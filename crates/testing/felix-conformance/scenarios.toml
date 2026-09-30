@@ -314,6 +314,40 @@ at the call site and in its documentation. The guarantee is the caller's to
 choose, not the client's to assume.
 """
 
+[[scenario]]
+id = "ack.carries_the_offset"
+required = false
+title = "An ack given after the write says where the batch landed"
+detail = """
+A client that offers FLAG_BINARY_PUBLISH_ACK_OFFSET gets the log offset of the
+batch's first record on every ack the broker sends after writing it: always
+for an idempotent batch, and for a plain acked publish when the broker acks on
+commit. The offsets agree with the log: a batch published right after an
+n-record batch at offset o lands at o + n, in the binary ack and in a JSON
+publish_ok alike. A client that exposes it returns it from the publish call,
+and returns nothing, not zero, when the broker did not say.
+"""
+
+[[scenario]]
+id = "ack.duplicate_reports_the_original_offset"
+required = false
+title = "A re-sent idempotent batch reports where it first landed"
+detail = """
+An idempotent batch the leader already holds is answered from memory without
+being appended again, and that answer carries the offset the batch was written
+at the first time.
+"""
+
+[[scenario]]
+id = "ack.offset_negotiated"
+required = false
+title = "The offset goes only to a client that offered it"
+detail = """
+The broker advertises FLAG_BINARY_PUBLISH_ACK_OFFSET in auth_ok. A client that
+did not offer it gets the ack frames it always did, byte for byte: no flag bit
+on a binary ack and no offset field in a JSON publish_ok.
+"""
+
 # ---------------------------------------------------------------------------
 # Errors and failure behaviour
 # ---------------------------------------------------------------------------

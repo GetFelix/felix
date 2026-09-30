@@ -336,6 +336,10 @@ export declare class Client {
    * certain to land, and may land twice. That is a delivery guarantee you
    * choose, never one this client assumes — and it cannot be combined with
    * `key`, which the re-send path does not yet carry.
+   *
+   * Resolves to the record's log offset, or `null` when the broker
+   * acknowledged before writing it, the stream has no log, the broker is too
+   * old to say, or `ack` is `"none"`.
    */
   publish(
     tenantId: string,
@@ -345,7 +349,7 @@ export declare class Client {
     key?: Buffer,
     ack?: AckMode,
     atLeastOnce?: boolean,
-  ): Promise<void>;
+  ): Promise<bigint | null>;
 
   /**
    * Subscribe to a stream.

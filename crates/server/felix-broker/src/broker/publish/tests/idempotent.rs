@@ -433,6 +433,32 @@ mod durable {
         assert_eq!(stored(&handle).await, bytes(&["a", "b", "c", "d"]));
     }
 
+    /// A re-send reports where the original landed, not where the log ends
+    /// now: the client takes that offset as its record's position.
+    #[tokio::test]
+    async fn a_re_send_reports_the_original_offsets_after_the_log_moved_on() {
+        let dir = tempfile::tempdir().expect("dir");
+        let (broker, handle, _storage) = open(dir.path()).await;
+        let first = broker
+            .publish_batch_idempotent(&handle, 7, 0, &bytes(&["a", "b"]), SequenceReuse::Refuse)
+            .await
+            .expect("first");
+        assert_eq!(first.outcome.offsets, Some((0, 1)));
+        let other = broker
+            .publish_batch_idempotent(&handle, 8, 0, &bytes(&["x"]), SequenceReuse::Refuse)
+            .await
+            .expect("another producer");
+        assert_eq!(other.outcome.offsets, Some((2, 2)));
+
+        let again = broker
+            .publish_batch_idempotent(&handle, 7, 0, &bytes(&["a", "b"]), SequenceReuse::Refuse)
+            .await
+            .expect("re-send");
+        assert!(again.duplicate, "the re-send was appended again");
+        assert_eq!(again.outcome.offsets, Some((0, 1)));
+        assert_eq!(stored(&handle).await, bytes(&["a", "b", "x"]));
+    }
+
     /// A promoted replica, or a move's destination, holds only what it was
     /// shipped, and that is enough.
     #[tokio::test]

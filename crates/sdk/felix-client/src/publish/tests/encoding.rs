@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 #[cfg(feature = "telemetry")]
 use crate::publish::PublishAdmission;
 use crate::publish::writer::{PublishRequest, PublishWorker};
-use crate::publish::{PublishSharding, Publisher, PublisherInner};
+use crate::publish::{Acked, PublishSharding, Publisher, PublisherInner};
 
 /// An acked batch falls back to JSON against a broker that never advertised
 /// the acked binary frame, and the fallback carries no key.
@@ -56,7 +56,7 @@ async fn an_acked_batch_falls_back_to_keyless_json_without_the_binary_flag() {
                 }
                 other => panic!("expected a JSON publish_batch, got {other:?}"),
             }
-            let _ = response.send(Ok(None));
+            let _ = response.send(Ok(Acked::default()));
         }
         _ => panic!("a broker without the acked binary frame must get JSON"),
     }
@@ -110,7 +110,7 @@ async fn an_idempotent_batch_is_binary_only_when_advertised() {
                         sequence: 7,
                     })
                 );
-                let _ = response.send(Ok(None));
+                let _ = response.send(Ok(Acked::default()));
             }
             PublishRequest::Message {
                 message, response, ..
@@ -127,7 +127,7 @@ async fn an_idempotent_batch_is_binary_only_when_advertised() {
                         ..
                     }
                 ));
-                let _ = response.send(Ok(None));
+                let _ = response.send(Ok(Acked::default()));
             }
             PublishRequest::Finish { .. } => panic!("unexpected finish"),
         }
@@ -172,7 +172,7 @@ async fn unacked_publish_defaults_to_binary_and_json_is_explicit() {
             assert_eq!(item_count, 1);
             assert_eq!(batch.payloads.len(), 1);
             assert_eq!(batch.payloads[0], b"binary");
-            let _ = response.send(Ok(None));
+            let _ = response.send(Ok(Acked::default()));
         }
         _ => panic!("unacked publish should use binary encoding"),
     }
@@ -199,7 +199,7 @@ async fn unacked_publish_defaults_to_binary_and_json_is_explicit() {
             message, response, ..
         } => {
             assert!(matches!(message, Message::Publish { .. }));
-            let _ = response.send(Ok(None));
+            let _ = response.send(Ok(Acked::default()));
         }
         _ => panic!("explicit JSON publish should use message encoding"),
     }
@@ -223,7 +223,7 @@ async fn publish_batch_binary_appends_bench_ts_when_enabled() -> Result<()> {
                 felix_wire::binary::decode_publish_batch(&frame).context("decode publish batch")?;
             assert_eq!(decoded.payloads.len(), 1);
             assert!(decoded.payloads[0].len() > 1);
-            let _ = response.send(Ok(None));
+            let _ = response.send(Ok(Acked::default()));
         }
         Ok(())
     });

@@ -43,6 +43,18 @@ impl Cluster {
             .await
     }
 
+    /// Publish one record through a named broker and return the offset its
+    /// ack reported, `None` when the broker did not report one.
+    pub async fn publish_via_at(
+        &self,
+        node_id: &str,
+        stream: &str,
+        payload: Vec<u8>,
+    ) -> Result<Option<u64>> {
+        self.publish_through(node_id, stream, payload, &self.client_token)
+            .await
+    }
+
     /// Publish through a named broker with a chosen credential.
     pub async fn publish_via_token(
         &self,
@@ -51,6 +63,18 @@ impl Cluster {
         payload: Vec<u8>,
         token: &str,
     ) -> Result<()> {
+        self.publish_through(node_id, stream, payload, token)
+            .await
+            .map(|_| ())
+    }
+
+    async fn publish_through(
+        &self,
+        node_id: &str,
+        stream: &str,
+        payload: Vec<u8>,
+        token: &str,
+    ) -> Result<Option<u64>> {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
@@ -86,6 +110,7 @@ impl Cluster {
             )
             .await
             .with_context(|| format!("publish to {stream} through a seed endpoint"))
+            .map(|_| ())
     }
 
     /// Publish with a routing key, through a named broker.
@@ -112,6 +137,7 @@ impl Cluster {
             )
             .await
             .with_context(|| format!("publish to {stream} key {key:?} via {node_id}"))
+            .map(|_| ())
     }
 
     /// Publish with a routing key, waiting out the window where two brokers

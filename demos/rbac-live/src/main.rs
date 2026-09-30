@@ -710,7 +710,8 @@ async fn publish_once(client: &Client) -> Result<()> {
             b"rbac-demo".to_vec(),
             AckMode::PerMessage,
         )
-        .await
+        .await?;
+    Ok(())
 }
 
 async fn subscribe_once(client: &Client) -> Result<()> {

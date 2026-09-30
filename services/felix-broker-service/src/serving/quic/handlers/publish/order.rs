@@ -122,7 +122,7 @@ fn answered_request(outgoing: &Outgoing) -> Option<u64> {
     match outgoing {
         Outgoing::PublishAck { request_id, .. } => Some(*request_id),
         Outgoing::Message(
-            Message::PublishOk { request_id }
+            Message::PublishOk { request_id, .. }
             | Message::PublishError { request_id, .. }
             | Message::PublishRefused { request_id, .. },
         ) => Some(*request_id),

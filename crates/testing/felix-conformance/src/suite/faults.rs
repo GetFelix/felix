@@ -153,7 +153,7 @@ async fn publish_case(
         );
         match timeout(hold + SETTLE, publish).await {
             Err(_) => bail!("publish {index} neither returned nor failed"),
-            Ok(Ok(())) => acked.push(payload),
+            Ok(Ok(_)) => acked.push(payload),
             Ok(Err(err)) if step.fault == LinkFault::Stall => {
                 bail!("publish {index} failed during a stall: {err:#}")
             }
@@ -179,7 +179,7 @@ async fn publish_case(
             )
             .await
         {
-            Ok(()) => {
+            Ok(_) => {
                 acked.push(payload);
                 break;
             }

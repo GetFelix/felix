@@ -27,7 +27,7 @@ fn acked_publish(request_id: u64) -> Message {
 
 fn answered(outgoing: &Outgoing) -> Option<u64> {
     match outgoing {
-        Outgoing::Message(Message::PublishOk { request_id }) => Some(*request_id),
+        Outgoing::Message(Message::PublishOk { request_id, .. }) => Some(*request_id),
         _ => None,
     }
 }
@@ -135,7 +135,10 @@ async fn a_full_window_stops_reading_until_an_answer_frees_a_slot() -> Result<()
     // What the writer does once it has written the answer to 1.
     let mut ready = Vec::new();
     order.release(
-        Outgoing::Message(Message::PublishOk { request_id: 1 }),
+        Outgoing::Message(Message::PublishOk {
+            request_id: 1,
+            offset: None,
+        }),
         &mut ready,
     );
     let third = timeout(Duration::from_secs(5), out_ack_rx.recv())
@@ -166,7 +169,7 @@ async fn answers_as_read() -> Result<(QuicConnection, tokio::task::JoinHandle<Re
         while let Some(message) =
             crate::serving::quic::read_message_limited(&mut recv, 1 << 20, &mut scratch).await?
         {
-            if let Message::PublishOk { request_id } = message {
+            if let Message::PublishOk { request_id, .. } = message {
                 ids.push(request_id);
             }
         }
@@ -207,7 +210,10 @@ async fn the_writer_answers_a_pipelining_stream_in_request_order() -> Result<()>
     ));
     for id in [3, 1, 4, 2] {
         out_ack_tx
-            .send(Outgoing::Message(Message::PublishOk { request_id: id }))
+            .send(Outgoing::Message(Message::PublishOk {
+                request_id: id,
+                offset: None,
+            }))
             .await?;
     }
     drop(out_ack_tx);
@@ -242,7 +248,10 @@ async fn a_lost_answer_closes_a_pipelining_stream() -> Result<()> {
         cancel_rx,
     ));
     out_ack_tx
-        .send(Outgoing::Message(Message::PublishOk { request_id: 2 }))
+        .send(Outgoing::Message(Message::PublishOk {
+            request_id: 2,
+            offset: None,
+        }))
         .await?;
     timeout(Duration::from_secs(5), cancelled.wait_for(|cancel| *cancel))
         .await

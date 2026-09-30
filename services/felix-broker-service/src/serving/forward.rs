@@ -34,7 +34,8 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use felix_wire::internal::{
-    AckMode, CacheOpKind, ErrorCode, ForwardCacheOp, ForwardPublish, InternalMessage, ShardRef,
+    AckMode, CacheOpKind, ErrorCode, ForwardCacheOp, ForwardPublish, InternalMessage,
+    PeerCapabilities, ShardRef,
 };
 
 use felix_replication::peer::PeerRequester;
@@ -87,7 +88,8 @@ pub enum ForwardError {
 
 /// Forward one batch and wait for the owner's answer.
 ///
-/// Returns the log offsets the owner assigned, when the stream has a log.
+/// Returns the log offsets the owner assigned, when the stream has a log and
+/// the owner is recent enough to say so.
 ///
 /// `budget` bounds the whole loop, retries included. Without it the attempt
 /// budget is the only bound, and it is far larger than the client's patience:
@@ -171,7 +173,13 @@ pub async fn forward_publish(
         match answer {
             Ok(InternalMessage::ForwardPublishOk(ok)) => {
                 metrics::record_forward(metrics::OUTCOME_OK);
-                return Ok(Some((ok.first_offset, ok.last_offset)));
+                // An owner that predates the capability answered a stream with
+                // no log with `0..=0`, so its offsets cannot be told from a
+                // real one and are not passed on.
+                let placed = pool
+                    .recorded_capabilities(&target.node_id)
+                    .is_some_and(|offered| offered.contains(PeerCapabilities::FORWARD_OFFSETS));
+                return Ok(ok.offsets().filter(|_| placed));
             }
             Ok(InternalMessage::NotLeader(moved)) => {
                 // The owner refused, so nothing was applied, and it named where

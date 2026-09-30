@@ -63,6 +63,10 @@ impl Publisher {
     /// a plain `FLAG_BINARY_PUBLISH_BATCH` frame, and an acked one adds
     /// `FLAG_BINARY_PUBLISH_ACKED` and waits for the broker's binary ack.
     ///
+    /// Returns the record's log offset. `None` when the broker acknowledged
+    /// before writing it, the stream has no log, the broker predates
+    /// `FLAG_BINARY_PUBLISH_ACK_OFFSET`, or `ack` is `AckMode::None`.
+    ///
     /// **Not cancel-safe.** Dropping this future — a `timeout`, a losing
     /// `select!` branch — after the record reaches the worker does not stop the
     /// publish. The record is sent and very likely lands; what is lost is
@@ -83,11 +87,12 @@ impl Publisher {
         stream: &str,
         payload: Vec<u8>,
         ack: AckMode,
-    ) -> Result<()> {
+    ) -> Result<Option<u64>> {
         if ack == AckMode::None {
             return self
                 .publish_batch_binary(tenant_id, namespace, stream, &[payload])
-                .await;
+                .await
+                .map(|()| None);
         }
         // A single acked publish is a one-item acked batch on the wire; there is no
         // separate binary encoding for single messages.
@@ -104,6 +109,8 @@ impl Publisher {
     /// Binary against a broker that advertised `FLAG_BINARY_PUBLISH_KEYED`, JSON
     /// against one that did not. A single keyed publish is a one-item keyed
     /// batch on the wire, exactly as `publish` is for the unkeyed case.
+    ///
+    /// Returns the record's log offset, when there is one; see [`Self::publish`].
     pub async fn publish_keyed(
         &self,
         tenant_id: &str,
@@ -112,7 +119,7 @@ impl Publisher {
         key: bytes::Bytes,
         payload: Vec<u8>,
         ack: AckMode,
-    ) -> Result<()> {
+    ) -> Result<Option<u64>> {
         self.publish_batch_keyed(tenant_id, namespace, stream, key, vec![payload], ack)
             .await
     }
@@ -122,6 +129,11 @@ impl Publisher {
     /// Binary, unless the broker never advertised the frame this needs — then
     /// JSON, which costs throughput and not correctness. That fallback is the
     /// only way a Felix client emits a JSON publish.
+    ///
+    /// Returns the log offset of the batch's first record; the rest follow it
+    /// contiguously. `None` when the broker acknowledged before writing the
+    /// batch, the stream has no log, the broker predates
+    /// `FLAG_BINARY_PUBLISH_ACK_OFFSET`, or `ack` is `AckMode::None`.
     pub async fn publish_batch(
         &self,
         tenant_id: &str,
@@ -129,11 +141,12 @@ impl Publisher {
         stream: &str,
         payloads: Vec<Vec<u8>>,
         ack: AckMode,
-    ) -> Result<()> {
+    ) -> Result<Option<u64>> {
         if ack == AckMode::None {
             return self
                 .publish_batch_binary(tenant_id, namespace, stream, &payloads)
-                .await;
+                .await
+                .map(|()| None);
         }
         // Fall back to the JSON encoding against a broker that has not advertised
         // the acked binary frame. Both paths are equivalent in semantics; only the
@@ -156,6 +169,9 @@ impl Publisher {
     /// Binary whenever the broker advertised `FLAG_BINARY_PUBLISH_KEYED`, with
     /// the JSON encoding as the fallback for brokers that predate it. The
     /// fallback costs throughput, not correctness.
+    ///
+    /// Returns the batch's first log offset, when there is one; see
+    /// [`Self::publish_batch`].
     pub async fn publish_batch_keyed(
         &self,
         tenant_id: &str,
@@ -164,7 +180,7 @@ impl Publisher {
         key: bytes::Bytes,
         payloads: Vec<Vec<u8>>,
         ack: AckMode,
-    ) -> Result<()> {
+    ) -> Result<Option<u64>> {
         if !self.supports_binary_keyed() {
             return self
                 .publish_batch_json_keyed(tenant_id, namespace, stream, payloads, Some(key), ack)
@@ -174,7 +190,7 @@ impl Publisher {
             return self
                 .publish_batch_binary_inner(Some(&key), tenant_id, namespace, stream, &payloads)
                 .await
-                .map(|_| ());
+                .map(|_| None);
         }
         // An acked keyed batch needs both modifier bits, so it also needs the
         // broker to have advertised the acked frame.
@@ -192,7 +208,7 @@ impl Publisher {
             ack,
         )
         .await
-        .map(|_| ())
+        .map(|acked| acked.offset)
     }
 
     /// Publish a batch as one binary frame, without asking for an ack.
@@ -282,6 +298,9 @@ impl Publisher {
     /// not the broker advertised support. Prefer `publish_batch`, which consults the
     /// mask negotiated during auth and falls back to JSON when the broker has not
     /// advertised `0x0008`.
+    ///
+    /// Returns the batch's first log offset, when there is one; see
+    /// [`Self::publish_batch`].
     pub async fn publish_batch_binary_acked(
         &self,
         tenant_id: &str,
@@ -289,10 +308,10 @@ impl Publisher {
         stream: &str,
         payloads: Vec<Vec<u8>>,
         ack: AckMode,
-    ) -> Result<()> {
+    ) -> Result<Option<u64>> {
         self.publish_batch_binary_acked_inner(None, tenant_id, namespace, stream, payloads, ack)
             .await
-            .map(|_| ())
+            .map(|acked| acked.offset)
     }
 
     /// One batch under a producer's sequence, appended once however many
@@ -301,6 +320,10 @@ impl Publisher {
     /// The low-level send: the sequence is the caller's to keep, and a refusal
     /// comes back as a [`crate::PublishRefused`]. [`crate::IdempotentProducer`]
     /// is the form that keeps the sequence and does the re-sending.
+    ///
+    /// Returns the batch's first log offset, when the broker reported one. A
+    /// re-send the broker already holds gets the offset it landed at the
+    /// first time.
     pub async fn publish_idempotent_batch(
         &self,
         tenant_id: &str,
@@ -309,7 +332,7 @@ impl Publisher {
         payloads: Vec<Vec<u8>>,
         producer_id: u64,
         sequence: u64,
-    ) -> Result<()> {
+    ) -> Result<Option<u64>> {
         let worker = self.select_worker(tenant_id, namespace, stream)?;
         if self.supports_binary_idempotent() {
             let response_rx = self
@@ -328,7 +351,7 @@ impl Publisher {
                 .await
                 .context("idempotent binary batch response dropped")?;
             cancelled.answered();
-            return answer.map(|_| ());
+            return answer.map(|acked| acked.offset);
         }
         let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
         let request_id = worker.request_counter.fetch_add(1, Ordering::Relaxed);
@@ -344,14 +367,14 @@ impl Publisher {
         };
         self.send_message(worker, message, AckMode::PerBatch, Some(request_id))
             .await
-            .map(|_| ())
+            .map(|acked| acked.offset)
     }
 
     /// Consecutive batches under consecutive sequences from `first_sequence`,
     /// with up to the stream's window unanswered at once.
     ///
-    /// Returns how many batches, from the first, were acknowledged, and the
-    /// first failure in sequence order if there was one. Everything from that
+    /// Returns the offsets of the batches acknowledged, from the first, and
+    /// the first failure in sequence order if there was one. Everything from that
     /// batch on is unsettled: it may or may not have landed. All of them go on
     /// one stream, whose answers come back in the order it carried them, so
     /// the failure reported is the earliest one and not a consequence of it.
@@ -367,19 +390,20 @@ impl Publisher {
         batches: &[Vec<Vec<u8>>],
         producer_id: u64,
         first_sequence: u64,
-    ) -> (usize, Result<()>) {
+    ) -> (Vec<Option<u64>>, Result<()>) {
         let worker = match self.select_worker(tenant_id, namespace, stream) {
             Ok(worker) => worker,
-            Err(err) => return (0, Err(err)),
+            Err(err) => return (Vec::new(), Err(err)),
         };
         let window = if self.supports_binary_idempotent() {
             (worker.publish_window as usize).min(IDEMPOTENT_PIPELINE_MAX)
         } else {
             0
         };
+        let mut acked = Vec::with_capacity(batches.len());
         if window <= 1 {
             for (index, payloads) in batches.iter().enumerate() {
-                if let Err(err) = self
+                match self
                     .publish_idempotent_batch(
                         tenant_id,
                         namespace,
@@ -390,14 +414,14 @@ impl Publisher {
                     )
                     .await
                 {
-                    return (index, Err(err));
+                    Ok(offset) => acked.push(offset),
+                    Err(err) => return (acked, Err(err)),
                 }
             }
-            return (batches.len(), Ok(()));
+            return (acked, Ok(()));
         }
         let mut in_flight = std::collections::VecDeque::with_capacity(window);
         let mut sent = 0;
-        let mut acked = 0;
         loop {
             while sent < batches.len() && in_flight.len() < window {
                 match self
@@ -421,7 +445,7 @@ impl Publisher {
                     Err(err) => {
                         while let Some(response_rx) = in_flight.pop_front() {
                             match response_rx.await {
-                                Ok(Ok(_)) => acked += 1,
+                                Ok(Ok(answer)) => acked.push(answer.offset),
                                 Ok(Err(first)) => return (acked, Err(first)),
                                 Err(_) => {
                                     return (
@@ -444,7 +468,7 @@ impl Publisher {
             let answer = response_rx.await;
             cancelled.answered();
             match answer {
-                Ok(Ok(_)) => acked += 1,
+                Ok(Ok(answer)) => acked.push(answer.offset),
                 Ok(Err(err)) => return (acked, Err(err)),
                 Err(_) => {
                     return (
@@ -630,6 +654,7 @@ impl Publisher {
     ) -> Result<()> {
         self.publish_batch_json_keyed(tenant_id, namespace, stream, payloads, None, ack)
             .await
+            .map(|_| ())
     }
 }
 
@@ -697,12 +722,6 @@ impl PublisherInner {
     }
 }
 
-/// What a publish learns from its ack: whether it succeeded, and -- when the
-/// broker it went to did not own the shard -- who does.
-///
-/// The owner travels back so `ClusterClient` can send the next batch for this
-/// shard straight there. A forward is correct but costs a decrypt, a
-/// re-encrypt and a decrypt, roughly half the throughput per core (#536).
 /// Most idempotent batches one producer keeps unanswered on a stream.
 ///
 /// A shard's leader remembers the last 64 sequences of each producer, and a
@@ -710,7 +729,21 @@ impl PublisherInner {
 /// remembered, or it is refused as expired instead of answered as a duplicate.
 pub(crate) const IDEMPOTENT_PIPELINE_MAX: usize = 64;
 
-pub(crate) type AckOutcome = Result<Option<felix_wire::binary::PublishOwner>>;
+/// What a successful ack said beyond "done".
+#[derive(Debug, Default)]
+pub(crate) struct Acked {
+    /// The shard's owner, when the broker that answered forwarded the batch.
+    ///
+    /// It travels back so `ClusterClient` can send the next batch for this
+    /// shard straight there. A forward is correct but costs a decrypt, a
+    /// re-encrypt and a decrypt, roughly half the throughput per core (#536).
+    pub(crate) forwarded_to: Option<felix_wire::binary::PublishOwner>,
+    /// The log offset of the batch's first record, when the broker reported it.
+    pub(crate) offset: Option<u64>,
+}
+
+/// What a publish learns from its answer: failure, or an [`Acked`].
+pub(crate) type AckOutcome = Result<Acked>;
 
 #[cfg(test)]
 mod tests;

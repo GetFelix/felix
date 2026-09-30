@@ -256,7 +256,7 @@ async fn handle_publish_batch_enqueue_ok_sends_ack() {
 
     let msg = out_rx.recv().await.expect("outgoing");
     match msg {
-        Outgoing::Message(Message::PublishOk { request_id }) => {
+        Outgoing::Message(Message::PublishOk { request_id, .. }) => {
             assert_eq!(request_id, 13);
         }
         _ => panic!("unexpected outgoing"),

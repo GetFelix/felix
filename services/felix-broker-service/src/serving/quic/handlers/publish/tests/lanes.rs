@@ -98,7 +98,7 @@ async fn a_stalled_forward_does_not_hold_up_another_shard() {
     );
     let answered = tokio::time::timeout(Duration::from_secs(1), local_rx).await;
     assert!(
-        matches!(answered, Ok(Ok(Ok(())))),
+        matches!(answered, Ok(Ok(Ok(_)))),
         "a publish to another shard waited behind a stalled forward"
     );
     assert!(

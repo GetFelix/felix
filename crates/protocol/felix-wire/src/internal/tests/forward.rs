@@ -108,3 +108,31 @@ fn an_over_long_credential_is_refused_on_encode() {
     });
     assert!(matches!(message.encode(), Err(Error::FrameTooLarge)));
 }
+
+/// A stream with no log is answered with an empty range, which no written
+/// batch has, so it cannot be read as a batch at offset 0.
+#[test]
+fn a_forward_ok_without_offsets_round_trips_as_none() {
+    let ok = ForwardPublishOk::new(42, None);
+    assert_eq!(ok.offsets(), None);
+    let message = InternalMessage::ForwardPublishOk(ok);
+    let decoded = InternalMessage::decode(message.encode().expect("encode")).expect("decode");
+    let InternalMessage::ForwardPublishOk(decoded) = decoded else {
+        panic!("expected ForwardPublishOk, got {decoded:?}");
+    };
+    assert_eq!(decoded.offsets(), None);
+}
+
+#[test]
+fn a_forward_ok_carries_the_batch_offsets() {
+    let message = InternalMessage::ForwardPublishOk(ForwardPublishOk::new(42, Some((4, 6))));
+    let decoded = InternalMessage::decode(message.encode().expect("encode")).expect("decode");
+    let InternalMessage::ForwardPublishOk(decoded) = decoded else {
+        panic!("expected ForwardPublishOk, got {decoded:?}");
+    };
+    assert_eq!(decoded.offsets(), Some((4, 6)));
+    assert_eq!(
+        ForwardPublishOk::new(1, Some((0, 0))).offsets(),
+        Some((0, 0))
+    );
+}

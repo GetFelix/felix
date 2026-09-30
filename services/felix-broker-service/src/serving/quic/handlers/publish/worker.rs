@@ -227,7 +227,7 @@ impl LaneWork {
                     .broker
                     .publish_batch(tenant_id, namespace, stream, 0, &job.payloads)
                     .await
-                    .map(|_| ())
+                    .map(|_| None)
                     .map_err(Into::into);
                 drop(lane);
                 settle(job.response, job.acked_on_enqueue, None, result);
@@ -303,17 +303,16 @@ impl LaneWork {
             let completed = broker.complete_publish(claimed).await;
             drop(fenced);
             let result = match completed {
-                Ok(outcome) => {
-                    felix_replication::quorum::await_quorum(
-                        &handle,
-                        shard.as_ref(),
-                        &outcome,
-                        marks.as_deref(),
-                        ingress.as_deref(),
-                        quorum_timeout,
-                    )
-                    .await
-                }
+                Ok(outcome) => felix_replication::quorum::await_quorum(
+                    &handle,
+                    shard.as_ref(),
+                    &outcome,
+                    marks.as_deref(),
+                    ingress.as_deref(),
+                    quorum_timeout,
+                )
+                .await
+                .map(|()| first_offset(&outcome)),
                 Err(err) => Err(err.into()),
             };
             settle(response, acked_on_enqueue, shard.as_ref(), result);
@@ -376,11 +375,17 @@ impl LaneWork {
                         ingress.as_deref(),
                         quorum_timeout,
                     )
-                    .await;
+                    .await
+                    .map(|()| first_offset(&outcome));
                     settle(job.response, job.acked_on_enqueue, shard.as_ref(), result);
                 });
             }
-            Ok(_) => settle(job.response, job.acked_on_enqueue, shard.as_ref(), Ok(())),
+            Ok(outcome) => settle(
+                job.response,
+                job.acked_on_enqueue,
+                shard.as_ref(),
+                Ok(first_offset(&outcome)),
+            ),
             Err(err) => settle(job.response, job.acked_on_enqueue, shard.as_ref(), Err(err)),
         }
     }
@@ -435,18 +440,17 @@ impl LaneWork {
         let result = match published {
             // A duplicate waits on the same quorum the original did: its
             // offsets are the original's, and the answer must mean the same
-            // thing.
-            Ok(idempotent) => {
-                felix_replication::quorum::await_quorum(
-                    handle,
-                    shard.as_ref(),
-                    &idempotent.outcome,
-                    self.marks.as_deref(),
-                    self.ingress.as_deref(),
-                    self.quorum_timeout,
-                )
-                .await
-            }
+            // thing, so it reports the original's offset too.
+            Ok(idempotent) => felix_replication::quorum::await_quorum(
+                handle,
+                shard.as_ref(),
+                &idempotent.outcome,
+                self.marks.as_deref(),
+                self.ingress.as_deref(),
+                self.quorum_timeout,
+            )
+            .await
+            .map(|()| first_offset(&idempotent.outcome)),
             Err(err) => Err(err),
         };
         settle(job.response, job.acked_on_enqueue, shard.as_ref(), result);
@@ -498,7 +502,7 @@ async fn forward(
     pool: &felix_replication::peer::PeerPool,
     job: &PublishJob,
     budget: Duration,
-) -> anyhow::Result<()> {
+) -> super::PublishResult {
     let PublishTarget::Forward {
         target,
         key,
@@ -518,8 +522,14 @@ async fn forward(
         budget,
     )
     .await
-    .map(|_| ())
+    .map(|placed| placed.map(|(first, _)| first))
     .map_err(anyhow::Error::from)
+}
+
+/// The offset a successful publish reports: its first record's, when the
+/// stream has a log.
+fn first_offset(outcome: &felix_broker::PublishOutcome) -> Option<u64> {
+    outcome.offsets.map(|(first, _)| first)
 }
 
 /// Run a publish executor, starting a fresh one on the same queue whenever it
@@ -565,10 +575,10 @@ const PUBLISH_WORKER_RESTARTS_TOTAL: &str = "felix_broker_publish_worker_restart
 /// the client holds an ack for a record that was not written. This is the only
 /// place that is visible, so it is counted and logged rather than dropped.
 fn settle(
-    response: Option<oneshot::Sender<anyhow::Result<()>>>,
+    response: Option<oneshot::Sender<super::PublishResult>>,
     acked_on_enqueue: bool,
     shard: Option<&ShardKey>,
-    result: anyhow::Result<()>,
+    result: super::PublishResult,
 ) {
     match (response, result) {
         (Some(response), result) => {

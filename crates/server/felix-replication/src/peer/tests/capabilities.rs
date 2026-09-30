@@ -149,7 +149,8 @@ async fn two_current_brokers_learn_each_others_capabilities() {
 
     let offered = PeerCapabilities::FENCE
         .union(PeerCapabilities::TAIL_FETCH)
-        .union(PeerCapabilities::GENERATION_LABELS);
+        .union(PeerCapabilities::GENERATION_LABELS)
+        .union(PeerCapabilities::FORWARD_OFFSETS);
     assert_eq!(theirs, offered);
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
     assert_eq!(noted.get("broker-a"), Some(offered));
@@ -242,8 +243,8 @@ async fn an_older_broker_dialling_in_is_answered_the_old_way() {
 
 /// **A broker with the fence turned off is an older broker to whoever sends
 /// one**: it offers nothing of the fence, the pool will not send it, and one
-/// sent by hand is refused as an unknown kind. Labels are not the fence's, so
-/// they are still offered.
+/// sent by hand is refused as an unknown kind. Labels and forwarded offsets
+/// are not the fence's, so they are still offered.
 #[tokio::test]
 async fn a_broker_with_the_fence_off_neither_offers_nor_answers_it() {
     let (listener, _noted) = listener_noting(false).await;
@@ -253,7 +254,7 @@ async fn a_broker_with_the_fence_off_neither_offers_nor_answers_it() {
         pool.capabilities(PEER, listener.addr)
             .await
             .expect("handshake"),
-        PeerCapabilities::GENERATION_LABELS
+        PeerCapabilities::GENERATION_LABELS.union(PeerCapabilities::FORWARD_OFFSETS)
     );
     let err = pool
         .request(PEER, listener.addr, fence())

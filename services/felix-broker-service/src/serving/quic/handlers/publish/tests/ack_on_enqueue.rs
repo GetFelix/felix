@@ -78,7 +78,10 @@ async fn a_publish_acked_on_enqueue_is_written_across_a_move() {
     .await
     .expect("publish handled");
     match out_rx.recv().await.expect("ack") {
-        Outgoing::Message(Message::PublishOk { request_id: 7 }) => {}
+        Outgoing::Message(Message::PublishOk {
+            request_id: 7,
+            offset: None,
+        }) => {}
         other => panic!("expected an ack on enqueue, got {other:?}"),
     }
 

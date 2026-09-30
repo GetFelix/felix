@@ -344,7 +344,10 @@ pub(crate) async fn handle_publish_message(
                     out_ack_depth,
                     "felix_broker_out_ack_depth",
                     ack_throttle_tx,
-                    Outgoing::Message(Message::PublishOk { request_id }),
+                    Outgoing::Message(Message::PublishOk {
+                        request_id,
+                        offset: None,
+                    }),
                 )
                 .await,
                 ack_timeout_state,

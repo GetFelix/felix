@@ -851,7 +851,8 @@ async fn publish_once(client: &Client, tenant_id: &str) -> Result<()> {
             b"cross-tenant-demo".to_vec(),
             AckMode::PerMessage,
         )
-        .await
+        .await?;
+    Ok(())
 }
 
 async fn subscribe_once(client: &Client, tenant_id: &str) -> Result<()> {

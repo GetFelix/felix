@@ -48,7 +48,7 @@ pub(crate) async fn ingest(common: &Common, stream: &str, keys: usize) -> Result
                 )
                 .await
             {
-                Ok(()) => consecutive += 1,
+                Ok(_) => consecutive += 1,
                 Err(_) if Instant::now() < deadline => {
                     consecutive = 0;
                     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -103,7 +103,7 @@ pub(crate) async fn ingest(common: &Common, stream: &str, keys: usize) -> Result
                         .publish_batch(&tenant, &namespace, &stream, payloads, AckMode::None)
                         .await
                 } {
-                    Ok(()) => sent += this,
+                    Ok(_) => sent += this,
                     Err(err) if is_retriable_transient(&err) => {
                         retries += 1;
                         tokio::time::sleep(Duration::from_millis(20)).await;

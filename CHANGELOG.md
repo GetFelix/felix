@@ -52,6 +52,19 @@ for what the current release guarantees.
 
 ### Added
 
+- **Publish acknowledgements say where the batch landed.** A client that
+  offers the new frame flag `FLAG_BINARY_PUBLISH_ACK_OFFSET` (`0x1000`) gets
+  the offset of the batch's first record on a successful binary ack, and as
+  `offset` on a JSON `publish_ok`. The broker sends it only when it answers
+  after the write; a client that did not offer the bit gets byte-identical
+  frames. A duplicate idempotent batch reports the original's offset, and a
+  forwarded batch reports the owner's, through a new peer capability
+  `FORWARD_OFFSETS`. `Publisher::publish`, `publish_batch` and friends,
+  `ClusterClient::publish` and `IdempotentProducer::publish` now return
+  `Result<Option<u64>>` instead of `Result<()>`; the Python and Node clients
+  return the offset too. The history checker now checks every acknowledged
+  append against the offset it was acknowledged at (#876).
+
 - **Placement restores a shard's replication factor.** A follower whose broker
   has been down or gone for `FELIX_SHARD_RESTORE_AFTER_MS` (`shard_restore_after_ms`,
   five minutes by default, `0` to turn it off) is replaced by a copy on a live

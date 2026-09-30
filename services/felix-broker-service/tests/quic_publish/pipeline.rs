@@ -6,7 +6,7 @@ use felix_wire::Frame;
 
 /// A broker holding `t1/default/orders` durably, with `configure` applied to
 /// its config before it starts serving.
-async fn serve_orders(
+pub(super) async fn serve_orders(
     dir: &std::path::Path,
     fsync_mode: felix_storage::log::FsyncMode,
     configure: impl FnOnce(&mut felix_broker_service::config::BrokerConfig),
@@ -60,7 +60,7 @@ async fn serve_orders(
 }
 
 /// One raw stream to the broker, and the frames it answers `auth` with.
-async fn raw_stream(
+pub(super) async fn raw_stream(
     addr: std::net::SocketAddr,
     cert: CertificateDer<'static>,
 ) -> Result<(
@@ -259,7 +259,7 @@ async fn a_pipelining_stream_is_answered_in_request_order() -> Result<()> {
             .await
             .context("no answer")??;
             match answer {
-                Some(Message::PublishOk { request_id }) => answered.push((request_id, true)),
+                Some(Message::PublishOk { request_id, .. }) => answered.push((request_id, true)),
                 Some(Message::PublishError { request_id, .. }) => {
                     answered.push((request_id, false))
                 }

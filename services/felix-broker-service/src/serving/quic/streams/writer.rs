@@ -158,6 +158,7 @@ async fn write_outgoing(
             code,
             detail,
             forwarded_to,
+            offset,
         } => {
             let sample = t_should_sample();
             let write_start = t_now_if(sample);
@@ -171,11 +172,13 @@ async fn write_outgoing(
                 .filter(|_| error_codes.binary_ack())
                 .map(|(code, retry)| (code, *retry));
             let detail = detail.as_ref().filter(|_| error_codes.binary_ack_detail());
-            let bytes = match felix_wire::binary::encode_publish_ack_bytes_detailed(
+            let offset = offset.filter(|_| error_codes.ack_offset());
+            let bytes = match felix_wire::binary::encode_publish_ack_bytes_at(
                 request_id,
                 error,
                 code,
                 detail,
+                offset,
                 forwarded_to.as_ref(),
             ) {
                 Ok(bytes) => bytes,

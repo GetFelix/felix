@@ -212,7 +212,7 @@ async fn build_publish_context(broker: Arc<Broker>) -> PublishContext {
                         .await
                 }
             }
-            .map(|_| ())
+            .map(|_| None)
             .map_err(anyhow::Error::from);
             if let Some(response) = job.response {
                 let _ = response.send(result);

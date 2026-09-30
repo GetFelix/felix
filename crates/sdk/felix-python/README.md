@@ -48,6 +48,10 @@ async with client:
 Both wrap the same client and fail over identically. The sync one blocks with
 the GIL released; the async one yields to your event loop.
 
+`publish` returns the record's log offset once the broker has written it, and
+`None` when it acknowledged earlier than that (`ack="none"`, or a broker that
+acks on enqueue), the stream has no log, or the broker is too old to say.
+
 ## Beyond publish and subscribe
 
 Both surfaces also cover consumer groups (`group_poll` and the four settles,

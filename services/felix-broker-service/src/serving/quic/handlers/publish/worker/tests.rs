@@ -80,7 +80,7 @@ async fn build_publish_context_worker_returns_publish_error() -> Result<()> {
 /// A `Named` job to this stream panics the worker that takes it.
 pub(super) const PANICKING_STREAM: &str = "panics-the-worker";
 
-fn named_job(stream: &str, response: Option<oneshot::Sender<Result<()>>>) -> PublishJob {
+fn named_job(stream: &str, response: Option<oneshot::Sender<Result<Option<u64>>>>) -> PublishJob {
     PublishJob {
         target: PublishTarget::Named {
             tenant_id: "t1".to_string(),

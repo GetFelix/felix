@@ -29,6 +29,13 @@ impl PeerCapabilities {
     ///
     /// [`ReplicateRecords::generations`]: super::ReplicateRecords::generations
     pub const GENERATION_LABELS: Self = Self(1 << 2);
+    /// Answers a forwarded publish with the offsets the batch landed at, and
+    /// with an empty range when the stream has no log (see
+    /// [`ForwardPublishOk::offsets`]). An owner without it answered an
+    /// ephemeral stream's batch with `0..=0`, which reads as a real offset.
+    ///
+    /// [`ForwardPublishOk::offsets`]: super::ForwardPublishOk::offsets
+    pub const FORWARD_OFFSETS: Self = Self(1 << 3);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

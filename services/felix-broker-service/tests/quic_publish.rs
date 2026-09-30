@@ -1177,7 +1177,13 @@ async fn reuse_a_sequence_over_json(
     };
     let first = exchange(publish(2, b"a")).await?;
     anyhow::ensure!(
-        matches!(first, Some(Message::PublishOk { request_id: 2 })),
+        matches!(
+            first,
+            Some(Message::PublishOk {
+                request_id: 2,
+                offset: None
+            })
+        ),
         "first: {first:?}"
     );
     exchange(publish(3, b"b")).await
@@ -1201,7 +1207,13 @@ async fn a_reused_sequence_is_refused_over_json_only_when_negotiated() -> Result
     )
     .await?;
     assert!(
-        matches!(legacy, Some(Message::PublishOk { request_id: 3 })),
+        matches!(
+            legacy,
+            Some(Message::PublishOk {
+                request_id: 3,
+                offset: None
+            })
+        ),
         "a legacy client should get publish_ok for a reused sequence"
     );
 
@@ -1236,3 +1248,6 @@ async fn a_reused_sequence_is_refused_over_json_only_when_negotiated() -> Result
 
 #[path = "quic_publish/pipeline.rs"]
 mod pipeline;
+
+#[path = "quic_publish/ack_offsets.rs"]
+mod ack_offsets;

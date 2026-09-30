@@ -83,6 +83,7 @@ Field definitions:
   | `0x0200` | `BINARY_PUBLISH_ACK_CODE` | Modifier on `0x0010`: a failed ack carries an error code and retry class |
   | `0x0400` | `BINARY_PUBLISH_ACK_DETAIL` | Modifier on `0x0200`: the code is followed by the error's `detail` (reason, suggested wait) |
   | `0x0800` | `EVENT_BATCH_SKIPPED` | Modifier on `0x0020`: the batch also carries a `skipped_before` count of offsets before it that hold no event |
+  | `0x1000` | `BINARY_PUBLISH_ACK_OFFSET` | Modifier on `0x0010`: a successful ack ends with the offset of the batch's first record. Offered by a client, it also lets `publish_ok` carry `offset` |
 
   Because these bits change how the payload is parsed, a receiver MUST reject a
   frame carrying any bit it does not recognise rather than masking it off (see
@@ -991,6 +992,33 @@ u64 retry_after_ms  0 when the broker suggests no wait
 It is `publish_error.detail` in binary: without it a binary publisher is told
 `shard_unavailable` but not whether the shard is moving, fenced or still opening,
 nor how long a move suggests waiting.
+
+With `0x1000` (`BINARY_PUBLISH_ACK_OFFSET`), set only on a successful ack and only
+for a client that offered the bit, the offset of the batch's first record comes
+last, after the owner if `0x0080` is set too:
+
+```
+u64 offset
+```
+
+A batch's offsets are contiguous, so the record at index `i` is at `offset + i`.
+The broker leaves the bit off when it has no offset to give: it acknowledged the
+batch when it was queued rather than once it was written (`ack_on_commit` off, on
+a stream that does not need a majority), or the stream has no log. On a `Quorum`
+stream the ack is sent once a majority holds the batch, so the offset is the one it
+was committed at. A duplicate idempotent batch is answered with the offset of the
+batch already in the log, which the log's producer marks keep. A forwarded batch
+reports the offset the owner wrote it at, when the owner is recent enough to say
+(see `FORWARD_OFFSETS` in `docs/internal-protocol.md`).
+
+The same offer adds `offset` to the JSON `publish_ok`, under the same rules:
+
+```json
+{"type":"publish_ok","request_id":7,"offset":42}
+```
+
+A client that did not offer `0x1000` gets exactly the frames it always got: no
+flag bit and no `offset` field.
 
 This is the response to a `0x0008` publish. It carries exactly the information the
 JSON `publish_ok` / `publish_error` messages do; a client that published with the

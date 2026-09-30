@@ -34,6 +34,13 @@
 //! u8[addr_len] addr
 //! u64 generation
 //! ```
+//!
+//! With FLAG_BINARY_PUBLISH_ACK_OFFSET (successful acks only), the offset of
+//! the batch's first record comes last:
+//!
+//! ```text
+//! u64 offset
+//! ```
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use serde::de::Error as SerdeError;
@@ -41,7 +48,7 @@ use serde::de::Error as SerdeError;
 use crate::client::error_code::{ErrorCode, ErrorDetail, RetryClass};
 use crate::client::flags::{
     FLAG_BINARY_PUBLISH_ACK, FLAG_BINARY_PUBLISH_ACK_CODE, FLAG_BINARY_PUBLISH_ACK_DETAIL,
-    FLAG_BINARY_PUBLISH_ACK_OWNER,
+    FLAG_BINARY_PUBLISH_ACK_OFFSET, FLAG_BINARY_PUBLISH_ACK_OWNER,
 };
 use crate::client::frame::{Frame, FrameHeader};
 use crate::error::{Error, Result};
@@ -67,6 +74,13 @@ pub struct PublishAck {
     /// was talking to a client that did not advertise it. All three are the
     /// same thing to a caller: no better place to send the next batch is known.
     pub forwarded_to: Option<PublishOwner>,
+    /// The log offset of the batch's first record. The rest follow it
+    /// contiguously.
+    ///
+    /// `None` when the broker did not say: it acknowledged before writing, the
+    /// stream has no log, or the client did not advertise
+    /// `FLAG_BINARY_PUBLISH_ACK_OFFSET`. Always `None` on a failure.
+    pub offset: Option<u64>,
 }
 
 /// The broker that owns the shard a forwarded batch went to.
@@ -130,12 +144,31 @@ pub fn encode_publish_ack_bytes_detailed(
     detail: Option<&ErrorDetail>,
     forwarded_to: Option<&PublishOwner>,
 ) -> Result<Bytes> {
+    encode_publish_ack_bytes_at(request_id, error, code, detail, None, forwarded_to)
+}
+
+/// Encode a publish ack with everything it can carry.
+///
+/// `offset` sets `FLAG_BINARY_PUBLISH_ACK_OFFSET` and is ignored on a failure,
+/// so the caller must only pass it for a client that advertised that bit.
+pub fn encode_publish_ack_bytes_at(
+    request_id: u64,
+    error: Option<&str>,
+    code: Option<(&ErrorCode, RetryClass)>,
+    detail: Option<&ErrorDetail>,
+    offset: Option<u64>,
+    forwarded_to: Option<&PublishOwner>,
+) -> Result<Bytes> {
     let message = error.unwrap_or("");
     let message_bytes = message.as_bytes();
     let message_len = u16::try_from(message_bytes.len()).map_err(|_| Error::FrameTooLarge)?;
     let code = code.filter(|_| error.is_some());
     let detail = detail.filter(|_| code.is_some());
+    let offset = offset.filter(|_| error.is_none());
     let mut payload_len = 1 + 8 + 2 + message_bytes.len();
+    if offset.is_some() {
+        payload_len += 8;
+    }
     if code.is_some() {
         payload_len += 2 + 1;
     }
@@ -171,6 +204,9 @@ pub fn encode_publish_ack_bytes_detailed(
     if detail.is_some() {
         flags |= FLAG_BINARY_PUBLISH_ACK_DETAIL;
     }
+    if offset.is_some() {
+        flags |= FLAG_BINARY_PUBLISH_ACK_OFFSET;
+    }
 
     let mut buf = BytesMut::with_capacity(FrameHeader::LEN + payload_len);
     FrameHeader::new(flags, payload_len as u32).encode(&mut buf);
@@ -197,6 +233,9 @@ pub fn encode_publish_ack_bytes_detailed(
         buf.put_u16(addr_len);
         buf.extend_from_slice(addr);
         buf.put_u64(generation);
+    }
+    if let Some(offset) = offset {
+        buf.put_u64(offset);
     }
     Ok(buf.freeze())
 }
@@ -278,12 +317,27 @@ pub fn decode_publish_ack(frame: &Frame) -> Result<PublishAck> {
     } else {
         None
     };
+    let offset = if frame.header.flags & FLAG_BINARY_PUBLISH_ACK_OFFSET != 0 {
+        // Only a success has an offset; a failure claiming one is malformed.
+        if error.is_some() {
+            return Err(Error::Deserialize(SerdeError::custom(
+                "offset on a failed ack",
+            )));
+        }
+        if buf.remaining() < 8 {
+            return Err(Error::Incomplete);
+        }
+        Some(buf.get_u64())
+    } else {
+        None
+    };
     Ok(PublishAck {
         request_id,
         error,
         code,
         detail,
         forwarded_to,
+        offset,
     })
 }
 

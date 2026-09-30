@@ -13,7 +13,7 @@ use crate::ClientConfig;
 use crate::cluster::{ClusterClient, ReconnectPolicy};
 use crate::test_support::{build_server_config, quinn_client_config};
 
-fn policy() -> ReconnectPolicy {
+pub(super) fn policy() -> ReconnectPolicy {
     ReconnectPolicy {
         attempts: 3,
         backoff: Duration::from_millis(1),
@@ -24,7 +24,9 @@ fn policy() -> ReconnectPolicy {
 
 /// The shipped defaults, so a regression back to a pool per role shows up
 /// as the pool sizes it would open.
-fn default_config(cert: rustls::pki_types::CertificateDer<'static>) -> Result<ClientConfig> {
+pub(super) fn default_config(
+    cert: rustls::pki_types::CertificateDer<'static>,
+) -> Result<ClientConfig> {
     let mut config = ClientConfig::optimized_defaults(quinn_client_config(cert)?);
     config.auth_tenant_id = Some("t1".to_string());
     config.auth_token = Some("test-token".to_string());
@@ -54,7 +56,10 @@ async fn one_connection_per_broker_under_light_mixed_role_use() -> Result<()> {
         let b_addr = Arc::clone(&b_addr);
         move |id| match id {
             0 => not_leader("b", *b_addr.get().expect("b bound")),
-            id => Message::PublishOk { request_id: id },
+            id => Message::PublishOk {
+                request_id: id,
+                offset: None,
+            },
         }
     })?;
     a_addr.set(a.addr).expect("a once");
@@ -62,7 +67,10 @@ async fn one_connection_per_broker_under_light_mixed_role_use() -> Result<()> {
         let a_addr = Arc::clone(&a_addr);
         move |id| match id {
             0 => not_leader("a", *a_addr.get().expect("a bound")),
-            id => Message::PublishOk { request_id: id },
+            id => Message::PublishOk {
+                request_id: id,
+                offset: None,
+            },
         }
     })?;
     b_addr.set(b.addr).expect("b once");
@@ -170,8 +178,12 @@ async fn a_dead_broker_connection_is_rebuilt_without_touching_another() -> Resul
     let (server_config, cert) = build_server_config()?;
     let a = StubBroker::start_with(server_config.clone(), |id| Message::PublishOk {
         request_id: id,
+        offset: None,
     })?;
-    let b = StubBroker::start_with(server_config, |id| Message::PublishOk { request_id: id })?;
+    let b = StubBroker::start_with(server_config, |id| Message::PublishOk {
+        request_id: id,
+        offset: None,
+    })?;
     let cluster =
         ClusterClient::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
             .await?;

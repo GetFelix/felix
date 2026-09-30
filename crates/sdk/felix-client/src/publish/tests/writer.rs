@@ -48,7 +48,11 @@ async fn acked_publishes_pipeline_without_waiting_per_ack() -> Result<()> {
             }
         }
         for request_id in request_ids {
-            let frame = Message::PublishOk { request_id }.encode()?;
+            let frame = Message::PublishOk {
+                request_id,
+                offset: None,
+            }
+            .encode()?;
             send.write_all(&frame.encode()).await.context("write ack")?;
         }
         // Close like the broker does: finish the ack side so the client's
@@ -135,9 +139,15 @@ async fn acks_answered_out_of_order_reach_their_own_requests() -> Result<()> {
                 .context("publish stream closed before all frames arrived")?;
         }
         for answer in [
-            Message::PublishOk { request_id: 3 },
+            Message::PublishOk {
+                request_id: 3,
+                offset: None,
+            },
             Message::publish_error(1, "refused"),
-            Message::PublishOk { request_id: 2 },
+            Message::PublishOk {
+                request_id: 2,
+                offset: None,
+            },
         ] {
             send.write_all(&answer.encode()?.encode())
                 .await

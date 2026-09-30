@@ -117,6 +117,10 @@ impl Client {
     /// `atLeastOnce` it is re-sent to another broker instead: the record is
     /// then certain to land, and may land twice. That is a delivery guarantee
     /// the caller chooses, never one this client assumes.
+    ///
+    /// Resolves to the record's log offset, or `null` when the broker
+    /// acknowledged before writing it, the stream has no log, the broker is
+    /// too old to say, or `ack` is `"none"`.
     #[napi]
     pub async fn publish(
         &self,
@@ -127,7 +131,7 @@ impl Client {
         key: Option<Buffer>,
         ack: Option<String>,
         at_least_once: Option<bool>,
-    ) -> Result<()> {
+    ) -> Result<Option<BigInt>> {
         let ack = parse_ack(ack.as_deref().unwrap_or("per_message"))?;
         let at_least_once = at_least_once.unwrap_or(false);
         let payload = payload.to_vec();
@@ -156,6 +160,7 @@ impl Client {
                     .await
             }
         }
+        .map(|offset| offset.map(BigInt::from))
         .map_err(classify)
     }
 

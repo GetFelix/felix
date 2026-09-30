@@ -304,8 +304,8 @@ async fn a_forwarded_publish_is_written_by_the_owner() {
     .await
     .expect("the owner must accept a publish for a shard it owns");
 
-    // Ephemeral stream: no log, so no offsets to report.
-    assert_eq!(offsets, Some((0, 0)));
+    // Ephemeral stream: no log, so no offsets, rather than a made-up 0.
+    assert_eq!(offsets, None);
 
     let delivered = tokio::time::timeout(Duration::from_secs(2), subscription.recv())
         .await

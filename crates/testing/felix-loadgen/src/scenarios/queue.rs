@@ -40,7 +40,7 @@ pub(crate) async fn queue(common: &Common, stream: &str) -> Result<()> {
                 )
                 .await
             {
-                Ok(()) => break,
+                Ok(_) => break,
                 Err(err) if is_retriable_transient(&err) => {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }

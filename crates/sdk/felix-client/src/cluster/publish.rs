@@ -25,6 +25,10 @@ impl ClusterClient {
     /// `shard_unavailable`, `draining` or `not_leader` has said it applied
     /// nothing, so the owner is forgotten and the record goes once through the
     /// entry broker, which routes by the current assignment.
+    ///
+    /// Returns the record's log offset. `None` when the broker acknowledged
+    /// before writing it, the stream has no log, the broker predates
+    /// `FLAG_BINARY_PUBLISH_ACK_OFFSET`, or `ack` is `AckMode::None`.
     pub async fn publish(
         &self,
         tenant_id: &str,
@@ -32,7 +36,7 @@ impl ClusterClient {
         stream: &str,
         payload: Vec<u8>,
         ack: AckMode,
-    ) -> Result<()> {
+    ) -> Result<Option<u64>> {
         // An unkeyed publish has nothing to hash, so it always resolves to
         // shard 0 -- no width lookup needed.
         let shard: ShardKey = (
@@ -51,6 +55,8 @@ impl ClusterClient {
     /// is ever written to. The key is what spreads records, and records
     /// sharing a key share a shard and therefore stay ordered with respect to
     /// each other.
+    ///
+    /// Returns the record's log offset, when there is one; see [`Self::publish`].
     pub async fn publish_keyed(
         &self,
         tenant_id: &str,
@@ -59,7 +65,7 @@ impl ClusterClient {
         payload: Vec<u8>,
         key: bytes::Bytes,
         ack: AckMode,
-    ) -> Result<()> {
+    ) -> Result<Option<u64>> {
         let stream_key: StreamKey = (
             tenant_id.to_string(),
             namespace.to_string(),
@@ -81,6 +87,9 @@ impl ClusterClient {
     /// the broker can tell the two apart — only the application holds an
     /// identity that would make deduplication possible. Use it for streams
     /// whose consumers tolerate that, which is what `AtLeastOnce` means.
+    ///
+    /// Returns the log offset of the attempt that was acknowledged, when there
+    /// is one; see [`Self::publish`].
     pub async fn publish_at_least_once(
         &self,
         tenant_id: &str,
@@ -88,7 +97,7 @@ impl ClusterClient {
         stream: &str,
         payload: Vec<u8>,
         ack: AckMode,
-    ) -> Result<()> {
+    ) -> Result<Option<u64>> {
         let started = std::time::Instant::now();
         let mut last: Option<anyhow::Error> = None;
         let mut retrying = Retrying::default();
@@ -113,7 +122,7 @@ impl ClusterClient {
             }
             let client = self.client().await;
             match publish_once(&client, tenant_id, namespace, stream, payload.clone(), ack).await {
-                Ok(_) => return Ok(()),
+                Ok(acked) => return Ok(acked.offset),
                 Err(err) => {
                     let attempt = Attempt {
                         resend_ambiguous: true,
@@ -156,7 +165,7 @@ impl ClusterClient {
         payload: Vec<u8>,
         key: Option<bytes::Bytes>,
         ack: AckMode,
-    ) -> Result<()> {
+    ) -> Result<Option<u64>> {
         let (tenant_id, namespace, stream) = (&shard.0, &shard.1, &shard.2);
         let routed = self
             .owners
@@ -180,11 +189,11 @@ impl ClusterClient {
                 )
                 .await
                 {
-                    Ok(forwarded_to) => {
-                        if let Some(owner) = forwarded_to {
+                    Ok(acked) => {
+                        if let Some(owner) = acked.forwarded_to {
                             self.remember_owner(shard, owner).await;
                         }
-                        return Ok(());
+                        return Ok(acked.offset);
                     }
                     Err(err) => err,
                 };
@@ -207,11 +216,11 @@ impl ClusterClient {
 
         let client = self.client().await;
         match publish_once_keyed(&client, tenant_id, namespace, stream, payload, key, ack).await {
-            Ok(forwarded_to) => {
-                if let Some(owner) = forwarded_to {
+            Ok(acked) => {
+                if let Some(owner) = acked.forwarded_to {
                     self.remember_owner(shard, owner).await;
                 }
-                Ok(())
+                Ok(acked.offset)
             }
             Err(err) if !wants_reconnect(&err) => Err(err),
             Err(err) => {

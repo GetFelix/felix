@@ -16,6 +16,7 @@ use std::sync::atomic::AtomicU64;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
+use super::Acked;
 use super::routing::PublishSharding;
 use super::writer::{PublishRequest, PublishWorker};
 use super::{Publisher, PublisherInner};
@@ -34,13 +35,13 @@ pub(super) fn make_publisher(sharding: PublishSharding, workers: usize) -> Publi
             while let Some(request) = rx.recv().await {
                 match request {
                     PublishRequest::Message { response, .. } => {
-                        let _ = response.send(Ok(None));
+                        let _ = response.send(Ok(Acked::default()));
                     }
                     PublishRequest::BinaryBytes { response, .. } => {
-                        let _ = response.send(Ok(None));
+                        let _ = response.send(Ok(Acked::default()));
                     }
                     PublishRequest::Finish { response } => {
-                        let _ = response.send(Ok(None));
+                        let _ = response.send(Ok(Acked::default()));
                         break;
                     }
                 }

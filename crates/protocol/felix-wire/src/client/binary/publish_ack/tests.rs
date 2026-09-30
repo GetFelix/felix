@@ -305,3 +305,93 @@ fn a_truncated_detail_is_an_error() {
         );
     }
 }
+
+/// With the offset flag a success carries its first offset; without an offset
+/// the frame is byte-identical to the one an older broker sends.
+#[test]
+fn a_successful_ack_carries_its_offset() {
+    use crate::FLAG_BINARY_PUBLISH_ACK_OFFSET;
+
+    let placed =
+        binary::encode_publish_ack_bytes_at(21, None, None, None, Some(900), None).expect("encode");
+    let frame = Frame::decode(placed.clone()).expect("frame");
+    assert_eq!(
+        frame.header.flags,
+        FLAG_BINARY_PUBLISH_ACK | FLAG_BINARY_PUBLISH_ACK_OFFSET
+    );
+    assert_eq!(&placed[placed.len() - 8..], &900u64.to_be_bytes());
+    let decoded = binary::decode_publish_ack(&frame).expect("decode");
+    assert_eq!(decoded.request_id, 21);
+    assert_eq!(decoded.error, None);
+    assert_eq!(decoded.offset, Some(900));
+
+    let unplaced =
+        binary::encode_publish_ack_bytes_at(21, None, None, None, None, None).expect("encode");
+    assert_eq!(
+        unplaced,
+        binary::encode_publish_ack_bytes(21, None).expect("plain")
+    );
+    let frame = Frame::decode(unplaced).expect("frame");
+    assert_eq!(
+        binary::decode_publish_ack(&frame).expect("decode").offset,
+        None
+    );
+}
+
+/// A failure never carries an offset, even if one is passed.
+#[test]
+fn a_failed_ack_drops_the_offset() {
+    let bytes = binary::encode_publish_ack_bytes_at(22, Some("full"), None, None, Some(5), None)
+        .expect("encode");
+    assert_eq!(
+        bytes,
+        binary::encode_publish_ack_bytes(22, Some("full")).expect("plain")
+    );
+}
+
+/// The offset follows the owner hint when a forwarded batch has both.
+#[test]
+fn a_forwarded_ack_carries_owner_and_offset() {
+    let owner = binary::PublishOwner {
+        node_id: "b".to_string(),
+        addr: Some("10.0.0.2:7000".to_string()),
+        generation: 3,
+    };
+    let bytes = binary::encode_publish_ack_bytes_at(23, None, None, None, Some(77), Some(&owner))
+        .expect("encode");
+    let frame = Frame::decode(bytes).expect("frame");
+    let decoded = binary::decode_publish_ack(&frame).expect("decode");
+    assert_eq!(decoded.forwarded_to, Some(owner));
+    assert_eq!(decoded.offset, Some(77));
+}
+
+/// A truncated offset, or one on a failure, is refused rather than guessed at.
+#[test]
+fn a_malformed_offset_is_refused() {
+    use crate::FLAG_BINARY_PUBLISH_ACK_OFFSET;
+
+    let mut buf = BytesMut::new();
+    buf.put_u8(0);
+    buf.put_u64(24);
+    buf.put_u16(0);
+    buf.put_u32(1);
+    let frame = Frame::new(
+        FLAG_BINARY_PUBLISH_ACK | FLAG_BINARY_PUBLISH_ACK_OFFSET,
+        buf.freeze(),
+    )
+    .expect("frame");
+    assert!(binary::decode_publish_ack(&frame).is_err());
+
+    let mut buf = BytesMut::new();
+    buf.put_u8(1);
+    buf.put_u64(24);
+    buf.put_u16(1);
+    buf.extend_from_slice(b"x");
+    buf.put_u64(9);
+    let frame = Frame::new(
+        FLAG_BINARY_PUBLISH_ACK | FLAG_BINARY_PUBLISH_ACK_OFFSET,
+        buf.freeze(),
+    )
+    .expect("frame");
+    assert!(binary::decode_publish_ack(&frame).is_err());
+}

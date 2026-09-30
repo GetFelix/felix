@@ -95,6 +95,10 @@ impl Client {
     /// record lands on shard 0, so a multi-shard stream behaves like a
     /// single-shard one. Records sharing a key share a shard and stay ordered
     /// with respect to each other; records with different keys do not.
+    ///
+    /// Returns the record's log offset, or `None` when the broker acknowledged
+    /// before writing it, the stream has no log, the broker is too old to say,
+    /// or `ack` is `"none"`.
     #[pyo3(signature = (
         tenant_id,
         namespace,
@@ -115,7 +119,7 @@ impl Client {
         key: Option<&[u8]>,
         ack: &str,
         at_least_once: bool,
-    ) -> PyResult<()> {
+    ) -> PyResult<Option<u64>> {
         let ack = parse_ack(ack)?;
         if key.is_some() && at_least_once {
             return Err(PyValueError::new_err(

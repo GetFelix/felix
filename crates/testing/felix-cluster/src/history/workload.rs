@@ -273,7 +273,7 @@ impl Workload {
         )
         .await;
         let (outcome, result) = match published {
-            Ok(Ok(())) => (AppendOutcome::Ok { offset: None }, Ok(())),
+            Ok(Ok(offset)) => (AppendOutcome::Ok { offset }, Ok(())),
             Ok(Err(err)) => (classify(&err), Err(err)),
             Err(_) => (AppendOutcome::Info, Err(anyhow!("no answer in time"))),
         };
@@ -498,7 +498,7 @@ impl Client<'_> {
         )
         .await;
         let outcome = match published {
-            Ok(Ok(())) => AppendOutcome::Ok { offset: None },
+            Ok(Ok(offset)) => AppendOutcome::Ok { offset },
             Ok(Err(err)) => classify(&err),
             // Dropping a publish after it reached the writer does not stop it.
             Err(_) => AppendOutcome::Info,
@@ -534,8 +534,8 @@ impl Client<'_> {
             )
             .await;
             match sent {
-                Ok(Ok(())) => {
-                    outcome = AppendOutcome::Ok { offset: None };
+                Ok(Ok(offset)) => {
+                    outcome = AppendOutcome::Ok { offset };
                     break;
                 }
                 // The same batch under the same sequence cannot land twice.

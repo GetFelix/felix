@@ -390,6 +390,7 @@ async fn re_send(cluster: &Cluster, node_id: &str, producer_id: u64, sequence: u
         )
         .await
         .context("the new leader must answer the re-send as a duplicate")
+        .map(|_| ())
 }
 
 /// **A producer's sequence moves with its shard.** The owner drains, the

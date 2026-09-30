@@ -1,6 +1,7 @@
 mod connections;
 mod decisions;
 mod error_codes;
+mod offsets;
 mod stub_broker;
 
 use std::time::Duration;

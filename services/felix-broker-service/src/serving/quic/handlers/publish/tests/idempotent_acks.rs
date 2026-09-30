@@ -71,7 +71,17 @@ fn plain_publishes_are_never_answered_with_a_refusal() {
 #[test]
 fn success_is_a_plain_publish_ok() {
     assert!(matches!(
-        AckEncoding::Idempotent.ok(9),
-        Outgoing::Message(Message::PublishOk { request_id: 9 })
+        AckEncoding::Idempotent.ok(9, None),
+        Outgoing::Message(Message::PublishOk {
+            request_id: 9,
+            offset: None
+        })
+    ));
+    assert!(matches!(
+        AckEncoding::Idempotent.ok(9, Some(4)),
+        Outgoing::Message(Message::PublishOk {
+            request_id: 9,
+            offset: Some(4)
+        })
     ));
 }
