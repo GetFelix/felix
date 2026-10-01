@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790832054391,
+  "lastUpdate": 1790832500731,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -21476,6 +21476,58 @@ window.BENCHMARK_DATA = {
             "range": "19558.80",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1198005.15\nmean: 1200450.12\nstdev: 19558.80\ncv: 1.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "84dd692a20d020e6b100d9308a79ad77a61e1e8a",
+          "message": "fix(storage): keep io_uring flush files open until their completions are reaped (#903)\n\nA failed io_uring_enter dropped every outstanding flush's file. Entries the\nkernel had already taken were still running against those descriptors, and\nentries it had not taken stayed in the submission queue for the next submit,\nso a sync could land on a closed or reused descriptor.\n\nThe waiters are still failed with the error, so nothing is acknowledged\nwhose flush outcome is unknown, but each file now stays in the waiting map\nuntil its completion is reaped. The backlog is failed too, so a ring whose\nslots are held by failed entries cannot park new requests. EAGAIN and EBUSY,\nwhich only ask for completions to be reaped before the kernel takes more,\nare handled like EINTR instead of failing (and poisoning) every log.\n\nThe service loop moves into a Service struct so a test can run a private\nring with an injected submit error without failing other tests' flushes.\n\nCloses #722",
+          "timestamp": "2026-09-30T22:11:07-07:00",
+          "tree_id": "786d8148208c805afc0bff93289b4bbbd30fcb43",
+          "url": "https://github.com/gabloe/felix/commit/84dd692a20d020e6b100d9308a79ad77a61e1e8a"
+        },
+        "date": 1790832499506,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347468.55,
+            "range": "13637.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347468.55\nmean: 343217.22\nstdev: 13637.32\ncv: 3.97%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347468.55,
+            "range": "13637.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347468.55\nmean: 343217.22\nstdev: 13637.32\ncv: 3.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 84998.23,
+            "range": "351.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 84998.23\nmean: 84904.30\nstdev: 351.47\ncv: 0.41%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 849982.32,
+            "range": "3514.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 849982.32\nmean: 849043.02\nstdev: 3514.70\ncv: 0.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
