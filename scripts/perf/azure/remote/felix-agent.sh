@@ -194,13 +194,19 @@ series_ports() {
 # byte counters, UDP InDatagrams/RcvbufErrors and the per-port byte counters.
 # Armed before the load: run-command dispatch takes seconds, so a sample taken
 # "during" the load from the operator often lands after it.
+#
+# Optional <proc> and <stats> point it at another system on the same VMs (the
+# NATS comparison): <proc> is the process name whose CPU is sampled, and
+# <stats> "nats" reads stored and received bytes from nats-server's
+# monitoring port instead of Felix's metrics. Without them it samples Felix.
 cmd_sampler_start() {
-  tag="$1"
+  tag="$1"; proc="${2:-}"; stats="${3:-felix}"
   mkdir -p "$SAMPLES"
   rm -f "$SAMPLES/$tag.txt" "$SAMPLES/$tag.stop" "$SAMPLES/$tag.series.tsv" "$SAMPLES/$tag.series.gz.b64"
-  url=$(metrics_url || true)
-  nohup "$0" _sample "$tag" "$url" >/dev/null 2>&1 &
-  echo "sampler=$tag"
+  if [ "$stats" = nats ]; then url=http://127.0.0.1:8222; else url=$(metrics_url || true); fi
+  echo "$stats" > "$SAMPLES/$tag.stats"
+  nohup "$0" _sample "$tag" "$url" "$proc" "$stats" >/dev/null 2>&1 &
+  echo "sampler=$tag${proc:+ proc=$proc}"
 }
 
 # Columns: t, cpu user+nice sys idle iowait irq softirq steal, proc ticks,
@@ -208,17 +214,33 @@ cmd_sampler_start() {
 # per port in series_ports order. Each line costs one scrape, one iptables
 # list and a few small /proc reads.
 cmd__sample() {
-  tag="$1"; url="${2:-}"; f="$SAMPLES/$tag.txt"; i=0
+  tag="$1"; url="${2:-}"; proc="${3:-}"; stats="${4:-felix}"; f="$SAMPLES/$tag.txt"; i=0
   ports=$(series_ports)
   ipt=0
   if command -v iptables >/dev/null && iptables -w -nL FELIX_PORTS >/dev/null 2>&1; then ipt=1; fi
   while [ "$i" -lt 3600 ] && [ ! -e "$SAMPLES/$tag.stop" ]; do
     t=$(date +%s.%N)
-    pid=$(pidof -s felix-broker 2>/dev/null || pidof -s felix-loadgen 2>/dev/null || true)
+    if [ -n "$proc" ]; then
+      pid=$(pidof -s "$proc" 2>/dev/null || true)
+    else
+      pid=$(pidof -s felix-broker 2>/dev/null || pidof -s felix-loadgen 2>/dev/null || true)
+    fi
     pt=0
     if [ -n "$pid" ]; then pt=$(awk '{ print $14 + $15 }' "/proc/$pid/stat" 2>/dev/null || echo 0); fi
     m="0 0"
-    if [ -n "$url" ]; then
+    if [ "$stats" = nats ]; then
+      # Appended bytes: records appended (the streams' last sequences)
+      # times the mean stored record size. Unlike the stored total it keeps
+      # counting when a memory stream discards at its limit. Then the
+      # server's received bytes. Top-level keys sit at a two-space indent.
+      a=$(curl -s -m 1 "$url/jsz?streams=true" | awk '
+        /"last_seq":/ { v = $2; gsub(/[^0-9]/, "", v); s += v }
+        /^  "bytes":/ { b = $2; gsub(/[^0-9]/, "", b) }
+        /^  "messages":/ { n = $2; gsub(/[^0-9]/, "", n) }
+        END { if (n > 0) printf "%.0f", s * b / n; else printf "0" }')
+      b=$(curl -s -m 1 "$url/varz" | sed -n 's/^  "in_bytes": *\([0-9]*\).*/\1/p' | head -1)
+      m="${a:-0} ${b:-0}"
+    elif [ -n "$url" ]; then
       m=$(curl -s -m 1 "$url" | awk '
         /^#/ { next }
         { n = $1; sub(/\{.*/, "", n)
@@ -293,7 +315,7 @@ cmd_sampler_stop() {
     }' "$f"
   series="$SAMPLES/$tag.series.tsv"
   {
-    echo "# hz=$(getconf CLK_TCK) nproc=$(nproc) host=$(hostname)"
+    echo "# hz=$(getconf CLK_TCK) nproc=$(nproc) host=$(hostname) stats=$(cat "$SAMPLES/$tag.stats" 2>/dev/null || echo felix)"
     printf 't\tproc_ticks\tappend_bytes\tpublish_bytes\tudp_in\tudp_rcvbuf_errors'
     for p in $(series_ports); do printf '\tport.%s.bytes' "$p"; done
     echo

@@ -44,13 +44,18 @@ TRIM = 0.10
 
 
 def read_series(path):
-    """(hz, rows): rows are dicts of floats keyed by the header's columns."""
-    hz, cols, rows = 100.0, None, []
+    """(hz, rows): rows are dicts of floats keyed by the header's columns.
+
+    A NATS series (stats=nats) carries the server's received bytes in the
+    publish column; it becomes the row's in_bytes, the ingress figure, since
+    NATS clients use TCP and the per-port UDP counters stay at zero."""
+    hz, cols, rows, nats = 100.0, None, [], False
     for line in path.read_text(errors="replace").splitlines():
         if line.startswith("#"):
             m = re.search(r"\bhz=(\d+)", line)
             if m:
                 hz = float(m.group(1))
+            nats = nats or "stats=nats" in line
             continue
         parts = line.split("\t")
         if cols is None:
@@ -59,9 +64,12 @@ def read_series(path):
         if len(parts) != len(cols):
             continue
         try:
-            rows.append({c: float(v) for c, v in zip(cols, parts)})
+            row = {c: float(v) for c, v in zip(cols, parts)}
         except ValueError:
             continue
+        if nats:
+            row["in_bytes"] = row.get("publish_bytes", 0.0)
+        rows.append(row)
     return hz, rows
 
 
@@ -97,6 +105,8 @@ def moving_window(series):
 
 
 def ingress(row):
+    if "in_bytes" in row:
+        return row["in_bytes"]
     return sum(v for k, v in row.items() if (m := re.match(r"^port\.(\d+)\.bytes$", k)) and int(m.group(1)) in CLIENT_PORTS)
 
 
@@ -158,6 +168,8 @@ def steady_state(series, gen_times):
 
 
 def ingress_at(rows, x):
+    if "in_bytes" in rows[0]:
+        return at(rows, "in_bytes", x) or 0.0
     keys = [k for k in rows[0] if (m := re.match(r"^port\.(\d+)\.bytes$", k)) and int(m.group(1)) in CLIENT_PORTS]
     return sum(at(rows, k, x) or 0.0 for k in keys)
 
@@ -193,12 +205,16 @@ def delta(before, after, key):
 
 
 def loadgen_json(path):
+    """The instrument's result line: felix-loadgen's LOADGEN_JSON, or the
+    NATS_BENCH_JSON that nats-agent reduces `nats bench` CSVs to, which uses
+    the same key names (throughput_mb_s, throughput_msg_s, ack_latency_us)."""
     for line in reversed(path.read_text(errors="replace").splitlines()):
-        if line.startswith("LOADGEN_JSON "):
-            try:
-                return json.loads(line[len("LOADGEN_JSON "):])
-            except json.JSONDecodeError:
-                return None
+        for tag in ("LOADGEN_JSON ", "NATS_BENCH_JSON "):
+            if line.startswith(tag):
+                try:
+                    return json.loads(line[len(tag):])
+                except json.JSONDecodeError:
+                    return None
     return None
 
 
