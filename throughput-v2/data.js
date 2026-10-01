@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790817020615,
+  "lastUpdate": 1790817319599,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -21216,6 +21216,58 @@ window.BENCHMARK_DATA = {
             "range": "6974.67",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 822293.05\nmean: 820778.99\nstdev: 6974.67\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dda7b424ecea9dac7a70baa4381f290d705a0f9b",
+          "message": "feat(wire): publish acknowledgements carry the offset the batch landed at (#876) (#891)\n\nA client that offers the new frame flag FLAG_BINARY_PUBLISH_ACK_OFFSET\n(0x1000) gets the offset of the batch's first record on a successful\nbinary ack, and as `offset` on a JSON publish_ok. The broker sends it only\nwhen it answers after the write; a client that did not offer the bit gets\nbyte-identical frames.\n\n- A duplicate idempotent batch reports the original's offset, which the\n  log's producer marks already keep; nothing new is persisted.\n- A forwarded batch reports the owner's offset. ForwardPublishOk's layout\n  is unchanged; a new peer capability FORWARD_OFFSETS says the owner sends\n  an empty range for a stream with no log, and an older owner's offsets\n  are not passed on.\n- felix-client: Publisher::publish and friends, ClusterClient::publish and\n  IdempotentProducer::publish return Result<Option<u64>>. Python and Node\n  publish return the offset.\n- Conformance covers the flag, the duplicate's offset and byte-identical\n  frames for a client that did not offer it.\n- The history workload records the offset for every acknowledged append,\n  so rule 3 covers plain and idempotent publishes, and the campaign bar\n  rises to 40 appends and half of the acknowledged ones.\n\nSpec-Unaffected: a wire field on the acknowledgement; replication, commit and failover semantics are unchanged.\n\nCloses #876",
+          "timestamp": "2026-09-30T18:09:37-07:00",
+          "tree_id": "305e9272d7b99165d750bf07322907d27a89df60",
+          "url": "https://github.com/gabloe/felix/commit/dda7b424ecea9dac7a70baa4381f290d705a0f9b"
+        },
+        "date": 1790817318997,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 337038,
+            "range": "8501.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337038.00\nmean: 336562.66\nstdev: 8501.33\ncv: 2.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 337038,
+            "range": "8501.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337038.00\nmean: 336562.66\nstdev: 8501.33\ncv: 2.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81955.37,
+            "range": "548.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81955.37\nmean: 81842.53\nstdev: 548.57\ncv: 0.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819553.65,
+            "range": "5485.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819553.65\nmean: 818425.28\nstdev: 5485.66\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
