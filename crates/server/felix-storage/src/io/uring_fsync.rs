@@ -59,6 +59,9 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 struct Ring {
     tx: std::sync::mpsc::Sender<Submission>,
     wake: Arc<Wake>,
+    /// An errno the service thread reports in place of its next submit.
+    #[cfg(test)]
+    submit_fault: Arc<std::sync::atomic::AtomicI32>,
 }
 
 /// Interrupts the service thread's wait when a request is queued.
@@ -113,7 +116,7 @@ impl Wake {
             .build()
             .user_data(WAKE_ID);
         // Safety: the eventfd lives as long as the ring's thread. The queue
-        // was just submitted, so it has room.
+        // has room: at most `MAX_IN_FLIGHT` other entries are outstanding.
         let _ = unsafe { uring.submission().push(&entry) };
     }
 }
@@ -138,7 +141,10 @@ enum Op {
     PollReadable,
 }
 
-type Waiting = HashMap<u64, (Arc<File>, oneshot::Sender<io::Result<()>>)>;
+/// Operations the kernel may still be using, keyed by flush id. The reply is
+/// taken when a submit error fails the waiter early; the file stays until the
+/// completion is reaped.
+type Waiting = HashMap<u64, (Arc<File>, Option<oneshot::Sender<io::Result<()>>>)>;
 
 /// Whether flushes should go through `io_uring`.
 ///
@@ -214,11 +220,14 @@ pub(crate) async fn fsync(file: Arc<File>) -> Option<io::Result<()>> {
 /// Wait through the ring for `file` to become readable.
 #[cfg(test)]
 async fn poll_readable(file: Arc<File>) -> Option<io::Result<()>> {
-    submit(file, Op::PollReadable).await
+    submit_to(ring()?, file, Op::PollReadable).await
 }
 
 async fn submit(file: Arc<File>, op: Op) -> Option<io::Result<()>> {
-    let ring = ring()?;
+    submit_to(ring()?, file, op).await
+}
+
+async fn submit_to(ring: &Ring, file: Arc<File>, op: Op) -> Option<io::Result<()>> {
     let (reply, wait) = oneshot::channel();
     // A send failure means the service thread is gone, which is the same
     // situation as no ring at all.
@@ -239,8 +248,12 @@ async fn submit(file: Arc<File>, op: Op) -> Option<io::Result<()>> {
 /// path rather than failing the publish: a durability mechanism must not
 /// depend on an optimisation being available.
 fn ring() -> Option<&'static Ring> {
-    RING.get_or_init(|| {
-        let mut uring = match IoUring::new(RING_ENTRIES) {
+    RING.get_or_init(Ring::start).as_ref()
+}
+
+impl Ring {
+    fn start() -> Option<Self> {
+        let uring = match IoUring::new(RING_ENTRIES) {
             Ok(uring) => uring,
             Err(err) => {
                 tracing::warn!(
@@ -261,73 +274,138 @@ fn ring() -> Option<&'static Ring> {
             }
         };
         let (tx, rx) = std::sync::mpsc::channel::<Submission>();
-        let thread_wake = Arc::clone(&wake);
+        #[cfg(test)]
+        let submit_fault = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let service = Service {
+            uring,
+            wake: Arc::clone(&wake),
+            rx,
+            waiting: Waiting::new(),
+            backlog: VecDeque::new(),
+            #[cfg(test)]
+            submit_fault: Arc::clone(&submit_fault),
+        };
         std::thread::Builder::new()
             .name("felix-uring-fsync".into())
-            .spawn(move || {
-                // Owned exclusively by this thread: the submission and
-                // completion queues are not safe to touch from several.
-                let wake = thread_wake;
-                let mut waiting = Waiting::new();
-                let mut backlog = VecDeque::new();
-                // The wake poll is always armed, so the wait below returns on
-                // either a completion or a newly queued request.
-                wake.arm(&mut uring);
-                loop {
-                    // Cleared before draining: a request queued after the
-                    // drain signals again and ends the next wait.
-                    wake.pending.store(false, Ordering::SeqCst);
-                    fence(Ordering::SeqCst);
-                    backlog.extend(rx.try_iter());
-                    while waiting.len() < MAX_IN_FLIGHT {
-                        let Some(submission) = backlog.pop_front() else {
-                            break;
-                        };
-                        if let Err(submission) = push(&mut uring, &mut waiting, submission) {
-                            // The queue drains on the submit below.
-                            backlog.push_front(submission);
-                            break;
-                        }
-                    }
-
-                    match uring.submit_and_wait(1) {
-                        Ok(_) => {}
-                        // Submitted entries stay in flight; collect as usual.
-                        Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-                        Err(err) => {
-                            // Nothing outstanding can be called durable.
-                            for (_, (_file, reply)) in waiting.drain() {
-                                let _ =
-                                    reply.send(Err(io::Error::new(err.kind(), err.to_string())));
-                            }
-                            continue;
-                        }
-                    }
-                    let completions: Vec<(u64, i32)> = uring
-                        .completion()
-                        .map(|cqe| (cqe.user_data(), cqe.result()))
-                        .collect();
-                    for (id, result) in completions {
-                        if id == WAKE_ID {
-                            wake.consume();
-                            wake.arm(&mut uring);
-                            continue;
-                        }
-                        if let Some((_file, reply)) = waiting.remove(&id) {
-                            let outcome = if result < 0 {
-                                Err(io::Error::from_raw_os_error(-result))
-                            } else {
-                                Ok(())
-                            };
-                            let _ = reply.send(outcome);
-                        }
-                    }
-                }
-            })
+            .spawn(move || service.run())
             .ok()?;
-        Some(Ring { tx, wake })
-    })
-    .as_ref()
+        Some(Ring {
+            tx,
+            wake,
+            #[cfg(test)]
+            submit_fault,
+        })
+    }
+}
+
+/// The service thread's state. Owned exclusively by that thread: the
+/// submission and completion queues are not safe to touch from several.
+struct Service {
+    uring: IoUring,
+    wake: Arc<Wake>,
+    rx: std::sync::mpsc::Receiver<Submission>,
+    waiting: Waiting,
+    backlog: VecDeque<Submission>,
+    #[cfg(test)]
+    submit_fault: Arc<std::sync::atomic::AtomicI32>,
+}
+
+impl Service {
+    fn run(mut self) {
+        // The wake poll is always armed, so the wait below returns on either a
+        // completion or a newly queued request.
+        self.wake.arm(&mut self.uring);
+        loop {
+            // Cleared before draining: a request queued after the drain
+            // signals again and ends the next wait.
+            self.wake.pending.store(false, Ordering::SeqCst);
+            fence(Ordering::SeqCst);
+            self.backlog.extend(self.rx.try_iter());
+            while self.waiting.len() < MAX_IN_FLIGHT {
+                let Some(submission) = self.backlog.pop_front() else {
+                    break;
+                };
+                if let Err(submission) = push(&mut self.uring, &mut self.waiting, submission) {
+                    // The queue drains on the submit below.
+                    self.backlog.push_front(submission);
+                    break;
+                }
+            }
+
+            let submitted = self.submit_and_wait();
+            if let Err(err) = &submitted {
+                self.on_submit_error(err);
+            }
+            let reaped = self.reap();
+            if submitted.is_err() && reaped == 0 {
+                // A ring that keeps refusing must not become a busy loop.
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+
+    fn submit_and_wait(&mut self) -> io::Result<usize> {
+        #[cfg(test)]
+        {
+            let errno = self.submit_fault.swap(0, Ordering::SeqCst);
+            if errno != 0 {
+                return Err(io::Error::from_raw_os_error(errno));
+            }
+        }
+        self.uring.submit_and_wait(1)
+    }
+
+    /// A failed `io_uring_enter` leaves every entry the kernel already took
+    /// in flight, and every entry it did not take in the submission queue for
+    /// the next submit. Either way the kernel may still use the descriptor, so
+    /// each file stays in `waiting` until its completion is reaped.
+    fn on_submit_error(&mut self, err: &io::Error) {
+        // Interrupted, or the kernel asking for completions to be reaped
+        // before it takes more: nothing failed, so collect and go round.
+        if err.kind() == io::ErrorKind::Interrupted
+            || matches!(err.raw_os_error(), Some(libc::EAGAIN | libc::EBUSY))
+        {
+            return;
+        }
+        // Otherwise the ring cannot be trusted to report what happened, and
+        // nothing outstanding can be called durable.
+        let fail = || Err(io::Error::new(err.kind(), err.to_string()));
+        for (_file, reply) in self.waiting.values_mut() {
+            if let Some(reply) = reply.take() {
+                let _ = reply.send(fail());
+            }
+        }
+        // Never pushed, so these are safe to drop. Failing them now keeps a
+        // ring whose slots are all held by failed entries from parking them.
+        for submission in self.backlog.drain(..) {
+            let _ = submission.reply.send(fail());
+        }
+    }
+
+    /// Deliver every available completion and release its file.
+    fn reap(&mut self) -> usize {
+        let completions: Vec<(u64, i32)> = self
+            .uring
+            .completion()
+            .map(|cqe| (cqe.user_data(), cqe.result()))
+            .collect();
+        for &(id, result) in &completions {
+            if id == WAKE_ID {
+                self.wake.consume();
+                self.wake.arm(&mut self.uring);
+                continue;
+            }
+            if let Some((_file, Some(reply))) = self.waiting.remove(&id) {
+                let outcome = if result < 0 {
+                    Err(io::Error::from_raw_os_error(-result))
+                } else {
+                    Ok(())
+                };
+                let _ = reply.send(outcome);
+            }
+        }
+        completions.len()
+    }
 }
 
 /// Queue one operation, or hand it back if the submission queue is full.
@@ -354,7 +432,7 @@ fn push(
     if !pushed {
         return Err(submission);
     }
-    waiting.insert(id, (submission.file, submission.reply));
+    waiting.insert(id, (submission.file, Some(submission.reply)));
     Ok(())
 }
 
