@@ -1121,7 +1121,12 @@ with the floor it would not have been named until it had copied that tail.
 `FelixShardReportFromAnswers.cfg` counts followers by their answers without
 the floor and loses the record, and `FelixShardReportFloor.cfg` passes
 (`a_new_leader_names_no_follower_before_it_answers`,
-`a_new_cache_leader_names_no_follower_missing_inherited_counters`).
+`a_new_cache_leader_names_no_follower_missing_inherited_counters`). The
+cluster test `a_move_cut_short_by_kills_promotes_no_follower_short_of_the_log`
+replays issue 878 in lease mode: no follower is promoted until the destination
+returns. With `majority_ack` finalized the promotion is fenced instead, and
+`a_move_cut_short_by_kills_leaves_no_replica_halted` checks that the brokers
+holding the unacknowledged tail halt and rejoin.
 
 The last report is the one promotion reads, so a leader that stops on purpose
 has to make it a good one. A stopping broker stops taking forwarded writes,
