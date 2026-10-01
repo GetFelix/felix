@@ -343,28 +343,11 @@ async fn a_paused_placement_does_not_move_a_draining_nodes_shard() {
     .expect("move after resuming");
     cluster.shutdown().await;
 }
-
-/// **A move cut short by a kill leaves no broker that cannot rejoin (#878).**
-///
-/// The old leader writes records no follower gets, and the move copies them
-/// to the destination. The destination takes over unable to reach any
-/// follower and is killed, and so is the old leader, so a follower without
-/// those records is promoted and writes over them. Both come back holding
-/// them past their commit offset but below where their own last generation
-/// began, so each halts and takes the new leader's rebuild. A leader used to
-/// count a follower it had not heard from as holding everything below its own
-/// generation, so the old leader's mark, and with it its commit offset,
-/// covered records nobody else had; it then refused every rebuild for good.
-#[serial]
-#[tokio::test]
-async fn a_move_cut_short_by_kills_leaves_no_replica_halted() {
-    let mut cluster = Cluster::start(ClusterConfig {
-        nodes: 4,
-        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
-        ..Default::default()
-    })
-    .await
-    .expect("start cluster");
+/// Cut a move short: the old leader writes two records no follower gets, the
+/// move copies them to a destination that takes over unable to reach any
+/// follower, and then the destination and the old leader are both killed.
+/// Returns the old leader, the destination and the acknowledged payloads.
+async fn cut_short_move(cluster: &mut Cluster) -> (String, String, Vec<Vec<u8>>) {
     let before = cluster
         .shard_assignments()
         .await
@@ -383,7 +366,7 @@ async fn a_move_cut_short_by_kills_leaves_no_replica_halted() {
         .into_iter()
         .filter(|id| *id != destination)
         .collect();
-    let mut acknowledged = publish_before(&cluster, &old, 3).await;
+    let acknowledged = publish_before(cluster, &old, 3).await;
 
     // Records only the old leader holds: nobody acknowledged them.
     let alone = Fault::Refuse {
@@ -456,6 +439,142 @@ async fn a_move_cut_short_by_kills_leaves_no_replica_halted() {
         .expect("kill the destination");
     cluster.kill_node(&old).expect("kill the old leader");
     cluster.heal_all().await.expect("heal");
+    (old, destination, acknowledged)
+}
+
+/// **A move cut short by kills promotes no follower short of the inherited
+/// log.**
+///
+/// The destination's followers lack the old leader's last records, and in
+/// lease mode the report is what promotion trusts, so the destination names
+/// none of them: an earlier leader may have acknowledged that tail. The shard
+/// waits for a broker holding the log. The destination comes back, leads
+/// again, and every replica rejoins with nothing halted. See "A new leader
+/// names nobody short of the log it inherited" in `docs/replication-design.md`.
+#[serial]
+#[tokio::test]
+async fn a_move_cut_short_by_kills_promotes_no_follower_short_of_the_log() {
+    let mut cluster = Cluster::start(ClusterConfig {
+        nodes: 4,
+        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    let (old, destination, mut acknowledged) = cut_short_move(&mut cluster).await;
+
+    for _ in 0..5 {
+        cluster.place_shards().await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    assert_eq!(
+        cluster.owner(STREAM).await.expect("owner"),
+        destination,
+        "a follower short of the inherited log was promoted",
+    );
+    cluster
+        .restart_node(&destination)
+        .await
+        .expect("restart the destination");
+    cluster
+        .restart_node(&old)
+        .await
+        .expect("restart the old leader");
+    for i in 0..3 {
+        let payload = format!("after-{i}").into_bytes();
+        cluster
+            .publish_keyed_via_settled(
+                &destination,
+                STREAM,
+                b"k",
+                payload.clone(),
+                Duration::from_secs(30),
+            )
+            .await
+            .expect("publish on the returned destination");
+        acknowledged.push(payload);
+    }
+
+    let rejoined = felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "every replica to rejoin behind the destination",
+        || async {
+            cluster.place_shards().await;
+            let halted = cluster
+                .metric(&destination, "felix_broker_replication_halted")
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(0.0);
+            let Ok(assignments) = cluster.shard_assignments().await else {
+                return false;
+            };
+            let Some(assignment) = assignments.into_values().next() else {
+                return false;
+            };
+            let level = cluster
+                .replica_report(STREAM, 0)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|report| {
+                    !report.caught_up.is_empty()
+                        && assignment
+                            .replicas
+                            .iter()
+                            .filter(|node| **node != assignment.leader)
+                            .all(|node| report.caught_up.contains(node))
+                });
+            halted == 0.0
+                && level
+                && cluster
+                    .moving_shards()
+                    .await
+                    .is_ok_and(|moving| moving.is_empty())
+        },
+    )
+    .await;
+    let report = cluster.replica_report(STREAM, 0).await.ok().flatten();
+    assert!(
+        rejoined.is_ok(),
+        "the replicas did not rejoin behind {destination}; last report {report:?}",
+    );
+    assert_eq!(
+        stored_on(&cluster, &destination, &acknowledged).await,
+        acknowledged
+    );
+    cluster.shutdown().await;
+}
+
+/// **A move cut short by kills leaves no broker that cannot rejoin (#878).**
+///
+/// With `majority_ack` finalized, a promoted leader fences a majority before
+/// it serves, so the report needs no floor and a follower without the old
+/// leader's last records is promoted and writes over them. The destination
+/// and the old leader come back holding those records past their commit
+/// offset but below where their own last generation began, so each halts and
+/// takes the new leader's rebuild. A leader used to count a follower it had
+/// not heard from as holding everything below its own generation, so the old
+/// leader's commit offset covered records nobody else had, and it refused
+/// every rebuild for good.
+#[serial]
+#[tokio::test]
+async fn a_move_cut_short_by_kills_leaves_no_replica_halted() {
+    let mut cluster = Cluster::start(ClusterConfig {
+        nodes: 4,
+        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    cluster
+        .finalize_fleet_features(
+            &["generation_start", "majority_ack"],
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("every broker enables generation_start and majority_ack");
+    let (old, destination, mut acknowledged) = cut_short_move(&mut cluster).await;
 
     felix_cluster::wait::until(
         Duration::from_secs(30),
