@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 
+use super::startup::MAX_SPAWN_ATTEMPTS;
 use super::{Cluster, READY_TIMEOUT};
 use crate::node::spawn_broker;
 use crate::wait;
@@ -97,21 +98,36 @@ impl Cluster {
         // Kept beside the new one: the old run is usually what a failure is about.
         let log = self.nodes[index].data_dir.join("broker.log");
         let _ = std::fs::rename(&log, log.with_extension("log.previous"));
-        let control_plane = self
-            .control_plane
-            .as_ref()
-            .ok_or_else(|| anyhow!("control plane is gone"))?;
-        let node = spawn_broker(
-            &self.binary,
-            control_plane,
-            &self.config,
-            self._root.path(),
-            index,
-            self.links.as_ref(),
-        )
-        .with_context(|| format!("restart {node_id}"))?;
-        self.nodes[index] = node;
-        self.await_placeable(index).await
+        // New ports can lose the same race start-up retries. Only that exit is
+        // retried: a broker that cannot recover its storage must fail the test.
+        let mut attempts = 1;
+        loop {
+            let control_plane = self
+                .control_plane
+                .as_ref()
+                .ok_or_else(|| anyhow!("control plane is gone"))?;
+            let node = spawn_broker(
+                &self.binary,
+                control_plane,
+                &self.config,
+                self._root.path(),
+                index,
+                self.links.as_ref(),
+            )
+            .with_context(|| format!("restart {node_id}"))?;
+            self.nodes[index] = node;
+            match self.await_placeable(index).await {
+                Err(_)
+                    if attempts < MAX_SPAWN_ATTEMPTS
+                        && self.nodes[index].exited().is_some()
+                        && self.nodes[index].lost_port_race() =>
+                {
+                    attempts += 1;
+                    tracing::warn!(%node_id, "broker lost a port on restart; starting it again");
+                }
+                result => return result,
+            }
+        }
     }
 
     /// Wait for the broker at `index` to report ready and the control plane
