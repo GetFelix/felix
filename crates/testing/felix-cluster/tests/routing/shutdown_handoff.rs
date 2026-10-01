@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
+use felix_cluster::{Cluster, ClusterConfig, Endpoint, Fault, StreamSpec};
 use serial_test::serial;
 use tokio::sync::Mutex;
 
@@ -202,6 +202,197 @@ async fn a_stopping_broker_hands_its_shard_over_under_load() {
             ),
         }
     }
+    let expected: Vec<u64> = (0..offsets.len() as u64).collect();
+    assert_eq!(offsets, expected, "every offset once and in order");
+    let mut unique = payloads.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), payloads.len(), "a record arrived twice");
+    cluster.shutdown().await;
+}
+
+/// **A reader told only that its shard moved finds it even when its one way
+/// in is shutting down.** The reader's only seed is the owner. The owner is
+/// cut off from the control plane, so its lease lapses and it ends the reader
+/// without naming a new owner, which sends the client back to its entry
+/// broker: the owner itself, now refusing for want of a lease. The shard fails
+/// over, and then the owner is stopped with no handoff, so it answers
+/// `draining` until it exits. The reader has to leave it for a broker that
+/// knows where the shard went, and resume there with every acknowledged
+/// record once and in order.
+#[serial]
+#[tokio::test]
+async fn a_reader_follows_a_moved_shard_off_a_draining_entry_broker() {
+    use felix_controlplane_service::cluster::placement::Decision;
+
+    let cluster = Cluster::start(ClusterConfig {
+        nodes: 3,
+        streams: vec![StreamSpec::replicated(STREAM, 1, 2)],
+        proxy_links: true,
+        broker_env: vec![
+            (
+                "FELIX_SHUTDOWN_HANDOFF_TIMEOUT_MS".to_string(),
+                "0".to_string(),
+            ),
+            (
+                "FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS".to_string(),
+                "3000".to_string(),
+            ),
+        ],
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    let owner = cluster
+        .wait_for_replication(STREAM, Duration::from_secs(30))
+        .await
+        .expect("the owner ships to its follower");
+    let other = cluster
+        .node_ids()
+        .into_iter()
+        .find(|id| id != &owner)
+        .expect("another broker");
+
+    let mut owed: Vec<Vec<u8>> = Vec::new();
+    for i in 0..20 {
+        let payload = format!("before-{i}").into_bytes();
+        cluster
+            .publish_keyed_via_settled(
+                &owner,
+                STREAM,
+                b"k",
+                payload.clone(),
+                Duration::from_secs(30),
+            )
+            .await
+            .expect("publish before the fault");
+        owed.push(payload);
+    }
+    // A failover keeps only what the owner last reported its follower holds,
+    // so wait for a report that would promote it with everything above.
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "a report naming a follower that holds every record",
+        || async {
+            let level = cluster
+                .metric(&owner, "felix_broker_replication_lag_records")
+                .await
+                .ok()
+                .flatten()
+                == Some(0.0);
+            level
+                && cluster.plan_if_down(&owner).await.is_ok_and(|plan| {
+                    plan.shards.iter().any(|shard| {
+                        shard.key.stream == STREAM && matches!(shard.decision, Decision::Place(..))
+                    })
+                })
+        },
+    )
+    .await
+    .expect("the follower caught up");
+
+    let reader = Arc::new(
+        felix_cluster::client::connect_cluster(
+            &[cluster.node(&owner).expect("node").client_addr],
+            &cluster.tenant_id,
+            &cluster.client_token,
+        )
+        .await
+        .expect("reader"),
+    );
+    let mut subscription = reader
+        .subscribe_from(
+            &cluster.tenant_id,
+            &cluster.namespace,
+            STREAM,
+            Some(felix_client::StartPosition::Offset(0)),
+        )
+        .await
+        .expect("subscribe");
+
+    // Offsets less the generation-start records skipped so far, so a promotion
+    // leaves no gap and any other jump is a drop.
+    let mut offsets = Vec::new();
+    let mut skipped = 0;
+    let mut payloads: Vec<Vec<u8>> = Vec::new();
+    let mut read_until = async |owed: &[Vec<u8>], payloads: &mut Vec<Vec<u8>>| {
+        let deadline =
+            tokio::time::Instant::now() + felix_cluster::wait::budget(Duration::from_secs(60));
+        while !owed.iter().all(|payload| payloads.contains(payload)) {
+            match tokio::time::timeout_at(deadline, subscription.next_event()).await {
+                Ok(Ok(Some(event))) => {
+                    skipped += event.skipped_before;
+                    offsets.push(event.offset.expect("a durable stream carries offsets") - skipped);
+                    payloads.push(event.payload.to_vec());
+                }
+                Ok(Ok(None)) => panic!(
+                    "the subscription ended after {} records instead of following the shard",
+                    payloads.len()
+                ),
+                Ok(Err(err)) => panic!("the subscription failed: {err:#}"),
+                Err(_) => panic!(
+                    "timed out with {} of {} acknowledged records",
+                    owed.iter().filter(|p| payloads.contains(p)).count(),
+                    owed.len()
+                ),
+            }
+        }
+    };
+    read_until(&owed, &mut payloads).await;
+
+    // The lapse ends the reader with no owner named: the owner cannot see
+    // the assignment, so it does not know one.
+    let log_path = cluster
+        .node(&owner)
+        .expect("node")
+        .data_dir
+        .join("broker.log");
+    let ended = || {
+        std::fs::read_to_string(&log_path)
+            .unwrap_or_default()
+            .matches("ended readers of a shard this broker no longer serves")
+            .count()
+    };
+    let ended_before = ended();
+    for fault in Fault::partition(Endpoint::node(&owner), Endpoint::ControlPlane) {
+        cluster
+            .inject(&fault)
+            .await
+            .expect("cut from the control plane");
+    }
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the owner to end its readers when its lease lapses",
+        || async { ended() > ended_before },
+    )
+    .await
+    .expect("readers ended");
+    felix_cluster::wait::until(Duration::from_secs(30), "a failover", || async {
+        cluster.place_shards().await;
+        cluster.owner(STREAM).await.is_ok_and(|now| now != owner)
+    })
+    .await
+    .expect("the follower is promoted");
+
+    // No handoff, so it answers `draining` at once and exits after the drain.
+    cluster.terminate_node(&owner).expect("SIGTERM");
+
+    for i in 0..20 {
+        let payload = format!("after-{i}").into_bytes();
+        cluster
+            .publish_keyed_via_settled(
+                &other,
+                STREAM,
+                b"k",
+                payload.clone(),
+                Duration::from_secs(30),
+            )
+            .await
+            .expect("publish after the failover");
+        owed.push(payload);
+    }
+    read_until(&owed, &mut payloads).await;
+
     let expected: Vec<u64> = (0..offsets.len() as u64).collect();
     assert_eq!(offsets, expected, "every offset once and in order");
     let mut unique = payloads.clone();

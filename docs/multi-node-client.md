@@ -168,7 +168,10 @@ while let Some(event) = subscription.next_event().await? {
 - **An in-memory stream resumes at the new owner's tail**, as any resubscribe
   would. Its offsets mean nothing on another broker.
 - **It asks the broker the old owner named first**, and the entry broker (which
-  redirects) if that one is unreachable. The old owner sends `shard_moved`
+  redirects) if none was named or that one is unreachable. An entry broker that
+  answers `draining` or not at all is replaced by another broker the client
+  knows, the one it was using tried last: the old owner is often the entry
+  broker, on its way down. The old owner sends `shard_moved`
   before the new owner has taken over, so the first attempts may be refused;
   it retries with the reconnect policy's backoff until its `deadline`, or 30
   seconds without one, and then returns the error from `next_event`.

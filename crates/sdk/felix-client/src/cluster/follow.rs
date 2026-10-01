@@ -20,7 +20,7 @@ use felix_wire::StartPosition;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use super::{Attempt, ClusterClient, Next, next_step};
+use super::{Attempt, ClusterClient, Next, next_step, wants_reconnect};
 use crate::SubscriptionLost;
 use crate::client::Client;
 use crate::subscribe::{Event, ShardMoved, Subscription};
@@ -349,17 +349,17 @@ impl ClusterClient {
         let mut hinted: Option<Arc<Client>> = None;
         let mut attempt = 0usize;
         loop {
-            let first = match (&hinted, hint) {
-                (Some(client), _) => Arc::clone(client),
+            let (first, via_entry) = match (&hinted, hint) {
+                (Some(client), _) => (Arc::clone(client), false),
                 (None, Some(addr)) => match self.connect_to(addr).await {
-                    Ok(client) => Arc::clone(hinted.insert(client)),
+                    Ok(client) => (Arc::clone(hinted.insert(client)), false),
                     Err(err) => {
                         tracing::debug!(error = %err, %addr, "new owner unreachable; asking the entry broker");
                         hint = None;
-                        self.client().await
+                        (self.client().await, true)
                     }
                 },
-                (None, None) => self.client().await,
+                (None, None) => (self.client().await, true),
             };
             let error = match open(first).await {
                 Ok(opened) => return Ok(opened),
@@ -373,6 +373,14 @@ impl ClusterClient {
                 return Err(error.context("the new owner did not take it before the deadline"));
             }
             tokio::time::sleep(delay).await;
+            // The entry broker is often the one that handed the shard off on
+            // its way down, so asking it again only waits out the deadline.
+            if via_entry
+                && wants_reconnect(&error)
+                && let Err(err) = self.reconnect().await
+            {
+                tracing::debug!(error = %err, "no broker answered while following a moved shard");
+            }
             attempt += 1;
         }
     }

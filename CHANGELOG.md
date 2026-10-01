@@ -739,6 +739,14 @@ for what the current release guarantees.
   the leader's bootstrap offer as if it held records. The copy waited for a
   rebuild slot, or for ever with `FELIX_REPLICATION_REBUILD_MAX_CONCURRENT=0`.
   An empty log now takes the offered base.
+- **A subscription follows a moved shard off a draining entry broker.** A
+  `ClusterClient` reader told `shard_moved` with no new owner named (a lapsed
+  lease or a deposed leader ends readers that way) asked only its entry
+  broker. When that was the old owner shutting down, it answered `draining`
+  and then nothing, and the reader failed with "the new owner did not take it
+  before the deadline". The follow now moves to another known broker when the
+  entry broker answers `draining` or not at all, and a reconnect tries the
+  broker it was using last. See `docs/multi-node-client.md`.
 - **A broker handed a shard back after dropping held batches takes writes
   (#881).** Liveness only: no acknowledged write was lost. A lease-mode leader
   that lost its lease with `Quorum` batches still held dropped them, followed

@@ -272,17 +272,22 @@ impl ClusterClient {
         self.nodes.connections_per_node().await
     }
 
-    /// Replace the client with one connected to a seed that answers.
+    /// Replace the client with one connected to a seed that answers, trying
+    /// the broker in use last.
     ///
     /// Held exclusively while it runs, so publishes queue behind it rather than
     /// racing to build several replacements for the same failure.
     pub(crate) async fn reconnect(&self) -> Result<()> {
-        let endpoints = self.endpoints.read().await.clone();
+        let mut endpoints = self.endpoints.read().await.clone();
         {
             let mut slot = self.client.write().await;
             // The broker in use just failed, so it is dialled afresh rather
-            // than handed back from the shared clients.
+            // than handed back from the shared clients. It goes last because
+            // a draining broker still completes handshakes and would be
+            // picked again until it exits.
             self.nodes.forget(&slot).await;
+            let failed = slot.dialled();
+            endpoints.sort_by_key(|addr| *addr == failed);
             *slot = self.nodes.connect_any(&endpoints).await?;
         }
         // After the swap, and outside the write lock: the broker that answered
