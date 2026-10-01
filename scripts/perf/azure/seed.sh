@@ -6,10 +6,11 @@
 #      plane): bootstrap the tenant with the real IdP, exchange the IdP token
 #      for a Felix operator token, create the namespace/streams/cache. This is
 #      the deployment's own flow, measured — not demo auth. seed-remote.sh is
-#      the body; it frames the felix token on stdout.
-#   2. On each broker: drop that token as /etc/felix/node.token and start the
-#      broker. run-command reaches each broker directly, so no loadgen->broker
-#      SSH (which had no key and rode the same DPI-blocked path) is needed.
+#      the body; it frames one credential pair per broker on stdout.
+#   2. On each broker: drop its pair as /etc/felix/node.token and
+#      /etc/felix/node.refresh_token and start the broker. run-command reaches
+#      each broker directly, so no loadgen->broker SSH (which had no key and
+#      rode the same DPI-blocked path) is needed.
 #   3. Poll the control plane (from the loadgen) until every broker registers.
 set -euo pipefail
 
@@ -65,6 +66,7 @@ TENANT='${TENANT}'
 NAMESPACE='${NAMESPACE}'
 REPLICATION_FACTOR='${REPLICATION_FACTOR:-1}'
 SHARDS='${SHARDS:-12}'
+BROKER_COUNT='${BROKER_COUNT}'
 SEED_STREAMS=0
 HDR
 )"
@@ -75,21 +77,24 @@ seed_out="$(run_on_str "$(loadgen_vm)" "${header}
 $(cat "${here}/seed-remote.sh")")"
 seed_rc=$?
 set -e
-printf '%s\n' "${seed_out}"
+# Without the framed credentials: this output lands in session logs.
+printf '%s\n' "${seed_out}" | grep -vE '__F(TOKEN|REFRESH)_|^eyJ' || true
 [ ${seed_rc} -eq 0 ] || { echo "!! loadgen seed step failed (see message above)" >&2; exit 1; }
-token="$(printf '%s' "${seed_out}" | extract_between FTOKEN)"
-[ -n "${token}" ] || { echo "!! seed did not return a felix token" >&2; exit 1; }
 
-# --- 2. drop the node token on each broker and start it ---------------------
-echo ">> node token to each broker, then start"
+# --- 2. drop each broker's credential pair and start it --------------------
+echo ">> node credential to each broker, then start"
 for i in $(seq 0 $((BROKER_COUNT - 1))); do
+  token="$(printf '%s' "${seed_out}" | extract_between "FTOKEN_${i}")"
+  refresh="$(printf '%s' "${seed_out}" | extract_between "FREFRESH_${i}")"
+  [ -n "${token}" ] && [ -n "${refresh}" ] \
+    || { echo "!! seed did not return a credential pair for broker-${i}" >&2; exit 1; }
   # felix-broker-env.sh regenerates /etc/felix/broker.env before start (the
   # unit's ExecStartPre does too, but a required EnvironmentFile must already
   # exist when the unit activates, so we write it here first). reset-failed
   # clears any earlier give-up. `restart` (not just enable --now) is deliberate:
-  # a re-seed drops a *fresh* token, and the broker reads its token once at
-  # startup with no refresh, so an already-running broker must be restarted to
-  # pick it up — enable --now is a no-op on an active unit.
+  # a re-seed drops a pair from a new control-plane store, and the broker should
+  # come up on it together with any new build and knobs — enable --now is a
+  # no-op on an active unit.
   # Source builds are installed side by side and ACTIVE_REF is linked in, so a
   # later switch is a relink and a restart. The calibrated knobs go into
   # overrides.env before the first start, so no broker ever runs uncalibrated.
@@ -102,9 +107,12 @@ for i in $(seq 0 $((BROKER_COUNT - 1))); do
     install_cmds="${install_cmds}felix-agent activate broker '${ACTIVE_REF}'
 "
   fi
+  # The broker runs as root and rewrites node.refresh_token on every refresh.
   broker_out="$(agent_on "$(broker_vm "${i}")" "mkdir -p /etc/felix
+(umask 077
 printf '%s' '${token}' > /etc/felix/node.token
-chmod 600 /etc/felix/node.token
+printf '%s\n' '${refresh}' > /etc/felix/node.refresh_token)
+chmod 600 /etc/felix/node.token /etc/felix/node.refresh_token
 ${install_cmds}felix-agent env-replace <<'OVR'
 $(base_overrides)
 OVR
@@ -170,6 +178,7 @@ TENANT='${TENANT}'
 NAMESPACE='${NAMESPACE}'
 REPLICATION_FACTOR='${REPLICATION_FACTOR:-1}'
 SHARDS='${SHARDS:-12}'
+BROKER_COUNT=0
 SEED_STREAMS=1
 HDR2
 )"
@@ -177,7 +186,7 @@ set +e
 stream_out="$(run_on_str "$(loadgen_vm)" "${stream_header}
 $(cat "${here}/seed-remote.sh")")"
 set -e
-printf '%s\n' "${stream_out}" | grep -vE '^__FTOKEN|^eyJ' || true
+printf '%s\n' "${stream_out}" | grep -vE '__F(TOKEN|REFRESH)_|^eyJ' || true
 case "${stream_out}" in
   *__RUNOK__*) ;;
   *) echo "!! stream creation did not complete" >&2; exit 1 ;;

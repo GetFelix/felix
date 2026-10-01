@@ -85,9 +85,72 @@ cmd_env_unset() {
 
 cmd_restart() {
   systemctl reset-failed felix-broker 2>/dev/null || true
-  systemctl restart felix-broker
+  # The broker refreshes in memory and never rewrites node.token, so after a
+  # few hours the file it restarts on has expired. Renew it while the broker is
+  # stopped, where nothing else can spend the same refresh token.
+  systemctl stop felix-broker
+  u=$(sed -n 's/^FELIX_CONTROLPLANE_URL=//p' /etc/felix/broker.env 2>/dev/null | tail -1)
+  if [ -n "$u" ]; then
+    cmd_token_refresh "$u" /etc/felix/node.token /etc/felix/node.refresh_token 1800 \
+      || echo "!! node token refresh failed; starting on the old one" >&2
+  fi
+  systemctl start felix-broker
   sleep 2
   echo "state=$(systemctl is-active felix-broker || true)"
+}
+
+# token-refresh <controlplane-url> <token-file> <refresh-file> [min-secs]:
+# trade the refresh token for a new pair when the access token has under
+# min-secs left (0, the default, always does). The rotated refresh token is
+# saved first: the old one is spent, so losing the new one loses the chain.
+# Prints no token.
+cmd_token_refresh() {
+  python3 - "$@" <<'PY'
+import base64, json, os, sys, time, urllib.error, urllib.request
+url, token_file, refresh_file = sys.argv[1:4]
+min_secs = int(sys.argv[4]) if len(sys.argv) > 4 else 0
+
+def claims(token):
+    p = token.split(".")[1]
+    p += "=" * (-len(p) % 4)
+    return json.loads(base64.urlsafe_b64decode(p))
+
+if not os.path.exists(refresh_file):
+    print("token.norefresh")
+    sys.exit(0)
+c = claims(open(token_file).read().strip())
+left = int(c.get("exp", 0)) - int(time.time())
+if min_secs and left > min_secs:
+    print(f"token.fresh={left}s")
+    sys.exit(0)
+req = urllib.request.Request(
+    f"{url.rstrip('/')}/v1/tenants/{c['tid']}/token/refresh",
+    data=json.dumps({"refresh_token": open(refresh_file).read().strip()}).encode(),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=30) as r:
+        resp = json.load(r)
+except urllib.error.HTTPError as e:
+    print(f"!! token refresh -> HTTP {e.code}: {e.read().decode(errors='replace')[:300]}", file=sys.stderr)
+    sys.exit(1)
+
+def put(path, value):
+    st = os.stat(path)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(value)
+        f.flush()
+        os.fsync(f.fileno())
+    os.chown(tmp, st.st_uid, st.st_gid)
+    os.rename(tmp, path)
+
+put(refresh_file, resp["refresh_token"] + "\n")
+put(token_file, resp["felix_token"])
+print(f"token.refreshed exp={claims(resp['felix_token']).get('exp')}")
+PY
 }
 
 # wipe: stop the broker, empty the durable log and drop the page cache, so a
@@ -479,6 +542,7 @@ case "$sub" in
   env-set) cmd_env_set "$@" ;;
   env-unset) cmd_env_unset "$@" ;;
   restart) cmd_restart ;;
+  token-refresh) cmd_token_refresh "$@" ;;
   wipe) cmd_wipe ;;
   counters-install) cmd_counters_install ;;
   snapshot) cmd_snapshot "$@" ;;

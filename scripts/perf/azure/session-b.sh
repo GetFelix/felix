@@ -29,7 +29,7 @@ source "${here}/cells.sh"
 : "${STEPS:=fio rows shapes arms rf1}"
 
 record_session session-b
-distribute_token || exit 1
+refresh_client_token || exit 1
 NGEN="${#LOADGEN_VMS[@]}"
 INGEST_GENS="${NGEN}"
 

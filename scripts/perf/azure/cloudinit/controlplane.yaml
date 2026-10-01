@@ -45,11 +45,10 @@ write_files:
       # "invalid token". Allow the RSA families the app actually uses, keeping
       # ES256 too. This is the real-IdP hot path the suite exists to measure.
       FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS=ES256,RS256,PS256
-      # A broker holds its node token statically for its whole lifetime (it is
-      # read once, with no refresh), so the exchange's default 900s TTL drops
-      # every broker out of the cluster 15 minutes in. Tokens are minted once,
-      # at seed, so they must outlast the whole campaign (8 h did not).
-      FELIX_EXCHANGE_TOKEN_TTL_SECONDS=604800
+      # Access tokens stay short and are refreshed through /token/refresh;
+      # this only bounds how stale one can get. The generators renew theirs
+      # between cells every six hours, so it has to outlast that.
+      FELIX_EXCHANGE_TOKEN_TTL_SECONDS=28800
       ENV
   - path: /etc/systemd/system/felix-controlplane.service
     content: |
