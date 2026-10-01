@@ -121,7 +121,7 @@ sets trials per cell (default 3). The header of each driver lists its cells.
 Ingest cells run for `CELL_SECS` seconds (default 90), not a record count, so
 a 256 B unbatched cell lasts as long as a 4 KiB x 64 one. Every generator in an
 ingest cell starts publishing at the same wall-clock time, `START_DELAY_SECS`
-(default 30) after launch, so the steady-state window covers the whole run.
+(default 45) after launch, so the steady-state window covers the whole run.
 The `shapes` step of each driver crosses payload (`SHAPE_PAYLOADS`, 256 1024
 4096), batch (`SHAPE_BATCHES`, 1 64) and in-flight acked batches per publisher
 (`SHAPE_IN_FLIGHT`, 0 64; 0 is fire-and-forget), `SHAPE_TRIALS` times (default 1).

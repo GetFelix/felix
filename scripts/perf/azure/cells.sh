@@ -27,7 +27,7 @@
 #   PROFILE=1 | PROFILE_CELLS=<regex>  perf + pidstat + folded stacks per cell
 #   PROFILE_SECS=40          how long a profile records
 #   SETTLE_SECS=8            pause after brokers report ready
-#   START_DELAY_SECS=30      ingest cells: every generator starts publishing this
+#   START_DELAY_SECS=45      ingest cells: every generator starts publishing this
 #                            long after the cell launches, at the same instant
 
 here="${here:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
@@ -48,7 +48,7 @@ export GROUP
 : "${PROFILE_CELLS:=}"
 : "${PROFILE_SECS:=40}"
 : "${SETTLE_SECS:=8}"
-: "${START_DELAY_SECS:=30}"
+: "${START_DELAY_SECS:=45}"
 : "${OUT:=${here}/sessions/${SESSION}-results}"
 mkdir -p "${OUT}/cells" "${OUT}/system"
 
@@ -266,10 +266,7 @@ cell() {
     ngen="${#LOADGEN_VMS[@]}"
   fi
   local gens=("${LOADGEN_VMS[@]:0:${ngen}}")
-  # Launching generators through run-command staggers them by seconds, so an
-  # ingest cell gives them one wall-clock start instead (#723).
   local start_at=""
-  case " $* " in *" --scenario ingest "*) start_at="$(( $(date +%s) + START_DELAY_SECS ))" ;; esac
   rm -rf "${dir}"; mkdir -p "${dir}"
   # shellcheck disable=SC2086 # both are lists of words
   for kv in ${CELL_LOADGEN_ENV:-} ${EXTRA_LOADGEN_ENV}; do lg_env="${lg_env}export ${kv}
@@ -281,7 +278,6 @@ cell() {
     echo "loadgen_ref=$(cat "${here}/sessions/${SESSION}.loadgen-ref" 2>/dev/null || echo "${LOADGEN_SPEC:-}")"
     echo "generators=${gens[*]}"
     echo "args=$*"
-    echo "start_at=${start_at}"
     echo "loadgen_env=$(printf '%s' "${lg_env}" | sed 's/^export //' | tr '\n' ' ')"
     echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf '%s\n' "${CURRENT_OVERRIDES}" | sed 's/^/override./'
@@ -294,6 +290,12 @@ felix-agent sampler-start '${name}'" "${BROKER_VMS[@]}" || rc=1
   if want_profile "${name}"; then
     par_on "${dir}" profstart "felix-agent profile-start '${name}' ${PROFILE_SECS}" "${BROKER_VMS[@]}" || true
   fi
+
+  # Launching generators through run-command staggers them by seconds, so an
+  # ingest cell gives them one wall-clock start instead (#723). Taken here,
+  # after the snapshots, which take longer than the delay.
+  case " $* " in *" --scenario ingest "*) start_at="$(( $(date +%s) + START_DELAY_SECS ))" ;; esac
+  echo "start_at=${start_at}" >> "${dir}/meta.env"
 
   # The instrument's stderr goes to a file on the VM, and only the tail of
   # stdout comes back: run-command keeps the last ~4 KB of output.
