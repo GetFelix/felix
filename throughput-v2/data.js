@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790817673711,
+  "lastUpdate": 1790818572480,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -21320,6 +21320,58 @@ window.BENCHMARK_DATA = {
             "range": "28398.22",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1145809.21\nmean: 1144447.58\nstdev: 28398.22\ncv: 2.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4592af42a51cdf41478f4c8f531262a0deab6bcd",
+          "message": "fix(client): follow a moved shard off a draining entry broker (#898)\n\nA reader told shard_moved with no owner named asked only its entry\nbroker. When that broker was the old owner shutting down it answered\ndraining until it exited, and the follow ran out its deadline. Reconnect\nto another known broker when the entry broker answers draining or not at\nall, trying the broker in use last.\n\nThe regression test lapses the owner's lease by cutting it off from the\ncontrol plane, which ends the reader with no owner named, fails the\nshard over, then stops the owner with no handoff.",
+          "timestamp": "2026-09-30T18:32:09-07:00",
+          "tree_id": "1cbafbc5d794ee9618d1a4d29212c4c991b5cf8e",
+          "url": "https://github.com/gabloe/felix/commit/4592af42a51cdf41478f4c8f531262a0deab6bcd"
+        },
+        "date": 1790818572021,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 342419.23,
+            "range": "7166.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342419.23\nmean: 338778.08\nstdev: 7166.89\ncv: 2.12%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 342419.23,
+            "range": "7166.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342419.23\nmean: 338778.08\nstdev: 7166.89\ncv: 2.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82261.93,
+            "range": "775.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82261.93\nmean: 82356.72\nstdev: 775.32\ncv: 0.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 822619.32,
+            "range": "7753.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 822619.32\nmean: 823567.21\nstdev: 7753.20\ncv: 0.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
