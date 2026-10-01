@@ -238,6 +238,36 @@ pub(crate) fn sync_dir(path: &std::path::Path) -> io::Result<()> {
     }
 }
 
+/// Create `path` and any missing ancestors, and make each new directory entry
+/// durable.
+///
+/// Flushes the parent of every directory it created, deepest first, ending with
+/// the first ancestor that already existed. When `path` already exists it still
+/// flushes `path`'s parent, which makes a directory that a crashed earlier run
+/// created but never flushed durable now.
+pub(crate) fn create_dir_all_durable(path: &std::path::Path) -> io::Result<()> {
+    let mut created = Vec::new();
+    let mut next = Some(path);
+    while let Some(dir) = next.filter(|dir| !dir.as_os_str().is_empty() && !dir.is_dir()) {
+        created.push(dir);
+        next = dir.parent();
+    }
+    std::fs::create_dir_all(path)?;
+    if created.is_empty() {
+        created.push(path);
+    }
+    for dir in created {
+        match dir.parent() {
+            // A relative path's last component lives in the working directory.
+            Some(parent) if parent.as_os_str().is_empty() => sync_dir(std::path::Path::new("."))?,
+            Some(parent) => sync_dir(parent)?,
+            // The filesystem root has no entry to flush.
+            None => {}
+        }
+    }
+    Ok(())
+}
+
 /// Flush file data *and* metadata. For the small files written whole and
 /// renamed into place (indexes, generation history), where the extra metadata
 /// round trip does not matter.

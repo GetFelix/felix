@@ -62,3 +62,66 @@ fn sync_data_and_sync_dir_succeed() {
     sync_data(&file).expect("sync_data");
     sync_dir(dir.path()).expect("sync_dir");
 }
+
+#[test]
+fn create_dir_all_durable_creates_every_missing_component() {
+    let dir = tempdir().expect("dir");
+    let nested = dir.path().join("a").join("b").join("c");
+    create_dir_all_durable(&nested).expect("create");
+    assert!(nested.is_dir());
+    // Opening an existing root goes through the same call.
+    create_dir_all_durable(&nested).expect("existing");
+}
+
+#[test]
+fn create_dir_all_durable_refuses_a_file_in_the_way() {
+    let dir = tempdir().expect("dir");
+    let file = dir.path().join("f");
+    File::create(&file).expect("create");
+    assert!(create_dir_all_durable(&file.join("sub")).is_err());
+}
+
+/// A new store root is lost to a power loss unless its parent is flushed.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_created_directory_survives_a_power_loss() {
+    use super::power_loss::{PowerLoss, Writeback};
+
+    let dir = tempdir().expect("dir");
+    let observer = PowerLoss::install(dir.path()).expect("install");
+    create_dir_all_durable(&dir.path().join("storage").join("caches")).expect("create");
+    for seed in 0..32 {
+        let image = tempdir().expect("image");
+        observer
+            .crash(seed, Writeback::AnySubset, image.path())
+            .expect("crash");
+        assert!(
+            image.path().join("storage").join("caches").is_dir(),
+            "seed {seed} lost the new directory"
+        );
+    }
+}
+
+/// A directory a crashed earlier run created without flushing is made durable
+/// when it is opened again.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_unflushed_directory_is_made_durable_when_opened() {
+    use super::power_loss::{PowerLoss, Writeback};
+
+    let dir = tempdir().expect("dir");
+    let observer = PowerLoss::install(dir.path()).expect("install");
+    let root = dir.path().join("counters");
+    std::fs::create_dir(&root).expect("unflushed create");
+    create_dir_all_durable(&root).expect("open");
+    for seed in 0..32 {
+        let image = tempdir().expect("image");
+        observer
+            .crash(seed, Writeback::AnySubset, image.path())
+            .expect("crash");
+        assert!(
+            image.path().join("counters").is_dir(),
+            "seed {seed} lost the directory"
+        );
+    }
+}

@@ -56,7 +56,7 @@ impl CounterStore {
     /// interleave their records in one directory.
     pub fn open(root: impl Into<PathBuf>, config: LogConfig) -> Result<Self> {
         let root = root.into();
-        std::fs::create_dir_all(&root).map_err(StorageError::Io)?;
+        crate::io::create_dir_all_durable(&root).map_err(StorageError::Io)?;
         Ok(Self {
             root,
             config,

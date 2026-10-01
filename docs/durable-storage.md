@@ -495,6 +495,19 @@ rule.
 > `a_power_loss_during_a_reset_leaves_old_or_new` stop the pass after each
 > unlink and open crash images of every stop (Linux only).
 
+**New directories are flushed into their parent.** A new directory entry is
+only durable once its parent directory is synced. The store roots (streams,
+`groups/`, `dead-letters/`, `caches/`, `counters/`) and each shard directory are
+created with every new path component synced into its parent. Without that, a
+power loss on a fresh node could drop a whole root, and the acknowledged records
+in it, before anything else happened to sync the storage directory. Opening an
+existing root syncs its parent again, so a root that an earlier run created but
+never synced becomes durable then.
+
+> `a_fresh_root_keeps_its_acknowledged_record_through_a_power_loss`,
+> `a_created_directory_survives_a_power_loss` and
+> `an_unflushed_directory_is_made_durable_when_opened` (Linux only).
+
 **The power-loss suite checks all of this against simulated reboots.** A
 workload runs against a real log while a test layer records what each flush made
 durable, then builds the directory a reboot could find (unsynced pages dropped,
