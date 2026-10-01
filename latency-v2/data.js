@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790835435268,
+  "lastUpdate": 1790858728608,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -27390,6 +27390,72 @@ window.BENCHMARK_DATA = {
             "range": "497.44",
             "unit": "us",
             "extra": "trials: 5\nmedian: 352.00\nmean: 563.40\nstdev: 497.44\ncv: 88.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7f9aff58b162b73f042fce867cc1f8afb83b6795",
+          "message": "ci: give each main commit its own concurrency group (#907)\n\nA concurrency group keeps one pending run and cancels it when the next one\nqueues, whatever cancel-in-progress says. So three merges inside one CI\nrun's length skipped the middle one: #903's run on 84dd692a was cancelled\nwhen #905 merged. Keying main's group by commit makes every main run its\nown group; branches still cancel superseded runs.\n\nCloses #906",
+          "timestamp": "2026-10-01T05:41:42-07:00",
+          "tree_id": "0005dad5820a6ad8318b6ced33632779b9c25997",
+          "url": "https://github.com/gabloe/felix/commit/7f9aff58b162b73f042fce867cc1f8afb83b6795"
+        },
+        "date": 1790858724856,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 135,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 135.00\nmean: 134.80\nstdev: 0.84\ncv: 0.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 182,
+            "range": "2.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 181.60\nstdev: 2.61\ncv: 1.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 235,
+            "range": "5.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 235.00\nmean: 234.60\nstdev: 5.94\ncv: 2.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 178,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 178.00\nmean: 178.00\nstdev: 1.00\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 354,
+            "range": "4.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 354.00\nmean: 355.40\nstdev: 4.22\ncv: 1.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 465,
+            "range": "23.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 465.00\nmean: 464.40\nstdev: 23.50\ncv: 5.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
