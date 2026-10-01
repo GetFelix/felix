@@ -458,7 +458,9 @@ export FELIX_EVENT_BATCH_MAX_BYTES="1048576"  # 1 MiB
 
 ### `FELIX_EVENT_BATCH_MAX_DELAY_US`
 
-**Description**: Maximum delay before flushing batch (microseconds).
+**Description**: Maximum delay before flushing batch (microseconds), counted
+from the batch's first event. The broker's timers fire on millisecond ticks, so
+a value under 1000 can wait until the next tick.
 
 **Type**: Unsigned integer
 

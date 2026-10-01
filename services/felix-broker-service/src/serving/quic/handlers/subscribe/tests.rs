@@ -4,6 +4,7 @@
 mod conn_counts;
 mod connection_writer;
 mod event_writer;
+mod feeder;
 mod frame_writer;
 mod handle_subscribe;
 mod lanes;
