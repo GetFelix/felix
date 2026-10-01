@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790818572480,
+  "lastUpdate": 1790822756108,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -21372,6 +21372,58 @@ window.BENCHMARK_DATA = {
             "range": "7753.20",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 822619.32\nmean: 823567.21\nstdev: 7753.20\ncv: 0.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "167120f06a10d6f68ad908cbf5763f15e181059e",
+          "message": "test: fix two main failures (power-loss O_APPEND rewrite, restart port race) (#899)\n\n* test(storage): rewrite a byte in place through a non-append handle\n\nOn Linux pwrite to an O_APPEND file ignores the offset and appends, so the\ngrowing-file power-loss test grew the file by one byte and failed on main.\n#889 merged with its Linux test job cancelled, so the test never ran there.\n\n* test(cluster): retry a restart that lost a port race\n\nrestart_node takes fresh probed ports like start-up does, but never retried\nwhen another process took one first. A long history campaign restarts\nbrokers hundreds of times and eventually loses that race (the adversarial\nnightly on 4592af42: bind metrics listener ... Address already in use).\nOnly that exit is retried, so a broker that cannot recover still fails.",
+          "timestamp": "2026-09-30T19:42:16-07:00",
+          "tree_id": "ca018791e311b0aaa88a8c87adf5fe58b0c3bbeb",
+          "url": "https://github.com/gabloe/felix/commit/167120f06a10d6f68ad908cbf5763f15e181059e"
+        },
+        "date": 1790822755155,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354811.38,
+            "range": "18160.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354811.38\nmean: 350164.51\nstdev: 18160.68\ncv: 5.19%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354811.38,
+            "range": "18160.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354811.38\nmean: 350164.51\nstdev: 18160.68\ncv: 5.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 85733.94,
+            "range": "604.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 85733.94\nmean: 85736.88\nstdev: 604.28\ncv: 0.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 857339.45,
+            "range": "6042.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 857339.45\nmean: 857368.85\nstdev: 6042.78\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
