@@ -63,6 +63,8 @@ read -ra LOADGEN_VMS <<<"${LOADGENS}"
 # AuthOk and spreads its connections across them.
 BROKER_ADDRS="$(printf '%s:5000,' "${BROKER_IP_LIST[@]}")"; BROKER_ADDRS="${BROKER_ADDRS%,}"
 TOKEN_FILE=/home/felix/felix-session/token
+CLIENT_REFRESH_FILE=/home/felix/felix-session/refresh
+CLIENT_REFRESH_STAMP="${OUT}/system/client-token.refreshed"
 FAILED_CELLS=""
 
 CURRENT_REF=""
@@ -139,6 +141,32 @@ chmod 600 ${TOKEN_FILE}
 test -s ${TOKEN_FILE}
 echo __RUNOK__" >/dev/null || { echo "!! token copy to ${lg} failed" >&2; return 1; }
   done
+}
+
+# refresh_client_token: renew the client token on generator 0 through the
+# control plane's refresh endpoint, then copy it to the others. Refresh tokens
+# rotate and a reused one revokes the chain, so generator 0 holds the only copy
+# and this is the only place it is spent.
+refresh_client_token() {
+  local out
+  out="$(agent_on "${LOADGEN_VMS[0]}" "felix-agent token-refresh 'http://${CONTROLPLANE_IP}:8080' ${TOKEN_FILE} ${CLIENT_REFRESH_FILE}" 2>&1)" || {
+    printf '%s\n' "${out}" | grep -E '^!!' >&2 || printf '%s\n' "${out}" | tail -3 >&2
+    return 1
+  }
+  case "${out}" in
+    *token.norefresh*) log "no client refresh token (seeded before refresh existed); keeping the current one" ;;
+    *) log "client token refreshed" ;;
+  esac
+  date +%s > "${CLIENT_REFRESH_STAMP}"
+  distribute_token
+}
+
+# Tracked locally so a cell costs no run-command to find out. Six hours leaves
+# two of the eight-hour access token for the cell that follows.
+client_token_due() {
+  local last
+  last="$(cat "${CLIENT_REFRESH_STAMP}" 2>/dev/null || echo 0)"
+  [ $(( $(date +%s) - last )) -ge 21600 ]
 }
 
 # record_session <driver>: session.json plus per-VM system facts, RTT and
@@ -259,6 +287,9 @@ cell() {
   if [ "${RESUME}" = 1 ] && [ -e "${dir}/done" ]; then
     log "skip ${name} (done)"
     return 0
+  fi
+  if client_token_due && ! refresh_client_token; then
+    echo "!! client token refresh failed; ${name} runs on the current one" >&2
   fi
   if [ -n "${CONFIG_LABEL}" ] && ! configure "${CONFIG_LABEL}" ${CONFIG_ARGS[@]+"${CONFIG_ARGS[@]}"}; then
     FAILED_CELLS="${FAILED_CELLS} ${name}"
@@ -461,21 +492,21 @@ shape_pass() {
 }
 
 # finalize_features <feature>...: finalize fleet features through the control
-# plane, from broker 0, which holds the admin token. ONE-WAY: run every cell
-# that needs the old behaviour first.
+# plane, from generator 0 with the operator's own admin credential, renewed
+# first when close to expiry. ONE-WAY: run every cell that needs the old
+# behaviour first.
 finalize_features() {
-  local f script="set -eu
-u=\$(sed -n 's/^FELIX_CONTROLPLANE_URL=//p' /etc/felix/broker.env)
-t=\$(cat /etc/felix/node.token)"
+  local f script="u='http://${CONTROLPLANE_IP}:8080'
+felix-agent token-refresh \"\$u\" /home/felix/felix-session/admin.token /home/felix/felix-session/admin.refresh 1800 || true
+t=\$(cat /home/felix/felix-session/admin.token)"
   for f in "$@"; do
     script="${script}
 curl -fsS -X POST -H \"Authorization: Bearer \$t\" \"\$u/v1/fleet/features/${f}/finalize?dry_run=false\"; echo"
   done
   script="${script}
-curl -fsS -H \"Authorization: Bearer \$t\" \"\$u/v1/fleet/features\"; echo
-echo __RUNOK__"
+curl -fsS -H \"Authorization: Bearer \$t\" \"\$u/v1/fleet/features\"; echo"
   log "finalize fleet features: $*"
-  run_on_str "${BROKER_VMS[0]}" "${script}" > "${OUT}/system/fleet-features.txt" 2>&1
+  agent_on "${LOADGEN_VMS[0]}" "${script}" > "${OUT}/system/fleet-features.txt" 2>&1
 }
 
 # write_path_pass <tag> <stream> <durable:0|1>: the #375/#425 shapes against

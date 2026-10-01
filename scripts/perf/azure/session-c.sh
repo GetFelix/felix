@@ -40,7 +40,7 @@ if [ "${TIER}" != t2 ] || [ "${REPLICATION_FACTOR:-1}" -lt 3 ]; then
 fi
 
 record_session session-c
-distribute_token || exit 1
+refresh_client_token || exit 1
 INGEST_GENS="${#LOADGEN_VMS[@]}"
 [ -s "${OUT}/system/assignments.txt" ] && log "leaders $(cat "${OUT}/system/assignments.txt")"
 

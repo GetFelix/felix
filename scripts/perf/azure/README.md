@@ -133,6 +133,19 @@ step finalizes `generation_start`, `majority_ack` and `lease_free_reads` (cells
 tagged `-lf`). Finalizing is one-way, so a re-run of the lease cells needs a
 fresh session.
 
+**Session credentials stay current by refresh, not by a long TTL.** Access
+tokens live 8 h. `seed.sh` gives every broker its own exchange, written as
+`/etc/felix/node.token` and `/etc/felix/node.refresh_token`; the broker
+refreshes before expiry and writes the rotated refresh token back, and
+`felix-agent restart` renews `node.token` while the broker is stopped.
+Refresh tokens rotate and presenting a spent one revokes its whole chain, so
+no two holders share one. The generators' client token has its own chain on
+generator 0 (`~felix/felix-session/refresh`): each driver refreshes it at
+start, a cell again once six hours have passed, and the result is copied to
+the other generators. Operator calls such as `finalize_features` use a third
+family, also on generator 0 (`admin.token`, `admin.refresh`), so the harness
+never spends a refresh token a broker holds.
+
 **Knobs.** Brokers read `/etc/felix/overrides.env` after the regenerated
 `broker.env`, so it wins. Every session starts from the calibrated base in
 `lib.sh` (`base_overrides`: `FELIX_ACK_ON_COMMIT=1`, `FELIX_STORAGE_IO_URING=1`,

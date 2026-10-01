@@ -1,15 +1,16 @@
 # POSIX sh body, run ON the load generator under dash as root via run-command.
 # seed.sh prepends a header assigning CP / BOOTSTRAP / BOOTSTRAP_TOKEN /
 # IDP_TOKEN / IDP_JWKS_URL / IDP_AUDIENCE / TENANT / NAMESPACE /
-# REPLICATION_FACTOR, then concatenates this file. Keep it dash-clean: no
-# arrays, no pipefail, no bashisms.
+# REPLICATION_FACTOR / BROKER_COUNT, then concatenates this file. Keep it
+# dash-clean: no arrays, no pipefail, no bashisms.
 #
 # The flow is the deployment's own, not a harness shortcut:
 #   1. bootstrap-initialize the tenant with the real IdP's issuer + JWKS
 #   2. exchange the IdP token for the Felix operator token
 #   3. create the namespace, streams, and cache scope the matrix uses
-# The felix token is written to ~felix/felix-session/token for run.sh and
-# framed on stdout so seed.sh can relay it to the brokers as their node token.
+# The client token and its refresh token go to ~felix/felix-session for the
+# generators. With BROKER_COUNT > 0 each broker also gets its own exchange,
+# framed on stdout for seed.sh to drop as that broker's node credential.
 #
 # Every step is idempotent (409 "already exists" is tolerated) so a re-run
 # after a partial seed converges instead of wedging, and every non-2xx prints
@@ -17,6 +18,11 @@
 # than a bare stall.
 
 RESP=/tmp/felix-seed-resp
+
+# field <name>: one string field of the last JSON response.
+field() {
+  python3 -c 'import json,sys; print(json.load(open("/tmp/felix-seed-resp"))[sys.argv[1]])' "$1"
+}
 
 # post_ok <url> [curl args...] — POST, reading any JSON body from stdin via
 # `-d @-`. Succeeds on 2xx and on 409 (already exists); prints status+body and
@@ -106,8 +112,8 @@ JSON
 
 # Two tokens come out of the exchange, because the broker validates a client
 # token by rejecting the WHOLE token if any action in it is not client-facing:
-#   - the ADMIN token (full perms) creates the namespace/streams/cache and is
-#     dropped on each broker as its node token (node.manage/node.view live here);
+#   - the ADMIN token (full perms) creates the namespace/streams/cache; each
+#     broker's node credential is an exchange of the same kind (below);
 #   - the CLIENT token is narrowed to stream/cache actions only, and is what the
 #     load generator authenticates with — an admin token carrying node.* is
 #     refused at the broker's client control stream ("invalid action: node.view").
@@ -116,7 +122,7 @@ CODE=$(curl -s -o "$RESP" -w '%{http_code}' -X POST "$CP/v1/tenants/$TENANT/toke
   -H "Authorization: Bearer $IDP_TOKEN" -H 'Content-Type: application/json' \
   -d '{"audience":"felix-controlplane"}')
 [ "$CODE" = 200 ] || { echo "!! admin token exchange -> HTTP $CODE" >&2; cat "$RESP" >&2; echo >&2; exit 1; }
-TOKEN=$(python3 -c 'import json; print(json.load(open("/tmp/felix-seed-resp"))["felix_token"])')
+TOKEN=$(field felix_token)
 [ -n "$TOKEN" ] || { echo "!! exchange returned no felix_token" >&2; exit 1; }
 
 echo ">> namespace and cache scope"
@@ -196,15 +202,43 @@ CODE=$(curl -s -o "$RESP" -w '%{http_code}' -X POST "$CP/v1/tenants/$TENANT/toke
   -H "Authorization: Bearer $IDP_TOKEN" -H 'Content-Type: application/json' \
   -d '{"requested":["stream.publish","stream.subscribe","cache.read","cache.write"]}')
 [ "$CODE" = 200 ] || { echo "!! client token exchange -> HTTP $CODE" >&2; cat "$RESP" >&2; echo >&2; exit 1; }
-CLIENT_TOKEN=$(python3 -c 'import json; print(json.load(open("/tmp/felix-seed-resp"))["felix_token"])')
-[ -n "$CLIENT_TOKEN" ] || { echo "!! client exchange returned no felix_token" >&2; exit 1; }
+CLIENT_TOKEN=$(field felix_token)
+CLIENT_REFRESH=$(field refresh_token)
+[ -n "$CLIENT_TOKEN" ] && [ -n "$CLIENT_REFRESH" ] \
+  || { echo "!! client exchange returned no felix_token/refresh_token" >&2; exit 1; }
 mkdir -p /home/felix/felix-session
-printf '%s' "$CLIENT_TOKEN" > /home/felix/felix-session/token
+( umask 077
+  printf '%s' "$CLIENT_TOKEN" > /home/felix/felix-session/token
+  printf '%s' "$CLIENT_REFRESH" > /home/felix/felix-session/refresh )
 chown -R felix:felix /home/felix/felix-session
-chmod 600 /home/felix/felix-session/token
+chmod 600 /home/felix/felix-session/token /home/felix/felix-session/refresh
 
-# Relay the ADMIN token to the operator (framed) to drop on the brokers as their
-# node token — node auth needs node.manage/node.view, which the client token
-# deliberately lacks. It stays inside HTTPS to the Azure control plane.
-printf '__FTOKEN_BEGIN__%s__FTOKEN_END__\n' "$TOKEN"
+# The operator's own admin credential, for control-plane calls the drivers make
+# (finalize_features). A family of its own, so the harness never spends a
+# refresh token a broker also holds.
+CODE=$(curl -s -o "$RESP" -w '%{http_code}' -X POST "$CP/v1/tenants/$TENANT/token/exchange" \
+  -H "Authorization: Bearer $IDP_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"audience":"felix-controlplane"}')
+[ "$CODE" = 200 ] || { echo "!! operator token exchange -> HTTP $CODE" >&2; cat "$RESP" >&2; echo >&2; exit 1; }
+( umask 077
+  printf '%s' "$(field felix_token)" > /home/felix/felix-session/admin.token
+  printf '%s\n' "$(field refresh_token)" > /home/felix/felix-session/admin.refresh )
+chmod 600 /home/felix/felix-session/admin.token /home/felix/felix-session/admin.refresh
+
+# One exchange per broker, framed for seed.sh to drop as that broker's node
+# credential. Refresh tokens rotate and a reused one revokes its whole chain,
+# so brokers sharing one would lock each other out at the first refresh. The
+# controlplane audience is what the broker's refresh asks for; node auth needs
+# node.manage/node.view, which the client token deliberately lacks.
+i=0
+while [ "$i" -lt "${BROKER_COUNT:-0}" ]; do
+  CODE=$(curl -s -o "$RESP" -w '%{http_code}' -X POST "$CP/v1/tenants/$TENANT/token/exchange" \
+    -H "Authorization: Bearer $IDP_TOKEN" -H 'Content-Type: application/json' \
+    -d '{"audience":"felix-controlplane"}')
+  [ "$CODE" = 200 ] || { echo "!! broker-$i token exchange -> HTTP $CODE" >&2; cat "$RESP" >&2; echo >&2; exit 1; }
+  printf '__FTOKEN_%s_BEGIN__%s__FTOKEN_%s_END__\n' "$i" "$(field felix_token)" "$i"
+  printf '__FREFRESH_%s_BEGIN__%s__FREFRESH_%s_END__\n' "$i" "$(field refresh_token)" "$i"
+  i=$((i + 1))
+done
+rm -f "$RESP"
 echo __RUNOK__
