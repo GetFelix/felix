@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790832496932,
+  "lastUpdate": 1790835435268,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -27324,6 +27324,72 @@ window.BENCHMARK_DATA = {
             "range": "665.10",
             "unit": "us",
             "extra": "trials: 5\nmedian: 484.00\nmean: 773.60\nstdev: 665.10\ncv: 85.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "801fc22d3b417b581e6e474198bd6253b6634429",
+          "message": "perf(broker): stop copying publish payloads on ingest (#905)\n\nEvery binary publish byte was copied twice after quinn handed it over: once\nfrom the read_chunk loop into the codec's scratch buffer, and again when\ndecode turned each record into its own Vec<u8>, which also cost one\nallocation per record. The broker then wrapped those Vecs straight back\ninto Bytes.\n\nPublishBatch.payloads is now Vec<Bytes>, each record a slice of the frame,\nand the broker passes them through as they are. The JSON publish paths\nconvert their Vec<u8> payloads with Bytes::from, which moves rather than\ncopies.\n\nFrame bodies are now read with read_chunks, up to 32 chunks per call\ninstead of one per packet, so the reader takes the connection lock far less\noften. read_chunks has no length limit and returns whatever the stream has\nbuffered, so bytes past the end of a frame are kept in a per-stream\nFrameScratch and served to the next read. The frame is only consumed once\nall of it has arrived, which also makes the read cancel-safe. Using one\nscratch for two streams is refused rather than misparsed.\n\nSince records now share their frame's buffer, each frame gets its own\nexactly-sized allocation instead of a reused scratch. A retained record\nkeeps its whole frame alive.\n\nSpec-Unaffected: same bytes on the wire, same records accepted in the same order; only how the broker buffers and slices a frame changes.\n\nCloses #902",
+          "timestamp": "2026-09-30T23:14:09-07:00",
+          "tree_id": "b08d926f5ffcb06086648aa6e8e0a64e84e4ded4",
+          "url": "https://github.com/gabloe/felix/commit/801fc22d3b417b581e6e474198bd6253b6634429"
+        },
+        "date": 1790835432317,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 102,
+            "range": "2.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 102.00\nmean: 103.60\nstdev: 2.70\ncv: 2.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 153,
+            "range": "4.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 155.60\nstdev: 4.04\ncv: 2.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 190,
+            "range": "8.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 190.00\nmean: 186.60\nstdev: 8.47\ncv: 4.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 107,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 107.00\nmean: 106.80\nstdev: 0.84\ncv: 0.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 243,
+            "range": "17.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 243.00\nmean: 245.40\nstdev: 17.30\ncv: 7.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 352,
+            "range": "497.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 352.00\nmean: 563.40\nstdev: 497.44\ncv: 88.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
