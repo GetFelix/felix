@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790890915067,
+  "lastUpdate": 1790895149551,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -21840,6 +21840,58 @@ window.BENCHMARK_DATA = {
             "range": "6670.48",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 810222.21\nmean: 812483.27\nstdev: 6670.48\ncv: 0.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "301d64674f61994b028df69254a7113d2ae21f4b",
+          "message": "perf(azure): summary leads with the stream's own rate and groups trials (#915)\n\nThe summary table led with append MB/s, which is always 0 for an in-memory\nstream, so most experiment rows read 0.0. It now leads with append for a\ndurable stream and ingress otherwise, and names which. Trial tags inside a\nname (sweeps run once per trial) are dropped when grouping, so those trials\nshare a row with a mean and spread instead of three rows of one.",
+          "timestamp": "2026-10-01T15:39:54-07:00",
+          "tree_id": "f36093db6b7cad142f94f86469e0de91c407bb58",
+          "url": "https://github.com/gabloe/felix/commit/301d64674f61994b028df69254a7113d2ae21f4b"
+        },
+        "date": 1790895148868,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 528947.66,
+            "range": "39012.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 528947.66\nmean: 504661.59\nstdev: 39012.70\ncv: 7.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 528947.66,
+            "range": "39012.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 528947.66\nmean: 504661.59\nstdev: 39012.70\ncv: 7.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125212.02,
+            "range": "2616.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125212.02\nmean: 124390.06\nstdev: 2616.78\ncv: 2.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1252120.21,
+            "range": "26167.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1252120.21\nmean: 1243900.59\nstdev: 26167.82\ncv: 2.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
