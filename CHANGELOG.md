@@ -729,6 +729,11 @@ for what the current release guarantees.
 
 ### Fixed
 
+- **`FELIX_EVENT_BATCH_MAX_DELAY_US` bounds the whole batch (#719).** The
+  subscriber feeder restarted the delay on every event, so a publisher sending
+  faster than one event per delay held each subscriber's events until 64 had
+  built up or 64 KiB filled: about 6 ms at one event per 190 µs. The delay now
+  counts from the batch's first event, as documented.
 - **A power loss on a fresh node keeps its store roots (#888).** The stream,
   group, dead-letter, cache and counter roots were created without syncing the
   directory that holds them, so a power loss before anything else synced it

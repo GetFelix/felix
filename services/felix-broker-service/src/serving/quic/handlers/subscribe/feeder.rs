@@ -169,12 +169,15 @@ pub(super) async fn run_lane_feeder(
         let batch_base = envelope.base_offset();
         let batch_skipped = envelope.skipped_before();
         let mut expected_next = batch_base.map(|base| base + envelope.len() as u64);
+        // One deadline for the whole batch. A per-recv timeout would let a
+        // steady stream hold the first event until the count or byte cap.
+        let deadline = tokio::time::Instant::now() + config.flush_delay;
 
         while batch.len() < max_events && batch_bytes < max_bytes {
             let next = if config.single_event_mode {
                 None
             } else {
-                match tokio::time::timeout(config.flush_delay, event_rx.recv()).await {
+                match tokio::time::timeout_at(deadline, event_rx.recv()).await {
                     Ok(Some(envelope)) => Some(envelope),
                     Ok(None) | Err(_) => None,
                 }
