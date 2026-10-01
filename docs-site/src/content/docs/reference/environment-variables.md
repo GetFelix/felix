@@ -41,7 +41,12 @@ ports starting at `FELIX_QUIC_BIND`.
 
 **Type**: Integer (at least 1)
 
-**Default**: `1`
+**Default**: derived from the cores the broker may use, as
+`max(1, min(cores / 2, 4))`: `1` up to 3 cores, `2` at 4 or 5, `4` from 8.
+On Linux the core count respects cgroup CPU limits. Unset, the count is also
+shortened so the range stops before `FELIX_INTERNAL_BIND` and port 65535, so a
+cluster member on the default ports (client `5000`, internal `5001`) keeps one
+listener.
 
 **Example**:
 ```bash
@@ -59,12 +64,17 @@ export FELIX_QUIC_LISTENERS=4          # binds 5000, 5001, 5002, 5003
 - The broker advertises the port set during authentication, and a client
   spreads its connection pools across it. A client that predates this ignores
   the advertisement and keeps using the single address it dialled.
+- **Why the default stops at half the cores**: on an 8-vCPU Azure broker,
+  4 listeners measured 4099 MB/s and 8 measured 3437 MB/s. Past half the
+  cores, listeners contend with the broker's own threads.
 - Every port in the range must be open in firewalls, security groups and
-  service definitions, not just `FELIX_QUIC_BIND`.
-- `FELIX_INTERNAL_BIND` must sit outside the range. Startup fails if it does
-  not, since peer traffic and client traffic must not share a listener.
-- Startup also fails if the range would run past port 65535, rather than
-  binding fewer listeners than asked for.
+  service definitions, not just `FELIX_QUIC_BIND`. Clients dial the advertised
+  ports on the host they connected to, so a container that publishes only
+  `5000`, or remaps it to another host port, needs `FELIX_QUIC_LISTENERS=1`.
+- An explicit `FELIX_INTERNAL_BIND` inside an explicit range fails startup,
+  since peer traffic and client traffic must not share a listener.
+- An explicit count whose range would run past port 65535 also fails startup,
+  rather than binding fewer listeners than asked for.
 - Adding brokers remains the horizontal lever. This raises what one broker can
   do before you need another.
 - Do not pin [`FELIX_IO_RUNTIME_THREADS`](#felix_io_runtime_threads) below one
@@ -1226,9 +1236,10 @@ experiment.
 **Type**: Non-negative integer
 
 **Default**: derived on macOS as one runtime per server endpoint plus one for
-clients, so a broker with one client listener gets `2`, and one with
-`FELIX_QUIC_LISTENERS=4` gets `6` (four client listeners, the internal
-listener, and the client runtime). `0` elsewhere.
+clients, so a broker with one client listener gets `2`, and a cluster member
+with four client listeners gets `6` (four client listeners, the internal
+listener, and the client runtime). `0` elsewhere. It follows the listener
+count whether that was set or derived, so the two defaults never conflict.
 
 ```bash
 export FELIX_IO_RUNTIME_THREADS="2"

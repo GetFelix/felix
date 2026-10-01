@@ -279,12 +279,16 @@ Native Windows support is not currently tested.
 Released images are on GHCR and pull without credentials:
 
 ```bash
-docker run -p 5000:5000/udp -p 8080:8080 \
+docker run -p 5000-5003:5000-5003/udp -p 8080:8080 \
   -e FELIX_CONTROLPLANE_URL=http://<control-plane-host>:8443 \
   -e FELIX_NODE_TOKEN_FILE=/etc/felix/node.token \
   -v /path/to/node.token:/etc/felix/node.token:ro \
   ghcr.io/gabloe/felix-broker:0.5.0
 ```
+
+The broker binds up to four client ports from `5000`, depending on its cores
+(see [`FELIX_QUIC_LISTENERS`](/felix/reference/environment-variables/#felix_quic_listeners)),
+and tells clients to use all of them, so publish the whole range.
 
 A broker authenticates every client against its tenant's signing keys, which it
 fetches from the control plane, and it reads its streams from there with a
@@ -306,7 +310,7 @@ To build one instead, for a change you have not released:
 docker build -t felix-broker -f docker/broker.Dockerfile .
 
 # Run what you built, with the same variables and mount as above
-docker run -p 5000:5000/udp -p 8080:8080 -e FELIX_CONTROLPLANE_URL=... felix-broker
+docker run -p 5000-5003:5000-5003/udp -p 8080:8080 -e FELIX_CONTROLPLANE_URL=... felix-broker
 ```
 
 ### Control Plane Container
