@@ -227,11 +227,16 @@ Recorded deliberately, because several are plausible enough to be re-proposed.
    `Vec<Vec<u8>>`. Measured: **6.8 µs per 64 × 4 KiB frame (38.3 GB/s)** versus
    0.2 µs for a refcount clone. At 73 MB/s that is ~0.2% of one core. Worth
    fixing for cleanliness; irrelevant to throughput.
+   At the 1.9 GB/s later measured on Azure it is no longer small, and the copy
+   is gone: `PublishBatch.payloads` is now `Vec<Bytes>` sliced from the frame
+   (#902).
 2. **The read scratch buffer does not realloc per frame.** The
    `clear()`/`resize()`/`split().freeze()` pattern in
    `serving/quic/codec.rs` looked like it would allocate every frame.
    Measured: **1 allocation across 10,000 frames** at 4 KiB, 64 KiB and 256 KiB.
    It reuses correctly.
+   This no longer holds by design: decoded records now share the frame's
+   buffer, so each frame gets its own exactly-sized allocation (#902).
 3. **Replay-ring retention is not the cause.** `latency_demo.rs:679` sizes the
    ring to the whole run (`warmup + total + 1`) instead of the production
    default of 1024 (`DEFAULT_LOG_CAPACITY` in `crates/server/felix-broker/src/broker.rs`), and RSS climbs

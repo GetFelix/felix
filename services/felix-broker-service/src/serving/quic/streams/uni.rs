@@ -7,8 +7,8 @@ use std::sync::Arc;
 #[cfg(feature = "telemetry")]
 use std::sync::atomic::Ordering;
 
+use crate::serving::quic::codec::FrameScratch;
 use anyhow::{Context, Result};
-use bytes::BytesMut;
 use felix_authz::{Action, Namespace, StreamName, TenantId, stream_resource};
 use felix_broker::Broker;
 use felix_wire::Message;
@@ -33,14 +33,14 @@ pub(super) struct UniLoopArgs {
 }
 
 /// Run one uni publish stream until EOF, a decode error, or a protocol
-/// violation. `frame_scratch` is reused across reads to avoid per-frame
-/// allocation; `stream_cache`/`stream_cache_key` carry resolved stream state
+/// violation. `frame_scratch` carries bytes read past one frame into the
+/// next; `stream_cache`/`stream_cache_key` carry resolved stream state
 /// between frames.
 pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
     source: &mut S,
     broker: Arc<Broker>,
     args: UniLoopArgs,
-    frame_scratch: &mut BytesMut,
+    frame_scratch: &mut FrameScratch,
 ) -> Result<()> {
     let UniLoopArgs {
         config,

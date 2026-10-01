@@ -90,7 +90,7 @@ async fn write_parts_many_writes_two_frames_in_order() -> Result<()> {
     let mut recv = tokio::time::timeout(Duration::from_secs(1), connection.accept_uni())
         .await
         .context("accept uni timeout")??;
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let frame1 =
         crate::serving::quic::codec::read_frame_limited_into(&mut recv, 16 * 1024, &mut scratch)
             .await?

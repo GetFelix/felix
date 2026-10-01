@@ -4,15 +4,15 @@
 //! delays.
 //!
 //! `Ok(None)` is a clean EOF, `Err` a transport or frame-format violation.
-//! The caller-owned `scratch` buffer is reused across reads so a frame read
-//! doesn't allocate; the boxed future keeps the trait object-safe without
+//! The caller-owned `scratch` holds bytes read past one frame for the next
+//! read, so it must stay with its stream; the boxed future keeps the trait object-safe without
 //! pulling in `async_trait`.
 
 use std::future::Future;
 use std::pin::Pin;
 
+use crate::serving::quic::codec::FrameScratch;
 use anyhow::Result;
-use bytes::BytesMut;
 use felix_wire::Frame;
 use quinn::RecvStream;
 
@@ -23,7 +23,7 @@ pub(super) trait FrameSource {
     fn next_frame<'a>(
         &'a mut self,
         max_frame_bytes: usize,
-        scratch: &'a mut BytesMut,
+        scratch: &'a mut FrameScratch,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Frame>>> + Send + 'a>>;
 }
 
@@ -31,7 +31,7 @@ impl FrameSource for RecvStream {
     fn next_frame<'a>(
         &'a mut self,
         max_frame_bytes: usize,
-        scratch: &'a mut BytesMut,
+        scratch: &'a mut FrameScratch,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Frame>>> + Send + 'a>> {
         Box::pin(read_frame_limited_into(self, max_frame_bytes, scratch))
     }
@@ -58,7 +58,7 @@ impl FrameSource for TestFrameSource {
     fn next_frame<'a>(
         &'a mut self,
         _max_frame_bytes: usize,
-        _scratch: &'a mut BytesMut,
+        _scratch: &'a mut FrameScratch,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Frame>>> + Send + 'a>> {
         Box::pin(async move { self.frames.pop_front().unwrap_or_else(|| Ok(None)) })
     }
@@ -75,7 +75,7 @@ impl FrameSource for DelayFrameSource {
     fn next_frame<'a>(
         &'a mut self,
         _max_frame_bytes: usize,
-        _scratch: &'a mut BytesMut,
+        _scratch: &'a mut FrameScratch,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Frame>>> + Send + 'a>> {
         Box::pin(async move {
             tokio::time::sleep(self.delay).await;

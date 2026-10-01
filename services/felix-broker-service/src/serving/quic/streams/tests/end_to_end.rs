@@ -26,7 +26,7 @@ async fn cache_put_get_round_trip() -> Result<()> {
 
     let config = BrokerConfig::default();
     let max_frame_bytes = config.max_frame_bytes;
-    let mut frame_scratch = BytesMut::with_capacity(max_frame_bytes.min(64 * 1024));
+    let mut frame_scratch = crate::serving::quic::FrameScratch::new();
     let server_task = tokio::spawn(crate::serving::quic::serve(
         Arc::clone(&server),
         Arc::clone(&broker),
@@ -118,7 +118,7 @@ async fn publish_rejects_unknown_stream() -> Result<()> {
 
     let config = BrokerConfig::default();
     let max_frame_bytes = config.max_frame_bytes;
-    let mut frame_scratch = BytesMut::with_capacity(max_frame_bytes.min(64 * 1024));
+    let mut frame_scratch = crate::serving::quic::FrameScratch::new();
     let server_task = tokio::spawn(crate::serving::quic::serve(
         Arc::clone(&server),
         Arc::clone(&broker),
@@ -224,7 +224,7 @@ async fn publish_ack_on_commit_smoke() -> Result<()> {
         ..BrokerConfig::default()
     };
     let max_frame_bytes = config.max_frame_bytes;
-    let mut frame_scratch = BytesMut::with_capacity(max_frame_bytes.min(64 * 1024));
+    let mut frame_scratch = crate::serving::quic::FrameScratch::new();
     let server_task = tokio::spawn(crate::serving::quic::serve(
         Arc::clone(&server),
         Arc::clone(&broker),
@@ -444,7 +444,7 @@ async fn control_stream_rejects_unexpected_message() -> Result<()> {
 
     let config = BrokerConfig::default();
     let max_frame_bytes = config.max_frame_bytes;
-    let mut frame_scratch = BytesMut::with_capacity(max_frame_bytes.min(64 * 1024));
+    let mut frame_scratch = crate::serving::quic::FrameScratch::new();
     let server_task = tokio::spawn(crate::serving::quic::serve(
         Arc::clone(&server),
         Arc::clone(&broker),
@@ -489,7 +489,7 @@ async fn cache_put_unknown_cache_closes_stream() -> Result<()> {
 
     let config = BrokerConfig::default();
     let max_frame_bytes = config.max_frame_bytes;
-    let mut frame_scratch = BytesMut::with_capacity(max_frame_bytes.min(64 * 1024));
+    let mut frame_scratch = crate::serving::quic::FrameScratch::new();
     let server_task = tokio::spawn(crate::serving::quic::serve(
         Arc::clone(&server),
         Arc::clone(&broker),
@@ -550,7 +550,7 @@ async fn cache_get_unknown_cache_closes_stream() -> Result<()> {
 
     let config = BrokerConfig::default();
     let max_frame_bytes = config.max_frame_bytes;
-    let mut frame_scratch = BytesMut::with_capacity(max_frame_bytes.min(64 * 1024));
+    let mut frame_scratch = crate::serving::quic::FrameScratch::new();
     let server_task = tokio::spawn(crate::serving::quic::serve(
         Arc::clone(&server),
         Arc::clone(&broker),

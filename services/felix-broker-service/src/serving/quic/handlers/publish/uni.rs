@@ -99,11 +99,7 @@ pub(crate) async fn handle_binary_publish_batch_uni(
         count_publish("error");
         return Ok(true);
     };
-    let payloads = batch
-        .payloads
-        .into_iter()
-        .map(Bytes::from)
-        .collect::<Vec<_>>();
+    let payloads = batch.payloads;
     let payload_bytes = payload_len_sum(&payloads);
     match enqueue_tenant_publish(
         publish_ctx,

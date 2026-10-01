@@ -82,7 +82,7 @@ async fn a_full_window_stops_reading_until_an_answer_frees_a_slot() -> Result<()
     let order = Arc::new(AckOrder::new());
     let loop_order = Arc::clone(&order);
     let control = tokio::spawn(async move {
-        let mut scratch = BytesMut::with_capacity(64 * 1024);
+        let mut scratch = crate::serving::quic::FrameScratch::new();
         run_control_loop(
             &mut source,
             broker,
@@ -164,7 +164,7 @@ async fn answers_as_read() -> Result<(QuicConnection, tokio::task::JoinHandle<Re
     let reader = tokio::spawn(async move {
         let connection = server.accept().await?;
         let (_send, mut recv) = connection.accept_bi().await?;
-        let mut scratch = BytesMut::new();
+        let mut scratch = crate::serving::quic::FrameScratch::new();
         let mut ids = Vec::new();
         while let Some(message) =
             crate::serving::quic::read_message_limited(&mut recv, 1 << 20, &mut scratch).await?

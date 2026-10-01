@@ -77,7 +77,7 @@ async fn handle_subscribe_message_sends_event_stream_binary_batch() -> Result<()
     let mut event_recv = tokio::time::timeout(Duration::from_secs(1), connection.accept_uni())
         .await
         .context("accept uni timeout")??;
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let hello =
         crate::serving::quic::codec::read_message_limited(&mut event_recv, 16 * 1024, &mut scratch)
             .await?
@@ -245,7 +245,7 @@ async fn handle_subscribe_message_batches_by_bytes() -> Result<()> {
     let mut event_recv = tokio::time::timeout(Duration::from_secs(1), connection.accept_uni())
         .await
         .context("accept uni timeout")??;
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let _ =
         crate::serving::quic::codec::read_message_limited(&mut event_recv, 16 * 1024, &mut scratch)
             .await?
@@ -370,7 +370,7 @@ async fn handle_subscribe_message_hashed_pool_with_generated_id() -> Result<()> 
     let mut event_recv = tokio::time::timeout(Duration::from_secs(1), connection.accept_uni())
         .await
         .context("accept uni timeout")??;
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let hello =
         crate::serving::quic::codec::read_message_limited(&mut event_recv, 16 * 1024, &mut scratch)
             .await?
@@ -541,7 +541,7 @@ async fn frames_of_a_moved_subscription(peer_features: u32) -> Result<Vec<bytes:
     let mut event_recv = tokio::time::timeout(Duration::from_secs(1), connection.accept_uni())
         .await
         .context("accept uni timeout")??;
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     crate::serving::quic::codec::read_message_limited(&mut event_recv, 16 * 1024, &mut scratch)
         .await?
         .expect("hello");
@@ -699,7 +699,7 @@ async fn frames_across_generation_starts(peer_flags: u16) -> Result<Vec<bytes::B
     let mut event_recv = tokio::time::timeout(Duration::from_secs(1), connection.accept_uni())
         .await
         .context("accept uni timeout")??;
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     crate::serving::quic::codec::read_message_limited(&mut event_recv, 16 * 1024, &mut scratch)
         .await?
         .expect("hello");

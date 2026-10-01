@@ -6,7 +6,6 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use anyhow::{Context, Result, anyhow};
-use bytes::Bytes;
 use felix_authz::{Action, Namespace, StreamName, TenantId, stream_resource};
 use felix_broker::Broker;
 use felix_wire::Frame;
@@ -128,11 +127,7 @@ pub(crate) async fn handle_binary_publish_batch_control(
         count = batch.payloads.len()
     );
     async move {
-        let payloads = batch
-            .payloads
-            .into_iter()
-            .map(Bytes::from)
-            .collect::<Vec<_>>();
+        let payloads = batch.payloads;
         let payload_bytes = payload_len_sum(&payloads);
         let fanout_start = t_now_if(sample);
         let r = enqueue_tenant_publish(

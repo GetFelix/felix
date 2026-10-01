@@ -9,7 +9,6 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
-use bytes::BytesMut;
 use felix_broker::{Broker, DurableStorage, StreamMetadata};
 use felix_broker_service::config::BrokerConfig;
 use felix_broker_service::serving::quic;
@@ -241,7 +240,7 @@ impl Stream {
             },
         )
         .await?;
-        let mut scratch = BytesMut::with_capacity(MAX_TEST_FRAME_BYTES);
+        let mut scratch = quic::FrameScratch::new();
         let auth_response =
             quic::read_message_limited(&mut recv, MAX_TEST_FRAME_BYTES, &mut scratch).await?;
         if !matches!(auth_response, Some(Message::AuthOk { .. })) {

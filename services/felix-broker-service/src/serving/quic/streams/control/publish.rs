@@ -150,7 +150,7 @@ pub(super) async fn publish_batch(
         tenant_id,
         namespace,
         stream,
-        payloads,
+        payloads.into_iter().map(bytes::Bytes::from).collect(),
         key,
         request_id,
         ack,
@@ -227,7 +227,7 @@ pub(super) async fn publish_idempotent(
         tenant_id,
         namespace,
         stream,
-        payloads,
+        payloads.into_iter().map(bytes::Bytes::from).collect(),
         key,
         Some(request_id),
         // Always acknowledged: a producer that never learns the

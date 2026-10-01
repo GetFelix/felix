@@ -534,6 +534,17 @@ for what the current release guarantees.
 
 ### Changed
 
+- **Binary publish payloads are no longer copied on decode.**
+  `felix_wire::binary::PublishBatch.payloads` is now `Vec<Bytes>`, each
+  record a slice of the frame it arrived in, which drops one copy and one
+  allocation per record on the broker's ingest path. A retained record keeps
+  its whole frame alive. The broker reads frame bodies with quinn's
+  `read_chunks`, taking up to 32 chunks per call instead of one; bytes read
+  past a frame wait in the new `serving::quic::FrameScratch`, which replaces
+  the `BytesMut` argument of `read_frame_limited_into` and
+  `read_message_limited` and must stay with one stream. The encoders still
+  take `&[Vec<u8>]`.
+
 - **aws-lc-rs is the only TLS crypto provider.** `ring` is gone from the
   build: quinn, rcgen and reqwest now use aws-lc-rs, which rustls and
   jsonwebtoken already did. The broker and control plane install it as the

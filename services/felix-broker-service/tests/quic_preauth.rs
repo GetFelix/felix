@@ -11,7 +11,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use bytes::BytesMut;
 use felix_broker::{Broker, StreamMetadata};
 use felix_broker_service::config::BrokerConfig;
 use felix_broker_service::serving::auth::demo::{DemoAuth, demo_auth_for_tenant};
@@ -97,7 +96,7 @@ async fn authenticate(harness: &Harness, connection: &QuicConnection) -> Result<
         },
     )
     .await?;
-    let mut scratch = BytesMut::new();
+    let mut scratch = felix_broker_service::serving::quic::FrameScratch::new();
     let answer = timeout(
         Duration::from_secs(5),
         read_message_limited(&mut recv, 64 * 1024, &mut scratch),
