@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790822756108,
+  "lastUpdate": 1790832054391,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -21424,6 +21424,58 @@ window.BENCHMARK_DATA = {
             "range": "6042.78",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 857339.45\nmean: 857368.85\nstdev: 6042.78\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ee2d30ab3f7671ae453fed4a6e2aac4b3d9c046d",
+          "message": "fix(broker): make the subscriber batch delay a deadline for the whole batch (#901)\n\nThe lane feeder gave every recv its own FELIX_EVENT_BATCH_MAX_DELAY_US\ntimeout, so the delay only fired after a gap that long between events. A\npublisher sending faster than one event per delay held each subscriber's\nevents until 64 had built up or 64 KiB filled, which is the ~6 ms delivery\np50 measured in #719. The feeder now sets one deadline when a batch starts,\nas the per-subscriber event writer already does. Every other reason to end\na batch is unchanged.\n\nThe configuration reference now says the delay counts from the first event\nand that tokio's millisecond timer ticks round sub-millisecond values up.\n\nSpec-Unaffected: only when a subscriber's coalesced batch is flushed changes; which events it carries, their order and their offsets are the same, and the model has no notion of time.",
+          "timestamp": "2026-09-30T22:08:55-07:00",
+          "tree_id": "4974ea3c40e5ca807eb1d8b475b3ff01dd11b316",
+          "url": "https://github.com/gabloe/felix/commit/ee2d30ab3f7671ae453fed4a6e2aac4b3d9c046d"
+        },
+        "date": 1790832053839,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 519296.02,
+            "range": "22194.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 519296.02\nmean: 529065.40\nstdev: 22194.66\ncv: 4.20%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 519296.02,
+            "range": "22194.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 519296.02\nmean: 529065.40\nstdev: 22194.66\ncv: 4.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119800.52,
+            "range": "1955.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119800.52\nmean: 120045.01\nstdev: 1955.88\ncv: 1.63%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1198005.15,
+            "range": "19558.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1198005.15\nmean: 1200450.12\nstdev: 19558.80\ncv: 1.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
