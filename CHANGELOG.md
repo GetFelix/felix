@@ -734,6 +734,13 @@ for what the current release guarantees.
   faster than one event per delay held each subscriber's events until 64 had
   built up or 64 KiB filled: about 6 ms at one event per 190 µs. The delay now
   counts from the batch's first event, as documented.
+- **An io_uring submit error no longer closes files under in-flight flushes
+  (#722).** With `FELIX_STORAGE_IO_URING=1`, a failed submit dropped every
+  outstanding flush's file while the kernel could still be syncing it, or
+  had not yet taken its entry, so the sync could land on a reused
+  descriptor. Each file is now held until its completion is reaped; the
+  waiters are still failed with the error. `EAGAIN` and `EBUSY`, which only
+  ask for completions to be reaped first, no longer fail any flush.
 - **A power loss on a fresh node keeps its store roots (#888).** The stream,
   group, dead-letter, cache and counter roots were created without syncing the
   directory that holds them, so a power loss before anything else synced it
