@@ -492,13 +492,13 @@ shape_pass() {
 }
 
 # finalize_features <feature>...: finalize fleet features through the control
-# plane, from broker 0, which holds the admin token. ONE-WAY: run every cell
-# that needs the old behaviour first. node.token on disk is only as fresh as
-# the broker's last restart, so it is renewed first when close to expiry.
+# plane, from generator 0 with the operator's own admin credential, renewed
+# first when close to expiry. ONE-WAY: run every cell that needs the old
+# behaviour first.
 finalize_features() {
-  local f script="u=\$(sed -n 's/^FELIX_CONTROLPLANE_URL=//p' /etc/felix/broker.env)
-felix-agent token-refresh \"\$u\" /etc/felix/node.token /etc/felix/node.refresh_token 1800 || true
-t=\$(cat /etc/felix/node.token)"
+  local f script="u='http://${CONTROLPLANE_IP}:8080'
+felix-agent token-refresh \"\$u\" /home/felix/felix-session/admin.token /home/felix/felix-session/admin.refresh 1800 || true
+t=\$(cat /home/felix/felix-session/admin.token)"
   for f in "$@"; do
     script="${script}
 curl -fsS -X POST -H \"Authorization: Bearer \$t\" \"\$u/v1/fleet/features/${f}/finalize?dry_run=false\"; echo"
@@ -506,7 +506,7 @@ curl -fsS -X POST -H \"Authorization: Bearer \$t\" \"\$u/v1/fleet/features/${f}/
   script="${script}
 curl -fsS -H \"Authorization: Bearer \$t\" \"\$u/v1/fleet/features\"; echo"
   log "finalize fleet features: $*"
-  agent_on "${BROKER_VMS[0]}" "${script}" > "${OUT}/system/fleet-features.txt" 2>&1
+  agent_on "${LOADGEN_VMS[0]}" "${script}" > "${OUT}/system/fleet-features.txt" 2>&1
 }
 
 # write_path_pass <tag> <stream> <durable:0|1>: the #375/#425 shapes against

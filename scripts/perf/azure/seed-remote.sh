@@ -213,6 +213,18 @@ mkdir -p /home/felix/felix-session
 chown -R felix:felix /home/felix/felix-session
 chmod 600 /home/felix/felix-session/token /home/felix/felix-session/refresh
 
+# The operator's own admin credential, for control-plane calls the drivers make
+# (finalize_features). A family of its own, so the harness never spends a
+# refresh token a broker also holds.
+CODE=$(curl -s -o "$RESP" -w '%{http_code}' -X POST "$CP/v1/tenants/$TENANT/token/exchange" \
+  -H "Authorization: Bearer $IDP_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"audience":"felix-controlplane"}')
+[ "$CODE" = 200 ] || { echo "!! operator token exchange -> HTTP $CODE" >&2; cat "$RESP" >&2; echo >&2; exit 1; }
+( umask 077
+  printf '%s' "$(field felix_token)" > /home/felix/felix-session/admin.token
+  printf '%s\n' "$(field refresh_token)" > /home/felix/felix-session/admin.refresh )
+chmod 600 /home/felix/felix-session/admin.token /home/felix/felix-session/admin.refresh
+
 # One exchange per broker, framed for seed.sh to drop as that broker's node
 # credential. Refresh tokens rotate and a reused one revokes its whole chain,
 # so brokers sharing one would lock each other out at the first refresh. The

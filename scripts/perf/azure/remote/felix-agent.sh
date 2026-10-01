@@ -86,8 +86,9 @@ cmd_env_unset() {
 cmd_restart() {
   systemctl reset-failed felix-broker 2>/dev/null || true
   # The broker refreshes in memory and never rewrites node.token, so after a
-  # few hours the file it restarts on has expired. Renew it while the broker is
-  # stopped, where nothing else can spend the same refresh token.
+  # few hours the file it restarts on has expired. Renew it here, with the
+  # broker stopped: it is the only other holder of this chain, so nothing can
+  # spend the same refresh token concurrently and revoke it.
   systemctl stop felix-broker
   u=$(sed -n 's/^FELIX_CONTROLPLANE_URL=//p' /etc/felix/broker.env 2>/dev/null | tail -1)
   if [ -n "$u" ]; then

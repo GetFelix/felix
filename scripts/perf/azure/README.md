@@ -142,7 +142,9 @@ Refresh tokens rotate and presenting a spent one revokes its whole chain, so
 no two holders share one. The generators' client token has its own chain on
 generator 0 (`~felix/felix-session/refresh`): each driver refreshes it at
 start, a cell again once six hours have passed, and the result is copied to
-the other generators.
+the other generators. Operator calls such as `finalize_features` use a third
+family, also on generator 0 (`admin.token`, `admin.refresh`), so the harness
+never spends a refresh token a broker holds.
 
 **Knobs.** Brokers read `/etc/felix/overrides.env` after the regenerated
 `broker.env`, so it wins. Every session starts from the calibrated base in
