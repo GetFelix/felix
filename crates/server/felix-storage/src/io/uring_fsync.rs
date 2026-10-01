@@ -360,25 +360,14 @@ impl Service {
     /// the next submit. Either way the kernel may still use the descriptor, so
     /// each file stays in `waiting` until its completion is reaped.
     fn on_submit_error(&mut self, err: &io::Error) {
-        // Interrupted, or the kernel asking for completions to be reaped
-        // before it takes more: nothing failed, so collect and go round.
-        if err.kind() == io::ErrorKind::Interrupted
-            || matches!(err.raw_os_error(), Some(libc::EAGAIN | libc::EBUSY))
-        {
+        // REVERTED for the revert-and-fail check: the pre-fix behaviour.
+        if err.kind() == io::ErrorKind::Interrupted {
             return;
         }
-        // Otherwise the ring cannot be trusted to report what happened, and
-        // nothing outstanding can be called durable.
-        let fail = || Err(io::Error::new(err.kind(), err.to_string()));
-        for (_file, reply) in self.waiting.values_mut() {
-            if let Some(reply) = reply.take() {
-                let _ = reply.send(fail());
+        for (_, (_file, reply)) in self.waiting.drain() {
+            if let Some(reply) = reply {
+                let _ = reply.send(Err(io::Error::new(err.kind(), err.to_string())));
             }
-        }
-        // Never pushed, so these are safe to drop. Failing them now keeps a
-        // ring whose slots are all held by failed entries from parking them.
-        for submission in self.backlog.drain(..) {
-            let _ = submission.reply.send(fail());
         }
     }
 
