@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790817319599,
+  "lastUpdate": 1790817673711,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -21268,6 +21268,58 @@ window.BENCHMARK_DATA = {
             "range": "5485.66",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 819553.65\nmean: 818425.28\nstdev: 5485.66\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dd8f9a64f0c752ce9f51537a19e878bf9ae0a477",
+          "message": "test(history): power loss, control-plane crash and delivery checks (#889)\n\nThe adversarial nemesis gains a whole-cluster power loss (every broker keeps\nonly what it flushed, then all restart) and a control-plane crash with a move,\ndrain or failover in flight. Live subscribers follow each list for the whole\ncampaign, and three new checker rules cover delivery order, records delivered\nand then lost, and records neither delivered nor visibly skipped.\n\nSpec-Unaffected: test harness and test-only storage fault facility",
+          "timestamp": "2026-09-30T18:11:56-07:00",
+          "tree_id": "d47038d730a6c05cd0fcc9f08c42887847a51edf",
+          "url": "https://github.com/gabloe/felix/commit/dd8f9a64f0c752ce9f51537a19e878bf9ae0a477"
+        },
+        "date": 1790817673162,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 517174.12,
+            "range": "31909.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 517174.12\nmean: 520651.47\nstdev: 31909.92\ncv: 6.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 517174.12,
+            "range": "31909.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 517174.12\nmean: 520651.47\nstdev: 31909.92\ncv: 6.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 114580.92,
+            "range": "2839.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 114580.92\nmean: 114444.76\nstdev: 2839.82\ncv: 2.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1145809.21,
+            "range": "28398.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1145809.21\nmean: 1144447.58\nstdev: 28398.22\ncv: 2.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
