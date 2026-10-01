@@ -31,5 +31,10 @@ write_files:
     encoding: b64
     content: {3}
 runcmd:
+  # The daily apt upgrade restarts services whose libraries changed. A
+  # restarted control plane forgets the session (its store is in memory), so
+  # every token goes invalid mid-run. A session VM lives for hours; no updates.
+  - systemctl disable --now apt-daily.timer apt-daily-upgrade.timer || true
+  - systemctl mask apt-daily.service apt-daily-upgrade.service unattended-upgrades.service || true
   - sysctl --system
   - /usr/local/sbin/felix-provision-loadgen.sh provision "{0}" "{1}" "{2}" > /var/log/felix-provision.log 2>&1
