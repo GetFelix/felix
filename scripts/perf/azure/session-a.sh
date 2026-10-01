@@ -9,6 +9,8 @@
 #   #547       flush dispatch on NVMe: A0 = OLD_REF (spawn_blocking), A1 =
 #              NEW_REF (flush thread), A2 = NEW_REF + io_uring; keys 1/12/48
 #              plus one c1 latency cell per arm.
+#   shapes     payload 256/1024/4096 x batch 1/64 x fire-and-forget/acked
+#              (64 in flight), in-memory and durable OnCommit, at ARM_LISTENERS.
 #   profiles   perf + pidstat + folded stacks at N=1 and N=4 on the
 #              frame-pointer build, when one was built (FP_REFS=main).
 #
@@ -31,7 +33,7 @@ source "${here}/cells.sh"
 : "${ARM_KEYS:=1 12 48}"
 : "${ARM_LISTENERS:=4}"
 # Which parts to run, in order. Re-run a subset with e.g. STEPS="arms".
-: "${STEPS:=fio smoke sweep profile arms}"
+: "${STEPS:=fio smoke sweep shapes profile arms}"
 
 [ "${SHARDS}" -ge 48 ] || echo "!! the stream has ${SHARDS} shards; ARM_KEYS up to 48 wants SHARDS=48" >&2
 record_session session-a
@@ -55,7 +57,7 @@ for step in ${STEPS}; do
     configure "${NEW_REF}" FELIX_QUIC_LISTENERS=4 FELIX_PUB_INGRESS_WAIT=1 || exit 1
     check_listeners 4 || exit 1
    
-    CELL_LOADGEN_ENV="$(sweep_env 4)" cell smoke-l4 "${NGEN}" $(PER_PUB=50000 ingest_flags perf "${SWEEP_KEYS}" "${PUBS_PER_GEN}")
+    CELL_LOADGEN_ENV="$(sweep_env 4)" cell smoke-l4 "${NGEN}" $(CELL_SECS=30 ingest_flags perf "${SWEEP_KEYS}" "${PUBS_PER_GEN}")
     grep -h '' "${OUT}/cells/smoke-l4/"*.after.txt | grep -E '^port\.50' | sed 's/^/   /'
     ;;
 
@@ -77,6 +79,15 @@ for step in ${STEPS}; do
         unset CELL_LOADGEN_ENV
       done
     done
+    ;;
+
+  shapes)
+    configure "${NEW_REF}" FELIX_QUIC_LISTENERS="${ARM_LISTENERS}" FELIX_PUB_INGRESS_WAIT=1 \
+      FELIX_DURABLE_FSYNC_MODE=on_commit || continue
+    export CELL_LOADGEN_ENV; CELL_LOADGEN_ENV="$(sweep_env "${ARM_LISTENERS}")"
+    shape_pass a-shape-inmem perf 0 "${NGEN}" "${PUBS_PER_GEN}"
+    shape_pass a-shape-dur perf-durable 1 "${NGEN}" "${PUBS_PER_GEN}"
+    unset CELL_LOADGEN_ENV
     ;;
 
   profile)

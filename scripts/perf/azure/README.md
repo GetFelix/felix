@@ -118,6 +118,21 @@ SESSION=v060-c ./session-c.sh
 `STEPS` picks parts of a driver (for example `STEPS="smoke sweep"`), `TRIALS`
 sets trials per cell (default 3). The header of each driver lists its cells.
 
+Ingest cells run for `CELL_SECS` seconds (default 90), not a record count, so
+a 256 B unbatched cell lasts as long as a 4 KiB x 64 one. Every generator in an
+ingest cell starts publishing at the same wall-clock time, `START_DELAY_SECS`
+(default 30) after launch, so the steady-state window covers the whole run.
+The `shapes` step of each driver crosses payload (`SHAPE_PAYLOADS`, 256 1024
+4096), batch (`SHAPE_BATCHES`, 1 64) and in-flight acked batches per publisher
+(`SHAPE_IN_FLIGHT`, 0 64; 0 is fire-and-forget), `SHAPE_TRIALS` times (default 1).
+An acked cell is what a client that waits for its acks gets; on a durable
+stream with `FELIX_ACK_ON_COMMIT=1` that is the durable rate.
+
+Session C runs its steps twice: under the lease, then after its `lease-free`
+step finalizes `generation_start`, `majority_ack` and `lease_free_reads` (cells
+tagged `-lf`). Finalizing is one-way, so a re-run of the lease cells needs a
+fresh session.
+
 **Knobs.** Brokers read `/etc/felix/overrides.env` after the regenerated
 `broker.env`, so it wins. Every session starts from the calibrated base in
 `lib.sh` (`base_overrides`: `FELIX_ACK_ON_COMMIT=1`, `FELIX_STORAGE_IO_URING=1`,
@@ -138,7 +153,7 @@ defaults instead of being skipped as done. A sweep is one line:
 SESSION=v060-a ./sweep.sh --name flushconc --durable \
   FELIX_BROKER_PUB_FLUSH_CONCURRENCY=16,32,64 client:FELIX_PUB_CONN_POOL=4,8 -- \
   --scenario ingest --stream perf-durable --payload-bytes 4096 --batch 64 \
-  --concurrency 16 --total 3200000 --keys 48
+  --concurrency 16 --duration-secs 90 --keys 48
 ```
 
 **Any build, hot-swapped.** `deploy-ref.sh` builds a branch, tag or SHA on

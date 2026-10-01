@@ -8,6 +8,7 @@
 #          plus the cache put retake (periodic c8, on_commit c1 and c8).
 #   #547   the flush-dispatch arms A0/A1/A2 on slow storage: a fix must not
 #          regress a ~4 ms flush.
+#   shapes payload x batch x fire-and-forget/acked, in-memory and OnCommit.
 #   #425   the RF=1 rows session C is compared against (perf, perf-quorum).
 #
 # Every row runs with FELIX_ACK_ON_COMMIT=1 (the base knobs), so a durable
@@ -25,7 +26,7 @@ source "${here}/cells.sh"
 : "${NEW_REF:=main}"
 : "${OLD_REF:=8f1736eb}"
 : "${PUBS_PER_GEN:=16}"
-: "${STEPS:=fio rows arms rf1}"
+: "${STEPS:=fio rows shapes arms rf1}"
 
 record_session session-b
 distribute_token || exit 1
@@ -51,6 +52,11 @@ for step in ${STEPS}; do
     durable_trials b375-oncommit-cache-c8 1 --scenario cache --cache perf --payload-bytes 256 --concurrency 8 --total 20000
     ;;
 
+  shapes)
+    stage "${NEW_REF}" FELIX_DURABLE_FSYNC_MODE=on_commit FELIX_PUB_INGRESS_WAIT=1
+    shape_pass b-shape-inmem perf 0 "${NGEN}" "${PUBS_PER_GEN}"
+    shape_pass b-shape-dur perf-durable 1 "${NGEN}" "${PUBS_PER_GEN}"
+    ;;
   arms)
     for t in $(seq 1 "${TRIALS}"); do
       for arm in A0 A1 A2; do

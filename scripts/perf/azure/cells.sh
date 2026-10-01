@@ -430,6 +430,44 @@ ingest_flags() {
   echo "--scenario ingest --stream $1 --payload-bytes ${PAYLOAD:-4096} --batch ${BATCH:-64} --concurrency $3 --duration-secs ${CELL_SECS:-90} --keys $2${IN_FLIGHT:+ --in-flight ${IN_FLIGHT}}"
 }
 
+# shape_pass <tag> <stream> <durable:0|1> <generators> <publishers-per-generator>:
+# keyed ingest across record shapes, so the write-up does not lead with the
+# best case. Payload x batch x in-flight, where in-flight 0 is fire-and-forget
+# and above 0 is acked (the rate a client that waits for its acks gets).
+shape_pass() {
+  local tag="$1" stream="$2" durable="$3" ngen="$4" per="$5" run=cell p b f t
+  [ "${durable}" = 1 ] && run=durable_cell
+  for t in $(seq 1 "${SHAPE_TRIALS:-1}"); do
+    for p in ${SHAPE_PAYLOADS:-256 1024 4096}; do
+      for b in ${SHAPE_BATCHES:-1 64}; do
+        for f in ${SHAPE_IN_FLIGHT:-0 64}; do
+          # shellcheck disable=SC2046 # ingest_flags prints words
+          "${run}" "${tag}-p${p}-b${b}-f${f}-t${t}" "${ngen}" \
+            $(PAYLOAD="${p}" BATCH="${b}" IN_FLIGHT="${f}" ingest_flags "${stream}" "${SHARDS}" "${per}")
+        done
+      done
+    done
+  done
+}
+
+# finalize_features <feature>...: finalize fleet features through the control
+# plane, from broker 0, which holds the admin token. ONE-WAY: run every cell
+# that needs the old behaviour first.
+finalize_features() {
+  local f script="set -eu
+u=\$(sed -n 's/^FELIX_CONTROLPLANE_URL=//p' /etc/felix/broker.env)
+t=\$(cat /etc/felix/node.token)"
+  for f in "$@"; do
+    script="${script}
+curl -fsS -X POST -H \"Authorization: Bearer \$t\" \"\$u/v1/fleet/features/${f}/finalize?dry_run=false\"; echo"
+  done
+  script="${script}
+curl -fsS -H \"Authorization: Bearer \$t\" \"\$u/v1/fleet/features\"; echo
+echo __RUNOK__"
+  log "finalize fleet features: $*"
+  run_on_str "${BROKER_VMS[0]}" "${script}" > "${OUT}/system/fleet-features.txt" 2>&1
+}
+
 # write_path_pass <tag> <stream> <durable:0|1>: the #375/#425 shapes against
 # one stream. Latency is batch 1 with a per-message ack, on one generator
 # (pubsub publishes through the first broker only). Throughput is batch 64,

@@ -180,6 +180,13 @@ post_ok "$CP/v1/tenants/$TENANT/namespaces/$NAMESPACE/caches" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' <<JSON
 { "cache": "perf", "display_name": "Perf" }
 JSON
+# Replicated like the quorum streams, for the Quorum read path (lease or
+# majority round, depending on the fleet features).
+post_ok "$CP/v1/tenants/$TENANT/namespaces/$NAMESPACE/caches" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' <<JSON
+{ "cache": "perf-quorum", "display_name": "Perf quorum", "shards": $SHARDS,
+  "replication_factor": $REPLICATION_FACTOR, "consistency": "Quorum" }
+JSON
 
 echo ">> exchange a client-scoped token for the load generator"
 # The exchange narrows to exactly the requested actions (filter_permissions),

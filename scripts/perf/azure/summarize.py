@@ -233,7 +233,7 @@ def cell_row(cdir):
     flags = parse_args(meta.get("args", ""))
     gens = meta.get("generators", "").split()
     row["generators"] = len(gens)
-    for f in ("scenario", "stream", "payload-bytes", "batch", "concurrency", "keys", "fanout"):
+    for f in ("scenario", "stream", "payload-bytes", "batch", "in-flight", "concurrency", "keys", "fanout"):
         row[f.replace("-", "_")] = flags.get(f, "")
     row["loadgen_env"] = meta.get("loadgen_env", "").strip()
     overrides = {k[len("override."):]: v for k, v in meta.items() if k.startswith("override.")}
@@ -301,6 +301,7 @@ def cell_row(cdir):
     row["port_imbalance"] = (max(ports.values()) / min(ports.values())) if len(ports) > 1 else None
 
     client_mb, client_msg, p50, p99, dp50, lcpu = [], [], None, None, None, []
+    gp50 = gp99 = None
     gen_times, gen_rates = [], []
     for g in gens:
         run = cdir / f"{g}.run.txt"
@@ -316,15 +317,20 @@ def cell_row(cdir):
         client_mb.append(j.get("throughput_mb_s"))
         client_msg.append(j.get("throughput_msg_s", j.get("publish_throughput_msg_s")))
         if p50 is None:
-            lat = j.get("ack_latency_us") or ((j.get("put") or {}).get("latency_us"))
+            lat = (j.get("ack_latency_us") or j.get("batch_ack_latency_us")
+                   or (j.get("put") or {}).get("latency_us"))
             if lat:
                 p50, p99 = lat.get("p50"), lat.get("p99")
+            gl = (j.get("get") or {}).get("latency_us")
+            if gl:
+                gp50, gp99 = gl.get("p50"), gl.get("p99")
             dl = j.get("delivery_latency_us")
             if dl:
                 dp50 = dl.get("p50")
     row["client_mb_s"] = fsum(client_mb)
     row["client_msg_s"] = fsum(client_msg)
     row["lat_p50_us"], row["lat_p99_us"], row["delivery_p50_us"] = p50, p99, dp50
+    row["get_p50_us"], row["get_p99_us"] = gp50, gp99
     row["loadgen_cpu_busy_max"] = fmax(lcpu)
     rates = [r for _, r in gen_rates if r]
     row["gen_mb_s"] = " ".join(f"{g.replace('felixperf-', '')}:{r:.0f}" for g, r in gen_rates if r is not None)
