@@ -10,7 +10,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use bytes::BytesMut;
 use felix_broker::{Broker, ShardHandoff};
 use felix_broker_service::serving::quic;
 use felix_wire::{FLAG_BINARY_EVENT_BATCH, FLAG_BINARY_EVENT_BATCH_SHARED, Message};
@@ -95,7 +94,7 @@ async fn subscribe(
     client_features: Option<u32>,
 ) -> Result<(u64, RecvStream)> {
     let (mut send, mut recv) = connection.open_bi().await?;
-    let mut scratch = BytesMut::with_capacity(MAX_TEST_FRAME_BYTES);
+    let mut scratch = quic::FrameScratch::new();
     quic::write_message(
         &mut send,
         Message::Auth {

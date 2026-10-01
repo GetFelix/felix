@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use felix_broker_service::serving::quic;
 use felix_wire::{AckMode, Message};
 
@@ -24,7 +24,7 @@ pub(crate) async fn run_pubsub(
 ) -> Result<()> {
     println!("Running pub/sub checks...");
     let (mut sub_send, mut sub_recv) = connection.open_bi().await?;
-    let mut frame_scratch = BytesMut::with_capacity(MAX_TEST_FRAME_BYTES.min(64 * 1024));
+    let mut frame_scratch = quic::FrameScratch::new();
     quic::write_message(
         &mut sub_send,
         Message::Auth {
@@ -92,7 +92,7 @@ pub(crate) async fn run_cache(
 ) -> Result<()> {
     println!("Running cache checks...");
     let (mut send, mut recv) = connection.open_bi().await?;
-    let mut frame_scratch = BytesMut::with_capacity(MAX_TEST_FRAME_BYTES.min(64 * 1024));
+    let mut frame_scratch = quic::FrameScratch::new();
     quic::write_message(
         &mut send,
         Message::Auth {
@@ -144,7 +144,7 @@ pub(crate) async fn publish(
     static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
     let request_id = REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let (mut send, mut recv) = connection.open_bi().await?;
-    let mut frame_scratch = BytesMut::with_capacity(MAX_TEST_FRAME_BYTES.min(64 * 1024));
+    let mut frame_scratch = quic::FrameScratch::new();
     quic::write_message(
         &mut send,
         Message::Auth {
@@ -186,7 +186,7 @@ async fn cache_get(
     key: &str,
 ) -> Result<Option<Bytes>> {
     let (mut send, mut recv) = connection.open_bi().await?;
-    let mut frame_scratch = BytesMut::with_capacity(MAX_TEST_FRAME_BYTES.min(64 * 1024));
+    let mut frame_scratch = quic::FrameScratch::new();
     quic::write_message(
         &mut send,
         Message::Auth {

@@ -15,6 +15,24 @@ fn binary_publish_batch_round_trip() {
     assert_eq!(decoded.payloads, payloads);
 }
 
+// Decoded records point into the frame's payload instead of being copied out.
+#[test]
+fn decoded_payloads_are_slices_of_the_frame() {
+    let payloads = vec![b"first".to_vec(), Vec::new(), vec![7u8; 4096]];
+    let frame = binary::encode_publish_batch("t1", "default", "orders", &payloads).expect("encode");
+    let frame_range = frame.payload.as_ptr_range();
+    let decoded = binary::decode_publish_batch(&frame).expect("decode");
+    assert_eq!(decoded.payloads, payloads);
+    for payload in decoded.payloads.iter().filter(|p| !p.is_empty()) {
+        let range = payload.as_ptr_range();
+        assert!(
+            frame_range.start <= range.start && range.end <= frame_range.end,
+            "payload of {} bytes was copied out of the frame",
+            payload.len()
+        );
+    }
+}
+
 #[test]
 fn keyed_publish_batch_round_trip() {
     let payloads = vec![b"one".to_vec(), b"two".to_vec()];

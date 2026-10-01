@@ -97,7 +97,7 @@ async fn auth_answer(
         },
     )
     .await?;
-    let mut scratch = bytes::BytesMut::new();
+    let mut scratch = felix_broker_service::serving::quic::FrameScratch::new();
     let frame = felix_broker_service::serving::quic::read_frame_limited_into(
         &mut recv,
         1 << 20,
@@ -204,7 +204,7 @@ async fn a_pipelining_stream_is_answered_in_request_order() -> Result<()> {
     )
     .await?;
     let (_connection, mut send, mut recv) = raw_stream(addr, cert).await?;
-    let mut scratch = bytes::BytesMut::new();
+    let mut scratch = felix_broker_service::serving::quic::FrameScratch::new();
     felix_broker_service::serving::quic::write_message(
         &mut send,
         Message::Auth {

@@ -12,7 +12,7 @@ async fn uni_loop_publish_and_errors() -> Result<()> {
         .await?;
     let auth = auth_fixture("t1", default_perms());
     let publish_ctx = build_publish_context(Arc::clone(&broker)).await;
-    let mut scratch = BytesMut::with_capacity(64 * 1024);
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let binary =
         binary_publish_batch_frame("t1", "default", "updates", &[Bytes::from_static(b"one")]);
     let frames = vec![
@@ -129,7 +129,7 @@ async fn uni_loop_breaks_on_enqueue_error() -> Result<()> {
         tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
         publish_window: None,
     };
-    let mut scratch = BytesMut::with_capacity(64 * 1024);
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let binary =
         binary_publish_batch_frame("t1", "default", "updates", &[Bytes::from_static(b"one")]);
     let mut source = TestFrameSource::new(vec![
@@ -221,7 +221,7 @@ async fn uni_loop_refuses_layouts_it_cannot_read() -> Result<()> {
         .await?;
     let mut sub = broker.subscribe("t1", "default", "updates", 0).await?;
     let auth = auth_fixture("t1", default_perms());
-    let mut scratch = BytesMut::with_capacity(64 * 1024);
+    let mut scratch = crate::serving::quic::FrameScratch::new();
 
     let plain =
         binary_publish_batch_frame("t1", "default", "updates", &[Bytes::from_static(b"one")]);

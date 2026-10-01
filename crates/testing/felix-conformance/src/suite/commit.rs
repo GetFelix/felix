@@ -3,7 +3,7 @@
 //! The scenarios are the `commit.*` entries in `scenarios.toml`.
 
 use anyhow::{Result, anyhow, bail};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use felix_broker_service::serving::quic;
 use felix_client::{Client, CommitError, CommitOp};
 use felix_wire::{Message, StateChange};
@@ -26,7 +26,7 @@ pub(crate) async fn run_commit(
     // commit.negotiated: the bit is advertised to a peer that offers
     // capabilities.
     let (mut send, mut recv) = connection.open_bi().await?;
-    let mut scratch = BytesMut::with_capacity(MAX_TEST_FRAME_BYTES);
+    let mut scratch = quic::FrameScratch::new();
     quic::write_message(
         &mut send,
         Message::Auth {

@@ -23,8 +23,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 
+use crate::serving::quic::codec::FrameScratch;
 use anyhow::Result;
-use bytes::BytesMut;
 use felix_broker::Broker;
 use quinn::{RecvStream, SendStream};
 use tokio::sync::{Mutex, Semaphore, mpsc, watch};
@@ -85,8 +85,8 @@ pub(crate) async fn handle_stream(
 
     let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(Instant::now())));
 
-    // Reused across frames to keep the hot path allocation-free.
-    let mut frame_scratch = BytesMut::with_capacity(config.max_frame_bytes.min(64 * 1024));
+    // Holds chunks read past a frame boundary until the next frame read.
+    let mut frame_scratch = FrameScratch::new();
 
     let (ack_waiter_tx, ack_waiter_rx) = mpsc::channel::<AckWaiterMessage>(ACK_WAITERS_MAX);
 
@@ -230,7 +230,7 @@ pub(crate) async fn handle_uni_stream(
     mut recv: RecvStream,
     peer_certs: Option<Vec<rustls::pki_types::CertificateDer<'static>>>,
 ) -> Result<()> {
-    let mut frame_scratch = BytesMut::with_capacity(config.max_frame_bytes.min(64 * 1024));
+    let mut frame_scratch = FrameScratch::new();
 
     run_uni_loop(
         &mut recv,

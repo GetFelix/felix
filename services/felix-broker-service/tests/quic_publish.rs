@@ -408,7 +408,7 @@ async fn quic_publish_binary_decode_error_closes_stream() -> Result<()> {
         },
     )
     .await?;
-    let mut frame_scratch = bytes::BytesMut::with_capacity(1024);
+    let mut frame_scratch = felix_broker_service::serving::quic::FrameScratch::new();
     let response = felix_broker_service::serving::quic::read_message_limited(
         &mut recv,
         config.max_frame_bytes,
@@ -489,7 +489,7 @@ async fn quic_publish_missing_request_id_returns_error() -> Result<()> {
         },
     )
     .await?;
-    let mut frame_scratch = bytes::BytesMut::with_capacity(1024);
+    let mut frame_scratch = felix_broker_service::serving::quic::FrameScratch::new();
     let response = felix_broker_service::serving::quic::read_message_limited(
         &mut recv,
         config.max_frame_bytes,
@@ -758,7 +758,7 @@ async fn quic_publish_unknown_flag_bit_is_rejected() -> Result<()> {
         },
     )
     .await?;
-    let mut frame_scratch = bytes::BytesMut::with_capacity(1024);
+    let mut frame_scratch = felix_broker_service::serving::quic::FrameScratch::new();
     let response = felix_broker_service::serving::quic::read_message_limited(
         &mut recv,
         config.max_frame_bytes,
@@ -853,7 +853,7 @@ async fn quic_publish_binary_acked_reply_is_a_binary_frame() -> Result<()> {
         },
     )
     .await?;
-    let mut frame_scratch = bytes::BytesMut::with_capacity(1024);
+    let mut frame_scratch = felix_broker_service::serving::quic::FrameScratch::new();
     let response = felix_broker_service::serving::quic::read_message_limited(
         &mut recv,
         config.max_frame_bytes,
@@ -1134,7 +1134,7 @@ async fn reuse_a_sequence_over_json(
     )?;
     let connection = client.connect(addr, "localhost").await?;
     let (mut send, mut recv) = connection.open_bi().await?;
-    let mut frame_scratch = bytes::BytesMut::with_capacity(1024);
+    let mut frame_scratch = felix_broker_service::serving::quic::FrameScratch::new();
     let mut exchange = async |message: Message| -> Result<Option<Message>> {
         felix_broker_service::serving::quic::write_message(&mut send, message).await?;
         felix_broker_service::serving::quic::read_message_limited(

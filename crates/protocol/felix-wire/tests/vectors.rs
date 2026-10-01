@@ -67,7 +67,9 @@ fn vectors_match_frame_encoding() {
                     .iter()
                     .map(|p| p.as_str().unwrap().as_bytes().to_vec())
                     .collect();
-                assert_eq!(acked.batch.payloads, expected);
+                let payloads: Vec<Vec<u8>> =
+                    acked.batch.payloads.iter().map(|p| p.to_vec()).collect();
+                assert_eq!(payloads, expected);
                 let expected_key = value["key_utf8"].as_str();
                 assert_eq!(
                     acked.batch.key.as_deref(),
@@ -82,7 +84,7 @@ fn vectors_match_frame_encoding() {
                     &acked.batch.tenant_id,
                     &acked.batch.namespace,
                     &acked.batch.stream,
-                    &acked.batch.payloads,
+                    &payloads,
                 )
                 .expect("re-encode acked");
                 assert_eq!(
@@ -108,14 +110,15 @@ fn vectors_match_frame_encoding() {
                     .iter()
                     .map(|p| p.as_str().unwrap().as_bytes().to_vec())
                     .collect();
-                assert_eq!(batch.payloads, expected);
+                let payloads: Vec<Vec<u8>> = batch.payloads.iter().map(|p| p.to_vec()).collect();
+                assert_eq!(payloads, expected);
 
                 let (re_encoded, _stats) = binary::encode_publish_batch_bytes_with_stats_keyed(
                     batch.key.as_deref(),
                     &batch.tenant_id,
                     &batch.namespace,
                     &batch.stream,
-                    &batch.payloads,
+                    &payloads,
                 )
                 .expect("re-encode batch");
                 assert_eq!(

@@ -80,7 +80,7 @@ async fn run_connection_writer_coalesces_multiple_deliveries() -> Result<()> {
     let mut event_recv = tokio::time::timeout(Duration::from_secs(2), client_conn.accept_uni())
         .await
         .context("accept uni timeout")??;
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let frame1 = crate::serving::quic::codec::read_frame_limited_into(
         &mut event_recv,
         16 * 1024,
@@ -225,7 +225,7 @@ async fn run_connection_writer_unregister_drops_late_deliveries() -> Result<()> 
     let mut event_recv = tokio::time::timeout(Duration::from_secs(2), client_conn.accept_uni())
         .await
         .context("accept uni timeout")??;
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let frame1 = crate::serving::quic::codec::read_frame_limited_into(
         &mut event_recv,
         16 * 1024,
@@ -340,7 +340,7 @@ async fn run_connection_writer_writes_queued_frames_before_an_unregister() -> Re
     let mut event_recv = tokio::time::timeout(Duration::from_secs(2), client_conn.accept_uni())
         .await
         .context("accept uni timeout")??;
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let frame = tokio::time::timeout(
         Duration::from_secs(2),
         crate::serving::quic::codec::read_frame_limited_into(
@@ -464,11 +464,11 @@ async fn a_stalled_subscription_does_not_stop_the_others_on_its_connection() -> 
 
     // Streams show up on the client as their data arrives. Read one frame
     // from each until subscription 2's turns up, and nothing more from 1.
-    let mut scratch = BytesMut::new();
     let mut unread = Vec::new();
     let found = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let mut event_recv = client_conn.accept_uni().await?;
+            let mut scratch = crate::serving::quic::FrameScratch::new();
             let frame = crate::serving::quic::codec::read_frame_limited_into(
                 &mut event_recv,
                 64 * 1024,
@@ -561,7 +561,7 @@ async fn block_policy_writes_a_batch_that_overshoots_the_bound() -> Result<()> {
     let mut event_recv = tokio::time::timeout(Duration::from_secs(2), client_conn.accept_uni())
         .await
         .context("accept uni timeout")??;
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     for index in 0..FRAMES {
         let frame = tokio::time::timeout(
             Duration::from_secs(2),

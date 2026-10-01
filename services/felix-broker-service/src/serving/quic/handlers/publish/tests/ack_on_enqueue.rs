@@ -117,7 +117,10 @@ async fn a_batch_acked_on_enqueue_is_written_across_a_move() {
         TENANT.to_string(),
         NAMESPACE.to_string(),
         DURABLE.to_string(),
-        vec![b"one".to_vec(), b"two".to_vec()],
+        vec![
+            bytes::Bytes::from_static(b"one"),
+            bytes::Bytes::from_static(b"two"),
+        ],
         None,
         Some(9),
         Some(felix_wire::AckMode::PerBatch),

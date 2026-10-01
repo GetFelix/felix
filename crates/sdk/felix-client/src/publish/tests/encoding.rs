@@ -171,7 +171,7 @@ async fn unacked_publish_defaults_to_binary_and_json_is_explicit() {
             let batch = felix_wire::binary::decode_publish_batch(&frame).expect("binary batch");
             assert_eq!(item_count, 1);
             assert_eq!(batch.payloads.len(), 1);
-            assert_eq!(batch.payloads[0], b"binary");
+            assert_eq!(batch.payloads[0], b"binary".as_slice());
             let _ = response.send(Ok(Acked::default()));
         }
         _ => panic!("unacked publish should use binary encoding"),

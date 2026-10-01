@@ -7,7 +7,7 @@ async fn delay_frame_source_returns_none() -> Result<()> {
     let mut source = DelayFrameSource {
         delay: Duration::from_millis(1),
     };
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let frame = source.next_frame(1024, &mut scratch).await?;
     assert!(frame.is_none());
     Ok(())
@@ -19,7 +19,7 @@ async fn pending_frame_source_returns_none() -> Result<()> {
     let mut source = PendingFrameSource {
         ready: Arc::clone(&ready),
     };
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     ready.store(true, Ordering::Relaxed);
     let frame = source.next_frame(1024, &mut scratch).await?;
     assert!(frame.is_none());

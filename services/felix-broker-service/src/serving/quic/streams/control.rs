@@ -50,8 +50,8 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use crate::serving::quic::codec::FrameScratch;
 use anyhow::{Context, Result};
-use bytes::BytesMut;
 use felix_broker::Broker;
 use felix_wire::Message;
 use tokio::sync::{Mutex, Semaphore, mpsc, watch};
@@ -83,7 +83,7 @@ use responder::{Responder, send_control_error};
 ///     update it.
 ///   - `ack_timeout_state`: shared state used to detect/report ack enqueue timeouts.
 ///   - `ack_waiters` / `ack_waiter_tx`: bounds and routes "ack when commit finishes" work.
-///   - `frame_scratch`: reusable buffer to avoid per-frame allocations.
+///   - `frame_scratch`: bytes read past the current frame, kept for the next read.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
     source: &mut S,
@@ -104,7 +104,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
     ack_waiters: Arc<Semaphore>,
     ack_waiter_tx: mpsc::Sender<AckWaiterMessage>,
     ack_wait_timeout: Duration,
-    frame_scratch: &mut BytesMut,
+    frame_scratch: &mut FrameScratch,
     error_codes: Arc<ErrorCodeSupport>,
     ack_order: Arc<AckOrder>,
 ) -> Result<bool> {

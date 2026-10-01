@@ -118,7 +118,7 @@ async fn a_new_stream_during_drain_is_told_draining() -> Result<()> {
         client_flags: Some(felix_wire::KNOWN_FLAGS),
         client_features: features,
     };
-    let mut scratch = bytes::BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
 
     let (mut send, mut recv) = connection.open_bi().await?;
     super::super::codec::write_message(
@@ -238,7 +238,7 @@ async fn a_held_stream_does_not_outlast_the_drain_deadline() -> Result<()> {
         started.elapsed()
     );
     // The held stream ends with the connection rather than being answered.
-    let mut scratch = bytes::BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let read = tokio::time::timeout(
         Duration::from_secs(2),
         super::super::codec::read_message_limited(&mut held_recv, 64 * 1024, &mut scratch),

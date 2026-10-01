@@ -103,8 +103,8 @@ async fn lane_fanout_preserves_order_for_multiple_subscribers() -> Result<()> {
     let mut event_recv_2 = tokio::time::timeout(Duration::from_secs(1), connection2.accept_uni())
         .await
         .context("accept uni timeout 2")??;
-    let mut scratch_1 = BytesMut::new();
-    let mut scratch_2 = BytesMut::new();
+    let mut scratch_1 = crate::serving::quic::FrameScratch::new();
+    let mut scratch_2 = crate::serving::quic::FrameScratch::new();
     let _ = crate::serving::quic::codec::read_message_limited(
         &mut event_recv_1,
         16 * 1024,

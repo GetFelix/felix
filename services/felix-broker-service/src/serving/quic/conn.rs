@@ -429,7 +429,7 @@ async fn answer_draining(
     mut recv: quinn::RecvStream,
     max_frame_bytes: usize,
 ) {
-    let mut scratch = bytes::BytesMut::new();
+    let mut scratch = super::codec::FrameScratch::new();
     let first = super::codec::read_message_limited(&mut recv, max_frame_bytes, &mut scratch).await;
     let asked = matches!(
         first,

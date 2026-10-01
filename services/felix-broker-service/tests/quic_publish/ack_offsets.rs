@@ -33,7 +33,7 @@ async fn authed_stream(
         },
     )
     .await?;
-    let mut scratch = bytes::BytesMut::new();
+    let mut scratch = felix_broker_service::serving::quic::FrameScratch::new();
     let answer =
         felix_broker_service::serving::quic::read_message_limited(&mut recv, 1 << 20, &mut scratch)
             .await?;
@@ -63,7 +63,7 @@ async fn json_publish(
         },
     )
     .await?;
-    let mut scratch = bytes::BytesMut::new();
+    let mut scratch = felix_broker_service::serving::quic::FrameScratch::new();
     let frame =
         felix_broker_service::serving::quic::read_frame_limited_into(recv, 1 << 20, &mut scratch)
             .await?
@@ -86,7 +86,7 @@ async fn binary_publish(
         &[b"binary".to_vec()],
     )?;
     send.write_all(&bytes).await?;
-    let mut scratch = bytes::BytesMut::new();
+    let mut scratch = felix_broker_service::serving::quic::FrameScratch::new();
     felix_broker_service::serving::quic::read_frame_limited_into(recv, 1 << 20, &mut scratch)
         .await?
         .context("no ack frame")

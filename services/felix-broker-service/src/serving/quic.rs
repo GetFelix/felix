@@ -70,7 +70,7 @@ mod telemetry;
 
 pub(crate) mod handlers;
 
-pub use codec::{read_frame_limited_into, read_message_limited, write_message};
+pub use codec::{FrameScratch, read_frame_limited_into, read_message_limited, write_message};
 pub use conn::{ClusterContext, serve, serve_with_shutdown};
 pub use preauth::ConnectionLimit;
 pub use telemetry::{FrameCountersSnapshot, frame_counters_snapshot, reset_frame_counters};

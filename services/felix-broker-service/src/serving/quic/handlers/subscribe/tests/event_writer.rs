@@ -26,7 +26,7 @@ async fn run_event_writer_single_closes_on_channel_close() -> Result<()> {
     let accept_uni = tokio::time::timeout(Duration::from_secs(1), connection.accept_uni());
     tx.send(make_payload(b"hello")).await?;
     let mut event_recv = accept_uni.await.context("accept uni timeout")??;
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let frame = crate::serving::quic::codec::read_frame_limited_into(
         &mut event_recv,
         16 * 1024,
@@ -68,7 +68,7 @@ async fn run_event_writer_single_binary_uses_batch_encoding() -> Result<()> {
     let accept_uni = tokio::time::timeout(Duration::from_secs(1), connection.accept_uni());
     tx.send(make_payload(b"bin")).await?;
     let mut event_recv = accept_uni.await.context("accept uni timeout")??;
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let frame = crate::serving::quic::codec::read_frame_limited_into(
         &mut event_recv,
         16 * 1024,
@@ -112,7 +112,7 @@ async fn run_event_writer_batches_with_pending_payload() -> Result<()> {
     tx.send(make_payload(b"bbb")).await?;
     tx.send(make_payload(b"c")).await?;
     let mut event_recv = accept_uni.await.context("accept uni timeout")??;
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let frame1 = crate::serving::quic::codec::read_frame_limited_into(
         &mut event_recv,
         16 * 1024,
@@ -165,7 +165,7 @@ async fn run_event_writer_flushes_by_count_and_deadline() -> Result<()> {
     let mut event_recv = tokio::time::timeout(Duration::from_secs(1), connection.accept_uni())
         .await
         .context("accept uni timeout")??;
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let frame = crate::serving::quic::codec::read_frame_limited_into(
         &mut event_recv,
         16 * 1024,
@@ -245,7 +245,7 @@ async fn run_event_writer_single_event_mode_writes_multiple_frames() -> Result<(
     tx.send(make_payload(b"two")).await?;
 
     let mut event_recv = accept_uni.await.context("accept uni timeout")??;
-    let mut scratch = BytesMut::new();
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let frame1 = crate::serving::quic::codec::read_frame_limited_into(
         &mut event_recv,
         16 * 1024,

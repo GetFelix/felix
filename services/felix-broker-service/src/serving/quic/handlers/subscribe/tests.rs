@@ -14,7 +14,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use anyhow::Context;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicClient, QuicServer, TransportConfig};
 use rcgen::generate_simple_self_signed;

@@ -36,7 +36,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use felix_authz::{
     FelixTokenIssuer, Jwk, Jwks, KeyUse, TenantId, TenantKeyCache, TenantKeyMaterial,
@@ -162,7 +162,7 @@ async fn open_authenticated_bi(
     connection: &QuicConnection,
     auth: &AuthFixture,
     max_frame_bytes: usize,
-    frame_scratch: &mut BytesMut,
+    frame_scratch: &mut crate::serving::quic::FrameScratch,
 ) -> Result<(quinn::SendStream, quinn::RecvStream)> {
     let (mut send, mut recv) = connection.open_bi().await?;
     crate::serving::quic::write_message(&mut send, auth_message(auth)).await?;
@@ -308,7 +308,7 @@ async fn run_control_loop_with_codes(
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
     let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
-    let mut scratch = BytesMut::with_capacity(64 * 1024);
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
         Arc::clone(&broker),
@@ -351,7 +351,7 @@ impl FrameSource for PendingFrameSource {
     fn next_frame<'a>(
         &'a mut self,
         _max_frame_bytes: usize,
-        _scratch: &'a mut BytesMut,
+        _scratch: &'a mut crate::serving::quic::FrameScratch,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Frame>>> + Send + 'a>>
     {
         let ready = Arc::clone(&self.ready);

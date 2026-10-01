@@ -385,7 +385,7 @@ async fn quic_subscribe_invalid_frame_closes_stream() -> Result<()> {
         },
     )
     .await?;
-    let mut frame_scratch = bytes::BytesMut::with_capacity(1024);
+    let mut frame_scratch = felix_broker_service::serving::quic::FrameScratch::new();
     let response = felix_broker_service::serving::quic::read_message_limited(
         &mut recv,
         config.max_frame_bytes,

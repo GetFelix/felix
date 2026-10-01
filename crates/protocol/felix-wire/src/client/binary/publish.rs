@@ -24,7 +24,9 @@ pub struct PublishBatch {
     /// `FLAG_BINARY_PUBLISH_KEYED`. `None` means unkeyed, which is not the same
     /// as an empty key: an empty key is a key, and hashes like any other.
     pub key: Option<Bytes>,
-    pub payloads: Vec<Vec<u8>>,
+    /// Record bodies, each a slice of the decoded frame's payload rather than
+    /// a copy, so a retained record keeps its whole frame alive.
+    pub payloads: Vec<Bytes>,
 }
 
 /// How often the output buffer had to grow while encoding.
@@ -321,8 +323,7 @@ pub fn decode_publish_batch(frame: &Frame) -> Result<PublishBatch> {
         if buf.remaining() < len {
             return Err(Error::Incomplete);
         }
-        let bytes = buf.copy_to_bytes(len);
-        payloads.push(bytes.to_vec());
+        payloads.push(buf.copy_to_bytes(len));
     }
     Ok(PublishBatch {
         tenant_id,

@@ -55,7 +55,7 @@ async fn control_loop_cache_put_best_effort_closed_reports_error() -> Result<()>
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
     let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
-    let mut scratch = BytesMut::with_capacity(64 * 1024);
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
         broker,
@@ -252,7 +252,7 @@ async fn control_loop_cache_put_best_effort_full_and_closed() -> Result<()> {
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
     let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
-    let mut scratch = BytesMut::with_capacity(64 * 1024);
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
         Arc::clone(&broker),
@@ -373,7 +373,7 @@ async fn control_loop_cache_get_records_lookup_timing() -> Result<()> {
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
     let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
-    let mut scratch = BytesMut::with_capacity(64 * 1024);
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
         broker,
@@ -470,7 +470,7 @@ async fn control_loop_cache_timings_recorded() -> Result<()> {
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
     let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
-    let mut scratch = BytesMut::with_capacity(64 * 1024);
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
         broker,
@@ -540,7 +540,7 @@ async fn control_loop_cache_get_missing_no_request_id_returns_true() -> Result<(
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
     let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
-    let mut scratch = BytesMut::with_capacity(64 * 1024);
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
         broker,
@@ -612,7 +612,7 @@ async fn control_loop_cache_put_missing_no_request_id_returns_true() -> Result<(
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
     let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
-    let mut scratch = BytesMut::with_capacity(64 * 1024);
+    let mut scratch = crate::serving::quic::FrameScratch::new();
     let result = run_control_loop(
         &mut source,
         broker,

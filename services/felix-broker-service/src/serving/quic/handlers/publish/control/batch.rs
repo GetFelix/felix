@@ -54,7 +54,7 @@ pub(crate) async fn handle_publish_batch_message(
     tenant_id: String,
     namespace: String,
     stream: String,
-    payloads: Vec<Vec<u8>>,
+    payloads: Vec<Bytes>,
     key: Option<bytes::Bytes>,
     request_id: Option<u64>,
     ack: Option<felix_wire::AckMode>,
@@ -313,7 +313,6 @@ pub(crate) async fn handle_publish_batch_message(
             .iter()
             .map(|payload| payload.len())
             .collect::<Vec<_>>();
-        let payloads = payloads.into_iter().map(Bytes::from).collect::<Vec<_>>();
         // Same reasoning as the JSON path above: `Quorum` outranks the local
         // ack-on-commit policy, because it is the stream saying this broker alone
         // cannot answer for the record.
