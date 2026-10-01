@@ -208,8 +208,8 @@ you run a collector. The broker exports traces over OTLP when
 Some queries to start from, at `http://localhost:9090`:
 
 ```promql
-# Publish rate
-rate(felix_publish_requests_total[1m])
+# Publish rate (a relayed publish is also counted as forwarded)
+rate(felix_publish_requests_total{result!="forwarded"}[1m])
 
 # Publish failures, by what went wrong: `error`, `not_owner`, `unroutable`,
 # `dropped`. The same counter carries the successes, under `ok` and

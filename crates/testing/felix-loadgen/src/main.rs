@@ -44,13 +44,15 @@ fn main() -> Result<()> {
 async fn run() -> Result<()> {
     let args = parse_args()?;
     match args.scenario.as_str() {
-        "pubsub" => scenarios::pubsub(&args.common, &args.stream, args.binary).await,
+        "pubsub" => {
+            scenarios::pubsub(&args.common, &args.stream, args.binary, args.via_entry).await
+        }
         "cache" => scenarios::cache(&args.common, &args.cache).await,
         "counter" => scenarios::counter(&args.common, &args.cache).await,
         "watch" => scenarios::watch(&args.common, &args.cache).await,
         "queue" => scenarios::queue(&args.common, &args.stream).await,
         "retained" => scenarios::retained(&args.common, &args.cache).await,
-        "ingest" => scenarios::ingest(&args.common, &args.stream, args.keys).await,
+        "ingest" => scenarios::ingest(&args.common, &args.stream, &args.ingest).await,
         other => bail!(
             "unknown scenario {other:?} (pubsub | cache | counter | watch | queue | retained | ingest)"
         ),

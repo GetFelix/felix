@@ -233,7 +233,7 @@ def cell_row(cdir):
     flags = parse_args(meta.get("args", ""))
     gens = meta.get("generators", "").split()
     row["generators"] = len(gens)
-    for f in ("scenario", "stream", "payload-bytes", "batch", "concurrency", "keys", "fanout"):
+    for f in ("scenario", "stream", "payload-bytes", "batch", "in-flight", "concurrency", "keys", "fanout"):
         row[f.replace("-", "_")] = flags.get(f, "")
     row["loadgen_env"] = meta.get("loadgen_env", "").strip()
     overrides = {k[len("override."):]: v for k, v in meta.items() if k.startswith("override.")}
@@ -301,7 +301,8 @@ def cell_row(cdir):
     row["port_imbalance"] = (max(ports.values()) / min(ports.values())) if len(ports) > 1 else None
 
     client_mb, client_msg, p50, p99, dp50, lcpu = [], [], None, None, None, []
-    gen_times, gen_rates = [], []
+    gp50 = gp99 = None
+    gen_times, gen_rates, pub_secs = [], [], []
     for g in gens:
         run = cdir / f"{g}.run.txt"
         j = loadgen_json(run) if run.exists() else None
@@ -312,19 +313,32 @@ def cell_row(cdir):
             gen_times.append((gs, ge))
         if not j:
             continue
+        # pubsub is sized by record count, not time: how long it actually
+        # published, so a run that is mostly drain is not read as steady.
+        if j.get("scenario") == "pubsub" and j.get("publish_throughput_msg_s"):
+            n = (j.get("warmup") or 0) + (j.get("total") or 0)
+            pub_secs.append(n / j["publish_throughput_msg_s"])
         gen_rates.append((g, j.get("throughput_mb_s")))
-        client_mb.append(j.get("throughput_mb_s"))
+        mb = j.get("throughput_mb_s")
+        if mb is None and j.get("publish_throughput_msg_s") and j.get("payload_bytes"):
+            mb = j["publish_throughput_msg_s"] * j["payload_bytes"] / 1e6
+        client_mb.append(mb)
         client_msg.append(j.get("throughput_msg_s", j.get("publish_throughput_msg_s")))
         if p50 is None:
-            lat = j.get("ack_latency_us") or ((j.get("put") or {}).get("latency_us"))
+            lat = (j.get("ack_latency_us") or j.get("batch_ack_latency_us")
+                   or (j.get("put") or {}).get("latency_us"))
             if lat:
                 p50, p99 = lat.get("p50"), lat.get("p99")
+            gl = (j.get("get") or {}).get("latency_us")
+            if gl:
+                gp50, gp99 = gl.get("p50"), gl.get("p99")
             dl = j.get("delivery_latency_us")
             if dl:
                 dp50 = dl.get("p50")
     row["client_mb_s"] = fsum(client_mb)
     row["client_msg_s"] = fsum(client_msg)
     row["lat_p50_us"], row["lat_p99_us"], row["delivery_p50_us"] = p50, p99, dp50
+    row["get_p50_us"], row["get_p99_us"] = gp50, gp99
     row["loadgen_cpu_busy_max"] = fmax(lcpu)
     rates = [r for _, r in gen_rates if r]
     row["gen_mb_s"] = " ".join(f"{g.replace('felixperf-', '')}:{r:.0f}" for g, r in gen_rates if r is not None)
@@ -340,6 +354,10 @@ def cell_row(cdir):
                 series[b] = (hz, rows)
     row["legacy"] = not series or len(series) < len(brokers)
     ss = {} if row["legacy"] else steady_state(series, gen_times if len(gen_times) == len(gens) else [])
+    run_secs = max((e - st for st, e in gen_times), default=0)
+    if pub_secs and run_secs and max(pub_secs) < 0.5 * run_secs:
+        # The median second would be drain, reading as ~0. Quote the client.
+        ss = {"ss_window": f"publish {max(pub_secs):.0f}s of {run_secs:.0f}s run; use client rates"}
     for k in SS_COLS:
         row[k] = ss.get(k)
     row["results"] = sum(1 for g in gens if (cdir / f"{g}.run.txt").exists() and loadgen_json(cdir / f"{g}.run.txt"))
@@ -374,6 +392,8 @@ def cell_console_line(cdir):
     fair = f"; gens {r['gen_mb_s']} (max/min {fmt(r['gen_fairness'], 2)})" if r["gen_mb_s"] else ""
     if r["legacy"] or r["ss_append_mb_s"] is None:
         why = "legacy, no series" if r["legacy"] else f"no steady window ({r['ss_window']})"
+        if not r["legacy"] and r["client_msg_s"]:
+            why += f": client {fmt(r['client_msg_s'], 0)} msg/s"
         return f"{why}: {old}{fair}"
     return (
         f"steady append {fmt(r['ss_append_mb_s'])} MB/s, ingress {fmt(r['ss_ingress_mb_s'])} MB/s, "
@@ -450,7 +470,8 @@ def main():
         "client listener ports. Drops/s is UDP RcvbufErrors averaged over that window; cores is "
         "broker process CPU. Fair is the fastest generator's MB/s over the slowest's. The old "
         "columns are the sampler's moving-counter append rate and the sum of client averages. "
-        "`legacy` marks cells recorded without a series. Spread is (max-min)/mean over trials.",
+        "`legacy` marks cells recorded without a series; `client only` marks pubsub cells that published for under "
+        "half the run, where the client rate is the number. Spread is (max-min)/mean over trials.",
         "",
         "| cell | n | ref | knobs | append MB/s (spread) | ingress MB/s | drops/s | cores | fair | old append / client MB/s | p50 / p99 us | sync ms | fan-in | broker CPU % | gen CPU % | rcvbuf err | ports |",
         "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
@@ -460,6 +481,7 @@ def main():
         use = ok or rs
         bm, _ = spread([r["broker_append_mb_s"] for r in use])
         legacy = all(r["legacy"] or r["ss_append_mb_s"] is None for r in use)
+        client_only = legacy and all(str(r["ss_window"] or "").startswith("publish ") for r in use)
         sa, ss = spread([r["ss_append_mb_s"] for r in use])
         si, _ = spread([r["ss_ingress_mb_s"] for r in use])
         sd, _ = spread([r["ss_drops_s"] for r in use])
@@ -483,7 +505,7 @@ def main():
             knobs += " client:" + r0["loadgen_env"]
         lines.append(
             f"| {g} | {len(ok)}/{len(rs)} | {r0['ref']} {r0['build_sha']} | {knobs} | "
-            f"{'legacy' if legacy else f'{fmt(sa)} ({fmt(ss, 0)}%)'} | {fmt(si)} | {fmt(sd, 0)} | {fmt(sc, 2)} | {fmt(sf, 2)} | "
+            f"{('client only' if client_only else 'legacy') if legacy else f'{fmt(sa)} ({fmt(ss, 0)}%)'} | {fmt(si)} | {fmt(sd, 0)} | {fmt(sc, 2)} | {fmt(sf, 2)} | "
             f"{fmt(bm)} / {fmt(cm)} | {fmt(p50, 0)} / {fmt(p99, 0)} | {fmt(sm, 2)} | {fmt(fi)} | "
             f"{fmt(cpu, 0)} | {fmt(lcpu, 0)} | {fmt(rb, 0)} | {r0['port_share']} |"
         )

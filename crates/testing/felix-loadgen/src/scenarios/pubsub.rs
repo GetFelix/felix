@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use felix_client::{ClusterClient, Publisher};
 use felix_wire::AckMode;
 
 use super::connect::{client, cluster};
@@ -12,15 +13,65 @@ use super::framing::{payload, read_header};
 use super::{Common, is_retriable_transient};
 use crate::stats::{Percentiles, Samples, emit_json, fmt_us};
 
+/// Where single publishes go.
+enum Route {
+    /// To the shard's owner, as a client following the assignment does. The
+    /// latency then does not depend on which broker leads the shard.
+    Owner(Box<ClusterClient>),
+    /// Through the first broker, which relays to the owner when it is not.
+    Entry(Publisher),
+}
+
+impl Route {
+    fn name(&self) -> &'static str {
+        match self {
+            Route::Owner(_) => "owner",
+            Route::Entry(_) => "entry",
+        }
+    }
+
+    async fn publish(
+        &self,
+        common: &Common,
+        stream: &str,
+        body: Vec<u8>,
+        ack: AckMode,
+    ) -> Result<()> {
+        match self {
+            Route::Owner(cluster) => cluster
+                .publish(&common.tenant, &common.namespace, stream, body, ack)
+                .await
+                .map(|_| ()),
+            Route::Entry(publisher) => publisher
+                .publish(&common.tenant, &common.namespace, stream, body, ack)
+                .await
+                .map(|_| ()),
+        }
+    }
+}
+
 /// Publish/subscribe: `fanout` subscribers, one publisher, and both latencies
 /// that matter — the acknowledgement round trip (batch 1) and the
 /// publish-to-delivery path (always).
-pub(crate) async fn pubsub(common: &Common, stream: &str, binary: bool) -> Result<()> {
+///
+/// Single publishes go to the shard's owner unless `via_entry`; batches always
+/// go through the first broker.
+pub(crate) async fn pubsub(
+    common: &Common,
+    stream: &str,
+    binary: bool,
+    via_entry: bool,
+) -> Result<()> {
     let epoch = Instant::now();
     let use_ack = common.batch <= 1 && !binary;
 
     let publisher_client = client(common, common.brokers[0]).await?;
     let publisher = publisher_client.publisher().await?;
+    let route = if via_entry || common.batch > 1 {
+        Route::Entry(publisher.clone())
+    } else {
+        Route::Owner(Box::new(cluster(common).await?))
+    };
 
     // Readiness pre-flight, *before* subscribers exist so its sentinels reach
     // nobody and pollute no count. A broker that does not yet hold the routing
@@ -35,10 +86,9 @@ pub(crate) async fn pubsub(common: &Common, stream: &str, binary: bool) -> Resul
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut consecutive = 0;
         while consecutive < 50 {
-            match publisher
+            match route
                 .publish(
-                    &common.tenant,
-                    &common.namespace,
+                    common,
                     stream,
                     payload(u64::MAX, epoch, common.payload_bytes),
                     AckMode::PerMessage,
@@ -152,10 +202,7 @@ pub(crate) async fn pubsub(common: &Common, stream: &str, binary: bool) -> Resul
             let started = loop {
                 let body = payload(seq, epoch, common.payload_bytes);
                 let at = Instant::now();
-                match publisher
-                    .publish(&common.tenant, &common.namespace, stream, body, ack)
-                    .await
-                {
+                match route.publish(common, stream, body, ack).await {
                     Ok(_) => break at,
                     Err(err) if is_retriable_transient(&err) => {
                         publish_retries += 1;
@@ -305,6 +352,7 @@ pub(crate) async fn pubsub(common: &Common, stream: &str, binary: bool) -> Resul
         "fanout": common.fanout,
         "batch": common.batch,
         "binary": binary,
+        "publish_route": route.name(),
         "warmup": common.warmup,
         "total": common.total,
         "received": received_total,

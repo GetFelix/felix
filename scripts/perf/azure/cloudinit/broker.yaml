@@ -120,6 +120,11 @@ write_files:
       mount /data
       chmod 1777 /data
 runcmd:
+  # The daily apt upgrade restarts services whose libraries changed. A
+  # restarted control plane forgets the session (its store is in memory), so
+  # every token goes invalid mid-run. A session VM lives for hours; no updates.
+  - systemctl disable --now apt-daily.timer apt-daily-upgrade.timer || true
+  - systemctl mask apt-daily.service apt-daily-upgrade.service unattended-upgrades.service || true
   - /usr/local/sbin/felix-mount-data.sh
   - sysctl --system
   # fio for the device baseline, iptables for per-listener datagram counters,

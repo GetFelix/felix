@@ -26,7 +26,11 @@
 #                            re-run with different EXTRA_* lands beside the first
 #   PROFILE=1 | PROFILE_CELLS=<regex>  perf + pidstat + folded stacks per cell
 #   PROFILE_SECS=40          how long a profile records
+#   PROFILE_LEAD_SECS=10     ingest cells: start recording this long after the
+#                            shared start, inside the publishing window
 #   SETTLE_SECS=8            pause after brokers report ready
+#   START_DELAY_SECS=45      ingest cells: every generator starts publishing this
+#                            long after the cell launches, at the same instant
 
 here="${here:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 # shellcheck source=lib.sh
@@ -45,7 +49,9 @@ export GROUP
 : "${PROFILE:=0}"
 : "${PROFILE_CELLS:=}"
 : "${PROFILE_SECS:=40}"
+: "${PROFILE_LEAD_SECS:=10}"
 : "${SETTLE_SECS:=8}"
+: "${START_DELAY_SECS:=45}"
 : "${OUT:=${here}/sessions/${SESSION}-results}"
 mkdir -p "${OUT}/cells" "${OUT}/system"
 
@@ -246,7 +252,7 @@ want_profile() {
 # CELL_LOADGEN_ENV for per-cell client knobs. The broker configuration is
 # whatever `configure` last applied.
 cell() {
-  local name ngen="$2" dir lg vm pids=() rc=0 lg_env="" kv
+  local name ngen="$2" dir lg vm p pids=() rc=0 lg_env="" kv
   name="$(tagged "$1")"
   shift 2
   dir="${OUT}/cells/${name}"
@@ -263,6 +269,7 @@ cell() {
     ngen="${#LOADGEN_VMS[@]}"
   fi
   local gens=("${LOADGEN_VMS[@]:0:${ngen}}")
+  local start_at=""
   rm -rf "${dir}"; mkdir -p "${dir}"
   # shellcheck disable=SC2086 # both are lists of words
   for kv in ${CELL_LOADGEN_ENV:-} ${EXTRA_LOADGEN_ENV}; do lg_env="${lg_env}export ${kv}
@@ -283,9 +290,11 @@ cell() {
   par_on "${dir}" before "felix-agent snapshot --env
 felix-agent sampler-start '${name}'" "${BROKER_VMS[@]}" || rc=1
   par_on "${dir}" armed "felix-agent sampler-start '${name}'" "${gens[@]}" || true
-  if want_profile "${name}"; then
-    par_on "${dir}" profstart "felix-agent profile-start '${name}' ${PROFILE_SECS}" "${BROKER_VMS[@]}" || true
-  fi
+  # Launching generators through run-command staggers them by seconds, so an
+  # ingest cell gives them one wall-clock start instead (#723). Taken here,
+  # after the snapshots, which take longer than the delay.
+  case " $* " in *" --scenario ingest "*) start_at="$(( $(date +%s) + START_DELAY_SECS ))" ;; esac
+  echo "start_at=${start_at}" >> "${dir}/meta.env"
 
   # The instrument's stderr goes to a file on the VM, and only the tail of
   # stdout comes back: run-command keeps the last ~4 KB of output.
@@ -296,8 +305,11 @@ ${lg_env}ulimit -n 1048576 || true
 mkdir -p /var/tmp/felix-cells
 o=/var/tmp/felix-cells/${name}.out; e=/var/tmp/felix-cells/${name}.err
 s=\$(date +%s.%N)
-felix-loadgen --brokers '${BROKER_ADDRS}' --tenant perf --token-file '${TOKEN_FILE}' --environment 'azure-${SESSION}-${name}' $* > \$o 2> \$e || { echo '!! case failed'; tail -15 \$e; exit 1; }
+felix-loadgen --brokers '${BROKER_ADDRS}' --tenant perf --token-file '${TOKEN_FILE}' --environment 'azure-${SESSION}-${name}' $* ${start_at:+--start-at ${start_at}} > \$o 2> \$e || { echo '!! case failed'; tail -15 \$e; exit 1; }
 t=\$(date +%s.%N)
+echo gen.launch=\$s
+# The steady-state window starts when publishing does, not at the launch.
+[ -z '${start_at}' ] || s=\$(awk -v s=\$s -v a='${start_at}' 'BEGIN { printf \"%.3f\\n\", (a > s) ? a : s }')
 grep -v '^LOADGEN_JSON' \$o | tail -c 1200
 grep '^LOADGEN_JSON' \$o | tail -1
 echo gen.start=\$s
@@ -305,7 +317,16 @@ echo gen.end=\$t
 echo __RUNOK__" > "${dir}/${lg}.run.txt" 2>&1 ) &
     pids+=("$!")
   done
+  # Record once publishing is under way: from the cell's start the window
+  # would cover the snapshots, the start delay and the handshakes instead.
+  local prof_pid=""
+  if want_profile "${name}"; then
+    ( [ -n "${start_at}" ] && sleep "$(( start_at + PROFILE_LEAD_SECS - $(date +%s) ))" 2>/dev/null
+      par_on "${dir}" profstart "felix-agent profile-start '${name}' ${PROFILE_SECS}" "${BROKER_VMS[@]}" || true ) &
+    prof_pid=$!
+  fi
   for p in ${pids[@]+"${pids[@]}"}; do wait "${p}" || rc=1; done
+  [ -z "${prof_pid}" ] || wait "${prof_pid}" || true
 
   par_on "${dir}" after "felix-agent sampler-stop '${name}'
 felix-agent snapshot" "${BROKER_VMS[@]}" || rc=1
@@ -410,12 +431,51 @@ durable_trials() {
   for t in $(seq 1 "${TRIALS}"); do durable_cell "${name}-t${t}" "$@"; done
 }
 
-# ingest_flags <stream> <keys> <publishers-per-generator>: 4 KiB keyed
-# ingest, sized per publisher (PER_PUB records each) so a cell lasts about as
-# long at any concurrency. --keys spreads batches over routing keys; 0 would
-# put every record on shard 0.
+# ingest_flags <stream> <keys> <publishers-per-generator>: keyed ingest for
+# CELL_SECS seconds, so every cell runs as long whatever its shape. PAYLOAD
+# (4096) and BATCH (64) shape the records; IN_FLIGHT > 0 sends acked batches
+# with that many outstanding per publisher, 0 is fire-and-forget. --keys
+# spreads batches over routing keys; 0 would put every record on shard 0.
 ingest_flags() {
-  echo "--scenario ingest --stream $1 --payload-bytes 4096 --batch 64 --concurrency $3 --total $(( $3 * ${PER_PUB:-200000} )) --keys $2"
+  echo "--scenario ingest --stream $1 --payload-bytes ${PAYLOAD:-4096} --batch ${BATCH:-64} --concurrency $3 --duration-secs ${CELL_SECS:-90} --keys $2${IN_FLIGHT:+ --in-flight ${IN_FLIGHT}}"
+}
+
+# shape_pass <tag> <stream> <durable:0|1> <generators> <publishers-per-generator>:
+# keyed ingest across record shapes, so the write-up does not lead with the
+# best case. Payload x batch x in-flight, where in-flight 0 is fire-and-forget
+# and above 0 is acked (the rate a client that waits for its acks gets).
+shape_pass() {
+  local tag="$1" stream="$2" durable="$3" ngen="$4" per="$5" run=cell p b f t
+  [ "${durable}" = 1 ] && run=durable_cell
+  for t in $(seq 1 "${SHAPE_TRIALS:-1}"); do
+    for p in ${SHAPE_PAYLOADS:-256 1024 4096}; do
+      for b in ${SHAPE_BATCHES:-1 64}; do
+        for f in ${SHAPE_IN_FLIGHT:-0 64}; do
+          # shellcheck disable=SC2046 # ingest_flags prints words
+          "${run}" "${tag}-p${p}-b${b}-f${f}-t${t}" "${ngen}" \
+            $(PAYLOAD="${p}" BATCH="${b}" IN_FLIGHT="${f}" ingest_flags "${stream}" "${SHARDS}" "${per}")
+        done
+      done
+    done
+  done
+}
+
+# finalize_features <feature>...: finalize fleet features through the control
+# plane, from broker 0, which holds the admin token. ONE-WAY: run every cell
+# that needs the old behaviour first.
+finalize_features() {
+  local f script="set -eu
+u=\$(sed -n 's/^FELIX_CONTROLPLANE_URL=//p' /etc/felix/broker.env)
+t=\$(cat /etc/felix/node.token)"
+  for f in "$@"; do
+    script="${script}
+curl -fsS -X POST -H \"Authorization: Bearer \$t\" \"\$u/v1/fleet/features/${f}/finalize?dry_run=false\"; echo"
+  done
+  script="${script}
+curl -fsS -H \"Authorization: Bearer \$t\" \"\$u/v1/fleet/features\"; echo
+echo __RUNOK__"
+  log "finalize fleet features: $*"
+  run_on_str "${BROKER_VMS[0]}" "${script}" > "${OUT}/system/fleet-features.txt" 2>&1
 }
 
 # write_path_pass <tag> <stream> <durable:0|1>: the #375/#425 shapes against
