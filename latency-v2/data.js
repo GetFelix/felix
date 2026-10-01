@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790887737049,
+  "lastUpdate": 1790890911317,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -27654,6 +27654,72 @@ window.BENCHMARK_DATA = {
             "range": "668.22",
             "unit": "us",
             "extra": "trials: 5\nmedian: 362.00\nmean: 655.80\nstdev: 668.22\ncv: 101.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dc49e1eaabbb056bb73c2895fa7f39987530cb5c",
+          "message": "perf(azure): refresh session tokens instead of a long TTL; refuse the NVMe flag without NVMe (#912)\n\n* perf(azure): week-long session tokens; refuse the NVMe flag without NVMe\n\nTwo ways the v0.6.0 campaign lost hours:\n- Session tokens are minted once, at seed, with an 8 h lifetime. Session A\n  was reseeded at 06:35 and every cell after 14:35 failed to configure. The\n  control plane now mints 7-day tokens.\n- USE_LOCAL_NVME=true leaked from a shared session.env into the D4as_v5\n  sessions. The template then attaches no data disk, so durable rows\n  measured the 30 GB OS disk and filled it. session.sh now refuses the flag\n  on any size outside the L-series.\n\n* perf(azure): keep session tokens current by refresh, not a week-long TTL\n\nEach broker gets its own exchange at seed (node.token + node.refresh_token)\nand refreshes itself through /token/refresh; felix-agent restart renews\nnode.token while the broker is stopped. The generators' client token keeps\nits refresh token on generator 0 and is refreshed at driver start and every\nsix hours between cells, then copied to the other generators. Refresh tokens\nrotate and reuse revokes the chain, so no two holders share one.\n\nThe exchange TTL goes back to 8 h.\n\n* perf(azure): give the operator its own refresh family for finalize_features\n\nRotating broker 0's chain from the harness while the broker may rotate it\ntoo can revoke the chain. The operator now holds its own admin exchange on\ngenerator 0 and finalize_features runs there.",
+          "timestamp": "2026-10-01T13:45:10-07:00",
+          "tree_id": "ab89b87b561ef3732d42150137f1d5f9b838d627",
+          "url": "https://github.com/gabloe/felix/commit/dc49e1eaabbb056bb73c2895fa7f39987530cb5c"
+        },
+        "date": 1790890907727,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 179,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 178.40\nstdev: 2.07\ncv: 1.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 244,
+            "range": "10.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 244.00\nmean: 247.60\nstdev: 10.36\ncv: 4.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 303,
+            "range": "140.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 303.00\nmean: 360.40\nstdev: 140.20\ncv: 38.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 213,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 213.00\nmean: 212.80\nstdev: 0.84\ncv: 0.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 433,
+            "range": "18.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 433.00\nmean: 443.20\nstdev: 18.89\ncv: 4.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 592,
+            "range": "511.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 592.00\nmean: 930.60\nstdev: 511.57\ncv: 54.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
