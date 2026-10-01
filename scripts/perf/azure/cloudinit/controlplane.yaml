@@ -47,9 +47,9 @@ write_files:
       FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS=ES256,RS256,PS256
       # A broker holds its node token statically for its whole lifetime (it is
       # read once, with no refresh), so the exchange's default 900s TTL drops
-      # every broker out of the cluster 15 minutes in. Mint tokens that outlast
-      # a full provision+seed+matrix session.
-      FELIX_EXCHANGE_TOKEN_TTL_SECONDS=28800
+      # every broker out of the cluster 15 minutes in. Tokens are minted once,
+      # at seed, so they must outlast the whole campaign (8 h did not).
+      FELIX_EXCHANGE_TOKEN_TTL_SECONDS=604800
       ENV
   - path: /etc/systemd/system/felix-controlplane.service
     content: |
