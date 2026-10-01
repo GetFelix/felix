@@ -37,7 +37,7 @@ tracing-subscriber = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tower-http = { version = "0.7", features = ["trace"] }
 utoipa = { workspace = true, features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+utoipa-swagger-ui = { version = "10.0.1", features = ["axum"] }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
