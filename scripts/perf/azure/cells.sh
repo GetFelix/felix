@@ -252,7 +252,7 @@ want_profile() {
 # CELL_LOADGEN_ENV for per-cell client knobs. The broker configuration is
 # whatever `configure` last applied.
 cell() {
-  local name ngen="$2" dir lg vm pids=() rc=0 lg_env="" kv
+  local name ngen="$2" dir lg vm p pids=() rc=0 lg_env="" kv
   name="$(tagged "$1")"
   shift 2
   dir="${OUT}/cells/${name}"
