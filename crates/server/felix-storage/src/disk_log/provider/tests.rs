@@ -172,3 +172,44 @@ async fn concurrent_opens_of_one_shard_open_it_once() {
         assert_eq!(log.tail_offset().await.expect("tail"), 1);
     }
 }
+
+/// A fresh node's stream root, and the acknowledged record in it, survive a
+/// power loss that lands before anything else flushes the storage directory.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_fresh_root_keeps_its_acknowledged_record_through_a_power_loss() {
+    use crate::io::power_loss::{PowerLoss, Writeback};
+
+    let dir = tempdir().expect("dir");
+    let observer = PowerLoss::install(dir.path()).expect("install");
+    let config = LogConfig {
+        fsync_mode: FsyncMode::OnCommit,
+        ..config()
+    };
+    let provider =
+        DiskLogProvider::new(dir.path().join("streams"), config.clone()).expect("provider");
+    let log = provider.open_shard(&shard("orders")).expect("open");
+    log.append(&[record("acked")]).await.expect("append");
+
+    for seed in 0..32 {
+        let image = tempdir().expect("image");
+        observer
+            .crash(seed, Writeback::AnySubset, image.path())
+            .expect("crash");
+        let root = image.path().join("streams");
+        assert!(root.is_dir(), "seed {seed} lost the stream root");
+        let recovered = DiskLogProvider::new(root, config.clone()).expect("reopen");
+        let read = recovered
+            .open_shard(&shard("orders"))
+            .expect("open")
+            .read_range(ReadRange {
+                start: 0,
+                max_bytes: 1024,
+            })
+            .await
+            .expect("read");
+        assert_eq!(read.len(), 1, "seed {seed} lost the acknowledged record");
+        recovered.shutdown().await.expect("shutdown");
+    }
+    provider.shutdown().await.expect("shutdown");
+}

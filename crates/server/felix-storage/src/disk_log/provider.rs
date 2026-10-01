@@ -39,7 +39,7 @@ impl DiskLogProvider {
     pub fn new(root: impl Into<PathBuf>, config: LogConfig) -> Result<Self> {
         config.validate()?;
         let root = root.into();
-        std::fs::create_dir_all(&root)?;
+        crate::io::create_dir_all_durable(&root)?;
         Ok(Self {
             root,
             config,

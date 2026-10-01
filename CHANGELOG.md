@@ -691,6 +691,11 @@ for what the current release guarantees.
 
 ### Fixed
 
+- **A power loss on a fresh node keeps its store roots (#888).** The stream,
+  group, dead-letter, cache and counter roots were created without syncing the
+  directory that holds them, so a power loss before anything else synced it
+  could drop a root and the acknowledged records in it. Every new directory is
+  now synced into its parent, and opening an existing root syncs it again.
 - **A broker handed a shard back after dropping held batches takes writes
   (#881).** Liveness only: no acknowledged write was lost. A lease-mode leader
   that lost its lease with `Quorum` batches still held dropped them, followed

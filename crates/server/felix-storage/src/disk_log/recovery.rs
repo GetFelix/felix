@@ -39,7 +39,7 @@ use std::path::Path;
 use super::durable_mark::{self, DurableMark};
 use super::now_micros;
 use super::segments::SealedEntry;
-use crate::io::sync_dir;
+use crate::io::{create_dir_all_durable, sync_dir};
 use crate::log::{LogConfig, Offset, RecordMark, SegmentDescriptor, SegmentId};
 use crate::segment::format::SEGMENT_HEADER_LEN;
 use crate::segment::writer::ResumeState;
@@ -73,12 +73,9 @@ struct OpenedSealed {
 /// Open, validate and repair every segment for one shard.
 pub(super) fn recover_shard(dir: &Path, label: &str, config: &LogConfig) -> Result<Recovered> {
     let started = std::time::Instant::now();
-    std::fs::create_dir_all(dir)?;
     // The directory entry itself must be durable, or a crash could lose a shard
     // that already reported successful writes.
-    if let Some(parent) = dir.parent() {
-        sync_dir(parent)?;
-    }
+    create_dir_all_durable(dir)?;
 
     let mut ids = discover_segment_ids(dir)?;
     // Read once, before anything is repaired: it describes the files as the
@@ -156,10 +153,7 @@ pub(super) fn place_empty_shard(
     config: &LogConfig,
     base_offset: Offset,
 ) -> Result<bool> {
-    std::fs::create_dir_all(dir)?;
-    if let Some(parent) = dir.parent() {
-        sync_dir(parent)?;
-    }
+    create_dir_all_durable(dir)?;
     if !discover_segment_ids(dir)?.is_empty() {
         return Ok(false);
     }
