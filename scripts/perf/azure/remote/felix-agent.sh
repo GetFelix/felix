@@ -252,12 +252,13 @@ cmd__sample() {
       b=$(curl -fs -m 1 "$url/varz" | sed -n 's/^  "in_bytes": *\([0-9]*\).*/\1/p' | head -1)
       m="${a:-NA} ${b:-NA}"
     elif [ -n "$url" ]; then
-      m=$(curl -s -m 1 "$url" | awk '
+      # A failed scrape is NA, so summarize.py can skip and count it.
+      m=$(curl -fs -m 1 "$url" | awk '
         /^#/ { next }
         { n = $1; sub(/\{.*/, "", n)
           if (n == "felix_storage_append_bytes_total") a += $NF
           else if (n == "felix_publish_bytes_total") p += $NF }
-        END { printf "%.0f %.0f", a, p }')
+        END { if (NR == 0) printf "NA NA"; else printf "%.0f %.0f", a, p }')
     fi
     pb=""
     if [ "$ipt" = 1 ]; then

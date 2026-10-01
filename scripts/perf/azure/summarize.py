@@ -40,16 +40,18 @@ BASE_KNOBS = {
     "FELIX_PUB_INGRESS_WAIT": "ingress_wait",
 }
 CLIENT_PORTS = range(5000, 5064)
+NA_FLAG_PCT = 5.0
 TRIM = 0.10
 
 
 def read_series(path):
-    """(hz, rows): rows are dicts of floats keyed by the header's columns.
+    """(hz, rows, na): rows are dicts of floats keyed by the header's columns;
+    na counts samples dropped for a failed scrape (NA).
 
     A NATS series (stats=nats) carries the server's received bytes in the
     publish column; it becomes the row's in_bytes, the ingress figure, since
     NATS clients use TCP and the per-port UDP counters stay at zero."""
-    hz, cols, rows, nats = 100.0, None, [], False
+    hz, cols, rows, nats, na = 100.0, None, [], False, 0
     for line in path.read_text(errors="replace").splitlines():
         if line.startswith("#"):
             m = re.search(r"\bhz=(\d+)", line)
@@ -63,6 +65,9 @@ def read_series(path):
             continue
         if len(parts) != len(cols):
             continue
+        if "NA" in parts:
+            na += 1
+            continue
         try:
             row = {c: float(v) for c, v in zip(cols, parts)}
         except ValueError:
@@ -70,7 +75,7 @@ def read_series(path):
         if nats:
             row["in_bytes"] = row.get("publish_bytes", 0.0)
         rows.append(row)
-    return hz, rows
+    return hz, rows, na
 
 
 def at(rows, key, x):
@@ -362,12 +367,18 @@ def cell_row(cdir):
     row["gen_start_skew_s"] = (max(s for s, _ in gen_times) - min(s for s, _ in gen_times)) if gen_times else None
     row["gen_end_skew_s"] = (max(e for _, e in gen_times) - min(e for _, e in gen_times)) if gen_times else None
     series = {}
+    na = total = 0
     for b in brokers:
         p = cdir / f"{b}.series.tsv"
         if p.exists():
-            hz, rows = read_series(p)
+            hz, rows, n = read_series(p)
+            na += n
+            total += n + len(rows)
             if len(rows) >= 2:
                 series[b] = (hz, rows)
+    # Rates interpolate across dropped samples; past a few percent a stall
+    # could hide in the gaps, so the cell is flagged.
+    row["ss_na_pct"] = 100 * na / total if total else None
     row["legacy"] = not series or len(series) < len(brokers)
     ss = {} if row["legacy"] else steady_state(series, gen_times if len(gen_times) == len(gens) else [])
     run_secs = max((e - st for st, e in gen_times), default=0)
@@ -436,6 +447,8 @@ def cell_console_line(cdir):
         return ""
     old = f"sampler append {fmt(r['broker_append_mb_s'])}, snapshots {fmt(r['snap_append_mb_s'])}, client sum {fmt(r['client_mb_s'])} MB/s"
     fair = f"; gens {r['gen_mb_s']} (max/min {fmt(r['gen_fairness'], 2)})" if r["gen_mb_s"] else ""
+    if r["ss_na_pct"] and r["ss_na_pct"] > NA_FLAG_PCT:
+        fair += f"; !! {r['ss_na_pct']:.0f}% of samples were failed scrapes"
     if r["legacy"] or r["ss_append_mb_s"] is None:
         why = "legacy, no series" if r["legacy"] else f"no steady window ({r['ss_window']})"
         if not r["legacy"] and r["client_msg_s"]:
@@ -519,6 +532,8 @@ def main():
         "appended record size and multiply by the payload, so per-record overhead (Felix's record header, "
         "NATS's subject and metadata) does not count as throughput; compare systems on these. Fair is the fastest generator's MB/s over the slowest's. The old "
         "columns are the sampler's moving-counter append rate and the sum of client averages. "
+        "`!! N% failed scrapes` marks a cell where over 5% of the broker samples were failed "
+        "scrapes, so a stall could hide in the interpolation. "
         "`legacy` marks cells recorded without a series; `client only` marks pubsub cells that published for under "
         "half the run, where the client rate is the number. Spread is (max-min)/mean over trials.",
         "",
@@ -547,6 +562,8 @@ def main():
         lcpu, _ = spread([r["loadgen_cpu_busy_max"] for r in use])
         rb = fsum([r["udp_rcvbuf_errors"] for r in use])
         r0 = use[0]
+        na_max = fmax([r["ss_na_pct"] for r in use])
+        na_note = f" !! {na_max:.0f}% failed scrapes" if na_max and na_max > NA_FLAG_PCT else ""
         knobs = " ".join(
             f"{c}={r0[c]}" for c in ("listeners", "io_threads", "fsync", "ack_on_commit", "io_uring", "ingress_wait") if r0[c]
         )
@@ -555,7 +572,7 @@ def main():
         if r0["loadgen_env"]:
             knobs += " client:" + r0["loadgen_env"]
         lines.append(
-            f"| {g} | {len(ok)}/{len(rs)} | {r0['ref']} {r0['build_sha']} | {knobs} | "
+            f"| {g}{na_note} | {len(ok)}/{len(rs)} | {r0['ref']} {r0['build_sha']} | {knobs} | "
             f"{('client only' if client_only else 'legacy') if legacy else f'{fmt(sa)} ({fmt(ss, 0)}%)'} | {fmt(rr, 0)} | {fmt(rp)} | {fmt(si)} | {fmt(sd, 0)} | {fmt(sc, 2)} | {fmt(sf, 2)} | "
             f"{fmt(bm)} / {fmt(cm)} | {fmt(p50, 0)} / {fmt(p99, 0)} | {fmt(sm, 2)} | {fmt(fi)} | "
             f"{fmt(cpu, 0)} | {fmt(lcpu, 0)} | {fmt(rb, 0)} | {r0['port_share']} |"

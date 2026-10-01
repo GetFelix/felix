@@ -4,8 +4,9 @@
 #
 #   SESSION=v060-a ./interleave.sh
 #
-# For each trial and each pair: one Felix cell at its best profile, then the
-# NATS cell it pairs with (the order flips on even trials). Before a Felix
+# For each trial and each pair: one Felix cell at its best profile and the
+# NATS cell it pairs with. Felix goes first on odd trials and NATS on even
+# ones, and AB_TRIALS is even, so neither system always runs first. Before a Felix
 # cell NATS is stopped and its store removed, Felix's store is wiped and /data
 # is trimmed; before a NATS cell nats_cell stops Felix, wipes and trims. Run
 # after install.sh, and after the sweep has picked NATS's best shape.
@@ -17,7 +18,7 @@
 #   ff        Felix perf, batch 64, fire-and-forget       <-> core publish
 #
 # Knobs: AB_PAIRS, AB_PAYLOADS (4096 256), AB_KEYS (48, Felix keys),
-# AB_STREAMS (NATS streams, default AB_KEYS), TRIALS (3), FELIX_BEST_REF
+# AB_STREAMS (NATS streams, default AB_KEYS), AB_TRIALS (4, even), FELIX_BEST_REF
 # (main), FELIX_BEST_ENV and FELIX_BEST_CLIENT_ENV (session A's shapes
 # profile), and the nats-lib.sh shape knobs for NATS (FAST_WINDOW, ...).
 set -uo pipefail
@@ -28,10 +29,12 @@ source "$(cd "$(dirname "$0")" && pwd)/nats-lib.sh"
 : "${AB_PAYLOADS:=4096 256}"
 : "${AB_KEYS:=48}"
 : "${AB_STREAMS:=${AB_KEYS}}"
+: "${AB_TRIALS:=4}"
 : "${FELIX_BEST_REF:=main}"
 : "${FELIX_BEST_ENV:=FELIX_QUIC_LISTENERS=4 FELIX_PUB_INGRESS_WAIT=1 FELIX_DURABLE_FSYNC_MODE=on_commit}"
 : "${FELIX_BEST_CLIENT_ENV:=FELIX_PUB_CONN_POOL=4}"
 
+[ $((AB_TRIALS % 2)) = 0 ] || { echo "!! AB_TRIALS must be even so each system goes first equally often" >&2; exit 2; }
 EXPECT_MTU="$(expected_mtu)" || exit 1
 
 # felix_ab <name> <stream> <payload> <batch> <in-flight>
@@ -77,7 +80,7 @@ record_session nats-interleave
 distribute_token || exit 1
 apply_mtu "${EXPECT_MTU}" || exit 1
 mkdir -p "${OUT}/system/nats"
-for t in $(seq 1 "${TRIALS}"); do
+for t in $(seq 1 "${AB_TRIALS}"); do
   for pr in ${AB_PAIRS}; do
     for p in ${AB_PAYLOADS}; do pair "${pr}" "${p}" "${t}" $(( t % 2 )); done
   done

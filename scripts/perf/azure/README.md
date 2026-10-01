@@ -294,8 +294,9 @@ The `sweep` runs stream count x fast-batch window (12/24/48/64 x
 16/64/256/1024/4000) in `always` mode, then one knob at a time in `always` and
 `default`: publishers per generator, fast-batch flow, async window, sync
 publish and `GOGC`. `interleave.sh` alternates a Felix best-profile cell and
-its NATS pair (ABAB, flipping the order on even trials), so drive wear and
-time of day fall on both alike.
+its NATS pair, `AB_TRIALS` (4, must be even) times: Felix first on odd
+trials, NATS first on even ones (AB BA AB BA), so drive wear and time of day
+fall on both alike and neither system always runs first.
 
 #### Fairness
 
@@ -337,6 +338,9 @@ Matched:
   set during interleaved Felix cells; they do not touch UDP. The NIC MTU is
   set to the one the Felix cells recorded (or `NATS_MTU`), checked end to end
   with a don't-fragment ping, recorded per cell, and a mismatch fails the cell.
+- **Failed scrapes.** A failed metrics scrape on either system is recorded
+  as `NA` and skipped; a cell with more than 5% of them is flagged in the
+  summary (`ss_na_pct`), since the rate interpolates across the gap.
 - **Measurement.** The same sampler (all `nats-server` threads; every `nats`
   process on a generator), the same window, the same summary, compared on
   records/s and payload MB/s.
