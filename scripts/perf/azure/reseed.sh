@@ -25,6 +25,16 @@ if [ -z "${IDP_TOKEN:-}" ] && [ -n "${IDP_TENANT_ID:-}" ]; then
   echo ">> minted an IdP token for scope ${IDP_SCOPE}"
 fi
 IFS=',' read -ra broker_ip_list <<<"${BROKER_IPS}"
+# A reseed starts the cluster's history over: the new control plane hands out
+# generations from zero, and a broker that still holds a newer one for a shard
+# refuses to open it (the fence working as intended). So the brokers start
+# empty too.
+# shellcheck source=lib.sh
+source "${here}/lib.sh"
+for i in "${!broker_ip_list[@]}"; do
+  run_on_str "$(broker_vm "${i}")" 'felix-agent wipe
+echo __RUNOK__' | grep '^wiped=' || { echo "!! could not wipe $(broker_vm "${i}")" >&2; exit 1; }
+done
 CONTROLPLANE_IP="${CONTROLPLANE_IP}" \
 BROKER_COUNT="${#broker_ip_list[@]}" \
 BOOTSTRAP_TOKEN="${BOOTSTRAP_TOKEN}" \
