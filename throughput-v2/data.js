@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790887739448,
+  "lastUpdate": 1790890915067,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -21788,6 +21788,58 @@ window.BENCHMARK_DATA = {
             "range": "59180.19",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1236269.21\nmean: 1215044.46\nstdev: 59180.19\ncv: 4.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dc49e1eaabbb056bb73c2895fa7f39987530cb5c",
+          "message": "perf(azure): refresh session tokens instead of a long TTL; refuse the NVMe flag without NVMe (#912)\n\n* perf(azure): week-long session tokens; refuse the NVMe flag without NVMe\n\nTwo ways the v0.6.0 campaign lost hours:\n- Session tokens are minted once, at seed, with an 8 h lifetime. Session A\n  was reseeded at 06:35 and every cell after 14:35 failed to configure. The\n  control plane now mints 7-day tokens.\n- USE_LOCAL_NVME=true leaked from a shared session.env into the D4as_v5\n  sessions. The template then attaches no data disk, so durable rows\n  measured the 30 GB OS disk and filled it. session.sh now refuses the flag\n  on any size outside the L-series.\n\n* perf(azure): keep session tokens current by refresh, not a week-long TTL\n\nEach broker gets its own exchange at seed (node.token + node.refresh_token)\nand refreshes itself through /token/refresh; felix-agent restart renews\nnode.token while the broker is stopped. The generators' client token keeps\nits refresh token on generator 0 and is refreshed at driver start and every\nsix hours between cells, then copied to the other generators. Refresh tokens\nrotate and reuse revokes the chain, so no two holders share one.\n\nThe exchange TTL goes back to 8 h.\n\n* perf(azure): give the operator its own refresh family for finalize_features\n\nRotating broker 0's chain from the harness while the broker may rotate it\ntoo can revoke the chain. The operator now holds its own admin exchange on\ngenerator 0 and finalize_features runs there.",
+          "timestamp": "2026-10-01T13:45:10-07:00",
+          "tree_id": "ab89b87b561ef3732d42150137f1d5f9b838d627",
+          "url": "https://github.com/gabloe/felix/commit/dc49e1eaabbb056bb73c2895fa7f39987530cb5c"
+        },
+        "date": 1790890914036,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 346425.87,
+            "range": "11709.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346425.87\nmean: 343443.01\nstdev: 11709.91\ncv: 3.41%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 346425.87,
+            "range": "11709.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346425.87\nmean: 343443.01\nstdev: 11709.91\ncv: 3.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81022.22,
+            "range": "667.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81022.22\nmean: 81248.33\nstdev: 667.05\ncv: 0.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810222.21,
+            "range": "6670.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810222.21\nmean: 812483.27\nstdev: 6670.48\ncv: 0.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
