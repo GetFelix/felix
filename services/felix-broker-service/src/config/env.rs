@@ -13,7 +13,8 @@ use super::{BrokerConfig, SubStreamMode, SubscriberLaneShard};
 impl BrokerConfig {
     /// Read every setting from its `FELIX_*` variable, with a default for
     /// anything unset. Not validated; [`BrokerConfig::from_env_or_yaml`] is
-    /// what startup calls.
+    /// what startup calls. An unset `FELIX_QUIC_LISTENERS` is 1 here; startup
+    /// derives it from the cores.
     pub fn from_env() -> Result<Self> {
         // Environment variables provide defaults for local development.
         let metrics_bind = std::env::var("FELIX_BROKER_METRICS_BIND")
@@ -24,7 +25,9 @@ impl BrokerConfig {
             .unwrap_or_else(|_| "0.0.0.0:5000".to_string())
             .parse()
             .with_context(|| "parse FELIX_QUIC_BIND")?;
-        let quic_listeners = quic_listeners_from_env(quic_bind)?;
+        // Unset is filled in by `from_env_or_yaml`, which knows the final
+        // ports; see `derive_quic_listeners`.
+        let quic_listeners = quic_listeners_from_env(quic_bind)?.unwrap_or(1);
         let io_runtime_threads = std::env::var("FELIX_IO_RUNTIME_THREADS")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -398,21 +401,17 @@ pub(super) fn parse_sub_queue_policy(value: &str) -> Option<SubQueuePolicy> {
     }
 }
 
-/// How many client-facing QUIC listeners to bind.
-///
-/// Defaults to 1, which is exactly today's behaviour: one socket, one endpoint
-/// driver, one port. Raising it trades a wider port range for a receive path
-/// that is no longer one task on one core.
+/// An explicit `FELIX_QUIC_LISTENERS`, or `None` when unset.
 ///
 /// Refused rather than clamped when the range would wrap past port 65535: a
 /// broker that silently bound fewer listeners than asked would read as the
 /// feature not working, and the operator has a port number to fix.
-fn quic_listeners_from_env(quic_bind: SocketAddr) -> Result<usize> {
+fn quic_listeners_from_env(quic_bind: SocketAddr) -> Result<Option<usize>> {
     let Some(raw) = std::env::var("FELIX_QUIC_LISTENERS")
         .ok()
         .filter(|value| !value.trim().is_empty())
     else {
-        return Ok(1);
+        return Ok(None);
     };
     let count: usize = raw
         .trim()
@@ -428,7 +427,56 @@ fn quic_listeners_from_env(quic_bind: SocketAddr) -> Result<usize> {
             quic_bind.port(),
         );
     }
-    Ok(count)
+    Ok(Some(count))
+}
+
+impl BrokerConfig {
+    /// With `FELIX_QUIC_LISTENERS` unset, set the listener count from the
+    /// cores this process may use, shortened to fit the free ports.
+    ///
+    /// Only the startup path calls this. A config from [`BrokerConfig::from_env`]
+    /// keeps one listener, because code that binds its own server and passes
+    /// the config to `serve` would otherwise advertise ports nobody bound.
+    pub(super) fn derive_quic_listeners(&mut self) {
+        let unset =
+            std::env::var("FELIX_QUIC_LISTENERS").map_or(true, |value| value.trim().is_empty());
+        if !unset {
+            return;
+        }
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        let wanted = default_quic_listeners(cores);
+        let internal = self.peer_transport.as_ref().map(|peer| peer.bind.port());
+        self.quic_listeners = fit_listener_range(wanted, self.quic_bind.port(), internal);
+        if self.quic_listeners < wanted {
+            tracing::info!(
+                wanted,
+                listeners = self.quic_listeners,
+                "FELIX_QUIC_LISTENERS is unset and the port range from FELIX_QUIC_BIND runs \
+                 into FELIX_INTERNAL_BIND or port 65535, or is port 0; binding fewer listeners",
+            );
+        }
+    }
+}
+
+/// `max(1, min(cores / 2, 4))`. Past half the cores, listeners contend with
+/// the broker's own threads and throughput drops.
+pub(super) fn default_quic_listeners(cores: usize) -> usize {
+    (cores / 2).clamp(1, 4)
+}
+
+/// Shorten a derived listener count so its ports stop before the internal
+/// listener and port 65535. Never below 1; a clash on the first port is left
+/// for the peer transport's own check to report. Port 0 asks the OS for any
+/// port, which has no consecutive range after it, so it gets one listener.
+pub(super) fn fit_listener_range(wanted: usize, first: u16, internal: Option<u16>) -> usize {
+    if first == 0 {
+        return 1;
+    }
+    let mut room = usize::from(u16::MAX - first) + 1;
+    if let Some(internal) = internal.filter(|port| *port >= first) {
+        room = room.min(usize::from(internal - first));
+    }
+    wanted.min(room).max(1)
 }
 
 /// The control-plane credential, from `FELIX_NODE_TOKEN_FILE` or

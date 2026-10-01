@@ -62,10 +62,11 @@ WORKDIR /var/lib/felix
 
 USER 65532:65532
 
-# Client QUIC (FELIX_QUIC_BIND), broker-to-broker QUIC (FELIX_INTERNAL_BIND),
-# and metrics (FELIX_BROKER_METRICS_BIND). Documentation rather than enforcement —
+# Client QUIC (FELIX_QUIC_BIND, up to four ports by default), broker-to-broker
+# QUIC (FELIX_INTERNAL_BIND, which a standalone broker does not bind), and
+# metrics (FELIX_BROKER_METRICS_BIND). Documentation rather than enforcement —
 # EXPOSE publishes nothing on its own — but it is what tooling reads.
-EXPOSE 5000/udp 5001/udp 8080/tcp
+EXPOSE 5000-5003/udp 8080/tcp
 
 # `/ready`, not `/healthz`: that is the path the broker actually serves, and it
 # is the one that flips during a drain. `/live` stays up on a broker that is

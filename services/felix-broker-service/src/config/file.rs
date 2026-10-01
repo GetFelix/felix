@@ -44,6 +44,8 @@ impl BrokerConfig {
                 serde_yaml_ng::from_str(&contents).with_context(|| "parse broker config yaml")?;
             config.apply(override_cfg)?;
         }
+        // After the file, which may move `quic_bind`.
+        config.derive_quic_listeners();
         // After both sources, because a combination is only wrong once it is
         // whole: an override may fix what the environment set, or break what it
         // had right.

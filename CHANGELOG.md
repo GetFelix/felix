@@ -544,6 +544,16 @@ for what the current release guarantees.
 
 ### Changed
 
+- **The broker's default listener count follows its cores.** With
+  `FELIX_QUIC_LISTENERS` unset, a broker binds `max(1, min(cores / 2, 4))`
+  client listeners, using the cores it may run on (cgroup limits included).
+  The count is shortened so the range stops before `FELIX_INTERNAL_BIND`, so
+  a cluster member on the default ports keeps one. An explicit value still
+  wins. A container that publishes only port `5000`, or remaps it, needs
+  `FELIX_QUIC_LISTENERS=1`, because clients dial the advertised ports. The
+  Helm chart still sets the count (default `1`), since it must list the ports.
+  (#720)
+
 - **Binary publish payloads are no longer copied on decode.**
   `felix_wire::binary::PublishBatch.payloads` is now `Vec<Bytes>`, each
   record a slice of the frame it arrived in, which drops one copy and one
