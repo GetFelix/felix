@@ -6,6 +6,12 @@ use felix_broker_service::config;
 use felix_broker_service::node::run_with_shutdown;
 use felix_common::lifecycle;
 
+// glibc malloc and free were ~6.5% of broker CPU under ingest (v0.6.0 Azure
+// profile): packet and frame buffers are freed on threads other than the one
+// that allocated them, which is where a per-thread allocator does better.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 // Tokio async runtime entry point. The broker is primarily I/O-bound (QUIC + HTTP metrics)
 // and runs multiple background tasks concurrently.
 #[tokio::main]

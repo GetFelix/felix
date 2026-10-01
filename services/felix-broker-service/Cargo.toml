@@ -57,6 +57,7 @@ name = "soak"
 path = "src/bin/soak/main.rs"
 
 [dependencies]
+mimalloc = { workspace = true }
 anyhow = { workspace = true }
 # The shard lifecycle drives local state through a trait object, so its two
 # async methods need boxing.
