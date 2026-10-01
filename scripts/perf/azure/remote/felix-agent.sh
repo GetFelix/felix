@@ -23,6 +23,12 @@ metrics_url() {
   if [ -n "$bind" ]; then echo "http://$bind/metrics"; fi
 }
 
+# The MTU of the interface the default route uses.
+nic_mtu() {
+  dev=$(ip -o route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p')
+  cat "/sys/class/net/${dev:-eth0}/mtu" 2>/dev/null || echo unknown
+}
+
 felix_pid() {
   pidof -s felix-broker 2>/dev/null || pidof -s felix-controlplane 2>/dev/null || true
 }
@@ -160,6 +166,7 @@ cmd_snapshot() {
       print "port." p ".pkts=" $1; print "port." p ".bytes=" $2 }'
   fi
   if [ "${1:-}" = "--env" ]; then
+    echo "nic.mtu=$(nic_mtu)"
     ports=$(ss -Huanp 2>/dev/null | awk '/felix-broker/ { n = split($4, a, ":"); p = a[n]; if (p >= 5000 && p < 5064) printf "%s%s", s, p; s = "," }')
     echo "listen.ports=$ports"
     for kind in broker controlplane; do
@@ -220,26 +227,30 @@ cmd__sample() {
   if command -v iptables >/dev/null && iptables -w -nL FELIX_PORTS >/dev/null 2>&1; then ipt=1; fi
   while [ "$i" -lt 3600 ] && [ ! -e "$SAMPLES/$tag.stop" ]; do
     t=$(date +%s.%N)
+    pt=0
     if [ -n "$proc" ]; then
-      pid=$(pidof -s "$proc" 2>/dev/null || true)
+      # Every process of that name: a generator may run several.
+      for pid in $(pidof "$proc" 2>/dev/null || true); do
+        pt=$((pt + $(awk '{ print $14 + $15 }' "/proc/$pid/stat" 2>/dev/null || echo 0)))
+      done
     else
       pid=$(pidof -s felix-broker 2>/dev/null || pidof -s felix-loadgen 2>/dev/null || true)
+      if [ -n "$pid" ]; then pt=$(awk '{ print $14 + $15 }' "/proc/$pid/stat" 2>/dev/null || echo 0); fi
     fi
-    pt=0
-    if [ -n "$pid" ]; then pt=$(awk '{ print $14 + $15 }' "/proc/$pid/stat" 2>/dev/null || echo 0); fi
     m="0 0"
     if [ "$stats" = nats ]; then
       # Appended bytes: records appended (the streams' last sequences)
       # times the mean stored record size. Unlike the stored total it keeps
       # counting when a memory stream discards at its limit. Then the
       # server's received bytes. Top-level keys sit at a two-space indent.
-      a=$(curl -s -m 1 "$url/jsz?streams=true" | awk '
+      # A failed scrape is NA, never 0, so it cannot read as a stall.
+      a=$(curl -fs -m 1 "$url/jsz?streams=true" | awk '
         /"last_seq":/ { v = $2; gsub(/[^0-9]/, "", v); s += v }
         /^  "bytes":/ { b = $2; gsub(/[^0-9]/, "", b) }
         /^  "messages":/ { n = $2; gsub(/[^0-9]/, "", n) }
-        END { if (n > 0) printf "%.0f", s * b / n; else printf "0" }')
-      b=$(curl -s -m 1 "$url/varz" | sed -n 's/^  "in_bytes": *\([0-9]*\).*/\1/p' | head -1)
-      m="${a:-0} ${b:-0}"
+        END { if (NR == 0) printf "NA"; else if (n > 0) printf "%.0f", s * b / n; else printf "0" }')
+      b=$(curl -fs -m 1 "$url/varz" | sed -n 's/^  "in_bytes": *\([0-9]*\).*/\1/p' | head -1)
+      m="${a:-NA} ${b:-NA}"
     elif [ -n "$url" ]; then
       m=$(curl -s -m 1 "$url" | awk '
         /^#/ { next }
@@ -285,7 +296,8 @@ cmd_sampler_stop() {
   echo "__SAMPLE_BEGIN__"
   echo "s.nproc=$(nproc)"
   awk -v hz="$(getconf CLK_TCK)" '
-    { t[NR] = $1; u[NR] = $2; s[NR] = $3; id[NR] = $4; w[NR] = $5; iq[NR] = $6; si[NR] = $7; sl[NR] = $8; pt[NR] = $9; ab[NR] = $10 }
+    { t[NR] = $1; u[NR] = $2; s[NR] = $3; id[NR] = $4; w[NR] = $5; iq[NR] = $6; si[NR] = $7; sl[NR] = $8; pt[NR] = $9
+      ab[NR] = ($10 ~ /^[0-9]/) ? $10 : ab[NR-1] }
     END {
       for (i = 2; i <= NR; i++) {
         du = u[i] - u[i-1]; ds = s[i] - s[i-1]; di = id[i] - id[i-1]; dw = w[i] - w[i-1]
@@ -365,6 +377,7 @@ for x in d.get("dataDisks", []):
       net.core.netdev_max_backlog net.core.netdev_budget kernel.io_uring_disabled; do
     echo "sysctl.$k=$(sysctl -n "$k" 2>/dev/null || echo n/a)"
   done
+  echo "nic.mtu=$(nic_mtu)"
   if command -v ethtool >/dev/null; then
     echo "nic.channels=$(ethtool -l eth0 2>/dev/null | awk '/^Current/ { c = 1 } c && /Combined/ { print $2; exit }')"
     echo "nic.offloads=$(ethtool -k eth0 2>/dev/null | grep -E 'gro|gso|rx-udp' | tr -d ' ' | tr '\n' ',')"

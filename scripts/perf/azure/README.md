@@ -214,18 +214,18 @@ VM (by run-command or cloud-init) and run there.
 ### NATS comparison on session A's VMs
 
 `nats/` runs NATS JetStream on the same machines as session A, after the
-Felix cells, and writes its cells beside them (`cells/nats-*`), so one
-`summarize.py` table holds both. Nothing is provisioned: the broker VM's
-`felix-broker` is stopped (not removed) while NATS runs, and started again
+Felix cells, and writes its cells beside them (`cells/nats-*`, `cells/ab-*`),
+so one `summarize.py` table holds both. Nothing is provisioned: the broker
+VM's `felix-broker` is stopped (not removed) while NATS runs, and started again
 at the end.
 
 ```bash
-SESSION=v060-a ./nats/install.sh           # nats-server + CLI, TLS, TCP limits
-SESSION=v060-a STEPS=sweep ./nats/nats-cells.sh    # find NATS's best shape (~2.5 h)
-# Re-run the matrix with the best shape the sweep found, e.g.:
-SESSION=v060-a STEPS=matrix RUN_TAG=best NATS_STREAMS=12 PUBS_PER_GEN=32 \
-  ASYNC_WINDOW=1024 NATS_SERVER_ENV="GOGC=400" ./nats/nats-cells.sh     # ~4 h
-SESSION=v060-a ./nats/uninstall.sh         # stop NATS, wipe /data/nats, Felix back
+SESSION=v060-a ./nats/install.sh                   # nats-server + CLI, TLS, TCP limits
+SESSION=v060-a STEPS=sweep ./nats/nats-cells.sh    # NATS's best shape (47 cells)
+# The matrix at the best shape the sweep found, e.g.:
+SESSION=v060-a STEPS=matrix RUN_TAG=best FAST_WINDOW=256 PUBS_PER_GEN=32 ./nats/nats-cells.sh
+SESSION=v060-a FAST_WINDOW=256 ./nats/interleave.sh   # Felix and NATS cells alternated
+SESSION=v060-a ./nats/uninstall.sh                 # stop NATS, wipe /data/nats, Felix back
 ```
 
 Versions are pinned in `nats/nats-lib.sh` and checked against each release's
@@ -233,44 +233,69 @@ Versions are pinned in `nats/nats-lib.sh` and checked against each release's
 at the time of writing. Override with `NATS_VERSION`/`NATS_SHA256` and
 `NATS_CLI_VERSION`/`NATS_CLI_SHA256`.
 
+**How a NATS cell runs.** Each shape is calibrated once: a
+`NATS_CALIB_SECS` (15 s) run on all four generators, its rate read from the
+server's counters. Each generator then runs one continuous `nats bench` per
+process, sized to 1.5x that rate over `CELL_SECS` + 5 s, starting at the
+cell's shared wall-clock start and interrupted with `SIGINT` (`timeout -s
+INT`) at its end; `gen.end` is the interrupt time. `nats bench` can only stop
+on a message count (its `--duration` needs `--throughput`, a rate cap), and it
+prints nothing when interrupted, so throughput comes from the server's
+counters over the steady-state window, exactly as Felix's does. A cell whose
+count ran out before the end fails, and so does a cell where any VM's NIC MTU
+differs from the Felix cells'. A generator above `NATS_GEN_BUSY_MAX` (85%)
+CPU reruns the cell with twice the processes per generator, up to
+`NATS_MAX_PROCS` (4); still saturated, the cell is flagged
+`flag.gen_saturated` in its `meta.env`. Generator CPU sums every `nats`
+process.
+
 **What a NATS cell records**, in the layout `cells.sh` uses: `meta.env` (the
-shape in felix-loadgen's flag names so the columns line up, plus `nats_cmd`,
-the exact `nats bench` command line); the server's `before.txt` (version and
-binary sha256, `GOMAXPROCS`, cores, `max_payload`, `max_pending`,
-`write_deadline`, every line of `nats.conf`, the `GO*` environment, the
-`/data` mount, kernel sysctls, NIC MTU and CPU count); each generator's
-`armed.txt` (its sysctls, MTU and CPU count); before/after counters; the
-1 Hz series from `nats-server`; and each generator's `run.txt` with a
-`NATS_BENCH_JSON` line and `gen.start`/`gen.end`. The steady-state rate is
-computed exactly as for Felix: median one-second rate over the all-generators
-window, trimmed 10% each end.
+shape in felix-loadgen's flag names so the columns line up, messages per
+client, processes, the exact `nats bench` command line, the expected MTU,
+generator CPU); the server's `before.txt` (version and binary sha256,
+`GOMAXPROCS`, cores, `max_payload`, `max_pending`, `write_deadline`, every
+line of `nats.conf`, the `GO*` environment, the `/data` mount, kernel
+sysctls, NIC MTU, CPU count); each generator's `armed.txt` (its sysctls, MTU
+and CPU count); before/after counters, including the TCP counters; the 1 Hz
+series from `nats-server`; and each generator's `run.txt`. Felix snapshots
+now record `nic.mtu` too.
 
 For NATS, *append* is records appended (the sum of the streams' last
-sequence numbers) times the mean stored record size from `/jsz`. That keeps
-counting when a memory stream discards at its limit; for file streams it equals
-the growth of JetStream's stored bytes. Stored size includes NATS's per-record
-overhead (subject, header, sequence and timestamp), as Felix's append bytes
-include its record header. *Ingress* is `/varz` `in_bytes`, all bytes the
-server received, protocol included.
+sequence numbers) times the mean stored record size from `/jsz`. It keeps
+counting when a memory stream discards; for file streams it equals the growth
+of stored bytes. A failed `/jsz` scrape is recorded as `NA`, never 0, and is
+left out of the rates. *Ingress* is `/varz` `in_bytes`, protocol included.
+The summary's **records/s** and **payload MB/s** divide the steady append
+rate by the mean appended record size and multiply by the payload, on both
+systems. Compare on those: a NATS record stores 30-40 B of subject and
+metadata beside the payload, and Felix's has its own header.
 
-**Cells** (`nats-cells.sh`): `matrix` runs each pair `TRIALS` times (3);
-`sweep` varies one knob at a time around the base shape. Session A's `shapes`
-cells spread over the stream's 48 shards and its listener-sweep cells over 12
-keys; the matrix uses 12 streams, and the sweep includes 48.
+**Cells.** The `matrix` crosses durability mode (`always`, `memory`,
+`default`), payload (4096, 256 B) and stream count (12 and 48, the key counts
+of session A's listener-sweep and shape cells, and 64, one stream per
+publisher, as a NATS-only extra), 3 trials each. Each system is quoted at its
+best stream or key count.
 
 | Felix cell in session A | NATS cell | What matches |
 |---|---|---|
-| `a-shape-dur-p{4096,256}-b1-f64` (acked, on_commit) | `nats-js-async-always-p*-w64` | 64 single-record publishes outstanding per publisher, fsync before ack |
-| same | `nats-js-fast-always-p*-f1-w64` | the same with a sliding window (fast batch, one ack per record, 64 outstanding) |
-| `a-shape-dur-p{4096,256}-b64-f64` | `nats-js-fast-always-p*-f64-w64` | 64 records per ack, 64 acks outstanding (4096 records in flight) |
-| `a-shape-inmem-*-f64` | `nats-js-*-memory-*` | acked publish into an in-memory stream |
-| Felix periodic fsync (`base_overrides`; no session A cell) | `nats-js-*-default-*` | written to the page cache, fsynced later (NATS: every 2 min) |
-| `l557-l4-io0-inmem`, `a-shape-inmem-p4096-b64-f0` (fire-and-forget) | `nats-core-p4096` | no ack; NATS core publish to subjects without subscribers |
+| `a-shape-dur-p*-b1-f64` (acked, on_commit) | `nats-js-fast-always-p*-f1-w64-*` (lead) | a sliding window of 64 single-record publishes per publisher, each acked after fsync |
+| same | `nats-js-async-always-p*-w64-*` (secondary) | 64 publishes, then a wait for all 64 acks (stop-and-wait) |
+| `a-shape-dur-p*-b64-f64` | `nats-js-fast-always-p*-f64-w64-*` | 64 records per ack, 64 acks outstanding |
+| `a-shape-inmem-*-f64` | `nats-js-fast-memory-*` | acked publish into an in-memory stream |
+| Felix periodic fsync (`base_overrides`; no session A cell) | `nats-js-fast-default-*` | page cache, fsynced later (NATS: every 2 min) |
+| `l557-l4-io0-inmem`, `a-shape-inmem-p4096-b64-f0` | `nats-core-p4096-*` | no ack; core publish to subjects without subscribers |
 
-`always` is `jetstream { sync_interval: always }`: an fsync on every write,
-the pair for Felix's `FELIX_DURABLE_FSYNC_MODE=on_commit` with
-`FELIX_ACK_ON_COMMIT=1`. `default` leaves `sync_interval` unset, which is
-two minutes in 2.15 (`defaultSyncInterval` in `server/filestore.go`).
+`always` is `jetstream { sync_interval: always }`, the pair for
+`FELIX_DURABLE_FSYNC_MODE=on_commit` with `FELIX_ACK_ON_COMMIT=1`. `default`
+leaves `sync_interval` unset: two minutes in 2.15 (`defaultSyncInterval` in
+`server/filestore.go`).
+
+The `sweep` runs stream count x fast-batch window (12/24/48/64 x
+16/64/256/1024/4000) in `always` mode, then one knob at a time in `always` and
+`default`: publishers per generator, fast-batch flow, async window, sync
+publish and `GOGC`. `interleave.sh` alternates a Felix best-profile cell and
+its NATS pair (ABAB, flipping the order on even trials), so drive wear and
+time of day fall on both alike.
 
 #### Fairness
 
@@ -282,70 +307,75 @@ Matched:
 
 - **Hardware.** The same broker VM (Standard_L8as_v4, 8 vCPU) and the same
   `/data` NVMe RAID0; the same four D4as_v5 generators in the same VNet. The
-  Felix broker is stopped during NATS cells, so nothing else shares the cores
-  or the disks.
-- **Starting state.** Every cell restarts `nats-server` on an empty
-  `/data/nats` with the page cache dropped, as every Felix durable cell starts
-  from a wiped `/data/felix`.
+  Felix broker is stopped during NATS cells and NATS during Felix cells.
+- **Starting state.** Every NATS cell starts on an empty `/data/nats`, with
+  `fstrim /data` and the page cache dropped. Felix durable cells wipe
+  `/data/felix` and drop the cache but do not trim; the cells in
+  `interleave.sh` trim before both systems, so quote those when the drives'
+  state could matter.
 - **Load.** 4 generators x `PUBS_PER_GEN` (16) publishers, the payload sizes
-  Felix used (4096 and 256 B), all generators starting at one wall-clock time
-  `START_DELAY_SECS` after launch, publishing for `CELL_SECS` (90 s), 3 trials.
-- **Spread.** 12 R1 streams (`NATS_STREAMS`) for Felix's 12 keys. Async and
-  core publishers rotate their subjects over every stream
-  (`--multisubject --multisubjectmax 12`), as a Felix publisher rotates over
-  its keys.
+  Felix used, all generators starting at one wall-clock time, publishing for
+  `CELL_SECS` (90 s), 3 trials, rate taken by the same steady-state rule.
+- **Spread.** Stream count is a matrix dimension matched to Felix's key count
+  (12, 48), plus 64. Under `sync_interval: always` an R1 file stream fsyncs
+  each write under its own lock, so NATS's durable throughput grows with
+  streams; it is quoted at its best count, as Felix is at its best.
 - **Durability pairs and replication.** R1 streams for Felix's RF=1;
-  `always` for OnCommit, `memory` for in-memory, `default` for periodic.
-- **Encryption.** NATS clients connect over TLS (`tls://`, P-256 server
-  certificate from a throwaway CA), as Felix clients always do over QUIC.
-- **Kernel tuning.** Felix's VMs allow 25 MiB UDP socket buffers. NATS gets
+  `always` for OnCommit, `memory` for in-memory, `default` for periodic. Both
+  systems ack an `always`/OnCommit publish only after its fsync.
+- **Memory streams.** Felix's in-memory stream keeps the newest 1024 records
+  per shard (`DEFAULT_LOG_CAPACITY`, no env override) and drops the oldest.
+  NATS memory streams keep the same total, `1024 x SHARDS` records split
+  over the streams (`--max-msgs`, `--discard old`), so both drop the oldest at
+  the same depth. `GOMEMLIMIT` is set to 85% of RAM so the Go runtime has a
+  memory target.
+- **Encryption.** NATS clients connect over TLS (P-256 server certificate),
+  as Felix clients do over QUIC.
+- **Kernel and NIC.** Felix's VMs allow 25 MiB UDP socket buffers. NATS gets
   the TCP equivalent on the broker and the generators: `tcp_rmem`/`tcp_wmem`
-  maximum 25 MiB, `somaxconn` 4096, `tcp_slow_start_after_idle=0`
-  (`nats-agent tune`; `uninstall.sh` restores the originals). The NIC MTU is
-  not changed for either system, and is recorded in every cell.
-- **Measurement.** The same sampler on `nats-server` (process CPU, system
-  CPU), the same steady-state window, the same summary.
-- **Best configuration, not defaults.** The `sweep` step tries stream count,
-  async window, publishers per generator, publish API (sync, async, fast batch
-  with several flow sizes) and `GOGC`, in both file-store modes. The quoted
-  NATS rows should be the matrix re-run at the best shape (`RUN_TAG=best`),
-  just as Felix is quoted at its best listener and client settings. Server
-  settings can be swept further with `NATS_SERVER_ENV` (process environment)
-  and `NATS_EXTRA_CONF` (server config lines). `GOMAXPROCS` is left at the Go
-  default, every core, and recorded.
+  maximum 25 MiB, `somaxconn` 4096, `tcp_slow_start_after_idle=0`. These stay
+  set during interleaved Felix cells; they do not touch UDP. The NIC MTU is
+  set to the one the Felix cells recorded (or `NATS_MTU`), checked end to end
+  with a don't-fragment ping, recorded per cell, and a mismatch fails the cell.
+- **Measurement.** The same sampler (all `nats-server` threads; every `nats`
+  process on a generator), the same window, the same summary, compared on
+  records/s and payload MB/s.
+- **Best configuration, not defaults.** The sweep above; `NATS_SERVER_ENV`
+  (process environment) and `NATS_EXTRA_CONF` (server config) sweep further.
+  `GOMAXPROCS` is left at the Go default, every core, and recorded.
 
 Cannot be matched, and how each is handled:
 
-- **Transport.** Felix speaks QUIC over UDP; NATS speaks its text protocol
-  over TCP. Kernel limits are matched as above; the protocols are not. Felix
-  cells report UDP receive-buffer drops; NATS cells record the TCP counters
-  (`tcp.*`, including retransmits) instead.
-- **Batching and ack semantics.** A Felix batch is one publish of up to 64
-  records with one ack, and `--in-flight` is a sliding window of batches.
-  `nats bench js pub async --batch 64` sends 64 messages, then waits for all
-  64 acks before sending more, so its window drains to zero every round. Fast
-  batch publish (2.14+) is the sliding-window equivalent, so the matrix runs
-  both. A fast batch targets one stream, so fast-batch publishers are pinned
-  to stream `(publisher index) mod 12` instead of rotating, which gives four
-  streams six publishers and eight streams five.
-- **Fire-and-forget.** Felix's fire-and-forget publish still appends to the
-  stream. Core NATS publish to a subject without subscribers is routed and
-  dropped; there is no JetStream equivalent without an ack. Its row is
-  quoted by ingress, and the append column reads zero.
-- **Run length.** `nats bench` stops on a message count; its `--duration`
-  needs `--throughput`, a rate cap. Each generator therefore runs `nats bench`
-  in chunks of about `CHUNK_SECS` (10 s), each sized from the previous chunk's
-  rate, until the cell's end. The reconnect between chunks takes a fraction of
-  a second, shows up as a dip in a few one-second samples, and the median
-  ignores it. The cost falls on NATS, so it is a disadvantage, not an
-  advantage; lengthen `CHUNK_SECS` to shrink it.
-- **Latency.** `nats bench` reports latency per operation: one async window,
-  one sync publish, one fast-batch ack. Felix reports it per batch ack. The
-  `p50 / p99` column is not comparable across the two and should not be
-  quoted side by side.
+- **Transport.** QUIC over UDP against NATS's protocol over TCP. Kernel limits
+  are matched as above; the protocols are not. Felix cells report UDP receive
+  drops, NATS cells the TCP counters (`tcp.*`, retransmits included).
+- **Batching and acks.** A Felix batch is one publish with one ack and its
+  in-flight window slides. NATS fast batch (2.14+) slides too and leads the
+  pairing; `nats bench js pub async --batch N` sends N and waits for all N
+  acks, so its window drains every round, and it is a secondary row. nats.go
+  limits async publishes in flight to 4000 (`PublishAsyncMaxPending`), which
+  nats bench does not raise, so async windows stop at 4000. A fast batch
+  targets one stream, so fast-batch publishers are pinned to stream
+  `index mod streams` instead of rotating.
+- **Group commit.** Under `always`, NATS fsyncs per write per stream. Felix
+  group-commits: one fsync serves every waiting publish. Both ack after the
+  fsync; how many fsyncs that costs is the design difference being measured.
+- **NATS's own recommendation.** NATS recommends R3 with the default sync
+  interval for durability, not R1 with `sync_interval: always`. R1 `always` is
+  run because it is the like-for-like pair for Felix's RF=1 OnCommit; the
+  `default` rows show R1 under NATS's default sync. R1 streams also offer
+  `persist_mode: async`, not run here.
+- **Fire-and-forget.** Felix's fire-and-forget publish still appends. Core
+  NATS publish to a subject without subscribers is routed and dropped. Its row
+  is quoted by ingress records/s; the append column reads zero.
+- **Latency.** Not compared: interrupted `nats bench` reports none, and its
+  per-operation latency is not Felix's per-batch latency.
+- **Authentication.** Felix clients present a JWT the broker verifies at
+  connect; NATS runs without auth. A connect-time cost, outside the window.
+- **TLS key exchange.** Felix's QUIC stack and Go's TLS may negotiate
+  different key exchanges (Go's default includes hybrid X25519+ML-KEM). A
+  one-off cost per connection, outside the steady-state window.
+- **Deduplication.** Publishes carry no `Nats-Msg-Id`, so the stream's
+  duplicate window costs nothing.
 - **Implementation.** Go (garbage collected; `GOGC` is swept) against Rust.
   Nothing to match; noted.
-- **Memory streams.** A 90 s cell does not fit in RAM, so memory streams are
-  limited to their share of 90% of `max_memory_store` (75% of RAM) and
-  discard their oldest records; append is counted from sequence numbers so
-  the discards do not lower it.

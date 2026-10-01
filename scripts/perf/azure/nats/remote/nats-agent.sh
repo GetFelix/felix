@@ -147,8 +147,14 @@ cmd_reset() {
   systemctl stop nats 2>/dev/null || true
   rm -rf "$STORE"; mkdir -p "$STORE"
   sync
+  cmd_trim
   echo 3 > /proc/sys/vm/drop_caches
   touch "$CONF_DIR/extra.conf" "$CONF_DIR/nats.env"
+  # A soft memory limit for the Go runtime at 85% of RAM, unless the operator
+  # set one: without it the GC paces on heap growth alone and a memory stream
+  # can drive the process into swap or the OOM killer.
+  grep -q '^GOMEMLIMIT=' "$CONF_DIR/nats.env" \
+    || awk '/^MemTotal/ { printf "GOMEMLIMIT=%.0f\n", $2 * 1024 * 0.85 }' /proc/meminfo >> "$CONF_DIR/nats.env"
   # Store limit: 90% of what /data has free, so no cell hits a limit and
   # starts discarding (which would flatten the stored-bytes counter).
   avail=$(df -B1 --output=avail "$STORE" | tail -1 | tr -d ' ')
@@ -200,13 +206,13 @@ width() { printf '%s' "$1" | wc -c | tr -d ' '; }
 # streams <n>: n R1 file streams, bench<i> on subject bench.<i>. Fast batch
 # publish must be allowed on the stream for `nats bench js pub fast`.
 #
-# streams <n> memory: memory streams instead, each limited to its share of 90%
-# of max_memory_store and discarding the oldest records at the limit; a 90 s
-# cell at line rate would not fit in RAM otherwise.
+# streams <n> memory <records>: memory streams instead, which together keep
+# the newest <records> and discard older ones, as a Felix in-memory stream
+# keeps the newest 1024 records per shard (DEFAULT_LOG_CAPACITY).
 cmd_streams() {
   n="$1"; storage="${2:-file}"; w=$(width "$n"); i=0; limit=""
   if [ "$storage" = memory ]; then
-    limit="--max-bytes=$(( $(mem_store_bytes) * 9 / 10 / n ))"
+    limit="--max-msgs=$(( (${3:?records to retain} + n - 1) / n ))"
   fi
   while [ "$i" -lt "$n" ]; do
     s=$(printf "%0${w}d" "$i")
@@ -222,7 +228,7 @@ cmd_streams() {
 cmd_hostfacts() {
   echo "host.nproc=$(nproc)"
   echo "host.kernel=$(uname -r)"
-  dev=$(ip -o route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p')
+  dev=$(nic)
   echo "host.nic=${dev:-eth0}"
   echo "host.mtu=$(cat "/sys/class/net/${dev:-eth0}/mtu" 2>/dev/null || echo unknown)"
   for k in net.core.rmem_max net.core.wmem_max net.core.rmem_default net.core.wmem_default \
@@ -252,7 +258,8 @@ cmd_snapshot() {
   # Appended, not stored: a memory stream discards at its limit. Records are
   # the streams' last sequences; bytes scale them by the mean stored size, as
   # the sampler does.
-  printf '%s\n' "$jsz" | awk '
+  # A failed scrape prints nothing, so the delta is missing rather than zero.
+  [ -z "$jsz" ] || printf '%s\n' "$jsz" | awk '
     /"last_seq":/ { v = $2; gsub(/[^0-9]/, "", v); s += v }
     /^  "bytes":/ { b = $2; gsub(/[^0-9]/, "", b) }
     /^  "messages":/ { n = $2; gsub(/[^0-9]/, "", n) }
@@ -260,9 +267,11 @@ cmd_snapshot() {
       printf "m.append_records=%.0f\nm.append_bytes=%.0f\n", s, (n > 0) ? s * b / n : 0
       printf "m.stored_bytes=%.0f\nm.stored_records=%.0f\n", b, n
     }'
-  echo "m.publish_bytes=$(printf '%s\n' "$varz" | json_int in_bytes)"
-  echo "m.publish_requests=$(printf '%s\n' "$varz" | json_int in_msgs)"
-  echo "m.slow_consumers=$(printf '%s\n' "$varz" | json_int slow_consumers)"
+  if [ -n "$varz" ]; then
+    echo "m.publish_bytes=$(printf '%s\n' "$varz" | json_int in_bytes)"
+    echo "m.publish_requests=$(printf '%s\n' "$varz" | json_int in_msgs)"
+    echo "m.slow_consumers=$(printf '%s\n' "$varz" | json_int slow_consumers)"
+  fi
   awk '/^Tcp:/ { if (!h) { for (i = 2; i <= NF; i++) k[i] = $i; h = 1 } else { for (i = 2; i <= NF; i++) print "tcp." k[i] "=" $i } }' /proc/net/snmp
   if [ "${1:-}" = "--env" ]; then
     bin=$(readlink -f /usr/local/bin/nats-server)
@@ -289,119 +298,142 @@ cmd_snapshot() {
   echo "__SNAP_END__"
 }
 
-# bench <name> <start_at> <secs> <kind> <size> <clients> <window> <flow> <streams> <gen> [<gens-total>]
+# bench <name> <start_at> <secs> <kind> <size> <clients> <window> <flow> <streams> <gen> <msgs-per-client> <procs>
 #
-# Runs `nats bench` from <start_at> (epoch seconds, shared by every generator)
-# until <secs> have passed. nats bench only stops on a message count (its
-# --duration needs --throughput, a rate cap), so the run is a series of chunks,
-# each sized from the previous chunk's rate to last CHUNK_SECS (default 10) or
-# what remains. The gaps between chunks (connect, stream lookup) are short
-# against the chunk and show up as dips the steady-state median ignores.
+# One continuous `nats bench` run per process from <start_at> (epoch seconds,
+# shared by every generator), interrupted with SIGINT at <start_at> + <secs>.
+# nats bench only stops on a count (its --duration needs a --throughput cap),
+# so the count is calibrated to outlast the cell and the run is cut at the
+# cell's end. nats bench prints nothing when interrupted, so throughput comes
+# from the server's counters over the steady-state window, as for Felix.
 #
 # kinds:
+#   js-fast   `js pub fast --batch <flow> --max-outstanding-acks <window>`: one
+#             ack per <flow> messages, up to <window> acks outstanding, a
+#             sliding window. A fast batch targets one stream, so publishers
+#             are pinned to stream (global publisher index mod <streams>).
 #   js-async  `js pub async --batch <window>`: send <window> messages, wait for
 #             all their acks, repeat. Subjects rotate over the streams.
 #   js-sync   `js pub sync`: one message in flight. Subjects rotate.
-#   js-fast   `js pub fast --batch <flow> --max-outstanding-acks <window>`: one
-#             ack per <flow> messages, up to <window> acks outstanding. A fast
-#             batch targets one stream, so each publisher is pinned to stream
-#             (global publisher index mod <streams>).
 #   core      `pub`: core NATS, no JetStream, no subscriber.
+# <procs> splits a generator's clients over that many processes (not js-fast,
+# which already runs one per stream).
 cmd_bench() {
   name="$1"; start_at="$2"; secs="$3"; kind="$4"; size="$5"; clients="$6"; window="$7"; flow="$8"
-  nstreams="$9"; gen="${10}"
+  nstreams="$9"; gen="${10}"; per_client="${11}"; procs="${12:-1}"
   dir="$CELLS/$name"
   rm -rf "$dir"; mkdir -p "$dir"
-  chunk_secs="${CHUNK_SECS:-10}"
   w=$(width "$nstreams")
   base="nats -s $(nats_url) --tlsca $TLS_DIR/ca.pem bench"
   multi="--multisubject --multisubjectmax $nstreams"
   common="--size $size --no-progress"
-  # A first chunk of 8 MiB per client: a couple of seconds at any plausible rate.
-  per_client=$((8388608 / size))
+  s0=$(printf "%0${w}d" 0)
   end=$((start_at + secs))
+  : > "$dir/cmds"
+  launch() { # <tag> <command...>
+    tag="$1"; shift
+    echo "$*" >> "$dir/cmds"
+    left=$((end - $(date +%s))); [ "$left" -ge 1 ] || left=1
+    timeout -s INT "$left" "$@" > "$dir/$tag.log" 2>&1 &
+    pids="$pids $!"
+  }
   now=$(date +%s)
   [ "$now" -ge "$start_at" ] || sleep $((start_at - now))
   s=$(date +%s.%N)
-  i=0
-  while [ "$(date +%s)" -lt "$end" ]; do
-    i=$((i + 1))
-    c0=$(date +%s.%N)
-    case "$kind" in
-      js-fast)
-        # Clients of this generator per stream.
-        p=$((gen * clients)); last=$((p + clients)); pids=""
-        st=0
-        while [ "$st" -lt "$nstreams" ]; do
-          k=0; q=$p
-          while [ "$q" -lt "$last" ]; do [ $((q % nstreams)) -eq "$st" ] && k=$((k + 1)); q=$((q + 1)); done
-          if [ "$k" -gt 0 ]; then
-            sn=$(printf "%0${w}d" "$st")
-            cmd="$base js pub fast bench.$sn --stream bench$sn --clients $k --msgs $((per_client * k)) --batch $flow --max-outstanding-acks $window $common --csv $dir/c$i-s$sn.csv"
-            [ "$i" -gt 1 ] || echo "$cmd" >> "$dir/cmds"
-            $cmd > "$dir/c$i-s$sn.log" 2>&1 &
-            pids="$pids $!"
-          fi
-          st=$((st + 1))
-        done
-        rc=0
-        for pd in $pids; do wait "$pd" || rc=1; done
-        ;;
-      js-async|js-sync|core)
-        case "$kind" in
-          js-async) sub="js pub async bench --stream bench$(printf "%0${w}d" 0) --batch $window $multi" ;;
-          js-sync) sub="js pub sync bench --stream bench$(printf "%0${w}d" 0) $multi" ;;
-          core) sub="pub core $multi" ;;
-        esac
-        cmd="$base $sub --clients $clients --msgs $((per_client * clients)) $common --csv $dir/c$i.csv"
-        [ "$i" -gt 1 ] || echo "$cmd" >> "$dir/cmds"
-        rc=0
-        $cmd > "$dir/c$i.log" 2>&1 || rc=1
-        ;;
-      *) echo "!! unknown kind $kind" >&2; exit 2 ;;
-    esac
-    if [ "$rc" != 0 ]; then
-      echo "!! chunk $i failed"; tail -8 "$dir"/c"$i"*.log; exit 1
-    fi
-    c1=$(date +%s.%N)
-    # Next chunk: this chunk's per-client rate times min(CHUNK_SECS, what is left).
-    per_client=$(awk -v n="$per_client" -v a="$c0" -v b="$c1" -v e="$end" -v cs="$chunk_secs" -v fl="${window:-1}" 'BEGIN {
-      r = n / ((b - a) > 0.05 ? (b - a) : 0.05); left = e - b; if (left > cs) left = cs
-      m = int(r * left); if (m < 2 * fl) m = 2 * fl; if (m < 1000) m = 1000; print m }')
+  pids=""
+  case "$kind" in
+    js-fast)
+      p=$((gen * clients)); last=$((p + clients)); st=0
+      while [ "$st" -lt "$nstreams" ]; do
+        k=0; q=$p
+        while [ "$q" -lt "$last" ]; do [ $((q % nstreams)) -eq "$st" ] && k=$((k + 1)); q=$((q + 1)); done
+        if [ "$k" -gt 0 ]; then
+          sn=$(printf "%0${w}d" "$st")
+          # shellcheck disable=SC2086 # common is a list of flags
+          launch "s$sn" $base js pub fast "bench.$sn" --stream "bench$sn" --clients "$k" \
+            --msgs $((per_client * k)) --batch "$flow" --max-outstanding-acks "$window" $common
+        fi
+        st=$((st + 1))
+      done
+      ;;
+    js-async|js-sync|core)
+      case "$kind" in
+        js-async) sub="js pub async bench --stream bench$s0 --batch $window $multi" ;;
+        js-sync) sub="js pub sync bench --stream bench$s0 $multi" ;;
+        core) sub="pub core $multi" ;;
+      esac
+      j=0
+      while [ "$j" -lt "$procs" ]; do
+        k=$((clients / procs)); [ "$j" -ge $((clients % procs)) ] || k=$((k + 1))
+        # shellcheck disable=SC2086 # base, sub and common are lists of words
+        [ "$k" -eq 0 ] || launch "p$j" $base $sub --clients "$k" --msgs $((per_client * k)) $common
+        j=$((j + 1))
+      done
+      ;;
+    *) echo "!! unknown kind $kind" >&2; exit 2 ;;
+  esac
+  # 124 is timeout's "interrupted at the end", the expected outcome. 0 means
+  # the count ran out first: the cell is shorter than asked, and flagged.
+  rc=0; ran_out=0
+  for pd in $pids; do
+    if wait "$pd"; then ran_out=1; else r=$?; [ "$r" = 124 ] || rc=$r; fi
   done
   t=$(date +%s.%N)
-  tail -c 400 "$(ls -t "$dir"/*.log | head -1)"
-  # The first chunk's command line; js-fast runs one per stream, alike but
-  # for the stream and client count.
+  if [ "$rc" != 0 ]; then
+    echo "!! nats bench failed ($rc)"; tail -c 800 "$(ls -t "$dir"/*.log | head -1)"; exit 1
+  fi
+  # The run ends when SIGINT lands; a process that ran out ends earlier.
+  [ "$ran_out" = 1 ] || t=$(awk -v t="$t" -v e="$end" 'BEGIN { printf "%.3f", (t < e) ? t : e }')
+  [ "$ran_out" = 0 ] || echo "!! the message count ran out before the cell's end; recalibrate"
   echo "nats_cmd=$(head -1 "$dir/cmds")"
   echo "nats_cmd_count=$(wc -l < "$dir/cmds")"
-  python3 - "$dir" "$kind" "$size" "$clients" "$window" "$flow" "$nstreams" "$s" "$t" "$i" <<'PY'
-import csv, glob, json, statistics, sys
-d, kind, size, clients, window, flow, nstreams, s, t, chunks = sys.argv[1:]
-size = int(size); elapsed = float(t) - float(s)
-total, p50, p99 = 0, [], []
-for f in glob.glob(d + "/*.csv"):
-    for row in csv.reader(open(f)):
-        if not row or row[0].startswith("#"):
-            continue
-        total += int(row[3])
-        if len(row) >= 13:
-            p50.append(float(row[10])); p99.append(float(row[12]))
-doc = {
-    "system": "nats", "scenario": "nats-" + kind, "payload_bytes": size, "clients": int(clients),
-    "window": int(window), "flow": int(flow), "streams": int(nstreams), "chunks": int(chunks),
-    "records": total // size, "bytes": total, "elapsed_s": round(elapsed, 3),
-    "throughput_mb_s": total / elapsed / 1e6 if elapsed > 0 else None,
-    "throughput_msg_s": total / size / elapsed if elapsed > 0 else None,
-}
-if p50:
-    # nats bench's latency is per operation: one async window, one sync
-    # publish, one fast-batch flow ack. Medians over clients and chunks.
-    doc["ack_latency_us"] = {"p50": statistics.median(p50), "p99": statistics.median(p99)}
-print("NATS_BENCH_JSON " + json.dumps(doc, separators=(",", ":")))
-PY
+  printf 'NATS_BENCH_JSON {"system":"nats","scenario":"nats-%s","payload_bytes":%s,"clients":%s,"window":%s,"flow":%s,"streams":%s,"procs":%s,"msgs_per_client":%s,"ran_out":%s}\n' \
+    "$kind" "$size" "$clients" "$window" "$flow" "$nstreams" "$procs" "$per_client" \
+    "$([ "$ran_out" = 1 ] && echo true || echo false)"
   echo "gen.start=$s"
   echo "gen.end=$t"
+}
+
+# trim: discard the freed blocks on /data, so a cell's writes do not land on
+# whatever state the previous cell left in the drives' FTL.
+cmd_trim() {
+  echo "trim=$(fstrim -v /data 2>&1 | tr -s ' ' | tr '\n' ' ')"
+}
+
+# stop: NATS off the broker VM (for a Felix cell in between), store wiped.
+cmd_stop() {
+  systemctl stop nats 2>/dev/null || true
+  rm -rf "$STORE"
+  echo "nats=$(systemctl is-active nats || true)"
+}
+
+# nic: the interface the default route uses, and the accelerated-networking
+# VFs enslaved to it, which must carry the same MTU.
+nic() { ip -o route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p'; }
+
+# mtu <bytes>: set the NIC MTU (and its VFs'). Done only to match what the
+# Felix cells ran with.
+cmd_mtu() {
+  want="$1"; dev=$(nic)
+  [ -n "$dev" ] || { echo "!! no default-route NIC"; exit 1; }
+  if [ "$(cat "/sys/class/net/$dev/mtu")" != "$want" ]; then
+    ip link set dev "$dev" mtu "$want"
+    for vf in /sys/class/net/"$dev"/lower_*; do
+      [ -e "$vf" ] || continue
+      ip link set dev "$(basename "$vf" | sed 's/^lower_//')" mtu "$want"
+    done
+  fi
+  echo "host.mtu=$(cat "/sys/class/net/$dev/mtu")"
+}
+
+# mtu-check <ip> <bytes>: a full-size, don't-fragment ping, so a raised MTU is
+# known to hold on the path and not just on the NIC.
+cmd_mtu_check() {
+  if ping -M "do" -c 3 -W 2 -s $(($2 - 28)) "$1" >/dev/null; then
+    echo "path_mtu.$1=$2 ok"
+  else
+    echo "!! path to $1 does not carry $2"; exit 1
+  fi
 }
 
 # uninstall: stop and remove NATS, restore TCP sysctls, start Felix again.
@@ -434,5 +466,9 @@ case "$sub" in
   snapshot) cmd_snapshot "$@" ;;
   bench) cmd_bench "$@" ;;
   uninstall) cmd_uninstall ;;
+  trim) cmd_trim ;;
+  stop) cmd_stop ;;
+  mtu) cmd_mtu "$@" ;;
+  mtu-check) cmd_mtu_check "$@" ;;
   *) echo "!! unknown command $sub" >&2; exit 2 ;;
 esac

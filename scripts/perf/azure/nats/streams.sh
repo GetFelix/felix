@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Create the benchmark streams on the session's NATS server.
 #
-#   SESSION=v060-a ./streams.sh [count]     (default NATS_STREAMS, 12)
+#   SESSION=v060-a ./streams.sh [count] [file|memory]     (default 12 file)
 #
 # count R1 file streams, bench<i> on subject bench.<i>, with <i> zero-padded to
 # the width of count, which is the subject suffix `nats bench --multisubject
@@ -15,5 +15,7 @@ set -euo pipefail
 # shellcheck source=scripts/perf/azure/nats/nats-lib.sh
 source "$(cd "$(dirname "$0")" && pwd)/nats-lib.sh"
 
-n="${1:-${NATS_STREAMS:-12}}"
-nats_agent_on "${NATS_VM}" "nats-agent streams ${n}" | grep -E '^streams=' | sed 's/^/   /'
+n="${1:-12}"; storage="${2:-file}"
+# Memory streams keep NATS_MEM_RETAIN records in total, like Felix's in-memory
+# ring (nats-lib.sh).
+nats_agent_on "${NATS_VM}" "nats-agent streams ${n} ${storage} ${NATS_MEM_RETAIN}" | grep -E '^streams=' | sed 's/^/   /'

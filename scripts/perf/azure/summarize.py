@@ -376,8 +376,38 @@ def cell_row(cdir):
         ss = {"ss_window": f"publish {max(pub_secs):.0f}s of {run_secs:.0f}s run; use client rates"}
     for k in SS_COLS:
         row[k] = ss.get(k)
+    row["ss_records_s"], row["ss_payload_mb_s"] = records_rate(cdir, brokers, row)
     row["results"] = sum(1 for g in gens if (cdir / f"{g}.run.txt").exists() and loadgen_json(cdir / f"{g}.run.txt"))
     return row
+
+
+def records_rate(cdir, brokers, row):
+    """Steady-state records/s and payload MB/s: the steady append rate over
+    the cell's mean appended record size (snapshot deltas of bytes over
+    records), times the payload. Puts Felix and NATS on the same footing,
+    since their stored records carry different per-record overhead. A NATS
+    core cell appends nothing; its records come from what the server received."""
+    db = dr = 0.0
+    rate = row.get("ss_append_mb_s")
+    keys = ("m.append_bytes", "m.append_records")
+    if not rate and row.get("scenario", "").startswith("nats-core"):
+        rate, keys = row.get("ss_ingress_mb_s"), ("m.publish_bytes", "m.publish_requests")
+    for b in brokers:
+        before = kv_lines(cdir / f"{b}.before.txt")
+        after = kv_lines(cdir / f"{b}.after.txt")
+        x, y = delta(before, after, keys[0]), delta(before, after, keys[1])
+        if x is None or y is None:
+            return None, None
+        db += x
+        dr += y
+    try:
+        payload = float(row.get("payload_bytes") or 0)
+    except ValueError:
+        payload = 0.0
+    if not rate or not dr or not db:
+        return None, None
+    recs = rate * 1e6 / (db / dr)
+    return recs, (recs * payload / 1e6 if payload else None)
 
 
 SS_COLS = ("ss_window", "ss_all_gens_secs", "ss_secs", "ss_steps", "ss_append_mb_s", "ss_ingress_mb_s",
@@ -412,7 +442,8 @@ def cell_console_line(cdir):
             why += f": client {fmt(r['client_msg_s'], 0)} msg/s"
         return f"{why}: {old}{fair}"
     return (
-        f"steady append {fmt(r['ss_append_mb_s'])} MB/s, ingress {fmt(r['ss_ingress_mb_s'])} MB/s, "
+        f"steady append {fmt(r['ss_append_mb_s'])} MB/s ({fmt(r['ss_records_s'], 0)} records/s, "
+        f"payload {fmt(r['ss_payload_mb_s'])} MB/s), ingress {fmt(r['ss_ingress_mb_s'])} MB/s, "
         f"drops {fmt(r['ss_drops_s'], 0)}/s, cores {fmt(r['ss_cores'], 2)} "
         f"over {fmt(r['ss_secs'], 0)}s of {fmt(r['ss_all_gens_secs'], 0)}s all-gens ({r['ss_window']}){fair}; "
         f"old: {old}"
@@ -484,13 +515,15 @@ def main():
         "over the window every generator was running less its first and last 10%. Append counts "
         "record bytes (header included); ingress counts UDP bytes (IP/UDP headers included) on the "
         "client listener ports. Drops/s is UDP RcvbufErrors averaged over that window; cores is "
-        "broker process CPU. Fair is the fastest generator's MB/s over the slowest's. The old "
+        "broker process CPU. Records/s and payload MB/s divide the steady append rate by the mean "
+        "appended record size and multiply by the payload, so per-record overhead (Felix's record header, "
+        "NATS's subject and metadata) does not count as throughput; compare systems on these. Fair is the fastest generator's MB/s over the slowest's. The old "
         "columns are the sampler's moving-counter append rate and the sum of client averages. "
         "`legacy` marks cells recorded without a series; `client only` marks pubsub cells that published for under "
         "half the run, where the client rate is the number. Spread is (max-min)/mean over trials.",
         "",
-        "| cell | n | ref | knobs | append MB/s (spread) | ingress MB/s | drops/s | cores | fair | old append / client MB/s | p50 / p99 us | sync ms | fan-in | broker CPU % | gen CPU % | rcvbuf err | ports |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| cell | n | ref | knobs | append MB/s (spread) | records/s | payload MB/s | ingress MB/s | drops/s | cores | fair | old append / client MB/s | p50 / p99 us | sync ms | fan-in | broker CPU % | gen CPU % | rcvbuf err | ports |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for g, rs in groups.items():
         ok = [r for r in rs if r["done"]]
@@ -499,6 +532,8 @@ def main():
         legacy = all(r["legacy"] or r["ss_append_mb_s"] is None for r in use)
         client_only = legacy and all(str(r["ss_window"] or "").startswith("publish ") for r in use)
         sa, ss = spread([r["ss_append_mb_s"] for r in use])
+        rr, _ = spread([r["ss_records_s"] for r in use])
+        rp, _ = spread([r["ss_payload_mb_s"] for r in use])
         si, _ = spread([r["ss_ingress_mb_s"] for r in use])
         sd, _ = spread([r["ss_drops_s"] for r in use])
         sc, _ = spread([r["ss_cores"] for r in use])
@@ -521,7 +556,7 @@ def main():
             knobs += " client:" + r0["loadgen_env"]
         lines.append(
             f"| {g} | {len(ok)}/{len(rs)} | {r0['ref']} {r0['build_sha']} | {knobs} | "
-            f"{('client only' if client_only else 'legacy') if legacy else f'{fmt(sa)} ({fmt(ss, 0)}%)'} | {fmt(si)} | {fmt(sd, 0)} | {fmt(sc, 2)} | {fmt(sf, 2)} | "
+            f"{('client only' if client_only else 'legacy') if legacy else f'{fmt(sa)} ({fmt(ss, 0)}%)'} | {fmt(rr, 0)} | {fmt(rp)} | {fmt(si)} | {fmt(sd, 0)} | {fmt(sc, 2)} | {fmt(sf, 2)} | "
             f"{fmt(bm)} / {fmt(cm)} | {fmt(p50, 0)} / {fmt(p99, 0)} | {fmt(sm, 2)} | {fmt(fi)} | "
             f"{fmt(cpu, 0)} | {fmt(lcpu, 0)} | {fmt(rb, 0)} | {r0['port_share']} |"
         )
