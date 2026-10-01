@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790815553106,
+  "lastUpdate": 1790817020615,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -21164,6 +21164,58 @@ window.BENCHMARK_DATA = {
             "range": "6889.75",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 820797.59\nmean: 822410.20\nstdev: 6889.75\ncv: 0.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "37ac03db943b05836de5baebf7c6934b66c7f2b6",
+          "message": "test(cluster): replay #878 under the report floor in both ack modes (#897)\n\n#883 floors a lease-mode leader's report at the log it inherited, so a\nfollower missing the old leader's unacknowledged tail is never named, and\nthe #878 test, which expected one to be promoted, failed on every run.\n\nThe lease-mode test now checks the documented behaviour: no follower is\npromoted, the destination returns and leads, and every replica rejoins.\nThe #878 flow moves to majority_ack mode, where the promotion is fenced and\nreachable, and still checks that brokers holding the tail halt and rejoin.",
+          "timestamp": "2026-09-30T17:51:07-07:00",
+          "tree_id": "2480ed8ad8eabd42d2ed4a0d01ba91ef6b3b75b2",
+          "url": "https://github.com/gabloe/felix/commit/37ac03db943b05836de5baebf7c6934b66c7f2b6"
+        },
+        "date": 1790817020126,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 331339.86,
+            "range": "14479.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 331339.86\nmean: 335264.20\nstdev: 14479.61\ncv: 4.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 331339.86,
+            "range": "14479.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 331339.86\nmean: 335264.20\nstdev: 14479.61\ncv: 4.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82229.3,
+            "range": "697.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82229.30\nmean: 82077.90\nstdev: 697.46\ncv: 0.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 822293.05,
+            "range": "6974.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 822293.05\nmean: 820778.99\nstdev: 6974.67\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
