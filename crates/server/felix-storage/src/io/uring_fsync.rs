@@ -206,7 +206,7 @@ pub(crate) async fn fsync(file: Arc<File>) -> Option<io::Result<()>> {
             return Some(Err(err));
         }
     }
-    #[cfg(test)]
+    #[cfg(any(test, debug_assertions, feature = "fault-injection"))]
     super::power_loss::observe_file(&file, super::SyncKind::Uring);
     submit(file, Op::Fsync).await
 }

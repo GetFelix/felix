@@ -46,11 +46,7 @@ async fn a_live_copy_restored_to_the_point_keeps_every_ack_before_it_and_nothing
     .expect("write the manifest");
     for shard in 0..SHARDS {
         let entry = point_shard(&point, STREAM, shard);
-        let live = cluster
-            .node(&entry.leader)
-            .expect("leader")
-            .data_dir
-            .clone();
+        let live = cluster.node(&entry.leader).expect("leader").storage_dir();
         let key = shard_key(&cluster, shard);
         copy_live_shard(
             &shard_dir(&live, &key),

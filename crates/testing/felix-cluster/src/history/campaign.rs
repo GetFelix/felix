@@ -1,5 +1,6 @@
-//! A campaign: start the clients, let the nemesis loose for a while, heal
-//! everything, take the final reads, and hand back the history.
+//! A campaign: start the subscribers and clients, let the nemesis loose for a
+//! while, heal everything, take the final reads, let the subscribers catch up,
+//! and hand back the history.
 //!
 //! The seed fixes the fault schedule and every client's choice of operation
 //! and list. It does not fix the interleaving, which is up to the scheduler
@@ -14,6 +15,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use super::model::{Consistency, History, ListSpec, millis};
 use super::nemesis::{ClusterView, Nemesis, ShardView};
 use super::rng::Rng;
+use super::subscriber::Subscribers;
 use super::workload::{ClientKind, Workload};
 use crate::{CacheSpec, Cluster, ClusterConfig, StreamSpec, wait};
 
@@ -170,8 +172,9 @@ impl Campaign {
 
     /// [`Self::nodes`] brokers, every list a `Quorum` stream and the cache a
     /// `Quorum` cache on three of them, set up for whatever `nemesis` may
-    /// inject: proxied links for link faults, and
-    /// flush-and-acknowledge-on-commit for fsync faults.
+    /// inject: proxied links for link faults,
+    /// flush-and-acknowledge-on-commit for fsync faults and power loss, and
+    /// the power-loss model for power loss.
     pub fn cluster_config(&self, nemesis: &impl Nemesis) -> ClusterConfig {
         let mut broker_env = Vec::new();
         if nemesis.needs_fsync_on_commit() {
@@ -191,6 +194,7 @@ impl Campaign {
                 .collect(),
             caches: vec![CacheSpec::quorum(&self.cache, 1, 3)],
             proxy_links: nemesis.needs_proxy_links(),
+            power_loss: nemesis.needs_power_loss(),
             broker_env,
             ..ClusterConfig::default()
         }
@@ -261,6 +265,12 @@ impl Campaign {
             );
         }
 
+        let subscribers = Subscribers::start(
+            cluster,
+            workload,
+            lists.iter().map(|(list, spec)| (list.clone(), spec.base)),
+        );
+
         let clients: Vec<_> = (0..self.clients)
             .map(|process| {
                 let kind = if process % 2 == 0 {
@@ -285,6 +295,12 @@ impl Campaign {
             let read = settled_read(cluster, workload, list).await?;
             final_reads.insert(list.clone(), read.elements);
         }
+        let ends: std::collections::BTreeMap<_, _> = final_reads
+            .iter()
+            .filter_map(|(list, elements)| Some((list.clone(), elements.last()?.offset)))
+            .collect();
+        subscribers.catch_up(&ends, SETTLE_TIMEOUT).await;
+        let subscriptions = subscribers.stop().await;
         let (ops, registers, faults) = workload.take();
         let (commit_values, commit_reads) = workload.take_commits();
         Ok(History {
@@ -295,6 +311,7 @@ impl Campaign {
             commit_values,
             commit_reads,
             faults,
+            subscriptions,
         })
     }
 

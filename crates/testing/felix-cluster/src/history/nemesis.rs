@@ -13,8 +13,10 @@
 //!
 //! The single faults are injected one at a time and each is healed before the
 //! next. The compound kinds are the exception on purpose: two
-//! faults at once, a fault in the middle of a move, or one broker restarted
-//! over and over. They are what [`RandomNemesis::adversarial`] picks from.
+//! faults at once, a fault in the middle of a move, one broker restarted over
+//! and over, the power cut to every broker, or the control plane crashing
+//! with work in flight. They are what [`RandomNemesis::adversarial`] picks
+//! from.
 
 use std::fmt;
 use std::time::Duration;
@@ -67,6 +69,13 @@ pub trait Nemesis {
     /// flush on every commit and acknowledge only after it; otherwise a failed
     /// flush happens behind acknowledgements that never waited for it.
     fn needs_fsync_on_commit(&self) -> bool {
+        false
+    }
+
+    /// Whether any fault this nemesis may pick cuts the power, so brokers
+    /// must run under the power-loss model
+    /// ([`ClusterConfig::power_loss`](crate::ClusterConfig::power_loss)).
+    fn needs_power_loss(&self) -> bool {
         false
     }
 }
@@ -152,6 +161,14 @@ pub enum FaultKind {
     /// Kill one broker, then restart it and kill it again before it has
     /// caught up, a few times, before letting it stay up.
     RestartLoop,
+    /// Every broker loses power at once: what no flush covered is lost, torn
+    /// or zeroed, and they stay down for the hold. Healing starts them all.
+    /// Linux and debug brokers only.
+    PowerLoss,
+    /// Start a move, a drain or the kill of a leader, then crash the control
+    /// plane before it can finish. Healing brings the control plane back over
+    /// the same state and heals what was in flight.
+    ControlPlaneCrash,
 }
 
 impl FaultKind {
@@ -172,7 +189,9 @@ impl FaultKind {
             | FaultKind::PartitionAndDelay
             | FaultKind::Overlap
             | FaultKind::InterruptedMove
-            | FaultKind::RestartLoop => FaultFamily::Compound,
+            | FaultKind::RestartLoop
+            | FaultKind::PowerLoss
+            | FaultKind::ControlPlaneCrash => FaultFamily::Compound,
         }
     }
 
@@ -185,12 +204,22 @@ impl FaultKind {
             )
     }
 
-    /// Whether a fault of this kind may act on fsync.
+    /// Whether a fault of this kind may act on fsync. A power loss does: it
+    /// keeps only what was flushed, so only acknowledging after the flush
+    /// makes losing an acknowledged write a bug.
     pub fn needs_fsync_on_commit(self) -> bool {
         matches!(
             self,
-            FaultKind::SlowFsync | FaultKind::FsyncFailOnce | FaultKind::Overlap
+            FaultKind::SlowFsync
+                | FaultKind::FsyncFailOnce
+                | FaultKind::Overlap
+                | FaultKind::PowerLoss
         )
+    }
+
+    /// Whether a fault of this kind cuts the power.
+    pub fn needs_power_loss(self) -> bool {
+        self == FaultKind::PowerLoss
     }
 }
 
@@ -206,8 +235,8 @@ pub enum FaultFamily {
     Disk,
     /// Who leads what: operator moves and drains.
     Assignment,
-    /// Several faults at once, a fault in the middle of a move, or one
-    /// broker restarted over and over.
+    /// Several faults at once, a fault in the middle of a move, one broker
+    /// restarted over and over, a power loss, or a control plane crash.
     Compound,
 }
 
@@ -288,6 +317,14 @@ pub enum Fault {
         /// How many times it is started again before it is left up.
         restarts: u32,
     },
+    PowerLoss {
+        /// Decides which unflushed writes each broker keeps.
+        seed: u64,
+    },
+    ControlPlaneCrash {
+        /// What is in flight when the control plane goes down.
+        during: Box<Fault>,
+    },
 }
 
 impl Fault {
@@ -316,6 +353,8 @@ impl Fault {
             Fault::Several { kind, .. } => *kind,
             Fault::InterruptedMove { .. } => FaultKind::InterruptedMove,
             Fault::RestartLoop { .. } => FaultKind::RestartLoop,
+            Fault::PowerLoss { .. } => FaultKind::PowerLoss,
+            Fault::ControlPlaneCrash { .. } => FaultKind::ControlPlaneCrash,
         }
     }
 
@@ -336,7 +375,9 @@ impl Fault {
             | Fault::TornWrite { node }
             | Fault::Isolate { node }
             | Fault::RestartLoop { node, .. } => vec![node.clone()],
-            Fault::ControlPlaneClockStep { .. } => Vec::new(),
+            // Every broker, so nothing else can be aimed away from it.
+            Fault::ControlPlaneClockStep { .. } | Fault::PowerLoss { .. } => Vec::new(),
+            Fault::ControlPlaneCrash { during } => during.targets(),
             Fault::MoveShard { from, to, .. } | Fault::InterruptedMove { from, to, .. } => {
                 vec![from.clone(), to.clone()]
             }
@@ -372,6 +413,10 @@ impl Fault {
                 ..
             } => compound::interrupt_move(cluster, kind, name, *shard, to, victim).await,
             Fault::RestartLoop { node, .. } => cluster.kill_node(node),
+            Fault::PowerLoss { seed } => cluster.power_off(*seed).await,
+            Fault::ControlPlaneCrash { during } => {
+                compound::crash_control_plane(cluster, during).await
+            }
             _ => {
                 for fault in self.harness_faults() {
                     cluster.inject(&fault).await?;
@@ -401,6 +446,10 @@ impl Fault {
             Fault::RestartLoop { node, restarts } => {
                 compound::restart_loop(cluster, node, *restarts).await
             }
+            Fault::PowerLoss { .. } => cluster.restart_stopped_nodes().await,
+            Fault::ControlPlaneCrash { during } => {
+                compound::recover_control_plane(cluster, during).await
+            }
             _ => {
                 for fault in self.harness_faults() {
                     cluster.heal(&fault).await?;
@@ -428,7 +477,9 @@ impl Fault {
             | Fault::Drain { .. }
             | Fault::Isolate { .. }
             | Fault::InterruptedMove { .. }
-            | Fault::RestartLoop { .. } => Vec::new(),
+            | Fault::RestartLoop { .. }
+            | Fault::PowerLoss { .. } => Vec::new(),
+            Fault::ControlPlaneCrash { during } => during.harness_faults(),
             Fault::Several { faults, .. } => {
                 faults.iter().flat_map(Fault::harness_faults).collect()
             }
@@ -530,6 +581,12 @@ impl fmt::Display for Fault {
             Fault::RestartLoop { node, restarts } => {
                 write!(f, "kill {node} and restart it {restarts} times in a row")
             }
+            Fault::PowerLoss { seed } => {
+                write!(f, "cut the power to every broker (image seed {seed})")
+            }
+            Fault::ControlPlaneCrash { during } => {
+                write!(f, "crash the control plane during: {during}")
+            }
         }
     }
 }
@@ -590,7 +647,8 @@ impl RandomNemesis {
 
     /// The compound faults: failures that overlap, a partition that forces a
     /// failover, moves cut short, replica sets changed by drains, torn
-    /// writes and restart loops. Run it on four brokers
+    /// writes, restart loops, a whole-cluster power loss and a control plane
+    /// crash with work in flight. Run it on four brokers
     /// ([`Campaign::adversarial`](super::Campaign::adversarial)), so a drain
     /// has somewhere to move a follower copy to.
     pub fn adversarial() -> Self {
@@ -603,6 +661,8 @@ impl RandomNemesis {
             FaultKind::RestartLoop,
             FaultKind::TornWrite,
             FaultKind::Drain,
+            FaultKind::PowerLoss,
+            FaultKind::ControlPlaneCrash,
         ])
     }
 }
@@ -690,6 +750,10 @@ impl Nemesis for RandomNemesis {
                 node,
                 restarts: compound::RESTARTS,
             },
+            FaultKind::PowerLoss => Fault::PowerLoss {
+                seed: rng.next_u64(),
+            },
+            FaultKind::ControlPlaneCrash => compound::pick_control_plane_crash(rng, view, node)?,
         })
     }
 
@@ -699,6 +763,10 @@ impl Nemesis for RandomNemesis {
 
     fn needs_fsync_on_commit(&self) -> bool {
         self.kinds.iter().any(|kind| kind.needs_fsync_on_commit())
+    }
+
+    fn needs_power_loss(&self) -> bool {
+        self.kinds.iter().any(|kind| kind.needs_power_loss())
     }
 }
 

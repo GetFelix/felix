@@ -26,6 +26,11 @@
 //!   until the file changes; `write=eio_once` fails the next one only. A new
 //!   `write_generation=<n>` arms `eio_once` again.
 //!
+//! - `power_loss=<seed>` with `power_loss_into=<dir>` builds the tree a
+//!   reboot after a power loss would find into `<dir>` and kills the process.
+//!   It needs the model armed at startup by [`arm_power_loss_from_env`] and is
+//!   Linux only; see `io::power_loss`.
+//!
 //! A failed write lands half its buffer first, the way a disk that fills
 //! mid-batch leaves a partial record behind, so the writer's rewind is what
 //! gets tested and not a write that conveniently did nothing.
@@ -38,6 +43,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Mutex, Once, PoisonError};
 use std::time::{Duration, Instant};
+
+/// Names the storage root a broker runs under the power-loss model.
+pub const POWER_LOSS_ROOT_VAR: &str = "FELIX_STORAGE_POWER_LOSS_ROOT";
 
 /// How long a reading of the fault file is reused.
 const REREAD_AFTER: Duration = Duration::from_millis(50);
@@ -76,6 +84,36 @@ pub(crate) enum WriteFailure {
     Io = 2,
     /// The next write fails with `EIO` and later ones succeed.
     IoOnce = 3,
+}
+
+/// When [`POWER_LOSS_ROOT_VAR`] is set, put that directory under the
+/// power-loss model and follow `FELIX_STORAGE_FAULT_FILE` for the
+/// `power_loss` directive. Call before any store under the root is opened:
+/// everything already there is taken as durable.
+///
+/// Every flush under the root then records what it made durable, which costs
+/// a read of the flushed bytes, so this is for fault-testing runs only.
+pub fn arm_power_loss_from_env() -> std::io::Result<()> {
+    let Some(root) = std::env::var_os(POWER_LOSS_ROOT_VAR) else {
+        return Ok(());
+    };
+    let Some(fault_file) = std::env::var_os("FELIX_STORAGE_FAULT_FILE") else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{POWER_LOSS_ROOT_VAR} needs FELIX_STORAGE_FAULT_FILE to be told when"),
+        ));
+    };
+    std::fs::create_dir_all(&root)?;
+    #[cfg(target_os = "linux")]
+    {
+        crate::io::power_loss::trigger::arm(std::path::Path::new(&root), fault_file.into())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = fault_file;
+        tracing::warn!("{POWER_LOSS_ROOT_VAR} is ignored: the power-loss model is Linux only");
+        Ok(())
+    }
 }
 
 /// Make every flush in this process wait `delay` before it reaches the device.

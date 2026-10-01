@@ -17,6 +17,10 @@ use crate::config::{BrokerConfig, DurableStorageConfig};
 /// left out and the cache lives in memory.
 pub(crate) fn open(config: &BrokerConfig) -> Result<(Broker, Option<DurableStorage>)> {
     let durable_config = DurableStorageConfig::from_env()?;
+    // Test-only: the cluster harness's power loss. Armed before any store
+    // opens, since the model takes what is already on disk as durable.
+    #[cfg(debug_assertions)]
+    felix_storage::fault::arm_power_loss_from_env().context("arm the simulated power loss")?;
     let durable_storage = match &durable_config {
         Some(durable) => {
             tracing::info!(config = %durable.summary(), "opening durable stream storage");

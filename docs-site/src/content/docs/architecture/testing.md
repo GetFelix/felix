@@ -28,7 +28,7 @@ connection, `outcome_unknown`). Half the clients are idempotent producers that
 re-send under the same sequence, so the campaign also exercises deduplication
 across leader changes.
 
-It checks seven rules:
+It checks eleven rules:
 
 1. No acknowledged append is missing from the final read.
 2. No value sits at two offsets.
@@ -39,9 +39,20 @@ It checks seven rules:
 7. A cache get never returns a value that a later put had already replaced
    before the get began, whether that put was acknowledged or an earlier get
    saw it.
+8. No reader sees an atomic commit's event without its state, or the other
+   way round.
+9. A live subscriber is delivered offsets in increasing order, across
+   reconnects too.
+10. Every record a subscriber was delivered is in the final log at the same
+    offset.
+11. Every record in the final log reaches a subscriber or shows up as a gap
+    in its offsets, up to the end of the log.
 
 A read that is missing records is allowed, because a subscriber may drop under
 `DropNew` and the offsets show the gap. What a read does hold has to match.
+Rules 9 to 11 come from one subscriber per stream that stays subscribed for
+the whole run and resumes after its last offset whenever its connection is
+lost; once the final reads are taken, it has up to 60 seconds to catch up.
 
 The nemesis waits 1-4 s, injects one fault for 2-6 s, heals it, and repeats.
 The single faults never overlap, so a majority is always one fault from whole.
@@ -61,9 +72,24 @@ control plane until its shards fail over, a partition beside a delayed link,
 two random faults together, a move whose source or destination is killed
 300 ms in, a broker restarted and killed again before it catches up, a torn
 segment write, and a drain that replaces follower copies on the spare broker.
+
+It also cuts the power to every broker at once. Each debug broker runs its
+storage under the same power-loss model the storage suite uses, so on the
+directive it builds the directory a reboot would find, with unflushed writes
+lost, torn or zeroed, and dies; the harness swaps that image in and restarts
+the whole cluster. The campaign then runs with fsync and acknowledgement on
+commit, so any acknowledged append or cache put that goes missing is a write
+acknowledged before it was durable. This needs Linux.
+
+And it crashes the control plane 300 ms after starting a move, a drain or the
+kill of a leader, keeping its state, and brings it back after the hold with
+placement running again. The heal waits for any move it had started to
+finish or be dropped.
+
 The nightly workflow runs it for 20 minutes beside the single-fault one, each
 with its own seed, and also goes round each compound kind once in a
-two-minute campaign.
+two-and-a-half-minute campaign. A one-minute campaign on every pull request
+alternates the power loss and the control plane crash.
 
 After every heal the campaign also checks liveness. Within 60 s each shard
 must have a running leader that takes a write or answers a get, no move or
@@ -145,7 +171,12 @@ scenario can cut a leader's links and speed up its clock at once.
 | `Write` | Segment writes failing with `ENOSPC` or `EIO`, or failing once | `FELIX_STORAGE_FAULT_FILE` |
 
 Process-level faults are methods: `stop_node`, `kill_node`, `pause_node`,
-`partition_node`, `restart_control_plane`, `drain_node` and `add_node`.
+`partition_node`, `restart_control_plane`, `crash_control_plane` with
+`recover_control_plane`, `power_off` with `restart_stopped_nodes`,
+`drain_node` and `add_node`. `power_off` needs a cluster started with
+`ClusterConfig::power_loss`, which sets `FELIX_STORAGE_POWER_LOSS_ROOT` on
+every broker, and writes a `power_loss` directive to each broker's
+`FELIX_STORAGE_FAULT_FILE`.
 
 The clock and storage seams exist only in debug builds and builds with the
 `fault-injection` feature; a release broker ignores those files. A broker's

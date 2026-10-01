@@ -45,6 +45,9 @@ pub struct ControlPlane {
     pub store: Arc<InMemoryStore>,
     keys: TenantSigningKeys,
     placement_wakes: Arc<felix_controlplane_service::cluster::placement::PlacementWakes>,
+    /// The interval [`Self::run_placement`] was given, so a restart runs
+    /// placement again: the reconciler stops with the instance it ran on.
+    placement: std::sync::Mutex<Option<Duration>>,
     shutdown: CancellationToken,
     task: tokio::task::JoinHandle<()>,
 }
@@ -89,12 +92,21 @@ impl ControlPlane {
     /// connections are cut, requests fail while it is down, and its expiry
     /// sweep starts fresh against heartbeat stamps as old as the outage.
     pub async fn restart(self, downtime: Duration) -> Result<Self> {
-        let store = Arc::clone(&self.store);
-        let keys = self.keys.clone();
-        let addr = self.addr()?;
-        self.shutdown().await;
+        let stopped = self.stop().await?;
         tokio::time::sleep(downtime).await;
-        Self::serve(store, keys, addr).await
+        stopped.start().await
+    }
+
+    /// Stop serving, keeping what a restart needs.
+    pub(crate) async fn stop(self) -> Result<StoppedControlPlane> {
+        let stopped = StoppedControlPlane {
+            store: Arc::clone(&self.store),
+            keys: self.keys.clone(),
+            addr: self.addr()?,
+            placement: *self.placement.lock().expect("placement lock"),
+        };
+        self.shutdown().await;
+        Ok(stopped)
     }
 
     /// Serve `store` on `addr`, with the expiry sweep running.
@@ -163,6 +175,7 @@ impl ControlPlane {
             store,
             keys,
             placement_wakes,
+            placement: std::sync::Mutex::new(None),
             shutdown,
             task,
         })
@@ -440,8 +453,10 @@ impl ControlPlane {
 
     /// Run placement the way a deployment does: on `interval`, and whenever a
     /// report a move waits on arrives. Off unless a test asks, because most
-    /// tests step placement themselves.
+    /// tests step placement themselves. Runs again after a
+    /// [`Self::restart`].
     pub fn run_placement(&self, interval: Duration) {
+        *self.placement.lock().expect("placement lock") = Some(interval);
         drop(
             felix_controlplane_service::cluster::placement::spawn_reconciler(
                 Arc::clone(&self.store)
@@ -467,5 +482,26 @@ impl ControlPlane {
         // fault rather than a teardown.
         self.task.abort();
         let _ = tokio::time::timeout(Duration::from_secs(5), self.task).await;
+    }
+}
+
+/// A control plane that has been stopped with its state kept, as a crashed
+/// one whose database survives: [`Self::start`] brings it back on the same
+/// address over the same store and keys.
+pub(crate) struct StoppedControlPlane {
+    store: Arc<InMemoryStore>,
+    keys: TenantSigningKeys,
+    addr: std::net::SocketAddr,
+    placement: Option<Duration>,
+}
+
+impl StoppedControlPlane {
+    /// Serve again, and run placement again if it was running.
+    pub(crate) async fn start(self) -> Result<ControlPlane> {
+        let control_plane = ControlPlane::serve(self.store, self.keys, self.addr).await?;
+        if let Some(interval) = self.placement {
+            control_plane.run_placement(interval);
+        }
+        Ok(control_plane)
     }
 }

@@ -55,10 +55,28 @@ impl BrokerNode {
         self.process.as_mut()?.try_wait().ok().flatten()
     }
 
+    /// Where this broker keeps its logs: the directory its durable storage
+    /// and cache are rooted in, inside [`Self::data_dir`].
+    pub fn storage_dir(&self) -> PathBuf {
+        storage_dir(&self.data_dir)
+    }
+
     /// Take the child handle, leaving the node stopped. `None` if it already was.
     pub(crate) fn take_process(&mut self) -> Option<Child> {
         self.process.take()
     }
+}
+
+/// Where a broker's storage is rooted. A directory of its own, so the fault
+/// files, logs and certificates beside it are not part of what a simulated
+/// power loss rebuilds.
+pub(crate) fn storage_dir(data_dir: impl AsRef<Path>) -> PathBuf {
+    data_dir.as_ref().join("storage")
+}
+
+/// Where a broker told to lose power builds the storage a reboot would find.
+pub(crate) fn power_loss_image(data_dir: impl AsRef<Path>) -> PathBuf {
+    data_dir.as_ref().join("power-loss-image")
 }
 
 /// Where a broker's test-only clock skew lives. See `felix_common::clock::fault`.

@@ -30,6 +30,12 @@ pub(super) const OVERLAP_KINDS: &[FaultKind] = &[
     FaultKind::Drain,
 ];
 
+/// What a [`FaultKind::ControlPlaneCrash`] has in flight when the control
+/// plane goes down: a move, a drain, or a leader killed so its shards must
+/// fail over.
+pub(super) const IN_FLIGHT_KINDS: &[FaultKind] =
+    &[FaultKind::MoveShard, FaultKind::Drain, FaultKind::Kill];
+
 /// How many times a [`FaultKind::RestartLoop`] starts its broker again.
 pub(super) const RESTARTS: u32 = 3;
 
@@ -41,6 +47,10 @@ const RESTART_GAP: Duration = Duration::from_millis(500);
 /// Short, so the kill lands while the destination is still copying.
 const MOVE_HEAD_START: Duration = Duration::from_millis(300);
 
+/// How long what a [`FaultKind::ControlPlaneCrash`] started runs before the
+/// control plane goes down: long enough for a move or drain to be under way.
+const CRASH_HEAD_START: Duration = Duration::from_millis(300);
+
 /// How long an isolated leader may keep its shards before the isolation is
 /// reported as having caused no failover. The harness control plane expires a
 /// silent broker after a second.
@@ -49,12 +59,9 @@ const FAILOVER: Duration = Duration::from_secs(20);
 /// Isolate a leader when there is one, since isolating a follower forces no
 /// failover.
 pub(super) fn pick_isolate(rng: &mut Rng, view: &ClusterView, node: String) -> Fault {
-    let node = if view.leaders.is_empty() || view.leaders.contains(&node) {
-        node
-    } else {
-        rng.pick(&view.leaders).clone()
-    };
-    Fault::Isolate { node }
+    Fault::Isolate {
+        node: a_leader(rng, view, node),
+    }
 }
 
 pub(super) fn pick_kill_two(rng: &mut Rng, node: String, peers: &[String]) -> Fault {
@@ -134,6 +141,25 @@ pub(super) fn pick_interrupted_move(rng: &mut Rng, view: &ClusterView) -> Option
     })
 }
 
+pub(super) fn pick_control_plane_crash(
+    rng: &mut Rng,
+    view: &ClusterView,
+    node: String,
+) -> Option<Fault> {
+    let during = match *rng.pick(IN_FLIGHT_KINDS) {
+        FaultKind::MoveShard => {
+            RandomNemesis::new(vec![FaultKind::MoveShard]).next_fault(rng, view)?
+        }
+        FaultKind::Drain => Fault::Drain { node },
+        _ => Fault::Kill {
+            node: a_leader(rng, view, node),
+        },
+    };
+    Some(Fault::ControlPlaneCrash {
+        during: Box::new(during),
+    })
+}
+
 /// Cut `node` off from its peers through the partition file and from the
 /// control plane through its proxy, then wait for the control plane to give
 /// its shards to someone else.
@@ -210,6 +236,25 @@ pub(super) async fn interrupt_move(
     cluster.kill_node(victim)
 }
 
+/// Start `during`, give it a head start, then crash the control plane.
+pub(super) async fn crash_control_plane(cluster: &mut Cluster, during: &Fault) -> Result<()> {
+    Box::pin(during.inject(cluster))
+        .await
+        .with_context(|| format!("{during}"))?;
+    tokio::time::sleep(CRASH_HEAD_START).await;
+    cluster.crash_control_plane().await
+}
+
+/// Bring the control plane back, then heal what it crashed in the middle of.
+/// A move or restore it had started either resumes or is dropped; healing a
+/// move or drain waits for that.
+pub(super) async fn recover_control_plane(cluster: &mut Cluster, during: &Fault) -> Result<()> {
+    cluster.recover_control_plane().await?;
+    Box::pin(during.heal(cluster))
+        .await
+        .with_context(|| format!("{during}"))
+}
+
 /// Start `node` and kill it again before it can catch up, `restarts - 1`
 /// times, then start it and leave it up.
 pub(super) async fn restart_loop(cluster: &mut Cluster, node: &str, restarts: u32) -> Result<()> {
@@ -228,6 +273,16 @@ pub(super) fn heal_order(faults: &[Fault]) -> Vec<&Fault> {
     let mut order: Vec<&Fault> = faults.iter().rev().collect();
     order.sort_by_key(|fault| fault.family() == super::FaultFamily::Assignment);
     order
+}
+
+/// `node` if it leads a shard, or else a broker that does: faulting a
+/// follower forces no failover.
+fn a_leader(rng: &mut Rng, view: &ClusterView, node: String) -> String {
+    if view.leaders.is_empty() || view.leaders.contains(&node) {
+        node
+    } else {
+        rng.pick(&view.leaders).clone()
+    }
 }
 
 /// One fault of a kind from [`OVERLAP_KINDS`], aimed at none of `exclude`.

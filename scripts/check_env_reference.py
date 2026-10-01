@@ -48,6 +48,7 @@ NOT_OPERATIONAL = {
     "FELIX_CLOCK_FAULT_FILE",
     "FELIX_PEER_PARTITION_FILE",
     "FELIX_STORAGE_FAULT_FILE",
+    "FELIX_STORAGE_POWER_LOSS_ROOT",
     "FELIX_TEST_BROKER_OUTPUT",
     "FELIX_TEST_DATABASE_URL",
     # Debug builds only: the fleet features a broker reports, so a cluster

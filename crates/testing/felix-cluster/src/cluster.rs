@@ -11,6 +11,7 @@ mod groups;
 mod metrics;
 mod ownership;
 mod placement;
+mod power_loss;
 mod restarts;
 mod startup;
 mod streams;
@@ -55,6 +56,8 @@ pub struct Cluster {
     links: Option<Links>,
     /// What has been injected and not yet healed.
     faults: std::sync::Mutex<faults::Injected>,
+    /// The control plane while [`Self::crash_control_plane`] has it down.
+    crashed_control_plane: Option<crate::controlplane::StoppedControlPlane>,
     /// Held so the data directories outlive the brokers and are removed with
     /// the cluster.
     _root: tempfile::TempDir,

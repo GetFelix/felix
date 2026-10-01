@@ -5,8 +5,9 @@ append to and read `Quorum` streams, and put to and get keys of a `Quorum`
 cache, on a real three-broker cluster while a
 nemesis kills, pauses and partitions brokers, and in the long runs also cuts
 links, skews clocks, fails fsyncs, moves shards and drains brokers. An
-adversarial nemesis overlaps faults, forces failovers and cuts moves and
-restarts short. Every operation is recorded with
+adversarial nemesis overlaps faults, forces failovers, cuts moves and
+restarts short, cuts the power to every broker and crashes the control plane
+with work in flight. Every operation is recorded with
 when it started, when it ended and what it returned. Once the faults are healed,
 the checker compares that history with what a replicated append-only log
 promises. During the run, after every heal, the campaign also checks that the
@@ -48,6 +49,9 @@ checked as registers (`history/register.rs`).
   that appends `value` to the list and sets the list's state to `value`. It is
   recorded as an append too, with the same outcomes, so rules 1 to 6 cover
   its event. A commit is never re-sent.
+- **Live subscribers.** One per list, subscribed from the list's base for the
+  whole run, recording every event it is delivered with its offset. See
+  "Live subscribers".
 - **commit read(list)** reads the list to its tail, then the list's state
   (the value and the offset of the commit that wrote it), then the list again
   from that offset. A commit read whose first read fell short of its tail, or
@@ -68,6 +72,9 @@ before B was invoked" means the same thing to every client.
 | 6 | Failed writes stay absent | A read sees a value whose append was answered as a definite failure |
 | 7 | No stale cache reads | A get returns the value of an ok put `u` although, before the get began, a value `w` whose put began after `u`'s was acknowledged was already in effect; or a get misses although some value was already in effect |
 | 8 | No partial commits | A commit read's first read saw a commit's event and the state it read next is older than that commit (the event without the state); or the state names a commit whose event is not at the state's version in the read that followed (the state without the event), or a value no commit wrote |
+| 9 | Delivery order | A live subscriber is delivered an offset at or below one it already had, in the same session or after a resume, or below where it started |
+| 10 | No lost deliveries | A live subscriber is delivered a record the final log does not hold at that offset: another value is there, no record is, or the log ends before it |
+| 11 | No missing deliveries | A record in the final log sits at an offset a subscriber was told holds no event (`skipped_before`), or past the last offset the subscriber was delivered once it had time to catch up |
 
 Rule 8 leans on the order of the three looks. Every commit event the first
 read saw was committed before the state was read, so the state must be at
@@ -128,6 +135,15 @@ violation.
 > `a_reader_that_sees_both_halves_is_valid`,
 > `the_event_without_the_state_is_a_partial_commit`,
 > `the_state_without_the_event_is_a_partial_commit`: rule 8, both ways round.
+> `a_whole_delivery_across_a_resume_is_valid` and
+> `a_visible_drop_is_counted_not_reported`: a subscriber that had everything,
+> or dropped a record the offsets show, passes.
+> `offsets_delivered_out_of_order_break_delivery_order`,
+> `a_resume_that_redelivers_breaks_delivery_order`,
+> `a_delivered_record_the_final_log_lacks_is_lost`,
+> `a_skip_over_a_record_is_a_missing_delivery` and
+> `a_subscriber_that_stops_short_is_a_missing_delivery`: rules 9 to 11, one
+> case each.
 
 ## The campaign
 
@@ -249,8 +265,9 @@ The nemesis also counts the cache's leader among the list leaders it targets.
 `RandomNemesis::adversarial` picks from the kinds below. They cover what a
 single fault healed before the next cannot reach: failures at the same time, a
 leader lost while clients write, replica sets that change, moves cut short,
-recovery from a half-finished state, partitions beside slow links, and
-brokers restarted over and over. Their code is in
+recovery from a half-finished state, partitions beside slow links, brokers
+restarted over and over, a whole cluster losing power, and a control plane
+that crashes in the middle of a change. Their code is in
 `history/nemesis/compound.rs`.
 
 | Kind | Injected | Healed |
@@ -263,6 +280,38 @@ brokers restarted over and over. Their code is in
 | `RestartLoop` | A broker is killed | Restarted and killed again 500ms later, twice, then restarted for good |
 | `TornWrite` | The broker's next segment write lands half its batch and fails with `EIO` | Fault removed, broker restarted |
 | `Drain` | As above | As above |
+| `PowerLoss` | Every broker loses power: each builds the storage a reboot would find, where writes no flush covered are lost, torn or zeroed as the seed decides, and dies; that image replaces its storage. They stay down for the hold | Every broker started again at once |
+| `ControlPlaneCrash` | A move, a drain or the kill of a leader starts, and 300ms later the control plane stops with its state kept | Control plane restarted on the same address and store, placement running again; then the move or drain waits to finish, or the killed broker is restarted |
+
+A `PowerLoss` is only as strong as what it keeps, so the campaign runs it with
+brokers that flush on every commit and acknowledge only after the flush
+(`FELIX_DURABLE_FSYNC_MODE=on_commit`, `FELIX_ACK_ON_COMMIT=true`). Under that
+configuration every acknowledged write the workload makes is flushed first:
+stream appends on the leader and on each follower before it acknowledges the
+leader, atomic commits, which are a single record on the same path, and cache
+puts. Replica state and the generation history are written to a temporary
+file, flushed, renamed and their directory flushed. So the lost-write rule
+applies unchanged: an acknowledged append or cache put missing after a power
+loss is a write acknowledged before it was durable.
+
+The model is the storage crate's power-loss layer (`io/power_loss.rs`, the one
+the storage power-loss suite uses), armed in a debug broker by
+`FELIX_STORAGE_POWER_LOSS_ROOT` and triggered through the storage fault file;
+see [the cluster harness](cluster-harness.md). It only sees flushes that go
+through the storage crate's I/O seam, which every broker write the workload
+depends on does. It needs Linux, since it reads flushed files through
+`/proc/self/fd`. Elsewhere a `PowerLoss` is logged as a fault that could not be
+injected. The broker writes the image and dies while holding the model's
+lock, so no flush can finish, and nothing can be acknowledged, after the image
+was taken.
+
+A `ControlPlaneCrash` is the harness's control plane stopped and started
+again over the same in-memory store and keys, which is a restart with its
+database intact. The brokers keep serving on the leases they hold until they
+lapse, and nothing is placed while it is down. A move or follower replacement
+it had started resumes or is dropped once it is back, and the heal waits up
+to 60s for no shard to be moving, as it does after a `MoveShard` or `Drain`.
+A killed leader's shards fail over only once it is back.
 
 The adversarial nemesis runs on four brokers (`Campaign::with_spare_broker`)
 with every list and the cache on three of them. The fourth broker matters in
@@ -322,6 +371,40 @@ a move's destination killed mid-move can refuse the new leader's rebuild
 (issue 878). Until it is fixed, an adversarial run may fail on it. The cache
 version of this stall (issue 863) is fixed.
 
+### Live subscribers
+
+Reads stop at the tail they were given, so they cannot tell a record that
+was never delivered from one that was not there yet. Rules 9 to 11 need a
+reader that stays. Once the bases are set, the campaign starts one subscriber
+per list (`history/subscriber.rs`), subscribed with
+`ClusterClient::subscribe_from` at the list's base, and leaves it running
+until the end. Every event it is delivered is recorded with its offset and
+`skipped_before`.
+
+Its `ClusterSubscription` follows shard moves and lost connections on its
+own. When it gives up with an error, or the broker ends the subscription, the
+subscriber connects a fresh client from the current address book and resumes
+at one past the last offset it was delivered, retrying every 250ms. Each
+resume is recorded with when it happened, where it started and why the
+previous session ended, and a violation names the session it happened in.
+
+After the clients stop and the final reads are taken, the campaign waits up
+to 60s for each subscriber to be delivered the last offset of its list's final
+read, then stops them. A subscriber that has not caught up by then does not
+fail the campaign. It is in the history, and rule 11 reports it as stopping
+short.
+
+A gap in a subscriber's offsets is a drop when the final log has a value at
+one of the skipped offsets and `skipped_before` did not claim it. Drops are
+allowed (`DropNew`), and the summary line counts them with the deliveries and
+resumes. A gap over offsets that hold no value in the final log, such as
+generation-start records, is not a drop. A gap that `skipped_before` claims
+holds no event, when the final log has a value there, is a violation: that
+record was skipped without the subscriber being able to see it.
+
+Rules 10 and 11 apply to `Quorum` lists only, like rule 1, and deliveries
+below a list's base are ignored.
+
 ### Acknowledged offsets
 
 Rule 3 includes "an append acknowledged at an offset is found at another", and
@@ -353,11 +436,19 @@ faults a failing run printed, implement `Nemesis`.
 > campaign on the lease that goes round every kind in a fixed order leaves a valid history
 > and injects and heals at least one fault of each family. The order puts a
 > shard move fourth and a drain sixth, so both run on every PR.
-> `adversarial_faults_heal_and_every_shard_serves_again`: a 120-second
+> `adversarial_faults_heal_and_every_shard_serves_again`: a 150-second
 > lease-free campaign on four brokers that goes round the compound kinds
 > leaves a valid history, every shard serves again after each heal, and at
 > least one `Isolate`, one `KillTwo` and one `RestartLoop` are injected and
 > healed. The healed `Isolate` means a partition caused a failover.
+> `a_power_loss_or_a_control_plane_crash_loses_nothing_acknowledged`: a
+> 60-second lease-free campaign that alternates the two leaves a valid
+> history, and injects and heals at least one `ControlPlaneCrash` and, on
+> Linux, one `PowerLoss`.
+> `a_power_loss_needs_on_commit_flushes_and_the_model` and
+> `a_control_plane_crash_interrupts_a_move_a_drain_or_a_failover`: a power
+> loss runs only with on-commit flushes, and a control plane crash lands
+> during each kind of work it can interrupt.
 > `all_faults_never_steps_a_broker_clock_back`: the nemesis never asks for a
 > step the harness would refuse.
 > `overlapping_faults_are_aimed_at_different_brokers`,

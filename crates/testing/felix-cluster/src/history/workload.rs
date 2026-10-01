@@ -332,7 +332,7 @@ impl Workload {
             .map_or(0, |(_, base)| *base)
     }
 
-    fn addrs(&self) -> Vec<SocketAddr> {
+    pub(super) fn addrs(&self) -> Vec<SocketAddr> {
         self.addrs.read().expect("address book lock").clone()
     }
 
@@ -781,7 +781,7 @@ fn encode(value: u64) -> Vec<u8> {
     format!("{PAYLOAD_PREFIX}{value}").into_bytes()
 }
 
-fn decode(payload: &[u8]) -> u64 {
+pub(super) fn decode(payload: &[u8]) -> u64 {
     std::str::from_utf8(payload)
         .ok()
         .and_then(|text| text.strip_prefix(PAYLOAD_PREFIX))

@@ -14,6 +14,8 @@
 //! - [`campaign`]: the run itself, configured from the environment, and
 //!   the state dump a failing run prints.
 //! - `liveness`: after every heal, the check that each shard serves again.
+//! - `subscriber`: one live subscriber per list for the whole run, for the
+//!   delivery rules.
 //!
 //! What each rule means and how to read a violation is in
 //! `docs/history-checker.md`.
@@ -27,6 +29,7 @@ pub mod model;
 pub mod nemesis;
 pub mod register;
 pub mod rng;
+mod subscriber;
 mod workload;
 
 pub use campaign::{Campaign, Mode};

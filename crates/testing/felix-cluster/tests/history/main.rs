@@ -39,7 +39,7 @@ const EVERY_FAMILY_DURATION: Duration = Duration::from_secs(75);
 
 /// Long enough for [`RoundRobin`] to go once round the adversarial kinds,
 /// each followed by the wait for every shard to serve again.
-const ADVERSARIAL_DURATION: Duration = Duration::from_secs(120);
+const ADVERSARIAL_DURATION: Duration = Duration::from_secs(150);
 
 /// **Acknowledged `Quorum` appends survive kills, pauses and partitions**,
 /// nothing is duplicated or reordered, reads are prefixes of the final log,
@@ -137,8 +137,10 @@ async fn every_fault_family_is_injected_and_healed_in_a_campaign() {
 /// **The adversarial faults run through the campaign, and the cluster
 /// recovers from each.** Two brokers killed at once, a leader isolated
 /// until it fails over, a partition beside a delayed link, two random faults
-/// together, a move cut short by a kill, a restart loop, a torn write and a
-/// drain that replaces follower copies, one after another on four brokers
+/// together, a move cut short by a kill, a restart loop, a torn write, a
+/// drain that replaces follower copies, a power loss on every broker (Linux
+/// only; elsewhere it is logged as not injected) and a control plane crash
+/// with work in flight, one after another on four brokers
 /// with the clients writing throughout. The history stays valid, and after
 /// each heal every shard serves again within the liveness bound.
 #[serial]
@@ -172,6 +174,52 @@ async fn adversarial_faults_heal_and_every_shard_serves_again() {
         FaultKind::KillTwo,
         FaultKind::RestartLoop,
     ] {
+        assert!(
+            healed.contains(&format!("{kind:?}")),
+            "seed {seed}: no {kind:?} was injected and healed; picked {:?}",
+            nemesis.picked,
+        );
+    }
+}
+
+/// Long enough for [`RoundRobin`] to go round a power loss and a control
+/// plane crash at least once each.
+const OUTAGE_DURATION: Duration = Duration::from_secs(60);
+
+/// **Nothing acknowledged is lost when every broker loses power at once, or
+/// when the control plane crashes with work in flight.** A power loss keeps
+/// only what each broker flushed, so an acknowledged append or cache put
+/// missing afterwards is a write acknowledged before it was durable. The
+/// power loss needs Linux; elsewhere it is logged as not injected and only
+/// the control plane crash is checked.
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_power_loss_or_a_control_plane_crash_loses_nothing_acknowledged() {
+    let mut campaign =
+        Campaign::from_env(SEED, OUTAGE_DURATION, Mode::LeaseFree).expect("campaign settings");
+    campaign.duration = OUTAGE_DURATION;
+    let (seed, mode) = (campaign.seed, campaign.mode);
+    println!(
+        "outage campaign: seed {seed}, mode {mode}; rerun with \
+         FELIX_HISTORY_SEED={seed} FELIX_HISTORY_MODE={mode}"
+    );
+    let mut nemesis = RoundRobin::new(vec![FaultKind::PowerLoss, FaultKind::ControlPlaneCrash]);
+    let history = run_checked(&campaign, &mut nemesis).await;
+
+    let healed: BTreeSet<String> = nemesis
+        .picked
+        .iter()
+        .filter(|fault| {
+            let line = format!("healed {fault}");
+            history.faults.iter().any(|f| f.what == line)
+        })
+        .map(|fault| format!("{:?}", fault.kind()))
+        .collect();
+    let mut expected = vec![FaultKind::ControlPlaneCrash];
+    if cfg!(target_os = "linux") {
+        expected.push(FaultKind::PowerLoss);
+    }
+    for kind in expected {
         assert!(
             healed.contains(&format!("{kind:?}")),
             "seed {seed}: no {kind:?} was injected and healed; picked {:?}",
@@ -308,5 +356,9 @@ impl Nemesis for RoundRobin {
 
     fn needs_fsync_on_commit(&self) -> bool {
         self.kinds.iter().any(Nemesis::needs_fsync_on_commit)
+    }
+
+    fn needs_power_loss(&self) -> bool {
+        self.kinds.iter().any(Nemesis::needs_power_loss)
     }
 }

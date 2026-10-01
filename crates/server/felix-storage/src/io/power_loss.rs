@@ -21,6 +21,12 @@
 //!
 //! Linux only: the capture reopens a descriptor through `/proc/self/fd`, which
 //! is what lets it read a segment the log holds write-only.
+//!
+//! Besides the unit tests, a debug broker can run under it for the cluster
+//! harness's whole-cluster power loss: `trigger` arms it from the environment
+//! and turns the power off when the fault file says so.
+
+pub(crate) mod trigger;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
@@ -38,6 +44,10 @@ use super::SyncKind;
 pub(crate) const PAGE: usize = 4096;
 /// The unit a device writes atomically; a torn page is torn on these.
 pub(crate) const SECTOR: usize = 512;
+/// Files up to this size are re-read whole at every flush, since they may be
+/// rewritten in place. Larger ones are taken to only grow (segments), so a
+/// flush reads from the page holding the previously captured length on.
+const WHOLE_FILE_UP_TO: u64 = 64 * 1024;
 
 /// Live observers. A flush consults this only while one is installed.
 static OBSERVERS: Mutex<Vec<Weak<PowerLoss>>> = Mutex::new(Vec::new());
@@ -105,12 +115,14 @@ impl PowerLoss {
         Ok(this)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn counts(&self) -> SyncCounts {
         self.state.lock().counts
     }
 
     /// Build the tree a reboot after a power loss *now* would find, into
     /// `into` (which must exist and be empty).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn crash(
         &self,
         seed: u64,
@@ -122,6 +134,40 @@ impl PowerLoss {
         // moments of the device.
         let durable = self.state.lock();
         crash_dir(&self.root, into, &durable, &mut rng, writeback)
+    }
+
+    /// Build the post-reboot tree into `into`, then kill this process without
+    /// releasing the device state. A flush that has not been captured yet
+    /// blocks on that lock, so nothing acknowledged after the image was taken
+    /// can be missing from it.
+    pub(crate) fn power_off(&self, seed: u64, into: &Path) -> ! {
+        let writeback = if seed & 1 == 0 {
+            Writeback::AnySubset
+        } else {
+            Writeback::InOrder
+        };
+        // Built beside `into` and renamed, so `into` existing means complete.
+        let staging = into.with_extension("partial");
+        let _ = std::fs::remove_dir_all(&staging);
+        let durable = self.state.lock();
+        tracing::warn!(seed, ?writeback, into = %into.display(), "simulated power loss");
+        let built = std::fs::create_dir_all(&staging)
+            .and_then(|()| {
+                crash_dir(
+                    &self.root,
+                    &staging,
+                    &durable,
+                    &mut SplitMix64::new(seed),
+                    writeback,
+                )
+            })
+            .and_then(|()| std::fs::rename(&staging, into));
+        if let Err(err) = built {
+            tracing::error!(%err, "could not build the power-loss image");
+        }
+        // SAFETY: signalling this process takes no pointers.
+        unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
+        std::process::abort()
     }
 
     fn owns(&self, path: &Path) -> bool {
@@ -136,11 +182,41 @@ impl PowerLoss {
         };
         // Through the descriptor rather than the path, so a file renamed or
         // unlinked since it was opened is still the one captured.
-        let Ok(bytes) = std::fs::read(format!("/proc/self/fd/{}", file.as_raw_fd())) else {
+        let path = format!("/proc/self/fd/{}", file.as_raw_fd());
+        let captured = self.state.lock().files.get(&inode).map(Vec::len);
+        // Only a file that has not shrunk is read from where the last capture
+        // ended. The segment writer truncates only to rewind a failed append,
+        // which the harness heals with a restart and a fresh observer.
+        let from = match captured {
+            Some(len) if meta.len() > WHOLE_FILE_UP_TO && meta.len() >= len as u64 => {
+                len / PAGE * PAGE
+            }
+            _ => 0,
+        };
+        let Ok(tail) = read_from(&path, from) else {
             return;
         };
         let mut state = self.state.lock();
-        state.files.insert(inode, bytes);
+        let spliced = match state.files.get_mut(&inode) {
+            Some(bytes) if from > 0 && bytes.len() >= from => {
+                bytes.truncate(from);
+                bytes.extend_from_slice(&tail);
+                true
+            }
+            _ => false,
+        };
+        if !spliced {
+            // A concurrent capture left less than the tail starts from.
+            let whole = if from == 0 {
+                tail
+            } else {
+                let Ok(whole) = std::fs::read(&path) else {
+                    return;
+                };
+                whole
+            };
+            state.files.insert(inode, whole);
+        }
         match kind {
             SyncKind::Data => state.counts.data += 1,
             SyncKind::All => state.counts.all += 1,
@@ -190,6 +266,16 @@ pub(crate) fn observe_dir(path: &Path) {
     for observer in observers.iter().filter(|o| o.owns(&path)) {
         observer.capture_dir(&path);
     }
+}
+
+/// The bytes of the file at `path` from `offset` to its end.
+fn read_from(path: &str, offset: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(offset as u64))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 fn live_observers() -> Vec<Arc<PowerLoss>> {

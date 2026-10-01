@@ -79,6 +79,7 @@ fn history(ops: Vec<Op>, final_a: &[(u64, u64)]) -> History {
         commit_values: Default::default(),
         commit_reads: Vec::new(),
         faults: Vec::new(),
+        subscriptions: Vec::new(),
     }
 }
 
