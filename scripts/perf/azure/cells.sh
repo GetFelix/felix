@@ -26,6 +26,8 @@
 #                            re-run with different EXTRA_* lands beside the first
 #   PROFILE=1 | PROFILE_CELLS=<regex>  perf + pidstat + folded stacks per cell
 #   PROFILE_SECS=40          how long a profile records
+#   PROFILE_LEAD_SECS=10     ingest cells: start recording this long after the
+#                            shared start, inside the publishing window
 #   SETTLE_SECS=8            pause after brokers report ready
 #   START_DELAY_SECS=45      ingest cells: every generator starts publishing this
 #                            long after the cell launches, at the same instant
@@ -47,6 +49,7 @@ export GROUP
 : "${PROFILE:=0}"
 : "${PROFILE_CELLS:=}"
 : "${PROFILE_SECS:=40}"
+: "${PROFILE_LEAD_SECS:=10}"
 : "${SETTLE_SECS:=8}"
 : "${START_DELAY_SECS:=45}"
 : "${OUT:=${here}/sessions/${SESSION}-results}"
@@ -287,10 +290,6 @@ cell() {
   par_on "${dir}" before "felix-agent snapshot --env
 felix-agent sampler-start '${name}'" "${BROKER_VMS[@]}" || rc=1
   par_on "${dir}" armed "felix-agent sampler-start '${name}'" "${gens[@]}" || true
-  if want_profile "${name}"; then
-    par_on "${dir}" profstart "felix-agent profile-start '${name}' ${PROFILE_SECS}" "${BROKER_VMS[@]}" || true
-  fi
-
   # Launching generators through run-command staggers them by seconds, so an
   # ingest cell gives them one wall-clock start instead (#723). Taken here,
   # after the snapshots, which take longer than the delay.
@@ -318,7 +317,16 @@ echo gen.end=\$t
 echo __RUNOK__" > "${dir}/${lg}.run.txt" 2>&1 ) &
     pids+=("$!")
   done
+  # Record once publishing is under way: from the cell's start the window
+  # would cover the snapshots, the start delay and the handshakes instead.
+  local prof_pid=""
+  if want_profile "${name}"; then
+    ( [ -n "${start_at}" ] && sleep "$(( start_at + PROFILE_LEAD_SECS - $(date +%s) ))" 2>/dev/null
+      par_on "${dir}" profstart "felix-agent profile-start '${name}' ${PROFILE_SECS}" "${BROKER_VMS[@]}" || true ) &
+    prof_pid=$!
+  fi
   for p in ${pids[@]+"${pids[@]}"}; do wait "${p}" || rc=1; done
+  [ -z "${prof_pid}" ] || wait "${prof_pid}" || true
 
   par_on "${dir}" after "felix-agent sampler-stop '${name}'
 felix-agent snapshot" "${BROKER_VMS[@]}" || rc=1
