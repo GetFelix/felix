@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790835437808,
+  "lastUpdate": 1790858732857,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -21580,6 +21580,58 @@ window.BENCHMARK_DATA = {
             "range": "53358.85",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1177414.33\nmean: 1152943.53\nstdev: 53358.85\ncv: 4.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7f9aff58b162b73f042fce867cc1f8afb83b6795",
+          "message": "ci: give each main commit its own concurrency group (#907)\n\nA concurrency group keeps one pending run and cancels it when the next one\nqueues, whatever cancel-in-progress says. So three merges inside one CI\nrun's length skipped the middle one: #903's run on 84dd692a was cancelled\nwhen #905 merged. Keying main's group by commit makes every main run its\nown group; branches still cancel superseded runs.\n\nCloses #906",
+          "timestamp": "2026-10-01T05:41:42-07:00",
+          "tree_id": "0005dad5820a6ad8318b6ced33632779b9c25997",
+          "url": "https://github.com/gabloe/felix/commit/7f9aff58b162b73f042fce867cc1f8afb83b6795"
+        },
+        "date": 1790858731599,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 357827.88,
+            "range": "5579.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 357827.88\nmean: 359876.09\nstdev: 5579.46\ncv: 1.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 357827.88,
+            "range": "5579.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 357827.88\nmean: 359876.09\nstdev: 5579.46\ncv: 1.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83592.43,
+            "range": "317.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83592.43\nmean: 83394.68\nstdev: 317.22\ncv: 0.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 835924.35,
+            "range": "3172.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 835924.35\nmean: 833946.87\nstdev: 3172.20\ncv: 0.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
