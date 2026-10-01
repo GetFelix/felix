@@ -61,6 +61,7 @@ async fn a_requested_pass_runs_without_waiting_for_the_interval() {
                 reported_at_millis: store.now_millis().await.expect("clock"),
                 drained: true,
                 leader_offset: None,
+                halted: Default::default(),
             },
             &fenced.leader,
         )

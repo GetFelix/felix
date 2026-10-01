@@ -37,7 +37,7 @@ use std::collections::HashMap;
 
 use crate::cluster::placement::CaughtUp;
 use crate::config::NodeLivenessConfig;
-use crate::model::{ReplicaReport, ShardKey};
+use crate::model::{HaltedCopy, ReplicaReport, ShardKey};
 
 /// Believe a report for twice the expiry timeout plus one heartbeat.
 ///
@@ -136,6 +136,10 @@ impl CaughtUp for ReplicaPositions {
 
     fn as_of_millis(&self) -> Option<u64> {
         Some(self.now_millis)
+    }
+
+    fn halted(&self, key: &ShardKey, node_id: &str) -> Option<&HaltedCopy> {
+        self.fresh(key)?.halted.get(node_id)
     }
 
     fn is_drained(&self, key: &ShardKey, generation: u64) -> bool {

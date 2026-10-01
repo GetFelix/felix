@@ -15,8 +15,8 @@
 //! which is when they are worth having, and an idle broker waits for nothing.
 //! `disk_log/sync.rs` makes the same trade for the same reason.
 use felix_common::membership::{
-    ReplicaOffset, ReplicaStatusRequest, ReplicaStatusResponse, ShardKind as WireShardKind,
-    ShardReplicaStatus,
+    HaltedReplicaStatus, ReplicaOffset, ReplicaStatusRequest, ReplicaStatusResponse,
+    ShardKind as WireShardKind, ShardReplicaStatus,
 };
 use felix_router::ShardKey;
 use tokio::sync::{mpsc, oneshot};
@@ -119,6 +119,10 @@ pub struct ShardReport {
     /// This broker has stopped serving the shard and its log will not grow,
     /// so `caught_up` is measured against the final tail.
     pub drained: bool,
+    /// Followers replication has stopped for, with the reason `halted.rs`
+    /// lists them under. Placement keeps a new copy off them and replaces
+    /// one that stays halted.
+    pub halted: Vec<(String, &'static str)>,
 }
 
 /// Who could take this shard over, as of `tail`.
@@ -147,6 +151,16 @@ pub(super) fn shard_report(
             .collect(),
         tail,
         drained,
+        // A fenced halt says this broker is no longer the leader, not that
+        // the follower's copy is bad, and the control plane refuses a
+        // superseded leader's report anyway.
+        halted: followers
+            .iter()
+            .filter_map(|follower| {
+                let halt = follower.halted.filter(|halt| halt.rebuildable())?;
+                Some((follower.node_id.clone(), crate::halted::describe(halt).0))
+            })
+            .collect(),
     }
 }
 
@@ -231,6 +245,14 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                     .map(|(node_id, durable_offset)| ReplicaOffset {
                         node_id: node_id.clone(),
                         durable_offset: *durable_offset,
+                    })
+                    .collect(),
+                halted: report
+                    .halted
+                    .iter()
+                    .map(|(node_id, reason)| HaltedReplicaStatus {
+                        node_id: node_id.clone(),
+                        reason: (*reason).to_string(),
                     })
                     .collect(),
             })

@@ -231,6 +231,21 @@ async fn record_one(
             .collect(),
         reported_at_millis: now,
         leader_offset: shard.leader_offset,
+        // `since_millis` is the store's to fill in: see `carry_halts`.
+        halted: shard
+            .halted
+            .iter()
+            .map(|halt| {
+                (
+                    halt.node_id.clone(),
+                    crate::model::HaltedCopy {
+                        reason: halt.reason.clone(),
+                        generation: shard.generation,
+                        since_millis: now,
+                    },
+                )
+            })
+            .collect(),
     };
     // The store checks leadership again as it writes: the checks above read
     // an assignment a promotion may have replaced since.
@@ -265,7 +280,8 @@ fn rejection_label(outcome: ReportOutcome) -> &'static str {
 
 /// Whether a report is the one a move in progress is waiting for: a
 /// successor close enough lets it fence, a drained leader lets it cut over,
-/// and a follower copied in close enough lets it be seated.
+/// a follower copied in close enough lets it be seated, and a destination
+/// reported halted lets it be given up.
 ///
 /// Only a hint for when placement runs. The pass judges the report itself,
 /// so a wrong answer here costs a pass or some latency, never a decision.
@@ -286,14 +302,15 @@ fn advances_move(
                 })
             })
     };
+    let halted = |node: &str| report.halted.iter().any(|halt| halt.node_id == node);
     if assignment.state == crate::model::ShardState::Draining {
-        return report.drained;
+        return report.drained || assignment.successor.as_deref().is_some_and(halted);
     }
     assignment
         .successor
         .iter()
         .chain(assignment.joining.iter())
-        .any(|node| close_enough(node))
+        .any(|node| close_enough(node) || halted(node))
 }
 
 #[cfg(test)]

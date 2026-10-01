@@ -65,6 +65,21 @@ for what the current release guarantees.
   return the offset too. The history checker now checks every acknowledged
   append against the offset it was acknowledged at (#876).
 
+- **Placement sees halted replicas (#874).** A leader's replica report names
+  the followers it has stopped shipping to, with the reason (`diverged` or
+  `needs_bootstrap`), as an optional `halted` field that is omitted when empty.
+  The control plane stores them with the report, keeping when each halt began:
+  Postgres gains `replica_reports.halted` (migration 0023), and on Raft the
+  field is metadata level 4, dropped until every member is upgraded. Placement
+  never picks a halted copy as a move, replacement or restore destination,
+  gives up a move whose destination halts (step `halted`) and places it
+  elsewhere, counts a halted copy as missing, and replaces one halted for
+  `FELIX_SHARD_RESTORE_AFTER_MS`. An operator's move to one is refused with
+  `destination_halted`, and a drain with nowhere else to go says which copy is
+  halted. `GET /v1/placement/replication` and `felix-controlplane admin
+  replication` list halted copies, and `felix_shard_replicas_halted` counts
+  them.
+
 - **Placement restores a shard's replication factor.** A follower whose broker
   has been down or gone for `FELIX_SHARD_RESTORE_AFTER_MS` (`shard_restore_after_ms`,
   five minutes by default, `0` to turn it off) is replaced by a copy on a live
@@ -709,6 +724,11 @@ for what the current release guarantees.
   directory that holds them, so a power loss before anything else synced it
   could drop a root and the acknowledged records in it. Every new directory is
   now synced into its parent, and opening an existing root syncs it again.
+- **A new copy of a trimmed shard is placed without a rebuild.** The leader's
+  first batch opened an empty log at 0 on the new broker, which then refused
+  the leader's bootstrap offer as if it held records. The copy waited for a
+  rebuild slot, or for ever with `FELIX_REPLICATION_REBUILD_MAX_CONCURRENT=0`.
+  An empty log now takes the offered base.
 - **A broker handed a shard back after dropping held batches takes writes
   (#881).** Liveness only: no acknowledged write was lost. A lease-mode leader
   that lost its lease with `Quorum` batches still held dropped them, followed

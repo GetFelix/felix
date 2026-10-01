@@ -47,6 +47,7 @@ fn report(stream: &str, caught_up: &[&str], reported_at_millis: u64) -> ReplicaR
         reported_at_millis,
         drained: false,
         leader_offset: None,
+        halted: Default::default(),
     }
 }
 
@@ -219,6 +220,7 @@ async fn load_reads_the_store_on_the_stores_clock() {
                 reported_at_millis: now,
                 drained: false,
                 leader_offset: None,
+                halted: Default::default(),
             },
             "broker-x",
         )

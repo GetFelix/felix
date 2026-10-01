@@ -50,6 +50,7 @@ fn status(
             .collect(),
         drained,
         leader_offset: y_behind.map(|behind| 100 + behind),
+        halted: Default::default(),
     }
 }
 
@@ -78,6 +79,22 @@ fn only_the_report_a_move_waits_for_wakes_placement() {
     assert!(
         advances_move(&fenced, &status(4, &y, true, None), lag),
         "leader drained"
+    );
+
+    let mut destination_halted = status(4, &[], false, None);
+    destination_halted
+        .halted
+        .push(felix_common::membership::HaltedReplicaStatus {
+            node_id: "broker-y".to_string(),
+            reason: "diverged".to_string(),
+        });
+    assert!(
+        advances_move(&staged, &destination_halted, lag),
+        "successor halted"
+    );
+    assert!(
+        advances_move(&fenced, &destination_halted, lag),
+        "fenced toward a successor that halted"
     );
 
     assert!(

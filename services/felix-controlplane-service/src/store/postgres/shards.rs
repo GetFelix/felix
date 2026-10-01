@@ -54,6 +54,7 @@ struct DbReplicaReport {
     reported_at_millis: i64,
     drained: bool,
     leader_offset: Option<i64>,
+    halted: serde_json::Value,
 }
 
 pub(super) async fn put_shard_assignment(
@@ -465,21 +466,43 @@ pub(super) async fn record_replica_report(
     if generation as u64 != report.generation {
         return Ok(ReportWrite::Stale);
     }
+    // Locked, so a concurrent report cannot carry halts from a row this one
+    // is about to replace.
+    let held: Option<(serde_json::Value,)> = sqlx::query_as(
+        r#"SELECT halted FROM replica_reports
+               WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND shard = $4 AND kind = $5
+               FOR UPDATE"#,
+    )
+    .bind(&report.key.tenant_id)
+    .bind(&report.key.namespace)
+    .bind(&report.key.stream)
+    .bind(report.key.shard as i32)
+    .bind(report.key.kind.as_str())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let mut report = report;
+    let held = match held {
+        Some((halted,)) => serde_json::from_value(halted)
+            .map_err(|err| StoreError::Unexpected(anyhow!("decode halted: {err}")))?,
+        None => Default::default(),
+    };
+    report.carry_halts(&held);
     // The WHERE is `ReplicaReport::supersedes` in SQL: a report that does not
     // supersede the held one updates no row, which is how it is told apart.
     // The foreign key is what removes the report when the assignment goes.
     let result = sqlx::query(
         r#"INSERT INTO replica_reports
                    (tenant_id, namespace, kind, stream, shard, generation, caught_up, offsets,
-                    reported_at_millis, drained, leader_offset)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    reported_at_millis, drained, leader_offset, halted)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                ON CONFLICT (tenant_id, namespace, kind, stream, shard) DO UPDATE
                SET generation = EXCLUDED.generation,
                    caught_up = EXCLUDED.caught_up,
                    offsets = EXCLUDED.offsets,
                    reported_at_millis = EXCLUDED.reported_at_millis,
                    drained = EXCLUDED.drained,
-                   leader_offset = EXCLUDED.leader_offset
+                   leader_offset = EXCLUDED.leader_offset,
+                   halted = EXCLUDED.halted
                WHERE EXCLUDED.generation > replica_reports.generation
                   OR (EXCLUDED.generation = replica_reports.generation
                       AND (EXCLUDED.leader_offset IS NULL
@@ -497,6 +520,7 @@ pub(super) async fn record_replica_report(
     .bind(report.reported_at_millis as i64)
     .bind(report.drained)
     .bind(report.leader_offset.map(|offset| offset as i64))
+    .bind(serde_json::to_value(&report.halted).expect("a map of halts serializes"))
     .execute(&mut *tx)
     .await;
     match result {
@@ -515,7 +539,7 @@ pub(super) async fn record_replica_report(
 pub(super) async fn list_replica_reports(store: &PostgresStore) -> StoreResult<Vec<ReplicaReport>> {
     sqlx::query_as::<_, DbReplicaReport>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, generation, caught_up, offsets,
-                      reported_at_millis, drained, leader_offset
+                      reported_at_millis, drained, leader_offset, halted
                FROM replica_reports
                ORDER BY tenant_id, namespace, kind, stream, shard"#,
     )
@@ -571,6 +595,8 @@ fn replica_report_from_db(row: DbReplicaReport) -> StoreResult<ReplicaReport> {
         reported_at_millis: row.reported_at_millis as u64,
         drained: row.drained,
         leader_offset: row.leader_offset.map(|offset| offset as u64),
+        halted: serde_json::from_value(row.halted)
+            .map_err(|err| StoreError::Unexpected(anyhow!("decode halted: {err}")))?,
     })
 }
 

@@ -78,6 +78,16 @@ pub struct ReplicaOffset {
     pub durable_offset: u64,
 }
 
+/// A replica its leader has stopped shipping to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+pub struct HaltedReplicaStatus {
+    pub node_id: String,
+    /// Why, as the stable string the broker's `/replication/halted` lists:
+    /// `diverged` or `needs_bootstrap`.
+    pub reason: String,
+}
+
 /// One shard's replica positions, as its leader last saw them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(ToSchema))]
@@ -102,6 +112,11 @@ pub struct ShardReplicaStatus {
     /// measured against. Omitted by brokers that predate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leader_offset: Option<u64>,
+    /// Followers the leader has stopped shipping to at `generation`. Such a
+    /// follower is in neither `caught_up` nor `replica_offsets`. Omitted when
+    /// empty, and by brokers that predate it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub halted: Vec<HaltedReplicaStatus>,
 }
 
 /// What a leader tells the control plane about the shards it leads.

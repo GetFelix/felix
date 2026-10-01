@@ -258,6 +258,7 @@ pub(super) async fn report(
                 reported_at_millis: store.now_millis().await.expect("clock"),
                 drained,
                 leader_offset: None,
+                halted: Default::default(),
             },
             &leader,
         )

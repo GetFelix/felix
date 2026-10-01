@@ -8,7 +8,7 @@ use crate::api::{
     types::{
         CacheChangesResponse, CacheCreateRequest, CacheListResponse, CacheSnapshotResponse,
         ErrorResponse, FeatureFlags, FleetFeaturesResponse, FleetFinalizeResponse,
-        GroupingListResponse, GroupingListing, HealthStatus, ListRegionsResponse,
+        GroupingListResponse, GroupingListing, HaltedReplica, HealthStatus, ListRegionsResponse,
         NamespaceChangesResponse, NamespaceCreateRequest, NamespaceListResponse,
         NamespaceSnapshotResponse, NodeHeartbeatRequest, NodeHeartbeatResponse, NodeListResponse,
         NodePlacement, NodeRegistrationRequest, NodeRegistrationResponse, NodeView,
@@ -196,6 +196,7 @@ use crate::model::{
         PlacementPlanResponse,
         PlacementStatusResponse,
         ShardReplication,
+        HaltedReplica,
         ShardReplicationResponse,
         TokenExchangeRequest,
         TokenExchangeResponse,

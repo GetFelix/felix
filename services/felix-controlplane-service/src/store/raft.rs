@@ -582,6 +582,17 @@ impl ControlPlaneStore for RaftStore {
         report: ReplicaReport,
         leader: &str,
     ) -> StoreResult<ReportWrite> {
+        let mut report = report;
+        // Halts are advisory: a group with a member that would drop them
+        // records the rest of the report, which placement needs.
+        let halts_level = MetaCommand::RecordReplicaReport {
+            report: report.clone(),
+            leader: None,
+        }
+        .version();
+        if !report.halted.is_empty() && self.handle.cluster_version().await < halts_level {
+            report.halted.clear();
+        }
         let mut command = MetaCommand::RecordReplicaReport {
             report,
             leader: Some(leader.to_string()),

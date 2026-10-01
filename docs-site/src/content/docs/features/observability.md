@@ -233,6 +233,7 @@ their replication factor:
 ```prometheus
 felix_shards_under_replicated   # shards short of their replication factor
 felix_shard_replicas_missing    # the copies they are missing between them
+felix_shard_replicas_halted     # copies whose leader has stopped shipping to them
 ```
 
 A broker restart makes these non-zero for as long as the broker is down. Once
@@ -244,8 +245,10 @@ plus the time a shard takes to copy. `felix-controlplane admin replication`
 unavailable, and where a copy is going. See
 [Restoring the replication factor](/felix/deployment/moving-shards/#restoring-the-replication-factor).
 
-A halted replica (below) still counts as a copy here: placement does not yet
-see halts.
+A halted replica (below) does not count as a copy: it is in no quorum.
+`felix_shard_replicas_halted` counts them, and the replication listing names
+them with the reason. Placement keeps new copies off a halted node, and
+replaces a copy that stays halted past the restore delay.
 
 ### Which replica stopped
 

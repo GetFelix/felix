@@ -248,10 +248,14 @@ pub(super) async fn record_replica_report(
         }
     }
     let mut reports = store.replica_reports.write().await;
-    if let Some(held) = reports.get(&report.key)
-        && !report.supersedes(held)
-    {
-        return Ok(ReportWrite::Stale);
+    let mut report = report;
+    if let Some(held) = reports.get(&report.key) {
+        if !report.supersedes(held) {
+            return Ok(ReportWrite::Stale);
+        }
+        report.carry_halts(&held.halted);
+    } else {
+        report.carry_halts(&Default::default());
     }
     reports.insert(report.key.clone(), report);
     Ok(ReportWrite::Stored)

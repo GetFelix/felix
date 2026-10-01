@@ -1093,8 +1093,10 @@ records may be on the dead leader alone, and with no report a caught-up replica
 cannot be told from a lagging one. The window runs from the assignment, through
 the promotion fence, to the first replication pass.
 
-A halted follower is never reported, however close its last position was. It has
-stopped rather than fallen behind.
+A halted follower is never reported as a candidate, however close its last
+position was. It has stopped rather than fallen behind. The report names it
+separately, with the reason, so placement can keep copies off it (see "Halted
+replicas in placement" below).
 
 **A new leader names nobody short of the log it inherited.** At a new
 generation nothing is counted until a majority holds a record of that
@@ -1222,8 +1224,9 @@ a failover had too few live brokers to fill the set. The second is how a cache
 or a `Leader` stream ends up after its leader dies in a three-broker cluster:
 the promoted leader and the one other live broker are all there is. Placement
 restores both on its own. A follower whose broker has been down or gone for
-`FELIX_SHARD_RESTORE_AFTER_MS` (five minutes by default) is lost, and a set with
-fewer seated members than the factor is short. For either, placement picks a
+`FELIX_SHARD_RESTORE_AFTER_MS` (five minutes by default) is lost, and so is one
+its leader has reported halted for that long. A set with fewer seated members
+than the factor is short. For either, placement picks a
 live broker outside the set (widening the zone spread where it can, never a
 down or draining broker) and adds it as `joining` with the move reason
 `restore`. From there the restore is the replacement above: the copy counts
@@ -1493,6 +1496,74 @@ carries what is worth knowing and nothing worth doing. The rebuild is the
 leader's, below, and an entry here clears once it has begun.
 
 The rule and its refusals are in `docs/internal-protocol.md`.
+
+### Halted replicas in placement
+
+The broker's listing is only on the broker, and placement decides from the
+control plane's reports. Before the reports carried halts, a drain could pick a
+halted follower as its destination, since it was already a replica, and the
+move then waited out its whole timeout for a copy that would never catch up
+(#863). So a leader's replica report also lists the followers it has stopped
+shipping to, each with its reason (`diverged` or `needs_bootstrap`). A fenced
+halt is left out: it means the reporting broker is no longer the leader, and
+the control plane refuses a superseded leader's report anyway. The field is
+omitted when nothing is halted, so a broker with nothing halted sends the bytes
+it always sent, and a control plane that predates the field ignores it.
+
+The control plane stores the halts with the report, in every backend: in
+memory, in the Raft log (metadata level 4, so a group with an older member
+records the rest of the report and drops the halts until every member is
+upgraded), and in Postgres (`replica_reports.halted`, migration 0023). Stored,
+a halt gains two things the broker does not send:
+
+- **When it began**, on the store's clock. A report that names the same node
+  halted again keeps the first time, so placement can tell how long a copy has
+  been stuck.
+- **A short memory.** Every assignment write is a new generation, and the
+  leader's cursors start over at each one, so the first reports at a new
+  generation can show a halted follower answering before the leader finds it
+  halted again. A halt therefore stays listed for up to two generations after
+  the last report that named it, unless a report has that node caught up. The
+  same memory keeps a node that was just dropped for a halt from being picked
+  again by the pass that replaces it.
+
+Placement uses them this way:
+
+- **Never a destination.** A drain, a rebalance, a follower replacement and a
+  restore all skip a node whose copy of that shard is listed halted. An
+  operator's move to one is refused with `destination_halted`. When the only
+  nodes that could take a draining leader's shard are halted, the drain waits
+  and the plan says so: `no live node can take this shard: the copy on <node>
+  is halted (<reason>)`.
+- **A destination that halts is given up.** A move's destination, or a copy
+  being added, that its leader reports halted at the current generation is
+  dropped with the same write that drops one whose broker died, and the next
+  pass picks somewhere else. The step is `halted`, and the report that names
+  the halt wakes placement, as a report a move is waiting for does.
+- **Not a live copy.** A halted follower is in no quorum, so it is not counted
+  in the shard's copies, and the shard shows as under-replicated at once.
+- **Replaced after the restore delay.** A follower halted for
+  `FELIX_SHARD_RESTORE_AFTER_MS` is replaced as a lost one is: a copy joins
+  elsewhere and the halted one leaves when it is seated. The delay gives the
+  leader's own rebuild, below, the chance to bring it back first. If the halt
+  clears during the restore, the restore is undone, as for a lost broker that
+  comes back.
+
+A new copy of a shard whose leader has already trimmed its log needs a
+bootstrap: the leader's first batch opens an empty log at 0 on the new broker,
+and the leader then offers its surviving base. An empty log has nothing to
+keep, so it takes the offered base. It used to refuse, like a log holding
+records, and the copy then waited for a rebuild slot, or for ever with
+`FELIX_REPLICATION_REBUILD_MAX_CONCURRENT=0`.
+
+`GET /v1/placement/replication` (and `felix-controlplane admin replication`)
+lists each shard's halted copies with the reason, the generation and the time
+the halt began, and `felix_shard_replicas_halted` counts them.
+`a_halted_follower_is_shown_and_replaced` in the cluster suite leaves a
+follower down while retention trims the leader past it, with rebuilds turned
+off, so the follower halts as `needs_bootstrap` when it returns. It checks that
+the halt shows in the control plane, and that placement copies the shard onto
+the spare and drops the halted copy.
 
 ### Rebuilding a halted follower
 

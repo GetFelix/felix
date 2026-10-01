@@ -404,6 +404,19 @@ fn render_replication(response: &Value) -> String {
                 .map(|nodes| nodes.iter().map(text).collect::<Vec<_>>().join(","))
                 .filter(|nodes| !nodes.is_empty())
                 .unwrap_or_else(|| "-".to_string());
+            let halted = item["halted"]
+                .as_array()
+                .map(|halts| {
+                    halts
+                        .iter()
+                        .map(|halt| {
+                            format!("{} ({})", text(&halt["node_id"]), text(&halt["reason"]))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .filter(|halts| !halts.is_empty())
+                .unwrap_or_else(|| "-".to_string());
             vec![
                 shard_name(item),
                 text(&item["leader"]),
@@ -413,12 +426,20 @@ fn render_replication(response: &Value) -> String {
                     text(&item["desired_replicas"])
                 ),
                 unavailable,
+                halted,
                 text(&item["restoring"]),
             ]
         })
         .collect();
     table(
-        &["SHARD", "LEADER", "COPIES", "UNAVAILABLE", "RESTORING"],
+        &[
+            "SHARD",
+            "LEADER",
+            "COPIES",
+            "UNAVAILABLE",
+            "HALTED",
+            "RESTORING",
+        ],
         rows,
     )
 }

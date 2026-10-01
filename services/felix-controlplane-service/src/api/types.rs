@@ -537,9 +537,27 @@ pub struct ShardReplication {
     /// Members of the replica set whose broker is not serving.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unavailable: Vec<String>,
+    /// Members of the replica set whose broker is serving but whose leader
+    /// has stopped shipping to them. Not counted in `current_replicas`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub halted: Vec<HaltedReplica>,
     /// The broker a copy is being added on, while a restore is under way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restoring: Option<String>,
+}
+
+/// A copy of a shard its leader has stopped shipping to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct HaltedReplica {
+    pub node_id: String,
+    /// `diverged` or `needs_bootstrap`; the broker's `/replication/halted`
+    /// says what each means and what to do about it.
+    pub reason: String,
+    /// The generation the leader reported it at.
+    pub generation: u64,
+    /// When a report first named it halted, on the store's clock. Placement
+    /// replaces the copy once it has been halted for the restore delay.
+    pub since_millis: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

@@ -33,6 +33,10 @@ pub enum MoveStep {
     /// A move's destination, or a follower being copied in, stopped being
     /// live before it finished; its staging is undone.
     Abandon { successor: String },
+    /// A move's destination, or a follower being copied in, stopped
+    /// following: its leader reported it halted for `reason`. Undone as for
+    /// `Abandon`, and the next pass picks somewhere else.
+    Halted { successor: String, reason: String },
     /// A move's destination, or a follower being copied in, did not get
     /// close enough within `MovePolicy::timeout_millis` and is dropped, giving
     /// its slot to the next move.
@@ -69,6 +73,7 @@ impl MoveStep {
             Self::Fence => "fence",
             Self::CutOver { .. } => "cut_over",
             Self::Abandon { .. } => "abandon",
+            Self::Halted { .. } => "halted",
             Self::TimedOut { .. } => "timed_out",
             Self::Reseat { .. } => "reseat",
             Self::Restore { .. } => "restore",
@@ -97,6 +102,9 @@ pub enum Blocked {
     NodeMoveLimit { node: String },
     /// The leader is draining and no live node can take the shard.
     NoDestination,
+    /// The leader is draining, and the only live nodes that could take the
+    /// shard hold a copy of it replication has stopped for. `node` is one.
+    DestinationHalted { node: String, reason: String },
     /// A move is wanted, and placement is paused.
     Paused,
 }
@@ -114,6 +122,10 @@ impl std::fmt::Display for Blocked {
             Self::MoveLimit => write!(f, "waiting for a move slot"),
             Self::NodeMoveLimit { node } => write!(f, "waiting for a move slot on {node}"),
             Self::NoDestination => write!(f, "no live node can take this shard"),
+            Self::DestinationHalted { node, reason } => write!(
+                f,
+                "no live node can take this shard: the copy on {node} is halted ({reason})"
+            ),
             Self::Paused => write!(f, "placement is paused"),
         }
     }

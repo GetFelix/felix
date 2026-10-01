@@ -11,6 +11,7 @@ mod failover;
 mod faults;
 mod fencing;
 mod fsync;
+mod halted;
 mod kafka_produce;
 mod lease_free_reads;
 mod lease_free_sessions;

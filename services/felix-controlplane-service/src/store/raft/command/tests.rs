@@ -93,6 +93,7 @@ fn a_replica_report_is_restamped() {
         reported_at_millis: 111,
         drained: false,
         leader_offset: None,
+        halted: Default::default(),
     };
     let encoded = encode_command(&MetaCommand::RecordReplicaReport {
         report: report.clone(),
@@ -139,6 +140,7 @@ fn a_report_without_a_leader_is_the_old_wire_form() {
         reported_at_millis: 111,
         drained: false,
         leader_offset: None,
+        halted: Default::default(),
     };
     let encoded = encode_command(&MetaCommand::RecordReplicaReport {
         report,

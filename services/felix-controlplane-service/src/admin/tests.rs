@@ -58,12 +58,21 @@ fn replication_lists_the_short_shards() {
             "kind": "stream", "leader": "broker-a", "desired_replicas": 3,
             "current_replicas": 2, "under_replicated": true,
             "unavailable": ["broker-c"], "restoring": "broker-d",
+        }, {
+            "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 1,
+            "kind": "stream", "leader": "broker-a", "desired_replicas": 3,
+            "current_replicas": 2, "under_replicated": true,
+            "halted": [{
+                "node_id": "broker-b", "reason": "diverged", "generation": 4,
+                "since_millis": 1000,
+            }],
         }],
     });
     assert_eq!(
         render_replication(&response),
-        "SHARD           LEADER    COPIES  UNAVAILABLE  RESTORING\n\
-         t1/ns/orders/0  broker-a  2/3     broker-c     broker-d\n"
+        "SHARD           LEADER    COPIES  UNAVAILABLE  HALTED               RESTORING\n\
+         t1/ns/orders/0  broker-a  2/3     broker-c     -                    broker-d\n\
+         t1/ns/orders/1  broker-a  2/3     -            broker-b (diverged)  -\n"
     );
     assert_eq!(
         render_replication(&json!({ "under_replicated": 0, "items": [] })),

@@ -76,6 +76,9 @@ pub enum Refused {
         node: String,
         lifecycle: NodeLifecycle,
     },
+    /// The destination's copy of the shard is halted: its leader has stopped
+    /// shipping to it, so a move there would never catch up.
+    DestinationHalted { node: String, reason: String },
     /// The destination already leads the shard.
     AlreadyLeads(String),
     /// The destination is at its `max_shards` cap.
@@ -109,6 +112,7 @@ impl Refused {
             Self::UnknownShard => "unknown_shard",
             Self::UnknownNode(_) => "unknown_node",
             Self::NotLive { .. } => "destination_not_live",
+            Self::DestinationHalted { .. } => "destination_halted",
             Self::AlreadyLeads(_) => "already_leader",
             Self::AtCapacity(_) => "at_capacity",
             Self::RegionNotAllowed { .. } => "region_not_allowed",
@@ -130,6 +134,11 @@ impl std::fmt::Display for Refused {
             Self::NotLive { node, lifecycle } => {
                 write!(f, "node {node} is {lifecycle:?}, not live")
             }
+            Self::DestinationHalted { node, reason } => write!(
+                f,
+                "the copy of this shard on {node} is halted ({reason}); replication \
+                 to it has stopped, so a move there would not finish"
+            ),
             Self::AlreadyLeads(node) => write!(f, "node {node} already leads this shard"),
             Self::AtCapacity(node) => write!(f, "node {node} is at its max_shards capacity"),
             Self::RegionNotAllowed { node, region, home } => write!(
@@ -193,6 +202,12 @@ pub fn start_move(
     }
     if existing.leader == destination {
         return Err(Refused::AlreadyLeads(destination.to_string()));
+    }
+    if let Some(halt) = catalog.caught_up.halted(key, destination) {
+        return Err(Refused::DestinationHalted {
+            node: destination.to_string(),
+            reason: halt.reason.clone(),
+        });
     }
     if moving(existing) {
         return Err(Refused::Moving);

@@ -953,9 +953,10 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `timed_out`, `reseat`, `restore`, `seat`, and an operator's `cancel`, `retake` and `discard` |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `reseat`, `restore`, `seat`, and an operator's `cancel`, `retake` and `discard` |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
+| `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |
 | `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout; a steady count means a copy that cannot finish |
 | `felix_shard_moves_waiting` | moves that could not advance in the last pass: a destination not catching up, a leader not reporting drained, or a move limit holding a drain back |
 | `felix_shard_assignment_write_conflicts_total` | placements and move steps not written because another instance changed the shard after this pass read it; the next pass re-plans |
@@ -1343,6 +1344,7 @@ Control plane:
 | `felix_shards_zone_unspread` | shards whose copies share a zone although brokers in other zones could hold them; non-zero means a zone is out of room or a spreading move is waiting for a slot |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor |
 | `felix_shard_replicas_missing` | the copies under-replicated shards are missing between them |
+| `felix_shard_replicas_halted` | copies whose leader has stopped shipping to them |
 | `felix_shard_move_steps_total{step}` | planned-move steps written |
 | `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout |
 | `felix_shard_moves_waiting` | moves that could not advance in the last pass |

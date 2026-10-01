@@ -27,6 +27,12 @@ pub const SHARDS_UNDER_REPLICATED: &str = "felix_shards_under_replicated";
 /// The copies under-replicated shards are missing between them.
 pub const SHARD_REPLICAS_MISSING: &str = "felix_shard_replicas_missing";
 
+/// Copies whose leader has stopped shipping to them (a follower that diverged
+/// or needs history the leader no longer holds). Placement keeps new copies
+/// off those nodes and replaces a copy halted for longer than the restore
+/// delay; `GET /v1/placement/replication` names them.
+pub const SHARD_REPLICAS_HALTED: &str = "felix_shard_replicas_halted";
+
 /// Passes that could not read the catalog at all.
 pub const RECONCILE_FAILURES_TOTAL: &str = "felix_shard_reconcile_failures_total";
 
@@ -339,6 +345,16 @@ pub(super) async fn apply_pass(
                 }
                 metrics::counter!(SHARD_MOVE_STEPS_TOTAL, "step" => step.label()).increment(1);
                 warn_if_unspread(plan, key, &written);
+                if let super::MoveStep::Halted { successor, reason } = step {
+                    tracing::warn!(
+                        kind = %key.kind,
+                        name = %key.stream,
+                        shard = key.shard,
+                        destination = %successor,
+                        reason = %reason,
+                        "a shard move's destination halted; placing the copy elsewhere",
+                    );
+                }
                 if let super::MoveStep::TimedOut { successor } = step {
                     metrics::counter!(SHARD_MOVES_TIMED_OUT_TOTAL).increment(1);
                     tracing::warn!(
@@ -476,6 +492,7 @@ pub(super) async fn apply_pass(
     metrics::gauge!(SHARDS_ZONE_UNSPREAD).set(plan.unspread.len() as f64);
     metrics::gauge!(SHARDS_UNDER_REPLICATED).set(plan.under_replicated.len() as f64);
     metrics::gauge!(SHARD_REPLICAS_MISSING).set(f64::from(plan.missing_copies));
+    metrics::gauge!(SHARD_REPLICAS_HALTED).set(f64::from(plan.halted_copies));
     outcome
 }
 
