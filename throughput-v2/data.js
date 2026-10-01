@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790832500731,
+  "lastUpdate": 1790835437808,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -21528,6 +21528,58 @@ window.BENCHMARK_DATA = {
             "range": "3514.70",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 849982.32\nmean: 849043.02\nstdev: 3514.70\ncv: 0.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "801fc22d3b417b581e6e474198bd6253b6634429",
+          "message": "perf(broker): stop copying publish payloads on ingest (#905)\n\nEvery binary publish byte was copied twice after quinn handed it over: once\nfrom the read_chunk loop into the codec's scratch buffer, and again when\ndecode turned each record into its own Vec<u8>, which also cost one\nallocation per record. The broker then wrapped those Vecs straight back\ninto Bytes.\n\nPublishBatch.payloads is now Vec<Bytes>, each record a slice of the frame,\nand the broker passes them through as they are. The JSON publish paths\nconvert their Vec<u8> payloads with Bytes::from, which moves rather than\ncopies.\n\nFrame bodies are now read with read_chunks, up to 32 chunks per call\ninstead of one per packet, so the reader takes the connection lock far less\noften. read_chunks has no length limit and returns whatever the stream has\nbuffered, so bytes past the end of a frame are kept in a per-stream\nFrameScratch and served to the next read. The frame is only consumed once\nall of it has arrived, which also makes the read cancel-safe. Using one\nscratch for two streams is refused rather than misparsed.\n\nSince records now share their frame's buffer, each frame gets its own\nexactly-sized allocation instead of a reused scratch. A retained record\nkeeps its whole frame alive.\n\nSpec-Unaffected: same bytes on the wire, same records accepted in the same order; only how the broker buffers and slices a frame changes.\n\nCloses #902",
+          "timestamp": "2026-09-30T23:14:09-07:00",
+          "tree_id": "b08d926f5ffcb06086648aa6e8e0a64e84e4ded4",
+          "url": "https://github.com/gabloe/felix/commit/801fc22d3b417b581e6e474198bd6253b6634429"
+        },
+        "date": 1790835437261,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 524501.43,
+            "range": "26346.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 524501.43\nmean: 522795.48\nstdev: 26346.79\ncv: 5.04%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 524501.43,
+            "range": "26346.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 524501.43\nmean: 522795.48\nstdev: 26346.79\ncv: 5.04%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 117741.43,
+            "range": "5335.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 117741.43\nmean: 115294.35\nstdev: 5335.88\ncv: 4.63%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1177414.33,
+            "range": "53358.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1177414.33\nmean: 1152943.53\nstdev: 53358.85\ncv: 4.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
