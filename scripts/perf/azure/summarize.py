@@ -227,8 +227,11 @@ def cell_row(cdir):
     if not meta:
         return None
     row = {"cell": cdir.name, "done": (cdir / "done").exists()}
-    m = re.match(r"^(.*)-t(\d+)$", cdir.name)
-    row["group"], row["trial"] = (m.group(1), int(m.group(2))) if m else (cdir.name, 1)
+    # A trial tag can sit inside a name as well as at its end (sweeps named
+    # per trial); drop every one so a cell's trials share a group.
+    trials = re.findall(r"-t(\d+)(?=-|$)", cdir.name)
+    row["group"] = re.sub(r"-t\d+(?=-|$)", "", cdir.name)
+    row["trial"] = int(trials[-1]) if trials else 1
     row["ref"] = meta.get("ref", "")
     flags = parse_args(meta.get("args", ""))
     gens = meta.get("generators", "").split()
@@ -473,8 +476,8 @@ def main():
         "`legacy` marks cells recorded without a series; `client only` marks pubsub cells that published for under "
         "half the run, where the client rate is the number. Spread is (max-min)/mean over trials.",
         "",
-        "| cell | n | ref | knobs | append MB/s (spread) | ingress MB/s | drops/s | cores | fair | old append / client MB/s | p50 / p99 us | sync ms | fan-in | broker CPU % | gen CPU % | rcvbuf err | ports |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| cell | n | ref | knobs | MB/s (spread) | of | append MB/s | ingress MB/s | drops/s | cores | fair | old append / client MB/s | p50 / p99 us | sync ms | fan-in | broker CPU % | gen CPU % | rcvbuf err | ports |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for g, rs in groups.items():
         ok = [r for r in rs if r["done"]]
@@ -483,6 +486,11 @@ def main():
         legacy = all(r["legacy"] or r["ss_append_mb_s"] is None for r in use)
         client_only = legacy and all(str(r["ss_window"] or "").startswith("publish ") for r in use)
         sa, ss = spread([r["ss_append_mb_s"] for r in use])
+        # The headline is what the stream does with the bytes: appended to the
+        # log when durable, accepted when in memory (where append is always 0).
+        durable = "durable" in str(use[0].get("stream") or "")
+        metric = "append" if durable else "ingress"
+        sh, shs = spread([r["ss_append_mb_s" if durable else "ss_ingress_mb_s"] for r in use])
         si, _ = spread([r["ss_ingress_mb_s"] for r in use])
         sd, _ = spread([r["ss_drops_s"] for r in use])
         sc, _ = spread([r["ss_cores"] for r in use])
@@ -505,7 +513,7 @@ def main():
             knobs += " client:" + r0["loadgen_env"]
         lines.append(
             f"| {g} | {len(ok)}/{len(rs)} | {r0['ref']} {r0['build_sha']} | {knobs} | "
-            f"{('client only' if client_only else 'legacy') if legacy else f'{fmt(sa)} ({fmt(ss, 0)}%)'} | {fmt(si)} | {fmt(sd, 0)} | {fmt(sc, 2)} | {fmt(sf, 2)} | "
+            f"{('client only' if client_only else 'legacy') if legacy else f'{fmt(sh)} ({fmt(shs, 0)}%)'} | {metric} | {fmt(sa)} | {fmt(si)} | {fmt(sd, 0)} | {fmt(sc, 2)} | {fmt(sf, 2)} | "
             f"{fmt(bm)} / {fmt(cm)} | {fmt(p50, 0)} / {fmt(p99, 0)} | {fmt(sm, 2)} | {fmt(fi)} | "
             f"{fmt(cpu, 0)} | {fmt(lcpu, 0)} | {fmt(rb, 0)} | {r0['port_share']} |"
         )
