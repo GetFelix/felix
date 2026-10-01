@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790832051462,
+  "lastUpdate": 1790832496932,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -27258,6 +27258,72 @@ window.BENCHMARK_DATA = {
             "range": "2624.68",
             "unit": "us",
             "extra": "trials: 5\nmedian: 919.00\nmean: 1969.40\nstdev: 2624.68\ncv: 133.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "84dd692a20d020e6b100d9308a79ad77a61e1e8a",
+          "message": "fix(storage): keep io_uring flush files open until their completions are reaped (#903)\n\nA failed io_uring_enter dropped every outstanding flush's file. Entries the\nkernel had already taken were still running against those descriptors, and\nentries it had not taken stayed in the submission queue for the next submit,\nso a sync could land on a closed or reused descriptor.\n\nThe waiters are still failed with the error, so nothing is acknowledged\nwhose flush outcome is unknown, but each file now stays in the waiting map\nuntil its completion is reaped. The backlog is failed too, so a ring whose\nslots are held by failed entries cannot park new requests. EAGAIN and EBUSY,\nwhich only ask for completions to be reaped before the kernel takes more,\nare handled like EINTR instead of failing (and poisoning) every log.\n\nThe service loop moves into a Service struct so a test can run a private\nring with an injected submit error without failing other tests' flushes.\n\nCloses #722",
+          "timestamp": "2026-09-30T22:11:07-07:00",
+          "tree_id": "786d8148208c805afc0bff93289b4bbbd30fcb43",
+          "url": "https://github.com/gabloe/felix/commit/84dd692a20d020e6b100d9308a79ad77a61e1e8a"
+        },
+        "date": 1790832493472,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 138,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 138.00\nmean: 137.60\nstdev: 0.89\ncv: 0.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 185,
+            "range": "54.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 185.00\nmean: 207.80\nstdev: 54.95\ncv: 26.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 241,
+            "range": "1118.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 241.00\nmean: 740.40\nstdev: 1118.37\ncv: 151.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 178,
+            "range": "5.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 178.00\nmean: 180.40\nstdev: 5.98\ncv: 3.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 349,
+            "range": "270.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 349.00\nmean: 472.00\nstdev: 270.59\ncv: 57.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 484,
+            "range": "665.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 484.00\nmean: 773.60\nstdev: 665.10\ncv: 85.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
