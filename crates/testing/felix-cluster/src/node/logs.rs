@@ -68,6 +68,16 @@ impl BrokerNode {
         format!(":\n  {}", lines.join("\n  "))
     }
 
+    /// Whether this broker exited because a port it was handed was taken.
+    ///
+    /// Ports are probed and released before the broker binds them, so another
+    /// process can take one in between. That is the harness losing a race, not
+    /// the broker failing to start.
+    pub(crate) fn lost_port_race(&self) -> bool {
+        std::fs::read_to_string(self.data_dir.join("broker.log"))
+            .is_ok_and(|log| log.contains("Address already in use"))
+    }
+
     /// The last log lines touching any of `topics`, for a failure to quote.
     ///
     /// Routing failures are diagnosed from what the brokers believed, and by

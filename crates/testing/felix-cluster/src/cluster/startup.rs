@@ -16,7 +16,7 @@ use crate::{ClusterConfig, ControlPlane, wait};
 /// take it in between. Three attempts make that vanishingly unlikely without
 /// masking a broker that is genuinely misconfigured — which fails identically
 /// every time and still surfaces, with its log.
-const MAX_SPAWN_ATTEMPTS: u32 = 3;
+pub(super) const MAX_SPAWN_ATTEMPTS: u32 = 3;
 
 impl Cluster {
     /// Start a cluster and wait until every part of it is usable.

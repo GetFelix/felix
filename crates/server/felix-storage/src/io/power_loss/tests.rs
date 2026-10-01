@@ -175,8 +175,14 @@ fn a_growing_large_file_is_captured_from_where_the_last_capture_ended() {
             .cloned()
             .expect("captured")
     };
-    let rewrite_first_byte = |file: &File, byte: u8| {
-        std::os::unix::fs::FileExt::write_at(file, &[byte], 0).expect("rewrite");
+    // Through its own handle: on Linux a positional write to an O_APPEND file
+    // ignores the offset and appends.
+    let rewrite_first_byte = |name: &str, byte: u8| {
+        let file = File::options()
+            .write(true)
+            .open(root.path().join(name))
+            .expect("open");
+        std::os::unix::fs::FileExt::write_at(&file, &[byte], 0).expect("rewrite");
     };
 
     let large = File::options()
@@ -190,7 +196,7 @@ fn a_growing_large_file_is_captured_from_where_the_last_capture_ended() {
     crate::io::sync_data(&large).expect("sync");
     assert_eq!(captured(&large), first);
 
-    rewrite_first_byte(&large, 9);
+    rewrite_first_byte("segment", 9);
     std::io::Write::write_all(&mut &large, &bytes(PAGE, 2)).expect("append");
     crate::io::sync_data(&large).expect("sync");
     let after = captured(&large);
@@ -205,7 +211,7 @@ fn a_growing_large_file_is_captured_from_where_the_last_capture_ended() {
     let small = File::create(root.path().join("index")).expect("create");
     std::io::Write::write_all(&mut &small, &bytes(PAGE, 1)).expect("write");
     crate::io::sync_data(&small).expect("sync");
-    rewrite_first_byte(&small, 9);
+    rewrite_first_byte("index", 9);
     crate::io::sync_data(&small).expect("sync");
     assert_eq!(captured(&small)[0], 9);
 }
