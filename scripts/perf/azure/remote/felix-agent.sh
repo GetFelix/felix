@@ -143,8 +143,8 @@ cmd_snapshot() {
         else if (n == "felix_storage_sync_failures_total") sf += v
         else if (n == "felix_broker_publish_quorum_failed_total") qf += v
         else if (n == "felix_publish_bytes_total") pb += v
-        else if (n == "felix_publish_requests_total") pr += v
-        else if (n == "felix_client_publish_forwarded_total") fw += v
+        # A relayed publish is counted as forwarded on top of its outcome.
+        else if (n == "felix_publish_requests_total") { if ($1 ~ /result="forwarded"/) fw += v; else pr += v }
       }
       END {
         printf "m.append_bytes=%.0f\nm.append_series_active=%d\nm.append_records=%.0f\n", ab, abn, ar

@@ -320,8 +320,8 @@ safe to group by. The token itself is never logged, including a near miss.
 **Example queries**:
 
 ```promql
-# Publish rate
-rate(felix_publish_requests_total[1m])
+# Publish rate (a relayed publish is also counted as forwarded)
+rate(felix_publish_requests_total{result!="forwarded"}[1m])
 
 # p99 publish latency
 histogram_quantile(0.99, rate(felix_publish_latency_ms_bucket[5m]))

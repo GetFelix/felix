@@ -58,6 +58,9 @@ for what the current release guarantees.
   The other two size a run by time and start every generator at the same instant. The Azure
   drivers use all three, and gained a `shapes` step (payload x batch x acked) and, in
   session C, lease and lease-free passes.
+- **`felix-loadgen pubsub` publishes to the shard's owner.** Single publishes went through
+  the first broker, so latency depended on which broker led the shard and a relayed publish
+  paid an extra round trip to the owner. `--via-entry` keeps the old path.
 
 - **Publish acknowledgements say where the batch landed.** A client that
   offers the new frame flag `FLAG_BINARY_PUBLISH_ACK_OFFSET` (`0x1000`) gets

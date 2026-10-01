@@ -13,6 +13,8 @@ pub(crate) struct Args {
     pub(crate) stream: String,
     pub(crate) cache: String,
     pub(crate) binary: bool,
+    /// pubsub: publish through the first broker instead of the shard's owner.
+    pub(crate) via_entry: bool,
 }
 
 /// Print the flags and exit with status 2.
@@ -42,6 +44,8 @@ pub(crate) fn usage() -> ! {
   --slow-delay-ms <n>         per-delivery delay for a slow subscriber (default: 0)
   --batch <n>                 publish batch size; 1 = per-message ack (default: 1)
   --binary                    binary publish framing (no per-message ack)
+  --via-entry                 pubsub: publish through the first broker, which relays
+                              to the shard's owner, instead of to the owner directly
   --concurrency <n>           workers for cache/counter (default: 8)
   --environment <label>       stamped into LOADGEN_JSON (default: unknown)
 
@@ -68,6 +72,7 @@ pub(crate) fn parse_args() -> Result<Args> {
     let mut fanout = 1usize;
     let mut batch = 1usize;
     let mut binary = false;
+    let mut via_entry = false;
     let mut concurrency = 8usize;
     let mut ingest = IngestOptions::default();
     let mut environment = "unknown".to_string();
@@ -124,6 +129,7 @@ pub(crate) fn parse_args() -> Result<Args> {
             }
             "--batch" => batch = value("--batch")?.parse().context("--batch")?,
             "--binary" => binary = true,
+            "--via-entry" => via_entry = true,
             // How many distinct routing keys to spread the batches over.
             // 0 keeps the unkeyed behaviour, where every record resolves to
             // shard 0 regardless of the stream's shard count -- which is what
@@ -183,5 +189,6 @@ pub(crate) fn parse_args() -> Result<Args> {
         stream,
         cache,
         binary,
+        via_entry,
     })
 }
