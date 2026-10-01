@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790817017493,
+  "lastUpdate": 1790817316383,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -26928,6 +26928,72 @@ window.BENCHMARK_DATA = {
             "range": "98.87",
             "unit": "us",
             "extra": "trials: 5\nmedian: 614.00\nmean: 643.60\nstdev: 98.87\ncv: 15.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dda7b424ecea9dac7a70baa4381f290d705a0f9b",
+          "message": "feat(wire): publish acknowledgements carry the offset the batch landed at (#876) (#891)\n\nA client that offers the new frame flag FLAG_BINARY_PUBLISH_ACK_OFFSET\n(0x1000) gets the offset of the batch's first record on a successful\nbinary ack, and as `offset` on a JSON publish_ok. The broker sends it only\nwhen it answers after the write; a client that did not offer the bit gets\nbyte-identical frames.\n\n- A duplicate idempotent batch reports the original's offset, which the\n  log's producer marks already keep; nothing new is persisted.\n- A forwarded batch reports the owner's offset. ForwardPublishOk's layout\n  is unchanged; a new peer capability FORWARD_OFFSETS says the owner sends\n  an empty range for a stream with no log, and an older owner's offsets\n  are not passed on.\n- felix-client: Publisher::publish and friends, ClusterClient::publish and\n  IdempotentProducer::publish return Result<Option<u64>>. Python and Node\n  publish return the offset.\n- Conformance covers the flag, the duplicate's offset and byte-identical\n  frames for a client that did not offer it.\n- The history workload records the offset for every acknowledged append,\n  so rule 3 covers plain and idempotent publishes, and the campaign bar\n  rises to 40 appends and half of the acknowledged ones.\n\nSpec-Unaffected: a wire field on the acknowledgement; replication, commit and failover semantics are unchanged.\n\nCloses #876",
+          "timestamp": "2026-09-30T18:09:37-07:00",
+          "tree_id": "305e9272d7b99165d750bf07322907d27a89df60",
+          "url": "https://github.com/gabloe/felix/commit/dda7b424ecea9dac7a70baa4381f290d705a0f9b"
+        },
+        "date": 1790817313763,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 177,
+            "range": "1.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 176.00\nstdev: 1.41\ncv: 0.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 244,
+            "range": "10.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 244.00\nmean: 245.00\nstdev: 10.05\ncv: 4.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 309,
+            "range": "39.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 309.00\nmean: 318.00\nstdev: 39.71\ncv: 12.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 214,
+            "range": "6.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 214.00\nmean: 216.80\nstdev: 6.98\ncv: 3.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 440,
+            "range": "345.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 440.00\nmean: 594.80\nstdev: 345.39\ncv: 58.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 755,
+            "range": "649.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 755.00\nmean: 963.40\nstdev: 649.53\ncv: 67.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
