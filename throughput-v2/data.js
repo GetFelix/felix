@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790810197798,
+  "lastUpdate": 1790815553106,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -21112,6 +21112,58 @@ window.BENCHMARK_DATA = {
             "range": "7068.44",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1208820.44\nmean: 1211038.02\nstdev: 7068.44\ncv: 0.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7825ad4a2a839589d98d2da66db2e4dce6b247bc",
+          "message": "ci: let every run on main finish (#896)\n\ncancel-in-progress also applied to main, so each merge cancelled the run\nof the one before it. Four merges in a row reached main without a\ncompleted test run, and the README badge, which ignores cancelled runs,\nstayed green on an old pass.",
+          "timestamp": "2026-09-30T17:42:12-07:00",
+          "tree_id": "d2cbc33e5041e9fcda2a9f5cd51790fc49fc3e1e",
+          "url": "https://github.com/gabloe/felix/commit/7825ad4a2a839589d98d2da66db2e4dce6b247bc"
+        },
+        "date": 1790815552372,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 350614.86,
+            "range": "5142.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350614.86\nmean: 350548.60\nstdev: 5142.58\ncv: 1.47%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 350614.86,
+            "range": "5142.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350614.86\nmean: 350548.60\nstdev: 5142.58\ncv: 1.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82079.76,
+            "range": "688.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82079.76\nmean: 82241.02\nstdev: 688.97\ncv: 0.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 820797.59,
+            "range": "6889.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 820797.59\nmean: 822410.20\nstdev: 6889.75\ncv: 0.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
