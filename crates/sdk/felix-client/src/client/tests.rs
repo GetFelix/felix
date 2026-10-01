@@ -104,7 +104,14 @@ async fn quic_publish_subscribe_cache_success() -> Result<()> {
                             request_id: Some(id),
                             ..
                         }) => {
-                            write_message(&mut send, Message::PublishOk { request_id: id }).await?;
+                            write_message(
+                                &mut send,
+                                Message::PublishOk {
+                                    request_id: id,
+                                    offset: None,
+                                },
+                            )
+                            .await?;
                         }
                         Some(Message::PublishBatch {
                             request_id: Some(id),
@@ -117,7 +124,14 @@ async fn quic_publish_subscribe_cache_success() -> Result<()> {
                                 &counters.json_acked
                             };
                             counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            write_message(&mut send, Message::PublishOk { request_id: id }).await?;
+                            write_message(
+                                &mut send,
+                                Message::PublishOk {
+                                    request_id: id,
+                                    offset: None,
+                                },
+                            )
+                            .await?;
                         }
                         Some(Message::Subscribe {
                             subscription_id, ..

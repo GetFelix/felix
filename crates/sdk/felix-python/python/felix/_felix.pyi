@@ -237,7 +237,7 @@ class Client:
         key: bytes | None = None,
         ack: AckMode = "per_message",
         at_least_once: bool = False,
-    ) -> None: ...
+    ) -> int | None: ...
     def subscribe(
         self,
         tenant_id: str,
@@ -369,7 +369,7 @@ class AsyncClient:
         key: bytes | None = None,
         ack: AckMode = "per_message",
         at_least_once: bool = False,
-    ) -> None: ...
+    ) -> int | None: ...
     async def subscribe(
         self,
         tenant_id: str,

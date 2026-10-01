@@ -124,6 +124,18 @@ pub const FLAG_BINARY_PUBLISH_ACK_DETAIL: u16 = 0x0400;
 /// `FLAG_EVENT_BATCH_OFFSETS` is rejected.
 pub const FLAG_EVENT_BATCH_SKIPPED: u16 = 0x0800;
 
+/// Modifier on `FLAG_BINARY_PUBLISH_ACK`: a successful ack ends with the
+/// `u64` log offset of the batch's first record.
+///
+/// A batch's offsets are contiguous, so one number places all of it. Set only
+/// on a success that has an offset: an ack sent before the batch was written,
+/// or one for a stream with no log, has none and leaves the bit clear. The
+/// same bit, offered in `Auth.client_flags`, is what lets a broker add
+/// `offset` to a JSON `PublishOk`.
+///
+/// Only sent to a client that advertised it in `Auth.client_flags`.
+pub const FLAG_BINARY_PUBLISH_ACK_OFFSET: u16 = 0x1000;
+
 /// Every flag bit this version understands.
 ///
 /// Frames carrying bits outside this mask are rejected rather than parsed with
@@ -145,7 +157,8 @@ pub const KNOWN_FLAGS: u16 = FLAG_BINARY_PUBLISH_BATCH
     | FLAG_BINARY_PUBLISH_IDEMPOTENT
     | FLAG_BINARY_PUBLISH_ACK_CODE
     | FLAG_BINARY_PUBLISH_ACK_DETAIL
-    | FLAG_EVENT_BATCH_SKIPPED;
+    | FLAG_EVENT_BATCH_SKIPPED
+    | FLAG_BINARY_PUBLISH_ACK_OFFSET;
 
 /// The flag bits that existed before capability negotiation.
 ///

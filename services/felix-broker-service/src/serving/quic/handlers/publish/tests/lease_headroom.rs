@@ -157,7 +157,7 @@ async fn publish_batch(h: &Harness, io: &Io) {
     .expect("batch handled");
 }
 
-fn assert_refused_as_fenced(result: anyhow::Result<()>) {
+fn assert_refused_as_fenced(result: anyhow::Result<Option<u64>>) {
     let err = result.expect_err("a write after the lease lapsed must be refused");
     assert_eq!(
         *crate::serving::quic::client_error::ClientError::from_anyhow(&err).code(),
@@ -224,7 +224,10 @@ async fn an_acked_publish_the_lease_strands_is_counted() {
     let mut io = Io::new();
     publish_one(&h, &io).await;
     match io.out_rx.recv().await.expect("ack") {
-        Outgoing::Message(Message::PublishOk { request_id: 7 }) => {}
+        Outgoing::Message(Message::PublishOk {
+            request_id: 7,
+            offset: None,
+        }) => {}
         other => panic!("expected an ack on enqueue, got {other:?}"),
     }
 

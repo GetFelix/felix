@@ -125,6 +125,7 @@ async fn run_publisher_writer_ack_mismatch_drains_queue() -> Result<()> {
         // Neither 9 nor 10: an ack for a request nobody is waiting on.
         let ack = Message::PublishOk {
             request_id: request_id + 100,
+            offset: None,
         };
         let frame = ack.encode().context("encode ack")?;
         send.write_all(&frame.encode()).await.context("write ack")?;
@@ -422,7 +423,10 @@ async fn a_refused_publish_leaves_the_stream_serving_later_ones() -> Result<()> 
                 let ack = if stream == "absent" {
                     refusal(request_id)
                 } else {
-                    Message::PublishOk { request_id }
+                    Message::PublishOk {
+                        request_id,
+                        offset: None,
+                    }
                 };
                 let frame = ack.encode().context("encode ack")?;
                 send.write_all(&frame.encode()).await.context("write ack")?;

@@ -96,6 +96,11 @@ client.publish("t1", "default", "orders", payload, key=customer_id)     # routed
 `"per_message"` (the default), `"per_batch"`, or `"none"`, which promises
 nothing and does not wait to find out.
 
+An acked `publish` returns the offset the record landed at, or `None` when the
+broker acknowledged it before writing it (a `Leader` stream without
+`ack_on_commit`), the stream has no log, or the broker is too old to say.
+`"none"` always returns `None`.
+
 ### The routing key decides the shard
 
 **Without a key every record lands on shard 0**, so a multi-shard stream

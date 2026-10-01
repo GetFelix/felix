@@ -140,7 +140,7 @@ async fn measure(listeners: usize) -> Measured {
                     )
                     .await
                 {
-                    Ok(()) => {
+                    Ok(_) => {
                         bytes.fetch_add((PAYLOAD * BATCH) as u64, Ordering::Relaxed);
                         records.fetch_add(BATCH as u64, Ordering::Relaxed);
                     }

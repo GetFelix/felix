@@ -51,7 +51,7 @@ pub(crate) async fn spawn_publishers(
                     .publish(TENANT, NAMESPACE, STREAM, payload.clone(), AckMode::None)
                     .await
                 {
-                    Ok(()) => {
+                    Ok(_) => {
                         stats.published.fetch_add(1, Ordering::Relaxed);
                     }
                     Err(_) => {

@@ -17,8 +17,8 @@ use felix_wire::{AckMode, FrameHeader, Message};
 use quinn::{RecvStream, SendStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 
-use super::AckOutcome;
 use super::ack::read_ack;
+use super::{AckOutcome, Acked};
 use crate::frame_io::write_frame_parts;
 #[cfg(feature = "telemetry")]
 use crate::telemetry::frame_counters;
@@ -351,7 +351,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                                         .pub_items_out_ok
                                         .fetch_add(item_count, Ordering::Relaxed);
                                 }
-                                let _ = response.send(Ok(None));
+                                let _ = response.send(Ok(Acked::default()));
                             } else if let Some(request_id) = request_id {
                                 submit_pending!(PendingAck {
                                     request_id,
@@ -433,7 +433,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                                             .fetch_add(item_count, Ordering::Relaxed);
                                     }
                                 }
-                                let _ = response.send(Ok(None));
+                                let _ = response.send(Ok(Acked::default()));
                             } else if let Some(request_id) = request_id {
                                 submit_pending!(PendingAck {
                                     request_id,
@@ -521,7 +521,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                                     .pub_items_out_ok
                                     .fetch_add(item_count as u64, Ordering::Relaxed);
                             }
-                            let _ = response.send(Ok(None));
+                            let _ = response.send(Ok(Acked::default()));
                         } else if let Some(request_id) = request_id {
                             submit_pending!(PendingAck {
                                 request_id,
@@ -582,7 +582,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
     };
     if let Some(response) = finish_response {
         let _ = response.send(match &result {
-            Ok(()) => Ok(None),
+            Ok(()) => Ok(Acked::default()),
             Err(err) => Err(anyhow::anyhow!(err.to_string())),
         });
     }

@@ -62,6 +62,27 @@ pub struct ForwardPublishOk {
     pub last_offset: u64,
 }
 
+impl ForwardPublishOk {
+    /// The answer for a batch the owner wrote at `offsets`, or to a stream
+    /// with no log when `None`. That case is sent as an empty range, `1..=0`,
+    /// which no written batch has.
+    pub fn new(correlation_id: u64, offsets: Option<(u64, u64)>) -> Self {
+        let (first_offset, last_offset) = offsets.unwrap_or((1, 0));
+        Self {
+            correlation_id,
+            first_offset,
+            last_offset,
+        }
+    }
+
+    /// Where the batch landed, or `None` for a stream with no log. Only
+    /// meaningful from an owner that advertised
+    /// [`super::PeerCapabilities::FORWARD_OFFSETS`].
+    pub fn offsets(&self) -> Option<(u64, u64)> {
+        (self.first_offset <= self.last_offset).then_some((self.first_offset, self.last_offset))
+    }
+}
+
 /// The owner refused, with a reason the requester can act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardPublishError {

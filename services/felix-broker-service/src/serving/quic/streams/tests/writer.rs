@@ -52,7 +52,10 @@ async fn writer_loop_branches() -> Result<()> {
         cancel_rx,
     ));
     out_ack_tx
-        .send(Outgoing::Message(Message::PublishOk { request_id: 1 }))
+        .send(Outgoing::Message(Message::PublishOk {
+            request_id: 1,
+            offset: None,
+        }))
         .await?;
     out_ack_tx.send(Outgoing::CacheMessage(Message::Ok)).await?;
     drop(out_ack_tx);
@@ -76,7 +79,10 @@ async fn writer_loop_branches() -> Result<()> {
         cancel_rx,
     ));
     out_ack_tx
-        .send(Outgoing::Message(Message::PublishOk { request_id: 2 }))
+        .send(Outgoing::Message(Message::PublishOk {
+            request_id: 2,
+            offset: None,
+        }))
         .await?;
     drop(out_ack_tx);
     writer.await.expect("writer");
@@ -232,7 +238,10 @@ async fn writer_loop_records_timings_when_sampled() -> Result<()> {
     ));
     for i in 0..50u64 {
         out_ack_tx
-            .send(Outgoing::Message(Message::PublishOk { request_id: i }))
+            .send(Outgoing::Message(Message::PublishOk {
+                request_id: i,
+                offset: None,
+            }))
             .await?;
     }
     for _ in 0..50u64 {

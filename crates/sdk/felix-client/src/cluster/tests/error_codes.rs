@@ -64,6 +64,7 @@ async fn a_fenced_owner_is_forgotten_and_the_publish_rerouted() -> Result<()> {
     let (server_config, cert) = build_server_config()?;
     let entry = StubBroker::start_with(server_config.clone(), |id| Message::PublishOk {
         request_id: id,
+        offset: None,
     })?;
     let old_owner = StubBroker::start_with(server_config, |id| {
         publish_error(id, ErrorCode::ShardUnavailable, Some("fenced"))

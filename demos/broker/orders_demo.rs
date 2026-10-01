@@ -396,7 +396,8 @@ async fn publish_event(publisher: &Publisher, stream: &str, event: &OrderEvent) 
     let payload = serde_json::to_vec(event)?;
     publisher
         .publish("t1", "default", stream, payload, AckMode::PerMessage)
-        .await
+        .await?;
+    Ok(())
 }
 
 async fn spawn_orders_worker(

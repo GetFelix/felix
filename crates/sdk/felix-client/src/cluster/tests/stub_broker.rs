@@ -1,7 +1,8 @@
 //! A broker that answers every publish and subscribe with one scripted
 //! message, and counts what it was sent.
 //!
-//! It advertises every frame flag and only `FEATURE_ERROR_CODES`, so a
+//! It advertises every frame flag and only `FEATURE_ERROR_CODES` and
+//! `FEATURE_IDEMPOTENT_PRODUCER`, so a
 //! [`ClusterClient`](crate::ClusterClient) skips discovery and sends its
 //! publishes as acked binary batches, answered here with coded binary acks.
 //! A subscribe the script answers with `Subscribed` gets an event stream,
@@ -150,9 +151,18 @@ async fn serve_stream(
             Message::Auth { .. } => {
                 let answer = Message::AuthOk {
                     server_flags: felix_wire::KNOWN_FLAGS,
-                    server_features: Some(felix_wire::FEATURE_ERROR_CODES),
+                    server_features: Some(
+                        felix_wire::FEATURE_ERROR_CODES | felix_wire::FEATURE_IDEMPOTENT_PRODUCER,
+                    ),
                     listener_ports: None,
                     publish_window: None,
+                };
+                write_message(&mut send, answer).await?;
+            }
+            Message::ProducerInit { request_id } => {
+                let answer = Message::ProducerInitOk {
+                    request_id,
+                    producer_id: 1,
                 };
                 write_message(&mut send, answer).await?;
             }
@@ -221,6 +231,9 @@ fn binary_ack(request_id: u64, answer: Message) -> Result<bytes::Bytes> {
                 None,
             )?
         }
+        Message::PublishOk { offset, .. } => felix_wire::binary::encode_publish_ack_bytes_at(
+            request_id, None, None, None, offset, None,
+        )?,
         _ => felix_wire::binary::encode_publish_ack_bytes(request_id, None)?,
     };
     Ok(bytes)

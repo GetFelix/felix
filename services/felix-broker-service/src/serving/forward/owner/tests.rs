@@ -590,6 +590,54 @@ async fn a_forwarded_leader_publish_does_not_wait() {
     );
 }
 
+/// The answer names where each forwarded batch landed in the owner's log.
+#[tokio::test]
+async fn a_forwarded_publish_is_answered_with_its_offsets() {
+    let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
+    let handler = handler(broker, None, Duration::from_millis(300));
+
+    for expected in [(0, 0), (1, 1)] {
+        match handler.apply(forwarded()).await {
+            InternalMessage::ForwardPublishOk(ok) => assert_eq!(ok.offsets(), Some(expected)),
+            other => panic!("expected an acknowledgement, got {:?}", other.kind()),
+        }
+    }
+}
+
+/// A stream with no log has no offsets, and says so with an empty range
+/// rather than `0..=0`, which a requester would take for a real one.
+#[tokio::test]
+async fn a_forwarded_publish_to_a_stream_without_a_log_has_no_offsets() {
+    let broker = Broker::new(EphemeralCache::new().into());
+    broker.register_tenant(TENANT).await.expect("tenant");
+    broker
+        .register_namespace(TENANT, NAMESPACE)
+        .await
+        .expect("namespace");
+    broker
+        .register_stream(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            StreamMetadata {
+                durable: false,
+                shards: 1,
+                consistency: ConsistencyLevel::Leader,
+            },
+        )
+        .await
+        .expect("stream");
+    let handler = handler(Arc::new(broker), None, Duration::from_millis(300));
+
+    match handler.apply(forwarded()).await {
+        InternalMessage::ForwardPublishOk(ok) => {
+            assert_eq!((ok.first_offset, ok.last_offset), (1, 0));
+            assert_eq!(ok.offsets(), None);
+        }
+        other => panic!("expected an acknowledgement, got {:?}", other.kind()),
+    }
+}
+
 /// The write fence, on the owner. Ownership and the generation check pass --
 /// the servable set still says the shard is served here -- but the lifecycle
 /// has already closed the fence for a move, so every forwarded write is

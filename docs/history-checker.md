@@ -326,11 +326,15 @@ version of this stall (issue 863) is fixed.
 
 Rule 3 includes "an append acknowledged at an offset is found at another", and
 that part can only fire for an append whose acknowledgement named an offset.
-A publish acknowledgement does not carry one on the wire, so plain and
-idempotent appends are recorded without it. Atomic commits do: `CommitOk`
-returns the commit's offset, and the workload records it. About one operation
-in ten is a commit, and every campaign test fails unless at least five appends
-were acknowledged at a known offset, so the rule is exercised on every run.
+Every kind of append names one now: a publish acknowledgement carries the offset
+of the batch's first record when the client offers
+`FLAG_BINARY_PUBLISH_ACK_OFFSET` and the broker answers after the write, and
+`CommitOk` carries the commit's. The workload records it for plain publishes,
+idempotent publishes (a re-send reports where the first copy landed) and
+commits. The campaign streams are `Quorum`, so every acknowledgement comes after
+the write. An append acknowledged without an offset is still checked by the
+other rules. Every campaign test fails unless at least 40 appends, and at least
+half of the acknowledged ones, were acknowledged at a known offset.
 
 **To add a fault**, add a `FaultKind` variant (with its family), a `Fault`
 variant, and its arms in `Fault::inject`, `Fault::heal` and `Display`

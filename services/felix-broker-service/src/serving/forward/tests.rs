@@ -6,7 +6,9 @@
 //! driven from a script rather than from a peer.
 use std::sync::Mutex;
 
-use felix_wire::internal::{ErrorCode, ForwardPublishError, ForwardPublishOk, HelloOk, NotLeader};
+use felix_wire::internal::{
+    ErrorCode, ForwardPublishError, ForwardPublishOk, HelloOk, NotLeader, PeerCapabilities,
+};
 
 use super::*;
 
@@ -15,6 +17,8 @@ struct ScriptedOwner {
     answers: Mutex<std::collections::VecDeque<std::result::Result<InternalMessage, PeerError>>>,
     asked: Mutex<Vec<(String, u64)>>,
     kinds: Mutex<Vec<felix_wire::internal::Kind>>,
+    /// What the owner offered in its handshake.
+    offered: Option<PeerCapabilities>,
 }
 
 impl ScriptedOwner {
@@ -25,7 +29,14 @@ impl ScriptedOwner {
             answers: Mutex::new(answers.into_iter().collect()),
             asked: Mutex::new(Vec::new()),
             kinds: Mutex::new(Vec::new()),
+            offered: Some(PeerCapabilities::FORWARD_OFFSETS),
         }
+    }
+
+    /// The same owner, as a build from before `FORWARD_OFFSETS`.
+    fn predating_offsets(mut self) -> Self {
+        self.offered = Some(PeerCapabilities::GENERATION_LABELS);
+        self
     }
 
     /// The frame kind of each request, in order.
@@ -67,6 +78,10 @@ impl PeerRequester for ScriptedOwner {
                 node_id: node_id.to_string(),
                 detail: "the script ran out".to_string(),
             }))
+    }
+
+    fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+        self.offered
     }
 }
 
@@ -136,6 +151,29 @@ async fn an_accepted_batch_returns_the_owners_offsets() {
     assert_eq!(forward(&owner).await.expect("accepted"), Some((10, 12)));
     assert_eq!(owner.attempts(), 1, "an accepted batch was sent twice");
     assert_eq!(owner.asked(), vec![("broker-b".to_string(), 4)]);
+}
+
+/// An owner with no log for the stream answers with an empty range, and that
+/// is passed on as no offset rather than as a batch at some offset.
+#[tokio::test]
+async fn a_batch_to_a_stream_without_a_log_returns_no_offsets() {
+    let owner = ScriptedOwner::new([Ok(InternalMessage::ForwardPublishOk(
+        ForwardPublishOk::new(0, None),
+    ))]);
+
+    assert_eq!(forward(&owner).await.expect("accepted"), None);
+}
+
+/// An owner from before `FORWARD_OFFSETS` answered a stream with no log with
+/// `0..=0`, which looks like a real offset, so nothing it says is passed on.
+#[tokio::test]
+async fn an_owner_that_predates_forwarded_offsets_returns_none() {
+    let owner = ScriptedOwner::new([Ok(accepted(10, 12))]).predating_offsets();
+    assert_eq!(forward(&owner).await.expect("accepted"), None);
+
+    let mut unknown = ScriptedOwner::new([Ok(accepted(10, 12))]);
+    unknown.offered = None;
+    assert_eq!(forward(&unknown).await.expect("accepted"), None);
 }
 
 /// A redirect is followed, at the generation the new owner named — the refusal

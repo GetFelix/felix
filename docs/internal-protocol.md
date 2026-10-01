@@ -103,10 +103,11 @@ never have dialled the one that shipped to it.
 | `1 << 0` | `FENCE` | answers `Fence`, and refuses every older leader of the shard once it has |
 | `1 << 1` | `TAIL_FETCH` | answers `ReplicateFetch` from the leader that fenced it |
 | `1 << 2` | `GENERATION_LABELS` | reads `ReplicateLabelledRecords`, and answers `ReplicateLabelledFetch` |
+| `1 << 3` | `FORWARD_OFFSETS` | answers `ForwardPublishOk` with the offsets the batch landed at, and with the empty range `1..=0` for a stream with no log |
 
 `FELIX_INTERNAL_FENCE=false` turns the first two bits off: the broker refuses
 `Fence` and `ReplicateFetch` as unknown kinds, as an older build would. It
-still offers `GENERATION_LABELS`, which is not the fence's.
+still offers `GENERATION_LABELS` and `FORWARD_OFFSETS`, which are not the fence's.
 
 ### Versioning
 
@@ -640,6 +641,12 @@ takes the commit-ack path, whatever the setting says.
 The owner's write is durable-then-answer, so `ForwardPublishOk` means the batch
 is as safe on the owner as a local publish would have been on the ingress
 broker.
+
+The ingress broker passes the owner's `first_offset` on to a client that asked
+for ack offsets, but only from an owner that offered `FORWARD_OFFSETS`. An older
+owner answers a stream with no log with `0..=0`, which cannot be told from a
+batch written at offset 0, so its answer is relayed without an offset. The
+message's layout is unchanged, and an older ingress broker ignores the offsets.
 
 ## Retrying a forwarded publish
 

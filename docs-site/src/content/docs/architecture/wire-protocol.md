@@ -118,7 +118,8 @@ Bit field for optional features:
 | 9   | 0x0200 | A failed ack carries an error code and retry class (modifier on bit 4) |
 | 10  | 0x0400 | A failed ack's code is followed by its `detail`: reason and suggested wait (modifier on bit 9) |
 | 11  | 0x0800 | Event batch also carries `skipped_before`: offsets just before it that hold no event (modifier on bit 5) |
-| 12-15| -     | Reserved (must be 0) |
+| 12  | 0x1000 | A successful ack ends with the offset of the batch's first record; offered by a client, it also adds `offset` to `publish_ok` (modifier on bit 4) |
+| 13-15| -     | Reserved (must be 0) |
 
 Receivers must **reject** a frame carrying a flag bit they do not recognise, rather
 than ignoring the bit. These bits select how the payload is parsed, so ignoring an
@@ -708,6 +709,15 @@ client that offered that bit:
   reason length, the reason, and a `u64` suggested wait in milliseconds (`0` for
   none). This is how a binary publisher learns that a `shard_unavailable` shard is
   `moving` rather than `fenced`, and how long to wait.
+
+A successful ack can carry where the batch landed:
+
+- `0x1000`: a `u64` offset of the batch's first record, last in the frame. The
+  rest of the batch follows it with no gaps. The broker sets it only when it
+  answers after the write, so an ack sent when the batch was queued, or for a
+  stream with no log, has none. A duplicate idempotent batch gets the offset of
+  the copy already in the log. A client that offered the bit also gets `offset`
+  on a JSON `publish_ok`; one that did not gets the same frames as before.
 
 With both, it carries exactly the information the JSON `publish_ok` /
 `publish_error` messages do. A client that published with the JSON encoding still

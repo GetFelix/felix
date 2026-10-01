@@ -305,7 +305,7 @@ async fn publish_jobs_until(
             )
             .await
         {
-            Ok(()) => {
+            Ok(_) => {
                 tally.ok += 1;
                 published.push(payload);
             }

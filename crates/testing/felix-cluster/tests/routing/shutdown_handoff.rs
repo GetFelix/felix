@@ -361,7 +361,7 @@ impl Publisher {
                             )
                             .await
                         {
-                            Ok(()) => acknowledged.lock().await.push(Acked {
+                            Ok(_) => acknowledged.lock().await.push(Acked {
                                 payload,
                                 key: key_index,
                                 at: Instant::now(),

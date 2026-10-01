@@ -608,7 +608,7 @@ async fn publish_until(
             )
             .await
         {
-            Ok(()) => acknowledged.push(payload),
+            Ok(_) => acknowledged.push(payload),
             Err(err) => refused.push(format!("{err:#}")),
         }
         // Paced, so eight publishers stay under what a debug broker's publish
@@ -909,7 +909,7 @@ async fn a_move_completes_while_a_publisher_keeps_writing() {
                         )
                         .await;
                     match published {
-                        Ok(()) => acknowledged.extend(batch),
+                        Ok(_) => acknowledged.extend(batch),
                         // Refused across the switch-over: a new connection
                         // finds the new route.
                         Err(_) => break,

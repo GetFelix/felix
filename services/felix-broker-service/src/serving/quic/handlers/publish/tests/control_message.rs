@@ -402,7 +402,7 @@ async fn handle_publish_message_ack_sends_ok() {
 
     let msg = out_rx.recv().await.expect("outgoing");
     match msg {
-        Outgoing::Message(Message::PublishOk { request_id }) => {
+        Outgoing::Message(Message::PublishOk { request_id, .. }) => {
             assert_eq!(request_id, 5);
         }
         _ => panic!("unexpected outgoing"),

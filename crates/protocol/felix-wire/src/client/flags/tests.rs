@@ -61,3 +61,13 @@ fn the_ack_detail_flag_is_new_and_not_in_the_frozen_set() {
         0
     );
 }
+
+#[test]
+fn the_ack_offset_flag_is_new_and_not_in_the_frozen_set() {
+    let others = crate::KNOWN_FLAGS & !crate::FLAG_BINARY_PUBLISH_ACK_OFFSET;
+    assert_eq!(crate::FLAG_BINARY_PUBLISH_ACK_OFFSET & others, 0);
+    assert_eq!(
+        crate::ORIGINAL_V1_FLAGS & crate::FLAG_BINARY_PUBLISH_ACK_OFFSET,
+        0
+    );
+}

@@ -84,14 +84,15 @@ impl<'a> IdempotentProducer<'a> {
         self.producer_id
     }
 
-    /// Publish one payload, once.
+    /// Publish one payload, once, returning its log offset when the leader
+    /// reported one. See [`Self::publish_batch`].
     pub async fn publish(
         &self,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
         payload: Vec<u8>,
-    ) -> Result<()> {
+    ) -> Result<Option<u64>> {
         self.publish_batch(tenant_id, namespace, stream, vec![payload])
             .await
     }
@@ -108,6 +109,14 @@ impl<'a> IdempotentProducer<'a> {
     /// or replace the producer. A [`PublishRefused`] ends this producer on the
     /// stream: every later call fails with the same reason, because the
     /// broker no longer knows where this producer is.
+    ///
+    /// Returns the log offset of the batch's first record, from the ack that
+    /// settled it; a re-send the leader already held reports where the batch
+    /// landed the first time. `None` when the leader reported no offset
+    /// (it predates `FLAG_BINARY_PUBLISH_ACK_OFFSET`, or the stream has no
+    /// log), or when an earlier call had already settled this batch and
+    /// nothing was sent.
+    ///
     /// **Cancelling this stops the producer.** Dropping the future between
     /// sending a batch and learning what happened to it leaves the sequence in
     /// doubt: the batch may have been appended under it, and the cursor still
@@ -122,9 +131,11 @@ impl<'a> IdempotentProducer<'a> {
         namespace: &str,
         stream: &str,
         payloads: Vec<Vec<u8>>,
-    ) -> Result<()> {
-        self.publish_batches(tenant_id, namespace, stream, vec![payloads])
-            .await
+    ) -> Result<Option<u64>> {
+        let offsets = self
+            .publish_batches_at(tenant_id, namespace, stream, vec![payloads])
+            .await?;
+        Ok(offsets.first().copied().flatten())
     }
 
     /// Publish several batches, once each, under consecutive sequences.
@@ -150,6 +161,20 @@ impl<'a> IdempotentProducer<'a> {
         stream: &str,
         batches: Vec<Vec<Vec<u8>>>,
     ) -> Result<()> {
+        self.publish_batches_at(tenant_id, namespace, stream, batches)
+            .await
+            .map(|_| ())
+    }
+
+    /// [`Self::publish_batches`], returning the offsets of the batches this
+    /// call sent, in order.
+    async fn publish_batches_at(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        batches: Vec<Vec<Vec<u8>>>,
+    ) -> Result<Vec<Option<u64>>> {
         let key = (
             tenant_id.to_string(),
             namespace.to_string(),
@@ -201,7 +226,7 @@ impl<'a> IdempotentProducer<'a> {
             }
         };
         if batches.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         // Armed across the send and disarmed the instant it answers: between
         // those two points the caller's future may be dropped, and that is the
@@ -211,11 +236,11 @@ impl<'a> IdempotentProducer<'a> {
             .send(tenant_id, namespace, stream, &batches, first, &key)
             .await;
         cancelled.disarm();
-        let settled = first + acked as u64;
+        let settled = first + acked.len() as u64;
         match result {
             Ok(()) if doubted.is_empty() => {
                 cursors.insert(key, Cursor::Next(settled));
-                Ok(())
+                Ok(acked)
             }
             // A shorter call than the run in doubt settles its prefix only.
             Ok(()) => {
@@ -227,7 +252,7 @@ impl<'a> IdempotentProducer<'a> {
                         settled: Vec::new(),
                     },
                 );
-                Ok(())
+                Ok(acked)
             }
             Err(err) => {
                 // Anything short of a terminal refusal may have landed: a
@@ -240,7 +265,7 @@ impl<'a> IdempotentProducer<'a> {
                         Cursor::Ended(refused.clone())
                     }
                     _ => {
-                        let mut unsettled = batches.split_off(acked);
+                        let mut unsettled = batches.split_off(acked.len());
                         unsettled.extend(doubted);
                         Cursor::InDoubt {
                             sequence: settled,
@@ -257,7 +282,7 @@ impl<'a> IdempotentProducer<'a> {
 
     /// Batches under consecutive sequences from `first`, re-sent from the
     /// first unanswered one until all are answered or the policy runs out.
-    /// Returns how many, from the first, were acknowledged. Only ever the
+    /// Returns the offsets of those acknowledged, from the first. Only ever the
     /// same numbers: a re-send is safe *because* the numbers did not move.
     async fn send(
         &self,
@@ -267,7 +292,7 @@ impl<'a> IdempotentProducer<'a> {
         batches: &[Vec<Vec<u8>>],
         first: u64,
         key: &(String, String, String),
-    ) -> (usize, Result<()>) {
+    ) -> (Vec<Option<u64>>, Result<()>) {
         match self.source {
             Source::Single(client) => {
                 self.send_via(client, tenant_id, namespace, stream, batches, first, key)
@@ -278,7 +303,7 @@ impl<'a> IdempotentProducer<'a> {
                 let policy = cluster.policy();
                 let mut last: Option<anyhow::Error> = None;
                 let mut retrying = Retrying::default();
-                let mut acked = 0;
+                let mut acked = Vec::new();
                 // What the last failure asked for: `None` goes again at once
                 // through the entry broker, `Some` backs off at least that long.
                 let mut wait: Option<std::time::Duration> = None;
@@ -309,12 +334,12 @@ impl<'a> IdempotentProducer<'a> {
                             tenant_id,
                             namespace,
                             stream,
-                            &batches[acked..],
-                            first + acked as u64,
+                            &batches[acked.len()..],
+                            first + acked.len() as u64,
                             key,
                         )
                         .await;
-                    acked += settled;
+                    acked.extend(settled);
                     let err = match result {
                         Ok(()) => return (acked, Ok(())),
                         Err(err) => err,
@@ -341,7 +366,7 @@ impl<'a> IdempotentProducer<'a> {
                     }
                     last = Some(err);
                 }
-                let sequence = first + acked as u64;
+                let sequence = first + acked.len() as u64;
                 (
                     acked,
                     Err(last
@@ -369,7 +394,7 @@ impl<'a> IdempotentProducer<'a> {
         batches: &[Vec<Vec<u8>>],
         first: u64,
         key: &(String, String, String),
-    ) -> (usize, Result<()>) {
+    ) -> (Vec<Option<u64>>, Result<()>) {
         let remembered = self.leaders.lock().await.get(key).cloned();
         let target = remembered.as_deref().unwrap_or(client);
         let (acked, first_result) = self
@@ -386,8 +411,8 @@ impl<'a> IdempotentProducer<'a> {
             }) => (node_id.clone(), addr.clone()),
             _ => return (acked, Err(err)),
         };
-        let rest = &batches[acked..];
-        let next = first + acked as u64;
+        let rest = &batches[acked.len()..];
+        let next = first + acked.len() as u64;
         // Only the leader holds the sequences, so the batch goes to it
         // rather than through a forward. One hop: a correct cluster needs
         // one, and a second refusal means the answer is moving.
@@ -432,7 +457,9 @@ impl<'a> IdempotentProducer<'a> {
         if result.is_ok() {
             self.leaders.lock().await.insert(key.clone(), leader);
         }
-        (acked + more, result)
+        let mut acked = acked;
+        acked.extend(more);
+        (acked, result)
     }
 
     async fn publish_on(
@@ -443,10 +470,10 @@ impl<'a> IdempotentProducer<'a> {
         stream: &str,
         batches: &[Vec<Vec<u8>>],
         first: u64,
-    ) -> (usize, Result<()>) {
+    ) -> (Vec<Option<u64>>, Result<()>) {
         let publisher = match client.publisher().await {
             Ok(publisher) => publisher,
-            Err(err) => return (0, Err(err)),
+            Err(err) => return (Vec::new(), Err(err)),
         };
         publisher
             .publish_idempotent_pipelined(

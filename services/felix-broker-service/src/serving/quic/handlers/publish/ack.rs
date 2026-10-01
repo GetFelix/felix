@@ -52,6 +52,9 @@ pub(crate) enum Outgoing {
         /// layout, and a client that cannot parse it rejects the whole frame --
         /// an acknowledgement for a publish that succeeded.
         forwarded_to: Option<felix_wire::binary::PublishOwner>,
+        /// Where a successful batch landed. The writer drops it for a client
+        /// that did not advertise `FLAG_BINARY_PUBLISH_ACK_OFFSET`.
+        offset: Option<u64>,
     },
 }
 
@@ -74,25 +77,27 @@ pub(crate) enum AckEncoding {
 }
 
 impl AckEncoding {
-    /// Build a success ack in this encoding.
-    pub(crate) fn ok(self, request_id: u64) -> Outgoing {
-        self.ok_forwarded(request_id, None)
+    /// Build a success ack in this encoding, with the offset of the batch's
+    /// first record when it was written before the answer.
+    pub(crate) fn ok(self, request_id: u64, offset: Option<u64>) -> Outgoing {
+        self.ok_forwarded(request_id, offset, None)
     }
 
     /// A success ack that names where the batch was forwarded, when it was.
     ///
-    /// Only the binary encoding carries it. A JSON `PublishOk` has nowhere to
-    /// put it without changing a message every client parses, and the JSON path
-    /// is compatibility traffic that is not worth optimising -- a client on it
-    /// is already paying more than forwarding costs.
+    /// Only the binary encoding carries the owner. A JSON `PublishOk` has
+    /// nowhere to put it without changing a message every client parses, and
+    /// the JSON path is compatibility traffic that is not worth optimising -- a
+    /// client on it is already paying more than forwarding costs.
     pub(crate) fn ok_forwarded(
         self,
         request_id: u64,
+        offset: Option<u64>,
         forwarded_to: Option<felix_wire::binary::PublishOwner>,
     ) -> Outgoing {
         match self {
             AckEncoding::Json | AckEncoding::Idempotent => {
-                Outgoing::Message(Message::PublishOk { request_id })
+                Outgoing::Message(Message::PublishOk { request_id, offset })
             }
             AckEncoding::Binary => Outgoing::PublishAck {
                 request_id,
@@ -100,6 +105,7 @@ impl AckEncoding {
                 code: None,
                 detail: None,
                 forwarded_to,
+                offset,
             },
         }
     }
@@ -119,6 +125,7 @@ impl AckEncoding {
                 // not land anywhere, so where it would have gone is not a
                 // route the client should adopt.
                 forwarded_to: None,
+                offset: None,
             },
         }
     }
@@ -177,7 +184,7 @@ pub(crate) enum AckWaiterResult {
         encoding: AckEncoding,
         payload_len: u64,
         start: crate::serving::quic::telemetry::TelemetryInstant,
-        response: Result<Result<()>, oneshot::error::RecvError>,
+        response: Result<super::PublishResult, oneshot::error::RecvError>,
     },
     PublishTimeout {
         request_id: u64,
@@ -188,7 +195,7 @@ pub(crate) enum AckWaiterResult {
         request_id: u64,
         encoding: AckEncoding,
         payload_bytes: Vec<usize>,
-        response: Result<Result<()>, oneshot::error::RecvError>,
+        response: Result<super::PublishResult, oneshot::error::RecvError>,
         /// Carried from the enqueue so a successful ack can name the owner a
         /// forwarded batch went to. Resolved there rather than here because
         /// that is where the routing decision was made.
@@ -210,14 +217,14 @@ pub(crate) enum AckWaiterMessage {
         encoding: AckEncoding,
         payload_len: u64,
         start: crate::serving::quic::telemetry::TelemetryInstant,
-        response_rx: oneshot::Receiver<Result<()>>,
+        response_rx: oneshot::Receiver<super::PublishResult>,
         permit: tokio::sync::OwnedSemaphorePermit,
     },
     PublishBatch {
         request_id: u64,
         encoding: AckEncoding,
         payload_bytes: Vec<usize>,
-        response_rx: oneshot::Receiver<Result<()>>,
+        response_rx: oneshot::Receiver<super::PublishResult>,
         permit: tokio::sync::OwnedSemaphorePermit,
         /// The shard's owner, when this batch was forwarded to one and the
         /// client advertised the flag bit that carries it.

@@ -301,7 +301,8 @@ async fn publish_alert(publisher: &Publisher, tenant: &str, message: &str) -> Re
             message.as_bytes().to_vec(),
             AckMode::PerMessage,
         )
-        .await
+        .await?;
+    Ok(())
 }
 
 async fn update_alert_cache(

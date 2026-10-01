@@ -4,7 +4,7 @@ use felix_transport::{QuicClient, QuicServer, TransportConfig};
 use felix_wire::{AckMode, Message};
 use quinn::RecvStream;
 
-use crate::publish::ack::{maybe_wait_for_ack, read_ack_message_with_timing};
+use crate::publish::ack::{maybe_wait_for_ack, read_ack_message_with_timing, wait_for_ack};
 use crate::test_support::{build_server_config, quinn_client_config};
 
 async fn open_ack_stream(
@@ -83,8 +83,11 @@ async fn maybe_wait_for_ack_missing_request_id() -> Result<()> {
 async fn maybe_wait_for_ack_ok() -> Result<()> {
     crate::timings::enable_collection(1);
     let request_id = 42;
-    let (mut recv, shutdown_tx, server_task) =
-        open_ack_stream(Some(Message::PublishOk { request_id })).await?;
+    let (mut recv, shutdown_tx, server_task) = open_ack_stream(Some(Message::PublishOk {
+        request_id,
+        offset: None,
+    }))
+    .await?;
     let mut scratch = BytesMut::with_capacity(64 * 1024);
     maybe_wait_for_ack(
         &mut recv,
@@ -124,8 +127,11 @@ async fn maybe_wait_for_ack_error() -> Result<()> {
 async fn maybe_wait_for_ack_unexpected_message() -> Result<()> {
     crate::timings::enable_collection(1);
     let request_id = 9;
-    let (mut recv, shutdown_tx, server_task) =
-        open_ack_stream(Some(Message::PublishOk { request_id: 8 })).await?;
+    let (mut recv, shutdown_tx, server_task) = open_ack_stream(Some(Message::PublishOk {
+        request_id: 8,
+        offset: None,
+    }))
+    .await?;
     let mut scratch = BytesMut::with_capacity(64 * 1024);
     assert!(
         maybe_wait_for_ack(
@@ -283,5 +289,44 @@ async fn a_binary_ack_carries_its_detail_to_the_caller() -> Result<()> {
     );
     let _ = shutdown_tx.send(());
     server_task.await.context("server task join")??;
+    Ok(())
+}
+
+/// The offset a successful ack reports, read off the wire.
+async fn acked_offset(bytes: Vec<u8>, request_id: u64) -> Result<Option<u64>> {
+    let (mut recv, shutdown_tx, server_task) = open_ack_stream_bytes(Some(bytes)).await?;
+    let mut scratch = BytesMut::with_capacity(64 * 1024);
+    let acked = wait_for_ack(
+        &mut recv,
+        request_id,
+        &mut scratch,
+        crate::config::DEFAULT_MAX_FRAME_BYTES,
+    )
+    .await??;
+    let _ = shutdown_tx.send(());
+    server_task.await.context("server task join")??;
+    Ok(acked.offset)
+}
+
+#[tokio::test]
+async fn a_binary_ack_carries_its_offset_to_the_caller() -> Result<()> {
+    let at = felix_wire::binary::encode_publish_ack_bytes_at(11, None, None, None, Some(99), None)?;
+    assert_eq!(acked_offset(at.to_vec(), 11).await?, Some(99));
+    // Without the flag bit there is no offset, rather than a zero.
+    let plain = felix_wire::binary::encode_publish_ack_bytes(11, None)?;
+    assert_eq!(acked_offset(plain.to_vec(), 11).await?, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_json_publish_ok_carries_its_offset_to_the_caller() -> Result<()> {
+    for offset in [Some(12), None] {
+        let frame = Message::PublishOk {
+            request_id: 3,
+            offset,
+        }
+        .encode()?;
+        assert_eq!(acked_offset(frame.encode().to_vec(), 3).await?, offset);
+    }
     Ok(())
 }

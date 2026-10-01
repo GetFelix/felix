@@ -348,6 +348,7 @@ pub(crate) struct ErrorCodeSupport {
     json: AtomicBool,
     binary_ack: AtomicBool,
     binary_ack_detail: AtomicBool,
+    ack_offset: AtomicBool,
 }
 
 impl ErrorCodeSupport {
@@ -365,15 +366,29 @@ impl ErrorCodeSupport {
             felix_wire::supports(peer_flags, felix_wire::FLAG_BINARY_PUBLISH_ACK_DETAIL),
             Ordering::Relaxed,
         );
+        self.ack_offset.store(
+            felix_wire::supports(peer_flags, felix_wire::FLAG_BINARY_PUBLISH_ACK_OFFSET),
+            Ordering::Relaxed,
+        );
     }
 
     /// The message as this client should receive it.
     pub(crate) fn shape(&self, message: Message) -> Message {
+        let message = if self.ack_offset() {
+            message
+        } else {
+            message.without_ack_offset()
+        };
         if self.json.load(Ordering::Relaxed) {
             message
         } else {
             message.without_error_code()
         }
+    }
+
+    /// Whether a successful ack, binary or JSON, may carry its offset.
+    pub(crate) fn ack_offset(&self) -> bool {
+        self.ack_offset.load(Ordering::Relaxed)
     }
 
     /// Whether a failed binary ack may carry its code.

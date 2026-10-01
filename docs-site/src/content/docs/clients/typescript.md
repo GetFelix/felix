@@ -110,6 +110,11 @@ await client.publish("t1", "default", "orders", payload, Buffer.from(customerId)
 Arguments are positional: `(tenantId, namespace, stream, payload, key?, ack?,
 atLeastOnce?)`. Pass `undefined` to skip one.
 
+`publish` resolves to the offset the record landed at, as a `bigint` like
+`Event.offset`, or `null` when the broker acknowledged it before writing it (a
+`Leader` stream without `ack_on_commit`), the stream has no log, the broker is
+too old to say, or `ack` is `"none"`.
+
 ### The routing key decides the shard
 
 **Without a key every record lands on shard 0**, so a multi-shard stream

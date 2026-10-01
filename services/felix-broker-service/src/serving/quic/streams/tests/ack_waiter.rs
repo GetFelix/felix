@@ -35,7 +35,7 @@ async fn ack_waiter_loop_branches() -> Result<()> {
             permit: waiters.clone().acquire_owned().await?,
         })
         .await?;
-    let _ = tx_ok.send(Ok(()));
+    let _ = tx_ok.send(Ok(None));
 
     let (tx_err, rx_err) = oneshot::channel();
     ack_waiter_tx
@@ -50,7 +50,7 @@ async fn ack_waiter_loop_branches() -> Result<()> {
         .await?;
     let _ = tx_err.send(Err(anyhow::anyhow!("nope")));
 
-    let (_tx_drop, rx_drop) = oneshot::channel::<Result<()>>();
+    let (_tx_drop, rx_drop) = oneshot::channel::<Result<Option<u64>>>();
     ack_waiter_tx
         .send(AckWaiterMessage::Publish {
             encoding: AckEncoding::Json,
@@ -62,7 +62,7 @@ async fn ack_waiter_loop_branches() -> Result<()> {
         })
         .await?;
 
-    let (tx_timeout, rx_timeout) = oneshot::channel::<Result<()>>();
+    let (tx_timeout, rx_timeout) = oneshot::channel::<Result<Option<u64>>>();
     ack_waiter_tx
         .send(AckWaiterMessage::Publish {
             encoding: AckEncoding::Json,
@@ -86,7 +86,7 @@ async fn ack_waiter_loop_branches() -> Result<()> {
             permit: waiters.clone().acquire_owned().await?,
         })
         .await?;
-    let _ = tx_batch_ok.send(Ok(()));
+    let _ = tx_batch_ok.send(Ok(None));
 
     let (tx_batch_err, rx_batch_err) = oneshot::channel();
     ack_waiter_tx
@@ -101,7 +101,7 @@ async fn ack_waiter_loop_branches() -> Result<()> {
         .await?;
     let _ = tx_batch_err.send(Err(anyhow::anyhow!("nope")));
 
-    let (_tx_batch_drop, rx_batch_drop) = oneshot::channel::<Result<()>>();
+    let (_tx_batch_drop, rx_batch_drop) = oneshot::channel::<Result<Option<u64>>>();
     ack_waiter_tx
         .send(AckWaiterMessage::PublishBatch {
             forwarded_to: None,
@@ -113,7 +113,7 @@ async fn ack_waiter_loop_branches() -> Result<()> {
         })
         .await?;
 
-    let (tx_batch_timeout, rx_batch_timeout) = oneshot::channel::<Result<()>>();
+    let (tx_batch_timeout, rx_batch_timeout) = oneshot::channel::<Result<Option<u64>>>();
     ack_waiter_tx
         .send(AckWaiterMessage::PublishBatch {
             forwarded_to: None,
@@ -152,7 +152,7 @@ async fn ack_waiter_loop_cancel_branch() -> Result<()> {
         Duration::from_millis(50),
     ));
     let waiters = Arc::new(Semaphore::new(1));
-    let (_tx, rx) = oneshot::channel::<Result<()>>();
+    let (_tx, rx) = oneshot::channel::<Result<Option<u64>>>();
     ack_waiter_tx
         .send(AckWaiterMessage::Publish {
             encoding: AckEncoding::Json,
@@ -225,7 +225,7 @@ async fn ack_waiter_loop_logs_on_enqueue_failure() -> Result<()> {
             permit: waiters.clone().acquire_owned().await?,
         })
         .await?;
-    let _ = tx_ok.send(Ok(()));
+    let _ = tx_ok.send(Ok(None));
 
     let (tx_err, rx_err) = oneshot::channel();
     ack_waiter_tx
@@ -240,7 +240,7 @@ async fn ack_waiter_loop_logs_on_enqueue_failure() -> Result<()> {
         .await?;
     let _ = tx_err.send(Err(anyhow::anyhow!("nope")));
 
-    let (_tx_drop, rx_drop) = oneshot::channel::<Result<()>>();
+    let (_tx_drop, rx_drop) = oneshot::channel::<Result<Option<u64>>>();
     ack_waiter_tx
         .send(AckWaiterMessage::Publish {
             encoding: AckEncoding::Json,
@@ -252,7 +252,7 @@ async fn ack_waiter_loop_logs_on_enqueue_failure() -> Result<()> {
         })
         .await?;
 
-    let (tx_timeout, rx_timeout) = oneshot::channel::<Result<()>>();
+    let (tx_timeout, rx_timeout) = oneshot::channel::<Result<Option<u64>>>();
     ack_waiter_tx
         .send(AckWaiterMessage::Publish {
             encoding: AckEncoding::Json,
@@ -276,7 +276,7 @@ async fn ack_waiter_loop_logs_on_enqueue_failure() -> Result<()> {
             permit: waiters.clone().acquire_owned().await?,
         })
         .await?;
-    let _ = tx_batch_ok.send(Ok(()));
+    let _ = tx_batch_ok.send(Ok(None));
 
     let (tx_batch_err, rx_batch_err) = oneshot::channel();
     ack_waiter_tx
@@ -291,7 +291,7 @@ async fn ack_waiter_loop_logs_on_enqueue_failure() -> Result<()> {
         .await?;
     let _ = tx_batch_err.send(Err(anyhow::anyhow!("nope")));
 
-    let (_tx_batch_drop, rx_batch_drop) = oneshot::channel::<Result<()>>();
+    let (_tx_batch_drop, rx_batch_drop) = oneshot::channel::<Result<Option<u64>>>();
     ack_waiter_tx
         .send(AckWaiterMessage::PublishBatch {
             forwarded_to: None,
@@ -303,7 +303,7 @@ async fn ack_waiter_loop_logs_on_enqueue_failure() -> Result<()> {
         })
         .await?;
 
-    let (tx_batch_timeout, rx_batch_timeout) = oneshot::channel::<Result<()>>();
+    let (tx_batch_timeout, rx_batch_timeout) = oneshot::channel::<Result<Option<u64>>>();
     ack_waiter_tx
         .send(AckWaiterMessage::PublishBatch {
             forwarded_to: None,
@@ -350,7 +350,7 @@ async fn ack_waiter_enqueue_failure_publish_error() -> Result<()> {
 async fn ack_waiter_enqueue_failure_publish_dropped() -> Result<()> {
     let (ack_waiter_tx, waiters, handle) =
         spawn_ack_waiter_with_closed_out_ack(Duration::from_millis(5));
-    let (_tx_drop, rx_drop) = oneshot::channel::<Result<()>>();
+    let (_tx_drop, rx_drop) = oneshot::channel::<Result<Option<u64>>>();
     ack_waiter_tx
         .send(AckWaiterMessage::Publish {
             encoding: AckEncoding::Json,
@@ -372,7 +372,7 @@ async fn ack_waiter_enqueue_failure_publish_dropped() -> Result<()> {
 async fn ack_waiter_enqueue_failure_publish_timeout() -> Result<()> {
     let (ack_waiter_tx, waiters, handle) =
         spawn_ack_waiter_with_closed_out_ack(Duration::from_millis(5));
-    let (tx_timeout, rx_timeout) = oneshot::channel::<Result<()>>();
+    let (tx_timeout, rx_timeout) = oneshot::channel::<Result<Option<u64>>>();
     ack_waiter_tx
         .send(AckWaiterMessage::Publish {
             encoding: AckEncoding::Json,
@@ -406,7 +406,7 @@ async fn ack_waiter_enqueue_failure_publish_batch_ok() -> Result<()> {
             permit: waiters.clone().acquire_owned().await?,
         })
         .await?;
-    let _ = tx_ok.send(Ok(()));
+    let _ = tx_ok.send(Ok(None));
     drop(ack_waiter_tx);
     tokio::time::sleep(Duration::from_millis(20)).await;
     handle.await.expect("ack waiter");
@@ -441,7 +441,7 @@ async fn ack_waiter_enqueue_failure_publish_batch_error() -> Result<()> {
 async fn ack_waiter_enqueue_failure_publish_batch_dropped() -> Result<()> {
     let (ack_waiter_tx, waiters, handle) =
         spawn_ack_waiter_with_closed_out_ack(Duration::from_millis(5));
-    let (_tx_drop, rx_drop) = oneshot::channel::<Result<()>>();
+    let (_tx_drop, rx_drop) = oneshot::channel::<Result<Option<u64>>>();
     ack_waiter_tx
         .send(AckWaiterMessage::PublishBatch {
             forwarded_to: None,
@@ -463,7 +463,7 @@ async fn ack_waiter_enqueue_failure_publish_batch_dropped() -> Result<()> {
 async fn ack_waiter_enqueue_failure_publish_batch_timeout() -> Result<()> {
     let (ack_waiter_tx, waiters, handle) =
         spawn_ack_waiter_with_closed_out_ack(Duration::from_millis(5));
-    let (tx_timeout, rx_timeout) = oneshot::channel::<Result<()>>();
+    let (tx_timeout, rx_timeout) = oneshot::channel::<Result<Option<u64>>>();
     ack_waiter_tx
         .send(AckWaiterMessage::PublishBatch {
             forwarded_to: None,

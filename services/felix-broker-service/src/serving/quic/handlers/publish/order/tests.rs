@@ -7,7 +7,10 @@ use super::AckOrder;
 use crate::serving::quic::handlers::publish::Outgoing;
 
 fn ok(request_id: u64) -> Outgoing {
-    Outgoing::Message(Message::PublishOk { request_id })
+    Outgoing::Message(Message::PublishOk {
+        request_id,
+        offset: None,
+    })
 }
 
 fn binary_ok(request_id: u64) -> Outgoing {
@@ -17,6 +20,7 @@ fn binary_ok(request_id: u64) -> Outgoing {
         code: None,
         detail: None,
         forwarded_to: None,
+        offset: None,
     }
 }
 
@@ -25,7 +29,7 @@ fn ids(ready: &[Outgoing]) -> Vec<u64> {
         .iter()
         .map(|outgoing| match outgoing {
             Outgoing::PublishAck { request_id, .. } => *request_id,
-            Outgoing::Message(Message::PublishOk { request_id }) => *request_id,
+            Outgoing::Message(Message::PublishOk { request_id, .. }) => *request_id,
             other => panic!("not a publish answer: {other:?}"),
         })
         .collect()

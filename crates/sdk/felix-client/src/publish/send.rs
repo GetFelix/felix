@@ -264,7 +264,7 @@ impl Publisher {
         payloads: Vec<Vec<u8>>,
         key: Option<bytes::Bytes>,
         ack: AckMode,
-    ) -> Result<()> {
+    ) -> Result<Option<u64>> {
         let worker = self.select_worker(tenant_id, namespace, stream)?;
         let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
         let request_id = if ack == AckMode::None {
@@ -283,7 +283,7 @@ impl Publisher {
         };
         self.send_message(worker, message, ack, request_id)
             .await
-            .map(|_| ())
+            .map(|acked| acked.offset)
     }
 
     /// Queue a JSON publish on `worker` and wait for its answer.

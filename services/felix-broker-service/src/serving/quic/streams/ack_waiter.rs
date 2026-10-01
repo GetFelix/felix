@@ -179,7 +179,7 @@ pub(super) async fn run_ack_waiter_loop(
                             // `start` measures end-to-end time from request ingest to commit completion.
                             t_consume_instant(start);
                             match response {
-                                Ok(Ok(_)) => {
+                                Ok(Ok(offset)) => {
                                     // Send a success ACK back to the client. This may apply backpressure/throttling
                                     // depending on outbound queue depth; failures here are treated as transport-level issues.
                                     count_publish_accepted("ok", payload_len);
@@ -197,7 +197,7 @@ pub(super) async fn run_ack_waiter_loop(
                                             &out_ack_depth_waiter,
                                             "felix_broker_out_ack_depth",
                                             &ack_throttle_tx_waiter,
-                                            encoding.ok(request_id),
+                                            encoding.ok(request_id, offset),
                                         )
                                         .await,
                                         &ack_timeout_state_waiter,
@@ -298,7 +298,7 @@ pub(super) async fn run_ack_waiter_loop(
                         } => {
                             // Batch variant: similar to Publish, but records bytes per message in the batch.
                             match response {
-                                Ok(Ok(_)) => {
+                                Ok(Ok(offset)) => {
                                     count_publish_accepted(
                                         "ok",
                                         payload_bytes.iter().sum::<usize>() as u64,
@@ -309,7 +309,7 @@ pub(super) async fn run_ack_waiter_loop(
                                             &out_ack_depth_waiter,
                                             "felix_broker_out_ack_depth",
                                             &ack_throttle_tx_waiter,
-                                            encoding.ok_forwarded(request_id, forwarded_to),
+                                            encoding.ok_forwarded(request_id, offset, forwarded_to),
                                         )
                                         .await,
                                         &ack_timeout_state_waiter,

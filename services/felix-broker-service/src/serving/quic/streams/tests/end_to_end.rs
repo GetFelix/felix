@@ -189,7 +189,13 @@ async fn publish_rejects_unknown_stream() -> Result<()> {
     let response =
         crate::serving::quic::read_message_limited(&mut recv, max_frame_bytes, &mut frame_scratch)
             .await?;
-    assert_eq!(response, Some(Message::PublishOk { request_id: 2 }));
+    assert_eq!(
+        response,
+        Some(Message::PublishOk {
+            request_id: 2,
+            offset: None
+        })
+    );
 
     drop(connection);
     server_task.abort();
@@ -252,7 +258,13 @@ async fn publish_ack_on_commit_smoke() -> Result<()> {
     let response =
         crate::serving::quic::read_message_limited(&mut recv, max_frame_bytes, &mut frame_scratch)
             .await?;
-    assert_eq!(response, Some(Message::PublishOk { request_id: 1 }));
+    assert_eq!(
+        response,
+        Some(Message::PublishOk {
+            request_id: 1,
+            offset: None
+        })
+    );
 
     drop(connection);
     server_task.abort();

@@ -38,7 +38,7 @@ async fn broker_with(streams: &[&str]) -> Arc<Broker> {
 fn local_job(
     handle: &felix_broker::StreamHandle,
     payload: Bytes,
-    response: Option<oneshot::Sender<anyhow::Result<()>>>,
+    response: Option<oneshot::Sender<anyhow::Result<Option<u64>>>>,
 ) -> PublishJob {
     PublishJob {
         target: PublishTarget::Resolved {

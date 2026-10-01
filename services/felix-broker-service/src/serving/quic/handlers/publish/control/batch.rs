@@ -432,7 +432,7 @@ pub(crate) async fn handle_publish_batch_message(
                     out_ack_depth,
                     "felix_broker_out_ack_depth",
                     ack_throttle_tx,
-                    encoding.ok(request_id),
+                    encoding.ok(request_id, None),
                 )
                 .await,
                 ack_timeout_state,

@@ -188,10 +188,19 @@ publisher
     .await?;
 
 // With acknowledgement
-publisher
+let offset = publisher
     .publish("acme", "prod", "events", b"important".to_vec(), AckMode::PerMessage)
     .await?;
 ```
+
+An acknowledged publish returns `Option<u64>`: the log offset of the first
+record in the batch. The rest of a batch follow it with no gaps, so record `i`
+is at `offset + i`. It is `None` when the broker acknowledged the batch as soon
+as it was queued instead of once it was written (a `Leader` stream with
+`ack_on_commit` off), when the stream has no log, and against a broker older
+than the offset flag. An unacknowledged publish always returns `None`. On a
+`Quorum` stream the offset is where the batch was committed, and a re-sent
+`IdempotentProducer` batch reports where the first copy landed.
 
 ### The routing key decides the shard
 

@@ -50,7 +50,10 @@ fn message_all_variants_encode_decode() {
     assert_eq!(message, decoded);
 
     // Test PublishOk message
-    let message = Message::PublishOk { request_id: 123 };
+    let message = Message::PublishOk {
+        request_id: 123,
+        offset: None,
+    };
     let frame = message.encode().expect("encode");
     let decoded = Message::decode(frame).expect("decode");
     assert_eq!(message, decoded);
@@ -116,4 +119,31 @@ fn ack_mode_serialization() {
         key: None,
     };
     assert!(msg3.encode().is_ok());
+}
+
+/// Without an offset a `PublishOk` is the frame an older broker sends, so an
+/// old client reads it unchanged; with one, the offset round-trips.
+#[test]
+fn publish_ok_offset_is_optional_on_the_wire() {
+    let plain = Message::PublishOk {
+        request_id: 7,
+        offset: None,
+    };
+    let frame = plain.clone().encode().expect("encode");
+    assert_eq!(
+        &frame.payload[..],
+        br#"{"type":"publish_ok","request_id":7}"#
+    );
+
+    let placed = Message::PublishOk {
+        request_id: 7,
+        offset: Some(42),
+    };
+    let frame = placed.clone().encode().expect("encode");
+    assert_eq!(
+        &frame.payload[..],
+        br#"{"type":"publish_ok","request_id":7,"offset":42}"#
+    );
+    assert_eq!(Message::decode(frame).expect("decode"), placed);
+    assert_eq!(placed.without_ack_offset(), plain);
 }

@@ -227,7 +227,8 @@ async fn run_checked(campaign: &Campaign, nemesis: &mut impl Nemesis) -> History
         "seed {seed}: only {puts} cache puts were acknowledged and {gets} gets answered"
     );
     // The rule that an append sits where its acknowledgement said can only
-    // fire for appends acknowledged with an offset, which today are commits.
+    // fire for appends acknowledged with an offset. Every acknowledgement
+    // sent after the write carries one, so most of them should.
     let at_known_offsets = history
         .ops
         .iter()
@@ -242,7 +243,7 @@ async fn run_checked(campaign: &Campaign, nemesis: &mut impl Nemesis) -> History
         })
         .count();
     assert!(
-        at_known_offsets >= 5,
+        at_known_offsets >= 40 && at_known_offsets * 2 >= history.acknowledged(),
         "seed {seed}: only {at_known_offsets} appends were acknowledged with an offset"
     );
     cluster.shutdown().await;

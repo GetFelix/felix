@@ -51,7 +51,7 @@ Everything the Python binding wraps, with one exception noted below.
 
 | | |
 |---|---|
-| Publish | `publish(tenant, ns, stream, payload, key?, ack?, atLeastOnce?)` |
+| Publish | `publish(tenant, ns, stream, payload, key?, ack?, atLeastOnce?)` → the record's offset, or `null` when the broker acked before writing it |
 | Subscribe | `subscribe(...)` → `nextEvent()`, `close()`, `closed` |
 | Sharded subscribe | `subscribeSharded(..., start?, resume?)` → `nextEvent()`, `positions()`, `shards` |
 | Stream shape | `streamShards(...)`, `endpoints()` |

@@ -165,16 +165,10 @@ impl ForwardingHandler {
                     return error(correlation_id, ErrorCode::StorageFailed, err.to_string());
                 }
                 metrics::record_served(metrics::OUTCOME_OK);
-                // An ephemeral stream has no log, so there are no offsets to
-                // report. Zero is not a lie here: the requester only relays an
-                // acknowledgement, and the client protocol carries no offset on
-                // a publish ack at all.
-                let (first, last) = outcome.offsets.unwrap_or((0, 0));
-                InternalMessage::ForwardPublishOk(ForwardPublishOk {
+                InternalMessage::ForwardPublishOk(ForwardPublishOk::new(
                     correlation_id,
-                    first_offset: first,
-                    last_offset: last,
-                })
+                    outcome.offsets,
+                ))
             }
             Err(err) => {
                 // The owner accepted the request and the write failed. Distinct

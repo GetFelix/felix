@@ -1,6 +1,7 @@
 //! The protocol suite: an in-process broker, checked twice — once with frames
 //! built by hand over raw QUIC, once through `felix-client`.
 
+mod ack_offset;
 mod checks;
 mod commit;
 mod faults;
@@ -19,6 +20,7 @@ use felix_storage::EphemeralCache;
 use felix_storage::log::LogConfig;
 use felix_transport::{QuicClient, QuicServer, TransportConfig};
 
+use ack_offset::run_ack_offsets;
 use commit::{COMMIT_STREAM, run_client_commit, run_commit};
 use faults::run_link_faults;
 use fixture::{
@@ -68,6 +70,7 @@ pub(crate) async fn run_protocol_suite() -> Result<()> {
     )?);
     let addr = server.local_addr()?;
     let config = felix_broker_service::config::BrokerConfig::from_env()?;
+    let ack_on_commit = config.ack_on_commit;
     let server_task = tokio::spawn(quic::serve(
         Arc::clone(&server),
         Arc::clone(&broker),
@@ -88,6 +91,7 @@ pub(crate) async fn run_protocol_suite() -> Result<()> {
     run_client_cache(addr, cert.clone(), &auth).await?;
     run_commit(&connection, &auth).await?;
     run_client_commit(addr, cert.clone(), &auth).await?;
+    run_ack_offsets(&connection, &auth, ack_on_commit).await?;
     run_shard_move(&connection, &auth, &broker).await?;
     run_link_faults(&broker, addr, build_client_config(cert, &auth)?).await?;
 

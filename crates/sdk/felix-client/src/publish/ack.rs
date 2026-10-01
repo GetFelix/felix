@@ -14,7 +14,7 @@ use felix_wire::AckMode;
 use felix_wire::Message;
 use quinn::RecvStream;
 
-use super::AckOutcome;
+use super::{AckOutcome, Acked};
 use crate::frame_io::read_frame_into_with_limit;
 #[cfg(feature = "telemetry")]
 use crate::telemetry::frame_counters;
@@ -98,7 +98,7 @@ pub(crate) async fn read_ack(
         None => (None, None),
     };
     match message {
-        Some(Message::PublishOk { request_id }) => {
+        Some(Message::PublishOk { request_id, offset }) => {
             #[cfg(feature = "telemetry")]
             {
                 let counters = frame_counters();
@@ -109,7 +109,13 @@ pub(crate) async fn read_ack(
                     .ack_items_in_ok
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
-            Ok((request_id, Ok(forwarded_to)))
+            Ok((
+                request_id,
+                Ok(Acked {
+                    forwarded_to,
+                    offset,
+                }),
+            ))
         }
         Some(Message::PublishError {
             request_id,
@@ -211,6 +217,7 @@ pub(crate) async fn read_ack_message_with_timing(
         match ack.error {
             None => Message::PublishOk {
                 request_id: ack.request_id,
+                offset: ack.offset,
             },
             Some(message) => {
                 let (code, retry) = ack.code.unzip();

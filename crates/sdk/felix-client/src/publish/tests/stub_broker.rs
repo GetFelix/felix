@@ -96,7 +96,14 @@ async fn publish_batch_ack_succeeds() -> Result<()> {
             write_message(&mut send, Message::Ok).await?;
             let next = read_frame_into(&mut recv, &mut frame_scratch, false).await?;
             if next.is_some() {
-                write_message(&mut send, Message::PublishOk { request_id: 1 }).await?;
+                write_message(
+                    &mut send,
+                    Message::PublishOk {
+                        request_id: 1,
+                        offset: Some(5),
+                    },
+                )
+                .await?;
                 let _ = send.finish();
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
@@ -132,8 +139,10 @@ async fn publish_batch_ack_succeeds() -> Result<()> {
     )
     .await?;
 
+    // A broker that never advertised the acked binary frame gets JSON, and
+    // the offset in its `publish_ok` comes back all the same.
     let publisher = client.publisher().await?;
-    publisher
+    let offset = publisher
         .publish_batch(
             "t1",
             "default",
@@ -142,6 +151,7 @@ async fn publish_batch_ack_succeeds() -> Result<()> {
             AckMode::PerBatch,
         )
         .await?;
+    assert_eq!(offset, Some(5));
 
     let _ = shutdown_tx.send(());
     server_task.abort();

@@ -560,7 +560,7 @@ where
                         .publish(TENANT, NAMESPACE, STREAM, body.to_vec(), AckMode::None)
                         .await
                     {
-                        Ok(()) => {
+                        Ok(_) => {
                             state.publisher.published.fetch_add(1, Ordering::Relaxed);
                             seq += 1;
                         }

@@ -65,8 +65,9 @@ impl AsyncClient {
         })
     }
 
-    /// Publish one record. See the synchronous `Client.publish` for what `ack`
-    /// and `at_least_once` mean — they are the same options.
+    /// Publish one record, resolving to its log offset or `None`. See the
+    /// synchronous `Client.publish` for what `ack` and `at_least_once` mean,
+    /// and when there is no offset.
     #[pyo3(signature = (
         tenant_id,
         namespace,

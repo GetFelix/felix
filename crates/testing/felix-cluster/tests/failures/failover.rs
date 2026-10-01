@@ -194,6 +194,112 @@ async fn a_quorum_acknowledged_record_survives_its_leader() {
     cluster.shutdown().await;
 }
 
+/// Publish through `node` until it acknowledges, and return the acked offset.
+/// A promoted broker takes a moment to open the shard, so early attempts fail.
+async fn publish_at_once_serving(cluster: &Cluster, node: &str, payload: &str) -> u64 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        match cluster
+            .publish_via_at(node, STREAM, payload.as_bytes().to_vec())
+            .await
+        {
+            Ok(offset) => {
+                return offset.unwrap_or_else(|| panic!("{payload} was acked without an offset"));
+            }
+            Err(err) if std::time::Instant::now() >= deadline => {
+                panic!("{node} never acknowledged {payload}: {err:#}")
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
+        }
+    }
+}
+
+/// Every record `node_id` replays, by offset, once it holds all of `wanted`.
+async fn replay_by_offset(
+    cluster: &Cluster,
+    node_id: &str,
+    wanted: &[(u64, String)],
+) -> std::collections::BTreeMap<u64, String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let mut held = std::collections::BTreeMap::new();
+        if let Ok((_client, mut subscription)) = cluster.replay_on(node_id, STREAM).await {
+            while let Ok(Ok(Some(event))) =
+                tokio::time::timeout(Duration::from_secs(2), subscription.next_event()).await
+            {
+                let offset = event
+                    .offset
+                    .expect("a durable stream's events carry offsets");
+                held.insert(offset, String::from_utf8_lossy(&event.payload).into_owned());
+            }
+        }
+        let complete = wanted.iter().all(|(offset, _)| held.contains_key(offset));
+        if complete || std::time::Instant::now() >= deadline {
+            return held;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// **An acknowledged offset is where the record is**, on the leader that
+/// acknowledged it and on the one promoted after it dies. A reader that
+/// seeks to an acked offset gets that record, not a neighbour.
+#[serial]
+#[tokio::test]
+async fn acknowledged_offsets_hold_across_a_failover() {
+    let mut cluster = Cluster::start(quorum_config())
+        .await
+        .expect("start cluster");
+    let leader = cluster.owner(STREAM).await.expect("owner");
+    let shipped_before = shipped_so_far(&cluster, &leader).await;
+
+    let mut acked = Vec::new();
+    for i in 0..10 {
+        let payload = format!("before-{i}");
+        let offset = cluster
+            .publish_via_at(&leader, STREAM, payload.clone().into_bytes())
+            .await
+            .expect("publish under quorum")
+            .unwrap_or_else(|| panic!("{payload} was acked without an offset"));
+        acked.push((offset, payload));
+    }
+    let first = acked[0].0;
+    let offsets: Vec<u64> = acked.iter().map(|(offset, _)| *offset).collect();
+    assert_eq!(
+        offsets,
+        (first..first + 10).collect::<Vec<_>>(),
+        "one publisher's acks on one shard land one after another"
+    );
+
+    replication_settled(&cluster, &leader, shipped_before).await;
+    cluster.kill_node(&leader).expect("kill the leader");
+    failover_from(&cluster, &leader, Duration::from_secs(30))
+        .await
+        .expect("a replica should have been promoted");
+    let new_leader = cluster.owner(STREAM).await.expect("owner");
+    assert_ne!(new_leader, leader);
+
+    for i in 0..2 {
+        let payload = format!("after-{i}");
+        let offset = publish_at_once_serving(&cluster, &new_leader, &payload).await;
+        assert!(
+            offset > first + 9,
+            "{payload} was acked at {offset}, inside what the old leader wrote"
+        );
+        acked.push((offset, payload));
+    }
+
+    let held = replay_by_offset(&cluster, &new_leader, &acked).await;
+    for (offset, payload) in &acked {
+        assert_eq!(
+            held.get(offset),
+            Some(payload),
+            "{payload} was acked at {offset}; {new_leader} holds {held:?}"
+        );
+    }
+    cluster.shutdown().await;
+}
+
 /// **Only a broker that holds the log is promoted.** The promoted leader must
 /// be one of the replicas, not whichever node scored highest — that is the
 /// difference between a failover and a silently empty shard.

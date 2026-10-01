@@ -229,6 +229,10 @@ impl PublishContext {
     }
 }
 
+/// What a publish's waiter hears: on success, the offset of the batch's first
+/// record when it has one.
+pub(crate) type PublishResult = Result<Option<u64>>;
+
 /// Work item run by the publish scheduler.
 ///
 /// A publish job is the unit the broker’s ingress pipeline processes:
@@ -241,7 +245,7 @@ impl PublishContext {
 pub(crate) struct PublishJob {
     pub(crate) target: PublishTarget,
     pub(crate) payloads: Vec<Bytes>,
-    pub(crate) response: Option<oneshot::Sender<Result<()>>>,
+    pub(crate) response: Option<oneshot::Sender<PublishResult>>,
     /// The client was told this job succeeded when it was queued. If it then
     /// cannot be written, nobody hears, so it is counted instead.
     pub(crate) acked_on_enqueue: bool,

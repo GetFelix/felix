@@ -45,7 +45,7 @@ pub(crate) async fn pubsub(common: &Common, stream: &str, binary: bool) -> Resul
                 )
                 .await
             {
-                Ok(()) => consecutive += 1,
+                Ok(_) => consecutive += 1,
                 Err(err) if Instant::now() < deadline => {
                     consecutive = 0;
                     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -156,7 +156,7 @@ pub(crate) async fn pubsub(common: &Common, stream: &str, binary: bool) -> Resul
                     .publish(&common.tenant, &common.namespace, stream, body, ack)
                     .await
                 {
-                    Ok(()) => break at,
+                    Ok(_) => break at,
                     Err(err) if is_retriable_transient(&err) => {
                         publish_retries += 1;
                         if publish_retries > (total as u64).max(1) {
@@ -187,7 +187,7 @@ pub(crate) async fn pubsub(common: &Common, stream: &str, binary: bool) -> Resul
                     )
                     .await
                 {
-                    Ok(()) => break,
+                    Ok(_) => break,
                     Err(err) if is_retriable_transient(&err) => {
                         publish_retries += 1;
                         if publish_retries > (total as u64).max(1) {
