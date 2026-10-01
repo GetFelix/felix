@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790895149551,
+  "lastUpdate": 1790897240471,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -21892,6 +21892,58 @@ window.BENCHMARK_DATA = {
             "range": "26167.82",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1252120.21\nmean: 1243900.59\nstdev: 26167.82\ncv: 2.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7ea91f0dd066e506aa566fc18e326ac0ba29d8b0",
+          "message": "feat(broker): derive the default listener count from cores (#720) (#918)\n\nWith FELIX_QUIC_LISTENERS unset, startup binds max(1, min(cores / 2, 4))\nclient listeners, shortened so the range stops before FELIX_INTERNAL_BIND\nand port 65535, and one on port 0. An explicit value still wins.\nBrokerConfig::from_env alone keeps one listener, so code that binds its own\nserver and passes the config to serve does not advertise unbound ports.\n\nDocker docs publish 5000-5003; the Helm chart keeps setting the count\nbecause it has to list the ports.",
+          "timestamp": "2026-10-01T16:17:23-07:00",
+          "tree_id": "20c92477ba26f40ba457018ad16b3479df76801c",
+          "url": "https://github.com/gabloe/felix/commit/7ea91f0dd066e506aa566fc18e326ac0ba29d8b0"
+        },
+        "date": 1790897239711,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 333685.22,
+            "range": "6157.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 333685.22\nmean: 337073.89\nstdev: 6157.70\ncv: 1.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 333685.22,
+            "range": "6157.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 333685.22\nmean: 337073.89\nstdev: 6157.70\ncv: 1.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80840.49,
+            "range": "902.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80840.49\nmean: 81008.34\nstdev: 902.45\ncv: 1.11%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 808404.92,
+            "range": "9024.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 808404.92\nmean: 810083.41\nstdev: 9024.51\ncv: 1.11%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
