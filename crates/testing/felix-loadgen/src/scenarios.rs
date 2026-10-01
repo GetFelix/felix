@@ -19,7 +19,7 @@ mod round_trips;
 mod watch;
 
 pub(crate) use cache::{cache, counter};
-pub(crate) use ingest::ingest;
+pub(crate) use ingest::{IngestOptions, ingest};
 pub(crate) use pubsub::pubsub;
 pub(crate) use queue::queue;
 pub(crate) use retained::retained;

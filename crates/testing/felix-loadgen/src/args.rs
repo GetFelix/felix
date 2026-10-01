@@ -3,13 +3,12 @@
 
 use anyhow::{Context, Result, bail};
 
-use crate::scenarios::Common;
+use crate::scenarios::{Common, IngestOptions};
 
 /// What the command line asked for.
 pub(crate) struct Args {
     pub(crate) common: Common,
-    /// Distinct routing keys for `ingest`; 0 publishes unkeyed.
-    pub(crate) keys: usize,
+    pub(crate) ingest: IngestOptions,
     pub(crate) scenario: String,
     pub(crate) stream: String,
     pub(crate) cache: String,
@@ -29,6 +28,11 @@ pub(crate) fn usage() -> ! {
   --stream <name>             stream for pubsub (default: perf)
   --keys <n>                  ingest: spread batches over n routing keys (default 0,
                               unkeyed -- every record lands on shard 0)
+  --in-flight <n>             ingest: acked batches each publisher keeps outstanding
+                              (default 0, fire-and-forget)
+  --duration-secs <n>         ingest: publish for n seconds instead of --total records
+  --start-at <unix-secs>      ingest: connect, then start publishing at this wall-clock
+                              time (fractional seconds), so generators overlap
   --cache <name>              cache scope for cache/counter/watch (default: perf)
   --warmup <n>                discarded operations (default: 2000)
   --total <n>                 measured operations (default: 20000)
@@ -65,7 +69,7 @@ pub(crate) fn parse_args() -> Result<Args> {
     let mut batch = 1usize;
     let mut binary = false;
     let mut concurrency = 8usize;
-    let mut keys = 0usize;
+    let mut ingest = IngestOptions::default();
     let mut environment = "unknown".to_string();
     let mut slow_subscribers = 0usize;
     let mut slow_delay_ms = 0u64;
@@ -124,7 +128,21 @@ pub(crate) fn parse_args() -> Result<Args> {
             // 0 keeps the unkeyed behaviour, where every record resolves to
             // shard 0 regardless of the stream's shard count -- which is what
             // made every multi-shard measurement so far a single-shard one.
-            "--keys" => keys = value("--keys")?.parse().context("--keys")?,
+            "--keys" => ingest.keys = value("--keys")?.parse().context("--keys")?,
+            "--in-flight" => {
+                ingest.in_flight = value("--in-flight")?.parse().context("--in-flight")?
+            }
+            "--duration-secs" => {
+                let secs: f64 = value("--duration-secs")?
+                    .parse()
+                    .context("--duration-secs")?;
+                ingest.duration = Some(std::time::Duration::from_secs_f64(secs));
+            }
+            "--start-at" => {
+                let secs: f64 = value("--start-at")?.parse().context("--start-at")?;
+                ingest.start_at =
+                    Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(secs));
+            }
             "--concurrency" => {
                 concurrency = value("--concurrency")?.parse().context("--concurrency")?
             }
@@ -145,7 +163,7 @@ pub(crate) fn parse_args() -> Result<Args> {
     let scenario = scenario.context("--scenario is required")?;
 
     Ok(Args {
-        keys,
+        ingest,
         common: Common {
             brokers,
             tenant,

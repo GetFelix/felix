@@ -27,6 +27,8 @@
 #   PROFILE=1 | PROFILE_CELLS=<regex>  perf + pidstat + folded stacks per cell
 #   PROFILE_SECS=40          how long a profile records
 #   SETTLE_SECS=8            pause after brokers report ready
+#   START_DELAY_SECS=30      ingest cells: every generator starts publishing this
+#                            long after the cell launches, at the same instant
 
 here="${here:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 # shellcheck source=lib.sh
@@ -46,6 +48,7 @@ export GROUP
 : "${PROFILE_CELLS:=}"
 : "${PROFILE_SECS:=40}"
 : "${SETTLE_SECS:=8}"
+: "${START_DELAY_SECS:=30}"
 : "${OUT:=${here}/sessions/${SESSION}-results}"
 mkdir -p "${OUT}/cells" "${OUT}/system"
 
@@ -263,6 +266,10 @@ cell() {
     ngen="${#LOADGEN_VMS[@]}"
   fi
   local gens=("${LOADGEN_VMS[@]:0:${ngen}}")
+  # Launching generators through run-command staggers them by seconds, so an
+  # ingest cell gives them one wall-clock start instead (#723).
+  local start_at=""
+  case " $* " in *" --scenario ingest "*) start_at="$(( $(date +%s) + START_DELAY_SECS ))" ;; esac
   rm -rf "${dir}"; mkdir -p "${dir}"
   # shellcheck disable=SC2086 # both are lists of words
   for kv in ${CELL_LOADGEN_ENV:-} ${EXTRA_LOADGEN_ENV}; do lg_env="${lg_env}export ${kv}
@@ -274,6 +281,7 @@ cell() {
     echo "loadgen_ref=$(cat "${here}/sessions/${SESSION}.loadgen-ref" 2>/dev/null || echo "${LOADGEN_SPEC:-}")"
     echo "generators=${gens[*]}"
     echo "args=$*"
+    echo "start_at=${start_at}"
     echo "loadgen_env=$(printf '%s' "${lg_env}" | sed 's/^export //' | tr '\n' ' ')"
     echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf '%s\n' "${CURRENT_OVERRIDES}" | sed 's/^/override./'
@@ -296,8 +304,11 @@ ${lg_env}ulimit -n 1048576 || true
 mkdir -p /var/tmp/felix-cells
 o=/var/tmp/felix-cells/${name}.out; e=/var/tmp/felix-cells/${name}.err
 s=\$(date +%s.%N)
-felix-loadgen --brokers '${BROKER_ADDRS}' --tenant perf --token-file '${TOKEN_FILE}' --environment 'azure-${SESSION}-${name}' $* > \$o 2> \$e || { echo '!! case failed'; tail -15 \$e; exit 1; }
+felix-loadgen --brokers '${BROKER_ADDRS}' --tenant perf --token-file '${TOKEN_FILE}' --environment 'azure-${SESSION}-${name}' $* ${start_at:+--start-at ${start_at}} > \$o 2> \$e || { echo '!! case failed'; tail -15 \$e; exit 1; }
 t=\$(date +%s.%N)
+echo gen.launch=\$s
+# The steady-state window starts when publishing does, not at the launch.
+[ -z '${start_at}' ] || s=\$(awk -v s=\$s -v a='${start_at}' 'BEGIN { printf \"%.3f\\n\", (a > s) ? a : s }')
 grep -v '^LOADGEN_JSON' \$o | tail -c 1200
 grep '^LOADGEN_JSON' \$o | tail -1
 echo gen.start=\$s
@@ -410,12 +421,13 @@ durable_trials() {
   for t in $(seq 1 "${TRIALS}"); do durable_cell "${name}-t${t}" "$@"; done
 }
 
-# ingest_flags <stream> <keys> <publishers-per-generator>: 4 KiB keyed
-# ingest, sized per publisher (PER_PUB records each) so a cell lasts about as
-# long at any concurrency. --keys spreads batches over routing keys; 0 would
-# put every record on shard 0.
+# ingest_flags <stream> <keys> <publishers-per-generator>: keyed ingest for
+# CELL_SECS seconds, so every cell runs as long whatever its shape. PAYLOAD
+# (4096) and BATCH (64) shape the records; IN_FLIGHT > 0 sends acked batches
+# with that many outstanding per publisher, 0 is fire-and-forget. --keys
+# spreads batches over routing keys; 0 would put every record on shard 0.
 ingest_flags() {
-  echo "--scenario ingest --stream $1 --payload-bytes 4096 --batch 64 --concurrency $3 --total $(( $3 * ${PER_PUB:-200000} )) --keys $2"
+  echo "--scenario ingest --stream $1 --payload-bytes ${PAYLOAD:-4096} --batch ${BATCH:-64} --concurrency $3 --duration-secs ${CELL_SECS:-90} --keys $2${IN_FLIGHT:+ --in-flight ${IN_FLIGHT}}"
 }
 
 # write_path_pass <tag> <stream> <durable:0|1>: the #375/#425 shapes against

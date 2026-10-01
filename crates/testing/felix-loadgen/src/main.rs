@@ -50,7 +50,7 @@ async fn run() -> Result<()> {
         "watch" => scenarios::watch(&args.common, &args.cache).await,
         "queue" => scenarios::queue(&args.common, &args.stream).await,
         "retained" => scenarios::retained(&args.common, &args.cache).await,
-        "ingest" => scenarios::ingest(&args.common, &args.stream, args.keys).await,
+        "ingest" => scenarios::ingest(&args.common, &args.stream, &args.ingest).await,
         other => bail!(
             "unknown scenario {other:?} (pubsub | cache | counter | watch | queue | retained | ingest)"
         ),
