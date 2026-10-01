@@ -76,6 +76,107 @@ async fn more_requests_than_ring_entries_wait_rather_than_fail() {
     }
 }
 
+/// A ring of the test's own, so an injected submit error cannot fail the
+/// flushes of other tests sharing the process-wide one.
+fn private_ring() -> Option<&'static Ring> {
+    Ring::start().map(|ring| &*Box::leak(Box::new(ring)))
+}
+
+/// Wait until only the test holds `file`, i.e. the ring has let it go.
+async fn released(file: &Arc<File>) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Arc::strong_count(file) > 1 {
+        if Instant::now() > deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    true
+}
+
+/// A submit error with an operation in flight. Its waiter and the new one are
+/// told the error, never success, and the in-flight file stays open until the
+/// kernel's completion is reaped: closing it early would let the kernel act on
+/// a reused descriptor.
+#[tokio::test]
+async fn a_submit_error_fails_waiters_but_keeps_in_flight_files_open() {
+    let Some(ring) = private_ring() else {
+        eprintln!("io_uring unavailable; skipping");
+        return;
+    };
+    let (reader, mut writer) = std::io::pipe().expect("pipe");
+    let gate = Arc::new(File::from(OwnedFd::from(reader)));
+    let held = tokio::spawn(submit_to(ring, Arc::clone(&gate), Op::PollReadable));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !held.is_finished(),
+        "the gate finished before it was opened"
+    );
+
+    ring.submit_fault.store(libc::EINVAL, Ordering::SeqCst);
+    let dir = tempdir().expect("dir");
+    let file = temp_file(dir.path(), "log");
+    let flushed = tokio::time::timeout(
+        Duration::from_secs(2),
+        submit_to(ring, Arc::clone(&file), Op::Fsync),
+    )
+    .await
+    .expect("the flush waiter was never answered");
+    assert!(matches!(flushed, Some(Err(_))), "flush: {flushed:?}");
+    let gated = tokio::time::timeout(Duration::from_secs(2), held)
+        .await
+        .expect("the in-flight waiter was never answered")
+        .expect("join");
+    assert!(matches!(gated, Some(Err(_))), "gate: {gated:?}");
+
+    assert_eq!(
+        Arc::strong_count(&gate),
+        2,
+        "the in-flight file was dropped before its completion was reaped",
+    );
+    writer.write_all(b"x").expect("release gate");
+    assert!(released(&gate).await, "the ring never let go of the gate");
+    assert!(released(&file).await, "the ring never let go of the log");
+
+    let after = tokio::time::timeout(
+        Duration::from_secs(2),
+        submit_to(ring, Arc::clone(&file), Op::Fsync),
+    )
+    .await
+    .expect("a flush after the error was never answered");
+    assert!(matches!(after, Some(Ok(()))), "after: {after:?}");
+}
+
+/// `EBUSY` asks for completions to be reaped before the kernel takes more.
+/// Nothing failed, so nothing may be reported as failed: a failed flush
+/// poisons its log.
+#[tokio::test]
+async fn a_busy_ring_delays_flushes_rather_than_failing_them() {
+    let Some(ring) = private_ring() else {
+        eprintln!("io_uring unavailable; skipping");
+        return;
+    };
+    let (reader, mut writer) = std::io::pipe().expect("pipe");
+    let gate = Arc::new(File::from(OwnedFd::from(reader)));
+    let held = tokio::spawn(submit_to(ring, Arc::clone(&gate), Op::PollReadable));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    ring.submit_fault.store(libc::EBUSY, Ordering::SeqCst);
+    let dir = tempdir().expect("dir");
+    let file = temp_file(dir.path(), "log");
+    let flushed = tokio::time::timeout(Duration::from_secs(2), submit_to(ring, file, Op::Fsync))
+        .await
+        .expect("the flush waiter was never answered");
+    assert!(matches!(flushed, Some(Ok(()))), "flush: {flushed:?}");
+
+    writer.write_all(b"x").expect("release gate");
+    let gated = tokio::time::timeout(Duration::from_secs(2), held)
+        .await
+        .expect("the in-flight waiter was never answered")
+        .expect("join");
+    assert!(matches!(gated, Some(Ok(()))), "gate: {gated:?}");
+}
+
 /// N logs flushing concurrently through the ring. Prints the per-flush
 /// latency so a change to the service loop can be compared before and after:
 /// `cargo test -p felix-storage --lib uring_fsync::tests::concurrent_flush_latency -- --ignored --nocapture`.

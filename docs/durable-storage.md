@@ -662,7 +662,10 @@ with `IORING_OP_FSYNC` (with `DATASYNC`, like the thread's `fdatasync`) on one
 process-wide ring. It is Linux-only and default off: a kernel too old for the
 opcode, or a container that forbids the syscall, falls back to the flush thread
 rather than failing, because durability must not depend on an optimisation
-being available. The kernel runs the sync on a worker thread of its own, so a
+being available. If submitting to the ring fails (other than `EINTR`, `EAGAIN`
+or `EBUSY`, which only delay it), every outstanding flush is failed with that
+error, which poisons its log; the file stays open until the kernel reports the
+operation done. The kernel runs the sync on a worker thread of its own, so a
 single log's flush is not faster this way; see
 [storage-performance.md](storage-performance.md#9-each-log-flushes-on-its-own-thread).
 
