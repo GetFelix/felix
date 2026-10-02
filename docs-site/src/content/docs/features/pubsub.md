@@ -91,7 +91,11 @@ from the broker (`FELIX_BROKER_PUBLISH_WINDOW`, 256 by default): up to that many
 acked publishes may be unanswered on each stream, and their acks come back in
 the order the stream sent them. Every stream has its own window, so publishes
 stuck behind a stalled shard do not hold up the other streams on the same
-connection.
+connection. The Rust client gives each shard it knows the number of a stream
+of its own: every `ClusterClient` publish, and every unkeyed or idempotent
+publish (shard 0). So a stalled shard holds up only its own publishes, not
+the stream's other shards. A client keeps up to 16 such streams
+(`publish_shard_streams`); shards past that share the pooled streams.
 
 A single caller that awaits each publish before issuing the next still
 pays one round trip per publish. Batch, or publish concurrently, to amortize

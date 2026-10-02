@@ -20,6 +20,7 @@ impl Client {
                 self.publish_sharding,
                 Arc::clone(&self.publish_admission),
                 self.publish_stream_hasher.clone(),
+                Some(Arc::clone(&self.publish_shard_streams)),
                 self.runtime_config.bench_embed_ts,
             )),
         })

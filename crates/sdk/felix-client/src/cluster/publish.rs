@@ -166,7 +166,6 @@ impl ClusterClient {
         key: Option<bytes::Bytes>,
         ack: AckMode,
     ) -> Result<Option<u64>> {
-        let (tenant_id, namespace, stream) = (&shard.0, &shard.1, &shard.2);
         let routed = self
             .owners
             .read()
@@ -178,17 +177,7 @@ impl ClusterClient {
             Some((owner, node_id)) => {
                 // Kept only so a refusal that applied nothing can be sent on.
                 let retained = payload.clone();
-                let err = match publish_once_keyed(
-                    &owner,
-                    tenant_id,
-                    namespace,
-                    stream,
-                    payload,
-                    key.clone(),
-                    ack,
-                )
-                .await
-                {
+                let err = match publish_once_to(&owner, &shard, payload, key.clone(), ack).await {
                     Ok(acked) => {
                         if let Some(owner) = acked.forwarded_to {
                             self.remember_owner(shard, owner).await;
@@ -215,7 +204,7 @@ impl ClusterClient {
         };
 
         let client = self.client().await;
-        match publish_once_keyed(&client, tenant_id, namespace, stream, payload, key, ack).await {
+        match publish_once_to(&client, &shard, payload, key, ack).await {
             Ok(acked) => {
                 if let Some(owner) = acked.forwarded_to {
                     self.remember_owner(shard, owner).await;
@@ -245,25 +234,32 @@ async fn publish_once(
     payload: Vec<u8>,
     ack: AckMode,
 ) -> AckOutcome {
-    publish_once_keyed(client, tenant_id, namespace, stream, payload, None, ack).await
+    let publisher = client.publisher().await.context("open publisher")?;
+    publisher
+        .publish_reporting_owner(tenant_id, namespace, stream, payload, ack)
+        .await
 }
 
-async fn publish_once_keyed(
+/// One publish to `shard`, on that shard's own stream when the client has
+/// room for one.
+async fn publish_once_to(
     client: &Client,
-    tenant_id: &str,
-    namespace: &str,
-    stream: &str,
+    shard: &ShardKey,
     payload: Vec<u8>,
     key: Option<bytes::Bytes>,
     ack: AckMode,
 ) -> AckOutcome {
+    let (tenant_id, namespace, stream, shard) = (&shard.0, &shard.1, &shard.2, shard.3);
     let publisher = client.publisher().await.context("open publisher")?;
     match key {
         Some(key) => {
             publisher
-                .publish_keyed_reporting_owner(tenant_id, namespace, stream, key, payload, ack)
+                .publish_keyed_reporting_owner(
+                    tenant_id, namespace, stream, key, shard, payload, ack,
+                )
                 .await
         }
+        // Unkeyed is shard 0, which is what the publisher assumes.
         None => {
             publisher
                 .publish_reporting_owner(tenant_id, namespace, stream, payload, ack)

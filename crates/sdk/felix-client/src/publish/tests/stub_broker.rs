@@ -52,7 +52,7 @@ async fn publish_reports_server_error() -> Result<()> {
     let client = Client::connect_with_transport(
         addr,
         "localhost",
-        build_client_config_with_overrides(cert, 0)?,
+        pool_only(build_client_config_with_overrides(cert, 0)?),
         TransportConfig::default(),
     )
     .await?;
@@ -134,7 +134,7 @@ async fn publish_batch_ack_succeeds() -> Result<()> {
     let client = Client::connect_with_transport(
         addr,
         "localhost",
-        build_client_config_with_overrides(cert, 0)?,
+        pool_only(build_client_config_with_overrides(cert, 0)?),
         TransportConfig::default(),
     )
     .await?;
@@ -156,4 +156,11 @@ async fn publish_batch_ack_succeeds() -> Result<()> {
     let _ = shutdown_tx.send(());
     server_task.abort();
     Ok(())
+}
+
+/// These stubs answer one stream per connection, so the publish has to go on
+/// a pooled stream rather than open one for its shard.
+fn pool_only(mut config: crate::ClientConfig) -> crate::ClientConfig {
+    config.publish_shard_streams = 0;
+    config
 }

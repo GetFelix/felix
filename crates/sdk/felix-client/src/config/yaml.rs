@@ -15,6 +15,7 @@ pub(super) struct ClientConfigOverride {
     publish_queue_depth: Option<usize>,
     publish_inflight_bytes: Option<usize>,
     publish_sharding: Option<String>,
+    publish_shard_streams: Option<usize>,
     auth_tenant_id: Option<String>,
     auth_token: Option<String>,
     cache_conn_pool: Option<usize>,
@@ -66,6 +67,10 @@ impl ClientConfigOverride {
             && let Some(parsed) = parse_sharding(value)
         {
             config.publish_sharding = parsed;
+        }
+        // Zero is meaningful here: it turns shard streams off.
+        if let Some(value) = self.publish_shard_streams {
+            config.publish_shard_streams = value;
         }
         if let Some(value) = &self.auth_tenant_id {
             config.auth_tenant_id = Some(value.clone());

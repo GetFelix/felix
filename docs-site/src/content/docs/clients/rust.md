@@ -118,6 +118,8 @@ let config = ClientConfig {
     
     // Publish sharding
     publish_sharding: PublishSharding::HashStream,
+    // Streams of their own for up to this many shards (0 turns them off)
+    publish_shard_streams: 16,
 
     ..ClientConfig::optimized_defaults(quinn)
 };
@@ -305,6 +307,17 @@ PublishSharding::HashStream
 same writer, so each stream's publishes reach the broker in order.
 `RoundRobin` spreads load evenly across writers, but publishes to one stream
 can arrive out of order.
+
+Under `HashStream`, a publish whose shard the client knows goes on a stream of
+its own for that shard instead: every `ClusterClient` publish, and every
+unkeyed or idempotent publish, which is shard 0. The broker answers a stream's
+pipelined publishes in order, so shards sharing a stream would wait on the
+slowest; on separate streams a shard stalled on a quorum holds up only
+itself. The stream opens on the shard's first publish, which pays one extra
+round trip to authenticate it, and stays open. The client keeps at most
+`publish_shard_streams` of them (16 by default, `FELIX_PUB_SHARD_STREAMS`);
+shards past that share the pool. A keyed publish through a plain `Client`
+always uses the pool, because that client does not know the stream's width.
 
 ### Errors you can act on
 

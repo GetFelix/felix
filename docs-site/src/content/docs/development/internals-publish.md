@@ -37,7 +37,14 @@ pub async fn publish(
 ) -> Result<()>
 ```
 
-1. **Worker selection.** `select_worker()` picks one of the pool's
+1. **Worker selection.** When the shard is known, `route()` first asks
+   `ShardStreams` (`publish/shard_streams.rs`) for the shard's own stream,
+   opening it on the shard's first publish. The shard is known for every
+   `ClusterClient` publish and for unkeyed and idempotent publishes, which are
+   shard 0. A pipelining stream is answered in request order, so a shard that
+   shared a stream with others would hold back their answers while it waited
+   on a quorum. Past `publish_shard_streams` (16) shards, or for a keyed
+   publish through a plain `Client`, `select_worker()` picks one of the pool's
    `PublishWorker`s, either round-robin or by hashing `(tenant_id, namespace,
    stream)` (`PublishSharding::HashStream`, the mode that keeps a stream's
    messages on one QUIC stream, preserving order). The hash result is cached

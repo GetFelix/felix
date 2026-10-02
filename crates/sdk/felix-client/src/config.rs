@@ -44,6 +44,11 @@ pub struct ClientConfig {
     pub publish_inflight_bytes: usize,
     /// How publishes are spread across the publish streams.
     pub publish_sharding: PublishSharding,
+    /// Most publish streams the client opens for one shard each, beside the
+    /// pool. A publish whose shard the client knows goes on that shard's own
+    /// stream, so a shard stalled on the broker holds up only itself. Shards
+    /// past this share the pool. `0` puts every publish on the pool.
+    pub publish_shard_streams: usize,
     /// The tenant every stream authenticates as. Required to connect.
     pub auth_tenant_id: Option<String>,
     /// A fixed token for every stream. Clients that run longer than the
@@ -114,6 +119,7 @@ impl ClientConfig {
             // other valid run occupied. The earlier run that appeared to favour
             // it never applied the override at all (#553).
             publish_sharding: PublishSharding::HashStream,
+            publish_shard_streams: DEFAULT_PUB_SHARD_STREAMS,
             auth_tenant_id: None,
             auth_token: None,
             token_provider: None,

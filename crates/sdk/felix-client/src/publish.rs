@@ -13,12 +13,14 @@ mod admission;
 mod idempotent;
 mod routing;
 mod send;
+mod shard_streams;
 mod writer;
 
 pub use idempotent::IdempotentProducer;
 pub use routing::PublishSharding;
 
 pub(crate) use admission::PublishAdmission;
+pub(crate) use shard_streams::{OpenWorker, ShardStreams};
 pub(crate) use writer::{PublishWorker, run_publisher_writer_with_limit};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -188,7 +190,14 @@ impl Publisher {
         }
         if ack == AckMode::None {
             return self
-                .publish_batch_binary_inner(Some(&key), tenant_id, namespace, stream, &payloads)
+                .publish_batch_binary_inner(
+                    Some(&key),
+                    None,
+                    tenant_id,
+                    namespace,
+                    stream,
+                    &payloads,
+                )
                 .await
                 .map(|_| None);
         }
@@ -201,6 +210,7 @@ impl Publisher {
         }
         self.publish_batch_binary_acked_inner(
             Some(&key),
+            None,
             tenant_id,
             namespace,
             stream,
@@ -219,7 +229,7 @@ impl Publisher {
         stream: &str,
         payloads: &[Vec<u8>],
     ) -> Result<()> {
-        self.publish_batch_binary_inner(None, tenant_id, namespace, stream, payloads)
+        self.publish_batch_binary_inner(None, None, tenant_id, namespace, stream, payloads)
             .await
             .map(|_| ())
     }
@@ -232,7 +242,7 @@ impl Publisher {
         stream: &str,
         payloads: &[Bytes],
     ) -> Result<()> {
-        let worker = self.select_worker(tenant_id, namespace, stream)?;
+        let worker = self.route(tenant_id, namespace, stream, Some(0)).await?;
         #[cfg(feature = "telemetry")]
         let sample = crate::telemetry::t_should_sample();
         #[cfg(not(feature = "telemetry"))]
@@ -309,9 +319,11 @@ impl Publisher {
         payloads: Vec<Vec<u8>>,
         ack: AckMode,
     ) -> Result<Option<u64>> {
-        self.publish_batch_binary_acked_inner(None, tenant_id, namespace, stream, payloads, ack)
-            .await
-            .map(|acked| acked.offset)
+        self.publish_batch_binary_acked_inner(
+            None, None, tenant_id, namespace, stream, payloads, ack,
+        )
+        .await
+        .map(|acked| acked.offset)
     }
 
     /// One batch under a producer's sequence, appended once however many
@@ -333,11 +345,12 @@ impl Publisher {
         producer_id: u64,
         sequence: u64,
     ) -> Result<Option<u64>> {
-        let worker = self.select_worker(tenant_id, namespace, stream)?;
+        // Idempotent batches are unkeyed, so they are shard 0's.
+        let worker = self.route(tenant_id, namespace, stream, Some(0)).await?;
         if self.supports_binary_idempotent() {
             let response_rx = self
                 .enqueue_idempotent_binary(
-                    worker,
+                    &worker,
                     tenant_id,
                     namespace,
                     stream,
@@ -365,7 +378,7 @@ impl Publisher {
             producer_id,
             sequence,
         };
-        self.send_message(worker, message, AckMode::PerBatch, Some(request_id))
+        self.send_message(&worker, message, AckMode::PerBatch, Some(request_id))
             .await
             .map(|acked| acked.offset)
     }
@@ -391,7 +404,7 @@ impl Publisher {
         producer_id: u64,
         first_sequence: u64,
     ) -> (Vec<Option<u64>>, Result<()>) {
-        let worker = match self.select_worker(tenant_id, namespace, stream) {
+        let worker = match self.route(tenant_id, namespace, stream, Some(0)).await {
             Ok(worker) => worker,
             Err(err) => return (Vec::new(), Err(err)),
         };
@@ -426,7 +439,7 @@ impl Publisher {
             while sent < batches.len() && in_flight.len() < window {
                 match self
                     .enqueue_idempotent_binary(
-                        worker,
+                        &worker,
                         tenant_id,
                         namespace,
                         stream,
@@ -531,8 +544,19 @@ impl Publisher {
     /// The streams are shared by every publisher from the same client, so this
     /// ends publishing for all of them.
     pub async fn finish(&self) -> Result<()> {
+        let own = self
+            .inner
+            .shard_streams
+            .as_ref()
+            .map(|streams| streams.close())
+            .unwrap_or_default();
         let mut handles = Vec::new();
-        for worker in self.inner.workers.iter() {
+        for worker in self
+            .inner
+            .workers
+            .iter()
+            .chain(own.iter().map(|worker| &**worker))
+        {
             let handle = {
                 let mut guard = worker.handle.lock().await;
                 guard.take()
@@ -576,10 +600,11 @@ impl Publisher {
     ) -> AckOutcome {
         if ack == AckMode::None {
             return self
-                .publish_batch_binary_inner(None, tenant_id, namespace, stream, &[payload])
+                .publish_batch_binary_inner(None, None, tenant_id, namespace, stream, &[payload])
                 .await;
         }
         self.publish_batch_binary_acked_inner(
+            None,
             None,
             tenant_id,
             namespace,
@@ -591,23 +616,34 @@ impl Publisher {
     }
 
     /// [`Publisher::publish_keyed`], reporting the shard's owner when this
-    /// broker forwarded the batch rather than owning it.
+    /// broker forwarded the batch rather than owning it. `shard` is the one
+    /// the key resolves to, which puts the publish on that shard's stream.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn publish_keyed_reporting_owner(
         &self,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
         key: bytes::Bytes,
+        shard: u32,
         payload: Vec<u8>,
         ack: AckMode,
     ) -> AckOutcome {
         if ack == AckMode::None {
             return self
-                .publish_batch_binary_inner(Some(&key), tenant_id, namespace, stream, &[payload])
+                .publish_batch_binary_inner(
+                    Some(&key),
+                    Some(shard),
+                    tenant_id,
+                    namespace,
+                    stream,
+                    &[payload],
+                )
                 .await;
         }
         self.publish_batch_binary_acked_inner(
             Some(&key),
+            Some(shard),
             tenant_id,
             namespace,
             stream,
@@ -665,6 +701,9 @@ pub(crate) struct PublisherInner {
     admission: Arc<PublishAdmission>,
     stream_cache: Mutex<StreamShardCache>,
     stream_hasher: ahash::RandomState,
+    /// Streams of their own for shards, shared by every publisher from the
+    /// client. `None` routes everything through `workers`.
+    shard_streams: Option<Arc<ShardStreams>>,
     bench_embed_ts: bool,
     /// Intersection of every worker's advertised flags.
     ///
@@ -704,6 +743,7 @@ impl PublisherInner {
             admission,
             stream_cache: Mutex::new(StreamShardCache::new(STREAM_SHARD_CACHE_CAPACITY)),
             stream_hasher,
+            shard_streams: None,
             bench_embed_ts: false,
             server_flags,
         }
@@ -714,10 +754,24 @@ impl PublisherInner {
         sharding: PublishSharding,
         admission: Arc<PublishAdmission>,
         stream_hasher: ahash::RandomState,
+        shard_streams: Option<Arc<ShardStreams>>,
         bench_embed_ts: bool,
     ) -> Self {
         let mut inner = Self::with_admission(workers, sharding, admission, stream_hasher);
+        inner.shard_streams = shard_streams;
         inner.bench_embed_ts = bench_embed_ts;
+        inner
+    }
+
+    /// [`Self::new`] with per-shard streams opened by `open`, up to `cap`.
+    #[cfg(test)]
+    pub(crate) fn with_shard_streams(
+        workers: Arc<Vec<PublishWorker>>,
+        cap: usize,
+        open: OpenWorker,
+    ) -> Self {
+        let mut inner = Self::new(workers, PublishSharding::HashStream);
+        inner.shard_streams = Some(Arc::new(ShardStreams::new(cap, open)));
         inner
     }
 }

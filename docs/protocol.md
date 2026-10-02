@@ -715,7 +715,9 @@ with `FLAG_BINARY_PUBLISH_ACKED`, and every `publish_idempotent`):
   broker stops reading that stream's publishes until one of its answers is
   written. Each stream has its own window, so a stream whose publishes wait
   on a stalled shard holds only its own slots, and the connection's other
-  streams keep publishing. A broker says so by advertising
+  streams keep publishing. The Rust client puts each shard it knows the
+  number of on a stream of its own (see below), which makes that true per
+  shard. A broker says so by advertising
   `FEATURE_STREAM_PUBLISH_WINDOW` with the grant. A broker that predates that
   bit counts the window across the whole connection, and a client must share
   one window between its streams there. A client that sends more is slowed by QUIC flow
@@ -738,6 +740,20 @@ answer behind it forever. Every publish is answered within its enqueue wait
 plus its ack wait, so a broker whose oldest held answer is overdue by twice
 that closes the stream instead; the client sees the stream fail and every
 unanswered publish on it as failed.
+
+**One stream per shard.** Request order and the window are both per stream,
+so shards that share a stream share a fate: a shard stuck on a quorum wait
+holds back answers the others have committed, then fills the window and stops
+the stream. The Rust client therefore sends a publish whose shard it knows on
+a stream that carries only that shard, opened on the shard's first publish on
+the same connection. That is every `ClusterClient` publish (it computes the
+shard to pick the owner) and every unkeyed or idempotent publish, which is
+always shard 0. A keyed publish through a plain `Client` does not know the
+shard and uses the hashed pool. The client keeps at most
+`publish_shard_streams` such streams (16 by default); shards past that share
+the pool, and a shard never changes stream while its writer lives, so its
+publishes stay in order. Nothing on the wire changes: the broker cannot tell
+these streams from any other.
 
 **Why the order matters to an idempotent producer.** With answers in request
 order, the first failure a producer reads is the earliest one, never a

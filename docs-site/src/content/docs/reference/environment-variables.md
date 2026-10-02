@@ -938,6 +938,24 @@ export FELIX_PUB_STREAMS_PER_CONN="2"
 export FELIX_PUB_STREAMS_PER_CONN="4"  # More concurrency
 ```
 
+### `FELIX_PUB_SHARD_STREAMS`
+
+**Description**: Most publish streams a client opens for one shard each,
+beside the pooled ones (client). A publish whose shard the client knows (every
+`ClusterClient` publish, and unkeyed or idempotent publishes) goes on its
+shard's own stream, so a stalled shard holds up only itself. Shards past the
+cap share the pool. `0` turns them off.
+
+**Type**: Non-negative integer (count)
+
+**Default**: `16`
+
+**Example**:
+```bash
+export FELIX_PUB_SHARD_STREAMS="16"
+export FELIX_PUB_SHARD_STREAMS="0"   # Every publish on the pool
+```
+
 ### `FELIX_PUBLISH_CHUNK_BYTES`
 
 **Description**: Chunk size for publishing large messages (client).
