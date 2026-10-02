@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790930670700,
+  "lastUpdate": 1790930973544,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22100,6 +22100,58 @@ window.BENCHMARK_DATA = {
             "range": "2881.57",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 809769.78\nmean: 809101.15\nstdev: 2881.57\ncv: 0.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0edc3969622b654762f6c5c08f94430366532b27",
+          "message": "fix(broker): open in-memory shards when generation_start is finalized (#930) (#931)\n\nA promoted shard of an in-memory stream tried to append a generation-start\nrecord, which only a durable log can take, so once the fleet finalized\ngeneration_start it never opened and its promotion retried every 200 ms.\n\nwrite_generation_start now skips in-memory streams. Their publishes take no\nlog offsets, nothing ships, the fence takes nothing, and a Quorum publish has\nno offset to wait on a mark for, so there is no inherited record for a start\nrecord to cover. Durable streams still write it before serving.\n\nA promoted shard kept closed after its fence now backs off, doubling from\n200 ms to 2 s per failed attempt at the same generation, instead of retrying\nat a fixed 200 ms for as long as the failure lasts.\n\nSpec-Unaffected: the model's logs are durable stream logs; an in-memory stream has no replicated log, so skipping its start record changes no modelled step, and the retry spacing is not modelled.",
+          "timestamp": "2026-10-02T01:42:10-07:00",
+          "tree_id": "0eafb609fd89d9cf96ed84af95bab1c6488b1764",
+          "url": "https://github.com/gabloe/felix/commit/0edc3969622b654762f6c5c08f94430366532b27"
+        },
+        "date": 1790930972821,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 530978.63,
+            "range": "7769.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 530978.63\nmean: 529396.54\nstdev: 7769.82\ncv: 1.47%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 530978.63,
+            "range": "7769.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 530978.63\nmean: 529396.54\nstdev: 7769.82\ncv: 1.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125118.3,
+            "range": "798.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125118.30\nmean: 125244.12\nstdev: 798.79\ncv: 0.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1251183.02,
+            "range": "7987.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1251183.02\nmean: 1252441.23\nstdev: 7987.96\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
