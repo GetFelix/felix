@@ -544,6 +544,16 @@ for what the current release guarantees.
 
 ### Changed
 
+- **Durable publishes queued on one shard are written as one append.** When
+  an executor takes a durable publish, it also takes the plain publishes
+  queued behind it on the same shard (up to 64, or 1 MiB) and claims them
+  together: one write, one flush wait and one fanout, with each publish still
+  answered with its own offset, in order. The fence is checked per publish; a
+  failed append or flush fails every publish in the claim.
+  `felix_broker_publish_claim_jobs` reports the group size. Group commit
+  waiters now also watch the durable bound, so one flush wakes all of them at
+  once instead of one at a time through the flush lock.
+
 - **A lone subscriber event is sent without waiting for a batch.** A
   subscription batch takes what is already queued and flushes at once; it
   waits up to `FELIX_EVENT_BATCH_MAX_DELAY_US` for more only after the

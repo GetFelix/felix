@@ -302,15 +302,22 @@ sequenceDiagram
     participant C as append C
     participant L as flush lock
     participant D as Device
+    participant M as durable bound
 
     A->>L: acquire
-    B->>L: (queued)
-    C->>L: (queued)
+    B->>L: (queued, watching the bound)
+    C->>L: (queued, watching the bound)
     A->>D: fsync
     D-->>A: durable through offset N
+    A->>M: publish N
     A->>L: release
-    Note over B,C: wake, find their target<br/>already durable,<br/>return without flushing
+    M-->>B: covered
+    M-->>C: covered
+    Note over B,C: return together<br/>without flushing
 ```
+
+The others wait on the lock and on the durable bound at once, so one flush
+wakes them all together rather than one after another through the lock.
 
 The full matrix, the regression budget, and the reasoning behind each
 optimisation are in

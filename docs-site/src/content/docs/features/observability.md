@@ -53,6 +53,7 @@ felix_broker_ingress_dropped_total          # fire-and-forget publishes dropped:
 felix_broker_ingress_rejected_total         # (telemetry)
 felix_broker_acked_publishes_dropped_total  # by reason: acked on enqueue, then not written
 felix_broker_publish_worker_restarts_total  # publish executors replaced after a panic; should stay 0
+felix_broker_publish_claim_jobs             # durable publishes claimed as one append; near 1 means lanes are not backing up
 felix_tenant_publish_queue_full_total       # by tenant and action (refused/dropped): no room in the publish queue
 felix_client_publish_forwarded_total        # client: publishes the broker had to relay (telemetry)
 felix_broker_json_publishes_total            # by frame: publishes still on JSON

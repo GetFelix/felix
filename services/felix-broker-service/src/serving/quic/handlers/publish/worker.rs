@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use felix_broker::Broker;
 use parking_lot::Mutex;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
@@ -235,9 +236,14 @@ impl LaneWork {
         }
     }
 
-    /// Claim a durable publish's offsets on its lane, then let the lane go and
-    /// finish the flush, fanout and quorum wait on a task of its own, so the
-    /// flushes overlap and group commit has something to coalesce (#535).
+    /// Claim a durable publish's offsets on its lane, together with the
+    /// publishes queued behind it there, then let the lane go and finish the
+    /// flush, fanout and quorum wait on a task of its own, so the flushes
+    /// overlap and group commit has something to coalesce (#535).
+    ///
+    /// Claimed together, the jobs are one append, one commit wait and one
+    /// fanout, which is most of what an unbatched durable publish costs. Each
+    /// still gets its own offsets and its own answer, in lane order.
     async fn claim(
         &self,
         job: PublishJob,
@@ -245,12 +251,20 @@ impl LaneWork {
         slot: OwnedSemaphorePermit,
         lane: LaneGuard,
     ) {
+        let PublishJob {
+            target,
+            mut payloads,
+            response,
+            acked_on_enqueue,
+            admission_permit: _permit,
+            fenced: _,
+        } = job;
         let PublishTarget::Resolved {
             handle,
             shard,
             generation,
             ..
-        } = &job.target
+        } = target
         else {
             unreachable!("only durable local publishes are claimed")
         };
@@ -261,48 +275,64 @@ impl LaneWork {
             &mut held,
             self.ingress.as_deref(),
             shard.as_ref(),
-            *generation,
+            generation,
         ) {
             Ok(fenced) => fenced,
             Err(refused) => {
                 drop(lane);
                 settle(
-                    job.response,
-                    job.acked_on_enqueue,
+                    response,
+                    acked_on_enqueue,
                     shard.as_ref(),
                     Err(refused.into()),
                 );
                 return;
             }
         };
+        let mut group = ClaimGroup {
+            members: vec![GroupMember {
+                response,
+                acked_on_enqueue,
+                records: payloads.len(),
+            }],
+            fences: vec![fenced],
+        };
+        // Released with the first job's, when this returns.
+        let mut permits = Vec::new();
+        // An empty publish claims no offsets, so there is nothing to share.
+        if !payloads.is_empty() {
+            self.take_queued(
+                &handle,
+                &shard,
+                &lane,
+                &mut payloads,
+                &mut group,
+                &mut permits,
+            );
+        }
+        metrics::histogram!(PUBLISH_CLAIM_JOBS).record(group.members.len() as f64);
         // The only ordered part: offsets are consumed here, so the order
         // claims return in is the order records land on disk.
-        let claimed = self.broker.claim_publish(handle, &job.payloads).await;
+        let claimed = self.broker.claim_publish(&handle, &payloads).await;
         drop(lane);
         let claimed = match claimed {
             Ok(claimed) => claimed,
             Err(err) => {
-                settle(
-                    job.response,
-                    job.acked_on_enqueue,
-                    shard.as_ref(),
-                    Err(err.into()),
-                );
+                group.fail(shard.as_ref(), err.into());
                 return;
             }
         };
         let broker = Arc::clone(&self.broker);
-        let handle = handle.clone();
-        let shard = shard.clone();
         let marks = self.marks.clone();
         let ingress = self.ingress.clone();
         let quorum_timeout = self.quorum_timeout;
-        let response = job.response;
-        let acked_on_enqueue = job.acked_on_enqueue;
         self.work.spawn(async move {
             let completed = broker.complete_publish(claimed).await;
-            drop(fenced);
+            let ClaimGroup { members, fences } = group;
+            drop(fences);
             let result = match completed {
+                // One wait for the group's last offset: the mark is
+                // monotonic, so it covers every member at once.
                 Ok(outcome) => felix_replication::quorum::await_quorum(
                     &handle,
                     shard.as_ref(),
@@ -315,9 +345,64 @@ impl LaneWork {
                 .map(|()| first_offset(&outcome)),
                 Err(err) => Err(err.into()),
             };
-            settle(response, acked_on_enqueue, shard.as_ref(), result);
+            settle_group(members, shard.as_ref(), result);
             drop(slot);
         });
+    }
+
+    /// Move the publishes queued on `lane` behind the one being claimed into
+    /// its claim, as many as fit. Each is fenced on its own; one the fence
+    /// refuses is answered now and left out, as it would have been alone.
+    fn take_queued(
+        &self,
+        handle: &felix_broker::StreamHandle,
+        shard: &Option<ShardKey>,
+        lane: &LaneGuard,
+        payloads: &mut Vec<Bytes>,
+        group: &mut ClaimGroup,
+        permits: &mut Vec<super::AdmissionPermit>,
+    ) {
+        let mut bytes = payload_bytes(payloads);
+        let taken = lane.take_more(CLAIM_MAX_JOBS - 1, |next, _| {
+            let joins = matches!(
+                &next.target,
+                PublishTarget::Resolved { handle: next_handle, .. } if next_handle.id() == handle.id()
+            ) && !next.payloads.is_empty()
+                && bytes + payload_bytes(&next.payloads) <= CLAIM_MAX_BYTES;
+            if joins {
+                bytes += payload_bytes(&next.payloads);
+            }
+            joins
+        });
+        for mut next in taken {
+            let PublishTarget::Resolved { generation, .. } = &next.target else {
+                unreachable!("only plain local publishes join a claim")
+            };
+            let mut held = next.fenced.take();
+            match fence::enter_or_keep(
+                &mut held,
+                self.ingress.as_deref(),
+                shard.as_ref(),
+                *generation,
+            ) {
+                Ok(fenced) => {
+                    group.members.push(GroupMember {
+                        response: next.response,
+                        acked_on_enqueue: next.acked_on_enqueue,
+                        records: next.payloads.len(),
+                    });
+                    group.fences.push(fenced);
+                    permits.extend(next.admission_permit);
+                    payloads.append(&mut next.payloads);
+                }
+                Err(refused) => settle(
+                    next.response,
+                    next.acked_on_enqueue,
+                    shard.as_ref(),
+                    Err(refused.into()),
+                ),
+            }
+        }
     }
 
     /// An ephemeral stream's publish has no flush to wait for, so it runs on
@@ -496,6 +581,75 @@ impl FlushSlots {
 
 /// Below this many shards the flush-slot map is not worth sweeping.
 const FLUSH_SLOTS_PRUNE_MIN: usize = 1024;
+
+/// Most publishes one claim takes from its lane, the first included.
+const CLAIM_MAX_JOBS: usize = 64;
+/// Most payload bytes the publishes joining a claim may bring it to. The first
+/// is claimed whatever its size.
+const CLAIM_MAX_BYTES: usize = 1024 * 1024;
+
+/// Publishes per durable claim. Close to 1 means the lanes are not backing up.
+const PUBLISH_CLAIM_JOBS: &str = "felix_broker_publish_claim_jobs";
+
+/// Publishes claimed as one append, in lane order.
+struct ClaimGroup {
+    members: Vec<GroupMember>,
+    /// Every member's place in the write fence, held until the group is
+    /// durable and fanned out.
+    fences: Vec<Option<FenceGuard>>,
+}
+
+impl ClaimGroup {
+    /// Answer every member with the claim's error: nothing was appended.
+    fn fail(self, shard: Option<&ShardKey>, err: anyhow::Error) {
+        settle_group(self.members, shard, Err(err));
+    }
+}
+
+/// One publish in a [`ClaimGroup`].
+struct GroupMember {
+    response: Option<oneshot::Sender<super::PublishResult>>,
+    acked_on_enqueue: bool,
+    records: usize,
+}
+
+/// Answer a group's members in order from the group's result. On success
+/// each gets the offset of its own first record; on failure each gets the
+/// same error, because the members were one append, one flush and one quorum
+/// wait, and none of them can have succeeded without the rest.
+fn settle_group(members: Vec<GroupMember>, shard: Option<&ShardKey>, result: super::PublishResult) {
+    match result {
+        Ok(first) => {
+            let mut next = first;
+            for member in members {
+                let records = member.records as u64;
+                settle(member.response, member.acked_on_enqueue, shard, Ok(next));
+                next = next.map(|offset| offset + records);
+            }
+        }
+        // Alone, the error goes out as it came, so a single publish is
+        // answered exactly as before claims were grouped.
+        Err(err) if members.len() == 1 => {
+            let member = members.into_iter().next().expect("one member");
+            settle(member.response, member.acked_on_enqueue, shard, Err(err));
+        }
+        Err(err) => {
+            let shared = ClientError::from_anyhow(&err);
+            for member in members {
+                settle(
+                    member.response,
+                    member.acked_on_enqueue,
+                    shard,
+                    Err(shared.clone().into()),
+                );
+            }
+        }
+    }
+}
+
+fn payload_bytes(payloads: &[Bytes]) -> usize {
+    payloads.iter().map(Bytes::len).sum()
+}
 
 /// Send a forwarded batch and wait for the owner's answer.
 async fn forward(
