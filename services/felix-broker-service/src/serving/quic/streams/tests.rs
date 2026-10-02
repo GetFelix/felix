@@ -238,7 +238,7 @@ async fn build_publish_context(broker: Arc<Broker>) -> PublishContext {
             &crate::config::BrokerConfig::default(),
         )),
         tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
-        publish_window: None,
+        publish_window: 0,
     }
 }
 

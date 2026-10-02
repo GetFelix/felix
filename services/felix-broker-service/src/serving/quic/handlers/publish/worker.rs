@@ -129,7 +129,7 @@ pub(crate) fn build_tracked_publish_context(
         preauth: Arc::new(PreAuthGate::new(config)),
         // The accept loop swaps in the broker-wide instance.
         tenant_rates: Arc::new(crate::serving::limits::TenantRates::new(&config.limits)),
-        publish_window: None,
+        publish_window: 0,
     }
 }
 

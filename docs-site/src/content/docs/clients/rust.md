@@ -406,7 +406,7 @@ let batches: Vec<Vec<Vec<u8>>> = orders.iter().map(|order| vec![order.encode()])
 producer.publish_batches("acme", "prod", "orders", batches).await?;
 ```
 
-The window is whatever the broker granted the connection
+The window is whatever the broker granted the stream
 (`FELIX_BROKER_PUBLISH_WINDOW`, 256 by default), capped at 64 because the leader
 remembers 64 sequences per producer. The broker answers a pipelining stream in
 the order it sent the batches, so when one fails the producer knows it is the

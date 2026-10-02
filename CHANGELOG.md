@@ -11,6 +11,18 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A stalled shard no longer stalls publishes to healthy shards on the same
+  connection.** The pipelined publish window was counted per connection, so a
+  stream whose publishes waited on one stuck shard (a quorum wait, say) could
+  take every slot and stop the connection's other streams. The broker now
+  grants `publish_window` per stream and says so with a new feature bit,
+  `FEATURE_STREAM_PUBLISH_WINDOW` (`0x2_0000`). The Rust client gives each
+  stream its own window against such a broker and keeps sharing one per
+  connection against an older broker. Older clients keep working: they share
+  one window across their streams, which stays inside every stream's. (#843)
+
 ## [0.6.0-preview] - 2026-10-02
 
 A preview of 0.6.0. Shards move between live brokers without refusing

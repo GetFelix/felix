@@ -784,6 +784,7 @@ advertised its bit.
 | `0x2000` | `FEATURE_UNSUPPORTED` | The broker answers an unknown request with `unsupported` and keeps the stream; the client can read that answer |
 | `0x4000` | `FEATURE_SEQUENCE_REUSED` | The client reads `publish_refused` with reason `sequence_reused` |
 | `0x8000` | `FEATURE_PUBLISH_PIPELINE` | Acked publishes are pipelined under a `publish_window` (below) |
+| `0x2_0000` | `FEATURE_STREAM_PUBLISH_WINDOW` | The `publish_window` is per stream rather than per connection (below) |
 
 The full list, with what each depends on, is in
 [`docs/protocol.md`](https://github.com/gabloe/felix/blob/main/docs/protocol.md).
@@ -794,16 +795,20 @@ A client that offers `FEATURE_PUBLISH_PIPELINE` may be granted a window, sent
 as `publish_window` in `auth_ok`:
 
 ```json
-{"type":"auth_ok","server_flags":2047,"server_features":65060,"publish_window":256}
+{"type":"auth_ok","server_flags":2047,"server_features":196132,"publish_window":256}
 ```
 
 The grant covers every acked publish on the connection, JSON or binary,
 including `publish_idempotent`. The broker answers publishes in the order each
 stream carried them, holding an answer back until everything before it on that
-stream is answered. At most `publish_window` publishes may be unanswered across
-the connection. At that depth the broker stops reading the connection's
-publishes, so a client that sends more is slowed by QUIC flow control rather
-than refused. A client that did not offer the bit gets answers in completion
+stream is answered. At most `publish_window` publishes may be unanswered on each
+stream. At that depth the broker stops reading that stream's publishes, so a
+client that sends more is slowed by QUIC flow control rather than refused.
+Because every stream has its own window, a stream whose publishes are waiting
+on a stalled shard does not hold up the other streams on its connection. The
+broker advertises `FEATURE_STREAM_PUBLISH_WINDOW` to say the window is per
+stream; an older broker without that bit counts one window across the whole
+connection, and the client shares one between its streams there. A client that did not offer the bit gets answers in completion
 order, matched by `request_id`, and no window.
 
 The order matters to an idempotent producer with several batches in flight:

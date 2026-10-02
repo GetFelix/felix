@@ -753,7 +753,7 @@ pub_conn_inflight_bytes: 16777216
 
 ### `publish_window`
 
-**Description**: The most acknowledged publishes one connection may have unanswered when its client pipelines them. Granted to a client that offers `FEATURE_PUBLISH_PIPELINE`, in `AuthOk.publish_window`. The broker answers that client's publishes on each stream in the order they were sent, and stops reading the connection's publishes while this many are outstanding, so the client is slowed by QUIC flow control instead of being refused.
+**Description**: The most acknowledged publishes one stream may have unanswered when its client pipelines them. Granted to a client that offers `FEATURE_PUBLISH_PIPELINE`, in `AuthOk.publish_window`. The broker answers that client's publishes on each stream in the order they were sent, and stops reading a stream's publishes while this many are outstanding on it, so the client is slowed by QUIC flow control instead of being refused. Each stream has its own window, so a stream stuck behind a stalled shard does not stall the others on its connection.
 
 **Type**: `u32`
 
