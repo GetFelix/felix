@@ -209,11 +209,15 @@ width() { printf '%s' "$1" | wc -c | tr -d ' '; }
 # streams <n> memory <records>: memory streams instead, which together keep
 # the newest <records> and discard older ones, as a Felix in-memory stream
 # keeps the newest 1024 records per shard (DEFAULT_LOG_CAPACITY).
+#
+# A fourth argument `atomic` also allows atomic batch publish, which
+# `nats bench js pub atomic` needs (pass `-` as <records> for file streams).
 cmd_streams() {
   n="$1"; storage="${2:-file}"; w=$(width "$n"); i=0; limit=""
   if [ "$storage" = memory ]; then
     limit="--max-msgs=$(( (${3:?records to retain} + n - 1) / n ))"
   fi
+  [ "${4:-}" != atomic ] || limit="$limit --allow-batch"
   while [ "$i" -lt "$n" ]; do
     s=$(printf "%0${w}d" "$i")
     # shellcheck disable=SC2086 # limit is empty or one flag
@@ -312,12 +316,16 @@ cmd_snapshot() {
 #             ack per <flow> messages, up to <window> acks outstanding, a
 #             sliding window. A fast batch targets one stream, so publishers
 #             are pinned to stream (global publisher index mod <streams>).
+#   js-atomic `js pub atomic --batch <flow>`: one atomic batch of <flow>
+#             messages, committed with one ack; a client has one batch
+#             outstanding at a time (no window). Pinned to a stream as
+#             js-fast, since a batch cannot span streams.
 #   js-async  `js pub async --batch <window>`: send <window> messages, wait for
 #             all their acks, repeat. Subjects rotate over the streams.
 #   js-sync   `js pub sync`: one message in flight. Subjects rotate.
 #   core      `pub`: core NATS, no JetStream, no subscriber.
-# <procs> splits a generator's clients over that many processes (not js-fast,
-# which already runs one per stream).
+# <procs> splits a generator's clients over that many processes (not js-fast
+# or js-atomic, which already run one per stream).
 cmd_bench() {
   name="$1"; start_at="$2"; secs="$3"; kind="$4"; size="$5"; clients="$6"; window="$7"; flow="$8"
   nstreams="$9"; gen="${10}"; per_client="${11}"; procs="${12:-1}"
@@ -342,16 +350,22 @@ cmd_bench() {
   s=$(date +%s.%N)
   pids=""
   case "$kind" in
-    js-fast)
+    js-fast|js-atomic)
       p=$((gen * clients)); last=$((p + clients)); st=0
       while [ "$st" -lt "$nstreams" ]; do
         k=0; q=$p
         while [ "$q" -lt "$last" ]; do [ $((q % nstreams)) -eq "$st" ] && k=$((k + 1)); q=$((q + 1)); done
         if [ "$k" -gt 0 ]; then
           sn=$(printf "%0${w}d" "$st")
-          # shellcheck disable=SC2086 # common is a list of flags
-          launch "s$sn" $base js pub fast "bench.$sn" --stream "bench$sn" --clients "$k" \
-            --msgs $((per_client * k)) --batch "$flow" --max-outstanding-acks "$window" $common
+          if [ "$kind" = js-atomic ]; then
+            # shellcheck disable=SC2086 # common is a list of flags
+            launch "s$sn" $base js pub atomic "bench.$sn" --stream "bench$sn" --clients "$k" \
+              --msgs $((per_client * k)) --batch "$flow" $common
+          else
+            # shellcheck disable=SC2086 # common is a list of flags
+            launch "s$sn" $base js pub fast "bench.$sn" --stream "bench$sn" --clients "$k" \
+              --msgs $((per_client * k)) --batch "$flow" --max-outstanding-acks "$window" $common
+          fi
         fi
         st=$((st + 1))
       done

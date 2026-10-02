@@ -18,6 +18,7 @@
 #   ff        Felix perf, batch 64, fire-and-forget       <-> core publish
 #   inmem-b64 Felix perf, batch 64, 64 in flight          <-> memory, fast flow 64
 #   per-b64   Felix perf-durable periodic, batch 64       <-> default sync, fast flow 64
+#   dur-a64   Felix perf-durable, batch 64, 64 in flight  <-> always, atomic batch 64
 #
 # Knobs: AB_PAIRS, AB_PAYLOADS (4096 256), AB_KEYS (48, Felix keys),
 # AB_STREAMS (NATS streams, default AB_KEYS), AB_TRIALS (4, even), FELIX_BEST_REF
@@ -72,6 +73,7 @@ pair() {
     inmem-b1) fstream=perf; fb=1; ff=64; nmode=memory; nkind=js-fast; nwin="${FAST_WINDOW}"; nflow=1 ;;
     ff) fstream=perf; fb=64; ff=""; nmode=default; nkind=core; nwin=0; nflow=1 ;;
     inmem-b64) fstream=perf; fb=64; ff=64; nmode=memory; nkind=js-fast; nwin="${AB_FLOW64_WINDOW}"; nflow=64 ;;
+    dur-a64) fstream=perf-durable; fb=64; ff=64; nmode=always; nkind=js-atomic; nwin=1; nflow=64 ;;
     per-b64) fstream=perf-durable; fb=64; ff=64; fsync=periodic; nmode=default; nkind=js-fast; nwin="${AB_FLOW64_WINDOW}"; nflow=64 ;;
     *) echo "!! unknown pair ${pr}" >&2; return 0 ;;
   esac

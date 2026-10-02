@@ -111,6 +111,10 @@ nats_reset() {
   streams_cmd="nats-agent streams ${streams}"
   [ "${mode}" = memory ] && streams_cmd="nats-agent streams ${streams} memory ${NATS_MEM_RETAIN}"
   [ "${kind}" = core ] && streams_cmd=":"
+  if [ "${kind}" = js-atomic ]; then
+    streams_cmd="nats-agent streams ${streams} file - atomic"
+    [ "${mode}" = memory ] && streams_cmd="nats-agent streams ${streams} memory ${NATS_MEM_RETAIN} atomic"
+  fi
   # shellcheck disable=SC2086 # senv is a list of KEY=VALUE words
   env_lines="$(printf '%s\n' ${senv})"
   nats_agent_on "${NATS_VM}" "cat > /etc/nats/nats.env <<'ENV'
@@ -175,6 +179,7 @@ nats_cell() {
   local senv="${NATS_SERVER_ENV}${*:+ $*}" dir="${OUT}/cells/${name}" lg p pids=() rc=0 gi per_client
   if [ "${RESUME}" = 1 ] && [ -e "${dir}/done" ]; then log "skip ${name} (done)"; return 0; fi
   [ "${kind}" = js-fast ] && procs=1
+  [ "${kind}" = js-atomic ] && procs=1
   per_client="$(calibrate "${mode}" "${kind}" "${size}" "${pubs}" "${window}" "${flow}" "${streams}" "${procs}" "${senv}")" || {
     FAILED_CELLS="${FAILED_CELLS} ${name}"; return 0; }
   rm -rf "${dir}"; mkdir -p "${dir}"
@@ -184,6 +189,7 @@ nats_cell() {
   local batch=1 inflight="${window}"
   case "${kind}" in
     js-fast) batch="${flow}"; inflight=$(( window * flow )) ;;
+    js-atomic) batch="${flow}"; inflight="${flow}" ;;
     js-sync) inflight=1 ;;
     core) inflight=0 ;;
   esac
@@ -200,6 +206,7 @@ nats_cell() {
     echo "override.NATS_SYNC=${mode}"
     echo "override.NATS_KIND=${kind}"
     [ "${kind}" != js-fast ] || echo "override.NATS_FAST_FLOW=${flow}"
+    [ "${kind}" != js-atomic ] || echo "override.NATS_ATOMIC_BATCH=${flow}"
     [ "${mode}" != memory ] || echo "override.NATS_MEM_RETAIN=${NATS_MEM_RETAIN}"
     [ "${procs}" = 1 ] || echo "override.NATS_PROCS=${procs}"
     for kv in ${senv}; do echo "override.NATS_ENV_${kv}"; done
@@ -244,7 +251,7 @@ nats-agent snapshot" "${NATS_VM}" || rc=1
   busy="$(cat "${dir}"/*.after.txt 2>/dev/null | sed -n 's/^s\.cpu_busy=//p' | sort -n | tail -1)"
   echo "gen_cpu_busy_max=${busy:-}" >> "${dir}/meta.env"
   if [ -n "${busy}" ] && awk -v b="${busy}" -v m="${NATS_GEN_BUSY_MAX}" 'BEGIN { exit !(b > m) }'; then
-    if [ "${kind}" != js-fast ] && [ "${procs}" -lt "${NATS_MAX_PROCS}" ]; then
+    if [ "${kind}" != js-fast ] && [ "${kind}" != js-atomic ] && [ "${procs}" -lt "${NATS_MAX_PROCS}" ]; then
       log "   a generator was ${busy}% busy; running ${name} again with $((procs * 2)) processes per generator"
       CELL_PROCS=$((procs * 2)) nats_cell "${raw}" "${mode}" "${kind}" "${size}" "${pubs}" "${window}" "${flow}" "${streams}" "$@"
       return 0
@@ -269,6 +276,7 @@ cell_name() {
   case "$2" in
     js-async) n="${n}-w$5" ;;
     js-fast) n="${n}-f$6-w$5" ;;
+    js-atomic) n="${n}-a$6" ;;
   esac
   n="${n}-c$4-s$7"
   shift 7
