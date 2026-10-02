@@ -23,6 +23,12 @@ for what the current release guarantees.
   connection against an older broker. Older clients keep working: they share
   one window across their streams, which stays inside every stream's. (#843)
 
+- The control plane's Raft leader no longer retries a down or misconfigured
+  member in a tight loop. Refused connections, timeouts and non-2xx replies
+  now back off (one heartbeat interval, doubling to one second), and the
+  error names the HTTP status instead of a JSON parse failure. Unit tests in
+  the control-plane crate no longer print their logs to stdout.
+
 ## [0.6.0-preview] - 2026-10-02
 
 A preview of 0.6.0. Shards move between live brokers without refusing

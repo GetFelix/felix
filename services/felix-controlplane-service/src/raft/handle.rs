@@ -84,7 +84,11 @@ impl RaftHandle {
         let raft = Raft::new(
             settings.node_id,
             config,
-            network::HttpNetworkFactory::new(&settings.security, settings.peer_addrs.clone())?,
+            network::HttpNetworkFactory::new(
+                &settings.security,
+                settings.peer_addrs.clone(),
+                settings.heartbeat_interval,
+            )?,
             log_store,
             state_machine,
         )

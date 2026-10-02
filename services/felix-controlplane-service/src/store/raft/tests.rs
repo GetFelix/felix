@@ -194,28 +194,73 @@ async fn ensure_signing_keys_never_overwrites() {
     );
 }
 
-/// A peer that answers only `standing`, reporting `version` — or, at 0,
-/// nothing, as a build from before metadata versions does.
+/// A peer that answers `standing`, reporting `version` — or, at 0,
+/// nothing, as a build from before metadata versions does. It accepts every
+/// append so the leader has nothing to retry.
 async fn stub_member(version: Arc<std::sync::atomic::AtomicU16>) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
     let addr = listener.local_addr().expect("addr").to_string();
+    let app = axum::Router::new()
+        .route(
+            "/internal/raft/append-entries",
+            axum::routing::post(|| async { axum::Json(serde_json::json!({ "Ok": "Success" })) }),
+        )
+        .route(
+            "/internal/raft/standing",
+            axum::routing::get(move || {
+                let version = version.load(std::sync::atomic::Ordering::SeqCst);
+                async move {
+                    axum::Json(if version == 0 {
+                        serde_json::json!({ "last_log_index": null })
+                    } else {
+                        serde_json::json!({ "last_log_index": null, "version": version })
+                    })
+                }
+            }),
+        );
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    addr
+}
+
+/// A learner that answers every append with an error is retried with a
+/// backoff, not in a loop: a dead member must not cost the leader a busy
+/// stream of failed RPCs.
+#[tokio::test]
+async fn a_failing_learner_is_not_retried_in_a_loop() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    let appends = Arc::new(AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+    let counted = Arc::clone(&appends);
     let app = axum::Router::new().route(
-        "/internal/raft/standing",
-        axum::routing::get(move || {
-            let version = version.load(std::sync::atomic::Ordering::SeqCst);
-            async move {
-                axum::Json(if version == 0 {
-                    serde_json::json!({ "last_log_index": null })
-                } else {
-                    serde_json::json!({ "last_log_index": null, "version": version })
-                })
-            }
+        "/internal/raft/append-entries",
+        axum::routing::post(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            async { axum::http::StatusCode::NOT_FOUND }
         }),
     );
     tokio::spawn(async move { axum::serve(listener, app).await });
-    addr
+    store
+        .handle
+        .add_learner_without_waiting(2, addr)
+        .await
+        .expect("add learner");
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let sent = appends.load(Ordering::SeqCst);
+    assert!(sent > 0, "the leader never tried the learner");
+    // About six with a 50 ms heartbeat; a loop without backoff sends
+    // hundreds.
+    assert!(
+        sent < 50,
+        "{sent} appends to a failing learner in one second"
+    );
 }
 
 /// With a member that predates the newer commands, the leader proposes
