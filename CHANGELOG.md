@@ -11,7 +11,7 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
-## [0.6.0-preview] - YYYY-MM-DD
+## [0.6.0-preview] - 2026-10-02
 
 A preview of 0.6.0. Shards move between live brokers without refusing
 writes, `Quorum` streams can acknowledge by their followers and serve reads

@@ -899,7 +899,7 @@ jobs:
   # exists, so a release that introduces a crate name needs a token once.
   # The checklist is in docs-site's development/building page.
   crates-publish:
-    name: Publish to crates.io
+    name: ${{ inputs.dry_run && 'Package crates (dry run, nothing published)' || 'Publish to crates.io' }}
     needs: [linux-x86_64, python-conformance, typescript-conformance]
     if: vars.PUBLISH_CRATES == 'true' || inputs.dry_run
     runs-on: ubuntu-latest
@@ -948,6 +948,13 @@ jobs:
           args=()
           for crate in "${crates[@]}"; do args+=(-p "$crate"); done
           cargo package --locked "${args[@]}"
+
+      # cargo package leaves extracted sources under target/package, and
+      # rust-cache's post step trips over their test fixture directories
+      # (ENOENT annotations). They are not worth caching anyway.
+      - name: Drop the packaged sources
+        if: always()
+        run: rm -rf target/package
 
       - name: Trusted publishing
         id: auth
