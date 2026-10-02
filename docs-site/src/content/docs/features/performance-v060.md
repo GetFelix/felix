@@ -407,7 +407,7 @@ also keeps setting the count explicitly, because it has to list every port.
 TODO(data): session C3's RF=3 rows (Leader and Quorum, ack on commit, lease and
 lease-free, in memory and durable) against session B's RF=1 rows, from the
 final run (#425). Session C3's first Quorum latency cells failed while
-token renewal was broken (see [Harness lessons](#harness-lessons)) and are
+the session's node tokens expired (see [Harness lessons](#harness-lessons)) and are
 being rerun. All of B and C3 is limited by the P10 disks for durable cells, so
 those rows compare replication modes, not peak throughput.
 :::
