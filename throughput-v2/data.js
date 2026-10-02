@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790973457582,
+  "lastUpdate": 1790978489406,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22360,6 +22360,58 @@ window.BENCHMARK_DATA = {
             "range": "2545.82",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 826837.02\nmean: 826459.93\nstdev: 2545.82\ncv: 0.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "62a4027d65a9453dea774e9b400fc98717dda894",
+          "message": "fix(client,broker): per-stream publish window so one stuck shard can't stall the connection (#843) (#942)\n\n* fix(client,broker): per-stream publish window so one stuck shard can't stall the connection (#843)\n\nThe pipelined publish window was counted per connection. A stream whose\npublishes waited on one stalled shard could take every slot and stop the\nconnection's other streams, which matters for ClusterClient since it shares\none connection per broker.\n\nThe broker now gives each pipelining stream its own window and advertises\nFEATURE_STREAM_PUBLISH_WINDOW (0x2_0000) with the grant. The client gives\neach stream its own window against such a broker and keeps one shared per\nconnection against an older broker. Older clients share one window across\ntheir streams, which stays inside every stream's.\n\n* chore: mark the publish-window change as outside the TLA+ model\n\nSpec-Unaffected: the publish window is client/broker flow control; docs/formal models the lease, replication, quorum and handoff, none of which change.",
+          "timestamp": "2026-10-02T14:54:44-07:00",
+          "tree_id": "01d6108e967cdc774c88630c4a9d40fc2aee688e",
+          "url": "https://github.com/gabloe/felix/commit/62a4027d65a9453dea774e9b400fc98717dda894"
+        },
+        "date": 1790978488825,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 678715.37,
+            "range": "47629.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 678715.37\nmean: 710885.59\nstdev: 47629.99\ncv: 6.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 678715.37,
+            "range": "47629.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 678715.37\nmean: 710885.59\nstdev: 47629.99\ncv: 6.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 174197.15,
+            "range": "3534.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 174197.15\nmean: 172460.11\nstdev: 3534.68\ncv: 2.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1741971.52,
+            "range": "35346.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1741971.52\nmean: 1724601.09\nstdev: 35346.77\ncv: 2.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
