@@ -544,6 +544,12 @@ for what the current release guarantees.
 
 ### Changed
 
+- **A lone subscriber event is sent without waiting for a batch.** A
+  subscription batch takes what is already queued and flushes at once; it
+  waits up to `FELIX_EVENT_BATCH_MAX_DELAY_US` for more only after the
+  previous batch found events queued behind its first. With one message in
+  flight, delivery no longer sits out the batch delay. (#926)
+
 - **The broker's default listener count follows its cores.** With
   `FELIX_QUIC_LISTENERS` unset, a broker binds `max(1, min(cores / 2, 4))`
   client listeners, using the cores it may run on (cgroup limits included).

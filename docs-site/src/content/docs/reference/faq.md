@@ -145,8 +145,9 @@ slower and tell you nothing.
 
 ## What's the most important tuning knob?
 
-For latency, `FELIX_EVENT_BATCH_MAX_DELAY_US`: the longest an event waits
-for its batch to fill, and therefore the latency floor batching adds. For
+For latency under load, `FELIX_EVENT_BATCH_MAX_DELAY_US`: the longest an
+event waits for its batch to fill once events arrive faster than the broker
+drains them. An idle subscriber's events are sent without waiting. For
 throughput, `FELIX_EVENT_BATCH_MAX_EVENTS` and its byte sibling. For memory,
 the flow-control windows (`FELIX_*_RECV_WINDOW`), since window × connections
 bounds in-flight data. The
@@ -205,8 +206,8 @@ conformance runner exists to check an implementation against it.
 The [troubleshooting guide](/felix/reference/troubleshooting/) covers these
 with commands. The three most common answers: you're running a debug build
 (use `--release`), a firewall is dropping UDP on the broker port, or
-`FELIX_EVENT_BATCH_MAX_DELAY_US` is set high and you're measuring the batch
-delay.
+`FELIX_EVENT_BATCH_MAX_DELAY_US` is set high and your load keeps the
+subscriber busy enough that batches wait for it.
 
 ## How do I contribute?
 

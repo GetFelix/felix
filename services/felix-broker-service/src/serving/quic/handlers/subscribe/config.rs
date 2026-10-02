@@ -8,11 +8,13 @@ use std::time::Duration;
 /// it doesn’t need the broker, only identifiers and batching policy.
 ///
 /// Batching behavior:
-/// Writer always coalesces into a single binary EventBatch per flush.
+/// Writer always coalesces into a single binary EventBatch per flush. A batch
+/// takes whatever is already queued and flushes at once; it waits for more,
+/// up to `flush_delay`, only after the previous batch found events queued.
 /// Flush triggers:
 /// - `max_events`
 /// - `max_bytes`
-/// - `flush_delay`
+/// - nothing queued (idle), or `flush_delay` (busy)
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct EventWriterConfig {
     /// Stable identifier for this subscription; used by the client to route events.
@@ -24,7 +26,8 @@ pub(crate) struct EventWriterConfig {
     /// Max total payload bytes per flush in batch mode.
     pub(super) max_bytes: usize,
 
-    /// Deadline for flushing a partially-filled batch.
+    /// The most a partially-filled batch waits for more events, and only while
+    /// events arrive faster than the feeder drains them.
     pub(super) flush_delay: Duration,
 
     /// If true, encode each payload as its own one-item EventBatch frame.
