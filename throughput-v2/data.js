@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790955986797,
+  "lastUpdate": 1790957240067,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22256,6 +22256,58 @@ window.BENCHMARK_DATA = {
             "range": "38397.96",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 809883.33\nmean: 794020.62\nstdev: 38397.96\ncv: 4.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eef8d3b38a4bc4fbe8c65a4d933fb36fd9bdfc13",
+          "message": "release: date 0.6.0-preview; quiet the crates dry run (#939)\n\nThe changelog section is the release notes, so it needs the tag date.\nThe crates job now says when it is a dry run, and removes target/package\nbefore rust-cache's post step, which logged ENOENT on the extracted test\nfixture directories. Nothing was published by the dry run: the publish\nsteps were skipped.",
+          "timestamp": "2026-10-02T09:04:17-07:00",
+          "tree_id": "ed2249741478ec6825fb9fad521d9bdfda5268c6",
+          "url": "https://github.com/gabloe/felix/commit/eef8d3b38a4bc4fbe8c65a4d933fb36fd9bdfc13"
+        },
+        "date": 1790957239457,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 598896.15,
+            "range": "27405.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 598896.15\nmean: 588273.64\nstdev: 27405.54\ncv: 4.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 598896.15,
+            "range": "27405.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 598896.15\nmean: 588273.64\nstdev: 27405.54\ncv: 4.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122508.53,
+            "range": "1042.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122508.53\nmean: 122129.49\nstdev: 1042.15\ncv: 0.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1225085.34,
+            "range": "10421.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1225085.34\nmean: 1221294.93\nstdev: 10421.50\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
