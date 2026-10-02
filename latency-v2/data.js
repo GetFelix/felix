@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790930667945,
+  "lastUpdate": 1790930970890,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -28050,6 +28050,72 @@ window.BENCHMARK_DATA = {
             "range": "739.03",
             "unit": "us",
             "extra": "trials: 5\nmedian: 619.00\nmean: 999.80\nstdev: 739.03\ncv: 73.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0edc3969622b654762f6c5c08f94430366532b27",
+          "message": "fix(broker): open in-memory shards when generation_start is finalized (#930) (#931)\n\nA promoted shard of an in-memory stream tried to append a generation-start\nrecord, which only a durable log can take, so once the fleet finalized\ngeneration_start it never opened and its promotion retried every 200 ms.\n\nwrite_generation_start now skips in-memory streams. Their publishes take no\nlog offsets, nothing ships, the fence takes nothing, and a Quorum publish has\nno offset to wait on a mark for, so there is no inherited record for a start\nrecord to cover. Durable streams still write it before serving.\n\nA promoted shard kept closed after its fence now backs off, doubling from\n200 ms to 2 s per failed attempt at the same generation, instead of retrying\nat a fixed 200 ms for as long as the failure lasts.\n\nSpec-Unaffected: the model's logs are durable stream logs; an in-memory stream has no replicated log, so skipping its start record changes no modelled step, and the retry spacing is not modelled.",
+          "timestamp": "2026-10-02T01:42:10-07:00",
+          "tree_id": "0eafb609fd89d9cf96ed84af95bab1c6488b1764",
+          "url": "https://github.com/gabloe/felix/commit/0edc3969622b654762f6c5c08f94430366532b27"
+        },
+        "date": 1790930967987,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 104,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 104.00\nmean: 104.20\nstdev: 1.64\ncv: 1.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 139,
+            "range": "8.60",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 139.00\nmean: 142.00\nstdev: 8.60\ncv: 6.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 187,
+            "range": "13.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 187.00\nmean: 187.40\nstdev: 13.35\ncv: 7.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 135,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 135.00\nmean: 135.20\nstdev: 0.45\ncv: 0.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 267,
+            "range": "5.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 267.00\nmean: 267.60\nstdev: 5.13\ncv: 1.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 365,
+            "range": "60.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 365.00\nmean: 383.80\nstdev: 60.53\ncv: 15.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
