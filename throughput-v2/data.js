@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790952674421,
+  "lastUpdate": 1790955986797,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22204,6 +22204,58 @@ window.BENCHMARK_DATA = {
             "range": "24521.91",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1746077.82\nmean: 1737576.53\nstdev: 24521.91\ncv: 1.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "20ad1b12ae40fdee1278fafacfe9f45a07bb44a1",
+          "message": "feat(cli): felixctl for streams, caches, the control plane and benchmarks (#872) (#936)\n\n* feat(cli): felixctl for streams, caches, the control plane and benchmarks (#872)\n\nA new crate, crates/tools/felixctl, with a binary of the same name:\n\n- context add/use/ls/rm: named profiles in felixctl/config.toml under the\n  platform config directory. A flag beats its FELIX_* variable, which beats\n  the profile.\n- pub, sub, cache get/put/del/watch and topology, on felix-client's public\n  API only.\n- Read-only tenant, namespace, stream, cache, node and shard listings over\n  the control plane's REST API, following next_cursor.\n- bench ingest/latency/fanout/cache, running felix-loadgen's scenarios in\n  process and printing the rate with p50 and p99.\n- --json on every command, distinct exit statuses (2 usage, 3 connection,\n  4 refused, 5 not found), help with examples on every command, completions\n  and man pages.\n\nfelix-loadgen becomes a library plus its binary. Scenarios return their\nLOADGEN_JSON object and print their prose only when asked; the binary prints\nboth exactly as before. Common gains an optional client config and server\nname so felixctl can use the context's TLS instead of the instrument's\naccept-any verifier. Both crates are publishable and wait in\nRELEASE_PENDING until the release workflow publishes them.\n\nfelix-cluster up now creates a `users` cache and records each broker's\nexported certificate in the session file, so the getting-started steps can\nverify the brokers. The harness gains a cluster-admin token for the tenant\nlisting test.\n\n* release: ship felixctl binaries, image and crates\n\nA tag now builds felixctl for Linux x86_64/aarch64, macOS aarch64/x86_64\nand Windows x86_64, packages each with its README, LICENSE, completions\nand man pages plus a .sha256, and attaches them to the release. The\nimages matrix gains ghcr.io/<owner>/felixctl (docker/felixctl.Dockerfile),\nwhich CI also builds and smoke-tests on PRs.\n\nThe crates.io job publishes felix-loadgen and felixctl after the client,\npackages all five crates before uploading any, and falls back to trusted\npublishing when CARGO_REGISTRY_TOKEN is unset. Both crates leave\nRELEASE_PENDING.\n\nrelease.yml takes dry_run (build everything, publish nothing) and ref\n(build a branch as if it were the tag, dry runs only) so a release can be\nrehearsed before its tag exists.",
+          "timestamp": "2026-10-02T08:42:01-07:00",
+          "tree_id": "96c3517c835eda91b34cec6e8234e9ea40049be1",
+          "url": "https://github.com/gabloe/felix/commit/20ad1b12ae40fdee1278fafacfe9f45a07bb44a1"
+        },
+        "date": 1790955985934,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 353306.67,
+            "range": "2341.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353306.67\nmean: 353003.65\nstdev: 2341.17\ncv: 0.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 353306.67,
+            "range": "2341.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353306.67\nmean: 353003.65\nstdev: 2341.17\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80988.33,
+            "range": "3839.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80988.33\nmean: 79402.06\nstdev: 3839.79\ncv: 4.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 809883.33,
+            "range": "38397.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 809883.33\nmean: 794020.62\nstdev: 38397.96\ncv: 4.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
