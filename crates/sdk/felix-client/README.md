@@ -14,8 +14,7 @@ felix-client = "0.4"
 ```
 
 ```rust
-use felix_client::{Client, ClientConfig};
-use felix_wire::AckMode;
+use felix_client::{AckMode, Client, ClientConfig};
 use std::net::SocketAddr;
 
 let quinn = quinn::ClientConfig::with_platform_verifier();

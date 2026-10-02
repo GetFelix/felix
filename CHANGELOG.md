@@ -11,6 +11,12 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Added
+
+- `felix-client` re-exports `AckMode`, `BrokerEndpoint` and `ShardRouting`,
+  so an application no longer needs `felix-wire` as a direct dependency to
+  call it. (#937)
+
 ### Changed
 
 - `felixctl pub` says how many acknowledgements came back without an offset

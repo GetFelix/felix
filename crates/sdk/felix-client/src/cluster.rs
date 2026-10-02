@@ -88,8 +88,7 @@ const MAX_REDIRECTS: usize = 3;
 ///
 /// ```rust,no_run
 /// use std::time::Duration;
-/// use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy};
-/// use felix_wire::AckMode;
+/// use felix_client::{AckMode, ClientConfig, ClusterClient, ReconnectPolicy};
 ///
 /// # async fn example(quinn: quinn::ClientConfig) -> anyhow::Result<()> {
 /// let mut config = ClientConfig::from_env_or_yaml(quinn, None)?;

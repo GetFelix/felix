@@ -24,8 +24,7 @@ clap = { workspace = true, features = ["string"] }
 clap_complete = { workspace = true }
 clap_mangen = { workspace = true }
 felix-client = { path = "../../sdk/felix-client", version = "0.6.0-preview" }
-# `AckMode`, `BrokerEndpoint` and `ShardRouting` appear in felix-client's
-# signatures without being re-exported by it.
+# For `CLIENT_ALPN`, when building TLS with a client certificate.
 felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview" }
 felix-loadgen = { path = "../../testing/felix-loadgen", version = "0.6.0-preview" }
 quinn = { workspace = true }

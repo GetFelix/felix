@@ -135,7 +135,7 @@ once the publish is committed, or with the reason it was refused:
 
 ```rust
 use felix_client::{Client, ClientConfig};
-use felix_wire::AckMode;
+use felix_client::AckMode;
 use std::net::SocketAddr;
 
 let quinn = quinn::ClientConfig::with_platform_verifier();
@@ -203,7 +203,7 @@ let messages = vec![
     b"Event 3".to_vec(),
 ];
 
-use felix_wire::AckMode;
+use felix_client::AckMode;
 let publisher = client.publisher().await?;
 publisher
     .publish_batch("acme", "prod", "events", messages, AckMode::PerBatch)
@@ -996,7 +996,7 @@ safe only through an idempotent producer.
 
 ```rust
 use felix_client::{BrokerError, Client, RetryClass};
-use felix_wire::AckMode;
+use felix_client::AckMode;
 use std::time::Duration;
 
 async fn publish_with_retry(client: &Client, data: &[u8], retries: u32) -> anyhow::Result<()> {

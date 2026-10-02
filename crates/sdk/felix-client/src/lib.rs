@@ -88,6 +88,8 @@ pub use telemetry::{
 };
 pub use tls::quic_client_config;
 
+pub use felix_wire::routing::ShardRouting;
 pub use felix_wire::{
-    CursorErrorReason, ErrorCode, ErrorDetail, PublishRefusalReason, RetryClass, StartPosition,
+    AckMode, BrokerEndpoint, CursorErrorReason, ErrorCode, ErrorDetail, PublishRefusalReason,
+    RetryClass, StartPosition,
 };

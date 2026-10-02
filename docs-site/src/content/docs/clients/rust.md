@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
     let publisher = client.publisher().await?;
 
     // Publish a message
-    use felix_wire::AckMode;
+    use felix_client::AckMode;
     publisher
         .publish(
             "acme",           // tenant_id
@@ -184,7 +184,7 @@ let config = ClientConfig {
 
 ```rust
 // Fire-and-forget (no ack)
-use felix_wire::AckMode;
+use felix_client::AckMode;
 let publisher = client.publisher().await?;
 publisher
     .publish("acme", "prod", "events", b"message".to_vec(), AckMode::None)
@@ -279,7 +279,7 @@ For high-throughput publishing, use the `Publisher` API:
 
 ```rust
 use felix_client::Publisher;
-use felix_wire::AckMode;
+use felix_client::AckMode;
 
 // Create publisher (uses ClientConfig settings)
 let publisher = client.publisher().await?;
@@ -1165,7 +1165,7 @@ runtime: the client's tasks live on the runtime that created it, so a client
 built on a throwaway runtime dies with that runtime.
 
 ```rust
-use felix_wire::AckMode;
+use felix_client::AckMode;
 use std::net::SocketAddr;
 use tokio::sync::OnceCell;
 
@@ -1201,7 +1201,7 @@ async fn publish_with_retry(
     data: &[u8],
     max_retries: u32
 ) -> Result<()> {
-    use felix_wire::AckMode;
+    use felix_client::AckMode;
     let publisher = client.publisher().await?;
     for attempt in 0..max_retries {
         match publisher
@@ -1243,7 +1243,7 @@ fn safe_to_resend(error: &anyhow::Error) -> bool {
 ### Batching for Throughput
 
 ```rust
-use felix_wire::AckMode;
+use felix_client::AckMode;
 use tokio::time::{interval, Duration};
 
 async fn batching_publisher(client: &Client) -> Result<()> {

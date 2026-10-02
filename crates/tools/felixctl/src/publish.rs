@@ -2,7 +2,7 @@
 
 use std::io::BufRead;
 
-use felix_wire::AckMode;
+use felix_client::AckMode;
 
 use crate::cli::{AckArg, PubArgs};
 use crate::connect::Broker;
