@@ -1,0 +1,279 @@
+---
+title: "felixctl"
+description: "The felixctl command: publish, subscribe, read caches, see where shards live, list what the control plane knows, and run benchmarks."
+---
+
+`felixctl` is Felix's command-line tool. It publishes to and reads from
+streams, reads, writes and watches cache keys, shows which broker owns each
+shard, lists tenants, namespaces, streams, caches, brokers and shard
+assignments, and runs load tests. Every command prints readable text by
+default and JSON with `--json`.
+
+Its data-plane commands use only the public API of the Rust client
+(`felix-client`); the listing commands use the control plane's REST API.
+
+## Install
+
+From a checkout of the repository:
+
+```bash
+cargo install --path crates/tools/felixctl
+```
+
+That puts `felixctl` in `~/.cargo/bin`. To run it without installing, use
+`cargo run --release -p felixctl -- <args>`.
+
+## Try it against a local cluster
+
+`felix-cluster up` starts a control plane and brokers, creates a stream named
+`orders` and a cache named `users`, and writes what a client needs into a
+session file in your temp directory. Start one and leave it running:
+
+```bash
+cargo run --release -p felix-cluster -- up --nodes 3
+```
+
+In a second terminal, turn the session file into a context. The brokers
+generate their own certificates, and the session names each one so the CLI can
+check them:
+
+```bash
+S=${TMPDIR:-/tmp}/felix-cluster.json
+cat $(jq -r '.nodes[].cert_file' "$S") > brokers.pem
+jq -r .client_token "$S" > token.jwt
+
+felixctl context add local \
+  --brokers "$(jq -r '[.nodes[].client_addr] | join(",")' "$S")" \
+  --tenant "$(jq -r .tenant_id "$S")" \
+  --namespace "$(jq -r .namespace "$S")" \
+  --token-file token.jwt \
+  --ca-file brokers.pem \
+  --controlplane-url "$(jq -r .control_plane "$S")" \
+  --controlplane-token "$(jq -r .admin_token "$S")"
+```
+
+The first context you add becomes the current one. Now subscribe in one
+terminal:
+
+```bash
+felixctl sub orders
+```
+
+and publish in another:
+
+```bash
+felixctl pub orders 'hello'
+```
+
+The publisher reports the offset the record was written at, and the subscriber
+prints `hello`. Read a cache key, see where the stream lives,
+and run a short benchmark:
+
+```bash
+felixctl cache put users alice 'online'
+felixctl cache get users alice
+felixctl topology orders
+felixctl bench latency orders
+```
+
+The benchmark prints the publish rate with the acknowledgement p50 and p99,
+then the delivered rate with the publish-to-delivery p50 and p99. Numbers from
+a laptop loopback run say little about a real deployment; see
+[Performance](/felix/features/performance/) for measured results.
+
+## Contexts
+
+A context is a named set of connection settings: broker addresses, the
+control-plane URL, tenant, namespace, tokens and TLS files. They live in
+`felixctl/config.toml` under `$XDG_CONFIG_HOME`, or by default
+`~/.config` on Linux, `~/Library/Application Support` on macOS and
+`%APPDATA%` on Windows. `--config` or `FELIX_CLI_CONFIG` points elsewhere.
+
+```bash
+felixctl context add prod --brokers a.example:5000,b.example:5000 \
+    --tenant acme --token-file ~/.felix/acme.jwt --use
+felixctl context ls
+felixctl context use local
+felixctl context rm prod
+```
+
+`context add` saves the connection flags given on its command line and nothing
+from the environment. Relative file paths are saved as absolute ones. The file
+is written readable only by you, because a context can hold a token, and a key
+it does not recognise is an error rather than ignored.
+
+Each setting comes from the first of: a flag, its environment variable, the
+context. `--context` or `FELIX_CONTEXT` picks a context other than the current
+one.
+
+| Flag | Variable | Meaning |
+| --- | --- | --- |
+| `--brokers` | `FELIX_BROKERS` | Broker addresses, `host:port`, comma-separated |
+| `--tenant` | `FELIX_AUTH_TENANT` | Tenant to act as |
+| `-n`, `--namespace` | `FELIX_NAMESPACE` | Namespace, `default` if unset |
+| `--token`, `--token-file` | `FELIX_AUTH_TOKEN`, `FELIX_AUTH_TOKEN_FILE` | Token the brokers accept |
+| `--controlplane-url` | `FELIX_CONTROLPLANE_URL` | Control-plane base URL |
+| `--controlplane-token`, `--controlplane-token-file` | `FELIX_CONTROLPLANE_TOKEN`, `FELIX_CONTROLPLANE_TOKEN_FILE` | Token the control plane accepts |
+| `--ca-file` | `FELIX_CA_FILE` | PEM bundle broker certificates are checked against |
+| `--client-cert-file`, `--client-key-file` | `FELIX_CLIENT_CERT_FILE`, `FELIX_CLIENT_KEY_FILE` | Client certificate to present |
+| `--controlplane-ca-file` | `FELIX_CONTROLPLANE_CA` | PEM bundle an `https://` control plane is checked against |
+| `--server-name` | `FELIX_SERVER_NAME` | TLS server name, by default the first broker's host name or `localhost` |
+| `--alpn` | | Offer the `felix/1` ALPN, which a broker with `FELIX_TLS_REQUIRE_ALPN` needs |
+
+Brokers and the control plane accept different tokens: a broker refuses a
+token carrying control-plane actions. That is why there are two.
+
+Certificates are always checked. Without `--ca-file` the platform trust store
+is used, which suits a broker serving a certificate from a public CA. A broker
+that generates its own certificate can export it with `FELIX_TLS_CERT_EXPORT`;
+pass that file as `--ca-file`. A client certificate, when given, is presented
+to every broker, which is what a broker with `FELIX_TLS_CLIENT_CA` and
+`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT` expects.
+
+The client's tuning variables (`FELIX_PUB_CONN_POOL`, `FELIX_CLIENT_CONFIG` and
+the rest in the [environment reference](/felix/reference/environment-variables/))
+apply to `felixctl` as to any client.
+
+## Publishing
+
+```bash
+felixctl pub orders 'hello'                       # one message
+felixctl pub orders --key customer-42 '{"n":1}'   # keyed: same key, same shard
+tail -f app.log | felixctl pub logs               # one message per line of stdin
+felixctl pub images --file cat.png                # a file as one message
+felixctl pub orders --whole < report.json         # all of stdin as one message
+felixctl pub orders 'tick' --count 100            # the same message 100 times
+```
+
+Each publish waits for the broker's acknowledgement and reports the offset.
+`--ack none` sends without waiting, and still flushes before exiting.
+`--idempotent` publishes through an idempotent producer, so a re-send after a
+reconnect cannot duplicate a record; it cannot be combined with `--key`.
+
+## Subscribing
+
+```bash
+felixctl sub orders                                 # from now on
+felixctl sub orders --from earliest --count 10      # the oldest ten retained
+felixctl sub orders --from 1500 --format offsets    # resume at offset 1500
+felixctl sub orders --shard 2                       # one shard only
+felixctl sub orders --json | jq -r .payload
+```
+
+Without `--shard`, every shard of the stream is read and merged; the order
+between shards is not defined. `--format raw` prints each payload on a line,
+`offsets` prefixes the shard and offset, and `json` (or `--json`) prints one
+object per message with `payload`, or `payload_base64` for bytes that are not
+UTF-8. The subscription follows a shard that moves to another broker.
+
+## Caches
+
+```bash
+felixctl cache put users alice 'online' --ttl-ms 60000
+felixctl cache get users alice
+felixctl cache del users alice
+felixctl cache watch users                            # every key, every shard
+felixctl cache watch users --key alice                # one key
+felixctl cache watch users --prefix al --retained     # current values, then changes
+felixctl cache ls
+felixctl cache info users
+```
+
+`cache get` prints the value as stored and exits with status 5 when the key is
+not set. `cache put` reads the value from stdin when none is given. A watch
+prints `key<TAB>value`, or `(deleted)`, per change.
+
+## Topology
+
+```bash
+felixctl topology orders
+felixctl topology users --cache
+```
+
+```
+stream t1/ns/orders: 1 shard(s), modulo routing
+
+SHARD  LEADER    ADDR             REPLICAS  GENERATION  STATE
+0      broker-2  127.0.0.1:50410  broker-2  1           active
+
+BROKER    ADDR
+broker-0  127.0.0.1:53348
+broker-1  127.0.0.1:65027
+broker-2  127.0.0.1:50410
+```
+
+The shard count and the brokers come from a broker. Shard owners come from the
+control plane, so they are shown only when a control-plane URL is set.
+
+## The control plane
+
+```bash
+felixctl tenant ls
+felixctl tenant info t1
+felixctl namespace ls
+felixctl stream ls
+felixctl stream info orders
+felixctl node ls
+felixctl node info broker-1
+felixctl shard ls --leader broker-2
+felixctl shard ls --name orders --json
+```
+
+These are read-only. Listings follow the control plane's `next_cursor` until
+every page is read. `tenant ls` needs a token allowed `tenant.manage` on the
+whole cluster; the rest need the matching manage or view permission for the
+tenant, or `node.view` for nodes and shards.
+
+## Benchmarks
+
+`felixctl bench` runs the scenarios of `felix-loadgen`, the instrument behind
+the [real-network performance runs](/felix/features/performance/), in process
+against the current context, and prints the rate and the p50 and p99 latency.
+
+```bash
+felixctl bench latency orders                 # 1 publisher, 1 subscriber
+felixctl bench fanout orders --fanout 20      # 1 publisher, 20 subscribers
+felixctl bench ingest orders --concurrency 8  # several publishers, no subscribers
+felixctl bench cache users                    # cache put then get
+felixctl bench latency orders --json          # summary plus the full result
+```
+
+The defaults finish in seconds: 500 warmup and 5000 measured operations, 256
+byte payloads. The stream or cache must exist. `--json` includes the full
+`LOADGEN_JSON` object the perf suite records, so a `felixctl bench` result and
+a `felix-loadgen` one can be compared field by field. Run benchmarks only
+against a cluster you are allowed to load.
+
+## Output and exit status
+
+Text is for reading; `--json` is for scripts. With `--json`, single results
+are one JSON object, `sub` and `cache watch` print one object per line, and an
+error goes to stderr as `{"error": "...", "exit": N}`.
+
+| Status | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | Any other failure |
+| 2 | Bad arguments, or a setting missing or unreadable |
+| 3 | No broker or control plane could be reached |
+| 4 | A broker or the control plane refused the request |
+| 5 | The key, resource or context does not exist |
+
+## Help, completions and man pages
+
+`felixctl help <command>` and `felixctl <command> --help` print the same help,
+with examples. `felixctl` alone prints a short overview.
+
+```bash
+felixctl completions bash > ~/.local/share/bash-completion/completions/felixctl
+felixctl completions zsh > "${fpath[1]}/_felixctl"
+felixctl completions fish > ~/.config/fish/completions/felixctl.fish
+felixctl man --out-dir ~/.local/share/man/man1
+```
+
+## Not yet
+
+Control-plane writes (creating streams and caches, moving shards, draining and
+deregistering brokers, RBAC), consumer groups, counters and state reads are
+planned. Release binaries and packages are not published yet. See
+[issue #872](https://github.com/gabloe/felix/issues/872).

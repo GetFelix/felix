@@ -273,6 +273,26 @@ impl ControlPlane {
         .context("mint admin token")
     }
 
+    /// [`Self::admin_token`], plus listing every tenant, which needs
+    /// `tenant.manage` over the whole cluster rather than one tenant.
+    pub fn cluster_admin_token(&self, tenant_id: &str) -> Result<String> {
+        felix_controlplane_service::auth::felix_token::mint_token_for(
+            &self.keys,
+            tenant_id,
+            "p:harness-cluster-admin",
+            vec![
+                "tenant.manage:cluster:*".to_string(),
+                format!("ns.manage:namespace:{tenant_id}/*"),
+                format!("stream.manage:stream:{tenant_id}/*/*"),
+                format!("cache.manage:cache:{tenant_id}/*/*"),
+                "node.view:cluster:*".to_string(),
+            ],
+            Duration::from_secs(3600),
+            felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
+        )
+        .context("mint cluster admin token")
+    }
+
     /// A credential that may operate consumer groups: redrive and discard dead
     /// letters, which a consumer's `stream.subscribe` does not allow.
     pub fn group_operator_token(&self, tenant_id: &str) -> Result<String> {

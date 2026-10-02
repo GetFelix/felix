@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use felix_cluster::session;
-use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
+use felix_cluster::{CacheSpec, Cluster, ClusterConfig, StreamSpec};
 
 use crate::args::flag_usize;
 use crate::signals::stop_signal;
@@ -68,6 +68,8 @@ pub(crate) fn cluster_config(nodes: usize, inherit_output: bool) -> ClusterConfi
     ClusterConfig {
         nodes,
         streams: vec![StreamSpec::new(STREAM, 1)],
+        // Something for `felixctl cache` to try out.
+        caches: vec![CacheSpec::new("users", 1)],
         inherit_output: inherit_output && std::env::var("FELIX_CLUSTER_VERBOSE").is_ok(),
         ..Default::default()
     }

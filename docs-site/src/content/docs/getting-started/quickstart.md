@@ -106,6 +106,13 @@ cargo run --release -p felix-cluster -- status       # membership and shard owne
 
 `up` first for `subscribe` and `publish`; the others start their own cluster.
 
+### With felixctl
+
+[`felixctl`](/felix/getting-started/felixctl/) works against the same cluster
+and covers more: keyed and idempotent publishes, subscribing from an offset,
+cache reads and watches, shard owners, control-plane listings and benchmarks.
+That page shows how to turn the session file into a `felixctl` context.
+
 ## One process, no cluster
 
 If you would rather see the data path than the cluster, the demos embed a
@@ -246,8 +253,8 @@ if let Some(value) = client.cache_get("t1", "ns", "users", "user:123").await? {
 }
 ```
 
-The cache must exist in the control plane too, and `felix-cluster up` creates
-none. [Rust client](/felix/clients/rust/) covers the rest of the API.
+The cache must exist in the control plane too. `felix-cluster up` creates one
+named `users`. [Rust client](/felix/clients/rust/) covers the rest of the API.
 
 ## Performance Testing
 
@@ -363,6 +370,7 @@ See `Taskfile.yml` in the repository root for all available tasks.
 Now that you have Felix running:
 
 - **Explore the Architecture:** [System Design](/felix/architecture/system-design/)
+- **Work from the terminal:** [felixctl](/felix/getting-started/felixctl/)
 - **Learn the APIs:** [Broker API](/felix/api/broker-api/)
 - **Tune Performance:** [Performance Guide](/felix/features/performance/)
 - **Deploy Properly:** [Deployment Guides](/felix/deployment/local/)

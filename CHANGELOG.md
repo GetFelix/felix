@@ -52,6 +52,24 @@ for what the current release guarantees.
 
 ### Added
 
+- **`felixctl`, a command-line tool (#872).** `pub` (from an argument, a file
+  or stdin; keyed, unacknowledged or idempotent), `sub` (from `latest`,
+  `earliest` or an offset, one shard or all), `cache get|put|del|watch`,
+  `topology` (shard count, owners and brokers), read-only `tenant`,
+  `namespace`, `stream`, `cache ls|info`, `node` and `shard` listings that
+  follow `next_cursor`, and `bench ingest|latency|fanout|cache`. Named contexts
+  in `felixctl/config.toml`, overridden by new `FELIX_*` variables
+  (`FELIX_CLI_CONFIG`, `FELIX_CONTEXT`, `FELIX_BROKERS`, `FELIX_NAMESPACE`,
+  `FELIX_AUTH_TOKEN_FILE`, `FELIX_CONTROLPLANE_TOKEN`,
+  `FELIX_CONTROLPLANE_TOKEN_FILE`, `FELIX_CA_FILE`, `FELIX_CLIENT_CERT_FILE`,
+  `FELIX_CLIENT_KEY_FILE`, `FELIX_SERVER_NAME`), overridden by flags. `--json`
+  everywhere, distinct exit statuses, shell completions and man pages.
+- **`felix-loadgen` is also a library.** `felix_loadgen::run` runs a scenario
+  and returns its `LOADGEN_JSON` object; `felixctl bench` uses it. The binary's
+  flags and output are unchanged. The crate is now publishable.
+- **`felix-cluster up` creates a cache named `users`, and its session file
+  names each broker's certificate (`cert_file`),** so a client can verify the
+  brokers it connects to.
 - **`felix-loadgen` ingest: `--in-flight <n>`, `--duration-secs`, `--start-at`.** `--in-flight`
   sends acked batches with `n` outstanding per publisher and reports their ack latency, so a
   run measures what a client that waits for durability gets and uses the publish window.

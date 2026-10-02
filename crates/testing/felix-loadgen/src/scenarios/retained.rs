@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 
 use super::connect::client;
 use super::{Common, scope};
-use crate::stats::{emit_json, fmt_us};
+use crate::stats::{fmt_us, report};
 
 /// Retained delivery (#349): the MQTT-style join-and-hold-roster. Seed a roster
 /// of `total` retained keys, then open a retained watch and measure the
@@ -14,7 +14,7 @@ use crate::stats::{emit_json, fmt_us};
 /// roster before it is live. Run it at `--total` 100 / 1000 / 10000 to trace
 /// the curve the design doc asks for. Each roster size gets its own key prefix,
 /// so the retained replay is exactly the roster and nothing else in the cache.
-pub(crate) async fn retained(common: &Common, cache: &str) -> Result<()> {
+pub(crate) async fn retained(common: &Common, cache: &str) -> Result<serde_json::Value> {
     let (tenant, namespace, name) = scope(common, cache);
     let roster = common.total.max(1);
     let prefix = format!("roster-{roster}/");
@@ -75,11 +75,12 @@ pub(crate) async fn retained(common: &Common, cache: &str) -> Result<()> {
     drop(held);
 
     let complete = received >= roster as u64;
-    println!(
+    report!(
+        common,
         "retained join: roster = {roster}, received = {received}/{roster}, time-to-complete-state = {}",
         fmt_us(elapsed.as_micros() as u64),
     );
-    emit_json(&serde_json::json!({
+    Ok(serde_json::json!({
         "scenario": "retained",
         "environment": common.environment,
         "cache": name,
@@ -88,6 +89,5 @@ pub(crate) async fn retained(common: &Common, cache: &str) -> Result<()> {
         "complete": complete,
         "payload_bytes": common.payload_bytes,
         "time_to_complete_state_us": elapsed.as_micros() as u64,
-    }));
-    Ok(())
+    }))
 }

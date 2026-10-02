@@ -21,6 +21,8 @@ members = [
   "crates/testing/felix-cluster",
   "crates/testing/felix-conformance",
   "crates/testing/felix-loadgen",
+  # Command-line tools.
+  "crates/tools/felixctl",
   # The deployables.
   "services/felix-broker-service",
   "services/felix-controlplane-service",
@@ -108,6 +110,9 @@ async-trait = "0.1"
 axum = "0.8"
 base64 = "0.23"
 casbin = { version = "2.20.0", default-features = false, features = ["runtime-tokio", "incremental"] }
+clap = { version = "4.6", features = ["derive"] }
+clap_complete = "4.6"
+clap_mangen = "0.2"
 crc = "3"
 crc32fast = "1.5"
 dashmap = "6"
@@ -138,6 +143,7 @@ serial_test = "4"
 socket2 = "0.6"
 sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "macros", "migrate", "chrono", "json"] }
 tempfile = "3"
+toml = "1.1.6"
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio-rustls = { version = "0.26", default-features = false }
 tracing-opentelemetry = "0.34.0"

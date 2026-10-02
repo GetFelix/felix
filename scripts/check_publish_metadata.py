@@ -45,13 +45,14 @@ COPYLEFT = {
     "felix-cluster",
     "felix-conformance",
     "felix-loadgen",
+    "felixctl",
     "felix-broker-service",
     "felix-controlplane-service",
 }
 
-# Everything except the client SDK and the two crates it is built on. The
-# server libraries are only ever built into the services, and the rest are
-# service binaries or dev/CI tools.
+# Everything except the client SDK and the two crates it is built on, and
+# felixctl with the felix-loadgen it links. The server libraries are only ever
+# built into the services, and the rest are service binaries or dev/CI tools.
 NOT_PUBLISHABLE = {
     "felix-authz",
     "felix-broker",
@@ -64,7 +65,14 @@ NOT_PUBLISHABLE = {
     "felix-controlplane-service",
     "felix-conformance",
     "felix-cluster",
+}
+
+# Publishable crates the release workflow does not publish yet. They are held
+# to every other rule here; only the publish-order check skips them. Take a
+# crate out of this set in the change that adds it to the workflow's list.
+RELEASE_PENDING = {
     "felix-loadgen",
+    "felixctl",
 }
 
 # crates.io hard requirement is `description`; the rest are discoverability
@@ -184,7 +192,7 @@ def check_publish_order(packages: list[dict]) -> list[str]:
 
     listed = match.group(1).replace("\\\n", " ").split()
     by_name = {p["name"]: p for p in packages}
-    expected = {n for n in by_name if n not in NOT_PUBLISHABLE}
+    expected = {n for n in by_name if n not in NOT_PUBLISHABLE | RELEASE_PENDING}
 
     for name in sorted(expected - set(listed)):
         failures.append(
