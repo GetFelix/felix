@@ -177,7 +177,16 @@ async fn a_non_owner_names_the_shard_owner() {
     let addr: Option<std::net::SocketAddr> =
         owners[0].addr.as_deref().and_then(|addr| addr.parse().ok());
     assert_eq!(addr, Some(addr_of(&owner)), "{owners:?}");
-    assert!(owners[0].generation > 0, "{owners:?}");
+    let assigned = cluster
+        .shard_assignments()
+        .await
+        .expect("read the assignments");
+    let key = format!("{}/{}/{STREAM}/0", cluster.tenant_id, cluster.namespace);
+    assert_eq!(
+        Some(owners[0].generation),
+        assigned.get(&key).map(|assignment| assignment.generation),
+        "{owners:?}"
+    );
     assert_eq!(owners[0].unavailable, None);
 
     cluster.shutdown().await;
