@@ -52,7 +52,7 @@ async fn publish_reports_server_error() -> Result<()> {
     let client = Client::connect_with_transport(
         addr,
         "localhost",
-        pool_only(build_client_config_with_overrides(cert, 0)?),
+        build_client_config_with_overrides(cert, 0)?,
         TransportConfig::default(),
     )
     .await?;
@@ -134,7 +134,7 @@ async fn publish_batch_ack_succeeds() -> Result<()> {
     let client = Client::connect_with_transport(
         addr,
         "localhost",
-        pool_only(build_client_config_with_overrides(cert, 0)?),
+        build_client_config_with_overrides(cert, 0)?,
         TransportConfig::default(),
     )
     .await?;
@@ -158,9 +158,96 @@ async fn publish_batch_ack_succeeds() -> Result<()> {
     Ok(())
 }
 
-/// These stubs answer one stream per connection, so the publish has to go on
-/// a pooled stream rather than open one for its shard.
-fn pool_only(mut config: crate::ClientConfig) -> crate::ClientConfig {
-    config.publish_shard_streams = 0;
-    config
+/// **A plain `Client` keeps one writer per stream.** `HashStream` promises
+/// that a stream's publishes share one writer, so an unkeyed and a keyed
+/// publish to one stream, pipelined together, arrive on the same QUIC stream.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_plain_client_sends_unkeyed_and_keyed_publishes_on_one_stream() -> Result<()> {
+    let _env_guard = set_client_env_with_event_pool(0);
+    let (server_config, cert) = build_server_config()?;
+    let server = QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?;
+    let addr = server.local_addr()?;
+    // The (connection, stream) each publish arrived on.
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let server_seen = std::sync::Arc::clone(&seen);
+    let server_task = tokio::spawn(async move {
+        while let Ok(connection) = server.accept().await {
+            let seen = std::sync::Arc::clone(&server_seen);
+            tokio::spawn(async move {
+                while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+                    let seen = std::sync::Arc::clone(&seen);
+                    let connection_id = connection.info().id;
+                    tokio::spawn(async move {
+                        let mut scratch = BytesMut::with_capacity(64 * 1024);
+                        let _ = read_message(&mut recv, &mut scratch).await?;
+                        write_message(&mut send, Message::Ok).await?;
+                        while let Some(message) = read_message(&mut recv, &mut scratch).await? {
+                            if let Message::PublishBatch {
+                                request_id: Some(id),
+                                ..
+                            } = message
+                            {
+                                seen.lock()
+                                    .expect("seen")
+                                    .push((format!("{connection_id:?}"), recv.id()));
+                                write_message(
+                                    &mut send,
+                                    Message::PublishOk {
+                                        request_id: id,
+                                        offset: None,
+                                    },
+                                )
+                                .await?;
+                            }
+                        }
+                        Ok::<(), anyhow::Error>(())
+                    });
+                }
+            });
+        }
+    });
+
+    let client = Client::connect_with_transport(
+        addr,
+        "localhost",
+        build_client_config_with_overrides(cert, 0)?,
+        TransportConfig::default(),
+    )
+    .await?;
+    let publisher = client.publisher().await?;
+    let (unkeyed, keyed) = timeout(Duration::from_secs(5), async {
+        tokio::join!(
+            publisher.publish(
+                "t1",
+                "default",
+                "orders",
+                b"a".to_vec(),
+                AckMode::PerMessage
+            ),
+            publisher.publish_keyed(
+                "t1",
+                "default",
+                "orders",
+                bytes::Bytes::from_static(b"k"),
+                b"b".to_vec(),
+                AckMode::PerMessage,
+            ),
+        )
+    })
+    .await?;
+    unkeyed?;
+    keyed?;
+    let seen = seen.lock().expect("seen").clone();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(
+        seen[0], seen[1],
+        "one stream's publishes went out on two writers"
+    );
+    server_task.abort();
+    Ok(())
 }

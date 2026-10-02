@@ -4,7 +4,7 @@
 //! is what keeps them in order. The hash is cached per stream so a hot
 //! stream does not rehash on every publish.
 //!
-//! A publish whose shard is known goes on that shard's own stream first
+//! A `ClusterClient` publisher sends each shard to its own stream first
 //! (`shard_streams`), and only falls back to the hash when the client has no
 //! room for another.
 //!
@@ -35,6 +35,11 @@ pub enum PublishSharding {
     RoundRobin,
     /// Pick the stream by hashing the stream's name, so each stream's
     /// publishes share one writer and stay in order. The default.
+    ///
+    /// A [`crate::ClusterClient`] narrows that to each shard: every shard of
+    /// a stream has one writer, its own while the client has room for one,
+    /// so a shard's publishes stay in order and a stalled shard holds up no
+    /// other.
     HashStream,
 }
 

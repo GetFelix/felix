@@ -22,18 +22,18 @@ for what the current release guarantees.
   stream its own window against such a broker and keeps sharing one per
   connection against an older broker. Older clients keep working: they share
   one window across their streams, which stays inside every stream's. (#843)
-- **A stalled shard no longer holds up other shards of the same stream, or
-  streams that share its QUIC stream.** A pipelining stream is answered in
-  request order, and the Rust client hashed every shard of a stream onto one
-  of its two pooled QUIC streams, so a stuck shard held back answers the other
-  shards had already committed. The client now gives each shard whose number
-  it knows a QUIC stream of its own: every `ClusterClient` publish, and every
-  unkeyed or idempotent publish (shard 0), on any client. Up to
-  `publish_shard_streams` of them (`FELIX_PUB_SHARD_STREAMS`, default 16) per
-  client, opened on a shard's first publish and kept; shards past that share
-  the pool as before, and `0` turns them off. A keyed publish through a plain
-  `Client` still uses the pool, since that client does not know the shard. No
-  wire change. (#843)
+- **Through a `ClusterClient`, a stalled shard no longer holds up other
+  shards of the same stream, or streams that share its QUIC stream.** A
+  pipelining stream is answered in request order, and the Rust client hashed
+  every shard of a stream onto one of its pooled QUIC streams, so a stuck
+  shard held back answers the other shards had already committed.
+  `ClusterClient` knows the shard of every publish it makes, so it now gives
+  each shard a QUIC stream of its own: plain, keyed and idempotent publishes
+  alike. Up to `publish_shard_streams` of them per broker it talks to
+  (`FELIX_PUB_SHARD_STREAMS`, default 16), opened on a shard's first publish
+  and kept; shards past that share the pool as before, and `0` turns them
+  off. A plain `Client` does not know a stream's width and routes exactly as
+  before, one writer per stream. No wire change. (#843)
 
 ## [0.6.0-preview] - 2026-10-02
 

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use felix_wire::AckMode;
 
 use super::{
@@ -234,7 +234,7 @@ async fn publish_once(
     payload: Vec<u8>,
     ack: AckMode,
 ) -> AckOutcome {
-    let publisher = client.publisher().await.context("open publisher")?;
+    let publisher = client.shard_publisher();
     publisher
         .publish_reporting_owner(tenant_id, namespace, stream, payload, ack)
         .await
@@ -250,7 +250,7 @@ async fn publish_once_to(
     ack: AckMode,
 ) -> AckOutcome {
     let (tenant_id, namespace, stream, shard) = (&shard.0, &shard.1, &shard.2, shard.3);
-    let publisher = client.publisher().await.context("open publisher")?;
+    let publisher = client.shard_publisher();
     match key {
         Some(key) => {
             publisher

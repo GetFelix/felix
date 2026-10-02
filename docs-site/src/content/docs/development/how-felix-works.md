@@ -669,8 +669,8 @@ written, and while none is free the control loop stops reading, so the window
 bounds a stream's unanswered publishes and pushes back through QUIC flow
 control. Each stream has its own window so that one stuck behind a stalled
 shard cannot take the slots its connection's other streams need. The Rust
-client puts each shard it knows on a stream of its own, so the window and the
-request order are in effect per shard.
+`ClusterClient` puts each shard on a stream of its own, so for it the window
+and the request order are in effect per shard.
 
 Commit acknowledgement is not an exactly-once outcome protocol. The publish job
 is enqueued before the broker reserves and submits all acknowledgement-waiter

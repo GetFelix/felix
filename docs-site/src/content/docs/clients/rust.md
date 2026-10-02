@@ -118,7 +118,8 @@ let config = ClientConfig {
     
     // Publish sharding
     publish_sharding: PublishSharding::HashStream,
-    // Streams of their own for up to this many shards (0 turns them off)
+    // ClusterClient only: streams of their own for up to this many shards
+    // per broker (0 turns them off)
     publish_shard_streams: 16,
 
     ..ClientConfig::optimized_defaults(quinn)
@@ -308,16 +309,18 @@ same writer, so each stream's publishes reach the broker in order.
 `RoundRobin` spreads load evenly across writers, but publishes to one stream
 can arrive out of order.
 
-Under `HashStream`, a publish whose shard the client knows goes on a stream of
-its own for that shard instead: every `ClusterClient` publish, and every
-unkeyed or idempotent publish, which is shard 0. The broker answers a stream's
-pipelined publishes in order, so shards sharing a stream would wait on the
-slowest; on separate streams a shard stalled on a quorum holds up only
-itself. The stream opens on the shard's first publish, which pays one extra
-round trip to authenticate it, and stays open. The client keeps at most
-`publish_shard_streams` of them (16 by default, `FELIX_PUB_SHARD_STREAMS`);
-shards past that share the pool. A keyed publish through a plain `Client`
-always uses the pool, because that client does not know the stream's width.
+A `ClusterClient` goes one step further under `HashStream`: it knows the
+shard of every publish it makes, so each shard gets a stream of its own. The
+broker answers a stream's pipelined publishes in order, so shards sharing a
+stream would wait on the slowest; on separate streams a shard stalled on a
+quorum holds up only itself. The stream opens on the shard's first publish,
+which pays one extra round trip to authenticate it, and stays open. It keeps
+at most `publish_shard_streams` of them per broker (16 by default,
+`FELIX_PUB_SHARD_STREAMS`); shards past that share the pool. A plain `Client`
+does not know a stream's width, so it keeps every publish to a stream on one
+writer as described above. A publisher taken from `ClusterClient::client()`
+is a plain one, so mixing it with the `ClusterClient`'s own publishes to the
+same stream puts that stream on two writers.
 
 ### Errors you can act on
 

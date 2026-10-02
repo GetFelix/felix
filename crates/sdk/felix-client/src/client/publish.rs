@@ -6,7 +6,7 @@ use anyhow::Result;
 use felix_wire::Message;
 
 use super::Client;
-use crate::publish::{IdempotentProducer, Publisher, PublisherInner};
+use crate::publish::{IdempotentProducer, Publisher, PublisherInner, ShardStreams};
 
 impl Client {
     /// A publisher over this client's publish streams.
@@ -14,16 +14,30 @@ impl Client {
     /// Cheap to make: every publisher from one client shares its streams and
     /// its in-flight byte budget.
     pub async fn publisher(&self) -> Result<crate::publish::Publisher> {
-        Ok(Publisher {
+        Ok(self.publisher_with(None))
+    }
+
+    /// A publisher that puts each shard on a stream of its own, for
+    /// [`crate::ClusterClient`].
+    ///
+    /// Only for a caller that names the shard of *every* publish it makes
+    /// to a stream. A keyed publish without one goes to the pool, so mixing
+    /// the two would put one stream on two writers.
+    pub(crate) fn shard_publisher(&self) -> Publisher {
+        self.publisher_with(Some(Arc::clone(&self.publish_shard_streams)))
+    }
+
+    fn publisher_with(&self, shard_streams: Option<Arc<ShardStreams>>) -> Publisher {
+        Publisher {
             inner: Arc::new(PublisherInner::with_runtime_config(
                 Arc::clone(&self.publish_workers),
                 self.publish_sharding,
                 Arc::clone(&self.publish_admission),
                 self.publish_stream_hasher.clone(),
-                Some(Arc::clone(&self.publish_shard_streams)),
+                shard_streams,
                 self.runtime_config.bench_embed_ts,
             )),
-        })
+        }
     }
 
     /// A producer id from the broker, for idempotent publishes.

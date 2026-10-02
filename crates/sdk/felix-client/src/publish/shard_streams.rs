@@ -1,4 +1,9 @@
-//! Publish streams that each carry one shard.
+//! Publish streams that each carry one shard, for `ClusterClient`.
+//!
+//! Only a caller that names the shard of every publish to a stream may use
+//! them: a keyed publish with no shard goes to the hashed pool, and a stream
+//! split between the two would be on two writers. A plain `Client` does not
+//! know a stream's width, so its publishes all stay on the pool.
 //!
 //! The broker answers a pipelining stream's publishes in the order the stream
 //! carried them, and stops reading the stream once its window is full. On a
@@ -145,6 +150,8 @@ impl ShardStreams {
             }
             return Some(Arc::clone(current));
         }
+        // Slots are never given back, so a shard turned away here stays on
+        // the pool for good and is never on two writers at once.
         if slots.len() >= self.cap {
             return None;
         }

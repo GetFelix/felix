@@ -23,7 +23,7 @@ pub(crate) const DEFAULT_PUBLISH_CHUNK_BYTES: usize = 16 * 1024;
 /// not free, and on the evidence it is not faster either.
 pub(crate) const DEFAULT_PUB_CONN_POOL: usize = 4;
 pub(crate) const DEFAULT_PUB_STREAMS_PER_CONN: usize = 2;
-/// Publish streams a client opens for one shard each.
+/// Publish streams a `ClusterClient` opens per broker for one shard each.
 ///
 /// Sixteen covers every shard of a 16-shard stream, or of a few smaller ones,
 /// which is the shape a stall would otherwise spread across. Each costs a

@@ -58,27 +58,11 @@ async fn quic_publish_subscribe_cache_success() -> Result<()> {
             connection: felix_transport::QuicConnection,
             counters: StubCounters,
         ) -> Result<()> {
-            // A task per stream, so a shard's own publish stream is served
-            // beside the pooled ones.
-            while let Ok((send, recv)) = connection.accept_bi().await {
-                tokio::spawn(serve_stream(
-                    connection.clone(),
-                    counters.clone(),
-                    send,
-                    recv,
-                ));
-            }
-            Ok(())
-        }
-
-        async fn serve_stream(
-            connection: felix_transport::QuicConnection,
-            counters: StubCounters,
-            mut send: quinn::SendStream,
-            mut recv: quinn::RecvStream,
-        ) -> Result<()> {
             let mut frame_scratch = BytesMut::with_capacity(64 * 1024);
-            {
+            loop {
+                let Ok((mut send, mut recv)) = connection.accept_bi().await else {
+                    break;
+                };
                 let auth = read_message(&mut recv, &mut frame_scratch).await?;
                 match auth {
                     Some(Message::Auth { .. }) => {
@@ -86,7 +70,7 @@ async fn quic_publish_subscribe_cache_success() -> Result<()> {
                     }
                     _ => {
                         write_message(&mut send, Message::error("missing auth")).await?;
-                        return Ok(());
+                        continue;
                     }
                 }
                 loop {
