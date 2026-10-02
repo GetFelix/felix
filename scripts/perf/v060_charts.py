@@ -145,13 +145,13 @@ def save(fig, out, name):
 def chart_listeners(cells, sessions, out, trace):
     """Ingress vs listener count, in memory and durable, at both MTUs."""
     series = [
-        ("In memory, MTU 1500, 167120f0", SERIES[0], "o", [
+        ("In memory, MTU 1500, before #905", SERIES[0], "o", [
             (1, "l557-l1-io0-inmem"), (2, "l557-l2-io0-inmem"), (4, "l557-l4-io0-inmem")]),
-        ("In memory, MTU 3900, 801fc22d", SERIES[1], "o", [
+        ("In memory, MTU 3900, with #905", SERIES[1], "o", [
             (1, "e8-mtu3900-l1"), (4, "best-inmem-l4"), (8, "best-inmem-l8")]),
-        ("Durable on_commit, MTU 1500, 167120f0", SERIES[2], "s", [
+        ("Durable on_commit, MTU 1500, before #905", SERIES[2], "s", [
             (1, "l557-l1-io0-dur"), (2, "l557-l2-io0-dur"), (4, "l557-l4-io0-dur")]),
-        ("Durable on_commit, MTU 3900, 801fc22d", SERIES[3], "s", [
+        ("Durable on_commit, MTU 3900, with #905", SERIES[3], "s", [
             (1, "best-dur-l1"), (2, "best-dur-l2"), (4, "best-dur-l4"), (8, "best-dur-l8")]),
     ]
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10.5, 4.2))
@@ -198,8 +198,8 @@ def chart_listeners(cells, sessions, out, trace):
 def chart_experiments(cells, out, trace):
     """MB/s per broker core for each A/B on the 4-listener in-memory cell."""
     arms = [
-        ("167120f0\n(before)", "e1-base", SERIES[0]),
-        ("#905\n801fc22d", "e1-801", SERIES[1]),
+        ("before #905", "e1-base", SERIES[0]),
+        ("#905", "e1-801", SERIES[1]),
         ("#905 + client\nACK threshold 64", "e2-ackelicit64", SERIES[1]),
         ("#905 control\n(for mimalloc)", "e7-801", SERIES[1]),
         ("#905 +\nmimalloc", "e7-mimalloc", GRAY),
@@ -263,7 +263,7 @@ def profile_shares(folded):
 def chart_cost_model(cells, out, trace):
     """Broker cores per GB/s of ingress, by category, from the four profiles."""
     profiles = [
-        ("167120f0, MTU 1500\n4 listeners", "prof-l4-inmem"),
+        ("before #905, MTU 1500\n4 listeners", "prof-l4-inmem"),
         ("#905, MTU 1500\n4 listeners", "prof-801-l4"),
         ("#905, MTU 3900, ACK 64\n4 listeners", "prof-best-l4"),
         ("#905, MTU 3900, ACK 64\n8 listeners", "prof-best-l8"),
@@ -333,6 +333,140 @@ def chart_per_record(cells, out, trace):
     save(fig, out, "per-record")
 
 
+# --- chart 5: Felix and NATS JetStream pairs ----------------------------------
+
+# Each pair ran on the same broker VM and generators, interleaved, with 48 keys
+# for Felix and 48 streams for NATS. Labels say what both sides guarantee.
+NATS_PAIRS = [
+    ("fsync before ack, batch 64, 4 KiB\n(NATS: atomic batch)", "dur-a64-p4096"),
+    ("fsync before ack, batch 64, 256 B\n(NATS: atomic batch)", "dur-a64-p256"),
+    ("fsync before ack, batch 1, 4 KiB", "dur-b1-p4096"),
+    ("fsync before ack, batch 1, 256 B", "dur-b1-p256"),
+    ("Felix periodic / NATS default sync,\nbatch 64, 4 KiB", "per-b64-p4096"),
+    ("Felix periodic / NATS default sync,\nbatch 64, 256 B", "per-b64-p256"),
+    ("in memory, batch 64, 4 KiB", "inmem-b64-p4096"),
+    ("in memory, batch 64, 256 B", "inmem-b64-p256"),
+    ("in memory, batch 1, 4 KiB", "inmem-b1-p4096"),
+    ("in memory, batch 1, 256 B", "inmem-b1-p256"),
+    ("no ack (core NATS), 4 KiB", "ff-p4096"),
+    ("no ack (core NATS), 256 B", "ff-p256"),
+]
+
+
+def records_per_s(cells, row):
+    """Steady-state records/s, counted the same way for both systems.
+
+    Durable and JetStream cells divide the steady append rate by the cell's
+    mean stored record size, so per-record overhead (Felix's header, NATS's
+    subject and metadata) is not counted as throughput. An in-memory Felix cell
+    appends nothing, so its records come from the payload bytes published; a
+    core NATS cell from the bytes and requests the server received."""
+    cdir = cells.root / row["cell"]
+    keys = ("m.append_bytes", "m.append_records")
+    rate = row.get("ss_append_mb_s")
+    if not rate:
+        if not str(row.get("ref", "")).startswith("nats"):
+            return row["ss_publish_mb_s"] * 1e6 / int(row["payload_bytes"])
+        rate, keys = row["ss_publish_mb_s"], ("m.publish_bytes", "m.publish_requests")
+    nbytes = nrecs = 0.0
+    for before in cdir.glob("felixperf-broker-*.before.txt"):
+        after = before.with_name(before.name.replace(".before.", ".after."))
+        b, a = summarize.kv_lines(before), summarize.kv_lines(after)
+        nbytes += summarize.delta(b, a, keys[0]) or 0.0
+        nrecs += summarize.delta(b, a, keys[1]) or 0.0
+    if not nbytes or not nrecs:
+        sys.exit(f"{row['cell']}: no {keys} counters")
+    return rate * 1e6 / (nbytes / nrecs)
+
+
+def chart_nats_pairs(cells, out, trace):
+    """Records/s and broker core-µs per record, Felix against NATS JetStream."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 7.4), sharey=True)
+    colors = {"Felix": SERIES[0], "NATS": SERIES[1]}
+    h = 0.38
+    for i, (label, pair) in enumerate(NATS_PAIRS):
+        flat = label.replace("\n", " ")
+        for j, (system, prefix) in enumerate((("Felix", f"ab-felix-{pair}-k48"), ("NATS", f"ab-nats-{pair}-s48"))):
+            rows = cells.trials(prefix)
+            recs = [trace.add("nats-pairs", f"{system}: {flat}", r, "records_per_s", records_per_s(cells, r)) for r in rows]
+            cost = [trace.add("nats-pairs", f"{system}: {flat}", r, "core_us_per_record", r["ss_cores"] / n * 1e6)
+                    for r, n in zip(rows, recs)]
+            y = i + (j - 0.5) * h
+            for ax, vals, fmt_ in ((ax1, recs, "{:,.0f}"), (ax2, cost, "{:.1f} µs")):
+                m = statistics.mean(vals)
+                ax.barh(y, m, height=h, color=colors[system], edgecolor=SURFACE, linewidth=1,
+                        label=system if i == 0 and ax is ax1 else None)
+                if len(vals) > 1:
+                    ax.scatter(vals, [y] * len(vals), s=9, color=INK, zorder=3, linewidths=0)
+                ax.text(m * 1.12, y, fmt_.format(m), va="center", fontsize=7.5, color=INK)
+    ax1.set_yticks(range(len(NATS_PAIRS)), [p[0] for p in NATS_PAIRS], fontsize=8)
+    ax1.invert_yaxis()
+    for ax in (ax1, ax2):
+        ax.set_xscale("log")
+        ax.grid(axis="y", visible=False)
+    ax1.set_xlim(2e4, 6e7)
+    ax1.set_xlabel("records/s, steady state from server counters (log scale)")
+    ax1.set_title("Throughput")
+    ax2.set_xlim(0.3, 300)
+    ax2.set_xlabel("server core-µs per record (log scale, lower is cheaper)")
+    ax2.set_title("Server CPU per record")
+    fig.legend(*ax1.get_legend_handles_labels(), loc="lower center", ncol=2, bbox_to_anchor=(0.5, -0.03))
+    fig.suptitle("Felix and NATS JetStream 2.15.0 on the same 8 vCPU NVMe broker, MTU 3900, TLS (dots: trials)",
+                 fontsize=11, fontweight="bold", color=INK)
+    fig.tight_layout(rect=(0, 0.03, 1, 1))
+    save(fig, out, "nats-pairs")
+
+
+# --- chart 6: one message in flight, before and after #927 ---------------------
+
+
+def latency_us(cells, row, kind):
+    lj = summarize.loadgen_json(cells.root / row["cell"] / "felixperf-loadgen.run.txt")
+    return lj[f"{kind}_latency_us"]
+
+
+def chart_latency_927(cells, out, trace):
+    """p50 and p99 ack and delivery latency at 256 B, one publish in flight."""
+    groups = [
+        ("in memory\n(NATS: file stream, default sync)", [
+            ("Felix before #927", ["ab927-base-lat-inmem-r1", "ab927-base-lat-inmem-r2"], SERIES[3]),
+            ("Felix after #927", ["ab927-pr927-lat-inmem-r1", "ab927-pr927-lat-inmem-r2"], SERIES[0]),
+            ("NATS JetStream", ["nats-lat-periodic-p256-t1"], SERIES[1]),
+        ]),
+        ("fsync before ack\n(Felix on_commit, NATS sync always)", [
+            ("Felix before #927", ["ab927-base-lat-oncommit-r1", "ab927-base-lat-oncommit-r2"], SERIES[3]),
+            ("Felix after #927", ["ab927-pr927-lat-oncommit-r1", "ab927-pr927-lat-oncommit-r2"], SERIES[0]),
+            ("NATS JetStream", ["nats-lat-oncommit-p256-t1"], SERIES[1]),
+        ]),
+    ]
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.4), sharey=True)
+    w = 0.26
+    for ax, kind, title in ((axes[0], "ack", "publish to ack"), (axes[1], "delivery", "publish to subscriber")):
+        for gi, (glabel, arms) in enumerate(groups):
+            for ai, (alabel, names, color) in enumerate(arms):
+                rows = [cells.one(n) for n in names]
+                p50 = [trace.add("latency-927", f"{glabel.splitlines()[0]}: {alabel} {kind} p50", r, "us",
+                                 latency_us(cells, r, kind)["p50"]) for r in rows]
+                p99 = [trace.add("latency-927", f"{glabel.splitlines()[0]}: {alabel} {kind} p99", r, "us",
+                                 latency_us(cells, r, kind)["p99"]) for r in rows]
+                x = gi + (ai - 1) * w
+                m = statistics.mean(p50)
+                ax.bar(x, m, width=w, color=color, edgecolor=SURFACE, linewidth=1.5,
+                       label=alabel if gi == 0 and ax is axes[0] else None)
+                ax.scatter([x] * len(p99), p99, marker="_", s=120, color=INK, zorder=3, linewidths=1.6,
+                           label="p99" if gi == 0 and ai == 0 and ax is axes[0] else None)
+                ax.text(x, m / 2, f"{m:.0f}", ha="center", va="center", fontsize=8, color=SURFACE, fontweight="bold")
+        ax.set_xticks(range(len(groups)), [g[0] for g in groups], fontsize=8.5)
+        ax.set_title(title)
+        ax.grid(axis="x", visible=False)
+    axes[0].set_ylabel("µs (bars: p50, ticks: p99)")
+    axes[0].set_ylim(0, 1600)
+    fig.legend(*axes[0].get_legend_handles_labels(), loc="lower center", ncol=4, bbox_to_anchor=(0.5, -0.06))
+    fig.suptitle("256 B, one publish in flight, same broker VM, MTU 3900", fontsize=11, fontweight="bold", color=INK)
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
+    save(fig, out, "latency-927")
+
+
 def main():
     root = HERE.parent.parent
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -349,6 +483,8 @@ def main():
     chart_experiments(cells, args.out, trace)
     chart_cost_model(cells, args.out, trace)
     chart_per_record(cells, args.out, trace)
+    chart_nats_pairs(cells, args.out, trace)
+    chart_latency_927(cells, args.out, trace)
     trace.write(args.out / "data.csv")
     print(f"wrote {args.out / 'data.csv'}")
 
