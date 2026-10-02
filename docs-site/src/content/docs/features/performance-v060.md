@@ -752,8 +752,9 @@ stores nothing here, while Felix appends to an in-memory stream.
 NATS publishes 256 B messages with no ack 14% faster than Felix, and at 4 KiB
 it matches Felix for 15% less CPU. Unbatched, NATS needs less CPU per message
 at 256 B in both durable and in-memory runs, even though Felix moves more
-messages. On latency, NATS acks an fsynced publish about 70 µs sooner at
-256 B, as the next section shows. Felix's 4 KiB periodic result ties NATS's
+messages. On latency, NATS acks sooner in every mode measured: about 70 µs
+sooner with an fsync before the ack, and about 20 to 30 µs sooner with
+periodic or default sync, as the next section shows. Felix's 4 KiB periodic result ties NATS's
 default sync, which syncs far less often.
 
 ### One message in flight
