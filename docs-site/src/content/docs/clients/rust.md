@@ -1118,6 +1118,11 @@ shard, and `resubscribe_sharded` takes it back. See
 [Multi-node client](https://github.com/gabloe/felix/blob/main/docs/multi-node-client.md)
 for the full contract.
 
+`Client::shard_owners(tenant, namespace, name, ShardKind::Stream)` (or
+`ShardKind::Cache`) says which broker owns each shard: one `ShardOwner` per
+shard with its node id, client address and generation, from the answering
+broker's routing snapshot. It needs `FEATURE_SHARD_OWNERS`.
+
 An `AckMode::None` publish returns once it is queued. Call
 `ClusterClient::finish()` before exiting: it waits until everything queued on
 every broker the client holds has been written, then closes the publish

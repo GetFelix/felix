@@ -9,6 +9,7 @@
 //! Run with `cargo test -p felix-cluster --test clients discovery::`.
 use std::time::Duration;
 
+use felix_client::ShardKind;
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
 use felix_wire::AckMode;
 use serial_test::serial;
@@ -127,6 +128,57 @@ async fn a_client_given_one_seed_survives_losing_it() {
         )
         .await
         .expect("the only configured broker is gone, but discovery found others");
+
+    cluster.shutdown().await;
+}
+
+/// **Any broker names a shard's owner and where clients reach it.** Asked of
+/// a broker that does not own the shard, so the answer has to come from its
+/// routes rather than from itself.
+#[serial]
+#[tokio::test]
+async fn a_non_owner_names_the_shard_owner() {
+    let cluster = Cluster::start(config()).await.expect("start cluster");
+    let (owner, non_owner) = cluster
+        .owner_and_non_owner(STREAM)
+        .await
+        .expect("resolve the owner");
+    let addr_of = |node_id: &str| {
+        cluster
+            .nodes
+            .iter()
+            .find(|node| node.node_id == node_id)
+            .map(|node| node.client_addr)
+            .expect("a client address")
+    };
+
+    let client = felix_cluster::client::connect_cluster(
+        &[addr_of(&non_owner)],
+        &cluster.tenant_id,
+        &cluster.client_token,
+    )
+    .await
+    .expect("connect");
+    let owners = client
+        .client()
+        .await
+        .shard_owners(
+            &cluster.tenant_id,
+            &cluster.namespace,
+            STREAM,
+            ShardKind::Stream,
+        )
+        .await
+        .expect("ask for the owners");
+
+    assert_eq!(owners.len(), 1, "{owners:?}");
+    assert_eq!(owners[0].shard, 0);
+    assert_eq!(owners[0].node_id.as_deref(), Some(owner.as_str()));
+    let addr: Option<std::net::SocketAddr> =
+        owners[0].addr.as_deref().and_then(|addr| addr.parse().ok());
+    assert_eq!(addr, Some(addr_of(&owner)), "{owners:?}");
+    assert!(owners[0].generation > 0, "{owners:?}");
+    assert_eq!(owners[0].unavailable, None);
 
     cluster.shutdown().await;
 }

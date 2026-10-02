@@ -275,6 +275,11 @@ impl IngressRouter {
         )
     }
 
+    /// This broker's node id, as the routes name it.
+    pub(crate) fn local_node_id(&self) -> &str {
+        self.router.local_node_id()
+    }
+
     /// How the stream was placed, or `None` if the routing snapshot does not
     /// know it. See [`felix_router::RoutingTable::placement_for`].
     pub(crate) fn placement_for(

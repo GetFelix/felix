@@ -829,6 +829,21 @@ A prefix watch reads **one shard**, so watching a prefix across a whole cache
 means one `cache_watch` per shard. `0` means the broker knows nothing of that
 cache.
 
+### Shard Owners
+
+```json
+{ "type": "shard_owners", "tenant_id": "acme", "namespace": "prod",
+  "name": "orders", "kind": "stream", "request_id": 3 }
+{ "type": "shard_owners_view", "request_id": 3, "owners": [
+  { "shard": 0, "node_id": "broker-2", "addr": "10.0.0.6:5000", "generation": 4 },
+  { "shard": 1, "generation": 0, "unavailable": "not_assigned" } ] }
+```
+
+Which broker owns each shard of a stream or cache (`kind` is `stream` or
+`cache`). Gated by `FEATURE_SHARD_OWNERS`. A shard nobody can serve right now
+has no `node_id` and says why in `unavailable`. A broker not in a cluster
+answers one shard with no `node_id`. `Client::shard_owners` asks it.
+
 `ClusterClient::subscribe_sharded` does all of this for you: it asks, opens one
 subscription per shard, and follows each shard's own redirect.
 

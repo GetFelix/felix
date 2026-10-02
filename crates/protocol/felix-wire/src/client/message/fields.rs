@@ -16,6 +16,38 @@ pub struct BrokerEndpoint {
     pub addr: String,
 }
 
+/// Whether a shard question is about a stream or a cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShardKind {
+    Stream,
+    Cache,
+}
+
+/// Who owns one shard, as one broker's routing snapshot sees it.
+///
+/// Can be stale the way any routing answer can: a shard that moved after the
+/// snapshot was taken is described where it was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShardOwner {
+    pub shard: u32,
+    /// The owning broker's node id. Absent when no broker can serve the shard
+    /// right now (`unavailable` says why), or when the answering broker is not
+    /// in a cluster and serves every shard itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    /// `host:port` the owner serves clients on, or absent when the cluster has
+    /// not been told where clients reach it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addr: Option<String>,
+    /// The ownership epoch this describes. `0` from a broker not in a cluster.
+    pub generation: u64,
+    /// Why no broker can serve the shard right now, as the `reason` of a
+    /// `shard_unavailable` error (`not_assigned`, `owner_unavailable`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
+}
+
 /// How a publish asks to be acknowledged. `None` asks for no answer at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -8,8 +8,8 @@ mod base64_serde;
 mod fields;
 
 pub use fields::{
-    AckMode, BrokerEndpoint, CursorErrorReason, GroupRecord, PublishRefusalReason, StartPosition,
-    StateChange,
+    AckMode, BrokerEndpoint, CursorErrorReason, GroupRecord, PublishRefusalReason, ShardKind,
+    ShardOwner, StartPosition, StateChange,
 };
 
 use bytes::Bytes;
@@ -235,6 +235,24 @@ pub enum Message {
     /// How many shards that cache has, as this broker's routing snapshot sees
     /// it. `0` means the broker knows nothing of the cache.
     CacheShardsView { shards: u32, request_id: u64 },
+    /// Ask which broker owns each shard of a stream or cache.
+    ///
+    /// Only ever sent to a broker that advertised `FEATURE_SHARD_OWNERS`.
+    ShardOwners {
+        tenant_id: String,
+        namespace: String,
+        /// The stream or cache. A stream and a cache may share a name, which
+        /// is why `kind` is required.
+        name: String,
+        kind: ShardKind,
+        request_id: u64,
+    },
+    /// One entry per shard, in shard order, as this broker's routing snapshot
+    /// sees it. Empty means the broker knows nothing of the stream or cache.
+    ShardOwnersView {
+        owners: Vec<ShardOwner>,
+        request_id: u64,
+    },
 
     // Publishing, including idempotent producers.
     /// Publish a single payload to a stream.

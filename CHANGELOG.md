@@ -31,6 +31,11 @@ for what the current release guarantees.
   idempotently with a routing key. The producer keeps a sequence per shard,
   which is what the leader checks, rather than one per stream. `felixctl pub`
   accepts `--idempotent` with `--key`. (#937)
+- Brokers answer `shard_owners` (`FEATURE_SHARD_OWNERS`, `0x4_0000`): which
+  broker owns each shard of a stream or cache, with its client address and
+  generation.
+  `Client::shard_owners` asks it. `felixctl topology` takes owners from the
+  broker and needs a control-plane URL only for replicas and state. (#937)
 
 ### Changed
 

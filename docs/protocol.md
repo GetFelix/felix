@@ -546,6 +546,40 @@ name. Scoped to the client's tenant and answered from the routing snapshot.
 `0` means the broker doesn't know the cache. A registered cache that hasn't
 been placed yet counts as one shard, as it does for `cache_watch`.
 
+### ShardOwners
+```
+{ "type": "shard_owners", "tenant_id": "<string>", "namespace": "<string>",
+  "name": "<string>", "kind": "stream|cache", "request_id": <u64> }
+```
+
+Sent only to a broker that advertised `FEATURE_SHARD_OWNERS`.
+
+Which broker owns each shard of a stream or cache. Without it a client learns
+an owner only by sending something to the shard and being redirected or
+forwarded. `kind` is required because a stream and a cache may share a name.
+Scoped to the client's tenant and answered from the routing snapshot, the same
+one `stream_shards` and `cache_shards` read, so the shard counts agree.
+
+### ShardOwnersView (server -> client)
+```
+{ "type": "shard_owners_view", "request_id": <u64>,
+  "owners": [ { "shard": <u32>, "node_id": "<string>", "addr": "host:port",
+                "generation": <u64>, "unavailable": "<reason>" } ] }
+```
+
+One entry per shard, in shard order. Empty means the broker knows nothing of
+the name. Each entry is what a request for that shard would be dispatched to:
+
+- An owned shard has `node_id`, `generation`, and `addr` when the cluster has
+  been told where clients reach that broker.
+- A shard nobody can serve right now has no `node_id` and gives the
+  `shard_unavailable` reason in `unavailable` (`not_assigned`,
+  `owner_unavailable`, `not_ready`, `moving`, ...).
+- A broker not in a cluster answers one shard with no `node_id` and
+  `generation` 0: it serves everything itself.
+
+Absent fields are left out rather than sent as `null`.
+
 ### CacheValue (server -> client)
 ```
 { "type": "cache_value", "key": "<string>", "value": "<base64|null>" }
@@ -1146,6 +1180,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x8000` | `FEATURE_PUBLISH_PIPELINE` | The client pipelines acked publishes; the broker grants a `publish_window` and answers each stream's publishes in request order. See [pipelined publishes](#pipelined-publishes) |
 | `0x1_0000` | `FEATURE_ATOMIC_COMMIT` | The broker accepts `commit` and `state_get`. See [atomic commits](atomic-commit.md) |
 | `0x2_0000` | `FEATURE_STREAM_PUBLISH_WINDOW` | The broker's `publish_window` is per stream, so each pipelining stream has its own. See [pipelined publishes](#pipelined-publishes) |
+| `0x4_0000` | `FEATURE_SHARD_OWNERS` | The broker answers `shard_owners` |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:

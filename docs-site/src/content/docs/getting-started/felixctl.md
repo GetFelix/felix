@@ -248,8 +248,10 @@ broker-1  127.0.0.1:65027
 broker-2  127.0.0.1:50410
 ```
 
-The shard count and the brokers come from a broker. Shard owners come from the
-control plane, so they are shown only when a control-plane URL is set.
+The shard count, each shard's owner and the brokers come from a broker.
+Replicas and assignment state come from the control plane, so those columns are
+filled only when a control-plane URL is set. A broker older than this release
+cannot name owners; against one, owners come from the control plane too.
 
 ## The control plane
 

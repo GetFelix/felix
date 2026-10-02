@@ -248,3 +248,14 @@ fn stream_publish_window_is_a_new_feature_bit_and_disturbs_nothing() {
         crate::FEATURE_STREAM_PUBLISH_WINDOW
     ));
 }
+
+#[test]
+fn shard_owners_is_a_new_feature_bit_and_disturbs_nothing() {
+    let others = crate::KNOWN_FEATURES & !crate::FEATURE_SHARD_OWNERS;
+    assert_eq!(crate::FEATURE_SHARD_OWNERS & others, 0);
+    assert!(crate::supports_feature(
+        crate::KNOWN_FEATURES,
+        crate::FEATURE_SHARD_OWNERS
+    ));
+    assert!(!crate::supports_feature(0, crate::FEATURE_SHARD_OWNERS));
+}

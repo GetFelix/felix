@@ -151,6 +151,8 @@ pub(super) async fn authenticate(
                             // deployment rather than a guess.
                             | felix_wire::FEATURE_STREAM_SHARDS
                             | felix_wire::FEATURE_CACHE_SHARDS
+                            // Likewise: a single node owns every shard.
+                            | felix_wire::FEATURE_SHARD_OWNERS
                             // Advertised unconditionally: the
                             // sequences live with the shard's
                             // leader, which every broker is for

@@ -96,3 +96,60 @@ fn cache_shards_round_trips() {
         r#"{"type":"cache_shards_view","shards":4,"request_id":3}"#
     );
 }
+
+#[test]
+fn shard_owners_round_trips() {
+    for message in [
+        Message::ShardOwners {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            name: "orders".to_string(),
+            kind: crate::ShardKind::Cache,
+            request_id: 5,
+        },
+        Message::ShardOwnersView {
+            owners: vec![
+                crate::ShardOwner {
+                    shard: 0,
+                    node_id: Some("broker-a".to_string()),
+                    addr: Some("10.0.0.4:5000".to_string()),
+                    generation: 3,
+                    unavailable: None,
+                },
+                crate::ShardOwner {
+                    shard: 1,
+                    node_id: None,
+                    addr: None,
+                    generation: 0,
+                    unavailable: Some("not_assigned".to_string()),
+                },
+            ],
+            request_id: 5,
+        },
+    ] {
+        let frame = message.encode().expect("encode");
+        assert_eq!(Message::decode(frame).expect("decode"), message);
+    }
+    let json = serde_json::to_string(&Message::ShardOwners {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        name: "orders".to_string(),
+        kind: crate::ShardKind::Stream,
+        request_id: 5,
+    })
+    .expect("serialize");
+    assert_eq!(
+        json,
+        r#"{"type":"shard_owners","tenant_id":"t1","namespace":"ns","name":"orders","kind":"stream","request_id":5}"#
+    );
+    // Absent fields are left out, not written as null.
+    let json = serde_json::to_string(&crate::ShardOwner {
+        shard: 2,
+        node_id: None,
+        addr: None,
+        generation: 0,
+        unavailable: None,
+    })
+    .expect("serialize");
+    assert_eq!(json, r#"{"shard":2,"generation":0}"#);
+}

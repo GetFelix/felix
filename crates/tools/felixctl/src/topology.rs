@@ -1,10 +1,12 @@
 //! `felixctl topology`: a stream's or cache's shards, their owners, and the
 //! brokers a client can reach.
 //!
-//! The client can say how many shards there are and which brokers exist, but
-//! not which broker owns a shard, so owners come from the control plane's
-//! shard assignments when a control-plane URL is configured.
+//! The shard count, the owners and the brokers come from a broker. Replicas
+//! and assignment state are the control plane's, so they are added when a
+//! control-plane URL is configured; its leader is used only for a broker too
+//! old to name owners.
 
+use felix_client::{ShardKind, ShardOwner};
 use serde_json::Value;
 
 use crate::cli::TopologyArgs;
@@ -46,7 +48,21 @@ pub(crate) async fn run(
         .map(|endpoint| (endpoint.node_id, endpoint.addr))
         .collect();
 
-    let owners = match &settings.controlplane_url {
+    let owners = if client.supports_shard_owners() {
+        let shard_kind = if args.cache {
+            ShardKind::Cache
+        } else {
+            ShardKind::Stream
+        };
+        Some(
+            client
+                .shard_owners(tenant, namespace, name, shard_kind)
+                .await?,
+        )
+    } else {
+        None
+    };
+    let assignments = match &settings.controlplane_url {
         Some(_) => {
             let api = Api::new(settings)?;
             Some(shard_owners(
@@ -59,29 +75,17 @@ pub(crate) async fn run(
         }
         None => None,
     };
+    let owners_known = owners.is_some() || assignments.is_some();
 
     let shard_rows: Vec<Value> = (0..shards)
         .map(|shard| {
-            let assignment = owners
+            let owner = owners
                 .as_ref()
-                .and_then(|owners| owners.iter().find(|a| a["shard"] == shard));
-            let leader = assignment
-                .and_then(|a| a["leader"].as_str())
-                .map(str::to_string);
-            let addr = leader.as_ref().and_then(|leader| {
-                brokers
-                    .iter()
-                    .find(|(node, _)| node == leader)
-                    .map(|(_, addr)| addr.clone())
-            });
-            serde_json::json!({
-                "shard": shard,
-                "leader": leader,
-                "leader_addr": addr,
-                "replicas": assignment.map(|a| a["replicas"].clone()),
-                "generation": assignment.map(|a| a["generation"].clone()),
-                "state": assignment.map(|a| a["state"].clone()),
-            })
+                .and_then(|owners| owners.iter().find(|o| o.shard == shard));
+            let assignment = assignments
+                .as_ref()
+                .and_then(|assignments| assignments.iter().find(|a| a["shard"] == shard));
+            shard_row(shard, owner, assignment, &brokers)
         })
         .collect();
 
@@ -93,7 +97,7 @@ pub(crate) async fn run(
             "kind": kind,
             "shards": shards,
             "routing": routing,
-            "owners_known": owners.is_some(),
+            "owners_known": owners_known,
             "shard_owners": shard_rows,
             "brokers": brokers
                 .iter()
@@ -111,7 +115,7 @@ pub(crate) async fn run(
         ));
     }
     text.push_str("\n\n");
-    if owners.is_some() {
+    if owners_known {
         let rows = shard_rows
             .iter()
             .map(|row| {
@@ -133,7 +137,9 @@ pub(crate) async fn run(
             rows,
         ));
     } else {
-        text.push_str("owners: unknown without a control-plane URL (--controlplane-url)");
+        text.push_str(
+            "owners: unknown; this broker does not report them, so set a control-plane URL (--controlplane-url)",
+        );
     }
     text.push_str("\n\n");
     if brokers.is_empty() {
@@ -146,6 +152,43 @@ pub(crate) async fn run(
         text.push_str(&table(&["BROKER", "ADDR"], rows));
     }
     out.text(&text)
+}
+
+/// One shard's row: the broker's account of its owner, with the control
+/// plane's replicas and state when there are any.
+fn shard_row(
+    shard: u32,
+    owner: Option<&ShardOwner>,
+    assignment: Option<&Value>,
+    brokers: &[(String, String)],
+) -> Value {
+    let leader = match owner {
+        Some(owner) => owner.node_id.clone(),
+        None => assignment
+            .and_then(|a| a["leader"].as_str())
+            .map(str::to_string),
+    };
+    let addr = owner.and_then(|owner| owner.addr.clone()).or_else(|| {
+        leader.as_ref().and_then(|leader| {
+            brokers
+                .iter()
+                .find(|(node, _)| node == leader)
+                .map(|(_, addr)| addr.clone())
+        })
+    });
+    let generation = match owner {
+        Some(owner) => Value::from(owner.generation),
+        None => assignment.map_or(Value::Null, |a| a["generation"].clone()),
+    };
+    serde_json::json!({
+        "shard": shard,
+        "leader": leader,
+        "leader_addr": addr,
+        "replicas": assignment.map(|a| a["replicas"].clone()),
+        "generation": generation,
+        "state": assignment.map(|a| a["state"].clone()),
+        "unavailable": owner.and_then(|owner| owner.unavailable.clone()),
+    })
 }
 
 /// The assignments for one stream's or cache's shards.

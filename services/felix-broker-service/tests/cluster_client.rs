@@ -1,6 +1,6 @@
 //! `ClusterClient` against a real broker, for the calls that need one to
-//! mean anything: flushing unacknowledged publishes and keyed idempotent
-//! publishes.
+//! mean anything: flushing unacknowledged publishes, keyed idempotent
+//! publishes, and asking who owns a shard.
 //!
 //! One broker, in memory, with no cluster behind it. Routing across brokers
 //! is the cluster harness's to test; this proves the wiring.
@@ -18,7 +18,7 @@ use felix_authz::{
 };
 use felix_broker::{Broker, StreamMetadata};
 use felix_broker_service::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
-use felix_client::{AckMode, ClientConfig, ClusterClient};
+use felix_client::{AckMode, ClientConfig, ClusterClient, ShardKind, ShardOwner};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicServer, TransportConfig};
 use jsonwebtoken::Algorithm;
@@ -162,6 +162,45 @@ async fn a_keyed_idempotent_publish_lands_once() -> Result<()> {
             .await
             .is_err(),
         "a record landed twice"
+    );
+    Ok(())
+}
+
+/// **A broker with no cluster owns every shard it knows of.** It answers one
+/// shard with no node id, and nothing for a name it does not know, including
+/// a cache sharing a stream's name.
+#[tokio::test]
+#[serial]
+async fn a_single_broker_reports_itself_as_every_owner() -> Result<()> {
+    let running = start().await?;
+    let client = running.cluster.client().await;
+    assert!(client.supports_shard_owners());
+
+    let owners = client
+        .shard_owners("t1", "default", "orders", ShardKind::Stream)
+        .await?;
+    assert_eq!(
+        owners,
+        [ShardOwner {
+            shard: 0,
+            node_id: None,
+            addr: None,
+            generation: 0,
+            unavailable: None,
+        }]
+    );
+    assert!(
+        client
+            .shard_owners("t1", "default", "missing", ShardKind::Stream)
+            .await?
+            .is_empty()
+    );
+    assert!(
+        client
+            .shard_owners("t1", "default", "orders", ShardKind::Cache)
+            .await?
+            .is_empty(),
+        "a stream is not a cache of the same name"
     );
     Ok(())
 }
