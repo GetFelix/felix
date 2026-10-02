@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790905068195,
+  "lastUpdate": 1790930667945,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -27984,6 +27984,72 @@ window.BENCHMARK_DATA = {
             "range": "183.29",
             "unit": "us",
             "extra": "trials: 5\nmedian: 667.00\nmean: 720.20\nstdev: 183.29\ncv: 25.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "efc43abf5dc3faa2a12d6f6523b62104cf37e38e",
+          "message": "perf(broker): send a lone subscriber event without waiting for a batch (#926) (#927)\n\n* perf(broker): send a lone subscriber event without waiting for a batch (#926)\n\nThe lane feeder drained the subscription with a deadline on every batch,\nso a single event in flight waited out FELIX_EVENT_BATCH_MAX_DELAY_US\nfor a batch that never filled. A batch now takes what is already queued\nwith try_recv and flushes; it waits for more, up to the delay, only\nafter the previous batch found events queued behind its first.\n\n* chore: note the spec is unaffected\n\nSpec-Unaffected: the change is to subscriber event batching in the serving\nlayer; the model covers the lease, the write path's lease and generation\nchecks, replication and handoff, none of which this touches.\n\n* perf(broker): never arm a batch timer when the delay is zero\n\ntokio rounds every timer deadline up to the next 1 ms tick, so a busy\nfeeder with FELIX_EVENT_BATCH_MAX_DELAY_US=0 still waited up to a\nmillisecond on `timeout_at(now)`. With a zero delay the feeder now takes\nonly what is already queued and flushes.\n\nSpec-Unaffected: subscriber batching is not modelled",
+          "timestamp": "2026-10-02T01:40:51-07:00",
+          "tree_id": "fc1017463991bfdfd558cc7ba693b5ede5e626d5",
+          "url": "https://github.com/gabloe/felix/commit/efc43abf5dc3faa2a12d6f6523b62104cf37e38e"
+        },
+        "date": 1790930664788,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 183,
+            "range": "3.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 181.20\nstdev: 3.83\ncv: 2.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 247,
+            "range": "3.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 247.00\nmean: 246.40\nstdev: 3.36\ncv: 1.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 306,
+            "range": "15.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 306.00\nmean: 312.20\nstdev: 15.75\ncv: 5.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 219,
+            "range": "5.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 220.80\nstdev: 5.17\ncv: 2.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 451,
+            "range": "114.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 451.00\nmean: 499.20\nstdev: 114.22\ncv: 22.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 619,
+            "range": "739.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 619.00\nmean: 999.80\nstdev: 739.03\ncv: 73.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
