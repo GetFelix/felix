@@ -98,17 +98,19 @@ it.
 ### Broker side
 
 The broker coalesces events into delivery batches per subscription. A batch
-flushes when **any** bound is hit:
+takes every event already queued for the subscriber and flushes as soon as
+nothing more is waiting, or when a bound is hit:
 
 ```yaml
 event_batch_max_events: 64      # this many events, or
 event_batch_max_bytes: 262144   # this many bytes, or
-event_batch_max_delay_us: 250   # this much time since the first event
+event_batch_max_delay_us: 250   # under load, this much time since the first event
 ```
 
-Small events under a steady load flush on the count bound; big events flush
-on bytes; a trickle flushes on the delay, which is therefore the latency
-floor batching adds. Delivery uses binary `EventBatch` framing by default.
+A trickle is sent event by event with no added delay. Once events arrive
+faster than the broker drains them, so a batch finds others queued behind its
+first, the next batch waits up to the delay to fill. Small events under a
+steady load then flush on the count bound and big events on bytes. Delivery uses binary `EventBatch` framing by default.
 
 ## Ordering
 

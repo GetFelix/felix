@@ -328,9 +328,14 @@ event_batch_max_bytes: 65536
 
 ### `event_batch_max_delay_us`
 
-**Description**: Maximum delay before flushing a subscription batch, counted
-from the batch's first event. The broker's timers fire on millisecond ticks, so
-a value under 1000 can wait until the next tick.
+**Description**: The most a subscription batch waits for more events under
+load. A batch takes whatever events are already queued for the subscriber and
+flushes at once, so an event that arrives alone is sent without waiting. Only
+when the previous batch found events queued behind its first (events arriving
+faster than the broker drains them) does the next batch wait, up to this long
+from its first event, for more to fill it. The broker's timers fire on
+millisecond ticks, so under load a value under 1000 can wait until the next
+tick.
 
 **Type**: `u64` (microseconds)
 

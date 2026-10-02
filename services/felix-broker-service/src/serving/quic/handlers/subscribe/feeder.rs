@@ -53,6 +53,7 @@ pub(super) async fn run_lane_feeder(
         config.max_bytes_per_write,
     );
     let mut pending: Option<DeliveryEnvelope> = None;
+    let mut busy = false;
 
     loop {
         let envelope = match pending.take() {
@@ -169,18 +170,27 @@ pub(super) async fn run_lane_feeder(
         let batch_base = envelope.base_offset();
         let batch_skipped = envelope.skipped_before();
         let mut expected_next = batch_base.map(|base| base + envelope.len() as u64);
-        // One deadline for the whole batch. A per-recv timeout would let a
+        // Wait for more only while the previous batch found events already
+        // queued behind its first, i.e. arrivals outpace this feeder. Otherwise a
+        // lone event would sit out `flush_delay` for a batch that never fills.
+        // One deadline for the whole batch: a per-recv timeout would let a
         // steady stream hold the first event until the count or byte cap.
-        let deadline = tokio::time::Instant::now() + config.flush_delay;
+        let deadline = busy.then(|| tokio::time::Instant::now() + config.flush_delay);
+        let mut found_queued = false;
 
-        while batch.len() < max_events && batch_bytes < max_bytes {
-            let next = if config.single_event_mode {
-                None
-            } else {
-                match tokio::time::timeout_at(deadline, event_rx.recv()).await {
-                    Ok(Some(envelope)) => Some(envelope),
-                    Ok(None) | Err(_) => None,
+        while !config.single_event_mode && batch.len() < max_events && batch_bytes < max_bytes {
+            let next = match event_rx.try_recv() {
+                Ok(envelope) => {
+                    found_queued = true;
+                    Some(envelope)
                 }
+                Err(_) => match deadline {
+                    Some(deadline) => tokio::time::timeout_at(deadline, event_rx.recv())
+                        .await
+                        .ok()
+                        .flatten(),
+                    None => None,
+                },
             };
             let Some(envelope) = next else {
                 break;
@@ -203,6 +213,7 @@ pub(super) async fn run_lane_feeder(
             batch.push(payload);
             expected_next = expected_next.map(|next| next + 1);
         }
+        busy = found_queued;
 
         let sample = t_should_sample();
         let enqueue_start = t_now_if(sample);

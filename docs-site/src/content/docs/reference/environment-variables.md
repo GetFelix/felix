@@ -468,9 +468,14 @@ export FELIX_EVENT_BATCH_MAX_BYTES="1048576"  # 1 MiB
 
 ### `FELIX_EVENT_BATCH_MAX_DELAY_US`
 
-**Description**: Maximum delay before flushing batch (microseconds), counted
-from the batch's first event. The broker's timers fire on millisecond ticks, so
-a value under 1000 can wait until the next tick.
+**Description**: The most a subscription batch waits for more events under
+load (microseconds). A batch takes whatever events are already queued for the subscriber and
+flushes at once, so an event that arrives alone is sent without waiting. Only
+when the previous batch found events queued behind its first (events arriving
+faster than the broker drains them) does the next batch wait, up to this long
+from its first event, for more to fill it. The broker's timers fire on
+millisecond ticks, so under load a value under 1000 can wait until the next
+tick.
 
 **Type**: Unsigned integer
 
@@ -479,15 +484,15 @@ a value under 1000 can wait until the next tick.
 **Example**:
 ```bash
 export FELIX_EVENT_BATCH_MAX_DELAY_US="250"
-export FELIX_EVENT_BATCH_MAX_DELAY_US="50"    # Ultra-low latency
-export FELIX_EVENT_BATCH_MAX_DELAY_US="1000"  # Prioritize batching
-export FELIX_EVENT_BATCH_MAX_DELAY_US="5000"  # Maximum batching
+export FELIX_EVENT_BATCH_MAX_DELAY_US="0"     # Never wait; batch only what is queued
+export FELIX_EVENT_BATCH_MAX_DELAY_US="1000"  # Bigger batches under load
 ```
 
 **Tuning**:
-- Lower: Reduced latency, more frequent sends
-- Higher: Better batching, higher latency
-- Typical range: 50-1000 microseconds
+- It does not affect an idle or lightly loaded subscriber, which is sent each
+  event as it arrives
+- Lower: lower delivery latency under load, more frames
+- Higher: fewer, fuller frames under load, higher latency under load
 
 ### `FELIX_FANOUT_BATCH`
 

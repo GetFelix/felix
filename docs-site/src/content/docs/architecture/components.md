@@ -303,9 +303,9 @@ sequenceDiagram
 
 **Batching behavior**:
 
-- Events are accumulated up to `event_batch_max_events` (default: 64)
-- Or until `event_batch_max_delay_us` elapses (default: 250 µs)
-- Or until `event_batch_max_bytes` is reached (default: 64 KB)
+- A batch takes the events already queued for the subscriber and flushes when none are left, so a lone event is sent at once
+- Up to `event_batch_max_events` (default: 64) or `event_batch_max_bytes` (default: 64 KB)
+- Under load (the previous batch found events queued), it also waits up to `event_batch_max_delay_us` (default: 250 µs) for more
 
 :::note[Want the real code path?]
 See [Internals: Subscribe & Fanout](/felix/development/internals-subscribe/)
