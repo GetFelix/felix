@@ -1732,7 +1732,7 @@ npm package's on purpose. It sorts before `0.6.0` on all three.
   `scripts/npm_first_publish.sh` claims a new package name, which CI cannot.
   (#578, #579, #580, #582, #583, #584)
 
-### Known gaps
+### Known limitations
 
 Deliberately not in this preview:
 
