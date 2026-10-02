@@ -192,7 +192,8 @@ Which broker the client reached decides which you get. `--idempotent` and
 `Quorum` streams are always answered after the write.
 `--ack none` sends without waiting, and still flushes before exiting.
 `--idempotent` publishes through an idempotent producer, so a re-send after a
-reconnect cannot duplicate a record; it cannot be combined with `--key`.
+reconnect cannot duplicate a record. With `--key`, the producer keeps a
+sequence for the key's shard.
 
 ## Subscribing
 

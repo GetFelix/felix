@@ -431,6 +431,22 @@ producer
     .await?;
 ```
 
+`publish_keyed` and `publish_batch_keyed` take a routing key, which picks the
+shard as it does for a plain keyed publish. The leader numbers batches per
+shard, so the producer keeps one sequence per shard: keys on the same shard
+share it, and an unkeyed batch is shard 0's. The producer works out the shard
+itself from the stream's width, asked once of a broker advertising
+`FEATURE_STREAM_SHARDS`, and fails without sending if it cannot learn it.
+Under a `ClusterClient` each shard's batches go on that shard's own publish
+stream, as its other publishes do; a plain `Client`'s producer stays on the
+hashed pool with the rest of that client's publishes.
+
+```rust
+producer
+    .publish_keyed("acme", "prod", "orders", Bytes::from("customer-42"), payload)
+    .await?;
+```
+
 One call at a time waits a round trip per batch. `publish_batches` sends several
 batches in one call and keeps up to a window of them unanswered at once, under
 consecutive sequences:
@@ -496,10 +512,11 @@ why, and you take a fresh id. A producer is cheap to re-initialise.
 :::
 
 A publish that returns an error other than a refusal is in doubt for the same
-reason, but the producer still has the batch. The next call on that stream must
-be the same batch: it goes out under the same sequence and lands once. A call
-with a different batch fails without sending anything, so either re-send until
-it succeeds or take a fresh id.
+reason, but the producer still has the batch. The next call on that shard must
+be the same batch, with the same key: it goes out under the same sequence and
+lands once. A call with a different batch, or another key on the same shard,
+fails without sending anything, so either re-send until it succeeds or take a
+fresh id.
 
 ## Subscribing
 

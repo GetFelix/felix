@@ -1,8 +1,9 @@
 //! A broker that answers every publish and subscribe with one scripted
 //! message, and counts what it was sent.
 //!
-//! It advertises every frame flag and only `FEATURE_ERROR_CODES` and
-//! `FEATURE_IDEMPOTENT_PRODUCER`, so a
+//! It advertises every frame flag and only `FEATURE_ERROR_CODES`,
+//! `FEATURE_IDEMPOTENT_PRODUCER` and `FEATURE_STREAM_SHARDS` (every stream has
+//! [`STREAM_SHARDS`]), so a
 //! [`ClusterClient`](crate::ClusterClient) skips discovery and sends its
 //! publishes as acked binary batches, answered here with coded binary acks.
 //! A subscribe the script answers with `Subscribed` gets an event stream,
@@ -24,14 +25,15 @@ use crate::test_support::build_server_config;
 /// The answer to one request, given its request id (0 for a subscribe).
 type Script = Arc<dyn Fn(u64) -> Message + Send + Sync>;
 
-type Shards = Arc<Mutex<Vec<Option<u32>>>>;
+/// An idempotent batch's routing key and sequence.
+pub(super) type Sequenced = (Option<bytes::Bytes>, u64);
+
+/// How many shards every stream has here, by modulo.
+pub(super) const STREAM_SHARDS: u32 = 4;
 
 pub(super) struct StubBroker {
     pub(super) addr: SocketAddr,
-    publishes: Arc<AtomicUsize>,
-    subscribes: Arc<AtomicUsize>,
-    /// The shard each subscribe asked for, in order.
-    shards: Shards,
+    seen: Seen,
     connections: Arc<Mutex<Vec<QuicConnection>>>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -69,16 +71,10 @@ impl StubBroker {
         };
         let server = QuicServer::bind("127.0.0.1:0".parse()?, server_config, transport)?;
         let addr = server.local_addr()?;
-        let publishes = Arc::new(AtomicUsize::new(0));
-        let subscribes = Arc::new(AtomicUsize::new(0));
-        let shards = Shards::default();
+        let seen = Seen::default();
         let script: Script = Arc::new(script);
         let connections = Arc::new(Mutex::new(Vec::new()));
-        let counts = (
-            Arc::clone(&publishes),
-            Arc::clone(&subscribes),
-            Arc::clone(&shards),
-        );
+        let counts = seen.clone();
         let accepted = Arc::clone(&connections);
         let task = tokio::spawn(async move {
             while let Ok(connection) = server.accept().await {
@@ -96,25 +92,34 @@ impl StubBroker {
         });
         Ok(Self {
             addr,
-            publishes,
-            subscribes,
-            shards,
+            seen,
             connections,
             task,
         })
     }
 
     pub(super) fn publishes(&self) -> usize {
-        self.publishes.load(Ordering::SeqCst)
+        self.seen.publishes.load(Ordering::SeqCst)
     }
 
     pub(super) fn subscribes(&self) -> usize {
-        self.subscribes.load(Ordering::SeqCst)
+        self.seen.subscribes.load(Ordering::SeqCst)
     }
 
     /// The shard each subscribe asked for, in order; `None` is unset.
     pub(super) fn subscribed_shards(&self) -> Vec<Option<u32>> {
-        self.shards.lock().unwrap().clone()
+        self.seen.shards.lock().unwrap().clone()
+    }
+
+    /// The routing key of each idempotent batch and the id of the QUIC stream
+    /// it arrived on, in order.
+    pub(super) fn batch_streams(&self) -> Vec<Sequenced> {
+        self.seen.batch_streams.lock().unwrap().clone()
+    }
+
+    /// The routing key and sequence of each idempotent batch, in order.
+    pub(super) fn sequences(&self) -> Vec<Sequenced> {
+        self.seen.sequences.lock().unwrap().clone()
     }
 
     /// Client connections still open, however many clients hold them.
@@ -147,18 +152,41 @@ impl Drop for StubBroker {
     }
 }
 
+/// What the stub was sent, shared by every stream it serves.
+#[derive(Clone, Default)]
+struct Seen {
+    publishes: Arc<AtomicUsize>,
+    subscribes: Arc<AtomicUsize>,
+    /// The shard each subscribe asked for.
+    shards: Arc<Mutex<Vec<Option<u32>>>>,
+    /// The routing key of each idempotent batch and the QUIC stream it came on.
+    batch_streams: Arc<Mutex<Vec<Sequenced>>>,
+    sequences: Arc<Mutex<Vec<Sequenced>>>,
+}
+
 async fn serve_stream(
     connection: QuicConnection,
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     script: Script,
-    (publishes, subscribes, shards): (Arc<AtomicUsize>, Arc<AtomicUsize>, Shards),
+    seen: Seen,
 ) -> Result<()> {
     let mut scratch = BytesMut::with_capacity(64 * 1024);
     while let Some(frame) = read_frame_into(&mut recv, &mut scratch, false).await? {
         if frame.header.flags & felix_wire::FLAG_BINARY_PUBLISH_ACKED != 0 {
-            let id = felix_wire::binary::decode_acked_publish_batch(&frame)?.request_id;
-            publishes.fetch_add(1, Ordering::SeqCst);
+            let batch = felix_wire::binary::decode_acked_publish_batch(&frame)?;
+            let id = batch.request_id;
+            seen.publishes.fetch_add(1, Ordering::SeqCst);
+            if let Some(producer) = batch.producer {
+                seen.batch_streams
+                    .lock()
+                    .unwrap()
+                    .push((batch.batch.key.clone(), u64::from(recv.id())));
+                seen.sequences
+                    .lock()
+                    .unwrap()
+                    .push((batch.batch.key, producer.sequence));
+            }
             send.write_all(&binary_ack(id, script(id))?).await?;
             continue;
         }
@@ -167,7 +195,9 @@ async fn serve_stream(
                 let answer = Message::AuthOk {
                     server_flags: felix_wire::KNOWN_FLAGS,
                     server_features: Some(
-                        felix_wire::FEATURE_ERROR_CODES | felix_wire::FEATURE_IDEMPOTENT_PRODUCER,
+                        felix_wire::FEATURE_ERROR_CODES
+                            | felix_wire::FEATURE_IDEMPOTENT_PRODUCER
+                            | felix_wire::FEATURE_STREAM_SHARDS,
                     ),
                     listener_ports: None,
                     publish_window: None,
@@ -181,9 +211,17 @@ async fn serve_stream(
                 };
                 write_message(&mut send, answer).await?;
             }
+            Message::StreamShards { request_id, .. } => {
+                let answer = Message::StreamShardsView {
+                    shards: STREAM_SHARDS,
+                    request_id,
+                    routing: None,
+                };
+                write_message(&mut send, answer).await?;
+            }
             Message::Subscribe { shard, .. } => {
-                subscribes.fetch_add(1, Ordering::SeqCst);
-                shards.lock().unwrap().push(shard);
+                seen.subscribes.fetch_add(1, Ordering::SeqCst);
+                seen.shards.lock().unwrap().push(shard);
                 let answer = match script(0) {
                     Message::Subscribed {
                         start_offset,

@@ -358,9 +358,8 @@ pub(crate) struct PubArgs {
     #[arg(long, value_enum, value_name = "MODE", default_value_t = AckArg::Message)]
     pub(crate) ack: AckArg,
     /// Publish through an idempotent producer, so a re-send after a
-    /// reconnect cannot duplicate a record. Always acknowledged; cannot be
-    /// combined with --key
-    #[arg(long, conflicts_with = "key")]
+    /// reconnect cannot duplicate a record. Always acknowledged
+    #[arg(long)]
     pub(crate) idempotent: bool,
 }
 

@@ -27,6 +27,10 @@ for what the current release guarantees.
 - `ClusterClient::finish` flushes unacknowledged publishes on every broker the
   client holds before the process exits. `felixctl pub --ack none` now
   publishes through the cluster client and calls it. (#937)
+- `IdempotentProducer::publish_keyed` and `publish_batch_keyed` publish
+  idempotently with a routing key. The producer keeps a sequence per shard,
+  which is what the leader checks, rather than one per stream. `felixctl pub`
+  accepts `--idempotent` with `--key`. (#937)
 
 ### Changed
 

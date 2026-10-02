@@ -182,9 +182,13 @@ impl<'a> Sender<'a> {
                     .publish_keyed(tenant, namespace, stream, payload, key.clone(), *ack)
                     .await
             }
-            // clap refuses --idempotent with --key.
-            (Mode::Idempotent(producer), _) => {
+            (Mode::Idempotent(producer), None) => {
                 producer.publish(tenant, namespace, stream, payload).await
+            }
+            (Mode::Idempotent(producer), Some(key)) => {
+                producer
+                    .publish_keyed(tenant, namespace, stream, key.clone(), payload)
+                    .await
             }
         }
     }

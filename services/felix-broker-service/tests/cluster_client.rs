@@ -1,6 +1,6 @@
 //! `ClusterClient` against a real broker, for the calls that need one to
-//! mean anything: flushing unacknowledged publishes, cache requests and
-//! counters, and asking who owns a shard.
+//! mean anything: flushing unacknowledged publishes and keyed idempotent
+//! publishes.
 //!
 //! One broker, in memory, with no cluster behind it. Routing across brokers
 //! is the cluster harness's to test; this proves the wiring.
@@ -118,6 +118,51 @@ async fn finish_flushes_unacknowledged_publishes() -> Result<()> {
         .publish("t1", "default", "orders", b"late".to_vec(), AckMode::None)
         .await;
     assert!(after.is_err(), "a publish after finish was accepted");
+    Ok(())
+}
+
+/// **A keyed idempotent publish lands, once each.** The broker routes the
+/// batch by its key and checks the sequence against that shard.
+#[tokio::test]
+#[serial]
+async fn a_keyed_idempotent_publish_lands_once() -> Result<()> {
+    let running = start().await?;
+    let mut subscription = running.cluster.subscribe("t1", "default", "orders").await?;
+    let producer = running.cluster.idempotent_producer().await?;
+
+    for (n, key) in ["alice", "bob", "alice"].into_iter().enumerate() {
+        producer
+            .publish_keyed(
+                "t1",
+                "default",
+                "orders",
+                bytes::Bytes::from(key),
+                format!("{n}").into_bytes(),
+            )
+            .await?;
+    }
+    producer
+        .publish_batch_keyed(
+            "t1",
+            "default",
+            "orders",
+            bytes::Bytes::from_static(b"carol"),
+            vec![b"3".to_vec(), b"4".to_vec()],
+        )
+        .await?;
+
+    for expected in ["0", "1", "2", "3", "4"] {
+        let event = timeout(Duration::from_secs(5), subscription.next_event())
+            .await??
+            .expect("the subscription stays open");
+        assert_eq!(event.payload.as_ref(), expected.as_bytes());
+    }
+    assert!(
+        timeout(Duration::from_millis(200), subscription.next_event())
+            .await
+            .is_err(),
+        "a record landed twice"
+    );
     Ok(())
 }
 
