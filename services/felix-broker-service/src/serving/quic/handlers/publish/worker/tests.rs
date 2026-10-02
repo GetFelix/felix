@@ -624,6 +624,41 @@ mod lane_claim {
         Ok(())
     }
 
+    /// A quorum timeout on a claim leaves every member's outcome unknown, so
+    /// none of them may be told it is safe to send again.
+    #[tokio::test]
+    async fn a_claim_whose_quorum_wait_times_out_leaves_every_member_unknown() {
+        let mut answers = Vec::new();
+        let mut members = Vec::new();
+        for _ in 0..2 {
+            let (tx, rx) = oneshot::channel();
+            members.push(GroupMember {
+                response: Some(tx),
+                acked_on_enqueue: false,
+                records: 1,
+            });
+            answers.push(rx);
+        }
+        let timeout = felix_replication::quorum::QuorumError::TimedOut {
+            what: "publish",
+            timeout: Duration::from_millis(5),
+        };
+        settle_group(members, None, Err(timeout.into()));
+        for answer in answers {
+            let err = answer
+                .await
+                .expect("worker response")
+                .expect_err("a publish whose quorum wait timed out was acknowledged");
+            let err = crate::serving::quic::client_error::ClientError::from_anyhow(&err);
+            assert_eq!(err.code(), &felix_wire::ErrorCode::QuorumTimeout, "{err:?}");
+            assert_eq!(
+                err.retry(),
+                felix_wire::RetryClass::OutcomeUnknown,
+                "{err:?}"
+            );
+        }
+    }
+
     /// A publish whose caller stopped waiting is still written in its place,
     /// and the publishes around it keep their own offsets and answers.
     #[tokio::test]

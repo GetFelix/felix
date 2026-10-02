@@ -189,8 +189,11 @@ do not mean more concurrent callers contending on shared stream state.
    per publish: one the fence refuses is answered with the refusal and left
    out, and the rest are written around it. Everything after that is shared:
    a failed append, flush or quorum wait fails every publish in the claim,
-   because none of them can have succeeded without the others. A publish
-   whose caller stopped waiting keeps its place, as it would alone.
+   because none of them can have succeeded without the others. Every member
+   gets the same error. A quorum timeout leaves the outcome unknown for each
+   of them, so none is told it is safe to send again. Exactly-once needs the
+   idempotent producer, whose publishes are never grouped. A publish whose
+   caller stopped waiting keeps its place, as it would alone.
 
    > `queued_publishes_on_one_lane_are_claimed_as_one_append`: eight
    > publishes queued on one lane, one of them three records long, are
@@ -202,6 +205,10 @@ do not mean more concurrent callers contending on shared stream state.
 
    > `a_publish_the_fence_refuses_is_left_out_of_the_claim`: the refused
    > publish gets `ShardUnavailable`, and the others are written at 0, 1, 2.
+
+   > `a_claim_whose_quorum_wait_times_out_leaves_every_member_unknown`: both
+   > members of a claim whose quorum wait timed out get `QuorumTimeout` with
+   > retry class `OutcomeUnknown`.
 
    A durable shard may have `pub_flush_concurrency` flushes outstanding.
    Past that, its next claim waits for one off the executor, holding only its
