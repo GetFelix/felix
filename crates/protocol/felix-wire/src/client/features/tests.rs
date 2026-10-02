@@ -259,3 +259,54 @@ fn shard_owners_is_a_new_feature_bit_and_disturbs_nothing() {
     ));
     assert!(!crate::supports_feature(0, crate::FEATURE_SHARD_OWNERS));
 }
+
+/// **Every feature bit is its own.** The per-bit tests above mask a bit out of
+/// `KNOWN_FEATURES`, which two constants sharing a value pass. This lists them
+/// all, so a new bit given a value already in use fails here.
+#[test]
+fn every_feature_bit_is_distinct_and_known() {
+    let bits = [
+        ("FEATURE_TOPOLOGY", crate::FEATURE_TOPOLOGY),
+        ("FEATURE_REDIRECT", crate::FEATURE_REDIRECT),
+        ("FEATURE_CACHE_DELETE", crate::FEATURE_CACHE_DELETE),
+        ("FEATURE_CONSUMER_GROUP", crate::FEATURE_CONSUMER_GROUP),
+        (
+            "FEATURE_GROUP_DEAD_LETTERS",
+            crate::FEATURE_GROUP_DEAD_LETTERS,
+        ),
+        ("FEATURE_STREAM_SHARDS", crate::FEATURE_STREAM_SHARDS),
+        ("FEATURE_CACHE_WATCH", crate::FEATURE_CACHE_WATCH),
+        (
+            "FEATURE_CACHE_WATCH_RETAINED",
+            crate::FEATURE_CACHE_WATCH_RETAINED,
+        ),
+        ("FEATURE_COUNTERS", crate::FEATURE_COUNTERS),
+        (
+            "FEATURE_IDEMPOTENT_PRODUCER",
+            crate::FEATURE_IDEMPOTENT_PRODUCER,
+        ),
+        ("FEATURE_CACHE_SHARDS", crate::FEATURE_CACHE_SHARDS),
+        ("FEATURE_ERROR_CODES", crate::FEATURE_ERROR_CODES),
+        ("FEATURE_SHARD_MOVED", crate::FEATURE_SHARD_MOVED),
+        ("FEATURE_UNSUPPORTED", crate::FEATURE_UNSUPPORTED),
+        ("FEATURE_SEQUENCE_REUSED", crate::FEATURE_SEQUENCE_REUSED),
+        ("FEATURE_PUBLISH_PIPELINE", crate::FEATURE_PUBLISH_PIPELINE),
+        ("FEATURE_ATOMIC_COMMIT", crate::FEATURE_ATOMIC_COMMIT),
+        (
+            "FEATURE_STREAM_PUBLISH_WINDOW",
+            crate::FEATURE_STREAM_PUBLISH_WINDOW,
+        ),
+        ("FEATURE_SHARD_OWNERS", crate::FEATURE_SHARD_OWNERS),
+    ];
+    let mut seen = 0u32;
+    for (name, bit) in bits {
+        assert_eq!(bit.count_ones(), 1, "{name} is not a single bit");
+        assert_eq!(seen & bit, 0, "{name} reuses a bit already taken");
+        seen |= bit;
+    }
+    assert_eq!(
+        seen,
+        crate::KNOWN_FEATURES,
+        "KNOWN_FEATURES and this list disagree"
+    );
+}
