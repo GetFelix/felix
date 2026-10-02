@@ -544,6 +544,12 @@ for what the current release guarantees.
 
 ### Changed
 
+- **A lone subscriber event is sent without waiting for a batch.** A
+  subscription batch takes what is already queued and flushes at once; it
+  waits up to `FELIX_EVENT_BATCH_MAX_DELAY_US` for more only after the
+  previous batch found events queued behind its first. With one message in
+  flight, delivery no longer sits out the batch delay. (#926)
+
 - **The broker's default listener count follows its cores.** With
   `FELIX_QUIC_LISTENERS` unset, a broker binds `max(1, min(cores / 2, 4))`
   client listeners, using the cores it may run on (cgroup limits included).
@@ -767,6 +773,12 @@ for what the current release guarantees.
   streams now skip the record: their publishes take no log offsets and are not
   replicated, so there is nothing inherited for it to cover. A promoted shard
   kept closed after its fence now backs off, doubling from 200 ms to 2 s.
+  
+- **A cache put or delete ships without waiting for the replication tick
+  (#928).** Stream publishes and counter updates woke the replication driver,
+  but cache writes waited for its next tick (`controlplane_sync_interval_ms`,
+  2 s by default), so a `Quorum` cache put took about 840 ms. Every cache write
+  now starts a replication pass, for `Leader` caches too.
 
 - **A broker's rotated refresh token is no longer world-readable (#913).** Each
   rotation wrote `FELIX_NODE_REFRESH_TOKEN_FILE` through a temporary created

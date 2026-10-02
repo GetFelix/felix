@@ -185,6 +185,12 @@ Coalescing here is governed by `EventWriterConfig`: `max_events`,
 `fanout_batch_size <= 1`, the latency profile: one event per frame,
 immediate flush, no batching delay).
 
+The feeder batches adaptively. After its first event it drains what is
+already queued with `try_recv` and flushes, so a lone event costs no timer
+and no wait. Only when that drain found something does the feeder mark
+itself busy, and the next batch then awaits more events until `flush_delay`
+after its first. A batch that drains nothing clears the mark.
+
 ## `run_writer_lane` → `run_connection_writer`
 
 **File**: `subscribe/writer.rs` (lane routing in `subscribe/lane.rs`)

@@ -400,7 +400,7 @@ max_subscriber_writer_lanes: 8       # Safety clamp
 subscriber_lane_shard: auto          # auto|subscriber_id_hash|connection_id_hash|round_robin_pin
 event_batch_max_events: 64           # Max events per batch
 event_batch_max_bytes: 65536         # Max batch size (64 KB)
-event_batch_max_delay_us: 250        # Max batching delay (250 µs)
+event_batch_max_delay_us: 250        # Max batching delay under load (250 µs)
 ```
 
 **Batching trade-offs**:

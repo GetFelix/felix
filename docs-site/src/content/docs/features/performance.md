@@ -289,18 +289,20 @@ Example:
 ```yaml
 event_batch_max_events: 64             # Max events per batch
 event_batch_max_bytes: 262144          # Max batch size (256 KB)
-event_batch_max_delay_us: 250          # Max batching delay (250 µs)
+event_batch_max_delay_us: 250          # Max batching delay under load (250 µs)
 fanout_batch_size: 64                  # Fanout batch size
 ```
 
-**Batch triggers**: Event batch is sent when **any** condition is met.
+**Batch triggers**: Event batch is sent when **any** condition is met. The
+delay applies only under load: a batch that finds nothing else queued is sent
+at once.
 
 **Trade-off analysis**:
 
 | Parameter | ↑ Increase Effect | ↓ Decrease Effect |
 |-----------|------------------|------------------|
 | `max_events` | Higher throughput, higher latency | Lower latency, lower throughput |
-| `max_delay_us` | Higher throughput, higher latency | Lower latency, lower throughput |
+| `max_delay_us` | Higher throughput, higher latency under load | Lower latency under load, lower throughput |
 | `max_bytes` | Fewer frames, more efficiency | More frames, less efficiency |
 | `fanout_batch_size` | Better fanout efficiency | Lower fanout latency |
 
@@ -482,7 +484,7 @@ Disable telemetry in production for maximum throughput. Enable only for profilin
 **High subscribe latency**:
 
 1. Check `subscriber_queue_capacity`, `subscriber_queue_policy`, and lane drop counters - subscribers falling behind?
-2. Check `event_batch_max_delay_us` - batching too aggressive?
+2. Check `event_batch_max_delay_us` - batches waiting too long under load?
 3. Check QUIC flow control - windows exhausted?
 4. Check subscriber processing time - bottleneck in application?
 5. Check path MTU discovery (`FELIX_MTU_UPPER_BOUND`) - see [Benchmarks](/felix/features/benchmarks/) for why this matters more than it looks.
