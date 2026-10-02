@@ -18,6 +18,7 @@
 #   ff        Felix perf, batch 64, fire-and-forget       <-> core publish
 #   inmem-b64 Felix perf, batch 64, 64 in flight          <-> memory, fast flow 64
 #   per-b64   Felix perf-durable periodic, batch 64       <-> default sync, fast flow 64
+#   inmem-async / per-async  as inmem-b64 / per-b64, NATS async publish
 #   dur-a64   Felix perf-durable, batch 64, 64 in flight  <-> always, atomic batch 64
 #
 # Knobs: AB_PAIRS, AB_PAYLOADS (4096 256), AB_KEYS (48, Felix keys),
@@ -40,6 +41,8 @@ source "$(cd "$(dirname "$0")" && pwd)/nats-lib.sh"
 # NATS publishers per generator. An atomic-batch client has one batch in
 # flight, so dur-a64 may need more clients than Felix's PUBS_PER_GEN.
 : "${AB_NATS_PUBS:=${PUBS_PER_GEN}}"
+# Async publish window for the *-async pairs (NATS's usual high-rate path).
+: "${AB_ASYNC_WINDOW:=1024}"
 : "${FELIX_BEST_REF:=main}"
 : "${FELIX_BEST_ENV:=FELIX_QUIC_LISTENERS=4 FELIX_PUB_INGRESS_WAIT=1 FELIX_DURABLE_FSYNC_MODE=on_commit}"
 : "${FELIX_BEST_CLIENT_ENV:=FELIX_PUB_CONN_POOL=4}"
@@ -78,6 +81,8 @@ pair() {
     inmem-b64) fstream=perf; fb=64; ff=64; nmode=memory; nkind=js-fast; nwin="${AB_FLOW64_WINDOW}"; nflow=64 ;;
     dur-a64) fstream=perf-durable; fb=64; ff=64; nmode=always; nkind=js-atomic; nwin=1; nflow=64 ;;
     per-b64) fstream=perf-durable; fb=64; ff=64; fsync=periodic; nmode=default; nkind=js-fast; nwin="${AB_FLOW64_WINDOW}"; nflow=64 ;;
+    inmem-async) fstream=perf; fb=64; ff=64; nmode=memory; nkind=js-async; nwin="${AB_ASYNC_WINDOW}"; nflow=1 ;;
+    per-async) fstream=perf-durable; fb=64; ff=64; fsync=periodic; nmode=default; nkind=js-async; nwin="${AB_ASYNC_WINDOW}"; nflow=1 ;;
     *) echo "!! unknown pair ${pr}" >&2; return 0 ;;
   esac
   local fname="ab-felix-${pr}-p${p}-k${AB_KEYS}-t${t}" nname="ab-nats-${pr}-p${p}-s${AB_STREAMS}-t${t}"
