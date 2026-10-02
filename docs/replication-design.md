@@ -352,7 +352,9 @@ the same:
   where its generation begins, its first record at the generation, and only
   then serves. A promoted leader does it after its fence and catch-up; if the
   append fails the shard stays closed, and the driver fences and tries again
-  after a short back-off (`FENCE_RETRY`, 200 ms). The record ships like any other and is labelled with the leader's
+  after a back-off that starts at 200 ms (`FENCE_RETRY`) and doubles with each
+  attempt at the same generation that leaves the shard closed, up to 2 s
+  (`FENCE_RETRY_MAX`). The record ships like any other and is labelled with the leader's
   generation, so a replica holding it answers a later fence with that
   generation as its last. The format is in `docs/storage-format.md`.
 - **The mark.** A stream leader's mark counts a majority only once it reaches a
@@ -394,6 +396,13 @@ how a shard whose generation began before the fleet finalized
 start record, and it gets its first one at its next leadership change. A cache shard writes none and counts as before: its
 log is compacted and never fenced, so it never takes a longer log on
 promotion, which is what makes an inherited record unsafe to count.
+
+An in-memory stream writes none either. Its publishes never reach the shard's
+log: they take no offsets, nothing ships, the fence has nothing to take, and a
+`Quorum` publish has no offset to wait on a mark for (`await_quorum`). With no
+inherited record there is nothing for a start record to cover, and the broker
+has no log to append one to, so a promoted in-memory shard opens as soon as
+its fence settles.
 
 **Across versions: the `generation_start` fleet feature.** The record and the
 counting rule switch on together, when an operator finalizes
