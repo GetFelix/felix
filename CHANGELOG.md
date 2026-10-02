@@ -766,6 +766,12 @@ for what the current release guarantees.
 
 ### Fixed
 
+- **A cache put or delete ships without waiting for the replication tick
+  (#928).** Stream publishes and counter updates woke the replication driver,
+  but cache writes waited for its next tick (`controlplane_sync_interval_ms`,
+  2 s by default), so a `Quorum` cache put took about 840 ms. Every cache write
+  now starts a replication pass, for `Leader` caches too.
+
 - **A broker's rotated refresh token is no longer world-readable (#913).** Each
   rotation wrote `FELIX_NODE_REFRESH_TOKEN_FILE` through a temporary created
   with the default mode, so 0644 under the usual umask, even when the operator
