@@ -175,7 +175,10 @@ pub(super) async fn run_lane_feeder(
         // lone event would sit out `flush_delay` for a batch that never fills.
         // One deadline for the whole batch: a per-recv timeout would let a
         // steady stream hold the first event until the count or byte cap.
-        let deadline = busy.then(|| tokio::time::Instant::now() + config.flush_delay);
+        // A zero delay must not arm a timer at all: tokio rounds every deadline
+        // up to its next 1 ms tick, so even `now + 0` can wait most of a ms.
+        let deadline = (busy && !config.flush_delay.is_zero())
+            .then(|| tokio::time::Instant::now() + config.flush_delay);
         let mut found_queued = false;
 
         while !config.single_event_mode && batch.len() < max_events && batch_bytes < max_bytes {

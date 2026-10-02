@@ -201,3 +201,32 @@ async fn lane_feeder_flushes_a_steady_stream_by_the_batch_deadline() -> Result<(
     assert_eq!(item_count(command), sent);
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn lane_feeder_with_zero_delay_flushes_a_busy_batch_without_a_timer() -> Result<()> {
+    let Harness {
+        broker,
+        mut lane_rx,
+        feeder,
+        _manager,
+        _guard,
+    } = spawn_feeder(Duration::ZERO).await?;
+
+    // Two events queued at once mark the feeder busy.
+    publish(&broker).await?;
+    publish(&broker).await?;
+    settle().await;
+    assert_eq!(item_count(lane_rx.try_recv()?), 2);
+
+    // Off a millisecond boundary, any timer would need time to advance to the
+    // next tick before it fires.
+    tokio::time::advance(Duration::from_micros(500)).await;
+    publish(&broker).await?;
+    settle().await;
+    let flushed = lane_rx.try_recv();
+    feeder.abort();
+
+    let command = flushed.expect("busy batch waited on a timer");
+    assert_eq!(item_count(command), 1);
+    Ok(())
+}
