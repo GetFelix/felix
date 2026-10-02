@@ -117,6 +117,15 @@ for dir in "$pkg"/npm/*/; do
   printf '  %-22s %s\n' "$triple" "$(du -h "$dir$node_file" | cut -f1)"
 done
 
+# npm refuses a prerelease without --tag, so that `latest` stays on the last
+# stable version. Tag it with its prerelease id (0.6.0-preview -> preview).
+version="$(node -p "require('$pkg/package.json').version")"
+tag_args=()
+if [[ "$version" == *-* ]]; then
+  pre="${version#*-}"
+  tag_args=(--tag "${pre%%.*}")
+fi
+
 echo
 echo "== publishing, platform packages first"
 echo "npm will ask for your one-time password, once per package. Pass"
@@ -126,10 +135,10 @@ echo "as these names exist."
 echo
 for dir in "$pkg"/npm/*/; do
   echo "-- $(basename "$dir")"
-  ( cd "$dir" && npm publish --registry="$REGISTRY" )
+  ( cd "$dir" && npm publish --registry="$REGISTRY" ${tag_args[@]+"${tag_args[@]}"} )
 done
 echo "-- felix-client"
-( cd "$pkg" && npm publish --registry="$REGISTRY" )
+( cd "$pkg" && npm publish --registry="$REGISTRY" ${tag_args[@]+"${tag_args[@]}"} )
 
 echo
 echo "== confirming the registry has them"
