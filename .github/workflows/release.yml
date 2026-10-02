@@ -809,6 +809,14 @@ jobs:
           # bypass-2fa token is deprecated and removed in January 2027, so this
           # is the token path that still exists afterwards.
           if [ "$STAGE" = "true" ]; then publish=(stage publish); else publish=(publish); fi
+          # npm refuses a prerelease without --tag, so that `latest` stays on
+          # the last stable version. Tag it with its prerelease id instead
+          # (0.6.0-preview -> preview, 0.7.0-rc.1 -> rc).
+          version=$(node -p "require('./package.json').version")
+          if [[ "$version" == *-* ]]; then
+            pre=${version#*-}
+            publish+=(--tag "${pre%%.*}")
+          fi
           for dir in npm/*/; do
             echo "== ${dir}"
             ( cd "$dir" && npm "${publish[@]}" )
