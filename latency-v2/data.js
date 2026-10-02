@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790957237495,
+  "lastUpdate": 1790973454604,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -28314,6 +28314,72 @@ window.BENCHMARK_DATA = {
             "range": "16.81",
             "unit": "us",
             "extra": "trials: 5\nmedian: 317.00\nmean: 321.00\nstdev: 16.81\ncv: 5.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a34bee4d6b68a9d100fd7528dc5501e1582b61a5",
+          "message": "fix(felixctl): cluster tests skip the harness probe; global flags parse on every command (#940)\n\n* fix(felixctl): cluster tests skip the harness probe; helper stops passing --controlplane-token twice\n\nThe felix-cluster harness publishes a harness-probe record to each stream\nbefore a test starts, so reading from earliest returned it first. The tests\nnow read from the offset of their own first publish.\n\nEnv::felixctl appended every connection flag even when the test passed one\nitself, and clap refuses a flag given twice. It now leaves out any flag the\ncaller set.\n\n* fix(felixctl): global --tenant and --namespace parse on tenant/namespace info\n\nThe positional arguments of `tenant info` and `namespace info` had the ids\ntenant and namespace, which replaced the global flags of the same id on\nthose commands, so `felixctl tenant info t1 --tenant t1` was refused. They\nnow have their own ids. A test checks every command takes every global\nflag.\n\nThe cluster tests no longer take their start offset from a publish ack: a\nbroker that acks on enqueue reports none. They read past the harness's\nprobes instead.\n\n* ci(deny): allow path-only dev-dependency wildcards\n\nfelixctl's dev-dependency on felix-cluster is path-only on purpose: cargo drops\nit on publish. cargo-deny counted it as a wildcard and failed the test job.",
+          "timestamp": "2026-10-02T13:33:50-07:00",
+          "tree_id": "d841652751396e5a08220e3da5ee1ae64c8f2a5f",
+          "url": "https://github.com/gabloe/felix/commit/a34bee4d6b68a9d100fd7528dc5501e1582b61a5"
+        },
+        "date": 1790973451885,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 135,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 135.00\nmean: 135.80\nstdev: 1.92\ncv: 1.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 179,
+            "range": "9.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 183.60\nstdev: 9.29\ncv: 5.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 245,
+            "range": "9.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 245.00\nmean: 245.00\nstdev: 9.41\ncv: 3.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 177,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 176.80\nstdev: 0.84\ncv: 0.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 349,
+            "range": "12.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 349.00\nmean: 356.80\nstdev: 12.48\ncv: 3.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 492,
+            "range": "649.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 492.00\nmean: 786.40\nstdev: 649.00\ncv: 82.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
