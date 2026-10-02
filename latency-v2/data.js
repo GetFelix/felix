@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790952671220,
+  "lastUpdate": 1790955983319,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -28182,6 +28182,72 @@ window.BENCHMARK_DATA = {
             "range": "47.85",
             "unit": "us",
             "extra": "trials: 5\nmedian: 281.00\nmean: 293.00\nstdev: 47.85\ncv: 16.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "20ad1b12ae40fdee1278fafacfe9f45a07bb44a1",
+          "message": "feat(cli): felixctl for streams, caches, the control plane and benchmarks (#872) (#936)\n\n* feat(cli): felixctl for streams, caches, the control plane and benchmarks (#872)\n\nA new crate, crates/tools/felixctl, with a binary of the same name:\n\n- context add/use/ls/rm: named profiles in felixctl/config.toml under the\n  platform config directory. A flag beats its FELIX_* variable, which beats\n  the profile.\n- pub, sub, cache get/put/del/watch and topology, on felix-client's public\n  API only.\n- Read-only tenant, namespace, stream, cache, node and shard listings over\n  the control plane's REST API, following next_cursor.\n- bench ingest/latency/fanout/cache, running felix-loadgen's scenarios in\n  process and printing the rate with p50 and p99.\n- --json on every command, distinct exit statuses (2 usage, 3 connection,\n  4 refused, 5 not found), help with examples on every command, completions\n  and man pages.\n\nfelix-loadgen becomes a library plus its binary. Scenarios return their\nLOADGEN_JSON object and print their prose only when asked; the binary prints\nboth exactly as before. Common gains an optional client config and server\nname so felixctl can use the context's TLS instead of the instrument's\naccept-any verifier. Both crates are publishable and wait in\nRELEASE_PENDING until the release workflow publishes them.\n\nfelix-cluster up now creates a `users` cache and records each broker's\nexported certificate in the session file, so the getting-started steps can\nverify the brokers. The harness gains a cluster-admin token for the tenant\nlisting test.\n\n* release: ship felixctl binaries, image and crates\n\nA tag now builds felixctl for Linux x86_64/aarch64, macOS aarch64/x86_64\nand Windows x86_64, packages each with its README, LICENSE, completions\nand man pages plus a .sha256, and attaches them to the release. The\nimages matrix gains ghcr.io/<owner>/felixctl (docker/felixctl.Dockerfile),\nwhich CI also builds and smoke-tests on PRs.\n\nThe crates.io job publishes felix-loadgen and felixctl after the client,\npackages all five crates before uploading any, and falls back to trusted\npublishing when CARGO_REGISTRY_TOKEN is unset. Both crates leave\nRELEASE_PENDING.\n\nrelease.yml takes dry_run (build everything, publish nothing) and ref\n(build a branch as if it were the tag, dry runs only) so a release can be\nrehearsed before its tag exists.",
+          "timestamp": "2026-10-02T08:42:01-07:00",
+          "tree_id": "96c3517c835eda91b34cec6e8234e9ea40049be1",
+          "url": "https://github.com/gabloe/felix/commit/20ad1b12ae40fdee1278fafacfe9f45a07bb44a1"
+        },
+        "date": 1790955979643,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 182,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 181.80\nstdev: 0.84\ncv: 0.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 247,
+            "range": "2.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 247.00\nmean: 247.00\nstdev: 2.92\ncv: 1.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 303,
+            "range": "17.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 303.00\nmean: 311.20\nstdev: 17.17\ncv: 5.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 216,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 216.00\nmean: 216.00\nstdev: 0.71\ncv: 0.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 436,
+            "range": "2.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 436.00\nmean: 435.40\nstdev: 2.41\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 682,
+            "range": "159.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 682.00\nmean: 766.40\nstdev: 159.84\ncv: 20.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
