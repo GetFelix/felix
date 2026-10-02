@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790978489406,
+  "lastUpdate": 1790980991912,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22412,6 +22412,58 @@ window.BENCHMARK_DATA = {
             "range": "35346.77",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1741971.52\nmean: 1724601.09\nstdev: 35346.77\ncv: 2.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "44f61ffaf30291246888eef6d2935327cea07d3c",
+          "message": "fix(release): publish npm prereleases under their prerelease tag (#948)\n\n* fix(release): publish npm prereleases under their prerelease tag (npm_first_publish.sh)\n\n* fix(release): publish npm prereleases under their prerelease tag\n\nnpm refuses to publish a prerelease without --tag, which failed the\n0.6.0-preview npm job before anything was uploaded. Tag a prerelease\nwith its prerelease id so latest stays on the last stable version.",
+          "timestamp": "2026-10-02T15:28:33-07:00",
+          "tree_id": "8cd92d6335e580e213c21bfd1e06e27f12e66d71",
+          "url": "https://github.com/gabloe/felix/commit/44f61ffaf30291246888eef6d2935327cea07d3c"
+        },
+        "date": 1790980991145,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 525074.89,
+            "range": "35923.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 525074.89\nmean: 523145.99\nstdev: 35923.12\ncv: 6.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 525074.89,
+            "range": "35923.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 525074.89\nmean: 523145.99\nstdev: 35923.12\ncv: 6.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124922.47,
+            "range": "1075.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124922.47\nmean: 124574.87\nstdev: 1075.69\ncv: 0.86%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1249224.67,
+            "range": "10756.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1249224.67\nmean: 1245748.69\nstdev: 10756.87\ncv: 0.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
