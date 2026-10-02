@@ -766,6 +766,14 @@ for what the current release guarantees.
 
 ### Fixed
 
+- **In-memory replicated streams open after `generation_start` is finalized
+  (#930).** A promoted shard of an in-memory stream tried to append a
+  generation-start record, which only a durable log can take, so it never
+  opened for writes and its promotion retried five times a second. In-memory
+  streams now skip the record: their publishes take no log offsets and are not
+  replicated, so there is nothing inherited for it to cover. A promoted shard
+  kept closed after its fence now backs off, doubling from 200 ms to 2 s.
+  
 - **A cache put or delete ships without waiting for the replication tick
   (#928).** Stream publishes and counter updates woke the replication driver,
   but cache writes waited for its next tick (`controlplane_sync_interval_ms`,

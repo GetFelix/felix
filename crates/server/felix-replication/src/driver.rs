@@ -58,6 +58,21 @@ pub struct Published {
 /// cannot reach, so this only spaces out the ones that answer and refuse.
 const FENCE_RETRY: Duration = Duration::from_millis(200);
 
+/// The longest a promoted shard waits between fence attempts. Each attempt
+/// that leaves it closed doubles the wait from [`FENCE_RETRY`], so a failure
+/// that does not clear on its own is not retried five times a second forever;
+/// the cap is what a fence that comes good can add to a failover.
+const FENCE_RETRY_MAX: Duration = Duration::from_secs(2);
+
+/// The wait before the next fence attempt, after `failures` in a row at the
+/// same generation left the shard closed.
+fn fence_backoff(failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    FENCE_RETRY
+        .saturating_mul(1u32 << doublings)
+        .min(FENCE_RETRY_MAX)
+}
+
 /// How soon a stopping broker asks for another pass when the last one left a
 /// shard's followers behind. Not at once: a follower that is unreachable would
 /// be redialled in a tight loop for the rest of the drain.
@@ -618,7 +633,7 @@ pub struct Pass {
     /// log, not counting halted followers, which waiting does not bring back.
     pub behind: bool,
     /// A shard this broker was promoted to lead is still waiting for a
-    /// majority to take its fence. The next pass runs after [`FENCE_RETRY`].
+    /// majority to take its fence. The next pass runs after [`fence_backoff`].
     pub fencing: bool,
 }
 

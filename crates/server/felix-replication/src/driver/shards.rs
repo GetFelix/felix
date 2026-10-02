@@ -20,8 +20,8 @@ use futures::stream::FuturesUnordered;
 
 use super::shard::{AuxCursors, Exchange, ShardCursors, ShardPass, Stragglers, replicate_shard};
 use super::{
-    DRAIN_RETRY, FENCE_RETRY, SHARD_CONCURRENCY, WriteFence, fence_one, open_fenced, take_work,
-    watch_key,
+    DRAIN_RETRY, FENCE_RETRY, SHARD_CONCURRENCY, WriteFence, fence_backoff, fence_one, open_fenced,
+    take_work, watch_key,
 };
 use crate::halted::HaltedReplica;
 use crate::peer::PeerRequester;
@@ -91,6 +91,9 @@ struct ShardState {
     /// the broker keeps closed after its fence is fenced again at the append
     /// rate of every other shard.
     fence_after: Option<tokio::time::Instant>,
+    /// Fence attempts in a row that left the shard closed, and the generation
+    /// they were at: a new promotion starts from [`FENCE_RETRY`] again.
+    fence_failures: (u64, u32),
     /// What its last pass left.
     last: Option<LastPass>,
 }
@@ -226,7 +229,17 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         if idle().any(|state| state.last.as_ref().is_some_and(|last| last.drain_pending)) {
             Some(DRAIN_RETRY)
         } else if idle().any(|state| state.fence_pending) {
-            Some(FENCE_RETRY)
+            // The soonest a fence is due. A shard with none set has its
+            // fence still to start, so it goes at the usual spacing.
+            let now = tokio::time::Instant::now();
+            idle()
+                .filter(|state| state.fence_pending)
+                .map(|state| {
+                    state
+                        .fence_after
+                        .map_or(FENCE_RETRY, |after| after.saturating_duration_since(now))
+                })
+                .min()
         } else {
             None
         }
@@ -424,15 +437,22 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     }
 
     /// A promoted shard's fence attempt ended. Open, it ships on its next
-    /// pass; not yet, it is tried again after [`FENCE_RETRY`].
-    pub(super) fn fenced(&mut self, (key, _generation, opened): (ShardKey, u64, bool)) {
+    /// pass; not yet, it is tried again after [`fence_backoff`].
+    pub(super) fn fenced(&mut self, (key, generation, opened): (ShardKey, u64, bool)) {
         let scan = self.scan;
         let Some(state) = self.states.get_mut(&key) else {
             return;
         };
         state.running = None;
         state.fence_pending = !opened;
-        state.fence_after = (!opened).then(|| tokio::time::Instant::now() + FENCE_RETRY);
+        let failures = match state.fence_failures {
+            _ if opened => 0,
+            (at, failures) if at == generation => failures.saturating_add(1),
+            _ => 1,
+        };
+        state.fence_failures = (generation, failures);
+        state.fence_after =
+            (!opened).then(|| tokio::time::Instant::now() + fence_backoff(failures));
         state.last = Some(LastPass::idle(scan));
         if opened || std::mem::take(&mut state.again) {
             self.start(&key);

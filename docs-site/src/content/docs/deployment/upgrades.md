@@ -138,7 +138,10 @@ leading a stream shard (a promotion, either end of a move, a cancelled move
 handing the shard back), and its quorum mark counts only past that record.
 That closes a way a promotion could lose an acknowledged record (Raft's
 Figure 8; see the replication design notes). Until it is finalized, brokers
-count as before and keep that exposure.
+count as before and keep that exposure. In-memory streams never write the
+record: their publishes take no log offsets and are not replicated, so there
+is nothing inherited for it to cover, and their shards open on promotion as
+before.
 
 - **Finalize it only after every broker runs a version that supports it.**
   The control plane refuses the finalize otherwise, and the dry run above
