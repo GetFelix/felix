@@ -220,17 +220,16 @@ fn from_env_rejects_invalid_socket_addr() {
 
 #[serial]
 #[test]
-fn from_env_respects_all_cache_window_settings() {
+fn from_env_respects_all_window_settings() {
     clear_felix_env();
     unsafe {
-        env::set_var("FELIX_CACHE_CONN_RECV_WINDOW", "512000000");
-        env::set_var("FELIX_CACHE_STREAM_RECV_WINDOW", "128000000");
+        env::set_var("FELIX_BROKER_PUB_CONN_RECV_WINDOW", "512000000");
+        env::set_var("FELIX_BROKER_PUB_STREAM_RECV_WINDOW", "128000000");
         env::set_var("FELIX_CACHE_SEND_WINDOW", "512000000");
     }
 
     let config = BrokerConfig::from_env().expect("from_env");
-    assert_eq!(config.cache_conn_recv_window, 512000000);
-    assert_eq!(config.cache_stream_recv_window, 128000000);
+    assert_eq!(config.pub_recv_windows(), (512000000, 128000000));
     assert_eq!(config.cache_send_window, 512000000);
 
     clear_felix_env();

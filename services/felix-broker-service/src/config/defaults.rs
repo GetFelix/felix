@@ -7,8 +7,6 @@ use super::{SubStreamMode, SubscriberLaneShard};
 
 pub(super) const DEFAULT_EVENT_BATCH_MAX_DELAY_US: u64 = 250;
 pub(super) const DEFAULT_DISABLE_TIMINGS: bool = false;
-pub(super) const DEFAULT_CACHE_CONN_RECV_WINDOW: u64 = 256 * 1024 * 1024;
-pub(super) const DEFAULT_CACHE_STREAM_RECV_WINDOW: u64 = 64 * 1024 * 1024;
 pub(super) const DEFAULT_CACHE_SEND_WINDOW: u64 = 256 * 1024 * 1024;
 pub(super) const DEFAULT_MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// Room for an `Auth` carrying a token with a long permission list, and no

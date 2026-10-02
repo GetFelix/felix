@@ -56,8 +56,8 @@ fn every_key_in_the_file_reaches_the_config() {
             disable_timings: true
             control_stream_drain_timeout_ms: 1010
             shutdown_drain_timeout_ms: 1011
-            cache_conn_recv_window: 1012
-            cache_stream_recv_window: 1013
+            pub_conn_recv_window: 1012
+            pub_stream_recv_window: 1013
             cache_send_window: 1014
             event_batch_max_events: 1015
             event_batch_max_bytes: 1016
@@ -101,8 +101,8 @@ fn every_key_in_the_file_reaches_the_config() {
     assert!(config.disable_timings);
     assert_eq!(config.control_stream_drain_timeout_ms, 1010);
     assert_eq!(config.shutdown_drain_timeout_ms, 1011);
-    assert_eq!(config.cache_conn_recv_window, 1012);
-    assert_eq!(config.cache_stream_recv_window, 1013);
+    assert_eq!(config.pub_conn_recv_window, Some(1012));
+    assert_eq!(config.pub_stream_recv_window, Some(1013));
     assert_eq!(config.cache_send_window, 1014);
     assert_eq!(config.event_batch_max_events, 1015);
     assert_eq!(config.event_batch_max_bytes, 1016);
@@ -165,17 +165,17 @@ fn a_zero_is_ignored_where_zero_would_mean_off() {
     config
         .apply(parse(
             r#"
-            cache_conn_recv_window: 0
             cache_send_window: 0
-            cache_stream_recv_window: 0
             event_batch_max_bytes: 0
             event_batch_max_events: 0
             fanout_batch_size: 0
             max_subscriber_writer_lanes: 0
             max_subscriptions_per_conn: 0
             pub_conn_inflight_bytes: 0
+            pub_conn_recv_window: 0
             pub_inflight_bytes: 0
             pub_queue_depth: 0
+            pub_stream_recv_window: 0
             pub_workers_per_conn: 0
             shutdown_drain_timeout_ms: 0
             sub_streams_per_conn: 0
@@ -189,16 +189,16 @@ fn a_zero_is_ignored_where_zero_would_mean_off() {
         .expect("apply");
 
     assert_eq!(
-        config.cache_conn_recv_window, defaults.cache_conn_recv_window,
-        "cache_conn_recv_window was disabled by a zero"
+        config.pub_conn_recv_window, defaults.pub_conn_recv_window,
+        "pub_conn_recv_window was disabled by a zero"
     );
     assert_eq!(
         config.cache_send_window, defaults.cache_send_window,
         "cache_send_window was disabled by a zero"
     );
     assert_eq!(
-        config.cache_stream_recv_window, defaults.cache_stream_recv_window,
-        "cache_stream_recv_window was disabled by a zero"
+        config.pub_stream_recv_window, defaults.pub_stream_recv_window,
+        "pub_stream_recv_window was disabled by a zero"
     );
     assert_eq!(
         config.event_batch_max_bytes, defaults.event_batch_max_bytes,

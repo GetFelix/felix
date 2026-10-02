@@ -20,6 +20,23 @@ for what the current release guarantees.
   write and carries one. The protocol and client docs now state that rule
   (#941).
 
+- The broker's client listeners take their QUIC receive windows from new
+  settings, `pub_conn_recv_window` and `pub_stream_recv_window`
+  (`FELIX_BROKER_PUB_CONN_RECV_WINDOW`, `FELIX_BROKER_PUB_STREAM_RECV_WINDOW`).
+  Both default to `pub_conn_inflight_bytes` (16 MiB), raised to
+  `max_frame_bytes` if that is larger. They used the cache windows, 256 MiB per
+  connection and 64 MiB per stream, so a client whose publishes waited on
+  ingress could leave far more unread data in the broker than the ingress
+  budget allows, and learned about a slow disk minutes late (#923). Startup
+  refuses a window below `max_frame_bytes` or a stream window above the
+  connection window. Larger windows can still help on a path with a large
+  bandwidth-delay product; set both settings to the old values to get them
+  back.
+- **Breaking:** the broker no longer reads `cache_conn_recv_window` and
+  `cache_stream_recv_window` from its config file, which now refuses them as
+  unknown keys, and ignores `FELIX_CACHE_CONN_RECV_WINDOW` and
+  `FELIX_CACHE_STREAM_RECV_WINDOW`. Those remain client settings.
+
 ### Fixed
 
 - **A stalled shard no longer stalls publishes to healthy shards on the same

@@ -101,11 +101,85 @@ fn a_per_connection_limit_above_the_broker_wide_one_is_refused() {
 #[test]
 fn a_stream_window_above_the_connection_window_is_refused() {
     let config = BrokerConfig {
-        cache_conn_recv_window: 1024,
-        cache_stream_recv_window: 2048,
+        pub_conn_recv_window: Some(32 * 1024 * 1024),
+        pub_stream_recv_window: Some(64 * 1024 * 1024),
         ..BrokerConfig::default()
     };
-    assert!(config.validate().is_err());
+    let message = format!("{:#}", config.validate().expect_err("stream above conn"));
+    assert!(
+        message.contains("exceeds pub_conn_recv_window"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_receive_window_smaller_than_a_frame_is_refused() {
+    let frame = 16 * 1024 * 1024;
+    let conn = BrokerConfig {
+        max_frame_bytes: frame,
+        pub_conn_recv_window: Some(frame as u64 - 1),
+        ..BrokerConfig::default()
+    };
+    let message = format!("{:#}", conn.validate().expect_err("conn below a frame"));
+    assert!(message.contains("pub_conn_recv_window"), "{message}");
+    assert!(message.contains("max_frame_bytes"), "{message}");
+
+    let stream = BrokerConfig {
+        max_frame_bytes: frame,
+        pub_stream_recv_window: Some(frame as u64 - 1),
+        ..BrokerConfig::default()
+    };
+    let message = format!("{:#}", stream.validate().expect_err("stream below a frame"));
+    assert!(message.contains("pub_stream_recv_window"), "{message}");
+}
+
+/// Unset, the windows follow the per-connection publish budget rather than
+/// buffering many budgets' worth of unread publishes.
+#[test]
+fn receive_windows_default_to_the_publish_budget() {
+    let config = BrokerConfig::default();
+    let budget = config.pub_conn_inflight_bytes as u64;
+    assert_eq!(budget, 16 * 1024 * 1024);
+    assert_eq!(config.pub_recv_windows(), (budget, budget));
+    config.validate().expect("defaults validate");
+
+    // A larger budget moves both windows with it.
+    let larger = BrokerConfig {
+        pub_conn_inflight_bytes: 32 * 1024 * 1024,
+        ..BrokerConfig::default()
+    };
+    assert_eq!(
+        larger.pub_recv_windows(),
+        (32 * 1024 * 1024, 32 * 1024 * 1024)
+    );
+
+    // A frame limit above the budget raises the floor, so derived values
+    // never fail validation.
+    let big_frames = BrokerConfig {
+        max_frame_bytes: 64 * 1024 * 1024,
+        event_batch_max_bytes: 64 * 1024,
+        ..BrokerConfig::default()
+    };
+    assert_eq!(
+        big_frames.pub_recv_windows(),
+        (64 * 1024 * 1024, 64 * 1024 * 1024)
+    );
+    big_frames
+        .validate()
+        .expect("derived windows cover the frame limit");
+}
+
+#[test]
+fn an_explicit_connection_window_keeps_the_stream_window_at_the_budget() {
+    let config = BrokerConfig {
+        pub_conn_recv_window: Some(256 * 1024 * 1024),
+        ..BrokerConfig::default()
+    };
+    assert_eq!(
+        config.pub_recv_windows(),
+        (256 * 1024 * 1024, 16 * 1024 * 1024)
+    );
+    config.validate().expect("explicit conn window");
 }
 
 fn expiring_token(exp: i64) -> String {
@@ -210,8 +284,8 @@ fn equal_limits_are_allowed() {
         event_batch_max_bytes: 64 * 1024,
         pub_inflight_bytes: 4096,
         pub_conn_inflight_bytes: 4096,
-        cache_conn_recv_window: 8192,
-        cache_stream_recv_window: 8192,
+        pub_conn_recv_window: Some(64 * 1024),
+        pub_stream_recv_window: Some(64 * 1024),
         ..BrokerConfig::default()
     };
     config.validate().expect("equal limits");

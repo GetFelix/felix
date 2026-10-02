@@ -171,6 +171,7 @@ graph TB
 - `FELIX_EVENT_CONN_RECV_WINDOW`: Per-connection receive window (default: 256 MiB)
 - `FELIX_EVENT_STREAM_RECV_WINDOW`: Per-stream receive window (default: 64 MiB)
 - `FELIX_EVENT_SEND_WINDOW`: Per-connection send window (default: 256 MiB)
+- `FELIX_BROKER_PUB_CONN_RECV_WINDOW` and `FELIX_BROKER_PUB_STREAM_RECV_WINDOW`: the broker's receive windows on its client listeners (default: the 16 MiB per-connection publish budget)
 
 :::caution[Memory Implications]
 Window sizes multiply with pool sizes. An event connection pool of 8 with 256 MiB windows can commit up to 2 GiB of receive buffers under burst load. Tune carefully for your workload.

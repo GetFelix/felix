@@ -35,15 +35,7 @@ impl BrokerConfig {
                 self.pub_inflight_bytes,
             );
         }
-        if self.cache_stream_recv_window > self.cache_conn_recv_window {
-            anyhow::bail!(
-                "cache_stream_recv_window ({}) exceeds cache_conn_recv_window \
-                 ({}): a single stream can never reach its own window, because \
-                 the connection's runs out first",
-                self.cache_stream_recv_window,
-                self.cache_conn_recv_window,
-            );
-        }
+        self.validate_pub_recv_windows()?;
         self.validate_io_runtime_covers_every_listener()?;
         self.validate_credential_can_outlive_itself()?;
         self.validate_peers_are_authenticated()?;
@@ -52,6 +44,39 @@ impl BrokerConfig {
             self.controlplane_ca.as_deref(),
             self.controlplane_url.as_deref(),
         )?;
+        Ok(())
+    }
+
+    /// Refuse client-listener receive windows that cannot hold one frame, or
+    /// a stream window the connection window could never let it reach.
+    ///
+    /// A window smaller than a frame does not deadlock, since the broker
+    /// returns credit as it reads, but every large frame then waits on several
+    /// round trips of window updates.
+    fn validate_pub_recv_windows(&self) -> Result<()> {
+        let (conn, stream) = self.pub_recv_windows();
+        let frame = self.max_frame_bytes as u64;
+        if conn < frame {
+            anyhow::bail!(
+                "pub_conn_recv_window ({conn}) is smaller than max_frame_bytes \
+                 ({frame}): one full-size frame would not fit in a connection's \
+                 receive window"
+            );
+        }
+        if stream < frame {
+            anyhow::bail!(
+                "pub_stream_recv_window ({stream}) is smaller than max_frame_bytes \
+                 ({frame}): one full-size frame would not fit in a stream's \
+                 receive window"
+            );
+        }
+        if stream > conn {
+            anyhow::bail!(
+                "pub_stream_recv_window ({stream}) exceeds pub_conn_recv_window \
+                 ({conn}): a single stream can never reach its own window, because \
+                 the connection's runs out first"
+            );
+        }
         Ok(())
     }
 

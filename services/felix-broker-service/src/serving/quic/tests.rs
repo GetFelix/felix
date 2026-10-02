@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use super::*;
 
 #[test]
-fn cache_transport_config_overrides_windows() {
+fn client_transport_config_overrides_windows() {
     let broker_config = BrokerConfig {
         quic_bind: "0.0.0.0:5000".parse::<SocketAddr>().unwrap(),
         metrics_bind: "0.0.0.0:8080".parse::<SocketAddr>().unwrap(),
@@ -18,8 +18,8 @@ fn cache_transport_config_overrides_windows() {
         disable_timings: false,
         control_stream_drain_timeout_ms: 50,
         shutdown_drain_timeout_ms: 25_000,
-        cache_conn_recv_window: 999,
-        cache_stream_recv_window: 888,
+        pub_conn_recv_window: Some(999),
+        pub_stream_recv_window: Some(888),
         cache_send_window: 777,
         event_batch_max_events: 64,
         event_batch_max_bytes: 256 * 1024,
@@ -49,9 +49,23 @@ fn cache_transport_config_overrides_windows() {
     };
 
     let base = TransportConfig::default();
-    let result = cache_transport_config(&broker_config, base);
+    let result = client_transport_config(&broker_config, base);
 
     assert_eq!(result.receive_window, 999);
     assert_eq!(result.stream_receive_window, 888);
     assert_eq!(result.send_window, 777);
+}
+
+/// The client listeners carry publishes, so by default a connection's
+/// receive windows match its publish budget. The cache-sized 256/64 MiB
+/// windows let a connection park far more unread publishes in the broker
+/// than ingress backpressure accounts for.
+#[test]
+fn client_listener_windows_follow_the_publish_budget_by_default() {
+    let config = BrokerConfig::default();
+    let result = client_transport_config(&config, TransportConfig::default());
+
+    let budget = config.pub_conn_inflight_bytes as u64;
+    assert_eq!(result.receive_window, budget);
+    assert_eq!(result.stream_receive_window, budget);
 }

@@ -134,8 +134,8 @@ publish_queue_wait_timeout_ms: 2000
 ack_wait_timeout_ms: 2000
 control_stream_drain_timeout_ms: 50
 
-cache_conn_recv_window: 268435456  # 256 MiB
-cache_stream_recv_window: 67108864 # 64 MiB
+pub_conn_recv_window: 16777216     # 16 MiB
+pub_stream_recv_window: 16777216   # 16 MiB
 cache_send_window: 268435456       # 256 MiB
 
 event_batch_max_events: 64
