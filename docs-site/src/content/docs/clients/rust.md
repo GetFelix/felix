@@ -1101,6 +1101,12 @@ shard, and `resubscribe_sharded` takes it back. See
 [Multi-node client](https://github.com/gabloe/felix/blob/main/docs/multi-node-client.md)
 for the full contract.
 
+An `AckMode::None` publish returns once it is queued. Call
+`ClusterClient::finish()` before exiting: it waits until everything queued on
+every broker the client holds has been written, then closes the publish
+streams, so publishing through that client afterwards fails.
+`Publisher::finish()` does the same for one `Client`.
+
 Prefix watches on a multi-shard cache work the same way. `watch_cache_sharded`
 opens one watch per shard and merges them. The retained version sends
 `ShardedCacheWatchItem::StateComplete` once every shard's current values have

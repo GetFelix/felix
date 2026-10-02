@@ -80,7 +80,7 @@ pub(crate) async fn run(args: &PubArgs, settings: &Settings, out: &Output) -> an
     let text = summary(
         stream,
         &sender.offsets,
-        matches!(sender.mode, Mode::Unacked(_)),
+        matches!(sender.mode, Mode::Plain(AckMode::None)),
     );
     out.done(
         &text,
@@ -132,12 +132,8 @@ struct Sender<'a> {
 }
 
 enum Mode<'a> {
-    /// Acknowledged, through the cluster client, which routes to the owner.
-    Acked,
-    /// Fire and forget. Through a single client's publisher, because that has
-    /// `finish()` to flush before the process exits; the cluster client has
-    /// no equivalent.
-    Unacked(felix_client::Publisher),
+    /// Through the cluster client, which routes to the owner.
+    Plain(AckMode),
     Idempotent(Box<felix_client::IdempotentProducer<'a>>),
 }
 
@@ -146,9 +142,9 @@ impl<'a> Sender<'a> {
         let mode = if args.idempotent {
             Mode::Idempotent(Box::new(broker.cluster.idempotent_producer().await?))
         } else if args.ack == AckArg::None {
-            Mode::Unacked(broker.cluster.client().await.publisher().await?)
+            Mode::Plain(AckMode::None)
         } else {
-            Mode::Acked
+            Mode::Plain(AckMode::PerMessage)
         };
         Ok(Self {
             broker,
@@ -176,38 +172,14 @@ impl<'a> Sender<'a> {
         );
         let cluster = &self.broker.cluster;
         match (&self.mode, &self.key) {
-            (Mode::Acked, None) => {
+            (Mode::Plain(ack), None) => {
                 cluster
-                    .publish(tenant, namespace, stream, payload, AckMode::PerMessage)
+                    .publish(tenant, namespace, stream, payload, *ack)
                     .await
             }
-            (Mode::Acked, Some(key)) => {
+            (Mode::Plain(ack), Some(key)) => {
                 cluster
-                    .publish_keyed(
-                        tenant,
-                        namespace,
-                        stream,
-                        payload,
-                        key.clone(),
-                        AckMode::PerMessage,
-                    )
-                    .await
-            }
-            (Mode::Unacked(publisher), None) => {
-                publisher
-                    .publish(tenant, namespace, stream, payload, AckMode::None)
-                    .await
-            }
-            (Mode::Unacked(publisher), Some(key)) => {
-                publisher
-                    .publish_keyed(
-                        tenant,
-                        namespace,
-                        stream,
-                        key.clone(),
-                        payload,
-                        AckMode::None,
-                    )
+                    .publish_keyed(tenant, namespace, stream, payload, key.clone(), *ack)
                     .await
             }
             // clap refuses --idempotent with --key.
@@ -217,9 +189,10 @@ impl<'a> Sender<'a> {
         }
     }
 
+    /// Flush what `--ack none` queued before the process exits.
     async fn finish(&self) -> anyhow::Result<()> {
-        if let Mode::Unacked(publisher) = &self.mode {
-            publisher.finish().await?;
+        if let Mode::Plain(AckMode::None) = self.mode {
+            self.broker.cluster.finish().await?;
         }
         Ok(())
     }

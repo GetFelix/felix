@@ -24,6 +24,9 @@ for what the current release guarantees.
 - `ClusterClient::subscribe_shard` subscribes to one chosen shard and follows
   it to its owner and through moves, as `subscribe_from` does for shard 0.
   `felixctl sub --shard` uses it, so it now follows a moved shard too. (#937)
+- `ClusterClient::finish` flushes unacknowledged publishes on every broker the
+  client holds before the process exits. `felixctl pub --ack none` now
+  publishes through the cluster client and calls it. (#937)
 
 ### Changed
 

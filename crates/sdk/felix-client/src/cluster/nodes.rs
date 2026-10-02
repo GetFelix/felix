@@ -46,6 +46,17 @@ impl Nodes {
         counts
     }
 
+    /// Every client currently held, one per broker.
+    pub(super) async fn clients(&self) -> Vec<Arc<Client>> {
+        let mut clients = Vec::new();
+        for (_, slot) in self.held() {
+            if let Some(client) = slot.client.lock().await.as_ref() {
+                clients.push(Arc::clone(client));
+            }
+        }
+        clients
+    }
+
     /// The client for the broker at `addr`, connecting only when there is no
     /// usable one.
     ///
