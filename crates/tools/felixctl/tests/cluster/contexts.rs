@@ -61,13 +61,23 @@ async fn a_context_carries_the_connection() {
     assert_eq!(contexts[0]["current"], true);
     assert_eq!(contexts[0]["controlplane_token"], "<redacted>");
 
-    // No connection flags at all.
-    env.run(&args(&["pub", "orders", "via-context"]), &[], None)
-        .await
-        .ok();
+    // No connection flags at all. Read from the publish's own offset: the
+    // harness's readiness probes come first in the stream.
     let run = env
         .run(
-            &args(&["sub", "orders", "--from", "earliest", "--count", "1"]),
+            &args(&["pub", "orders", "via-context", "--json"]),
+            &[],
+            None,
+        )
+        .await
+        .ok();
+    let offset = run.json()["offsets"][0]
+        .as_u64()
+        .unwrap_or_else(|| panic!("no offset: {}", run.stdout))
+        .to_string();
+    let run = env
+        .run(
+            &args(&["sub", "orders", "--from", &offset, "--count", "1"]),
             &[],
             None,
         )

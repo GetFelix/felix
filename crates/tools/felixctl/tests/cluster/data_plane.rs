@@ -24,7 +24,11 @@ async fn publish_subscribe_cache_and_topology_against_a_cluster() {
         .await
         .ok();
     assert_eq!(run.json()["published"], 1);
-    assert!(run.json()["offsets"][0].is_u64(), "{}", run.stdout);
+    // The harness's readiness probes sit ahead of it, so read from here.
+    let first = run.json()["offsets"][0]
+        .as_u64()
+        .unwrap_or_else(|| panic!("no offset: {}", run.stdout));
+    let first_arg = first.to_string();
 
     let mut args: Vec<String> = vec!["pub".into(), "orders".into(), "--json".into()];
     args.extend(env.flags(&cluster));
@@ -52,7 +56,7 @@ async fn publish_subscribe_cache_and_topology_against_a_cluster() {
         .felixctl(
             &cluster,
             &[
-                "sub", "orders", "--from", "earliest", "--count", "5", "--json",
+                "sub", "orders", "--from", &first_arg, "--count", "5", "--json",
             ],
         )
         .await
@@ -72,17 +76,29 @@ async fn publish_subscribe_cache_and_topology_against_a_cluster() {
     let run = env
         .felixctl(
             &cluster,
-            &["sub", "orders", "--from", "earliest", "--count", "1"],
+            &["sub", "orders", "--from", &first_arg, "--count", "1"],
         )
         .await
         .ok();
     assert_eq!(run.stdout, "one\n");
 
+    // `earliest` starts at offset 0, whichever record that is.
     let run = env
         .felixctl(
             &cluster,
             &[
-                "sub", "orders", "--shard", "0", "--from", "earliest", "--count", "2", "--format",
+                "sub", "orders", "--from", "earliest", "--count", "1", "--json",
+            ],
+        )
+        .await
+        .ok();
+    assert_eq!(run.json()["offset"], 0, "{}", run.stdout);
+
+    let run = env
+        .felixctl(
+            &cluster,
+            &[
+                "sub", "orders", "--shard", "0", "--from", &first_arg, "--count", "2", "--format",
                 "offsets",
             ],
         )
@@ -90,11 +106,7 @@ async fn publish_subscribe_cache_and_topology_against_a_cluster() {
         .ok();
     let lines: Vec<&str> = run.stdout.lines().collect();
     assert_eq!(lines.len(), 2, "{}", run.stdout);
-    assert!(
-        lines[0].starts_with("0\t") && lines[0].ends_with("\tone"),
-        "{}",
-        run.stdout
-    );
+    assert!(lines[0] == format!("0\t{first}\tone"), "{}", run.stdout);
 
     // Every shard of a wide stream, merged.
     let run = env
