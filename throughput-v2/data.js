@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790930973544,
+  "lastUpdate": 1790952674421,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22152,6 +22152,58 @@ window.BENCHMARK_DATA = {
             "range": "7987.96",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1251183.02\nmean: 1252441.23\nstdev: 7987.96\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "baaca74acdb7aac867d752350f7620fbf19b3ce7",
+          "message": "ci: switch main's jobs to GitHub-hosted runners with a repository variable (#935)\n\nThe Azure runners are deallocated until the subscription reactivates, so every\npush, nightly and dispatched run queues. FELIX_SELF_HOSTED_RUNNERS=false sends\nthose jobs to ubuntu-latest; unset keeps the self-hosted path.",
+          "timestamp": "2026-10-02T07:48:20-07:00",
+          "tree_id": "d2ca73272252a3b15d6ac68bed46c6c2194bdfcb",
+          "url": "https://github.com/gabloe/felix/commit/baaca74acdb7aac867d752350f7620fbf19b3ce7"
+        },
+        "date": 1790952673211,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 729037.49,
+            "range": "41293.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 729037.49\nmean: 720240.51\nstdev: 41293.46\ncv: 5.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 729037.49,
+            "range": "41293.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 729037.49\nmean: 720240.51\nstdev: 41293.46\ncv: 5.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 174607.78,
+            "range": "2452.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 174607.78\nmean: 173757.65\nstdev: 2452.19\ncv: 1.41%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1746077.82,
+            "range": "24521.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1746077.82\nmean: 1737576.53\nstdev: 24521.91\ncv: 1.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
