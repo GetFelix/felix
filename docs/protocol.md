@@ -1007,14 +1007,37 @@ u64 offset
 ```
 
 A batch's offsets are contiguous, so the record at index `i` is at `offset + i`.
-The broker leaves the bit off when it has no offset to give: it acknowledged the
-batch when it was queued rather than once it was written (`ack_on_commit` off, on
-a stream that does not need a majority), or the stream has no log. On a `Quorum`
-stream the ack is sent once a majority holds the batch, so the offset is the one it
-was committed at. A duplicate idempotent batch is answered with the offset of the
-batch already in the log, which the log's producer marks keep. A forwarded batch
-reports the offset the owner wrote it at, when the owner is recent enough to say
-(see `FORWARD_OFFSETS` in `docs/internal-protocol.md`).
+
+An ack carries an offset only if the broker sent it after the batch was
+written. The broker leaves the bit off when it has no offset to give: the stream
+has no log, or the broker acknowledged the batch when it was queued. It does
+that only for a `Leader` stream whose shard it owns, with `ack_on_commit` off
+(the default), and not when the publish was admitted too close to the end of
+the shard's lease (see `docs/semantics.md`). Every other acked publish is
+answered after the write and carries its offset:
+
+- with `ack_on_commit` on;
+- on a `Quorum` stream, once a majority holds the batch, at the offset it was
+  committed at;
+- an idempotent batch; a duplicate is answered with the offset of the batch
+  already in the log, which the log's producer marks keep;
+- a forwarded batch, which the entry broker answers only once the owner has,
+  with the offset the owner wrote it at when the owner is recent enough to say
+  (see `FORWARD_OFFSETS` in `docs/internal-protocol.md`).
+
+So whether an ack has an offset depends on the ack, not on the stream. With
+`ack_on_commit` off, the same publish to the same stream comes back without an
+offset from the shard's owner and with one through a broker that forwards it.
+A client that needs the offset of every record publishes idempotently, or needs
+brokers that run with `ack_on_commit` on.
+
+The broker never makes up an offset for a batch it has only queued. A queued
+batch has no offset yet: offsets are taken when the batch is appended. And
+until the write is durable, a crash can lose the batch and give its offsets to
+a later record, so an early offset could end up naming a different record.
+An offset in an ack is as durable as the write it reports. Under
+`FELIX_DURABLE_FSYNC_MODE=on_commit` the record is on disk. Under the other
+fsync modes a machine crash can still lose it, along with its offset.
 
 The same offer adds `offset` to the JSON `publish_ok`, under the same rules:
 

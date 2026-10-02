@@ -11,6 +11,15 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Changed
+
+- `felixctl pub` says how many acknowledgements came back without an offset
+  and why, instead of leaving it to a `null` in `--json`. An owner that acks
+  on enqueue (`ack_on_commit` off) answers before the record has an offset,
+  while a publish forwarded through another broker is answered after the
+  write and carries one. The protocol and client docs now state that rule
+  (#941).
+
 ### Fixed
 
 - **A stalled shard no longer stalls publishes to healthy shards on the same

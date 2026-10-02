@@ -99,7 +99,9 @@ nothing and does not wait to find out.
 An acked `publish` returns the offset the record landed at, or `None` when the
 broker acknowledged it before writing it (a `Leader` stream without
 `ack_on_commit`), the stream has no log, or the broker is too old to say.
-`"none"` always returns `None`.
+`"none"` always returns `None`. Only the broker that owns the shard
+acknowledges before writing; a publish forwarded through another broker is
+answered after the write and has its offset, so one stream can return both.
 
 ### The routing key decides the shard
 

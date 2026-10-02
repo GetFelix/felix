@@ -102,8 +102,8 @@ and publish in another:
 felixctl pub orders 'hello'
 ```
 
-The publisher reports the offset the record was written at, and the subscriber
-prints `hello`. Read a cache key, see where the stream lives,
+The publisher reports the offset the record was written at, when the broker's
+acknowledgement carries one (see below), and the subscriber prints `hello`. Read a cache key, see where the stream lives,
 and run a short benchmark:
 
 ```bash
@@ -182,7 +182,14 @@ felixctl pub orders --whole < report.json         # all of stdin as one message
 felixctl pub orders 'tick' --count 100            # the same message 100 times
 ```
 
-Each publish waits for the broker's acknowledgement and reports the offset.
+Each publish waits for the broker's acknowledgement and reports the offset it
+carries. Not every acknowledgement carries one. A broker that owns the shard
+and runs with `FELIX_ACK_ON_COMMIT` off (the default) answers a `Leader`
+stream's publish as soon as it is queued, before the record has an offset, so
+`--json` shows `null` for it. A publish that reached another broker first is
+forwarded to the owner and answered after the write, so it does carry one.
+Which broker the client reached decides which you get. `--idempotent` and
+`Quorum` streams are always answered after the write.
 `--ack none` sends without waiting, and still flushes before exiting.
 `--idempotent` publishes through an idempotent producer, so a re-send after a
 reconnect cannot duplicate a record; it cannot be combined with `--key`.

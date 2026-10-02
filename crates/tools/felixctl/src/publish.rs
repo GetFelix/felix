@@ -77,10 +77,32 @@ pub(crate) async fn run(args: &PubArgs, settings: &Settings, out: &Output) -> an
     sender.finish().await?;
 
     let stream = &args.stream;
-    let published = sender.offsets.len();
-    let first = sender.offsets.iter().flatten().min().copied();
-    let last = sender.offsets.iter().flatten().max().copied();
-    let text = match (first, last) {
+    let text = summary(
+        stream,
+        &sender.offsets,
+        matches!(sender.mode, Mode::Unacked(_)),
+    );
+    out.done(
+        &text,
+        serde_json::json!({
+            "stream": stream,
+            "published": sender.offsets.len(),
+            "offsets": sender.offsets,
+        }),
+    )
+}
+
+/// The line `pub` prints when it is done.
+///
+/// An acked publish can come back without an offset: a broker that owns the
+/// shard and acks on enqueue answers before the record has one, while a
+/// forwarded publish is answered by the owner after the write. Saying so keeps
+/// a missing offset from reading as a failure.
+fn summary(stream: &str, offsets: &[Option<u64>], unacked: bool) -> String {
+    let published = offsets.len();
+    let first = offsets.iter().flatten().min().copied();
+    let last = offsets.iter().flatten().max().copied();
+    let mut text = match (first, last) {
         (Some(first), Some(last)) if first == last => {
             format!("published {published} to {stream} at offset {first}")
         }
@@ -89,14 +111,13 @@ pub(crate) async fn run(args: &PubArgs, settings: &Settings, out: &Output) -> an
         }
         _ => format!("published {published} to {stream}"),
     };
-    out.done(
-        &text,
-        serde_json::json!({
-            "stream": stream,
-            "published": published,
-            "offsets": sender.offsets,
-        }),
-    )
+    let missing = offsets.iter().filter(|offset| offset.is_none()).count();
+    if !unacked && missing > 0 {
+        text.push_str(&format!(
+            "; {missing} without an offset (acknowledged before the write, or the stream has no log)"
+        ));
+    }
+    text
 }
 
 /// One of the three ways to publish, chosen once from the flags.
