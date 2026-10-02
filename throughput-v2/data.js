@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790957240067,
+  "lastUpdate": 1790973457582,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22308,6 +22308,58 @@ window.BENCHMARK_DATA = {
             "range": "10421.50",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1225085.34\nmean: 1221294.93\nstdev: 10421.50\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a34bee4d6b68a9d100fd7528dc5501e1582b61a5",
+          "message": "fix(felixctl): cluster tests skip the harness probe; global flags parse on every command (#940)\n\n* fix(felixctl): cluster tests skip the harness probe; helper stops passing --controlplane-token twice\n\nThe felix-cluster harness publishes a harness-probe record to each stream\nbefore a test starts, so reading from earliest returned it first. The tests\nnow read from the offset of their own first publish.\n\nEnv::felixctl appended every connection flag even when the test passed one\nitself, and clap refuses a flag given twice. It now leaves out any flag the\ncaller set.\n\n* fix(felixctl): global --tenant and --namespace parse on tenant/namespace info\n\nThe positional arguments of `tenant info` and `namespace info` had the ids\ntenant and namespace, which replaced the global flags of the same id on\nthose commands, so `felixctl tenant info t1 --tenant t1` was refused. They\nnow have their own ids. A test checks every command takes every global\nflag.\n\nThe cluster tests no longer take their start offset from a publish ack: a\nbroker that acks on enqueue reports none. They read past the harness's\nprobes instead.\n\n* ci(deny): allow path-only dev-dependency wildcards\n\nfelixctl's dev-dependency on felix-cluster is path-only on purpose: cargo drops\nit on publish. cargo-deny counted it as a wildcard and failed the test job.",
+          "timestamp": "2026-10-02T13:33:50-07:00",
+          "tree_id": "d841652751396e5a08220e3da5ee1ae64c8f2a5f",
+          "url": "https://github.com/gabloe/felix/commit/a34bee4d6b68a9d100fd7528dc5501e1582b61a5"
+        },
+        "date": 1790973457072,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 355119.12,
+            "range": "6528.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355119.12\nmean: 355747.61\nstdev: 6528.11\ncv: 1.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 355119.12,
+            "range": "6528.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355119.12\nmean: 355747.61\nstdev: 6528.11\ncv: 1.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82683.7,
+            "range": "254.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82683.70\nmean: 82645.99\nstdev: 254.58\ncv: 0.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 826837.02,
+            "range": "2545.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 826837.02\nmean: 826459.93\nstdev: 2545.82\ncv: 0.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
