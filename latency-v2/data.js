@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790973454604,
+  "lastUpdate": 1790978486843,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -28380,6 +28380,72 @@ window.BENCHMARK_DATA = {
             "range": "649.00",
             "unit": "us",
             "extra": "trials: 5\nmedian: 492.00\nmean: 786.40\nstdev: 649.00\ncv: 82.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "62a4027d65a9453dea774e9b400fc98717dda894",
+          "message": "fix(client,broker): per-stream publish window so one stuck shard can't stall the connection (#843) (#942)\n\n* fix(client,broker): per-stream publish window so one stuck shard can't stall the connection (#843)\n\nThe pipelined publish window was counted per connection. A stream whose\npublishes waited on one stalled shard could take every slot and stop the\nconnection's other streams, which matters for ClusterClient since it shares\none connection per broker.\n\nThe broker now gives each pipelining stream its own window and advertises\nFEATURE_STREAM_PUBLISH_WINDOW (0x2_0000) with the grant. The client gives\neach stream its own window against such a broker and keeps one shared per\nconnection against an older broker. Older clients share one window across\ntheir streams, which stays inside every stream's.\n\n* chore: mark the publish-window change as outside the TLA+ model\n\nSpec-Unaffected: the publish window is client/broker flow control; docs/formal models the lease, replication, quorum and handoff, none of which change.",
+          "timestamp": "2026-10-02T14:54:44-07:00",
+          "tree_id": "01d6108e967cdc774c88630c4a9d40fc2aee688e",
+          "url": "https://github.com/gabloe/felix/commit/62a4027d65a9453dea774e9b400fc98717dda894"
+        },
+        "date": 1790978478695,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 68,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 68.00\nmean: 68.00\nstdev: 0.71\ncv: 1.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 89,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 89.00\nmean: 89.60\nstdev: 1.52\ncv: 1.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 111,
+            "range": "2.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 111.00\nmean: 112.40\nstdev: 2.88\ncv: 2.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 85,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 85.00\nmean: 85.00\nstdev: 1.00\ncv: 1.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 202,
+            "range": "9.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 202.00\nmean: 200.20\nstdev: 9.26\ncv: 4.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 373,
+            "range": "626.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 373.00\nmean: 768.80\nstdev: 626.43\ncv: 81.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
