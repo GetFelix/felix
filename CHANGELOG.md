@@ -36,6 +36,11 @@ for what the current release guarantees.
   generation.
   `Client::shard_owners` asks it. `felixctl topology` takes owners from the
   broker and needs a control-plane URL only for replicas and state. (#937)
+- `ClusterClient` has `cache_put`, `cache_get`, `cache_delete`, `counter_add`
+  and `counter_get`. Each goes to the key's shard owner when the client knows
+  it (asked once per cache with `shard_owners`), else through the broker in
+  use, which forwards; a failed read is asked again once, a write is not sent
+  twice. `felixctl cache` uses them. (#937)
 
 ### Changed
 

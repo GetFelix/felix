@@ -1,6 +1,6 @@
 //! `ClusterClient` against a real broker, for the calls that need one to
 //! mean anything: flushing unacknowledged publishes, keyed idempotent
-//! publishes, and asking who owns a shard.
+//! publishes, asking who owns a shard, and cache requests.
 //!
 //! One broker, in memory, with no cluster behind it. Routing across brokers
 //! is the cluster harness's to test; this proves the wiring.
@@ -16,7 +16,7 @@ use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use felix_authz::{
     FelixTokenIssuer, Jwk, Jwks, KeyUse, TenantId, TenantKeyCache, TenantKeyMaterial,
 };
-use felix_broker::{Broker, StreamMetadata};
+use felix_broker::{Broker, CacheMetadata, StreamMetadata};
 use felix_broker_service::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
 use felix_client::{AckMode, ClientConfig, ClusterClient, ShardKind, ShardOwner};
 use felix_storage::EphemeralCache;
@@ -51,6 +51,9 @@ async fn start() -> Result<Running> {
     broker.register_namespace("t1", "default").await?;
     broker
         .register_stream("t1", "default", "orders", StreamMetadata::default())
+        .await?;
+    broker
+        .register_cache("t1", "default", "sessions", CacheMetadata::default())
         .await?;
 
     let (server_config, cert) = build_server_config()?;
@@ -202,6 +205,46 @@ async fn a_single_broker_reports_itself_as_every_owner() -> Result<()> {
             .is_empty(),
         "a stream is not a cache of the same name"
     );
+    Ok(())
+}
+
+/// **Cache requests work through the cluster client.** With no cluster there
+/// is no owner to route to, so they go through the broker in use, and a
+/// counter is refused by a broker with nowhere to keep it rather than sent.
+#[tokio::test]
+#[serial]
+async fn cache_requests_go_through_the_cluster_client() -> Result<()> {
+    let running = start().await?;
+    let cluster = &running.cluster;
+
+    cluster
+        .cache_put("t1", "default", "sessions", "alice", "online".into(), None)
+        .await?;
+    assert_eq!(
+        cluster
+            .cache_get("t1", "default", "sessions", "alice")
+            .await?
+            .as_deref(),
+        Some(&b"online"[..])
+    );
+    assert_eq!(
+        cluster
+            .cache_delete("t1", "default", "sessions", "alice")
+            .await?
+            .as_deref(),
+        Some(&b"online"[..])
+    );
+    assert_eq!(
+        cluster
+            .cache_get("t1", "default", "sessions", "alice")
+            .await?,
+        None
+    );
+    let err = cluster
+        .counter_add("t1", "default", "sessions", "hits", 1)
+        .await
+        .expect_err("an in-memory broker keeps no counters");
+    assert!(format!("{err:#}").contains("counters"), "{err:#}");
     Ok(())
 }
 

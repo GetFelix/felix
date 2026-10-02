@@ -404,6 +404,12 @@ it (see "Error codes" in `docs/protocol.md`):
   client.
 - A subscribe, cache watch or group request whose redirect target answers
   `shard_unavailable` or `draining` goes back to the entry broker once.
+- A cache request (`cache_put`, `cache_get`, `cache_delete`, `counter_add`,
+  `counter_get`) goes to the key's owner, learned once per cache from
+  `shard_owners`, or through the entry broker, which forwards. An owner that
+  fails is forgotten. A write is then sent through the entry broker only if the
+  owner said it applied nothing, as a publish is; a read is always asked again
+  once.
 - Opening a subscription (`subscribe`, `subscribe_from`, `subscribe_shard`,
   `subscribe_sharded`)
   retries a `retry` or `retry_after` refusal with the policy's attempts and

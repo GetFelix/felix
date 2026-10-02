@@ -2,8 +2,9 @@
 //! message, and counts what it was sent.
 //!
 //! It advertises every frame flag and only `FEATURE_ERROR_CODES`,
-//! `FEATURE_IDEMPOTENT_PRODUCER` and `FEATURE_STREAM_SHARDS` (every stream has
-//! [`STREAM_SHARDS`]), so a
+//! `FEATURE_IDEMPOTENT_PRODUCER`, `FEATURE_STREAM_SHARDS` (every stream has
+//! [`STREAM_SHARDS`]) and `FEATURE_SHARD_OWNERS` (answered for caches from
+//! [`StubBroker::set_cache_owners`]), so a
 //! [`ClusterClient`](crate::ClusterClient) skips discovery and sends its
 //! publishes as acked binary batches, answered here with coded binary acks.
 //! A subscribe the script answers with `Subscribed` gets an event stream,
@@ -122,6 +123,16 @@ impl StubBroker {
         self.seen.sequences.lock().unwrap().clone()
     }
 
+    /// Cache requests it was sent.
+    pub(super) fn cache_requests(&self) -> usize {
+        self.seen.cache_requests.load(Ordering::SeqCst)
+    }
+
+    /// What it answers `shard_owners` with, for any cache.
+    pub(super) fn set_cache_owners(&self, owners: Vec<felix_wire::ShardOwner>) {
+        *self.seen.cache_owners.lock().unwrap() = owners;
+    }
+
     /// Client connections still open, however many clients hold them.
     pub(super) fn live_connections(&self) -> usize {
         self.connections
@@ -162,6 +173,8 @@ struct Seen {
     /// The routing key of each idempotent batch and the QUIC stream it came on.
     batch_streams: Arc<Mutex<Vec<Sequenced>>>,
     sequences: Arc<Mutex<Vec<Sequenced>>>,
+    cache_requests: Arc<AtomicUsize>,
+    cache_owners: Arc<Mutex<Vec<felix_wire::ShardOwner>>>,
 }
 
 async fn serve_stream(
@@ -197,7 +210,8 @@ async fn serve_stream(
                     server_features: Some(
                         felix_wire::FEATURE_ERROR_CODES
                             | felix_wire::FEATURE_IDEMPOTENT_PRODUCER
-                            | felix_wire::FEATURE_STREAM_SHARDS,
+                            | felix_wire::FEATURE_STREAM_SHARDS
+                            | felix_wire::FEATURE_SHARD_OWNERS,
                     ),
                     listener_ports: None,
                     publish_window: None,
@@ -216,6 +230,41 @@ async fn serve_stream(
                     shards: STREAM_SHARDS,
                     request_id,
                     routing: None,
+                };
+                write_message(&mut send, answer).await?;
+            }
+            Message::ShardOwners { request_id, .. } => {
+                let owners = seen.cache_owners.lock().unwrap().clone();
+                write_message(&mut send, Message::ShardOwnersView { owners, request_id }).await?;
+            }
+            // The script's error is the answer; anything else is success.
+            Message::CachePut { request_id, .. } => {
+                let id = request_id.unwrap_or_default();
+                seen.cache_requests.fetch_add(1, Ordering::SeqCst);
+                let answer = match script(id) {
+                    error @ Message::Error { .. } => error,
+                    _ => Message::CacheOk { request_id: id },
+                };
+                write_message(&mut send, answer).await?;
+            }
+            Message::CacheGet {
+                tenant_id,
+                namespace,
+                cache,
+                key,
+                request_id,
+            } => {
+                seen.cache_requests.fetch_add(1, Ordering::SeqCst);
+                let answer = match script(request_id.unwrap_or_default()) {
+                    error @ Message::Error { .. } => error,
+                    _ => Message::CacheValue {
+                        tenant_id,
+                        namespace,
+                        cache,
+                        key,
+                        value: Some(bytes::Bytes::from_static(b"stub")),
+                        request_id,
+                    },
                 };
                 write_message(&mut send, answer).await?;
             }

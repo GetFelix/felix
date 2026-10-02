@@ -1123,6 +1123,12 @@ for the full contract.
 shard with its node id, client address and generation, from the answering
 broker's routing snapshot. It needs `FEATURE_SHARD_OWNERS`.
 
+Cache and counter calls (`cache_put`, `cache_get`, `cache_delete`,
+`counter_add`, `counter_get`) are on `ClusterClient` too. Each goes to the owner
+of the key's shard, asked once per cache with `shard_owners`, and otherwise
+through the broker in use, which forwards. A write that may have been applied
+is not sent twice, as for `publish`; a failed read is asked again once.
+
 An `AckMode::None` publish returns once it is queued. Call
 `ClusterClient::finish()` before exiting: it waits until everything queued on
 every broker the client holds has been written, then closes the publish
@@ -1385,5 +1391,9 @@ anything else from a measurement; see
 | Counters | `counter_add()`, `counter_get()` | Durable counters |
 | Consumer groups | `group_poll()`, `group_ack()`, `group_nack()` | Work queues |
 | Cluster | `ClusterClient::connect()` | Multi-broker, reconnects and follows redirects |
+| One shard | `ClusterClient::subscribe_shard()` | Follow a chosen shard through moves |
+| Flush | `ClusterClient::finish()`, `Publisher::finish()` | Before exit, after `AckMode::None` |
+| Shard owners | `Client::shard_owners()` | Which broker owns each shard |
+| Mutual TLS | `quic_client_config_with_identity()` | Present a client certificate |
 
 For complete API documentation, see the [rustdoc](https://docs.rs/felix-client).

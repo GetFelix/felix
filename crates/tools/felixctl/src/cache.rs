@@ -1,8 +1,8 @@
 //! `felixctl cache get|put|del|watch`. `ls` and `info` are control-plane
 //! requests and live in [`crate::controlplane`].
 //!
-//! Gets, puts and deletes go through whichever broker the cluster client is
-//! using; a broker that does not own the key's shard forwards the request.
+//! Gets, puts and deletes go through the cluster client, which sends each to
+//! the owner of the key's shard when it knows it.
 
 use felix_client::{CacheChange, CacheWatchFilter, CacheWatchItem, ShardedCacheWatchItem};
 
@@ -26,7 +26,7 @@ pub(crate) async fn run(
         _ => {}
     }
     let broker = Broker::connect(settings).await?;
-    let client = broker.cluster.client().await;
+    let client = &broker.cluster;
     let (tenant, namespace) = (broker.tenant.as_str(), broker.namespace.as_str());
     match command {
         CacheCommand::Get { cache, key } => {

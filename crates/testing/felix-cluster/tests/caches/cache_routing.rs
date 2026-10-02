@@ -402,3 +402,84 @@ async fn a_sharded_retained_watch_on_an_empty_prefix_is_complete_at_once() {
         ShardedCacheWatchItem::StateComplete
     );
 }
+
+/// **A cluster client sends a cache request straight to the key's owner.** It
+/// asks who owns the cache's shards once, so a client seeded with a broker
+/// that does not own the key still reaches the owner without a forward, and
+/// its value is what every broker reads.
+#[tokio::test]
+#[serial]
+async fn a_cluster_client_routes_cache_requests_to_the_owner() {
+    let cluster = Cluster::start(with_cache()).await.expect("start cluster");
+    let key = "routed";
+    let shard = felix_wire::routing::shard_for(SHARDS, Some(key.as_bytes()));
+    let owner = cluster
+        .shard_owner_of("cache", CACHE, shard)
+        .await
+        .expect("the key's owner");
+    let addr_of = |node_id: &str| {
+        cluster
+            .nodes
+            .iter()
+            .find(|node| node.node_id == node_id)
+            .map(|node| node.client_addr)
+            .expect("a client address")
+    };
+    let seed = cluster
+        .node_ids()
+        .into_iter()
+        .find(|node| *node != owner)
+        .expect("a broker that does not own the key");
+
+    let client = felix_cluster::client::connect_cluster(
+        &[addr_of(&seed)],
+        &cluster.tenant_id,
+        &cluster.client_token,
+    )
+    .await
+    .expect("connect");
+    let (tenant, namespace) = (cluster.tenant_id.as_str(), cluster.namespace.as_str());
+    client
+        .cache_put(tenant, namespace, CACHE, key, "v1".into(), None)
+        .await
+        .expect("put");
+
+    let connected: Vec<_> = client
+        .connections_per_node()
+        .await
+        .into_iter()
+        .map(|(addr, _)| addr)
+        .collect();
+    assert!(
+        connected.contains(&addr_of(&owner)),
+        "the put did not go to the owner {owner}; connected to {connected:?}",
+    );
+    assert_eq!(
+        client
+            .cache_get(tenant, namespace, CACHE, key)
+            .await
+            .expect("get")
+            .as_deref(),
+        Some(&b"v1"[..])
+    );
+    let read = cluster
+        .cache_get_via(&seed, CACHE, key)
+        .await
+        .expect("read through the seed");
+    assert_eq!(read.as_deref(), Some(&b"v1"[..]));
+    assert_eq!(
+        client
+            .cache_delete(tenant, namespace, CACHE, key)
+            .await
+            .expect("delete")
+            .as_deref(),
+        Some(&b"v1"[..])
+    );
+    assert_eq!(
+        client
+            .cache_get(tenant, namespace, CACHE, key)
+            .await
+            .expect("get after delete"),
+        None
+    );
+}
