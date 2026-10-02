@@ -1,0 +1,181 @@
+chart,label,cell,metric,value
+listeners,"In memory, MTU 1500, 167120f0",l557-l1-io0-inmem-t1,ss_ingress_mb_s,813.293
+listeners,"In memory, MTU 1500, 167120f0",l557-l1-io0-inmem-t2,ss_ingress_mb_s,822.299
+listeners,"In memory, MTU 1500, 167120f0",l557-l1-io0-inmem-t3,ss_ingress_mb_s,828.899
+listeners,"In memory, MTU 1500, 167120f0",l557-l1-io0-inmem-t1,ss_cores,3.206
+listeners,"In memory, MTU 1500, 167120f0",l557-l1-io0-inmem-t2,ss_cores,3.152
+listeners,"In memory, MTU 1500, 167120f0",l557-l1-io0-inmem-t3,ss_cores,3.119
+listeners,"In memory, MTU 1500, 167120f0",l557-l2-io0-inmem-t1,ss_ingress_mb_s,1329.119
+listeners,"In memory, MTU 1500, 167120f0",l557-l2-io0-inmem-t2,ss_ingress_mb_s,1334.069
+listeners,"In memory, MTU 1500, 167120f0",l557-l2-io0-inmem-t3,ss_ingress_mb_s,1336.231
+listeners,"In memory, MTU 1500, 167120f0",l557-l2-io0-inmem-t1,ss_cores,5.189
+listeners,"In memory, MTU 1500, 167120f0",l557-l2-io0-inmem-t2,ss_cores,5.186
+listeners,"In memory, MTU 1500, 167120f0",l557-l2-io0-inmem-t3,ss_cores,5.184
+listeners,"In memory, MTU 1500, 167120f0",l557-l4-io0-inmem-t1,ss_ingress_mb_s,1890.648
+listeners,"In memory, MTU 1500, 167120f0",l557-l4-io0-inmem-t2,ss_ingress_mb_s,1890.129
+listeners,"In memory, MTU 1500, 167120f0",l557-l4-io0-inmem-t3,ss_ingress_mb_s,1907.474
+listeners,"In memory, MTU 1500, 167120f0",l557-l4-io0-inmem-t1,ss_cores,7.316
+listeners,"In memory, MTU 1500, 167120f0",l557-l4-io0-inmem-t2,ss_cores,7.526
+listeners,"In memory, MTU 1500, 167120f0",l557-l4-io0-inmem-t3,ss_cores,7.537
+listeners,"In memory, MTU 3900, 801fc22d",e8-mtu3900-l1-t1-QUIC_LISTENERS=1-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-t1,ss_ingress_mb_s,1721.259
+listeners,"In memory, MTU 3900, 801fc22d",e8-mtu3900-l1-t2-QUIC_LISTENERS=1-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-t1,ss_ingress_mb_s,1720.567
+listeners,"In memory, MTU 3900, 801fc22d",e8-mtu3900-l1-t3-QUIC_LISTENERS=1-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-t1,ss_ingress_mb_s,1730.145
+listeners,"In memory, MTU 3900, 801fc22d",e8-mtu3900-l1-t1-QUIC_LISTENERS=1-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-t1,ss_cores,3.111
+listeners,"In memory, MTU 3900, 801fc22d",e8-mtu3900-l1-t2-QUIC_LISTENERS=1-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-t1,ss_cores,3.107
+listeners,"In memory, MTU 3900, 801fc22d",e8-mtu3900-l1-t3-QUIC_LISTENERS=1-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-t1,ss_cores,3.097
+listeners,"In memory, MTU 3900, 801fc22d",best-inmem-l4-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_ingress_mb_s,4119.737
+listeners,"In memory, MTU 3900, 801fc22d",best-inmem-l4-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_ingress_mb_s,4106.848
+listeners,"In memory, MTU 3900, 801fc22d",best-inmem-l4-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_ingress_mb_s,4071.736
+listeners,"In memory, MTU 3900, 801fc22d",best-inmem-l4-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,7.383
+listeners,"In memory, MTU 3900, 801fc22d",best-inmem-l4-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,7.380
+listeners,"In memory, MTU 3900, 801fc22d",best-inmem-l4-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,7.403
+listeners,"In memory, MTU 3900, 801fc22d",best-inmem-l8-t1-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_ingress_mb_s,3437.435
+listeners,"In memory, MTU 3900, 801fc22d",best-inmem-l8-t2-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_ingress_mb_s,3454.754
+listeners,"In memory, MTU 3900, 801fc22d",best-inmem-l8-t3-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_ingress_mb_s,3429.723
+listeners,"In memory, MTU 3900, 801fc22d",best-inmem-l8-t1-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,7.729
+listeners,"In memory, MTU 3900, 801fc22d",best-inmem-l8-t2-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,7.738
+listeners,"In memory, MTU 3900, 801fc22d",best-inmem-l8-t3-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,7.722
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l1-io0-dur-t1,ss_append_mb_s,691.231
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l1-io0-dur-t2,ss_append_mb_s,698.619
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l1-io0-dur-t3,ss_append_mb_s,695.487
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l1-io0-dur-t1,ss_cores,4.435
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l1-io0-dur-t2,ss_cores,4.415
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l1-io0-dur-t3,ss_cores,4.451
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l2-io0-dur-t1,ss_append_mb_s,1036.770
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l2-io0-dur-t2,ss_append_mb_s,1047.886
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l2-io0-dur-t3,ss_append_mb_s,1047.521
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l2-io0-dur-t1,ss_cores,6.068
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l2-io0-dur-t2,ss_cores,6.129
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l2-io0-dur-t3,ss_cores,6.108
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l4-io0-dur-t1,ss_append_mb_s,1193.633
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l4-io0-dur-t2,ss_append_mb_s,1196.656
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l4-io0-dur-t3,ss_append_mb_s,1181.126
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l4-io0-dur-t1,ss_cores,6.384
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l4-io0-dur-t2,ss_cores,6.402
+listeners,"Durable on_commit, MTU 1500, 167120f0",l557-l4-io0-dur-t3,ss_cores,6.380
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l1-t1-QUIC_LISTENERS=1-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_append_mb_s,1413.857
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l1-t2-QUIC_LISTENERS=1-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_append_mb_s,1413.151
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l1-t3-QUIC_LISTENERS=1-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_append_mb_s,1415.713
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l1-t1-QUIC_LISTENERS=1-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,4.480
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l1-t2-QUIC_LISTENERS=1-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,4.519
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l1-t3-QUIC_LISTENERS=1-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,4.506
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l2-t1-QUIC_LISTENERS=2-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_append_mb_s,1433.281
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l2-t2-QUIC_LISTENERS=2-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_append_mb_s,1431.229
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l2-t3-QUIC_LISTENERS=2-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_append_mb_s,1430.096
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l2-t1-QUIC_LISTENERS=2-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,4.072
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l2-t2-QUIC_LISTENERS=2-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,4.043
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l2-t3-QUIC_LISTENERS=2-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,3.974
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l4-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_append_mb_s,1436.855
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l4-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_append_mb_s,1431.969
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l4-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_append_mb_s,1428.262
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l4-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,4.077
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l4-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,4.203
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l4-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,4.120
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l8-t1-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_append_mb_s,1423.600
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l8-t2-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_append_mb_s,1427.492
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l8-t3-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_append_mb_s,1426.977
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l8-t1-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,4.320
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l8-t2-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,4.297
+listeners,"Durable on_commit, MTU 3900, 801fc22d",best-dur-l8-t3-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-DURABLE_FSYNC_MODE=on_commit-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_cores,4.339
+experiments,167120f0 (before),e1-base-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,ss_ingress_mb_s,1889.605
+experiments,167120f0 (before),e1-base-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,ss_ingress_mb_s,1923.447
+experiments,167120f0 (before),e1-base-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,ss_ingress_mb_s,1867.168
+experiments,167120f0 (before),e1-base-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,mb_s_per_core,249.699
+experiments,167120f0 (before),e1-base-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,mb_s_per_core,251.748
+experiments,167120f0 (before),e1-base-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,mb_s_per_core,246.587
+experiments,#905 801fc22d,e1-801-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,ss_ingress_mb_s,2155.783
+experiments,#905 801fc22d,e1-801-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,ss_ingress_mb_s,2153.075
+experiments,#905 801fc22d,e1-801-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,ss_ingress_mb_s,2165.051
+experiments,#905 801fc22d,e1-801-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,mb_s_per_core,300.588
+experiments,#905 801fc22d,e1-801-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,mb_s_per_core,299.887
+experiments,#905 801fc22d,e1-801-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,mb_s_per_core,300.491
+experiments,#905 + client ACK threshold 64,e2-ackelicit64-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-ACK_ELICITING_THRESHOLD=64-t1,ss_ingress_mb_s,2210.337
+experiments,#905 + client ACK threshold 64,e2-ackelicit64-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-ACK_ELICITING_THRESHOLD=64-t1,ss_ingress_mb_s,2220.230
+experiments,#905 + client ACK threshold 64,e2-ackelicit64-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-ACK_ELICITING_THRESHOLD=64-t1,ss_ingress_mb_s,2212.580
+experiments,#905 + client ACK threshold 64,e2-ackelicit64-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-ACK_ELICITING_THRESHOLD=64-t1,mb_s_per_core,312.012
+experiments,#905 + client ACK threshold 64,e2-ackelicit64-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-ACK_ELICITING_THRESHOLD=64-t1,mb_s_per_core,313.957
+experiments,#905 + client ACK threshold 64,e2-ackelicit64-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-ACK_ELICITING_THRESHOLD=64-t1,mb_s_per_core,313.935
+experiments,#905 control (for mimalloc),e7-801-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,ss_ingress_mb_s,2156.972
+experiments,#905 control (for mimalloc),e7-801-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,ss_ingress_mb_s,2152.532
+experiments,#905 control (for mimalloc),e7-801-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,ss_ingress_mb_s,2158.391
+experiments,#905 control (for mimalloc),e7-801-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,mb_s_per_core,299.586
+experiments,#905 control (for mimalloc),e7-801-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,mb_s_per_core,298.771
+experiments,#905 control (for mimalloc),e7-801-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,mb_s_per_core,299.312
+experiments,#905 + mimalloc,e7-mimalloc-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,ss_ingress_mb_s,2152.736
+experiments,#905 + mimalloc,e7-mimalloc-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,ss_ingress_mb_s,2165.395
+experiments,#905 + mimalloc,e7-mimalloc-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,ss_ingress_mb_s,2168.802
+experiments,#905 + mimalloc,e7-mimalloc-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,mb_s_per_core,304.101
+experiments,#905 + mimalloc,e7-mimalloc-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,mb_s_per_core,303.190
+experiments,#905 + mimalloc,e7-mimalloc-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,mb_s_per_core,305.959
+experiments,#905 + MTU 3900,e8-mtu3900-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-t1,ss_ingress_mb_s,4021.470
+experiments,#905 + MTU 3900,e8-mtu3900-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-t1,ss_ingress_mb_s,3990.015
+experiments,#905 + MTU 3900,e8-mtu3900-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-t1,ss_ingress_mb_s,3973.941
+experiments,#905 + MTU 3900,e8-mtu3900-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-t1,mb_s_per_core,539.167
+experiments,#905 + MTU 3900,e8-mtu3900-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-t1,mb_s_per_core,537.066
+experiments,#905 + MTU 3900,e8-mtu3900-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-t1,mb_s_per_core,536.138
+experiments,#905 + MTU 3900 + ACK 64,best-inmem-l4-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_ingress_mb_s,4119.737
+experiments,#905 + MTU 3900 + ACK 64,best-inmem-l4-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_ingress_mb_s,4106.848
+experiments,#905 + MTU 3900 + ACK 64,best-inmem-l4-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,ss_ingress_mb_s,4071.736
+experiments,#905 + MTU 3900 + ACK 64,best-inmem-l4-t1-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,mb_s_per_core,557.978
+experiments,#905 + MTU 3900 + ACK 64,best-inmem-l4-t2-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,mb_s_per_core,556.500
+experiments,#905 + MTU 3900 + ACK 64,best-inmem-l4-t3-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,mb_s_per_core,550.043
+cost-model,"167120f0, MTU 1500 4 listeners",prof-l4-inmem,cores_per_gb_s,4.029
+cost-model,"167120f0, MTU 1500 4 listeners: kernel: NIC rx softirq",prof-l4-inmem,cores_per_gb_s,1.003
+cost-model,"167120f0, MTU 1500 4 listeners: kernel: UDP recv syscall (copy)",prof-l4-inmem,cores_per_gb_s,0.842
+cost-model,"167120f0, MTU 1500 4 listeners: kernel: UDP send, other",prof-l4-inmem,cores_per_gb_s,0.073
+cost-model,"167120f0, MTU 1500 4 listeners: QUIC crypto (AES-GCM)",prof-l4-inmem,cores_per_gb_s,0.362
+cost-model,"167120f0, MTU 1500 4 listeners: quinn-proto packets",prof-l4-inmem,cores_per_gb_s,0.644
+cost-model,"167120f0, MTU 1500 4 listeners: quinn drivers / UDP",prof-l4-inmem,cores_per_gb_s,0.319
+cost-model,"167120f0, MTU 1500 4 listeners: broker publish path",prof-l4-inmem,cores_per_gb_s,0.515
+cost-model,"167120f0, MTU 1500 4 listeners: memcpy / malloc",prof-l4-inmem,cores_per_gb_s,0.128
+cost-model,"167120f0, MTU 1500 4 listeners: tokio, tracing, other",prof-l4-inmem,cores_per_gb_s,0.141
+cost-model,"#905, MTU 1500 4 listeners",prof-801-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,cores_per_gb_s,3.371
+cost-model,"#905, MTU 1500 4 listeners: kernel: NIC rx softirq",prof-801-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,cores_per_gb_s,1.007
+cost-model,"#905, MTU 1500 4 listeners: kernel: UDP recv syscall (copy)",prof-801-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,cores_per_gb_s,0.896
+cost-model,"#905, MTU 1500 4 listeners: kernel: UDP send, other",prof-801-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,cores_per_gb_s,0.098
+cost-model,"#905, MTU 1500 4 listeners: QUIC crypto (AES-GCM)",prof-801-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,cores_per_gb_s,0.312
+cost-model,"#905, MTU 1500 4 listeners: quinn-proto packets",prof-801-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,cores_per_gb_s,0.409
+cost-model,"#905, MTU 1500 4 listeners: quinn drivers / UDP",prof-801-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,cores_per_gb_s,0.226
+cost-model,"#905, MTU 1500 4 listeners: broker publish path",prof-801-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,cores_per_gb_s,0.252
+cost-model,"#905, MTU 1500 4 listeners: memcpy / malloc",prof-801-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,cores_per_gb_s,0.041
+cost-model,"#905, MTU 1500 4 listeners: tokio, tracing, other",prof-801-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-PUB_CONN_POOL=4-t1,cores_per_gb_s,0.131
+cost-model,"#905, MTU 3900, ACK 64 4 listeners",prof-best-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,1.826
+cost-model,"#905, MTU 3900, ACK 64 4 listeners: kernel: NIC rx softirq",prof-best-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.448
+cost-model,"#905, MTU 3900, ACK 64 4 listeners: kernel: UDP recv syscall (copy)",prof-best-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.488
+cost-model,"#905, MTU 3900, ACK 64 4 listeners: kernel: UDP send, other",prof-best-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.033
+cost-model,"#905, MTU 3900, ACK 64 4 listeners: QUIC crypto (AES-GCM)",prof-best-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.223
+cost-model,"#905, MTU 3900, ACK 64 4 listeners: quinn-proto packets",prof-best-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.159
+cost-model,"#905, MTU 3900, ACK 64 4 listeners: quinn drivers / UDP",prof-best-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.165
+cost-model,"#905, MTU 3900, ACK 64 4 listeners: broker publish path",prof-best-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.218
+cost-model,"#905, MTU 3900, ACK 64 4 listeners: memcpy / malloc",prof-best-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.026
+cost-model,"#905, MTU 3900, ACK 64 4 listeners: tokio, tracing, other",prof-best-l4-QUIC_LISTENERS=4-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=4-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.066
+cost-model,"#905, MTU 3900, ACK 64 8 listeners",prof-best-l8-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,2.270
+cost-model,"#905, MTU 3900, ACK 64 8 listeners: kernel: NIC rx softirq",prof-best-l8-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.408
+cost-model,"#905, MTU 3900, ACK 64 8 listeners: kernel: UDP recv syscall (copy)",prof-best-l8-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.408
+cost-model,"#905, MTU 3900, ACK 64 8 listeners: kernel: UDP send, other",prof-best-l8-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.021
+cost-model,"#905, MTU 3900, ACK 64 8 listeners: QUIC crypto (AES-GCM)",prof-best-l8-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.432
+cost-model,"#905, MTU 3900, ACK 64 8 listeners: quinn-proto packets",prof-best-l8-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.393
+cost-model,"#905, MTU 3900, ACK 64 8 listeners: quinn drivers / UDP",prof-best-l8-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.248
+cost-model,"#905, MTU 3900, ACK 64 8 listeners: broker publish path",prof-best-l8-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.256
+cost-model,"#905, MTU 3900, ACK 64 8 listeners: memcpy / malloc",prof-best-l8-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.042
+cost-model,"#905, MTU 3900, ACK 64 8 listeners: tokio, tracing, other",prof-best-l8-QUIC_LISTENERS=8-PUB_INGRESS_WAIT=1-MTU_UPPER_BOUND=3872-PUB_CONN_POOL=8-MTU_UPPER_BOUND=3872-ACK_ELICITING_THRESHOLD=64-t1,cores_per_gb_s,0.062
+per-record,"in memory, 4 KiB, batch 64",ab-felix-inmem-b64-p4096-k48-t1,records_per_s,945554.240
+per-record,"in memory, 4 KiB, batch 64",ab-felix-inmem-b64-p4096-k48-t1,core_us_per_record,7.925
+per-record,"in memory, 256 B, batch 64",ab-felix-inmem-b64-p256-k48-t1,records_per_s,9568027.213
+per-record,"in memory, 256 B, batch 64",ab-felix-inmem-b64-p256-k48-t1,core_us_per_record,0.776
+per-record,"in memory, 4 KiB, batch 1",ab-felix-inmem-b1-p4096-k48-t1,records_per_s,298781.766
+per-record,"in memory, 4 KiB, batch 1",ab-felix-inmem-b1-p4096-k48-t1,core_us_per_record,24.335
+per-record,"in memory, 256 B, batch 1",ab-felix-inmem-b1-p256-k48-t1,records_per_s,429379.366
+per-record,"in memory, 256 B, batch 1",ab-felix-inmem-b1-p256-k48-t1,core_us_per_record,17.115
+per-record,"periodic, 4 KiB, batch 64",ab-felix-per-b64-p4096-k48-t1,records_per_s,308142.144
+per-record,"periodic, 4 KiB, batch 64",ab-felix-per-b64-p4096-k48-t1,core_us_per_record,11.212
+per-record,"periodic, 256 B, batch 64",ab-felix-per-b64-p256-k48-t1,records_per_s,3651601.253
+per-record,"periodic, 256 B, batch 64",ab-felix-per-b64-p256-k48-t1,core_us_per_record,1.494
+per-record,"on_commit, 4 KiB, batch 64",ab-felix-dur-b64-p4096-k48-t1,records_per_s,324315.067
+per-record,"on_commit, 4 KiB, batch 64",ab-felix-dur-b64-p4096-k48-t1,core_us_per_record,11.698
+per-record,"on_commit, 256 B, batch 64",ab-felix-dur-b64-p256-k48-t1,records_per_s,2267582.273
+per-record,"on_commit, 256 B, batch 64",ab-felix-dur-b64-p256-k48-t1,core_us_per_record,1.896
+per-record,"on_commit, 4 KiB, batch 1",ab-felix-dur-b1-p4096-k48-t1,records_per_s,65128.344
+per-record,"on_commit, 4 KiB, batch 1",ab-felix-dur-b1-p4096-k48-t1,core_us_per_record,84.890
+per-record,"on_commit, 256 B, batch 1",ab-felix-dur-b1-p256-k48-t1,records_per_s,95313.822
+per-record,"on_commit, 256 B, batch 1",ab-felix-dur-b1-p256-k48-t1,core_us_per_record,61.547
