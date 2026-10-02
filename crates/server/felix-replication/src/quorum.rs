@@ -546,6 +546,9 @@ pub async fn await_quorum<S: ShardServing + ?Sized>(
 /// Hold a write to a `Quorum` cache until a majority of its shard's replica set
 /// has it. The cache-side mirror of [`await_quorum`].
 ///
+/// Call it right after every local put or delete: a write wakes replication
+/// whatever the cache's consistency, so a `Leader` cache ships promptly too.
+///
 /// A cache put does not report the offset it took, so this waits for the
 /// shard's tail as read after the write. That is at or past the write, so a
 /// mark at the tail covers it; a concurrent later write can only make the wait
@@ -568,6 +571,11 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
         Access::Write => "write",
         Access::Read => "read",
     };
+    // The cache log ships on a replication pass; start one now rather than
+    // wait out the tick.
+    if access == Access::Write {
+        broker.appended().notify_one();
+    }
     let consistency = broker
         .cache_consistency(&shard.tenant_id, &shard.namespace, &shard.stream)
         .await;
