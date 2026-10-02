@@ -4,18 +4,16 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use felix_client::{Client, ClientConfig, ClientIdentity, ClusterClient};
+use felix_client::{ClientConfig, ClientIdentity, ClusterClient};
 
 use crate::context::Settings;
 use crate::error::{Exit, MarkExit, fail};
 
-/// A connection to the cluster and what is needed to open more.
+/// A connection to the cluster, and the tenant and namespace to use it in.
 pub(crate) struct Broker {
     pub(crate) cluster: Arc<ClusterClient>,
     pub(crate) tenant: String,
     pub(crate) namespace: String,
-    config: ClientConfig,
-    server_name: String,
 }
 
 impl Broker {
@@ -24,7 +22,7 @@ impl Broker {
         let addrs = addresses(settings.brokers()?).await?;
         let config = client_config(settings)?;
         let server_name = server_name(settings);
-        let cluster = ClusterClient::connect(&addrs, &server_name, config.clone())
+        let cluster = ClusterClient::connect(&addrs, &server_name, config)
             .await
             .mark(
                 Exit::Connection,
@@ -34,16 +32,7 @@ impl Broker {
             cluster: Arc::new(cluster),
             tenant: settings.tenant()?.to_string(),
             namespace: settings.namespace.clone(),
-            config,
-            server_name,
         })
-    }
-
-    /// A single-broker client at `addr`, for following a redirect by hand.
-    pub(crate) async fn client_at(&self, addr: SocketAddr) -> anyhow::Result<Client> {
-        Client::connect(addr, &self.server_name, self.config.clone())
-            .await
-            .mark(Exit::Connection, format!("connect to {addr}"))
     }
 }
 

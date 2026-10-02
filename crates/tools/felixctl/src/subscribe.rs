@@ -1,13 +1,11 @@
 //! `felixctl sub`.
 //!
-//! Without `--shard`, a single-shard stream is read through the cluster
-//! client's followed subscription and a wider one through its sharded
-//! subscription, so moves and lost brokers are followed either way. With
-//! `--shard`, the shard is read through a plain client: the cluster client
-//! cannot subscribe to one chosen shard, so a `NotLeader` redirect is
-//! followed here, once.
+//! A single-shard stream, or one shard chosen with `--shard`, is read
+//! through the cluster client's followed subscription, and a wider stream
+//! through its sharded subscription, so moves and lost brokers are followed
+//! either way.
 
-use felix_client::{NotLeaderError, ShardEvent, StartPosition, Subscription};
+use felix_client::{ShardEvent, StartPosition};
 
 use crate::cli::{FormatArg, StartArg, SubArgs};
 use crate::connect::Broker;
@@ -39,7 +37,10 @@ pub(crate) async fn run(args: &SubArgs, settings: &Settings, out: &Output) -> an
     );
 
     if let Some(shard) = args.shard {
-        let mut subscription = subscribe_shard(&broker, stream, shard, start).await?;
+        let mut subscription = broker
+            .cluster
+            .subscribe_shard(tenant, namespace, stream, shard, start)
+            .await?;
         let mut seen = 0;
         while let Some(event) = subscription.next_event().await? {
             printer.event(Some(shard), event.offset, &event.payload)?;
@@ -112,36 +113,6 @@ pub(crate) fn start_position(from: StartArg) -> Option<StartPosition> {
         StartArg::Latest => None,
         StartArg::Earliest => Some(StartPosition::Earliest),
         StartArg::Offset(offset) => Some(StartPosition::Offset(offset)),
-    }
-}
-
-/// Subscribe to one shard, following one `NotLeader` redirect to its owner.
-async fn subscribe_shard(
-    broker: &Broker,
-    stream: &str,
-    shard: u32,
-    start: Option<StartPosition>,
-) -> anyhow::Result<Subscription> {
-    let entry = broker.cluster.client().await;
-    let (tenant, namespace) = (broker.tenant.as_str(), broker.namespace.as_str());
-    match entry
-        .subscribe_shard(tenant, namespace, stream, shard, start)
-        .await
-    {
-        Ok(subscription) => Ok(subscription),
-        Err(err) => {
-            let Some(addr) = err
-                .downcast_ref::<NotLeaderError>()
-                .and_then(|redirect| redirect.addr.as_deref())
-                .and_then(|addr| addr.parse().ok())
-            else {
-                return Err(err);
-            };
-            let owner = broker.client_at(addr).await?;
-            owner
-                .subscribe_shard(tenant, namespace, stream, shard, start)
-                .await
-        }
     }
 }
 

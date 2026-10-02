@@ -208,7 +208,8 @@ Without `--shard`, every shard of the stream is read and merged; the order
 between shards is not defined. `--format raw` prints each payload on a line,
 `offsets` prefixes the shard and offset, and `json` (or `--json`) prints one
 object per message with `payload`, or `payload_base64` for bytes that are not
-UTF-8. The subscription follows a shard that moves to another broker.
+UTF-8. The subscription follows a shard that moves to another broker, with or
+without `--shard`.
 
 ## Caches
 

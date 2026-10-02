@@ -24,10 +24,14 @@ use crate::test_support::build_server_config;
 /// The answer to one request, given its request id (0 for a subscribe).
 type Script = Arc<dyn Fn(u64) -> Message + Send + Sync>;
 
+type Shards = Arc<Mutex<Vec<Option<u32>>>>;
+
 pub(super) struct StubBroker {
     pub(super) addr: SocketAddr,
     publishes: Arc<AtomicUsize>,
     subscribes: Arc<AtomicUsize>,
+    /// The shard each subscribe asked for, in order.
+    shards: Shards,
     connections: Arc<Mutex<Vec<QuicConnection>>>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -67,19 +71,24 @@ impl StubBroker {
         let addr = server.local_addr()?;
         let publishes = Arc::new(AtomicUsize::new(0));
         let subscribes = Arc::new(AtomicUsize::new(0));
+        let shards = Shards::default();
         let script: Script = Arc::new(script);
         let connections = Arc::new(Mutex::new(Vec::new()));
-        let counts = (Arc::clone(&publishes), Arc::clone(&subscribes));
+        let counts = (
+            Arc::clone(&publishes),
+            Arc::clone(&subscribes),
+            Arc::clone(&shards),
+        );
         let accepted = Arc::clone(&connections);
         let task = tokio::spawn(async move {
             while let Ok(connection) = server.accept().await {
                 accepted.lock().unwrap().push(connection.clone());
                 let script = Arc::clone(&script);
-                let counts = (Arc::clone(&counts.0), Arc::clone(&counts.1));
+                let counts = counts.clone();
                 tokio::spawn(async move {
                     while let Ok((send, recv)) = connection.accept_bi().await {
                         let script = Arc::clone(&script);
-                        let counts = (Arc::clone(&counts.0), Arc::clone(&counts.1));
+                        let counts = counts.clone();
                         tokio::spawn(serve_stream(connection.clone(), send, recv, script, counts));
                     }
                 });
@@ -89,6 +98,7 @@ impl StubBroker {
             addr,
             publishes,
             subscribes,
+            shards,
             connections,
             task,
         })
@@ -100,6 +110,11 @@ impl StubBroker {
 
     pub(super) fn subscribes(&self) -> usize {
         self.subscribes.load(Ordering::SeqCst)
+    }
+
+    /// The shard each subscribe asked for, in order; `None` is unset.
+    pub(super) fn subscribed_shards(&self) -> Vec<Option<u32>> {
+        self.shards.lock().unwrap().clone()
     }
 
     /// Client connections still open, however many clients hold them.
@@ -137,7 +152,7 @@ async fn serve_stream(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     script: Script,
-    (publishes, subscribes): (Arc<AtomicUsize>, Arc<AtomicUsize>),
+    (publishes, subscribes, shards): (Arc<AtomicUsize>, Arc<AtomicUsize>, Shards),
 ) -> Result<()> {
     let mut scratch = BytesMut::with_capacity(64 * 1024);
     while let Some(frame) = read_frame_into(&mut recv, &mut scratch, false).await? {
@@ -166,8 +181,9 @@ async fn serve_stream(
                 };
                 write_message(&mut send, answer).await?;
             }
-            Message::Subscribe { .. } => {
+            Message::Subscribe { shard, .. } => {
                 subscribes.fetch_add(1, Ordering::SeqCst);
+                shards.lock().unwrap().push(shard);
                 let answer = match script(0) {
                     Message::Subscribed {
                         start_offset,

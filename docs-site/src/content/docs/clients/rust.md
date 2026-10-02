@@ -650,8 +650,9 @@ A rebalance or a drain can move a stream's shard to another broker. The old
 owner delivers everything it committed, then ends the subscription with a
 `shard_moved` frame saying where the shard went and where to resume.
 
-`ClusterClient::subscribe` and `subscribe_from` return a `ClusterSubscription`
-that follows the shard on its own: `next_event` resubscribes on the new owner
+`ClusterClient::subscribe` and `subscribe_from` (shard 0), and
+`subscribe_shard` (a shard you name), return a `ClusterSubscription` that
+follows the shard on its own: `next_event` resubscribes on the new owner
 and carries on. On a durable stream it resumes at
 `max(last delivered offset + 1, resume_from)`, so nothing is repeated or
 skipped; an in-memory stream resumes at the new owner's tail. `moves()` counts

@@ -21,6 +21,9 @@ for what the current release guarantees.
   a CA from PEM files, so mutual TLS no longer means building the rustls
   config by hand. felixctl uses them and drops its `rustls` and `felix-wire`
   dependencies. (#937)
+- `ClusterClient::subscribe_shard` subscribes to one chosen shard and follows
+  it to its owner and through moves, as `subscribe_from` does for shard 0.
+  `felixctl sub --shard` uses it, so it now follows a moved shard too. (#937)
 
 ### Changed
 

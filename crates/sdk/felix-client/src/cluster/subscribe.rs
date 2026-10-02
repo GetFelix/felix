@@ -46,15 +46,36 @@ impl ClusterClient {
         stream: &str,
         start: Option<felix_wire::StartPosition>,
     ) -> Result<ClusterSubscription> {
+        self.subscribe_shard(tenant_id, namespace, stream, 0, start)
+            .await
+    }
+
+    /// Like [`ClusterClient::subscribe_from`], for one chosen shard of a
+    /// stream rather than shard 0.
+    ///
+    /// The subscription follows that shard to its owner and again whenever
+    /// it moves, exactly as [`ClusterSubscription`] describes. It reads that
+    /// shard only; [`Self::subscribe_sharded`] reads them all.
+    ///
+    /// A shard past the stream's width is refused by the broker, not
+    /// checked here.
+    pub async fn subscribe_shard(
+        self: &Arc<Self>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        start: Option<felix_wire::StartPosition>,
+    ) -> Result<ClusterSubscription> {
         let (client, subscription) = self
-            .open_shard(tenant_id, namespace, stream, 0, start)
+            .open_shard(tenant_id, namespace, stream, shard, start)
             .await?;
         Ok(ClusterSubscription::new(
             Arc::clone(self),
             tenant_id,
             namespace,
             stream,
-            0,
+            shard,
             client,
             subscription,
         ))
