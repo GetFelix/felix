@@ -689,20 +689,20 @@ Each row is one pair, run back to back on the same machines. Records/s and
 CPU are server-side. The fsync pair with batches has two trials, and the
 table shows trial 2. Every other pair has one trial.
 
-| Pair | Felix records/s | Felix cores | NATS records/s | NATS cores | Felix ÷ NATS |
-|---|---|---|---|---|---|
-| fsync before ack, batches of 64, 4 KiB | 321,611 | 3.79 | 107,130 | 4.72 | 3.0× |
-| fsync before ack, batches of 64, 256 B | 2,272,979 | 4.34 | 165,376 | 4.47 | 13.7× |
-| fsync before ack, unbatched, 4 KiB | 65,046 | 5.53 | 48,663 | 4.05 | 1.34× |
-| fsync before ack, unbatched, 256 B | 95,330 | 5.87 | 64,675 | 3.36 | 1.47× |
-| periodic / NATS default, batches of 64, 4 KiB | 308,172 | 3.46 | 294,414 | 5.19 | 1.05× |
-| periodic / NATS default, batches of 64, 256 B | 3,651,532 | 5.46 | 476,059 | 3.04 | see below |
-| in memory, batches of 64, 4 KiB | 945,554 | 7.49 | 306,431 | 5.33 | 3.1× |
-| in memory, batches of 64, 256 B | 9,568,027 | 7.42 | 586,563 | 3.19 | see below |
-| in memory, unbatched, 4 KiB | 298,782 | 7.27 | 234,566 | 6.11 | 1.27× |
-| in memory, unbatched, 256 B | 429,379 | 7.35 | 344,202 | 5.28 | 1.25× |
-| no ack (core NATS), 4 KiB | 983,518 | 7.44 | 980,007 | 6.35 | 1.00× |
-| no ack (core NATS), 256 B | 7,956,547 | 7.35 | 9,035,452 | 7.03 | 0.88× |
+| Pair | Durability (Felix / NATS) | Felix records/s | Felix cores | NATS records/s | NATS cores | Felix ÷ NATS |
+|---|---|---|---|---|---|---|
+| fsync before ack, batches of 64, 4 KiB | `on_commit` / `always`: both fsync before the ack | 321,611 | 3.79 | 107,130 | 4.72 | 3.0× |
+| fsync before ack, batches of 64, 256 B | `on_commit` / `always`: both fsync before the ack | 2,272,979 | 4.34 | 165,376 | 4.47 | 13.7× |
+| fsync before ack, unbatched, 4 KiB | `on_commit` / `always`: both fsync before the ack | 65,046 | 5.53 | 48,663 | 4.05 | 1.34× |
+| fsync before ack, unbatched, 256 B | `on_commit` / `always`: both fsync before the ack | 95,330 | 5.87 | 64,675 | 3.36 | 1.47× |
+| periodic / NATS default, batches of 64, 4 KiB | `periodic` 250 ms / default 2 min: acked before flush | 308,172 | 3.46 | 294,414 | 5.19 | 1.05× |
+| periodic / NATS default, batches of 64, 256 B | `periodic` 250 ms / default 2 min: acked before flush | 3,651,532 | 5.46 | 476,059 | 3.04 | see below |
+| in memory, batches of 64, 4 KiB | memory / memory stream: lost on restart | 945,554 | 7.49 | 306,431 | 5.33 | 3.1× |
+| in memory, batches of 64, 256 B | memory / memory stream: lost on restart | 9,568,027 | 7.42 | 586,563 | 3.19 | see below |
+| in memory, unbatched, 4 KiB | memory / memory stream: lost on restart | 298,782 | 7.27 | 234,566 | 6.11 | 1.27× |
+| in memory, unbatched, 256 B | memory / memory stream: lost on restart | 429,379 | 7.35 | 344,202 | 5.28 | 1.25× |
+| no ack (core NATS), 4 KiB | not stored, no ack | 983,518 | 7.44 | 980,007 | 6.35 | 1.00× |
+| no ack (core NATS), 256 B | not stored, no ack | 7,956,547 | 7.35 | 9,035,452 | 7.03 | 0.88× |
 
 Sources for every row are in the footnote.[^pairs]
 
