@@ -19,8 +19,7 @@ categories = ["development-tools::profiling", "network-programming"]
 # Publishable because felixctl, which is, links its scenarios for `felixctl
 # bench`. AGPL like the rest of the server side (LICENSING.md).
 
-# A library too, so `felix bench` (crates/tools/felix-cli) runs the same
-# scenarios.
+# A library too, so `felixctl bench` runs the same scenarios.
 [lib]
 path = "src/lib.rs"
 

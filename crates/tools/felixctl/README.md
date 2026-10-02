@@ -6,7 +6,7 @@ shows which broker owns each shard, lists what the control plane knows, and
 runs load tests.
 
 ```bash
-cargo install --path crates/tools/felixctl
+cargo install felixctl --version 0.6.0-preview
 
 felixctl context add local --brokers 127.0.0.1:5000 --tenant t1 \
     --token-file token.jwt --ca-file broker-cert.pem
@@ -17,6 +17,17 @@ felixctl topology orders
 felixctl stream ls
 felixctl bench latency orders
 ```
+
+Each release also attaches prebuilt archives for Linux, macOS and Windows,
+with shell completions and man pages, to its
+[GitHub release](https://github.com/gabloe/felix/releases), and publishes a
+container image:
+
+```bash
+docker run --rm ghcr.io/gabloe/felixctl:0.6.0-preview --help
+```
+
+From a checkout, `cargo install --path crates/tools/felixctl`.
 
 Every command prints readable text, or JSON with `--json`, and exits with a
 status that says what went wrong: 2 for bad arguments or settings, 3 when

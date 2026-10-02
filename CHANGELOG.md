@@ -64,6 +64,15 @@ for what the current release guarantees.
   `FELIX_CONTROLPLANE_TOKEN_FILE`, `FELIX_CA_FILE`, `FELIX_CLIENT_CERT_FILE`,
   `FELIX_CLIENT_KEY_FILE`, `FELIX_SERVER_NAME`), overridden by flags. `--json`
   everywhere, distinct exit statuses, shell completions and man pages.
+- **Releases ship felixctl.** A tag attaches `felixctl-<tag>-<target>`
+  archives for Linux x86_64 and aarch64, macOS aarch64 and x86_64, and Windows
+  x86_64, each with a `.sha256`, completions and man pages; pushes
+  `ghcr.io/<owner>/felixctl` for amd64 and arm64; and publishes `felix-loadgen`
+  and `felixctl` to crates.io after the client. The crates.io job packages
+  every crate before uploading any, and uses trusted publishing when no
+  `CARGO_REGISTRY_TOKEN` is set. `release.yml` takes `dry_run` (build
+  everything, publish nothing) and `ref` (build a branch as if it were `tag`,
+  dry runs only), so a release can be rehearsed before its tag exists.
 - **`felix-loadgen` is also a library.** `felix_loadgen::run` runs a scenario
   and returns its `LOADGEN_JSON` object; `felixctl bench` uses it. The binary's
   flags and output are unchanged. The crate is now publishable.

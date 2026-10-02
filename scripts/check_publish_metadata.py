@@ -70,10 +70,7 @@ NOT_PUBLISHABLE = {
 # Publishable crates the release workflow does not publish yet. They are held
 # to every other rule here; only the publish-order check skips them. Take a
 # crate out of this set in the change that adds it to the workflow's list.
-RELEASE_PENDING = {
-    "felix-loadgen",
-    "felixctl",
-}
+RELEASE_PENDING: set[str] = set()
 
 # crates.io hard requirement is `description`; the rest are discoverability
 # fields we want set before a first publish rather than bolted on after.

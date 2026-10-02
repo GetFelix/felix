@@ -14,14 +14,51 @@ Its data-plane commands use only the public API of the Rust client
 
 ## Install
 
+Starting with 0.6.0-preview, each release publishes felixctl in three forms.
+
+From crates.io, which puts `felixctl` in `~/.cargo/bin`:
+
+```bash
+cargo install felixctl --version 0.6.0-preview
+```
+
+A preview has to be named with `--version`, because cargo skips pre-releases
+otherwise.
+
+As a prebuilt binary from the
+[GitHub release](https://github.com/gabloe/felix/releases), for Linux
+(x86_64, aarch64), macOS (Apple Silicon, Intel) and Windows (x86_64). Each
+archive is `felixctl-<tag>-<target>.tar.gz` (`.zip` on Windows) with a
+`.sha256` beside it, and holds shell completions in `completions/` and man
+pages in `man/`:
+
+```bash
+tag=v0.6.0-preview target=aarch64-apple-darwin
+base=https://github.com/gabloe/felix/releases/download/$tag
+curl -fsSLO "$base/felixctl-$tag-$target.tar.gz"
+curl -fsSLO "$base/felixctl-$tag-$target.tar.gz.sha256"
+shasum -a 256 -c "felixctl-$tag-$target.tar.gz.sha256"
+tar -xzf "felixctl-$tag-$target.tar.gz"
+```
+
+As a container image for linux/amd64 and linux/arm64. The config file is
+written mode `0600`, so run as your own user to read a mounted one:
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$HOME/.config/felixctl:/home/felix/.config/felixctl" \
+  ghcr.io/gabloe/felixctl:0.6.0-preview stream ls
+```
+
+A preview tag is never `latest`.
+
 From a checkout of the repository:
 
 ```bash
 cargo install --path crates/tools/felixctl
 ```
 
-That puts `felixctl` in `~/.cargo/bin`. To run it without installing, use
-`cargo run --release -p felixctl -- <args>`.
+To run it without installing, use `cargo run --release -p felixctl -- <args>`.
 
 ## Try it against a local cluster
 
