@@ -109,8 +109,9 @@ pub enum Message {
         /// during auth, which is a much larger claim than "I also listen here".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         listener_ports: Option<Vec<u16>>,
-        /// How many acknowledged publishes this connection may have
-        /// unanswered at once, when the broker pipelines them.
+        /// How many acknowledged publishes may be unanswered at once, when
+        /// the broker pipelines them: per stream if the broker advertises
+        /// `FEATURE_STREAM_PUBLISH_WINDOW`, else per connection.
         ///
         /// Present only for a client that offered `FEATURE_PUBLISH_PIPELINE`
         /// and only when the broker grants it, so every other client gets the

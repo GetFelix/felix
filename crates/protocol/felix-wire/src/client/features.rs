@@ -173,10 +173,11 @@ pub const FEATURE_SEQUENCE_REUSED: u32 = 0x0000_4000;
 /// carried them.
 ///
 /// Offered by a *client*; a broker that grants it answers `publish_window`
-/// in `AuthOk`, the most acknowledged publishes one connection may have
-/// unanswered across all its streams. The broker stops reading a
-/// connection's publishes while that many are outstanding, so a client that
-/// sends more is slowed by flow control rather than refused. Without the
+/// in `AuthOk`, the most acknowledged publishes that may be unanswered at
+/// once: across the whole connection, or on each stream when the broker also
+/// advertises `FEATURE_STREAM_PUBLISH_WINDOW`. The broker stops reading
+/// publishes while that many are outstanding, so a client that sends more is
+/// slowed by flow control rather than refused. Without the
 /// bit, answers come in completion order and the request id is the only
 /// correlation, as before.
 ///
@@ -193,6 +194,15 @@ pub const FEATURE_PUBLISH_PIPELINE: u32 = 0x0000_8000;
 /// broker that implements it even before its fleet enables `atomic_commit`;
 /// until then a commit is refused with an error that says so.
 pub const FEATURE_ATOMIC_COMMIT: u32 = 0x0001_0000;
+/// The broker's `publish_window` is per stream, not per connection.
+///
+/// Advertised by a *broker*, like `FEATURE_CACHE_DELETE`, alongside
+/// `FEATURE_PUBLISH_PIPELINE`. Each pipelining stream then has its own window,
+/// so a stream whose publishes are stuck behind a stalled shard holds only its
+/// own slots and the connection's other streams keep publishing. Without the
+/// bit the window is shared by every stream on the connection, which is what a
+/// client must assume of a broker that predates it.
+pub const FEATURE_STREAM_PUBLISH_WINDOW: u32 = 0x0002_0000;
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -210,7 +220,8 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_UNSUPPORTED
     | FEATURE_SEQUENCE_REUSED
     | FEATURE_PUBLISH_PIPELINE
-    | FEATURE_ATOMIC_COMMIT;
+    | FEATURE_ATOMIC_COMMIT
+    | FEATURE_STREAM_PUBLISH_WINDOW;
 
 /// True if `features` advertises `feature`.
 pub fn supports_feature(features: u32, feature: u32) -> bool {

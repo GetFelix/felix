@@ -117,6 +117,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
         peer_features: 0,
         error_codes,
         ack_order,
+        publish_window: None,
         stream_cache,
         stream_cache_key,
     };
@@ -206,7 +207,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 && ack != felix_wire::AckMode::None
                 && !admit_pipelined(
                     &session.ack_order,
-                    publish_ctx.publish_window.as_ref(),
+                    session.publish_window.as_ref(),
                     &mut cancel_rx_read,
                     request_id,
                 )
@@ -277,7 +278,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             && let Some(request_id) = pipelined_request(&message)
             && !admit_pipelined(
                 &session.ack_order,
-                publish_ctx.publish_window.as_ref(),
+                session.publish_window.as_ref(),
                 &mut cancel_rx_read,
                 request_id,
             )
@@ -832,6 +833,8 @@ struct Session {
     /// Shared with the writer, which holds answers back into request order
     /// once `Auth` asks for pipelining.
     ack_order: Arc<AckOrder>,
+    /// This stream's publish window, once `Auth` grants one.
+    publish_window: Option<Arc<Semaphore>>,
     stream_cache: StreamHandleCache,
     stream_cache_key: String,
 }
@@ -854,7 +857,7 @@ fn pipelined_request(message: &Message) -> Option<u64> {
     }
 }
 
-/// Take a slot in the connection's publish window and register the publish
+/// Take a slot in the stream's publish window and register the publish
 /// for an in-order answer. False when the stream was cancelled while it
 /// waited.
 ///

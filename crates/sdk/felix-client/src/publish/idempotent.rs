@@ -142,7 +142,7 @@ impl<'a> IdempotentProducer<'a> {
     ///
     /// Against a broker that pipelines publishes (`FEATURE_PUBLISH_PIPELINE`)
     /// the batches go out without waiting for each other's answers, up to the
-    /// connection's window and never more than 64 at once; against any other
+    /// publish window and never more than 64 at once; against any other
     /// broker they go one at a time. Either way the result is the same as
     /// calling [`Self::publish_batch`] for each in turn: every batch is
     /// appended once, in order, or the call fails.

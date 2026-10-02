@@ -31,8 +31,8 @@ pub(crate) struct PublishWorker {
     pub(crate) request_counter: AtomicU64,
     /// Frame-flag bits the broker advertised for this stream during auth.
     pub(crate) server_flags: u16,
-    /// The publish window the broker granted this stream's connection, with
-    /// answers in request order. `0` when it did not.
+    /// The publish window the broker granted, with answers in request order.
+    /// `0` when it did not.
     pub(crate) publish_window: u32,
 }
 
@@ -69,7 +69,7 @@ struct PendingAck {
     request_id: u64,
     response: oneshot::Sender<AckOutcome>,
     _permit: OwnedSemaphorePermit,
-    /// This publish's slot in the connection's window, freed with the answer.
+    /// This publish's slot in the publish window, freed with the answer.
     _window: Option<OwnedSemaphorePermit>,
     // Read only by the telemetry counters in the ack reader.
     #[cfg_attr(not(feature = "telemetry"), allow(dead_code))]
@@ -100,8 +100,8 @@ pub(crate) async fn run_publisher_writer_with_limit(
     //
     // Depth is bounded by the publisher's in-flight byte budget
     // (`publish_inflight_bytes`), since each entry holds its admission permit
-    // until the broker answers, and by the connection's publish window when
-    // the broker granted one.
+    // until the broker answers, and by the publish window when the broker
+    // granted one.
     let mut ack_scratch = BytesMut::with_capacity(64 * 1024);
     let mut json_scratch = BytesMut::with_capacity(64 * 1024);
     let mut pending: VecDeque<PendingAck> = VecDeque::new();
@@ -212,7 +212,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                 }
             }
         };
-        // A slot in the connection's window before an acked publish goes out.
+        // A slot in the publish window before an acked publish goes out.
         // While none is free, settle this stream's own answers: they may be
         // what holds the slots, and waiting on them unread would deadlock.
         let needs_ack = match &request {

@@ -127,7 +127,7 @@ async fn uni_loop_breaks_on_enqueue_error() -> Result<()> {
             &crate::config::BrokerConfig::default(),
         )),
         tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
-        publish_window: None,
+        publish_window: 0,
     };
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let binary =

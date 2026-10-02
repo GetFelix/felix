@@ -74,10 +74,13 @@ pub(super) async fn authenticate(
                     session.peer_features,
                     felix_wire::FEATURE_PUBLISH_PIPELINE,
                 )
-                && publish_ctx.publish_window.is_some())
-            .then_some(config.publish_window);
-            if publish_window.is_some() {
+                && publish_ctx.publish_window > 0)
+                .then_some(publish_ctx.publish_window);
+            if let Some(window) = publish_window {
                 session.ack_order.enable();
+                session.publish_window = Some(std::sync::Arc::new(tokio::sync::Semaphore::new(
+                    window as usize,
+                )));
             }
             // Advertise our flag set only to a client that offered its
             // own. A client that sent no `client_flags` predates
@@ -166,9 +169,13 @@ pub(super) async fn authenticate(
                             // A reused sequence is refused, not answered as a
                             // duplicate, for a client that offered the bit.
                             | felix_wire::FEATURE_SEQUENCE_REUSED
+                            // Each stream gets a window of its own.
                             | match publish_ctx.publish_window {
-                                Some(_) => felix_wire::FEATURE_PUBLISH_PIPELINE,
-                                None => 0,
+                                0 => 0,
+                                _ => {
+                                    felix_wire::FEATURE_PUBLISH_PIPELINE
+                                        | felix_wire::FEATURE_STREAM_PUBLISH_WINDOW
+                                }
                             },
                     ),
                     // Only when there is more than one. A single

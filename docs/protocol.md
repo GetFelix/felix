@@ -699,7 +699,7 @@ A client that offers `FEATURE_PUBLISH_PIPELINE` in `auth` may be granted a
 publish window, answered in `auth_ok`:
 
 ```json
-{"type":"auth_ok","server_flags":2047,"server_features":65060,"publish_window":256}
+{"type":"auth_ok","server_flags":2047,"server_features":196132,"publish_window":256}
 ```
 
 The grant is two promises about every acked publish on that connection
@@ -711,16 +711,21 @@ with `FLAG_BINARY_PUBLISH_ACKED`, and every `publish_idempotent`):
   else changes: each publish gets the answer it would have got, only later.
   Other responses on the stream (`cache_value`, `subscribed`, and so on) are
   not held back.
-- **At most `publish_window` are unanswered per connection**, across all its
-  streams. At that depth the broker stops reading the connection's publishes
-  until an answer is written. A client that sends more is slowed by QUIC flow
+- **At most `publish_window` are unanswered per stream.** At that depth the
+  broker stops reading that stream's publishes until one of its answers is
+  written. Each stream has its own window, so a stream whose publishes wait
+  on a stalled shard holds only its own slots, and the connection's other
+  streams keep publishing. A broker says so by advertising
+  `FEATURE_STREAM_PUBLISH_WINDOW` with the grant. A broker that predates that
+  bit counts the window across the whole connection, and a client must share
+  one window between its streams there. A client that sends more is slowed by QUIC flow
   control, not refused; the frames wait in the transport rather than in the
   tenant's share of the publish queue, which is what keeps a pipelining client
   to its fair share.
 
 `publish_window` is present only when the client offered the bit and the broker
 grants it; a broker configured with `publish_window = 0`
-(`FELIX_BROKER_PUBLISH_WINDOW=0`) neither advertises the bit nor grants a
+(`FELIX_BROKER_PUBLISH_WINDOW=0`) neither advertises the bits nor grants a
 window. A client that did not offer it, and one that predates negotiation, get
 exactly the frames they always got: completion-order answers and no window. A
 client reads a window without the bit as no window.
@@ -1102,6 +1107,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x4000` | `FEATURE_SEQUENCE_REUSED` | The client reads `publish_refused` with `sequence_reused`; see [idempotent producers](#idempotent-producers) |
 | `0x8000` | `FEATURE_PUBLISH_PIPELINE` | The client pipelines acked publishes; the broker grants a `publish_window` and answers each stream's publishes in request order. See [pipelined publishes](#pipelined-publishes) |
 | `0x1_0000` | `FEATURE_ATOMIC_COMMIT` | The broker accepts `commit` and `state_get`. See [atomic commits](atomic-commit.md) |
+| `0x2_0000` | `FEATURE_STREAM_PUBLISH_WINDOW` | The broker's `publish_window` is per stream, so each pipelining stream has its own. See [pipelined publishes](#pipelined-publishes) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:

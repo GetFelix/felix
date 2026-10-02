@@ -88,8 +88,10 @@ merely until the frame is written.
 
 A client that negotiates `FEATURE_PUBLISH_PIPELINE` also gets a publish window
 from the broker (`FELIX_BROKER_PUBLISH_WINDOW`, 256 by default): up to that many
-acked publishes may be unanswered on a connection, and their acks come back in
-the order the stream sent them.
+acked publishes may be unanswered on each stream, and their acks come back in
+the order the stream sent them. Every stream has its own window, so publishes
+stuck behind a stalled shard do not hold up the other streams on the same
+connection.
 
 A single caller that awaits each publish before issuing the next still
 pays one round trip per publish. Batch, or publish concurrently, to amortize

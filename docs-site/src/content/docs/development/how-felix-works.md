@@ -662,12 +662,13 @@ Acknowledgements carry request IDs and may be emitted out of order, allowing
 independent completed jobs to respond without waiting for an earlier slow job.
 A client that negotiated `FEATURE_PUBLISH_PIPELINE` is the exception: the
 control loop registers each of its acked publishes as it reads it
-(`handlers/publish/order.rs::AckOrder`), taking a slot in the connection's
+(`handlers/publish/order.rs::AckOrder`), taking a slot in the stream's
 publish window, and the stream's writer holds an answer back until everything
 read before it has been answered. The slot is freed when the answer is
 written, and while none is free the control loop stops reading, so the window
-bounds a connection's unanswered publishes and pushes back through QUIC flow
-control.
+bounds a stream's unanswered publishes and pushes back through QUIC flow
+control. Each stream has its own window so that one stuck behind a stalled
+shard cannot take the slots its connection's other streams need.
 
 Commit acknowledgement is not an exactly-once outcome protocol. The publish job
 is enqueued before the broker reserves and submits all acknowledgement-waiter
