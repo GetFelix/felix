@@ -175,8 +175,12 @@ repository is public, and a machine that ran a stranger's code would hand it to
 the next job. Each of those jobs picks its runner like this:
 
 ```yaml
-runs-on: ${{ github.event_name != 'pull_request' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
+runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
 ```
+
+When the Azure runners are down, set the repository variable
+`FELIX_SELF_HOSTED_RUNNERS` to `false` and every job runs on `ubuntu-latest`.
+Delete the variable to go back.
 
 On top of that, the repository requires a maintainer to approve workflow runs
 for every outside contributor's pull request.

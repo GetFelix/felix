@@ -39,7 +39,7 @@ jobs:
   sweep:
     # The suite is Linux only: the power-loss layer models Linux writeback.
     # Self-hosted like history.yml.
-    runs-on: ${{ github.event_name != 'pull_request' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
+    runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
     # A cold build plus 110 seeds across nine scenarios, with room to spare.
     timeout-minutes: 60
     steps:
