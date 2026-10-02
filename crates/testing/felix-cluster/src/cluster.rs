@@ -86,6 +86,7 @@ impl Cluster {
                     node_id: node.node_id.clone(),
                     client_addr: node.client_addr,
                     metrics_addr: node.metrics_addr,
+                    cert_file: Some(node.data_dir.join("broker-cert.pem")),
                 })
                 .collect(),
         }

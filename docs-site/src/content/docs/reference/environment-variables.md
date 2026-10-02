@@ -2028,3 +2028,24 @@ absent. They are listed in that script rather than here.
 | `FELIX_WORKER_THREADS` | unset | Tokio worker threads. Defaults to the core count. |
 | `FELIX_TIMING_SAMPLE_EVERY` | unset | Sample rate for timing histograms. |
 | `FELIX_SERVICE_INSTANCE_ID` | unset | Instance identity reported in telemetry. |
+
+### felixctl
+
+`felixctl` reads these to override the current context. A flag overrides the
+variable, and the variable overrides the context. See
+[felixctl](/felix/getting-started/felixctl/).
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `FELIX_CLI_CONFIG` | `felixctl/config.toml` in the platform config directory | The file holding the contexts. |
+| `FELIX_CONTEXT` | the file's current context | Context to use. |
+| `FELIX_BROKERS` | unset | Broker addresses, `host:port`, comma-separated. |
+| `FELIX_AUTH_TENANT` | unset | Tenant, the same variable the client reads. |
+| `FELIX_NAMESPACE` | `default` | Namespace. |
+| `FELIX_AUTH_TOKEN`, `FELIX_AUTH_TOKEN_FILE` | unset | Broker token, or a file holding it. |
+| `FELIX_CONTROLPLANE_URL` | unset | Control-plane base URL, for the listing commands and shard owners. |
+| `FELIX_CONTROLPLANE_TOKEN`, `FELIX_CONTROLPLANE_TOKEN_FILE` | unset | Control-plane token, or a file holding it. Brokers and the control plane accept different tokens. |
+| `FELIX_CA_FILE` | platform trust store | PEM bundle broker certificates are checked against. |
+| `FELIX_CLIENT_CERT_FILE`, `FELIX_CLIENT_KEY_FILE` | unset | Client certificate and key to present to brokers. |
+| `FELIX_CONTROLPLANE_CA` | platform trust store | PEM bundle an `https://` control plane is checked against, as for brokers. |
+| `FELIX_SERVER_NAME` | the first broker's host name, or `localhost` | TLS server name sent to brokers. |

@@ -11,22 +11,22 @@ use tokio::task::JoinSet;
 
 use super::connect::client;
 use super::{Common, is_retriable_transient};
-use crate::stats::{Samples, emit_json, fmt_us};
+use crate::stats::{Samples, fmt_us, report};
 
 /// The `ingest`-only flags.
 #[derive(Default)]
-pub(crate) struct IngestOptions {
+pub struct IngestOptions {
     /// Distinct routing keys; 0 publishes unkeyed.
-    pub(crate) keys: usize,
+    pub keys: usize,
     /// The stream's shard count. Absent, the broker is asked.
-    pub(crate) shards: Option<u32>,
+    pub shards: Option<u32>,
     /// Acked batches each publisher keeps outstanding; 0 is fire-and-forget.
-    pub(crate) in_flight: usize,
+    pub in_flight: usize,
     /// Publish for this long instead of a fixed `--total`.
-    pub(crate) duration: Option<Duration>,
+    pub duration: Option<Duration>,
     /// Start publishing at this wall-clock time, so generators on separate
     /// machines overlap for the whole run instead of starting seconds apart.
-    pub(crate) start_at: Option<SystemTime>,
+    pub start_at: Option<SystemTime>,
 }
 
 /// Where an ingest publisher writes.
@@ -79,7 +79,11 @@ struct Tally {
 /// what the broker's publish window allows, and the ack latency is reported.
 /// On a durable stream with ack-on-commit this is the rate a client that waits
 /// for durability gets, not the broker's enqueue rate.
-pub(crate) async fn ingest(common: &Common, stream: &str, opts: &IngestOptions) -> Result<()> {
+pub(crate) async fn ingest(
+    common: &Common,
+    stream: &str,
+    opts: &IngestOptions,
+) -> Result<serde_json::Value> {
     let IngestOptions { in_flight, .. } = *opts;
     let publishers = common.concurrency.max(1);
     let per = (common.total / publishers).max(1);
@@ -254,16 +258,21 @@ pub(crate) async fn ingest(common: &Common, stream: &str, opts: &IngestOptions) 
     // client wrote, which says nothing about what the broker appended.
     let acked_records = (in_flight > 0).then_some(acked);
     let acked_msg_s = acked_records.map(|n| n as f64 / secs);
-    println!(
+    report!(
+        common,
         "ingest: publishers = {publishers}, in_flight = {in_flight}, published = {published} in {secs:.1} s, {msg_s:.0} msg/s, {mb_s:.1} MB/s, publish_retries = {retries}, cut_off = {cut_off}"
     );
     match acked_msg_s {
-        Some(rate) => println!("  acked = {acked} ({rate:.0} msg/s)"),
-        None => println!("  fire-and-forget: published counts sends written, not records appended"),
+        Some(rate) => report!(common, "  acked = {acked} ({rate:.0} msg/s)"),
+        None => report!(
+            common,
+            "  fire-and-forget: published counts sends written, not records appended"
+        ),
     }
     let ack = (!acks.is_empty()).then(|| acks.percentiles());
     if let Some(ack) = ack {
-        println!(
+        report!(
+            common,
             "  batch ack: p50 = {}, p99 = {}, p999 = {}, max = {}",
             fmt_us(ack.p50_us),
             fmt_us(ack.p99_us),
@@ -271,7 +280,7 @@ pub(crate) async fn ingest(common: &Common, stream: &str, opts: &IngestOptions) 
             fmt_us(ack.max_us)
         );
     }
-    emit_json(&serde_json::json!({
+    Ok(serde_json::json!({
         "scenario": "ingest",
         "environment": common.environment,
         "stream": stream,
@@ -293,8 +302,7 @@ pub(crate) async fn ingest(common: &Common, stream: &str, opts: &IngestOptions) 
         "batch_ack_latency_us": ack.map(|p| serde_json::json!({
             "p50": p.p50_us, "p99": p.p99_us, "p999": p.p999_us, "max": p.max_us,
         })),
-    }));
-    Ok(())
+    }))
 }
 
 /// Publish a batch of `count` copies of `template`, retrying the transient

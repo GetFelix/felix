@@ -75,6 +75,16 @@ pub(crate) fn fmt_us(micros: u64) -> String {
 
 /// The machine contract: one JSON object on one line, prefixed so it survives
 /// being embedded in a log full of prose.
-pub(crate) fn emit_json(value: &serde_json::Value) {
+pub fn emit_json(value: &serde_json::Value) {
     println!("LOADGEN_JSON {value}");
 }
+
+/// `println!`, when the run was asked for the human-readable lines.
+macro_rules! report {
+    ($common:expr, $($arg:tt)*) => {
+        if $common.prose {
+            println!($($arg)*);
+        }
+    };
+}
+pub(crate) use report;

@@ -11,7 +11,7 @@ use felix_wire::AckMode;
 use super::connect::{client, cluster};
 use super::framing::{payload, read_header};
 use super::{Common, is_retriable_transient};
-use crate::stats::{Percentiles, Samples, emit_json, fmt_us};
+use crate::stats::{Percentiles, Samples, fmt_us, report};
 
 /// Where single publishes go.
 enum Route {
@@ -61,7 +61,7 @@ pub(crate) async fn pubsub(
     stream: &str,
     binary: bool,
     via_entry: bool,
-) -> Result<()> {
+) -> Result<serde_json::Value> {
     let epoch = Instant::now();
     let use_ack = common.batch <= 1 && !binary;
 
@@ -299,7 +299,8 @@ pub(crate) async fn pubsub(
     });
 
     // The stdout shape scripts/perf already parses.
-    println!(
+    report!(
+        common,
         "Results (publish n = {}, sampled {}, received {}, unaccounted {}, payload {} bytes, fanout {}, batch {}, binary {})",
         total,
         common.total,
@@ -310,16 +311,26 @@ pub(crate) async fn pubsub(
         common.batch,
         binary,
     );
-    println!("  delivered total = {received_total}");
-    println!("  p50 = {}", fmt_us(headline.p50_us));
-    println!("  p99 = {}", fmt_us(headline.p99_us));
-    println!("  p999 = {}", fmt_us(headline.p999_us));
-    println!("  throughput = {publish_throughput:.1} msg/s");
-    println!("  effective throughput = {measured_throughput:.1} msg/s");
-    println!("  delivered throughput = {delivered_throughput:.1} msg/s");
-    println!("  delivered per-sub throughput = {per_sub:.1} msg/s");
+    report!(common, "  delivered total = {received_total}");
+    report!(common, "  p50 = {}", fmt_us(headline.p50_us));
+    report!(common, "  p99 = {}", fmt_us(headline.p99_us));
+    report!(common, "  p999 = {}", fmt_us(headline.p999_us));
+    report!(common, "  throughput = {publish_throughput:.1} msg/s");
+    report!(
+        common,
+        "  effective throughput = {measured_throughput:.1} msg/s"
+    );
+    report!(
+        common,
+        "  delivered throughput = {delivered_throughput:.1} msg/s"
+    );
+    report!(
+        common,
+        "  delivered per-sub throughput = {per_sub:.1} msg/s"
+    );
     if common.slow_subscribers > 0 {
-        println!(
+        report!(
+            common,
             "  isolation: {healthy_count} healthy sub(s) got {healthy_received} ({}/sub of {expected_per_sub} expected); {slow_count} slow sub(s) got {slow_received} ({}/sub) — slow-delay {}ms",
             if healthy_count > 0 {
                 healthy_received / healthy_count as u64
@@ -335,7 +346,8 @@ pub(crate) async fn pubsub(
         );
     }
     if let (Some(ack), Some(delivery)) = (ack, delivery) {
-        println!(
+        report!(
+            common,
             "  delivery (publish -> subscriber): p50 = {}, p99 = {}, p999 = {} (ack latency above)",
             fmt_us(delivery.p50_us),
             fmt_us(delivery.p99_us),
@@ -344,7 +356,7 @@ pub(crate) async fn pubsub(
         let _ = ack;
     }
 
-    emit_json(&serde_json::json!({
+    Ok(serde_json::json!({
         "scenario": "pubsub",
         "environment": common.environment,
         "stream": stream,
@@ -377,6 +389,5 @@ pub(crate) async fn pubsub(
         "delivery_latency_us": delivery.map(|p| serde_json::json!({
             "p50": p.p50_us, "p99": p.p99_us, "p999": p.p999_us, "max": p.max_us,
         })),
-    }));
-    Ok(())
+    }))
 }

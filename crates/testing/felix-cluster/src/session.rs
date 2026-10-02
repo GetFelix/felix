@@ -79,6 +79,9 @@ pub struct SessionNode {
     pub node_id: String,
     pub client_addr: SocketAddr,
     pub metrics_addr: SocketAddr,
+    /// The broker's generated certificate, for a client to trust.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cert_file: Option<PathBuf>,
 }
 
 /// Where `up` leaves the file and the other commands look for it.

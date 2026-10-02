@@ -19,11 +19,13 @@ fn session(control_plane: &str) -> Session {
                 node_id: "broker-0".to_string(),
                 client_addr: "127.0.0.1:7000".parse().expect("addr"),
                 metrics_addr: "127.0.0.1:8000".parse().expect("addr"),
+                cert_file: None,
             },
             SessionNode {
                 node_id: "broker-1".to_string(),
                 client_addr: "127.0.0.1:7001".parse().expect("addr"),
                 metrics_addr: "127.0.0.1:8001".parse().expect("addr"),
+                cert_file: None,
             },
         ],
     }

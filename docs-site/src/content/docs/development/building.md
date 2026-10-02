@@ -147,8 +147,63 @@ Other workflows:
 - `soak.yml`: a weekly soak and resource-leak run.
 - `perf-pr.yml`, `perf-publish.yml`, `perf-comprehensive.yml`: benchmarks. The
   PR run is advisory and never fails a check.
-- `release.yml`: builds and publishes a tagged release.
+- `release.yml`: builds and publishes a tagged release. See
+  [Releases](#releases).
 - `cla.yml`: the CLA Assistant bot.
+
+## Releases
+
+Pushing a `v*` tag runs `release.yml`. A tag with a `-` suffix
+(`v0.6.0-preview`) is a GitHub prerelease, and its images are not tagged
+`latest`. The tag has to match every version field in the tree
+(`scripts/check_release_version.py`), and its release notes are its
+`CHANGELOG.md` section. The workflow:
+
+- creates the GitHub release with `felix-<tag>-linux-x86_64.tar.gz` (broker
+  and control plane) and `SHA256SUMS`;
+- attaches `felixctl-<tag>-<target>.tar.gz` (`.zip` on Windows) and a
+  `.sha256` for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
+  `aarch64-apple-darwin`, `x86_64-apple-darwin` and `x86_64-pc-windows-msvc`.
+  Each holds the binary, its README and LICENSE, `completions/` and `man/`;
+- pushes and signs `ghcr.io/<owner>/felix-broker`, `felix-controlplane` and
+  `felixctl` for linux/amd64 and linux/arm64, when `PUBLISH_IMAGES` is `true`;
+- after the Python and Node conformance suites pass, attaches the wheels and
+  Node addons and publishes them to PyPI (`PUBLISH_PYPI`) and npm
+  (`PUBLISH_NPM`);
+- after both conformance suites, packages `felix-transport`, `felix-wire`,
+  `felix-client`, `felix-loadgen` and `felixctl` together, then publishes them
+  to crates.io in that order (`PUBLISH_CRATES`), skipping any version already
+  there.
+
+### crates.io credentials
+
+The crates.io job uses the `CARGO_REGISTRY_TOKEN` secret when it is set, and
+trusted publishing otherwise. crates.io only allows a trusted publisher on a
+crate that already exists, so a release that adds a crate name publishes it
+with the token, which needs the `publish-new` scope for that name. After that
+release you can, optionally:
+
+1. On crates.io, add a trusted publisher to each new crate: repository
+   `gabloe/felix`, workflow `release.yml`, environment `crates-io`.
+2. Once every crate has one, run `gh secret delete CARGO_REGISTRY_TOKEN` and
+   revoke the token. Later releases then publish with no stored credential.
+
+npm has the same limit with no token fallback, so a new npm package name is
+published once by hand with `scripts/npm_first_publish.sh`.
+
+### Rehearsing a release
+
+`dry_run` builds everything (binaries, archives, images, wheels, addons and
+crate packages) and publishes nothing. `ref` builds a branch or commit as if
+it were `tag`, so the rehearsal can run before the tag exists:
+
+```bash
+gh workflow run release.yml --ref main \
+  -f tag=v0.6.0-preview -f ref=main -f dry_run=true
+```
+
+`ref` without `dry_run` fails the run. The felixctl archives are kept as a
+workflow artifact named `felixctl-<tag>-archives`.
 
 ## Self-hosted runners
 
