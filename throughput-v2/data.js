@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790905071303,
+  "lastUpdate": 1790930670700,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22048,6 +22048,58 @@ window.BENCHMARK_DATA = {
             "range": "3936.73",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 818820.46\nmean: 817590.04\nstdev: 3936.73\ncv: 0.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "efc43abf5dc3faa2a12d6f6523b62104cf37e38e",
+          "message": "perf(broker): send a lone subscriber event without waiting for a batch (#926) (#927)\n\n* perf(broker): send a lone subscriber event without waiting for a batch (#926)\n\nThe lane feeder drained the subscription with a deadline on every batch,\nso a single event in flight waited out FELIX_EVENT_BATCH_MAX_DELAY_US\nfor a batch that never filled. A batch now takes what is already queued\nwith try_recv and flushes; it waits for more, up to the delay, only\nafter the previous batch found events queued behind its first.\n\n* chore: note the spec is unaffected\n\nSpec-Unaffected: the change is to subscriber event batching in the serving\nlayer; the model covers the lease, the write path's lease and generation\nchecks, replication and handoff, none of which this touches.\n\n* perf(broker): never arm a batch timer when the delay is zero\n\ntokio rounds every timer deadline up to the next 1 ms tick, so a busy\nfeeder with FELIX_EVENT_BATCH_MAX_DELAY_US=0 still waited up to a\nmillisecond on `timeout_at(now)`. With a zero delay the feeder now takes\nonly what is already queued and flushes.\n\nSpec-Unaffected: subscriber batching is not modelled",
+          "timestamp": "2026-10-02T01:40:51-07:00",
+          "tree_id": "fc1017463991bfdfd558cc7ba693b5ede5e626d5",
+          "url": "https://github.com/gabloe/felix/commit/efc43abf5dc3faa2a12d6f6523b62104cf37e38e"
+        },
+        "date": 1790930669949,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 345221.34,
+            "range": "12645.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345221.34\nmean: 340527.61\nstdev: 12645.71\ncv: 3.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 345221.34,
+            "range": "12645.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345221.34\nmean: 340527.61\nstdev: 12645.71\ncv: 3.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80976.98,
+            "range": "288.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80976.98\nmean: 80910.12\nstdev: 288.16\ncv: 0.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 809769.78,
+            "range": "2881.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 809769.78\nmean: 809101.15\nstdev: 2881.57\ncv: 0.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
