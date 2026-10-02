@@ -124,8 +124,39 @@ resolve_ref() {
 # fetch_file <vm> <remote-path> <local-path>: pull a small file home through
 # run-command's ~4 KB output cap, 3000 bytes a call. Meant for folded stacks
 # (gzip+base64), not bulk data.
+# blob_sas: a read/write SAS URL for this session's artifact container, made on
+# first use and cached for 5 h (the SAS lives 6). The container is in the
+# session's resource group, so teardown deletes it with everything else.
+blob_sas() {
+  local cache="${here}/sessions/${SESSION}.blob" acct key exp sas age
+  if [ -s "${cache}" ]; then
+    age=$(( $(date +%s) - $(stat -f %m "${cache}" 2>/dev/null || stat -c %Y "${cache}") ))
+    [ "${age}" -lt 18000 ] && { cat "${cache}"; return 0; }
+  fi
+  acct="felixperf$(printf '%s' "${GROUP}" | shasum | cut -c1-12)"
+  az storage account show -g "${GROUP}" -n "${acct}" -o none 2>/dev/null \
+    || az storage account create -g "${GROUP}" -n "${acct}" --sku Standard_LRS \
+         --min-tls-version TLS1_2 --allow-blob-public-access false -o none || return 1
+  key="$(az storage account keys list -g "${GROUP}" -n "${acct}" --query '[0].value' -o tsv)" || return 1
+  az storage container create --account-name "${acct}" --account-key "${key}" -n artifacts -o none || return 1
+  exp="$(date -u -v+6H +%Y-%m-%dT%H:%MZ 2>/dev/null || date -u -d '+6 hours' +%Y-%m-%dT%H:%MZ)"
+  sas="$(az storage container generate-sas --account-name "${acct}" --account-key "${key}" \
+    -n artifacts --permissions rcw --expiry "${exp}" -o tsv)" || return 1
+  ( umask 077; printf 'https://%s.blob.core.windows.net/artifacts?%s\n' "${acct}" "${sas}" > "${cache}" )
+  cat "${cache}"
+}
+
 fetch_file() {
-  local vm="$1" src="$2" dst="$3" size off=0 part
+  local vm="$1" src="$2" dst="$3" size off=0 part sas url
+  # One PUT to blob storage and one GET, instead of a run-command per 3 KB.
+  if [ "${FETCH_VIA_BLOB:-1}" = 1 ] && sas="$(blob_sas 2>/dev/null)" && [ -n "${sas}" ]; then
+    url="${sas%%\?*}/${SESSION}/${vm}/$(date +%s)-$(basename "${src}")?${sas#*\?}"
+    if run_on_str "${vm}" "curl -fsS -X PUT -H 'x-ms-blob-type: BlockBlob' --data-binary @'${src}' '${url}'
+echo __RUNOK__" >/dev/null 2>&1 && curl -fsS -o "${dst}" "${url}"; then
+      return 0
+    fi
+    echo "!! blob fetch of ${src} from ${vm} failed; falling back to chunks" >&2
+  fi
   size="$(agent_on "${vm}" "printf '__SIZE_BEGIN__%s__SIZE_END__\n' \"\$(wc -c < '${src}')\"" | extract_between SIZE)"
   [ -n "${size}" ] || { echo "!! ${src} not readable on ${vm}" >&2; return 1; }
   : > "${dst}"
