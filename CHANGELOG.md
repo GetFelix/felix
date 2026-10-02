@@ -760,6 +760,12 @@ for what the current release guarantees.
 
 ### Fixed
 
+- **A broker's rotated refresh token is no longer world-readable (#913).** Each
+  rotation wrote `FELIX_NODE_REFRESH_TOKEN_FILE` through a temporary created
+  with the default mode, so 0644 under the usual umask, even when the operator
+  had created the original 0600. The temporary is now created 0600, and a stale
+  one left by a crash is removed first rather than reused with its old mode.
+
 - **`FELIX_EVENT_BATCH_MAX_DELAY_US` bounds the whole batch (#719).** The
   subscriber feeder restarted the delay on every event, so a publisher sending
   faster than one event per delay held each subscriber's events until 64 had
