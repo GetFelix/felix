@@ -115,6 +115,46 @@ fn global_flags_work_after_the_command() {
 }
 
 #[test]
+fn every_command_takes_every_global_flag() {
+    // A command argument sharing a global flag's id replaces it, and the
+    // flag is then refused on that command.
+    let root = Cli::command();
+    let globals: Vec<&str> = root
+        .get_arguments()
+        .filter(|arg| arg.is_global_set())
+        .filter_map(|arg| arg.get_long())
+        .collect();
+    let mut missing = Vec::new();
+    for (name, command) in all_commands() {
+        // clap's generated `help` subcommands take no flags at all.
+        if name.split(' ').any(|word| word == "help") {
+            continue;
+        }
+        for long in &globals {
+            if !command
+                .get_arguments()
+                .any(|arg| arg.get_long() == Some(long))
+            {
+                missing.push(format!("{name} --{long}"));
+            }
+        }
+    }
+    assert!(missing.is_empty(), "refused: {missing:?}");
+}
+
+#[test]
+fn connection_flags_parse_on_commands_that_ignore_them() {
+    for args in [
+        &["node", "ls", "--tenant", "t", "-n", "ns", "--token", "x"][..],
+        &["shard", "ls", "--tenant", "t"],
+        &["tenant", "info", "t1", "--tenant", "t1"],
+        &["namespace", "info", "ns", "--namespace", "ns"],
+    ] {
+        parse(args).unwrap_or_else(|err| panic!("{args:?}: {err}"));
+    }
+}
+
+#[test]
 fn pub_flags_parse() {
     let cli = parse(&[
         "pub", "orders", "x", "--key", "k", "--count", "3", "--ack", "none",

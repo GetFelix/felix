@@ -551,7 +551,9 @@ pub(crate) enum TenantCommand {
   felixctl tenant info t1"
     )]
     Info {
+        // Its own id: one named `tenant` would replace the global --tenant here.
         /// Tenant id
+        #[arg(id = "tenant_id", value_name = "TENANT")]
         tenant: String,
     },
 }
@@ -573,7 +575,9 @@ pub(crate) enum NamespaceCommand {
   felixctl namespace info default"
     )]
     Info {
+        // Its own id: one named `namespace` would replace the global --namespace.
         /// Namespace name
+        #[arg(id = "namespace_name", value_name = "NAMESPACE")]
         namespace: String,
     },
 }

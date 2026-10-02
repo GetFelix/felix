@@ -100,11 +100,39 @@ impl Env {
         ]
     }
 
-    /// Run `felixctl` with `args`, the connection flags and this config file.
+    /// Run `felixctl` with `args`, the connection flags `args` does not
+    /// already set, and this config file.
     pub(crate) async fn felixctl(&self, cluster: &Cluster, args: &[&str]) -> Run {
-        let mut all: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
-        all.extend(self.flags(cluster));
-        self.run(&all, &[], None).await
+        self.run(&with_flags(args, self.flags(cluster)), &[], None)
+            .await
+    }
+
+    /// The offset of the first record in shard 0 of `stream` that is not one
+    /// of the harness's readiness probes. Their number is not fixed, and a
+    /// publish ack carries no offset when the broker acks on enqueue, so a
+    /// test finds where its own records start by reading.
+    pub(crate) async fn first_after_probes(&self, cluster: &Cluster, stream: &str) -> u64 {
+        let mut offset = 0;
+        loop {
+            let from = offset.to_string();
+            let run = self
+                .felixctl(
+                    cluster,
+                    &[
+                        "sub", stream, "--shard", "0", "--from", &from, "--count", "1", "--json",
+                    ],
+                )
+                .await
+                .ok();
+            let event = run.json();
+            let at = event["offset"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("no offset: {}", run.stdout));
+            if event["payload"] != "harness-probe" {
+                return at;
+            }
+            offset = at + 1;
+        }
     }
 
     /// Run `felixctl` with only `args`, the given environment, and `stdin`.
@@ -116,6 +144,53 @@ impl Env {
     ) -> Run {
         run_felixctl(self.dir.path(), &self.config(), args, env, stdin).await
     }
+}
+
+/// `args` followed by each `--flag value` pair in `flags` that `args` does not
+/// set itself. clap refuses a flag given twice, so a test overriding one
+/// connection flag must not also get the default.
+fn with_flags(args: &[&str], flags: Vec<String>) -> Vec<String> {
+    let mut all: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+    let mut flags = flags.into_iter();
+    while let (Some(name), Some(value)) = (flags.next(), flags.next()) {
+        if !args.contains(&name.as_str()) {
+            all.push(name);
+            all.push(value);
+        }
+    }
+    all
+}
+
+#[test]
+fn an_explicit_flag_replaces_the_default() {
+    let defaults = ["--tenant", "t1", "--controlplane-token", "default"]
+        .map(String::from)
+        .to_vec();
+    assert_eq!(
+        with_flags(
+            &["tenant", "ls", "--controlplane-token", "admin"],
+            defaults.clone()
+        ),
+        [
+            "tenant",
+            "ls",
+            "--controlplane-token",
+            "admin",
+            "--tenant",
+            "t1"
+        ]
+    );
+    assert_eq!(
+        with_flags(&["tenant", "ls"], defaults),
+        [
+            "tenant",
+            "ls",
+            "--tenant",
+            "t1",
+            "--controlplane-token",
+            "default"
+        ]
+    );
 }
 
 /// Run the binary with a clean environment: only `HOME`, `PATH`, the config

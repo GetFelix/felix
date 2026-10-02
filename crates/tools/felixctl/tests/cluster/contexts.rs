@@ -65,9 +65,10 @@ async fn a_context_carries_the_connection() {
     env.run(&args(&["pub", "orders", "via-context"]), &[], None)
         .await
         .ok();
+    let offset = env.first_after_probes(&cluster, "orders").await.to_string();
     let run = env
         .run(
-            &args(&["sub", "orders", "--from", "earliest", "--count", "1"]),
+            &args(&["sub", "orders", "--from", &offset, "--count", "1"]),
             &[],
             None,
         )
