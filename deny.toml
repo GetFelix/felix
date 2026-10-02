@@ -54,6 +54,9 @@ confidence-threshold = 0.8
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# A path-only dev-dependency on an unpublished test crate is dropped on publish,
+# so it is not a wildcard anyone resolves (felixctl -> felix-cluster).
+allow-wildcard-paths = true
 deny = [
   # NOTE: We require RSA via jsonwebtoken for OIDC RS256 validation.
   # Remove only if OIDC validation migrates to non-RSA algorithms.
