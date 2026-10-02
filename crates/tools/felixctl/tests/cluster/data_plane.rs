@@ -24,11 +24,6 @@ async fn publish_subscribe_cache_and_topology_against_a_cluster() {
         .await
         .ok();
     assert_eq!(run.json()["published"], 1);
-    // The harness's readiness probes sit ahead of it, so read from here.
-    let first = run.json()["offsets"][0]
-        .as_u64()
-        .unwrap_or_else(|| panic!("no offset: {}", run.stdout));
-    let first_arg = first.to_string();
 
     let mut args: Vec<String> = vec!["pub".into(), "orders".into(), "--json".into()];
     args.extend(env.flags(&cluster));
@@ -52,6 +47,8 @@ async fn publish_subscribe_cache_and_topology_against_a_cluster() {
     assert_eq!(run.json()["published"], 3);
 
     // Read it all back, in order, with offsets.
+    let first = env.first_after_probes(&cluster, "orders").await;
+    let first_arg = first.to_string();
     let run = env
         .felixctl(
             &cluster,

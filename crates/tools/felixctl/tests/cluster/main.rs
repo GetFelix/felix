@@ -107,6 +107,34 @@ impl Env {
             .await
     }
 
+    /// The offset of the first record in shard 0 of `stream` that is not one
+    /// of the harness's readiness probes. Their number is not fixed, and a
+    /// publish ack carries no offset when the broker acks on enqueue, so a
+    /// test finds where its own records start by reading.
+    pub(crate) async fn first_after_probes(&self, cluster: &Cluster, stream: &str) -> u64 {
+        let mut offset = 0;
+        loop {
+            let from = offset.to_string();
+            let run = self
+                .felixctl(
+                    cluster,
+                    &[
+                        "sub", stream, "--shard", "0", "--from", &from, "--count", "1", "--json",
+                    ],
+                )
+                .await
+                .ok();
+            let event = run.json();
+            let at = event["offset"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("no offset: {}", run.stdout));
+            if event["payload"] != "harness-probe" {
+                return at;
+            }
+            offset = at + 1;
+        }
+    }
+
     /// Run `felixctl` with only `args`, the given environment, and `stdin`.
     pub(crate) async fn run(
         &self,
