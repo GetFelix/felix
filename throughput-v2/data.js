@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790897240471,
+  "lastUpdate": 1790904806131,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -21944,6 +21944,58 @@ window.BENCHMARK_DATA = {
             "range": "9024.51",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 808404.92\nmean: 810083.41\nstdev: 9024.51\ncv: 1.11%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d005902eb8ead3b8a7dfd55f136e27852f63b9f9",
+          "message": "fix(broker): write the rotated refresh token 0600 (#914)\n\npersist() created the temporary with File::create, so mode 0666 minus the\numask (0644 usually), and renamed it over FELIX_NODE_REFRESH_TOKEN_FILE.\nAfter the first rotation the node's 30-day refresh token was readable by\nevery local user, whatever mode the operator gave the original. Create the\ntemporary 0600 and remove a stale one first, since the mode only applies on\ncreation.\n\nCloses #913",
+          "timestamp": "2026-10-01T18:30:45-07:00",
+          "tree_id": "36a4e09d854d1e840ea517bdf5bdb40adac690b8",
+          "url": "https://github.com/gabloe/felix/commit/d005902eb8ead3b8a7dfd55f136e27852f63b9f9"
+        },
+        "date": 1790904805377,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 712507.15,
+            "range": "40693.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 712507.15\nmean: 715693.35\nstdev: 40693.51\ncv: 5.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 712507.15,
+            "range": "40693.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 712507.15\nmean: 715693.35\nstdev: 40693.51\ncv: 5.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 168068.33,
+            "range": "3970.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 168068.33\nmean: 167365.28\nstdev: 3970.46\ncv: 2.37%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1680683.33,
+            "range": "39704.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1680683.33\nmean: 1673652.77\nstdev: 39704.62\ncv: 2.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
