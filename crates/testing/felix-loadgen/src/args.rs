@@ -30,6 +30,8 @@ pub(crate) fn usage() -> ! {
   --stream <name>             stream for pubsub (default: perf)
   --keys <n>                  ingest: spread batches over n routing keys (default 0,
                               unkeyed -- every record lands on shard 0)
+  --shards <n>                ingest: the stream's shard count, so --keys can be chosen
+                              to cover every shard (default: ask the broker)
   --in-flight <n>             ingest: acked batches each publisher keeps outstanding
                               (default 0, fire-and-forget)
   --duration-secs <n>         ingest: publish for n seconds instead of --total records
@@ -135,6 +137,7 @@ pub(crate) fn parse_args() -> Result<Args> {
             // shard 0 regardless of the stream's shard count -- which is what
             // made every multi-shard measurement so far a single-shard one.
             "--keys" => ingest.keys = value("--keys")?.parse().context("--keys")?,
+            "--shards" => ingest.shards = Some(value("--shards")?.parse().context("--shards")?),
             "--in-flight" => {
                 ingest.in_flight = value("--in-flight")?.parse().context("--in-flight")?
             }
