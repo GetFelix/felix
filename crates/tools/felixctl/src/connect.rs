@@ -2,14 +2,9 @@
 //! from resolved [`Settings`] with `felix-client`'s public API only.
 
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Context as _;
-use felix_client::{Client, ClientConfig, ClusterClient};
-use rustls::RootCertStore;
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use felix_client::{Client, ClientConfig, ClientIdentity, ClusterClient};
 
 use crate::context::Settings;
 use crate::error::{Exit, MarkExit, fail};
@@ -105,75 +100,25 @@ fn quic_tls(settings: &Settings) -> anyhow::Result<quinn::ClientConfig> {
     let roots = settings
         .ca_file
         .as_deref()
-        .map(root_store)
-        .transpose()?
+        .map(felix_client::root_store_from_pem_file)
+        .transpose()
+        .mark(Exit::Usage, "read the CA file")?
         .map(Arc::new);
-    let identity = match (&settings.client_cert_file, &settings.client_key_file) {
-        (None, None) => None,
-        (Some(cert), Some(key)) => Some((cert.as_path(), key.as_path())),
+    match (&settings.client_cert_file, &settings.client_key_file) {
+        (None, None) => felix_client::quic_client_config(roots, settings.alpn),
+        (Some(cert), Some(key)) => {
+            let identity = ClientIdentity::from_pem_files(cert, key)
+                .mark(Exit::Usage, "read the client certificate")?;
+            felix_client::quic_client_config_with_identity(roots, identity, settings.alpn)
+        }
         _ => {
             return Err(fail(
                 Exit::Usage,
                 "a client certificate needs both --client-cert-file and --client-key-file",
             ));
         }
-    };
-    let Some((cert, key)) = identity else {
-        // The library's own setup covers everything but a client certificate.
-        return felix_client::quic_client_config(roots, settings.alpn)
-            .mark(Exit::Usage, "set up TLS");
-    };
-
-    // felix-client has no helper for a client certificate; its docs say to
-    // build the rustls config, which is what this does.
-    let chain = CertificateDer::pem_file_iter(cert)
-        .and_then(|certs| certs.collect::<Result<Vec<_>, _>>())
-        .mark(Exit::Usage, format!("read {}", cert.display()))?;
-    let key =
-        PrivateKeyDer::from_pem_file(key).mark(Exit::Usage, format!("read {}", key.display()))?;
-    let builder = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::aws_lc_rs::default_provider(),
-    ))
-    .with_protocol_versions(&[&rustls::version::TLS13])
-    .context("TLS 1.3")?;
-    let builder = match roots {
-        Some(roots) => builder.with_root_certificates(roots),
-        None => {
-            use rustls_platform_verifier::BuilderVerifierExt;
-            builder
-                .with_platform_verifier()
-                .context("the platform trust store")?
-        }
-    };
-    let mut tls = builder
-        .with_client_auth_cert(chain, key)
-        .mark(Exit::Usage, "use the client certificate")?;
-    if settings.alpn {
-        tls.alpn_protocols = vec![felix_wire::CLIENT_ALPN.to_vec()];
     }
-    let crypto =
-        quinn::crypto::rustls::QuicClientConfig::try_from(tls).context("QUIC client TLS")?;
-    Ok(quinn::ClientConfig::new(Arc::new(crypto)))
-}
-
-fn root_store(path: &Path) -> anyhow::Result<RootCertStore> {
-    let mut roots = RootCertStore::empty();
-    let certs = CertificateDer::pem_file_iter(path)
-        .and_then(|certs| certs.collect::<Result<Vec<_>, _>>())
-        .mark(Exit::Usage, format!("read {}", path.display()))?;
-    if certs.is_empty() {
-        return Err(fail(
-            Exit::Usage,
-            format!("{} holds no certificates", path.display()),
-        ));
-    }
-    for cert in certs {
-        roots.add(cert).mark(
-            Exit::Usage,
-            format!("trust a certificate from {}", path.display()),
-        )?;
-    }
-    Ok(roots)
+    .mark(Exit::Usage, "set up TLS")
 }
 
 #[cfg(test)]

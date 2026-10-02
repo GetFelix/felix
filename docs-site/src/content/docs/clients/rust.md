@@ -143,9 +143,24 @@ let config = ClientConfig::optimized_defaults(quinn);
 
 A broker with `FELIX_TLS_REQUIRE_ALPN=true` serves only clients that offer
 `felix/1`. A broker older than ALPN support refuses them, so offer it only once
-every broker you connect to is current. If you build the rustls config yourself
-(for a client certificate, say), set `alpn_protocols` to
-`vec![felix_wire::CLIENT_ALPN.to_vec()]` to offer it.
+every broker you connect to is current.
+
+To trust a private CA and present a client certificate, read both from PEM
+files:
+
+```rust
+use std::sync::Arc;
+use felix_client::{ClientIdentity, quic_client_config_with_identity, root_store_from_pem_file};
+
+let roots = Arc::new(root_store_from_pem_file("ca.pem")?);
+let identity = ClientIdentity::from_pem_files("client.pem", "client.key")?;
+let quinn = quic_client_config_with_identity(Some(roots), identity, true)?;
+```
+
+`ClientIdentity::new` takes a chain and key you already hold. Each loader
+names the file it could not use. For anything else, build the rustls config
+yourself and set `alpn_protocols` to `vec![felix_wire::CLIENT_ALPN.to_vec()]`
+to offer `felix/1`.
 
 ### Configuration Tuning
 

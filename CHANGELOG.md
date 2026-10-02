@@ -16,6 +16,11 @@ for what the current release guarantees.
 - `felix-client` re-exports `AckMode`, `BrokerEndpoint` and `ShardRouting`,
   so an application no longer needs `felix-wire` as a direct dependency to
   call it. (#937)
+- `quic_client_config_with_identity` presents a client certificate, and
+  `ClientIdentity::from_pem_files` and `root_store_from_pem_file` read one and
+  a CA from PEM files, so mutual TLS no longer means building the rustls
+  config by hand. felixctl uses them and drops its `rustls` and `felix-wire`
+  dependencies. (#937)
 
 ### Changed
 

@@ -40,8 +40,8 @@
 //! - `cache`: the cache workers and [`CacheWatch`].
 //! - `cluster`: [`ClusterClient`] and the sharded views built on it.
 //! - `config`: [`ClientConfig`], its defaults, and the env and YAML overrides.
-//! - `tls`: [`quic_client_config`], the QUIC TLS setup, and whether it offers
-//!   the `felix/1` ALPN.
+//! - `tls`: [`quic_client_config`], the QUIC TLS setup, whether it offers
+//!   the `felix/1` ALPN, and a client certificate ([`ClientIdentity`]).
 //! - `telemetry` and [`timings`]: counters and sampled timings, mostly
 //!   compiled out unless the `telemetry` feature is on.
 
@@ -86,7 +86,9 @@ pub use subscribe::{Event, ShardMoved, Subscription};
 pub use telemetry::{
     FrameCountersSnapshot, frame_counters_snapshot, publishes_forwarded, reset_frame_counters,
 };
-pub use tls::quic_client_config;
+pub use tls::{
+    ClientIdentity, quic_client_config, quic_client_config_with_identity, root_store_from_pem_file,
+};
 
 pub use felix_wire::routing::ShardRouting;
 pub use felix_wire::{
