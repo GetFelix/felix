@@ -192,7 +192,8 @@ Which broker the client reached decides which you get. `--idempotent` and
 `Quorum` streams are always answered after the write.
 `--ack none` sends without waiting, and still flushes before exiting.
 `--idempotent` publishes through an idempotent producer, so a re-send after a
-reconnect cannot duplicate a record; it cannot be combined with `--key`.
+reconnect cannot duplicate a record. With `--key`, the producer keeps a
+sequence for the key's shard.
 
 ## Subscribing
 
@@ -208,7 +209,8 @@ Without `--shard`, every shard of the stream is read and merged; the order
 between shards is not defined. `--format raw` prints each payload on a line,
 `offsets` prefixes the shard and offset, and `json` (or `--json`) prints one
 object per message with `payload`, or `payload_base64` for bytes that are not
-UTF-8. The subscription follows a shard that moves to another broker.
+UTF-8. The subscription follows a shard that moves to another broker, with or
+without `--shard`.
 
 ## Caches
 
@@ -246,8 +248,10 @@ broker-1  127.0.0.1:65027
 broker-2  127.0.0.1:50410
 ```
 
-The shard count and the brokers come from a broker. Shard owners come from the
-control plane, so they are shown only when a control-plane URL is set.
+The shard count, each shard's owner and the brokers come from a broker.
+Replicas and assignment state come from the control plane, so those columns are
+filled only when a control-plane URL is set. A broker older than this release
+cannot name owners; against one, owners come from the control plane too.
 
 ## The control plane
 

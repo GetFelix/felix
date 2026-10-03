@@ -196,7 +196,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use felix_client::{Client, ClientConfig, quic_client_config};
-use felix_wire::AckMode;
+use felix_client::AckMode;
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 

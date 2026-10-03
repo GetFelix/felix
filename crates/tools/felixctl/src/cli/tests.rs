@@ -179,9 +179,20 @@ fn pub_flags_parse() {
 
 #[test]
 fn pub_refuses_contradictions() {
-    assert!(parse(&["pub", "s", "--idempotent", "--key", "k", "x"]).is_err());
     assert!(parse(&["pub", "s", "x", "--file", "f"]).is_err());
     assert!(parse(&["pub", "s", "--file", "f", "--whole"]).is_err());
+}
+
+#[test]
+fn an_idempotent_publish_may_be_keyed() {
+    let Some(Command::Pub(args)) = parse(&["pub", "s", "--idempotent", "--key", "k", "x"])
+        .expect("parse")
+        .command
+    else {
+        panic!("not pub");
+    };
+    assert!(args.idempotent);
+    assert_eq!(args.key.as_deref(), Some("k"));
 }
 
 #[test]

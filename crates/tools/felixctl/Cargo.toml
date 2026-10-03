@@ -24,14 +24,9 @@ clap = { workspace = true, features = ["string"] }
 clap_complete = { workspace = true }
 clap_mangen = { workspace = true }
 felix-client = { path = "../../sdk/felix-client", version = "0.6.0-preview" }
-# `AckMode`, `BrokerEndpoint` and `ShardRouting` appear in felix-client's
-# signatures without being re-exported by it.
-felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview" }
 felix-loadgen = { path = "../../testing/felix-loadgen", version = "0.6.0-preview" }
 quinn = { workspace = true }
 reqwest = { workspace = true }
-rustls = { workspace = true }
-rustls-platform-verifier = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-std", "io-util"] }

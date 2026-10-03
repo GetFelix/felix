@@ -1,7 +1,8 @@
 //! A producer whose publishes land once, however many times they are sent.
 //!
 //! The broker hands out a producer id; the producer numbers its batches on
-//! each stream from zero and sends the number with the batch. The shard's
+//! each shard from zero and sends the number with the batch. An unkeyed
+//! batch goes to shard 0; a keyed one to the shard its key routes to. The shard's
 //! leader appends the number it expects and answers a re-send of one it
 //! already holds, so a batch the producer never got an answer for can be
 //! sent again without a second copy landing. On a durable stream the numbers
@@ -31,6 +32,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
+use bytes::Bytes;
+use felix_wire::routing::ShardRouting;
 use tokio::sync::Mutex;
 
 use crate::client::Client;
@@ -40,8 +43,9 @@ use crate::{PublishRefusalReason, PublishRefused};
 /// A producer whose batches are appended once, however many times they are
 /// sent. See the module documentation.
 ///
-/// One sequence per stream, so a producer may publish to several streams;
-/// calls on one stream are serialised, since the sequence has to be. A batch
+/// One sequence per shard, so a producer may publish to several streams and,
+/// with keys, to several shards of one; calls are serialised, since each
+/// sequence has to be. A batch
 /// of any size takes one sequence. [`Self::publish_batches`] keeps several
 /// batches of one call in flight at once.
 pub struct IdempotentProducer<'a> {
@@ -54,10 +58,14 @@ pub struct IdempotentProducer<'a> {
     /// cursor lock already is: publishes on this producer serialise behind that
     /// lock whatever stream they are for.
     in_doubt: AtomicBool,
-    cursors: Mutex<HashMap<(String, String, String), Cursor>>,
-    /// The broker a refusal named as the leader of a stream, kept so the next
+    /// Per shard, because that is what the leader numbers. An unkeyed batch
+    /// is shard 0's.
+    cursors: Mutex<HashMap<ShardKey, Cursor>>,
+    /// The broker a refusal named as the leader of a shard, kept so the next
     /// batch goes straight there rather than being refused again.
-    leaders: Mutex<HashMap<(String, String, String), Arc<Client>>>,
+    leaders: Mutex<HashMap<ShardKey, Arc<Client>>>,
+    /// Each keyed stream's width and mapping, asked once.
+    widths: Mutex<HashMap<StreamKey, (u32, ShardRouting)>>,
 }
 
 impl<'a> IdempotentProducer<'a> {
@@ -76,6 +84,7 @@ impl<'a> IdempotentProducer<'a> {
             in_doubt: AtomicBool::new(false),
             cursors: Mutex::new(HashMap::new()),
             leaders: Mutex::new(HashMap::new()),
+            widths: Mutex::new(HashMap::new()),
         }
     }
 
@@ -133,7 +142,49 @@ impl<'a> IdempotentProducer<'a> {
         payloads: Vec<Vec<u8>>,
     ) -> Result<Option<u64>> {
         let offsets = self
-            .publish_batches_at(tenant_id, namespace, stream, vec![payloads])
+            .publish_batches_at(tenant_id, namespace, stream, None, vec![payloads])
+            .await?;
+        Ok(offsets.first().copied().flatten())
+    }
+
+    /// [`Self::publish`] with a routing key, which decides the shard as it
+    /// does for [`Publisher::publish_keyed`](crate::Publisher::publish_keyed).
+    pub async fn publish_keyed(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        key: Bytes,
+        payload: Vec<u8>,
+    ) -> Result<Option<u64>> {
+        self.publish_batch_keyed(tenant_id, namespace, stream, key, vec![payload])
+            .await
+    }
+
+    /// [`Self::publish_batch`] with a routing key, which decides the shard.
+    ///
+    /// The leader numbers batches per shard, so this producer keeps a
+    /// sequence per shard: keys that share a shard share its sequence, and
+    /// the rules of [`Self::publish_batch`] apply to that shard. A batch in
+    /// doubt is re-sent only with the same key as well as the same payloads.
+    ///
+    /// The shard is worked out here from the stream's width and mapping,
+    /// asked of the broker once, so this needs one that advertises
+    /// `FEATURE_STREAM_SHARDS` and fails without sending anything otherwise.
+    /// If the stream's width changed after it was asked, a batch can reach a
+    /// shard whose sequence it does not continue; the leader refuses that as
+    /// a gap, which ends the producer on that shard rather than misplacing a
+    /// record.
+    pub async fn publish_batch_keyed(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        key: Bytes,
+        payloads: Vec<Vec<u8>>,
+    ) -> Result<Option<u64>> {
+        let offsets = self
+            .publish_batches_at(tenant_id, namespace, stream, Some(key), vec![payloads])
             .await?;
         Ok(offsets.first().copied().flatten())
     }
@@ -161,7 +212,7 @@ impl<'a> IdempotentProducer<'a> {
         stream: &str,
         batches: Vec<Vec<Vec<u8>>>,
     ) -> Result<()> {
-        self.publish_batches_at(tenant_id, namespace, stream, batches)
+        self.publish_batches_at(tenant_id, namespace, stream, None, batches)
             .await
             .map(|_| ())
     }
@@ -173,12 +224,17 @@ impl<'a> IdempotentProducer<'a> {
         tenant_id: &str,
         namespace: &str,
         stream: &str,
+        routing_key: Option<Bytes>,
         batches: Vec<Vec<Vec<u8>>>,
     ) -> Result<Vec<Option<u64>>> {
+        let shard = self
+            .shard_for(tenant_id, namespace, stream, routing_key.as_deref())
+            .await?;
         let key = (
             tenant_id.to_string(),
             namespace.to_string(),
             stream.to_string(),
+            shard,
         );
         if self.in_doubt.load(Ordering::Acquire) {
             anyhow::bail!(
@@ -199,9 +255,22 @@ impl<'a> IdempotentProducer<'a> {
             Some(Cursor::Next(sequence)) => (*sequence, Vec::new()),
             Some(Cursor::InDoubt {
                 sequence,
+                routing_key: pending_key,
                 batches: pending,
                 settled,
             }) => {
+                // Another key on the same shard is a different record, however
+                // alike the payloads, and the leader would answer it from
+                // memory without appending it.
+                if *pending_key != routing_key {
+                    anyhow::bail!(
+                        "the last batch on this shard failed without a definite answer, so \
+                         sequence {sequence} may already hold it. A batch with another key \
+                         under that sequence would be acknowledged without being appended, \
+                         so it is not sent: re-send the same batch with the same key, or \
+                         call producer_init for a fresh producer.",
+                    );
+                }
                 // The same call again: what it already landed is not sent.
                 if !settled.is_empty()
                     && batches.starts_with(settled)
@@ -232,9 +301,7 @@ impl<'a> IdempotentProducer<'a> {
         // those two points the caller's future may be dropped, and that is the
         // window where the cursor and the broker can disagree.
         let cancelled = InDoubtOnCancel::armed(&self.in_doubt);
-        let (acked, result) = self
-            .send(tenant_id, namespace, stream, &batches, first, &key)
-            .await;
+        let (acked, result) = self.send(&key, routing_key.as_ref(), &batches, first).await;
         cancelled.disarm();
         let settled = first + acked.len() as u64;
         match result {
@@ -248,6 +315,7 @@ impl<'a> IdempotentProducer<'a> {
                     key,
                     Cursor::InDoubt {
                         sequence: settled,
+                        routing_key,
                         batches: doubted,
                         settled: Vec::new(),
                     },
@@ -269,6 +337,7 @@ impl<'a> IdempotentProducer<'a> {
                         unsettled.extend(doubted);
                         Cursor::InDoubt {
                             sequence: settled,
+                            routing_key,
                             batches: unsettled,
                             settled: batches,
                         }
@@ -286,16 +355,14 @@ impl<'a> IdempotentProducer<'a> {
     /// same numbers: a re-send is safe *because* the numbers did not move.
     async fn send(
         &self,
-        tenant_id: &str,
-        namespace: &str,
-        stream: &str,
+        key: &ShardKey,
+        routing_key: Option<&Bytes>,
         batches: &[Vec<Vec<u8>>],
         first: u64,
-        key: &(String, String, String),
     ) -> (Vec<Option<u64>>, Result<()>) {
         match self.source {
             Source::Single(client) => {
-                self.send_via(client, tenant_id, namespace, stream, batches, first, key)
+                self.send_via(client, key, routing_key, batches, first)
                     .await
             }
             Source::Cluster(cluster) => {
@@ -331,12 +398,10 @@ impl<'a> IdempotentProducer<'a> {
                     let (settled, result) = self
                         .send_via(
                             &client,
-                            tenant_id,
-                            namespace,
-                            stream,
+                            key,
+                            routing_key,
                             &batches[acked.len()..],
                             first + acked.len() as u64,
-                            key,
                         )
                         .await;
                     acked.extend(settled);
@@ -382,23 +447,20 @@ impl<'a> IdempotentProducer<'a> {
         }
     }
 
-    /// Send to the stream's leader if one is remembered, else to `client`,
+    /// Send to the shard's leader if one is remembered, else to `client`,
     /// following one not-leader refusal to the broker it names.
-    #[allow(clippy::too_many_arguments)]
     async fn send_via(
         &self,
         client: &Client,
-        tenant_id: &str,
-        namespace: &str,
-        stream: &str,
+        key: &ShardKey,
+        routing_key: Option<&Bytes>,
         batches: &[Vec<Vec<u8>>],
         first: u64,
-        key: &(String, String, String),
     ) -> (Vec<Option<u64>>, Result<()>) {
         let remembered = self.leaders.lock().await.get(key).cloned();
         let target = remembered.as_deref().unwrap_or(client);
         let (acked, first_result) = self
-            .publish_on(target, tenant_id, namespace, stream, batches, first)
+            .publish_on(target, key, routing_key, batches, first)
             .await;
         let err = match first_result {
             Ok(()) => return (acked, Ok(())),
@@ -451,9 +513,7 @@ impl<'a> IdempotentProducer<'a> {
                 Err(err) => return (acked, Err(err)),
             },
         };
-        let (more, result) = self
-            .publish_on(&leader, tenant_id, namespace, stream, rest, next)
-            .await;
+        let (more, result) = self.publish_on(&leader, key, routing_key, rest, next).await;
         if result.is_ok() {
             self.leaders.lock().await.insert(key.clone(), leader);
         }
@@ -465,9 +525,8 @@ impl<'a> IdempotentProducer<'a> {
     async fn publish_on(
         &self,
         client: &Client,
-        tenant_id: &str,
-        namespace: &str,
-        stream: &str,
+        key: &ShardKey,
+        routing_key: Option<&Bytes>,
         batches: &[Vec<Vec<u8>>],
         first: u64,
     ) -> (Vec<Option<u64>>, Result<()>) {
@@ -483,16 +542,82 @@ impl<'a> IdempotentProducer<'a> {
         };
         publisher
             .publish_idempotent_pipelined(
-                tenant_id,
-                namespace,
-                stream,
+                &key.0,
+                &key.1,
+                &key.2,
+                routing_key,
+                key.3,
                 batches,
                 self.producer_id,
                 first,
             )
             .await
     }
+
+    /// The shard a batch's sequence belongs to: 0 without a key, else the one
+    /// the broker would route the key to.
+    ///
+    /// Unlike a plain keyed publish, which falls back to shard 0 when the
+    /// width is unknown and lets the broker route, a guess here would number
+    /// the batch against the wrong shard's sequence. So an unknown width is
+    /// an error.
+    async fn shard_for(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        routing_key: Option<&[u8]>,
+    ) -> Result<u32> {
+        let Some(routing_key) = routing_key else {
+            return Ok(0);
+        };
+        let stream_key: StreamKey = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        let known = self.widths.lock().await.get(&stream_key).copied();
+        let (shards, routing) = match known {
+            Some(width) => width,
+            None => {
+                let client = match self.source {
+                    Source::Single(client) => {
+                        client.stream_routing(tenant_id, namespace, stream).await
+                    }
+                    Source::Cluster(cluster) => {
+                        cluster
+                            .client()
+                            .await
+                            .stream_routing(tenant_id, namespace, stream)
+                            .await
+                    }
+                };
+                let width = client.with_context(|| {
+                    format!(
+                        "learn {stream}'s shards, to number a keyed batch against the right one"
+                    )
+                })?;
+                anyhow::ensure!(
+                    width.0 > 0,
+                    "the broker knows of no stream {stream} in {tenant_id}/{namespace}"
+                );
+                self.widths.lock().await.insert(stream_key, width);
+                width
+            }
+        };
+        Ok(felix_wire::routing::shard_for_routing(
+            routing,
+            shards,
+            Some(routing_key),
+        ))
+    }
 }
+
+/// A stream.
+type StreamKey = (String, String, String);
+
+/// One shard of one stream: what a sequence numbers.
+type ShardKey = (String, String, String, u32);
 
 /// True when the shorter of `a` and `b` is a prefix of the other.
 fn starts_alike(a: &[Vec<Vec<u8>>], b: &[Vec<Vec<u8>>]) -> bool {
@@ -516,6 +641,8 @@ enum Cursor {
     /// those numbers again.
     InDoubt {
         sequence: u64,
+        /// The key they went with. Only the same key may re-send them.
+        routing_key: Option<Bytes>,
         batches: Vec<Vec<Vec<u8>>>,
         /// The batches of the failing call that were acknowledged, so the
         /// same call made again re-sends only the rest.

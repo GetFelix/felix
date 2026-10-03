@@ -23,7 +23,7 @@ one in use from the other endpoints when it fails.
 ```rust,no_run
 use std::time::Duration;
 use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy};
-use felix_wire::AckMode;
+use felix_client::AckMode;
 
 # async fn example(quinn: quinn::ClientConfig) -> anyhow::Result<()> {
 let mut config = ClientConfig::from_env_or_yaml(quinn, None)?;
@@ -148,8 +148,8 @@ cache watches itself, after delivering everything it committed, and its last
 frame on each says where the shard went and where to resume (`shard_moved`, see
 `docs/protocol.md`, "Shard moves").
 
-**A `ClusterClient` subscription follows the shard.** `ClusterClient::subscribe`
-and `subscribe_from` return a `ClusterSubscription`, and its `next_event`
+**A `ClusterClient` subscription follows the shard.** `ClusterClient::subscribe`,
+`subscribe_from` and `subscribe_shard` return a `ClusterSubscription`, and its `next_event`
 resubscribes on the new owner by itself, so a move looks like a short pause:
 
 ```rust,no_run
@@ -404,7 +404,14 @@ it (see "Error codes" in `docs/protocol.md`):
   client.
 - A subscribe, cache watch or group request whose redirect target answers
   `shard_unavailable` or `draining` goes back to the entry broker once.
-- Opening a subscription (`subscribe`, `subscribe_from`, `subscribe_sharded`)
+- A cache request (`cache_put`, `cache_get`, `cache_delete`, `counter_add`,
+  `counter_get`) goes to the key's owner, learned once per cache from
+  `shard_owners`, or through the entry broker, which forwards. An owner that
+  fails is forgotten. A write is then sent through the entry broker only if the
+  owner said it applied nothing, as a publish is; a read is always asked again
+  once.
+- Opening a subscription (`subscribe`, `subscribe_from`, `subscribe_shard`,
+  `subscribe_sharded`)
   retries a `retry` or `retry_after` refusal with the policy's attempts and
   backoff, as a publish does. A `fatal` one is returned at once.
 

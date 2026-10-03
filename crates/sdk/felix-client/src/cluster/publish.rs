@@ -165,6 +165,36 @@ impl ClusterClient {
         Ok(IdempotentProducer::for_cluster(self, producer_id))
     }
 
+    /// Wait until every publish already handed to this client has been
+    /// written and, if it asked for one, acknowledged, then close the publish
+    /// streams.
+    ///
+    /// Call it before exiting after `AckMode::None` publishes, which return
+    /// once queued: without it, records still queued are lost with the
+    /// process. It covers every broker this client holds a connection to, and
+    /// on each both the pooled streams and the per-shard streams, so
+    /// publishes that went straight to a shard's owner are flushed as well as
+    /// those sent through the entry broker.
+    ///
+    /// This ends publishing through this client, as [`Publisher::finish`]
+    /// does for one broker: later publishes fail. Every broker is finished
+    /// even when one fails, and the first failure is returned.
+    ///
+    /// [`Publisher::finish`]: crate::Publisher::finish
+    pub async fn finish(&self) -> Result<()> {
+        let mut first: Option<anyhow::Error> = None;
+        for client in self.nodes.clients().await {
+            // The shard publisher finishes the pooled streams and the shard
+            // streams this client's publishes go on.
+            let finished = client.shard_publisher().finish().await;
+            if let Err(err) = finished {
+                let err = err.context(format!("finish publishing to {}", client.dialled()));
+                first.get_or_insert(err);
+            }
+        }
+        first.map_or(Ok(()), Err)
+    }
+
     /// One publish to one shard: through its cached owner when there is one,
     /// else through the entry broker, which forwards.
     async fn publish_to_shard(

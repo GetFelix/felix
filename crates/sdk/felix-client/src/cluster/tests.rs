@@ -1,6 +1,8 @@
+mod cache_routing;
 mod connections;
 mod decisions;
 mod error_codes;
+mod keyed_producer;
 mod offsets;
 mod stub_broker;
 

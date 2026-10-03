@@ -52,6 +52,12 @@ impl Publisher {
         )
     }
 
+    /// Whether the broker takes this idempotent batch as a binary frame: a
+    /// keyed one also needs the keyed layout.
+    pub(super) fn supports_binary_idempotent_for(&self, key: Option<&bytes::Bytes>) -> bool {
+        self.supports_binary_idempotent() && (key.is_none() || self.supports_binary_keyed())
+    }
+
     pub(super) async fn publish_batch_binary_inner(
         &self,
         key: Option<&[u8]>,

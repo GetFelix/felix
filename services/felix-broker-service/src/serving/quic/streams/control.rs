@@ -426,6 +426,24 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 discovery::cache_shards(&cx, &mut session, tenant_id, namespace, cache, request_id)
                     .await?
             }
+            Message::ShardOwners {
+                tenant_id,
+                namespace,
+                name,
+                kind,
+                request_id,
+            } => {
+                discovery::shard_owners(
+                    &cx,
+                    &mut session,
+                    tenant_id,
+                    namespace,
+                    name,
+                    kind,
+                    request_id,
+                )
+                .await?
+            }
             Message::Subscribe {
                 tenant_id,
                 namespace,
@@ -774,6 +792,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             | Message::TopologyView { .. }
             | Message::StreamShardsView { .. }
             | Message::CacheShardsView { .. }
+            | Message::ShardOwnersView { .. }
             | Message::NotLeader { .. }
             | Message::Ok => {
                 // Protocol hygiene: these message types should never arrive on the control stream

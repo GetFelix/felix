@@ -11,6 +11,37 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Added
+
+- `felix-client` re-exports `AckMode`, `BrokerEndpoint` and `ShardRouting`,
+  so an application no longer needs `felix-wire` as a direct dependency to
+  call it. (#937)
+- `quic_client_config_with_identity` presents a client certificate, and
+  `ClientIdentity::from_pem_files` and `root_store_from_pem_file` read one and
+  a CA from PEM files, so mutual TLS no longer means building the rustls
+  config by hand. felixctl uses them and drops its `rustls` and `felix-wire`
+  dependencies. (#937)
+- `ClusterClient::subscribe_shard` subscribes to one chosen shard and follows
+  it to its owner and through moves, as `subscribe_from` does for shard 0.
+  `felixctl sub --shard` uses it, so it now follows a moved shard too. (#937)
+- `ClusterClient::finish` flushes unacknowledged publishes on every broker the
+  client holds before the process exits. `felixctl pub --ack none` now
+  publishes through the cluster client and calls it. (#937)
+- `IdempotentProducer::publish_keyed` and `publish_batch_keyed` publish
+  idempotently with a routing key. The producer keeps a sequence per shard,
+  which is what the leader checks, rather than one per stream. `felixctl pub`
+  accepts `--idempotent` with `--key`. (#937)
+- Brokers answer `shard_owners` (`FEATURE_SHARD_OWNERS`, `0x4_0000`): which
+  broker owns each shard of a stream or cache, with its client address and
+  generation.
+  `Client::shard_owners` asks it. `felixctl topology` takes owners from the
+  broker and needs a control-plane URL only for replicas and state. (#937)
+- `ClusterClient` has `cache_put`, `cache_get`, `cache_delete`, `counter_add`
+  and `counter_get`. Each goes to the key's shard owner when the client knows
+  it (asked once per cache with `shard_owners`), else through the broker in
+  use, which forwards; a failed read is asked again once, a write is not sent
+  twice. `felixctl cache` uses them. (#937)
+
 ### Changed
 
 - `felixctl pub` says how many acknowledgements came back without an offset

@@ -26,3 +26,35 @@ fn owners_are_the_named_streams_or_caches_assignments() {
     assert_eq!(caches.len(), 1);
     assert!(shard_owners(all, "t2", "default", "orders", "stream").is_empty());
 }
+
+#[test]
+fn a_row_takes_the_owner_from_the_broker_and_replicas_from_the_control_plane() {
+    let owner = ShardOwner {
+        shard: 0,
+        node_id: Some("b2".into()),
+        addr: Some("10.0.0.2:5000".into()),
+        generation: 7,
+        unavailable: None,
+    };
+    let assignment = json!({
+        "shard": 0, "leader": "b1", "replicas": ["b1", "b2"],
+        "generation": 6, "state": "active",
+    });
+    let brokers = vec![("b1".to_string(), "10.0.0.1:5000".to_string())];
+
+    let row = shard_row(0, Some(&owner), Some(&assignment), &brokers);
+    assert_eq!(
+        row["leader"], "b2",
+        "the broker's answer is the fresher one"
+    );
+    assert_eq!(row["leader_addr"], "10.0.0.2:5000");
+    assert_eq!(row["generation"], 7);
+    assert_eq!(row["replicas"], json!(["b1", "b2"]));
+    assert_eq!(row["state"], "active");
+
+    // A broker too old to say falls back on the assignment.
+    let row = shard_row(0, None, Some(&assignment), &brokers);
+    assert_eq!(row["leader"], "b1");
+    assert_eq!(row["leader_addr"], "10.0.0.1:5000");
+    assert_eq!(row["generation"], 6);
+}

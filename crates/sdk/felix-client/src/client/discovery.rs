@@ -1,6 +1,6 @@
-//! What a broker can tell a [`Client`] about the cluster: its brokers, and how
-//! many shards a stream or cache has. Each question refuses to be asked of a
-//! broker that did not advertise it.
+//! What a broker can tell a [`Client`] about the cluster: its brokers, how
+//! many shards a stream or cache has, and who owns each. Each question refuses
+//! to be asked of a broker that did not advertise it.
 
 use anyhow::{Context, Result};
 use bytes::BytesMut;
@@ -24,6 +24,11 @@ impl Client {
     /// Whether this broker answers [`Client::cache_shards`].
     pub fn supports_cache_shards(&self) -> bool {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_CACHE_SHARDS)
+    }
+
+    /// Whether this broker answers [`Client::shard_owners`].
+    pub fn supports_shard_owners(&self) -> bool {
+        felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_SHARD_OWNERS)
     }
 
     /// Ask the broker which brokers a client may connect to.
@@ -224,6 +229,81 @@ impl Client {
                 "unexpected cache shards response: {other:?}"
             )),
             None => Err(anyhow::anyhow!("cache shards response missing")),
+        }
+    }
+
+    /// Which broker owns each shard of a stream or cache, as this broker's
+    /// routing snapshot sees it: one [`ShardOwner`](crate::ShardOwner) per
+    /// shard, in shard order.
+    ///
+    /// Empty means this broker knows nothing of it. A broker not in a cluster
+    /// answers one shard with no node id, since it serves everything itself.
+    /// A shard nobody can serve right now has no node id and says why in
+    /// `unavailable`. The answer is a snapshot and can be stale the way a
+    /// redirect can; a request sent on it is still routed correctly.
+    ///
+    /// Fails without sending anything when the broker did not advertise
+    /// [`felix_wire::FEATURE_SHARD_OWNERS`].
+    pub async fn shard_owners(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        kind: crate::ShardKind,
+    ) -> Result<Vec<crate::ShardOwner>> {
+        if !self.supports_shard_owners() {
+            anyhow::bail!("broker does not report shard owners");
+        }
+        if tenant_id != self.auth_tenant_id {
+            return Err(anyhow::anyhow!(
+                "tenant mismatch: client auth is scoped to {}",
+                self.auth_tenant_id
+            ));
+        }
+        let OpenedStream {
+            mut send,
+            mut recv,
+            lease: _lease,
+            ..
+        } = self.open_event_stream().await?;
+        let request_id = self
+            .cache_request_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        write_message(
+            &mut send,
+            Message::ShardOwners {
+                tenant_id: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                name: name.to_string(),
+                kind,
+                request_id,
+            },
+        )
+        .await
+        .context("send shard owners request")?;
+        let mut scratch = BytesMut::with_capacity(4 * 1024);
+        let answer =
+            read_message_with_limit(&mut recv, &mut scratch, self.runtime_config.max_frame_bytes)
+                .await?;
+        let _ = send.finish();
+        match answer {
+            Some(Message::ShardOwnersView { owners, .. }) => Ok(owners),
+            Some(Message::Error {
+                message,
+                code,
+                retry,
+                detail,
+            }) => Err(crate::error::refused(
+                "shard owners rejected",
+                message,
+                code,
+                retry,
+                detail,
+            )),
+            Some(other) => Err(anyhow::anyhow!(
+                "unexpected shard owners response: {other:?}"
+            )),
+            None => Err(anyhow::anyhow!("shard owners response missing")),
         }
     }
 }

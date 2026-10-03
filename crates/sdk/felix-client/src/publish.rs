@@ -361,15 +361,46 @@ impl Publisher {
         producer_id: u64,
         sequence: u64,
     ) -> Result<Option<u64>> {
-        // Idempotent batches are unkeyed, so they are shard 0's.
-        let worker = self.route(tenant_id, namespace, stream, Some(0)).await?;
-        if self.supports_binary_idempotent() {
+        self.publish_idempotent_batch_routed(
+            tenant_id,
+            namespace,
+            stream,
+            None,
+            0,
+            payloads,
+            producer_id,
+            sequence,
+        )
+        .await
+    }
+
+    /// [`Self::publish_idempotent_batch`] with an optional routing key, which
+    /// decides the shard and so whose sequence `sequence` is. `shard` is the
+    /// one the key resolves to (0 without one), which puts the batch on that
+    /// shard's stream when this publisher has shard streams.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn publish_idempotent_batch_routed(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        key: Option<&bytes::Bytes>,
+        shard: u32,
+        payloads: Vec<Vec<u8>>,
+        producer_id: u64,
+        sequence: u64,
+    ) -> Result<Option<u64>> {
+        let worker = self
+            .route(tenant_id, namespace, stream, Some(shard))
+            .await?;
+        if self.supports_binary_idempotent_for(key) {
             let response_rx = self
                 .enqueue_idempotent_binary(
                     &worker,
                     tenant_id,
                     namespace,
                     stream,
+                    key,
                     payloads,
                     producer_id,
                     sequence,
@@ -389,7 +420,7 @@ impl Publisher {
             namespace: namespace.to_string(),
             stream: stream.to_string(),
             payloads,
-            key: None,
+            key: key.cloned(),
             request_id,
             producer_id,
             sequence,
@@ -410,21 +441,27 @@ impl Publisher {
     ///
     /// Without a window, or against a broker that cannot take a binary
     /// idempotent batch, this sends one batch at a time.
+    ///
+    /// `shard` is the shard whose sequences these are: `key`'s, or 0 without
+    /// one. A publisher with shard streams sends them on that shard's stream,
+    /// so a shard's sequences only ever go out on one writer.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn publish_idempotent_pipelined(
         &self,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
+        key: Option<&bytes::Bytes>,
+        shard: u32,
         batches: &[Vec<Vec<u8>>],
         producer_id: u64,
         first_sequence: u64,
     ) -> (Vec<Option<u64>>, Result<()>) {
-        let worker = match self.route(tenant_id, namespace, stream, Some(0)).await {
+        let worker = match self.route(tenant_id, namespace, stream, Some(shard)).await {
             Ok(worker) => worker,
             Err(err) => return (Vec::new(), Err(err)),
         };
-        let window = if self.supports_binary_idempotent() {
+        let window = if self.supports_binary_idempotent_for(key) {
             (worker.publish_window as usize).min(IDEMPOTENT_PIPELINE_MAX)
         } else {
             0
@@ -433,10 +470,12 @@ impl Publisher {
         if window <= 1 {
             for (index, payloads) in batches.iter().enumerate() {
                 match self
-                    .publish_idempotent_batch(
+                    .publish_idempotent_batch_routed(
                         tenant_id,
                         namespace,
                         stream,
+                        key,
+                        shard,
                         payloads.clone(),
                         producer_id,
                         first_sequence + index as u64,
@@ -459,6 +498,7 @@ impl Publisher {
                         tenant_id,
                         namespace,
                         stream,
+                        key,
                         batches[sent].clone(),
                         producer_id,
                         first_sequence + sent as u64,
@@ -518,6 +558,7 @@ impl Publisher {
         tenant_id: &str,
         namespace: &str,
         stream: &str,
+        key: Option<&bytes::Bytes>,
         payloads: Vec<Vec<u8>>,
         producer_id: u64,
         sequence: u64,
@@ -530,7 +571,7 @@ impl Publisher {
                 producer_id,
                 sequence,
             },
-            None,
+            key.map(bytes::Bytes::as_ref),
             tenant_id,
             namespace,
             stream,

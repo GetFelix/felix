@@ -43,6 +43,7 @@
 //! cluster's answer turns out to be -- which is what makes it safe to take the
 //! answer at all.
 
+mod cache;
 mod cache_watch;
 mod commit;
 mod follow;
@@ -88,8 +89,7 @@ const MAX_REDIRECTS: usize = 3;
 ///
 /// ```rust,no_run
 /// use std::time::Duration;
-/// use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy};
-/// use felix_wire::AckMode;
+/// use felix_client::{AckMode, ClientConfig, ClusterClient, ReconnectPolicy};
 ///
 /// # async fn example(quinn: quinn::ClientConfig) -> anyhow::Result<()> {
 /// let mut config = ClientConfig::from_env_or_yaml(quinn, None)?;
@@ -168,6 +168,10 @@ pub struct ClusterClient {
     /// different answer, and a group redirect carries no fresher generation
     /// to arbitrate between the two.
     group_routes: RwLock<HashMap<ShardKey, Arc<Client>>>,
+    /// Each cache's shard owners, asked once and dropped when a request to
+    /// one fails. Apart from `owners` because a cache and a stream may share
+    /// a name, and its entries carry no generation to compare.
+    cache_routes: RwLock<HashMap<StreamKey, Arc<cache::CacheOwners>>>,
     /// The one client per broker that every field above draws from, so a
     /// broker costs one connection however many roles it plays.
     nodes: nodes::Nodes,
@@ -200,6 +204,7 @@ impl ClusterClient {
             owners: RwLock::new(HashMap::new()),
             shards: RwLock::new(HashMap::new()),
             group_routes: RwLock::new(HashMap::new()),
+            cache_routes: RwLock::new(HashMap::new()),
             nodes,
         };
         cluster.discover().await;

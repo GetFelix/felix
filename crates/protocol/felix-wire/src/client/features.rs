@@ -203,6 +203,15 @@ pub const FEATURE_ATOMIC_COMMIT: u32 = 0x0001_0000;
 /// bit the window is shared by every stream on the connection, which is what a
 /// client must assume of a broker that predates it.
 pub const FEATURE_STREAM_PUBLISH_WINDOW: u32 = 0x0002_0000;
+
+/// The broker answers `shard_owners`: which broker owns each shard of a
+/// stream or cache.
+///
+/// Advertised by a *broker*, like `FEATURE_CACHE_SHARDS`. A client learns an
+/// owner otherwise only by sending something to the shard and being
+/// redirected or forwarded.
+pub const FEATURE_SHARD_OWNERS: u32 = 0x0004_0000;
+
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -221,7 +230,8 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_SEQUENCE_REUSED
     | FEATURE_PUBLISH_PIPELINE
     | FEATURE_ATOMIC_COMMIT
-    | FEATURE_STREAM_PUBLISH_WINDOW;
+    | FEATURE_STREAM_PUBLISH_WINDOW
+    | FEATURE_SHARD_OWNERS;
 
 /// True if `features` advertises `feature`.
 pub fn supports_feature(features: u32, feature: u32) -> bool {

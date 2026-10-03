@@ -56,7 +56,7 @@ subscribers as unmeasured.
 Send several payloads in one request:
 
 ```rust
-use felix_wire::AckMode;
+use felix_client::AckMode;
 
 let mut batch = Vec::new();
 for i in 0..64 {

@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
     let publisher = client.publisher().await?;
 
     // Publish a message
-    use felix_wire::AckMode;
+    use felix_client::AckMode;
     publisher
         .publish(
             "acme",           // tenant_id
@@ -143,9 +143,24 @@ let config = ClientConfig::optimized_defaults(quinn);
 
 A broker with `FELIX_TLS_REQUIRE_ALPN=true` serves only clients that offer
 `felix/1`. A broker older than ALPN support refuses them, so offer it only once
-every broker you connect to is current. If you build the rustls config yourself
-(for a client certificate, say), set `alpn_protocols` to
-`vec![felix_wire::CLIENT_ALPN.to_vec()]` to offer it.
+every broker you connect to is current.
+
+To trust a private CA and present a client certificate, read both from PEM
+files:
+
+```rust
+use std::sync::Arc;
+use felix_client::{ClientIdentity, quic_client_config_with_identity, root_store_from_pem_file};
+
+let roots = Arc::new(root_store_from_pem_file("ca.pem")?);
+let identity = ClientIdentity::from_pem_files("client.pem", "client.key")?;
+let quinn = quic_client_config_with_identity(Some(roots), identity, true)?;
+```
+
+`ClientIdentity::new` takes a chain and key you already hold. Each loader
+names the file it could not use. For anything else, build the rustls config
+yourself and set `alpn_protocols` to `vec![felix_wire::CLIENT_ALPN.to_vec()]`
+to offer `felix/1`.
 
 ### Configuration Tuning
 
@@ -184,7 +199,7 @@ let config = ClientConfig {
 
 ```rust
 // Fire-and-forget (no ack)
-use felix_wire::AckMode;
+use felix_client::AckMode;
 let publisher = client.publisher().await?;
 publisher
     .publish("acme", "prod", "events", b"message".to_vec(), AckMode::None)
@@ -279,7 +294,7 @@ For high-throughput publishing, use the `Publisher` API:
 
 ```rust
 use felix_client::Publisher;
-use felix_wire::AckMode;
+use felix_client::AckMode;
 
 // Create publisher (uses ClientConfig settings)
 let publisher = client.publisher().await?;
@@ -416,6 +431,22 @@ producer
     .await?;
 ```
 
+`publish_keyed` and `publish_batch_keyed` take a routing key, which picks the
+shard as it does for a plain keyed publish. The leader numbers batches per
+shard, so the producer keeps one sequence per shard: keys on the same shard
+share it, and an unkeyed batch is shard 0's. The producer works out the shard
+itself from the stream's width, asked once of a broker advertising
+`FEATURE_STREAM_SHARDS`, and fails without sending if it cannot learn it.
+Under a `ClusterClient` each shard's batches go on that shard's own publish
+stream, as its other publishes do; a plain `Client`'s producer stays on the
+hashed pool with the rest of that client's publishes.
+
+```rust
+producer
+    .publish_keyed("acme", "prod", "orders", Bytes::from("customer-42"), payload)
+    .await?;
+```
+
 One call at a time waits a round trip per batch. `publish_batches` sends several
 batches in one call and keeps up to a window of them unanswered at once, under
 consecutive sequences:
@@ -481,10 +512,11 @@ why, and you take a fresh id. A producer is cheap to re-initialise.
 :::
 
 A publish that returns an error other than a refusal is in doubt for the same
-reason, but the producer still has the batch. The next call on that stream must
-be the same batch: it goes out under the same sequence and lands once. A call
-with a different batch fails without sending anything, so either re-send until
-it succeeds or take a fresh id.
+reason, but the producer still has the batch. The next call on that shard must
+be the same batch, with the same key: it goes out under the same sequence and
+lands once. A call with a different batch, or another key on the same shard,
+fails without sending anything, so either re-send until it succeeds or take a
+fresh id.
 
 ## Subscribing
 
@@ -635,8 +667,9 @@ A rebalance or a drain can move a stream's shard to another broker. The old
 owner delivers everything it committed, then ends the subscription with a
 `shard_moved` frame saying where the shard went and where to resume.
 
-`ClusterClient::subscribe` and `subscribe_from` return a `ClusterSubscription`
-that follows the shard on its own: `next_event` resubscribes on the new owner
+`ClusterClient::subscribe` and `subscribe_from` (shard 0), and
+`subscribe_shard` (a shard you name), return a `ClusterSubscription` that
+follows the shard on its own: `next_event` resubscribes on the new owner
 and carries on. On a durable stream it resumes at
 `max(last delivered offset + 1, resume_from)`, so nothing is repeated or
 skipped; an in-memory stream resumes at the new owner's tail. `moves()` counts
@@ -1085,6 +1118,23 @@ shard, and `resubscribe_sharded` takes it back. See
 [Multi-node client](https://github.com/gabloe/felix/blob/main/docs/multi-node-client.md)
 for the full contract.
 
+`Client::shard_owners(tenant, namespace, name, ShardKind::Stream)` (or
+`ShardKind::Cache`) says which broker owns each shard: one `ShardOwner` per
+shard with its node id, client address and generation, from the answering
+broker's routing snapshot. It needs `FEATURE_SHARD_OWNERS`.
+
+Cache and counter calls (`cache_put`, `cache_get`, `cache_delete`,
+`counter_add`, `counter_get`) are on `ClusterClient` too. Each goes to the owner
+of the key's shard, asked once per cache with `shard_owners`, and otherwise
+through the broker in use, which forwards. A write that may have been applied
+is not sent twice, as for `publish`; a failed read is asked again once.
+
+An `AckMode::None` publish returns once it is queued. Call
+`ClusterClient::finish()` before exiting: it waits until everything queued on
+every broker the client holds has been written, then closes the publish
+streams, so publishing through that client afterwards fails.
+`Publisher::finish()` does the same for one `Client`.
+
 Prefix watches on a multi-shard cache work the same way. `watch_cache_sharded`
 opens one watch per shard and merges them. The retained version sends
 `ShardedCacheWatchItem::StateComplete` once every shard's current values have
@@ -1165,7 +1215,7 @@ runtime: the client's tasks live on the runtime that created it, so a client
 built on a throwaway runtime dies with that runtime.
 
 ```rust
-use felix_wire::AckMode;
+use felix_client::AckMode;
 use std::net::SocketAddr;
 use tokio::sync::OnceCell;
 
@@ -1201,7 +1251,7 @@ async fn publish_with_retry(
     data: &[u8],
     max_retries: u32
 ) -> Result<()> {
-    use felix_wire::AckMode;
+    use felix_client::AckMode;
     let publisher = client.publisher().await?;
     for attempt in 0..max_retries {
         match publisher
@@ -1243,7 +1293,7 @@ fn safe_to_resend(error: &anyhow::Error) -> bool {
 ### Batching for Throughput
 
 ```rust
-use felix_wire::AckMode;
+use felix_client::AckMode;
 use tokio::time::{interval, Duration};
 
 async fn batching_publisher(client: &Client) -> Result<()> {
@@ -1341,5 +1391,9 @@ anything else from a measurement; see
 | Counters | `counter_add()`, `counter_get()` | Durable counters |
 | Consumer groups | `group_poll()`, `group_ack()`, `group_nack()` | Work queues |
 | Cluster | `ClusterClient::connect()` | Multi-broker, reconnects and follows redirects |
+| One shard | `ClusterClient::subscribe_shard()` | Follow a chosen shard through moves |
+| Flush | `ClusterClient::finish()`, `Publisher::finish()` | Before exit, after `AckMode::None` |
+| Shard owners | `Client::shard_owners()` | Which broker owns each shard |
+| Mutual TLS | `quic_client_config_with_identity()` | Present a client certificate |
 
 For complete API documentation, see the [rustdoc](https://docs.rs/felix-client).

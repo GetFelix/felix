@@ -246,7 +246,7 @@ graph LR
 
 ```rust
 // Publish to two streams
-use felix_wire::AckMode;
+use felix_client::AckMode;
 let publisher = client.publisher().await?;
 publisher
     .publish("acme", "prod", "user-login", login_event, AckMode::None)
@@ -262,7 +262,7 @@ publisher
 
 ```rust
 // Batch publish preserves order within the batch
-use felix_wire::AckMode;
+use felix_client::AckMode;
 let publisher = client.publisher().await?;
 let messages = vec![msg1, msg2, msg3];
 publisher
@@ -747,7 +747,7 @@ Applications can test semantic guarantees:
 ```rust
 // Publish ordered batch
 let messages = vec!["msg1", "msg2", "msg3"];
-use felix_wire::AckMode;
+use felix_client::AckMode;
 let publisher = client.publisher().await?;
 publisher
     .publish_batch("test", "default", "orders", messages, AckMode::PerBatch)
