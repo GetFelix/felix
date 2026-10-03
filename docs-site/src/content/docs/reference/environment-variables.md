@@ -317,6 +317,11 @@ export FELIX_ACK_ON_COMMIT="yes"
 - `false`: Fire-and-forget, lower latency
 - `true`: Explicit acks, higher latency guarantee
 
+A client can ask for the `true` behaviour on its own connections without
+changing it for everyone: `ClientConfig::ack_on_commit` in felix-client offers
+`FEATURE_ACK_ON_COMMIT`, and its acknowledged publishes are then answered after
+the write, with their offsets.
+
 ### `FELIX_MAX_FRAME_BYTES`
 
 **Description**: Maximum frame size accepted on QUIC streams.

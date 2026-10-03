@@ -102,6 +102,12 @@ pub struct ClientConfig {
     /// latency measurement. Benchmarks only: it changes what subscribers
     /// receive. Has no effect without the `telemetry` feature.
     pub bench_embed_ts: bool,
+    /// Ask every broker to answer acknowledged publishes after the write,
+    /// with the offset, as `FELIX_ACK_ON_COMMIT=true` does broker-wide. Slower
+    /// per publish. A broker that predates it ignores it, and
+    /// [`crate::Client::supports_ack_on_commit`] says whether a broker
+    /// honours it.
+    pub ack_on_commit: bool,
 }
 
 impl ClientConfig {
@@ -138,6 +144,7 @@ impl ClientConfig {
             cache_send_window: DEFAULT_CACHE_SEND_WINDOW,
             event_router_max_pending: DEFAULT_EVENT_ROUTER_MAX_PENDING,
             client_sub_queue_capacity: DEFAULT_CLIENT_SUB_QUEUE_CAPACITY,
+            ack_on_commit: false,
             client_sub_queue_policy: ClientSubQueuePolicy::DropNew,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             bench_embed_ts: false,
