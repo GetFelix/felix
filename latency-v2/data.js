@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791062925400,
+  "lastUpdate": 1791067259299,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -29832,6 +29832,72 @@ window.BENCHMARK_DATA = {
             "range": "177.66",
             "unit": "us",
             "extra": "trials: 5\nmedian: 624.00\nmean: 672.40\nstdev: 177.66\ncv: 26.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7f3ac092f80288473b9ca8d4e8c226c2f6f96432",
+          "message": "feat(groups): a restarted member takes back its predecessor's claims (#1002)\n\n* feat(groups): a restarted member takes back its predecessor's claims\n\nClaims carried no consumer identity, so a member that restarted got newer\nrecords first and its predecessor's only after the visibility timeout. A\ngroup_poll may now name its consumer, recorded on the claims it takes, and\nwith reclaim that member's standing claims are owed again before anything\nelse. Negotiated as FEATURE_GROUP_CONSUMER; the fields are left out when\nunused, so older brokers read the same request.\n\nSpec-Unaffected: changes which consumer a claim is recorded against and when a standing claim becomes owed within one leader; the durable cursor, the lease, the mark and promotion are untouched.\n\nCloses #962.\n\n* fix(broker): map set_stream_retention errors with BrokerError::from\n\n* fix(groups): scope a member to its principal and reclaim once per connection\n\nA consumer name is capped at 128 bytes and refused past it, and claims\nshare one interned key per member instead of a copy each. A member is the\nname plus the authenticated principal, so naming another principal's\nmember reaches none of its claims.\n\nA connection's first reclaim reserves the claims the member holds from\nolder connections. They go back to it before owed records, across polls\nwhen max_records is smaller, until taken back or lapsed. Later reclaims\non the connection, and reclaims from older connections, are ordinary\npolls, so a client that always sets reclaim or two live processes under\none name cannot keep burning attempts.\n\nConnection ids now count up per process: quinn's stable_id is an address\nand can repeat, which would let a restarted member look like its\npredecessor.\n\n* test(groups): leave the captured frames out of an assertion message\n\n* test(groups): name the failing refusal by index instead of printing them",
+          "timestamp": "2026-10-03T15:35:49-07:00",
+          "tree_id": "4b8c63cbd4ef73294859c8818c55c9a2782a6ae5",
+          "url": "https://github.com/gabloe/felix/commit/7f3ac092f80288473b9ca8d4e8c226c2f6f96432"
+        },
+        "date": 1791067256498,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 180,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 180.00\nmean: 180.00\nstdev: 1.00\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 249,
+            "range": "2.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 249.00\nmean: 248.40\nstdev: 2.51\ncv: 1.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 305,
+            "range": "38.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 305.00\nmean: 315.60\nstdev: 38.47\ncv: 12.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 215,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 215.00\nmean: 214.40\nstdev: 0.89\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 429,
+            "range": "6.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 429.00\nmean: 431.60\nstdev: 6.58\ncv: 1.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 604,
+            "range": "332.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 604.00\nmean: 827.40\nstdev: 332.49\ncv: 40.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
