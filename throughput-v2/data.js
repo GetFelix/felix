@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791054561862,
+  "lastUpdate": 1791055017738,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -23088,6 +23088,58 @@ window.BENCHMARK_DATA = {
             "range": "5488.79",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1035669.96\nmean: 1032809.18\nstdev: 5488.79\ncv: 0.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f5fb1d41fadac223eb6fe99a6f1da2a625df6b17",
+          "message": "fix(client): resolve brokers that advertise a DNS name (#994)\n\nClusterClient kept only advertised client addresses that parsed as IP\naddresses, so discovery silently dropped brokers advertising names, and\nowners, redirects and moved-shard hints given by name fell back to the entry\nbroker. Every advertised address now goes through one resolver, which looks a\nname up each time, logs one that does not resolve, and remembers it as what\nthat broker's certificate is checked against. The broker refuses a client\nadvertise address that is not host:port at startup.\n\nCloses #982.",
+          "timestamp": "2026-10-03T12:12:42-07:00",
+          "tree_id": "e7ed3ff005e2106d9beece8182d852759ae02b8a",
+          "url": "https://github.com/gabloe/felix/commit/f5fb1d41fadac223eb6fe99a6f1da2a625df6b17"
+        },
+        "date": 1791055016592,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 703351.06,
+            "range": "37196.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 703351.06\nmean: 712829.53\nstdev: 37196.42\ncv: 5.22%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 703351.06,
+            "range": "37196.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 703351.06\nmean: 712829.53\nstdev: 37196.42\ncv: 5.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 163119.62,
+            "range": "3841.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 163119.62\nmean: 161986.17\nstdev: 3841.64\ncv: 2.37%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1631196.18,
+            "range": "38416.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1631196.18\nmean: 1619861.67\nstdev: 38416.38\ncv: 2.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
