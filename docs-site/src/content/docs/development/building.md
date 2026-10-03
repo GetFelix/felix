@@ -165,8 +165,9 @@ Pushing a `v*` tag runs `release.yml`. A tag with a `-` suffix
   `.sha256` for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
   `aarch64-apple-darwin`, `x86_64-apple-darwin` and `x86_64-pc-windows-msvc`.
   Each holds the binary, its README and LICENSE, `completions/` and `man/`;
-- pushes and signs `ghcr.io/<owner>/felix-broker`, `felix-controlplane` and
-  `felixctl` for linux/amd64 and linux/arm64, when `PUBLISH_IMAGES` is `true`;
+- builds `ghcr.io/<owner>/felix-broker`, `felix-controlplane` and `felixctl`
+  for linux/amd64 and linux/arm64, each on a runner of that architecture, and
+  when `PUBLISH_IMAGES` is `true` pushes them as one multi-arch tag and signs it;
 - after the Python and Node conformance suites pass, attaches the wheels and
   Node addons and publishes them to PyPI (`PUBLISH_PYPI`) and npm
   (`PUBLISH_NPM`);

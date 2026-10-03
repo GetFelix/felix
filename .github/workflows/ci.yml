@@ -51,8 +51,9 @@ jobs:
   #
   # The release workflow builds these too, but only on a tag — which would mean
   # discovering a broken Dockerfile at the moment of a release. amd64 only here:
-  # arm64 is emulated and slow, and what a PR needs to know is whether the file
-  # still describes a working build. The multi-arch build stays on the tag.
+  # what a PR needs to know is whether the file still describes a working build,
+  # and a second architecture would double the cost of finding out. The
+  # multi-arch build stays on the tag.
   images:
     name: Container images build
     runs-on: ubuntu-latest
