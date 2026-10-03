@@ -126,6 +126,15 @@ for what the current release guarantees.
   registered in that moment was never ended and looked like a quiet key. It
   is now answered `shard_unavailable` (`moving`), and the client retries
   where the shard is served. (#986)
+- **Many subscriptions on one connection no longer lose deliveries at the
+  default queue bound.** A publish fanned out to every subscription on a
+  connection put one entry per subscription on the connection's writer lane
+  and on its connection writer queue, both 64 deep by default, and under
+  `drop_new` the overflow was dropped, the connection queue's without a
+  count. Those two hand-offs now wait when full. Drops happen only in each
+  subscription's own queues and are all counted in
+  `felix_sub_queue_dropped_total`. `felix_subscriber_lane_dropped_total` is
+  gone, since nothing is dropped where it counted. (#978)
 - **A subscribe that reaches a broker just after it stopped serving the shard
   is refused instead of left waiting.** A broker ends a shard's readers before
   its routes catch up with the move or failover, so for that moment it still

@@ -880,7 +880,7 @@ There are six main checkpoints in publish-to-delivery order:
 | 3 | Broker publish admission | Per-connection and process-wide publish bytes |
 | 4 | Broker publish scheduler queue | Queued publish jobs, shared fairly between tenants |
 | 5 | Broker-core subscriber channel | Envelopes waiting for one subscriber |
-| 6 | Writer lane/connection queues | Encoded deliveries waiting for QUIC writers |
+| 6 | Connection writer, per subscription | Encoded deliveries waiting for one subscription's QUIC stream |
 
 QUIC flow control is the final transport-level checkpoint beneath these.
 
@@ -1027,7 +1027,7 @@ When investigating missing messages, begin with:
 
 - broker ingress drop/rejection counters;
 - `felix_subscribe_dropped_total`;
-- subscriber lane drop counters;
+- `felix_sub_queue_dropped_total`, which counts every drop on the subscribe path;
 - client subscription queue drop counters; and
 - QUIC connection close/write-error logs.
 
