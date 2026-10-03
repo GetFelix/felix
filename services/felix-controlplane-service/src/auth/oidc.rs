@@ -1,11 +1,11 @@
 //! Validation of upstream IdP tokens -- the boundary between an external
 //! identity provider and Felix's own authorization.
 //!
-//! ES256 is the default and only algorithm. RS* and PS* can be enabled by
-//! configuration but are off by default because of the Marvin side-channel
-//! attack, which has no known mitigation in Rust's crypto libraries today; many
-//! IdPs publish RSA keys via JWKS, so the allowlist is opt-in rather than
-//! absent. Felix's own EdDSA tokens are a separate path entirely.
+//! RS256 and ES256 are accepted by default, and the allowlist can narrow or
+//! widen that. Accepting both opens no algorithm confusion: the key comes from
+//! the issuer's JWKS and its type must match the header's `alg`, and HS* and
+//! `none` are always refused. Felix's own EdDSA tokens are a separate path
+//! entirely.
 //!
 //! Claims are decoded once *without* verification purely to find the issuer, so
 //! the right JWKS can be fetched. Everything else -- issuer, audience,
@@ -41,7 +41,7 @@ use keys::{
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Validates upstream OIDC bearer tokens, with cached discovery documents and
-/// JWKS. ES256 by default; RS*/PS* only when explicitly allowlisted.
+/// JWKS. RS256 and ES256 by default; see [`DEFAULT_ALLOWED_ALGORITHMS`].
 #[derive(Debug, Clone)]
 pub struct UpstreamOidcValidator {
     client: reqwest::Client,
