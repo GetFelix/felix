@@ -171,6 +171,28 @@ itself is a static shared secret, valid while bootstrap is enabled. The full
 threat model, replay rules, rotation procedure, and recovery steps are in
 [`docs/security/bootstrap.md`](https://github.com/gabloe/felix/blob/main/docs/security/bootstrap.md).
 
+#### Development tokens
+
+For a local stack or a CI job, `FELIX_BOOTSTRAP_DEV_TOKENS=true` makes the
+bootstrap listener mint a Felix token for any principal of an initialized
+tenant, with no identity provider:
+
+```bash
+curl -sS -X POST http://127.0.0.1:9095/internal/bootstrap/tenants/t1/dev-token \
+  -H 'X-Felix-Bootstrap-Token: change-me' \
+  -H 'Content-Type: application/json' \
+  -d '{ "principal": "p:dev" }'
+```
+
+The principal is named as RBAC policies and groupings name it, and the token
+carries what RBAC grants it, narrowed by `requested`, `resources` and
+`audience` exactly as on [token exchange](#token-exchange-oidc--felix). The
+answer is the exchange's, refresh token included. The control plane refuses to
+start with the switch on unless bootstrap is enabled on a loopback
+`FELIX_BOOTSTRAP_BIND_ADDR`, and logs a warning that it is on. Anyone holding
+the bootstrap token can then act as any principal, so never set it on a shared
+or production control plane.
+
 After bootstrap, admin actions require explicit Felix permissions:
 - IdP issuer admin: `tenant.manage:tenant:{tenant_id}`, plus
   `tenant.manage:cluster:*` to change an existing issuer's keys, audiences or

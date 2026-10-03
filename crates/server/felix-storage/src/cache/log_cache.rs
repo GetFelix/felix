@@ -31,7 +31,7 @@ use crate::cache::{CacheChange, CacheObserver, CacheSnapshotEntry, StorageApi};
 use crate::commit_order::CommitSequencer;
 use crate::compaction::Compactor;
 use crate::disk_log::{DiskLog, layout};
-use crate::log::{AppendRecord, LogConfig, ShardKey};
+use crate::log::{AppendOnlyLog, AppendRecord, LogConfig, ShardKey};
 use crate::shard_slots::ShardSlots;
 use crate::{Result, StorageError};
 
@@ -98,47 +98,60 @@ impl LogCache {
             expires_at_millis,
         };
 
-        let mut staged = {
-            let mut state = shard.state.lock().await;
-            shard.ensure_index(&mut state).await?;
-            let payload = op.encode();
-            let bytes = payload.len() as u64;
-            let pending = state
-                .log
-                .append_pending(&[AppendRecord {
-                    payload,
-                    timestamp_micros: now_millis() * 1000,
-                    mark: Default::default(),
-                }])
-                .await?;
-            // Claimed the moment the offsets are consumed. The guard releases
-            // the range on every exit path — error, cancellation mid-await —
-            // so a failed commit cannot strand the writers queued behind it.
-            let turn = shard
-                .sequencer
-                .reserve_owned(pending.first_offset(), pending.last_offset() + 1);
-            state.sequenced_through = Some(pending.last_offset() + 1);
-            FinishOnDrop::new(StagedWrite {
-                shard: Arc::clone(&shard),
-                log: state.log.clone(),
-                change: CacheChange {
-                    tenant_id: tenant_id.to_string(),
-                    namespace: namespace.to_string(),
-                    cache: cache.to_string(),
-                    shard: shard_index,
-                    key: key.to_string(),
-                    value: Some(value),
-                    offset: pending.first_offset(),
-                    expires_at_millis,
-                },
-                pending,
-                turn,
-                op,
-                bytes,
-                observer: Arc::clone(&self.observer),
-                _in_flight: shard.key_in_flight(key),
-            })
+        let observer = Arc::clone(&self.observer);
+        let change = CacheChange {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            cache: cache.to_string(),
+            shard: shard_index,
+            key: key.to_string(),
+            value: Some(value),
+            offset: 0,
+            expires_at_millis,
         };
+        // Staged on a task of its own: once the append thread has the record
+        // it is written, and the guard built from it is what applies it and
+        // tells the watchers. A caller cancelled in between would leave the
+        // put in the log and nowhere else.
+        let mut staged = crate::task::run_to_end({
+            let shard = Arc::clone(&shard);
+            async move {
+                let mut state = shard.state.lock().await;
+                shard.ensure_index(&mut state).await?;
+                let payload = op.encode();
+                let bytes = payload.len() as u64;
+                // Claimed by the log the moment the offsets are consumed, so a
+                // failed commit cannot strand the writers queued behind it.
+                let (pending, turn) = state
+                    .log
+                    .append_claimed(
+                        &[AppendRecord {
+                            payload,
+                            timestamp_micros: now_millis() * 1000,
+                            mark: Default::default(),
+                        }],
+                        &shard.sequencer,
+                    )
+                    .await?;
+                state.sequenced_through = Some(pending.last_offset() + 1);
+                let in_flight = shard.key_in_flight(&change.key);
+                Ok(FinishOnDrop::new(StagedWrite {
+                    shard: Arc::clone(&shard),
+                    log: state.log.clone(),
+                    change: CacheChange {
+                        offset: pending.first_offset(),
+                        ..change
+                    },
+                    pending,
+                    turn,
+                    op,
+                    bytes,
+                    observer,
+                    _in_flight: in_flight,
+                }))
+            }
+        })
+        .await?;
 
         staged.commit().await?;
         let mut state = shard.state.lock().await;
@@ -253,55 +266,69 @@ impl LogCache {
             key: key.to_string(),
         };
 
-        let (previous, mut staged) = {
-            let mut state = shard.state.lock().await;
-            shard.ensure_index(&mut state).await?;
-            let Some(entry) = state.index.entries.get(key).copied() else {
-                return Ok(Deleted::default());
-            };
-            if expired_at.is_some_and(|now| !entry.is_expired(now)) {
-                return Ok(Deleted::default());
+        let observer = Arc::clone(&self.observer);
+        let change = CacheChange {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            cache: cache.to_string(),
+            shard: shard_index,
+            key: key.to_string(),
+            value: None,
+            offset: 0,
+            expires_at_millis: 0,
+        };
+        // On a task of its own, for the reason `put_checked` gives.
+        let staged = crate::task::run_to_end({
+            let shard = Arc::clone(&shard);
+            async move {
+                let mut state = shard.state.lock().await;
+                shard.ensure_index(&mut state).await?;
+                let Some(entry) = state.index.entries.get(&change.key).copied() else {
+                    return Ok(None);
+                };
+                if expired_at.is_some_and(|now| !entry.is_expired(now)) {
+                    return Ok(None);
+                }
+                let previous = if entry.is_expired(now_millis()) {
+                    None
+                } else {
+                    shard.read_value(&state, entry).await?
+                };
+                let payload = op.encode();
+                let bytes = payload.len() as u64;
+                let (pending, turn) = state
+                    .log
+                    .append_claimed(
+                        &[AppendRecord {
+                            payload,
+                            timestamp_micros: now_millis() * 1000,
+                            mark: Default::default(),
+                        }],
+                        &shard.sequencer,
+                    )
+                    .await?;
+                state.sequenced_through = Some(pending.last_offset() + 1);
+                let in_flight = shard.key_in_flight(&change.key);
+                let staged = FinishOnDrop::new(StagedWrite {
+                    shard: Arc::clone(&shard),
+                    log: state.log.clone(),
+                    change: CacheChange {
+                        offset: pending.first_offset(),
+                        ..change
+                    },
+                    pending,
+                    turn,
+                    op,
+                    bytes,
+                    observer,
+                    _in_flight: in_flight,
+                });
+                Ok(Some((previous, staged)))
             }
-            let previous = if entry.is_expired(now_millis()) {
-                None
-            } else {
-                shard.read_value(&state, entry).await?
-            };
-            let payload = op.encode();
-            let bytes = payload.len() as u64;
-            let pending = state
-                .log
-                .append_pending(&[AppendRecord {
-                    payload,
-                    timestamp_micros: now_millis() * 1000,
-                    mark: Default::default(),
-                }])
-                .await?;
-            let turn = shard
-                .sequencer
-                .reserve_owned(pending.first_offset(), pending.last_offset() + 1);
-            state.sequenced_through = Some(pending.last_offset() + 1);
-            let staged = FinishOnDrop::new(StagedWrite {
-                shard: Arc::clone(&shard),
-                log: state.log.clone(),
-                change: CacheChange {
-                    tenant_id: tenant_id.to_string(),
-                    namespace: namespace.to_string(),
-                    cache: cache.to_string(),
-                    shard: shard_index,
-                    key: key.to_string(),
-                    value: None,
-                    offset: pending.first_offset(),
-                    expires_at_millis: 0,
-                },
-                pending,
-                turn,
-                op,
-                bytes,
-                observer: Arc::clone(&self.observer),
-                _in_flight: shard.key_in_flight(key),
-            });
-            (previous, staged)
+        })
+        .await?;
+        let Some((previous, mut staged)) = staged else {
+            return Ok(Deleted::default());
         };
 
         staged.commit().await?;
@@ -644,6 +671,25 @@ impl StorageApi for LogCache {
     ) -> Result<Vec<CacheSnapshotEntry>> {
         self.live_entries_checked(tenant_id, namespace, cache, shard)
             .await
+    }
+
+    async fn applied_through(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+    ) -> Result<Option<u64>> {
+        let shard = self.shard(tenant_id, namespace, cache, shard)?;
+        let mut state = shard.state.lock().await;
+        shard.ensure_index(&mut state).await?;
+        // Applied writes release their turns under this lock, so with writers
+        // in flight the sequencer is the frontier; idle, the tail is.
+        let applied = shard.sequencer.next_offset();
+        if state.sequenced_through == Some(applied) {
+            return state.log.tail_offset().await.map(Some);
+        }
+        Ok(Some(applied))
     }
 
     async fn len(&self) -> usize {

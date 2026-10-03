@@ -227,10 +227,7 @@ impl CacheShard {
             if records.is_empty() {
                 return Ok(true);
             }
-            let pending = state.log.append_pending(&records).await?;
-            let turn = self
-                .sequencer
-                .reserve_owned(pending.first_offset(), pending.last_offset() + 1);
+            let (pending, turn) = state.log.append_claimed(&records, &self.sequencer).await?;
             state.sequenced_through = Some(pending.last_offset() + 1);
             (pending, turn, ops)
         };

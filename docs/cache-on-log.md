@@ -195,13 +195,18 @@ log reads. The observer must not block there, so fanout is `try_send` against
 bounded queues, following the same publisher-never-blocks rule stream fanout follows.
 
 **The join is register-before-read.** A watch resuming from an offset registers
-its queue first, then reads the log's tail, then serves `[from_offset, tail)`
-from the log. Registration pins the live edge: every change below the tail is
-on disk and every change at or past it is queued, so the two halves cannot leak
-a write landing in between. It is the same discipline, for the same past defect,
-as the stream resume path. The registration race is closed by offsets: a change
-applied just before the tail was read can arrive both in the replay and on the
-queue, and the queued copy is dropped because its offset is below the tail.
+its queue first, then reads the shard's applied frontier (the log's tail, or
+lower while writes are in flight), then serves `[from_offset, frontier)` from
+the log. Registration pins the live edge: every change below the frontier is
+applied and on disk, and every change at or past it is still to be applied and
+will be queued, so the two halves cannot leak a write landing in between. The
+frontier and not the tail, because a write already in the log but not yet
+applied is in no snapshot, and with the tail as the edge its change would
+arrive below it and be dropped. It is the same discipline, for the same past
+defect, as the stream resume path. The registration race is closed by offsets:
+a change applied just before the frontier was read can arrive both in the
+replay and on the queue, and the queued copy is dropped because its offset is
+below the frontier.
 
 **Falling behind ends the watch, loudly.** A stream subscriber reads a queue
 drop out of a jump in delivered offsets. A *filtered* watch cannot: other

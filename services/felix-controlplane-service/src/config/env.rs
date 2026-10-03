@@ -133,6 +133,10 @@ impl ControlPlaneConfig {
                 token: std::env::var("FELIX_BOOTSTRAP_TOKEN").ok(),
                 previous_token: std::env::var("FELIX_BOOTSTRAP_TOKEN_PREVIOUS").ok(),
                 tls: bootstrap_tls_from_env()?,
+                dev_tokens: std::env::var("FELIX_BOOTSTRAP_DEV_TOKENS")
+                    .ok()
+                    .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false),
             },
             node_liveness,
             shard_moves,

@@ -69,7 +69,7 @@ fn driver(
 
 /// Append one record to `shard` and wake the driver, as a publish does.
 async fn append(broker: &Broker, shard: u32) {
-    broker
+    let log = broker
         .shard_log(
             felix_broker::LogKind::Stream,
             TENANT,
@@ -78,10 +78,18 @@ async fn append(broker: &Broker, shard: u32) {
             shard,
         )
         .await
-        .expect("log")
-        .append(&[Bytes::from_static(b"late")])
-        .await
-        .expect("append");
+        .expect("log");
+    // The append waits on the log's own thread, and a paused runtime with
+    // nothing to poll jumps its clock to the next timer meanwhile. Blocking
+    // work holds the clock, so wait from there.
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        runtime
+            .block_on(log.append(&[Bytes::from_static(b"late")]))
+            .expect("append")
+    })
+    .await
+    .expect("append task");
     broker.appended().notify_one();
 }
 

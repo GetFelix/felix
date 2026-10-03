@@ -19,7 +19,7 @@ pub mod tenants;
 mod trace_context;
 pub mod types;
 
-pub use router::{build_bootstrap_router, build_router};
+pub use router::{build_bootstrap_router, build_bootstrap_router_with_dev_tokens, build_router};
 pub use state::AppState;
 
 use crate::api::error::{ApiError, api_internal, api_not_found};

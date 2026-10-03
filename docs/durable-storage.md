@@ -131,8 +131,8 @@ sequenceDiagram
 
     C->>B: publish(payload)
     B->>L: append(records)
-    L->>OS: one write() for the whole batch
-    Note over L,OS: offsets assigned under the segment lock
+    L->>OS: one write() for the whole batch, on the append thread
+    Note over L,OS: offsets assigned on that thread, in queue order
 
     alt FsyncMode::OnCommit
         L->>D: ensure_durable(target)
@@ -150,9 +150,9 @@ sequenceDiagram
 
 ### One order, not three
 
-Offsets are assigned under the segment lock, but the fsync wait happens after it
-is released, so two concurrent publishes can resume from a shared group-commit
-flush in either order. Left alone, the log on disk could read `A, B` while a
+Offsets are assigned on the log's append thread, one batch at a time, but the
+fsync wait happens after the append returns, so two concurrent publishes can
+resume from a shared group-commit flush in either order. Left alone, the log on disk could read `A, B` while a
 cursor replay and a live subscriber both saw `B, A`.
 
 A per-stream commit sequencer closes that gap. After its durable append, each
@@ -237,9 +237,12 @@ wake them one after another.
 Measured on a Mac Studio (Apple M4 Max, APFS): 253 durable appends/second at
 concurrency 1,
 14,387 at concurrency 64, a 57× gain from the same code path. The fan-in
-actually achieved is reported as `felix_storage_sync_batch_appends`; a value near
-1 under load means appends are serialising on the device instead of sharing a
-flush.
+actually achieved is reported as `felix_storage_sync_batch_appends`, the number
+of records each flush covered. Records rather than appends, because the broker
+merges publishes that queue on a shard into one append, and those share the
+flush too. A client batch of N records counts N, so read it under
+single-record publishes, or divide by the batch size. A value near 1 under load
+means appends are serialising on the device instead of sharing a flush.
 
 This is the same mechanism behind PostgreSQL's `commit_delay` and the WAL
 group-commit paths in MySQL and RocksDB.
@@ -257,6 +260,56 @@ sync in progress, and the sync still completes for whoever flushes next. If a
 thread cannot be started, the flush falls back to the blocking pool.
 [storage-performance.md](storage-performance.md#9-each-log-flushes-on-its-own-thread)
 has the measurements.
+
+### Where the append runs
+
+A `write` into the page cache normally takes microseconds, but once a process
+dirties pages faster than the device takes them, Linux throttles it inside
+`write()` for up to hundreds of milliseconds. A reactor thread caught there
+stalls every task scheduled on it. So each log also has an append thread, with
+the same lifecycle as its flush thread, and every append runs there in
+submission order, which is offset order. The publisher awaits the result.
+The thread polls for its next append for 20 µs before it parks, and a caller
+alone in the queue polls as long for its result, so back-to-back appends do
+not pay a wake-up on either side. The caller hears its result before the
+thread writes any index entries, and frees its batch itself.
+
+The batch is encoded and given its place under the segment lock, written with
+the lock released, and made visible under the lock again. A reader or a flush
+needs that lock only for pointer work, so neither waits on the disk behind an
+append. Appends to one log run one at a time, and anything else that changes
+the active segment (a background roll's install, truncation, reset, restore,
+seal, close) takes the same append lock, so nothing moves the segment under a
+write in flight. An inline rollover runs on the append thread with the append.
+
+A flush takes its bound on the append thread too, behind the appends already
+queued there, so one flush covers every append in flight. Taken on the caller,
+it would miss the appends still queued, and each would wait for a flush of its
+own. The cost is that a flush also waits for an append whose `write` the kernel
+is holding.
+
+An append whose caller gives up before the append thread starts on it is
+skipped and spends no offsets. Once started, the batch is written and kept
+whatever the caller does, as it was when the write ran in the caller's own
+poll: cutting it back would free the blocks preallocated past it, and a flush
+may already have covered it. A caller that orders batches by offset, such as
+the broker's commit sequencer, passes its sequencer to
+`DiskLog::append_claimed`, which claims the range on the append thread, so a
+caller that gives up after its batch is kept still releases the range and the
+writers behind it are not stranded.
+
+A started batch can therefore land after its caller has gone, so a tail read
+straight from the segments may sit below it. A subscribe cursor taken at the
+tail (`Broker::cursor_tail`) reads it with `DiskLog::settled_tail_offset`
+instead, on the append thread behind the batches already there. Otherwise a
+cancelled publish could land above a cursor taken after it: absent from the
+replay ring before a restart, replayed from disk after one.
+
+A caller with work to do once its record is in the log runs the append and
+that work to the end on a task of its own, so cancelling it only stops the
+wait. A cache put or delete stages there (append, then the guard that applies
+the write and tells the watchers), and a counter add appends and folds there.
+The broker's publish executors are never cancelled mid-claim.
 
 ## Segments and rollover
 
@@ -693,7 +746,7 @@ FELIX_DURABLE_FSYNC_MODE=on_commit \
 | --- | --- |
 | `felix_storage_append_duration_seconds` | how long a durable publish takes end to end |
 | `felix_storage_sync_duration_seconds` | how much of that is the device |
-| `felix_storage_sync_batch_appends` | group-commit fan-in; near 1 under load means no batching |
+| `felix_storage_sync_batch_appends` | group-commit fan-in in records per flush; near 1 under single-record load means no batching |
 | `felix_storage_unsynced_bytes` | data a crash would lose right now |
 | `felix_storage_sync_failures_total` | non-zero means acknowledged durability is in doubt |
 | `felix_storage_full_total` | writes and log creations refused because the disk or quota was full; none of them wrote anything |

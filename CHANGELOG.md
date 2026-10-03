@@ -35,6 +35,12 @@ for what the current release guarantees.
   connections; they go back to it before anything else, over as many polls as
   it takes, until taken back or lapsed. Later reclaims on that connection, and
   reclaims from older connections, do nothing. (#962)
+- Development tokens without an identity provider. With
+  `FELIX_BOOTSTRAP_DEV_TOKENS=true` the bootstrap listener serves
+  `POST /internal/bootstrap/tenants/{tenant}/dev-token`, which mints a Felix
+  token (and refresh token) for any principal of an initialized tenant with
+  what RBAC grants it. Startup refuses it unless bootstrap is on a loopback
+  bind. (#954)
 - `felix-client` re-exports `AckMode`, `BrokerEndpoint` and `ShardRouting`,
   so an application no longer needs `felix-wire` as a direct dependency to
   call it. (#937)
@@ -63,6 +69,8 @@ for what the current release guarantees.
   it (asked once per cache with `shard_owners`), else through the broker in
   use, which forwards; a failed read is asked again once, a write is not sent
   twice. `felixctl cache` uses them. (#937)
+- The storage fault file takes `write_delay_ms=<n>`, which delays every
+  segment write the way a throttled `write()` does. (#909)
 
 ### Changed
 
@@ -197,6 +205,28 @@ for what the current release guarantees.
   change that makes the bound cover it delivers it to live subscribers. Before,
   a subscriber could stop short of records every read of the log returned.
 
+- **A slow or throttled disk no longer stalls the broker's runtime.** A
+  durable append's `write()` ran on the Tokio worker that called it, under a
+  synchronous lock every reader of that log also took, and once Linux
+  throttles a process that dirties pages faster than the device takes them,
+  `write()` blocks for up to hundreds of milliseconds. Each log now appends on
+  a thread of its own, started on demand and stopped after 10 s idle like its
+  flush thread, and the write runs with the lock released. A lone unbatched
+  publisher loses 4 to 6% of its throughput to the hand-off, one sending
+  batches of 16 gains about a tenth, and several publishers on one log get
+  about twice the throughput with p99 in tens of microseconds. Sparse index
+  entries are written 256 at a time instead of with each append that crosses
+  an interval. `felix_storage_sync_batch_appends` now counts the records each
+  flush covered rather than the callers waiting when it started, so publishes
+  the broker merges into one append count once each, and a client batch of N
+  records counts N. See
+  `docs/storage-performance.md`. (#909)
+- **Breaking:** `StreamLog::begin_append`, `begin_append_marked` and
+  `continue_batch` take the stream's `CommitSequencer` and return the claimed
+  `CommitTurn` with the `PendingAppend`. `DiskLog::append_claimed` and
+  `continue_claimed` (which replaces `continue_pending`) make that claim on the
+  append thread, so a caller cancelled before it hears its offsets still
+  releases its range. (#909)
 - **A stalled shard no longer stalls publishes to healthy shards on the same
   connection.** The pipelined publish window was counted per connection, so a
   stream whose publishes waited on one stuck shard (a quorum wait, say) could
