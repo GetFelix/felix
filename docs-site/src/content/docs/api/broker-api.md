@@ -640,11 +640,12 @@ More streams allow more requests in flight. See
 
 ### Cache Configuration
 
-Broker-side cache tuning:
+Broker-side cache tuning. Cache requests arrive on the same listener as
+publishes, so the receive windows are the publish ones:
 
 ```yaml
-cache_conn_recv_window: 268435456    # 256 MiB per connection
-cache_stream_recv_window: 67108864   # 64 MiB per stream
+pub_conn_recv_window: 16777216       # 16 MiB per connection
+pub_stream_recv_window: 16777216     # 16 MiB per stream
 cache_send_window: 268435456         # 256 MiB send window
 ```
 

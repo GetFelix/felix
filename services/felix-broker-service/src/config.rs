@@ -149,10 +149,13 @@ pub struct BrokerConfig {
     /// How long a clustered broker waits for its shards to move to other
     /// brokers before it stops. `0` skips the handoff.
     pub shutdown_handoff_timeout_ms: u64,
-    /// Cache connection flow-control window.
-    pub cache_conn_recv_window: u64,
-    /// Cache stream flow-control window.
-    pub cache_stream_recv_window: u64,
+    /// QUIC connection receive window of the client listeners: how many bytes
+    /// one client connection may send that the broker has not read yet. `None`
+    /// follows the publish budget; see [`BrokerConfig::pub_recv_windows`].
+    pub pub_conn_recv_window: Option<u64>,
+    /// QUIC per-stream receive window of the client listeners. `None` follows
+    /// the publish budget; see [`BrokerConfig::pub_recv_windows`].
+    pub pub_stream_recv_window: Option<u64>,
     /// Cache connection send window.
     pub cache_send_window: u64,
     /// Max events per batched subscription frame.
@@ -275,6 +278,23 @@ impl BrokerConfig {
             .collect()
     }
 
+    /// The `(connection, stream)` QUIC receive windows the client listeners
+    /// are built with.
+    ///
+    /// An explicit setting wins. Unset, both follow `pub_conn_inflight_bytes`:
+    /// a client whose publishes are waiting on ingress can then park at most
+    /// one more budget's worth in the broker's receive buffers before QUIC
+    /// flow control holds it back. The 16 MiB default still covers the
+    /// bandwidth-delay product of a 10 Gbit/s path up to about 13 ms of round
+    /// trip. Neither goes below `max_frame_bytes`, so one frame always fits in
+    /// a window; `validate` refuses explicit values that break that.
+    pub fn pub_recv_windows(&self) -> (u64, u64) {
+        let budget = (self.pub_conn_inflight_bytes as u64).max(self.max_frame_bytes as u64);
+        let conn = self.pub_conn_recv_window.unwrap_or(budget);
+        let stream = self.pub_stream_recv_window.unwrap_or(conn.min(budget));
+        (conn, stream)
+    }
+
     /// Server endpoints this broker binds: the client listeners, plus the
     /// internal one when it is part of a cluster.
     ///
@@ -360,8 +380,8 @@ impl Default for BrokerConfig {
             shutdown_drain_timeout_ms: DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
             shutdown_predrain_ms: DEFAULT_SHUTDOWN_PREDRAIN_MS,
             shutdown_handoff_timeout_ms: DEFAULT_SHUTDOWN_HANDOFF_TIMEOUT_MS,
-            cache_conn_recv_window: DEFAULT_CACHE_CONN_RECV_WINDOW,
-            cache_stream_recv_window: DEFAULT_CACHE_STREAM_RECV_WINDOW,
+            pub_conn_recv_window: None,
+            pub_stream_recv_window: None,
             cache_send_window: DEFAULT_CACHE_SEND_WINDOW,
             event_batch_max_events: 64,
             event_batch_max_bytes: 64 * 1024,

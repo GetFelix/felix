@@ -249,9 +249,9 @@ services:
       - FELIX_EVENT_BATCH_MAX_DELAY_US=250
       - FELIX_FANOUT_BATCH=64
 
-      # Cache flow control
-      - FELIX_CACHE_CONN_RECV_WINDOW=268435456
-      - FELIX_CACHE_STREAM_RECV_WINDOW=67108864
+      # Client listener flow control (defaults follow the publish budget)
+      - FELIX_BROKER_PUB_CONN_RECV_WINDOW=16777216
+      - FELIX_BROKER_PUB_STREAM_RECV_WINDOW=16777216
 
       - RUST_LOG=info
 ```
@@ -271,7 +271,7 @@ quic_bind: "0.0.0.0:5000"
 metrics_bind: "0.0.0.0:8080"
 event_batch_max_events: 64
 event_batch_max_delay_us: 250
-cache_conn_recv_window: 268435456
+pub_conn_recv_window: 16777216
 ```
 
 ```yaml

@@ -36,8 +36,8 @@ publish_queue_wait_timeout_ms: 2000
 ack_wait_timeout_ms: 2000
 disable_timings: false
 control_stream_drain_timeout_ms: 50
-cache_conn_recv_window: 268435456
-cache_stream_recv_window: 67108864
+pub_conn_recv_window: 16777216
+pub_stream_recv_window: 16777216
 cache_send_window: 268435456
 event_batch_max_events: 64
 event_batch_max_bytes: 65536
@@ -278,6 +278,14 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   batches can't starve every other connection's admission. Must be smaller than
   `pub_inflight_bytes` to have any effect; a value equal to or larger than it degenerates to
   "no per-connection cap."
+- `pub_conn_recv_window` and `pub_stream_recv_window` are the QUIC receive windows of the
+  client listeners, which carry publishes and cache requests alike. Unset, both follow
+  `pub_conn_inflight_bytes`, raised to `max_frame_bytes` if that is larger. When ingress is full
+  and `pub_ingress_wait` is on, the broker stops reading publishes, and the window is how much
+  more a client can park in the broker before QUIC flow control holds it back. Bigger windows
+  cost broker memory and delay backpressure; smaller ones can cap throughput on a path with a
+  large bandwidth-delay product. Startup refuses a window below `max_frame_bytes` or a stream
+  window above the connection window.
 - The pre-auth limits bound what a client costs before it proves who it is. Until a stream's
   `Auth` succeeds its frames are capped at `preauth_max_frame_bytes` (only an `Auth` has to
   fit), and at most `preauth_max_streams_per_conn` unauthenticated streams per connection are

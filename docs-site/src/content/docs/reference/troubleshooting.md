@@ -208,6 +208,9 @@ export FELIX_SUBSCRIBER_QUEUE_CAPACITY="128"           # default 512
 export FELIX_BROKER_PUBLISH_INFLIGHT_BYTES="33554432"  # default 64 MiB
 ```
 
+The broker's client listeners buffer at most `FELIX_BROKER_PUB_CONN_RECV_WINDOW`
+of unread data per connection, 16 MiB by default.
+
 ## Containers
 
 ### Image and version

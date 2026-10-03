@@ -726,11 +726,11 @@ let config = ClientConfig {
 ### Broker Configuration
 
 ```yaml
-# QUIC flow control (see the environment variable reference for the
-# FELIX_CACHE_* names and defaults)
-cache_conn_recv_window: 268435456    # 256 MiB per connection
-cache_stream_recv_window: 67108864   # 64 MiB per stream
-cache_send_window: 268435456         # Send window
+# QUIC flow control. One listener carries cache requests and publishes,
+# so its receive windows follow the publish budget (16 MiB by default).
+pub_conn_recv_window: 16777216       # per connection
+pub_stream_recv_window: 16777216     # per stream
+cache_send_window: 268435456         # send window
 ```
 
 ## Limitations and Planned Features

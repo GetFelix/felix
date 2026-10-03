@@ -98,11 +98,18 @@ pub(crate) static DECODE_ERROR_LOGS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "telemetry")]
 pub(crate) const DECODE_ERROR_LOG_LIMIT: usize = 20;
 
-/// The QUIC transport settings for client listeners: `base` with the cache
+/// The QUIC transport settings for client listeners: `base` with the
 /// flow-control windows from `config` applied.
-pub fn cache_transport_config(config: &BrokerConfig, mut base: TransportConfig) -> TransportConfig {
-    base.receive_window = config.cache_conn_recv_window;
-    base.stream_receive_window = config.cache_stream_recv_window;
+///
+/// One listener carries publishes, subscriptions and cache requests alike, so
+/// its receive windows are sized for what clients send most: publishes.
+pub fn client_transport_config(
+    config: &BrokerConfig,
+    mut base: TransportConfig,
+) -> TransportConfig {
+    let (conn, stream) = config.pub_recv_windows();
+    base.receive_window = conn;
+    base.stream_receive_window = stream;
     base.send_window = config.cache_send_window;
     base
 }

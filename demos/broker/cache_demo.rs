@@ -40,7 +40,7 @@ async fn run_demo(mut bench: BenchConfig) -> Result<()> {
     let config = felix_broker_service::config::BrokerConfig::from_env()?;
     let (auth, auth_override) = resolve_demo_auth(&config)?;
     let (server_config, cert) = build_server_config().context("build server config")?;
-    let transport = felix_broker_service::serving::quic::cache_transport_config(
+    let transport = felix_broker_service::serving::quic::client_transport_config(
         &config,
         TransportConfig::default(),
     );

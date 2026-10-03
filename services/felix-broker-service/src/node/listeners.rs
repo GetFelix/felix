@@ -31,7 +31,7 @@ pub(super) fn bind(config: &BrokerConfig, tls: &ClientTls) -> Result<Vec<Arc<Qui
     // Apply transport-level configuration (flow control windows, pooling behavior, etc.)
     // derived from broker config.
     let transport =
-        crate::serving::quic::cache_transport_config(config, TransportConfig::default());
+        crate::serving::quic::client_transport_config(config, TransportConfig::default());
 
     // One `QuicServer` per configured listener. Each owns its own UDP socket and
     // therefore its own `quinn` endpoint driver -- the single task that reads

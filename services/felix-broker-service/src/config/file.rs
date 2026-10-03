@@ -119,15 +119,15 @@ impl BrokerConfig {
         if let Some(value) = override_cfg.shutdown_handoff_timeout_ms {
             config.shutdown_handoff_timeout_ms = value;
         }
-        if let Some(value) = override_cfg.cache_conn_recv_window
+        if let Some(value) = override_cfg.pub_conn_recv_window
             && value > 0
         {
-            config.cache_conn_recv_window = value;
+            config.pub_conn_recv_window = Some(value);
         }
-        if let Some(value) = override_cfg.cache_stream_recv_window
+        if let Some(value) = override_cfg.pub_stream_recv_window
             && value > 0
         {
-            config.cache_stream_recv_window = value;
+            config.pub_stream_recv_window = Some(value);
         }
         if let Some(value) = override_cfg.cache_send_window
             && value > 0
@@ -273,8 +273,8 @@ pub(super) struct BrokerConfigOverride {
     shutdown_drain_timeout_ms: Option<u64>,
     shutdown_predrain_ms: Option<u64>,
     shutdown_handoff_timeout_ms: Option<u64>,
-    cache_conn_recv_window: Option<u64>,
-    cache_stream_recv_window: Option<u64>,
+    pub_conn_recv_window: Option<u64>,
+    pub_stream_recv_window: Option<u64>,
     cache_send_window: Option<u64>,
     event_batch_max_events: Option<usize>,
     event_batch_max_bytes: Option<usize>,

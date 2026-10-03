@@ -106,7 +106,7 @@ fn from_env_or_yaml_filters_zero_values_in_yaml() {
     fs::write(
         &config_path,
         r#"
-cache_conn_recv_window: 0
+pub_conn_recv_window: 0
 event_batch_max_events: 0
 fanout_batch_size: 0
 "#,
@@ -118,10 +118,7 @@ fanout_batch_size: 0
 
     let config = BrokerConfig::from_env_or_yaml().expect("from_env_or_yaml");
     // Should keep env defaults when yaml has 0
-    assert_eq!(
-        config.cache_conn_recv_window,
-        DEFAULT_CACHE_CONN_RECV_WINDOW
-    );
+    assert_eq!(config.pub_conn_recv_window, None);
     assert_eq!(config.event_batch_max_events, 64);
     assert_eq!(config.fanout_batch_size, 64);
 
@@ -168,8 +165,8 @@ fn from_env_or_yaml_all_window_overrides() {
     fs::write(
         &config_path,
         r#"
-cache_conn_recv_window: 128000000
-cache_stream_recv_window: 32000000
+pub_conn_recv_window: 128000000
+pub_stream_recv_window: 32000000
 cache_send_window: 128000000
 pub_workers_per_conn: 16
 pub_queue_depth: 4096
@@ -185,8 +182,7 @@ subscriber_single_writer_per_conn: false
     }
 
     let config = BrokerConfig::from_env_or_yaml().expect("from_env_or_yaml");
-    assert_eq!(config.cache_conn_recv_window, 128000000);
-    assert_eq!(config.cache_stream_recv_window, 32000000);
+    assert_eq!(config.pub_recv_windows(), (128000000, 32000000));
     assert_eq!(config.cache_send_window, 128000000);
     assert_eq!(config.pub_workers_per_conn, 16);
     assert_eq!(config.pub_queue_depth, 4096);

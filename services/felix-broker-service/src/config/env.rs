@@ -158,16 +158,14 @@ impl BrokerConfig {
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(DEFAULT_SHUTDOWN_HANDOFF_TIMEOUT_MS);
-        let cache_conn_recv_window = std::env::var("FELIX_CACHE_CONN_RECV_WINDOW")
+        let pub_conn_recv_window = std::env::var("FELIX_BROKER_PUB_CONN_RECV_WINDOW")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_CACHE_CONN_RECV_WINDOW);
-        let cache_stream_recv_window = std::env::var("FELIX_CACHE_STREAM_RECV_WINDOW")
+            .filter(|value| *value > 0);
+        let pub_stream_recv_window = std::env::var("FELIX_BROKER_PUB_STREAM_RECV_WINDOW")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_CACHE_STREAM_RECV_WINDOW);
+            .filter(|value| *value > 0);
         let cache_send_window = std::env::var("FELIX_CACHE_SEND_WINDOW")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
@@ -352,8 +350,8 @@ impl BrokerConfig {
             shutdown_drain_timeout_ms,
             shutdown_predrain_ms,
             shutdown_handoff_timeout_ms,
-            cache_conn_recv_window,
-            cache_stream_recv_window,
+            pub_conn_recv_window,
+            pub_stream_recv_window,
             cache_send_window,
             event_batch_max_events,
             event_batch_max_bytes,

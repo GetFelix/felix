@@ -324,7 +324,7 @@ quic_bind: "0.0.0.0:5000"
 metrics_bind: "0.0.0.0:8080"
 event_batch_max_events: 64
 event_batch_max_delay_us: 250
-cache_conn_recv_window: 268435456
+pub_conn_recv_window: 16777216
 ```
 
 Point the broker at it with `FELIX_BROKER_CONFIG=/tmp/felix-config.yml`. It

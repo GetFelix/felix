@@ -284,6 +284,11 @@ Example:
 - **High throughput, bursty**: Use larger windows (256-512 MiB)
 - **Memory constrained**: Reduce pool size before reducing windows
 
+These are the client's windows. On the broker side, `pub_conn_recv_window` and
+`pub_stream_recv_window` bound how much unread publish data one client
+connection can leave in the broker. They default to `pub_conn_inflight_bytes`
+(16 MiB), so backpressure reaches a publisher soon after ingress fills.
+
 #### Batching Parameters
 
 ```yaml

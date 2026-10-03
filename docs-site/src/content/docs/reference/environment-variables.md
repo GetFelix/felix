@@ -748,7 +748,7 @@ export FELIX_CACHE_STREAMS_PER_CONN="2"   # Less overhead
 
 ### `FELIX_CACHE_CONN_RECV_WINDOW`
 
-**Description**: Cache connection flow-control receive window (broker).
+**Description**: Receive window of the client's cache connections (client). The broker's client listeners use `FELIX_BROKER_PUB_CONN_RECV_WINDOW`.
 
 **Type**: Positive integer (bytes)
 
@@ -768,7 +768,7 @@ export FELIX_CACHE_CONN_RECV_WINDOW="134217728"    # 128 MiB
 
 ### `FELIX_CACHE_STREAM_RECV_WINDOW`
 
-**Description**: Cache stream flow-control receive window (broker).
+**Description**: Receive window of each stream on the client's cache connections (client). The broker's client listeners use `FELIX_BROKER_PUB_STREAM_RECV_WINDOW`.
 
 **Type**: Positive integer (bytes)
 
@@ -1086,6 +1086,30 @@ export FELIX_BROKER_PUBLISH_INFLIGHT_BYTES="67108864"
 
 ```bash
 export FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES="16777216"
+```
+
+### `FELIX_BROKER_PUB_CONN_RECV_WINDOW`
+
+**Description**: QUIC connection receive window of the broker's client listeners: how many bytes one client connection may have sent that the broker has not read yet. When ingress is full and `FELIX_PUB_INGRESS_WAIT` is on, the broker stops reading publishes, and this is how much more a client can park in the broker before QUIC flow control holds it back. A bigger window costs broker memory and delays backpressure. A smaller one can cap throughput on a path with a large bandwidth-delay product. Must be at least `FELIX_MAX_FRAME_BYTES` and at least `FELIX_BROKER_PUB_STREAM_RECV_WINDOW`, or startup fails.
+
+**Type**: Positive integer (bytes)
+
+**Default**: `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES` (16 MiB), or `FELIX_MAX_FRAME_BYTES` if that is larger
+
+```bash
+export FELIX_BROKER_PUB_CONN_RECV_WINDOW="16777216"
+```
+
+### `FELIX_BROKER_PUB_STREAM_RECV_WINDOW`
+
+**Description**: QUIC per-stream receive window of the broker's client listeners. Must be at least `FELIX_MAX_FRAME_BYTES`, so one full-size frame fits, and no larger than `FELIX_BROKER_PUB_CONN_RECV_WINDOW`, or startup fails.
+
+**Type**: Positive integer (bytes)
+
+**Default**: the smaller of the connection window and `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES` (16 MiB), never below `FELIX_MAX_FRAME_BYTES`
+
+```bash
+export FELIX_BROKER_PUB_STREAM_RECV_WINDOW="16777216"
 ```
 
 ### `FELIX_BROKER_PUBLISH_WINDOW`
@@ -1548,7 +1572,8 @@ no error to explain it:
 |---|---|
 | `event_batch_max_bytes` > `max_frame_bytes` | The broker would send subscribers frames larger than it will itself accept, and a client applying the same limit drops them |
 | `pub_conn_inflight_bytes` > `pub_inflight_bytes` | The per-connection limit could never be the one that applies, so one connection may take the whole broker-wide allowance |
-| `cache_stream_recv_window` > `cache_conn_recv_window` | A single stream can never reach its own window, because the connection's runs out first |
+| `pub_stream_recv_window` > `pub_conn_recv_window` | A single stream can never reach its own window, because the connection's runs out first |
+| `pub_conn_recv_window` or `pub_stream_recv_window` < `max_frame_bytes` | One full-size frame would not fit in a receive window |
 | `FELIX_INTERNAL_BIND` shares a port with `FELIX_QUIC_BIND` | The internal and client-facing listeners must be separate |
 
 Equal is allowed everywhere: these bound each other and do not have to differ.

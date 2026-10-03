@@ -117,6 +117,16 @@ The memory bound is roughly what you would expect: the sum of each
 connection's window plus each open stream's window. Size them against the
 memory you are willing to spend on in-flight data.
 
+The broker's own receive windows decide how much a client may send that the
+broker has not read. Its client listeners use `FELIX_BROKER_PUB_CONN_RECV_WINDOW`
+and `FELIX_BROKER_PUB_STREAM_RECV_WINDOW`, which default to the per-connection
+publish budget (`FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`, 16 MiB). When
+ingress is full and `FELIX_PUB_INGRESS_WAIT` is on, the broker stops reading
+publishes, so a publisher is held back after one more budget's worth instead of
+filling hundreds of MiB of broker memory first. Larger windows delay that
+backpressure and cost broker memory; smaller ones can cap throughput on a path
+with a large bandwidth-delay product.
+
 ### Congestion control and ACK cadence
 
 Felix uses quinn's default congestion controller, **CUBIC** (RFC 8312),
