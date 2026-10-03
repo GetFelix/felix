@@ -479,6 +479,7 @@ restore-point` on restore. See [Backup and restore](/felix/deployment/backup-and
 | Control plane not ready, liveness fine | The store: Postgres unreachable, or the database is behind the build's migrations. That is readiness doing its job. |
 | Raft group never forms | Fewer members than the peers map names, or the headless Service was changed. Every member must carry the same map. A log line saying a majority is empty and none holds the group means the members were started with `existing` and no data: the `-raft-formed` ConfigMap is left from an earlier release whose volumes are gone. Delete it and restart the members, or set `controlplane.storage.raft.initialClusterState=new` for one upgrade. |
 | Raft members log `raft peer request ... refused` | The members disagree on the peer token or the cluster id; both must be the same on every member. |
+| Leader logs `error replication to target=N` with `peer answered 404` (or another status) | Member N's peer address points at something that is not its peer listener, or member N rejects the leader (401/403). The leader retries it about once a second until it answers. |
 | `helm upgrade` refused with a message about budgets, drains, or members | Deliberate. The message names the values that are wrong together. |
 | PVC `Pending` | No default StorageClass, or the named one does not exist in this zone. |
 | Peer mTLS pods stuck in `ContainerCreating` | cert-manager-csi-driver is not installed, or the Issuer cannot sign. `kubectl describe pod` shows the CSI error. |

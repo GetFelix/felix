@@ -30,6 +30,11 @@ pub(crate) fn init_observability(service_name: &str) -> PrometheusHandle {
 
         let provider = build_tracer_provider(service_name);
         let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        // Unit tests in this crate install this subscriber for the whole
+        // binary; the test writer lets libtest capture every test's logs.
+        #[cfg(test)]
+        let fmt_layer = tracing_subscriber::fmt::layer().with_test_writer();
+        #[cfg(not(test))]
         let fmt_layer = tracing_subscriber::fmt::layer();
         let registry = tracing_subscriber::registry().with(filter).with(fmt_layer);
         if let Some(provider) = provider {
