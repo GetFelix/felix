@@ -298,6 +298,13 @@ the broker's commit sequencer, passes its sequencer to
 caller that gives up after its batch is kept still releases the range and the
 writers behind it are not stranded.
 
+A started batch can therefore land after its caller has gone, so a tail read
+straight from the segments may sit below it. A subscribe cursor taken at the
+tail (`Broker::cursor_tail`) reads it with `DiskLog::settled_tail_offset`
+instead, on the append thread behind the batches already there. Otherwise a
+cancelled publish could land above a cursor taken after it: absent from the
+replay ring before a restart, replayed from disk after one.
+
 A caller with work to do once its record is in the log runs the append and
 that work to the end on a task of its own, so cancelling it only stops the
 wait. A cache put or delete stages there (append, then the guard that applies
