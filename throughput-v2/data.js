@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790980991912,
+  "lastUpdate": 1790986479909,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22464,6 +22464,58 @@ window.BENCHMARK_DATA = {
             "range": "10756.87",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1249224.67\nmean: 1245748.69\nstdev: 10756.87\ncv: 0.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "28f8a276e63f3824bed05593ba73431914c51af1",
+          "message": "test(cluster): retry a lost port race when brokers restart after a power loss (#950)\n\nrestart_stopped_nodes respawned every broker but, unlike restart_node and\nstart-up, did not retry one that exited because its probed port was taken\nbefore it could bind. A history campaign failed that way in CI.",
+          "timestamp": "2026-10-02T17:03:09-07:00",
+          "tree_id": "6d8cf4204237557ba7ef522ff3be985692ecc108",
+          "url": "https://github.com/gabloe/felix/commit/28f8a276e63f3824bed05593ba73431914c51af1"
+        },
+        "date": 1790986479412,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 355853.62,
+            "range": "12625.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355853.62\nmean: 352365.04\nstdev: 12625.82\ncv: 3.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 355853.62,
+            "range": "12625.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355853.62\nmean: 352365.04\nstdev: 12625.82\ncv: 3.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81687.7,
+            "range": "4153.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81687.70\nmean: 80041.53\nstdev: 4153.37\ncv: 5.19%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 816877.02,
+            "range": "41533.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 816877.02\nmean: 800415.28\nstdev: 41533.65\ncv: 5.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
