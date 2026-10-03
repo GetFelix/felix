@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791054181649,
+  "lastUpdate": 1791054561862,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -23036,6 +23036,58 @@ window.BENCHMARK_DATA = {
             "range": "3834.55",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 815513.63\nmean: 817644.58\nstdev: 3834.55\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "74640efb3a52de9b4761785d74f8910a31f92f8e",
+          "message": "fix(release): build the npm client's Linux addons against glibc 2.28 (#995)\n\nThey linked against the runners' glibc 2.38 and would not load on Debian\nbookworm, RHEL 8 or node:*-bookworm images. napi now builds them with\ncargo-zigbuild for glibc 2.28, and the release fails if an addon needs a\nnewer glibc symbol.\n\nCloses #981.",
+          "timestamp": "2026-10-03T12:01:35-07:00",
+          "tree_id": "1ca8f86e67ee44aff0023a334a8f3aab3ab6a3b5",
+          "url": "https://github.com/gabloe/felix/commit/74640efb3a52de9b4761785d74f8910a31f92f8e"
+        },
+        "date": 1791054561197,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 420701.54,
+            "range": "23887.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 420701.54\nmean: 430036.37\nstdev: 23887.99\ncv: 5.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 420701.54,
+            "range": "23887.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 420701.54\nmean: 430036.37\nstdev: 23887.99\ncv: 5.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 103567,
+            "range": "548.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 103567.00\nmean: 103280.92\nstdev: 548.88\ncv: 0.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1035669.96,
+            "range": "5488.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1035669.96\nmean: 1032809.18\nstdev: 5488.79\ncv: 0.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
