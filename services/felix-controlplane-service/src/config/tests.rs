@@ -824,3 +824,37 @@ mod debug_redaction {
         );
     }
 }
+
+/// Development tokens are minted for any principal without an identity
+/// provider, so they are only served by a loopback bootstrap listener.
+#[serial]
+#[test]
+fn dev_tokens_need_a_loopback_bootstrap_listener() {
+    let _env = clear_felix_env();
+    unsafe {
+        env::set_var("FELIX_BOOTSTRAP_DEV_TOKENS", "true");
+    }
+    let err = ControlPlaneConfig::from_env().expect_err("bootstrap off");
+    assert!(
+        err.to_string().contains("FELIX_BOOTSTRAP_DEV_TOKENS"),
+        "{err}"
+    );
+
+    unsafe {
+        env::set_var("FELIX_BOOTSTRAP_ENABLED", "true");
+        env::set_var("FELIX_BOOTSTRAP_TOKEN", "secret");
+        env::set_var("FELIX_BOOTSTRAP_BIND_ADDR", "0.0.0.0:9095");
+    }
+    let err = ControlPlaneConfig::from_env().expect_err("not loopback");
+    assert!(err.to_string().contains("loopback"), "{err}");
+
+    unsafe {
+        env::set_var("FELIX_BOOTSTRAP_BIND_ADDR", "127.0.0.1:9095");
+    }
+    assert!(
+        ControlPlaneConfig::from_env()
+            .expect("loopback")
+            .bootstrap
+            .dev_tokens
+    );
+}

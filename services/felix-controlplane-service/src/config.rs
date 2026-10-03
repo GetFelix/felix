@@ -139,6 +139,16 @@ impl ControlPlaneConfig {
             }
             raft.validate()?;
         }
+        // Minting for any principal without an IdP is a development shortcut,
+        // and only a loopback listener keeps it on the developer's machine.
+        if self.bootstrap.dev_tokens
+            && !(self.bootstrap.enabled && self.bootstrap.bind_addr.ip().is_loopback())
+        {
+            return Err(anyhow!(
+                "FELIX_BOOTSTRAP_DEV_TOKENS needs FELIX_BOOTSTRAP_ENABLED and a loopback \
+                 FELIX_BOOTSTRAP_BIND_ADDR"
+            ));
+        }
         if self.bootstrap.enabled && self.bootstrap.token.is_none() {
             return Err(anyhow!(
                 "bootstrap enabled but FELIX_BOOTSTRAP_TOKEN / bootstrap.token is not set"
