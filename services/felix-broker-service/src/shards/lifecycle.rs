@@ -547,12 +547,20 @@ impl ShardLifecycle {
         // A promotion is the one new term the model fences (`FenceOnPromote`):
         // a move's destination takes over from a leader that drained into it,
         // and a cancelled move hands the shard back to the leader that had it.
+        // A hand-back is the generation right after the draining one. A later
+        // one may have had another leader in between, as when the move
+        // finished and that leader then failed, and only the fence keeps it
+        // out if it is still writing.
+        let handed_back = self
+            .shards
+            .get(key)
+            .is_some_and(|shard| shard.draining && generation == shard.generation + 1);
         let fence = self.fence_promotions
             && new_term
             && !draining
             && key.kind == ShardKind::Stream
             && !self.incoming.contains_key(key)
-            && !self.shards.get(key).is_some_and(|shard| shard.draining);
+            && !handed_back;
         if fence {
             self.promoting.insert(key.clone());
         } else {

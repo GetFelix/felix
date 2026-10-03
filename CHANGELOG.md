@@ -87,6 +87,15 @@ for what the current release guarantees.
   bookworm, RHEL 8 and `node:*-bookworm` images. The release now links them
   against glibc 2.28 with cargo-zigbuild and fails if an addon needs a newer
   glibc symbol. (#981)
+- **A broker promoted after it moved a shard away is fenced again.** A
+  broker that had drained a shard into a move kept that fact after the move
+  finished, and when a later failover gave it the shard back it took that
+  for a cancelled move and opened without fencing. The previous leader, cut
+  off rather than gone, could then still commit a write with a follower that
+  had not heard of the promotion, at the offset the new leader started its
+  generation at. The history campaign saw one value at two offsets and a
+  subscriber told the first held no event. Only the generation right after
+  the draining one now counts as a hand-back. (#971)
 - **A subscribe that reaches a broker just after it stopped serving the shard
   is refused instead of left waiting.** A broker ends a shard's readers before
   its routes catch up with the move or failover, so for that moment it still
