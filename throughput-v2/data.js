@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791062512935,
+  "lastUpdate": 1791062928353,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -23452,6 +23452,58 @@ window.BENCHMARK_DATA = {
             "range": "7958.54",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1264889.75\nmean: 1263432.77\nstdev: 7958.54\ncv: 0.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f3ee01e1333c2b313f8f5b1e1aacafb3f7efc9f7",
+          "message": "fix(storage): append on a per-log thread, a simpler alternative to #952 (#909) (#958)\n\n* fix(storage): append on a per-log thread with the segment lock released (#909)\n\nA durable append ran write() on the calling Tokio worker under the\nsynchronous segments lock, so a throttled disk stalled that worker and\nevery reader of the log behind it.\n\nEach log now runs its appends on a thread of its own, the flush thread's\nmachinery generalised as LogThread. The batch is staged under the lock,\nwritten without it and taken in under it again; an append lock keeps\nrolls, truncation, seal and close off a write in flight. A caller that\ngives up before its batch is kept has it skipped or cut back off, and\nappend_claimed / continue_claimed reserve the commit turn on the thread.\nA flush takes its bound there too, so it covers the appends queued ahead\nof it, and sync_batch_appends now counts the appends each flush covered.\n\n* perf(storage): poll briefly before parking on the append hand-off (#909)\n\nA lone appender paid a thread wake-up on each side of every append,\nwhich cost more than the write and about 60% of its throughput. The\nappend thread now polls 20 µs for its next job before parking, and a\ncaller whose job is the only one queued polls as long for its result.\n\n* fix(storage): count group-commit fan-in in records, not appends (#909)\n\nThe broker merges publishes that queue on a shard into one durable append,\nso counting appends per flush undercounted how many publishes shared it.\nCounted in records, a flush covering one merged append of five publishes\nreads five.\n\n* test(replication): hold the paused clock while a straggler test appends (#909)\n\nAppends now wait on the log's own thread. A paused current-thread runtime\nwith nothing to poll jumps its clock to the next timer meanwhile, so the\nbackoff test's 200 rounds ran 30 to 45 s of virtual time and saw too many\nfence attempts. Waiting from blocking work holds the clock, as the inline\nappend did.\n\n* perf(storage): answer the caller before the index write, and batch index entries (#909)\n\nA lone publisher sending batches of 16 lost 15 to 25% to the append\nthread hand-off. The caller now gets its result before the thread writes\nindex entries, frees its own batch, and the reply channel's close\nreplaces the separate abandon flag. Index entries go to the file 256 at a\ntime instead of a second write on every other small batch.\n\ntests/slow_disk.rs holds every write for 50 ms and checks that a 1 ms\nticker keeps running; with the write inline on the caller it stalls for\nabout 300 ms.\n\n* fix(storage): keep a started append, and finish cache and counter writes on their own task (#909)\n\nWith appends on the log's thread, a caller cancelled after its batch was\nkept but before it heard back left the record in the log without its\nfollow-up: a cache put reached the index without telling its watchers, a\ncounter delta stayed out of the sum. Cache puts and deletes now stage, and\ncounter adds append and fold, on a task of their own, so cancelling the\ncaller only stops the wait. A batch whose write has started is kept rather\nthan cut back, as when the write ran in the caller's poll, so a timeout no\nlonger frees preallocated blocks and a flush never covers bytes that are\ncut back later. At most a quarter of the cores' worth of callers poll for\ntheir result at once.\n\n* ci: run the cancelled cache put test under load (#909)\n\n* fix(broker): join a cache watch at the applied frontier, not the log's tail (#909)\n\nA write in the log but not yet applied when a watch joined was in neither\nhalf: the snapshot leaves unapplied writes out, and its change arrived\nbelow the tail and was dropped as already covered. The cache now reports\nhow far its writes are applied, and the watch joins there. Seen as a lost\nwrite in a_retained_watch_delivers_current_state_then_live_under_concurrent_writes\nonce cache puts stage on a task of their own; the window existed before.\n\nAlso fixes the stress script exiting non-zero when nothing failed.\n\n* fix(storage): import the log trait for the applied frontier (#909)\n\n* test(broker): judge a quiescent cache key as of the watch's join (#909)\n\nThe retained watch test read the writer's progress after the snapshot, so\na write in flight at the join and finished by then counted as quiescent\nalthough its value is past the live edge and arrives live.\n\n* docs: note the cache watch join change leaves the model alone (#909)\n\nSpec-Unaffected: the cache watch's join offset is local to one broker's\nwatch delivery; the lease, quorum mark, reports, promotion and handoff are\nunchanged.\n\n* fix(broker): read a cursor's tail after appends already started\n\nA publish cancelled after the append thread started on it is still\nwritten. cursor_tail read the tail without waiting for it, so the record\ncould land at or above the cursor: missing from the ring before a\nrestart, replayed from disk after. The tail is now read on the append\nthread, behind any append already handed to it.\n\n* docs(storage): a cursor's tail waits for appends already started",
+          "timestamp": "2026-10-03T14:22:45-07:00",
+          "tree_id": "37b57ccccebc084dd2ada428c0228a8559dbd4db",
+          "url": "https://github.com/gabloe/felix/commit/f3ee01e1333c2b313f8f5b1e1aacafb3f7efc9f7"
+        },
+        "date": 1791062927935,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 346293.58,
+            "range": "6159.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346293.58\nmean: 344986.09\nstdev: 6159.27\ncv: 1.79%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 346293.58,
+            "range": "6159.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346293.58\nmean: 344986.09\nstdev: 6159.27\ncv: 1.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80596.36,
+            "range": "819.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80596.36\nmean: 80741.21\nstdev: 819.30\ncv: 1.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805963.62,
+            "range": "8193.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805963.62\nmean: 807412.08\nstdev: 8193.01\ncv: 1.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
