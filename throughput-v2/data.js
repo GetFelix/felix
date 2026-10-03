@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791047305684,
+  "lastUpdate": 1791054181649,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22984,6 +22984,58 @@ window.BENCHMARK_DATA = {
             "range": "6291.53",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1236165.98\nmean: 1236253.27\nstdev: 6291.53\ncv: 0.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "01bf833c2321ba12b17f287f0e73afba94142308",
+          "message": "fix(felixctl): save the config atomically and keep it private (#990)\n\nsave opened the config with mode 0600, which applies only to a file it\ncreates, and truncated it before writing. An existing 0644 config stayed\nreadable by others, and a crash mid-write left it empty. It now writes a\ntemporary file beside it, sets 0600, syncs and renames it into place.\n\nAlso states in the protocol docs how a connection's outstanding publishes\nscale with its streams now that the publish window is per stream, and what\nbounds that.",
+          "timestamp": "2026-10-03T11:59:36-07:00",
+          "tree_id": "ca8190264826af186f600cd8ad3a108ba8337e36",
+          "url": "https://github.com/gabloe/felix/commit/01bf833c2321ba12b17f287f0e73afba94142308"
+        },
+        "date": 1791054181160,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 338841.11,
+            "range": "11083.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 338841.11\nmean: 341364.18\nstdev: 11083.70\ncv: 3.25%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 338841.11,
+            "range": "11083.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 338841.11\nmean: 341364.18\nstdev: 11083.70\ncv: 3.25%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81551.36,
+            "range": "383.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81551.36\nmean: 81764.46\nstdev: 383.45\ncv: 0.47%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 815513.63,
+            "range": "3834.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 815513.63\nmean: 817644.58\nstdev: 3834.55\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
