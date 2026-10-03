@@ -48,6 +48,10 @@ pub struct StreamMetadata {
     pub shards: u32,
     /// What an acknowledgement of a publish to this stream means.
     pub consistency: ConsistencyLevel,
+    /// This stream's retention. A bound left unset is the broker's own
+    /// (`FELIX_DURABLE_RETENTION_BYTES`, `FELIX_DURABLE_RETENTION_SECONDS`).
+    /// Ignored for a stream that is not durable.
+    pub retention: felix_storage::log::Retention,
 }
 
 impl Default for StreamMetadata {
@@ -56,6 +60,7 @@ impl Default for StreamMetadata {
             durable: false,
             shards: 1,
             consistency: ConsistencyLevel::Leader,
+            retention: felix_storage::log::Retention::default(),
         }
     }
 }

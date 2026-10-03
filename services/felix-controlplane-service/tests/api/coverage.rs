@@ -323,6 +323,34 @@ async fn streams_error_paths_and_changes() {
     let response = app.clone().oneshot(patch_missing).await.expect("patch");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
+    // A zero bound is one no log can meet; refused on create and patch.
+    let zero_create = json_request_as(
+        "POST",
+        "/v1/tenants/t1/namespaces/default/streams",
+        &admin,
+        serde_json::json!({
+            "stream": "zero",
+            "kind": StreamKind::Stream,
+            "shards": 1,
+            "retention": { "max_age_seconds": null, "max_size_bytes": 0 },
+            "consistency": "Leader",
+            "delivery": "AtLeastOnce",
+            "durable": true
+        }),
+    );
+    let response = app.clone().oneshot(zero_create).await.expect("create");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let zero_patch = json_request_as(
+        "PATCH",
+        "/v1/tenants/t1/namespaces/default/streams/orders",
+        &admin,
+        serde_json::json!({
+            "retention": { "max_age_seconds": 0, "max_size_bytes": null }
+        }),
+    );
+    let response = app.clone().oneshot(zero_patch).await.expect("patch");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
     let delete_missing = Request::builder()
         .method("DELETE")
         .uri("/v1/tenants/t1/namespaces/default/streams/missing")

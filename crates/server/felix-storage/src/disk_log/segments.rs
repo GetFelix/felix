@@ -380,13 +380,13 @@ impl RetentionPlan {
     /// check reads the newest record of each candidate, which may be cold.
     pub(super) fn choose(
         &self,
-        config: &LogConfig,
+        bounds: crate::log::Retention,
         now_micros: u64,
         label: &str,
     ) -> Result<Vec<SegmentId>> {
-        let max_bytes = config.retention_bytes;
-        let max_age_micros = config
-            .retention_age
+        let max_bytes = bounds.bytes;
+        let max_age_micros = bounds
+            .age
             .map(|age| age.as_micros().min(u128::from(u64::MAX)) as u64);
         let mut total_bytes = self.total_bytes;
         let mut chosen = Vec::new();
