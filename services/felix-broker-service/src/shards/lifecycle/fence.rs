@@ -346,6 +346,11 @@ impl FenceGuard {
     pub(crate) fn lease_free(&self) -> bool {
         self.gate.lease_free_at.load(SeqCst) == self.generation
     }
+
+    /// Whether the fence this guard entered is still open at its generation.
+    pub(crate) fn still_open(&self) -> bool {
+        self.gate.open_at.load(SeqCst) == self.generation
+    }
 }
 
 impl Drop for FenceGuard {

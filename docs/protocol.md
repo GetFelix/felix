@@ -638,8 +638,11 @@ field of `detail` is optional. See [Error codes](#error-codes).
   resume whose history compaction collapsed is answered with `resnapshot: true`
   and current values; a watch that falls behind is ended with
   `cache_watch_lagged` naming the offset to re-watch from. TTL expiry is a
-  change: the shard's leader writes a delete for an entry within about a second
-  of its TTL passing, and watchers receive it as a delete.
+  change: the shard's leader writes a delete for an entry after its TTL passes,
+  and watchers receive it as a delete. The leader's expiry pass runs once a
+  second and writes at most 1024 deletes per shard per pass, so under a mass
+  expiry the deletes lag. An expiry is permanent once written, even if the
+  leader's clock had jumped forward.
 - A `retained` CacheWatch delivers current state first: each matching key's
   current value at the offset of the write that produced it, then live changes
   from `resume_offset`, so a client joins and immediately holds the state

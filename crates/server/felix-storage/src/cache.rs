@@ -126,6 +126,7 @@ pub trait StorageApi: Debug + Send + Sync {
         _cache: &str,
         _shard: u32,
         _limit: usize,
+        _keep_going: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<usize> {
         Ok(0)
     }

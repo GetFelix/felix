@@ -194,7 +194,8 @@ impl LogCache {
     ///
     /// For the shard's leader only, like any write. Each key is checked again
     /// when its delete is staged, under the lock a put stages under, so a
-    /// put that refreshed it in between keeps its value.
+    /// put that refreshed it in between keeps its value. `keep_going` is asked
+    /// before each delete, and the pass stops the first time it says no.
     pub async fn expire_due(
         &self,
         tenant_id: &str,
@@ -202,6 +203,7 @@ impl LogCache {
         cache: &str,
         shard: u32,
         limit: usize,
+        keep_going: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<usize> {
         let now = now_millis();
         let due: Vec<String> = {
@@ -219,6 +221,9 @@ impl LogCache {
         };
         let mut written = 0;
         for key in due {
+            if !keep_going() {
+                break;
+            }
             let deleted = self
                 .delete_entry(tenant_id, namespace, cache, shard, &key, Some(now))
                 .await?;
@@ -626,8 +631,9 @@ impl StorageApi for LogCache {
         cache: &str,
         shard: u32,
         limit: usize,
+        keep_going: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<usize> {
-        LogCache::expire_due(self, tenant_id, namespace, cache, shard, limit).await
+        LogCache::expire_due(self, tenant_id, namespace, cache, shard, limit, keep_going).await
     }
 
     fn set_change_observer(&self, observer: Arc<dyn CacheObserver>) -> bool {

@@ -90,12 +90,20 @@ not part of making the claim true.
 
 Checked at read against the record's own `expires_at_millis`, so an expired
 entry is reported as absent the moment it lapses. Separately, the shard's
-leader writes a delete for each entry whose TTL has passed, about once a second
+leader writes a delete for each entry whose TTL has passed
 (`LogCache::expire_due`), through the same fence a client's write takes and
 replicated like one. That delete is what tells a watch the entry is gone, and
 lets compaction drop it. It is staged under the lock a put stages under and
 checks the expiry again there, so a put that refreshed the key after it was
 found due keeps its value. An in-memory cache still expires lazily only.
+
+The leader's expiry pass runs once a second and writes at most 1024 deletes per
+shard per pass, so under a mass expiry the deletes lag the TTLs by as many
+passes as it takes. The fence and lease are checked before each delete, and a
+pass stops once either says the shard is no longer this broker's to write.
+Expiry is decided by the leader's clock and is permanent once written: a leader
+whose clock jumps forward deletes entries early, and a later fix to the clock
+does not bring them back.
 
 ## Compaction
 
@@ -238,7 +246,8 @@ already reconstructs the state a retained start shortcuts, and serving both
 would deliver every value twice.
 
 **TTL expiry is a change.** When an entry's TTL passes, the shard's leader
-writes a delete for it within about a second, and a watch delivers it like any
+writes a delete for it in its next expiry pass (see [TTL](#ttl): at most 1024
+per shard per pass, so a mass expiry lags), and a watch delivers it like any
 other delete (no value). The put's `expires_at_millis` still travels with the
 put's event. A watch replaying history also replays writes whose TTL has since
 lapsed, followed by their deletes, because they are the history.
