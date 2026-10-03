@@ -626,3 +626,22 @@ fn filling_the_cap_with_everything_available_is_not_capped() {
     assert!(!claim.capped);
     assert!(!group.claim(3, 10, now, VIS).capped);
 }
+
+#[test]
+fn a_run_of_skipped_offsets_is_counted_and_dropped_once_passed() {
+    let mut group = GroupTracker::new(0, MANY);
+    group.skip(3);
+    group.skip(4);
+    assert_eq!(group.skipped_before(5), 2);
+    assert_eq!(group.skipped_before(6), 0);
+
+    for offset in 0..=5 {
+        group.ack(offset);
+    }
+    assert_eq!(group.committed(), 6);
+    assert_eq!(
+        group.skipped_before(5),
+        0,
+        "the record after the run is settled"
+    );
+}

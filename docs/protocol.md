@@ -271,7 +271,8 @@ hand-backs or lapsed claims free room.
 ### GroupRecords (server -> client)
 ```
 { "type": "group_records",
-  "records": [{ "offset": <number>, "payload": "<base64>", "attempts": <number> }],
+  "records": [{ "offset": <number>, "payload": "<base64>", "attempts": <number>,
+                "skipped_before": <number>? }],
   "request_id": <number> }
 ```
 
@@ -279,6 +280,13 @@ hand-backs or lapsed claims free room.
 anything higher is a redelivery. Absent means the broker did not report it,
 which is not the same as a first attempt, and a consumer should not treat it as
 one.
+
+`skipped_before` is how many offsets directly below this record the broker
+settled without delivering: generation-start records, which are not a client's,
+and records retention removed before the group reached them. A gap in the
+offsets a consumer receives that this count covers will never fill, and one it
+does not cover is a record still to come. Absent means `0`, and the broker
+leaves it out when it is `0`, so an older client gets the frame it always did.
 
 ### GroupDeadLetters / GroupDiscard / GroupRedrive
 ```

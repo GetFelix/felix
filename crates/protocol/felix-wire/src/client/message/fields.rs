@@ -148,6 +148,18 @@ pub struct GroupRecord {
     /// exactly the retry handling it wanted.
     #[serde(default)]
     pub attempts: u32,
+    /// How many offsets directly below this one the broker settled without
+    /// delivering: generation-start records, and records retention removed
+    /// before the group reached them. So a consumer can tell a hole that will
+    /// never fill from a record still to come. Absent, and so `0`, from a
+    /// broker that predates it, and left out when `0` so the frame is the one
+    /// an older client always got.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub skipped_before: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// One change to a stream shard's keyed state, as a `commit` carries it.

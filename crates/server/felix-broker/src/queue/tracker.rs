@@ -50,6 +50,11 @@ pub(crate) struct GroupTracker {
     /// yet finished. Settling one has to clear that record too, or every
     /// later leader would redeliver it again.
     redriven: BTreeSet<u64>,
+    /// Runs of offsets settled without being delivered (generation starts,
+    /// trimmed records), keyed by the end of the run, which is exclusive, to
+    /// the start. What a record at that end reports as skipped before it.
+    /// Dropped once the cursor is past the record that follows the run.
+    skipped: BTreeMap<u64, u64>,
     /// Most times a record is handed out before it is given up on.
     ///
     /// Without a bound a record that always fails is redelivered for ever and
@@ -76,6 +81,7 @@ impl GroupTracker {
             redeliver: BTreeSet::new(),
             attempts: BTreeMap::new(),
             redriven: BTreeSet::new(),
+            skipped: BTreeMap::new(),
             max_attempts: max_attempts.max(1),
             max_in_flight: usize::MAX,
         }
@@ -211,9 +217,24 @@ impl GroupTracker {
         while self.acked_ahead.remove(&self.committed) {
             self.committed += 1;
         }
+        let committed = self.committed;
+        self.skipped.retain(|&end, _| end >= committed);
         // `high_water` can lag when a group is created above its acks.
         self.high_water = self.high_water.max(self.committed);
         (self.committed != before).then_some(self.committed)
+    }
+
+    /// Note that `offset` was settled without being delivered, before
+    /// settling it.
+    pub(crate) fn skip(&mut self, offset: u64) {
+        let start = self.skipped.remove(&offset).unwrap_or(offset);
+        self.skipped.insert(offset + 1, start);
+    }
+
+    /// How many offsets directly below `offset` were settled without being
+    /// delivered.
+    pub(crate) fn skipped_before(&self, offset: u64) -> u64 {
+        self.skipped.get(&offset).map_or(0, |start| offset - start)
     }
 
     /// Give one offset back without finishing it. It is owed again at once,

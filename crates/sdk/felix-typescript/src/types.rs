@@ -35,6 +35,10 @@ pub struct GroupRecord {
     /// `1` is a first attempt; anything higher is a redelivery, so a consumer
     /// can treat a retry differently. `0` means the broker did not report it.
     pub attempts: u32,
+    /// How many offsets directly below this one were settled without being
+    /// delivered (generation starts, records retention removed), so a hole
+    /// with this count will not fill. Zero from a broker that predates it.
+    pub skipped_before: BigInt,
 }
 
 /// One change observed by a cache watch.
