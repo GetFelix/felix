@@ -79,6 +79,9 @@ for what the current release guarantees.
   `0.6.0-preview` images instead of `0.5.0`, and a release tag now fails
   `check_release_version.py` while any doc pins a `ghcr.io/gabloe/felix*`
   image at another version. (#957)
+- `felixctl` saves its config through a temporary file that is synced and
+  renamed into place, and makes it owner-only even when it already existed
+  with wider permissions. A crash mid-save no longer leaves an empty config.
 - **A subscribe that reaches a broker just after it stopped serving the shard
   is refused instead of left waiting.** A broker ends a shard's readers before
   its routes catch up with the move or failover, so for that moment it still

@@ -1114,7 +1114,7 @@ export FELIX_BROKER_PUB_STREAM_RECV_WINDOW="16777216"
 
 ### `FELIX_BROKER_PUBLISH_WINDOW`
 
-**Description**: The most acknowledged publishes one stream may have unanswered when its client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker grants this number in `AuthOk.publish_window`, answers a pipelining stream's publishes in the order it sent them, and stops reading that stream's publishes while this many are outstanding on it. Each stream has its own window, so one stuck behind a stalled shard does not stall the others on its connection. `0` turns pipelining off: no client is granted a window, and acks come back in completion order.
+**Description**: The most acknowledged publishes one stream may have unanswered when its client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker grants this number in `AuthOk.publish_window`, answers a pipelining stream's publishes in the order it sent them, and stops reading that stream's publishes while this many are outstanding on it. Each stream has its own window, so one stuck behind a stalled shard does not stall the others on its connection. A connection's outstanding publishes therefore scale with its streams (up to QUIC's 1024) times this window; the payload bytes the broker holds for one connection stay under `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`. `0` turns pipelining off: no client is granted a window, and acks come back in completion order.
 
 **Type**: Non-negative integer
 
