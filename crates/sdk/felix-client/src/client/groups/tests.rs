@@ -1,0 +1,18 @@
+use super::*;
+
+/// **A named poll is refused by a broker that predates member names**, since
+/// it would drop the name and a reclaim would quietly do nothing. An unnamed
+/// poll is unaffected.
+#[test]
+fn a_named_poll_needs_the_broker_to_record_members() {
+    let member = GroupMember {
+        consumer: "snapshotter".to_string(),
+        reclaim: true,
+    };
+    let without = felix_wire::KNOWN_FEATURES & !felix_wire::FEATURE_GROUP_CONSUMER;
+
+    let refused = require_member_support(without, Some(&member)).expect_err("refused");
+    assert!(refused.to_string().contains("does not record which member"));
+    require_member_support(without, None).expect("an unnamed poll is fine");
+    require_member_support(felix_wire::KNOWN_FEATURES, Some(&member)).expect("supported");
+}

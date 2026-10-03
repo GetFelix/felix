@@ -84,11 +84,24 @@ its records claimed until the visibility timeout (`FELIX_GROUP_VISIBILITY_TIMEOU
 30 s by default) lapses, and its replacement gets newer records first. A member
 that names itself takes them back at once: poll with a stable `consumer` name
 (`group_poll_as` with a `GroupMember` in Rust, `consumer=` in Python, the
-`consumer` argument in Node), and on the first poll after a restart set
-`reclaim`. The records the previous process held under that name come back
-before anything else, each counted as another attempt. Claims are kept in the
-leader's memory, so this holds while the shard's leader stays put; after a
-failover the group resumes from its durable position anyway.
+`consumer` argument in Node), and set `reclaim` after a restart. The names
+belong to the principal you authenticate as, so another principal using the same
+name gets nothing of yours. A name is 1 to 128 bytes.
+
+The first poll on a new connection that sets `reclaim` reserves every record the
+member still holds from older connections. Those come back to that connection
+before anything else, including records owed to the group, over as many polls
+as it takes, and nobody else gets them in the meantime. Each counts as another
+attempt. One whose claim lapses before you take it back goes to the whole group,
+as any lapsed claim does.
+
+Only that first poll reclaims. Leaving `reclaim` set on every poll is harmless,
+and a connection older than the last one to reclaim never takes anything back.
+Give each live process its own name: two under one name work, but the newer
+takes what the older held when it first reclaims.
+
+Claims are kept in the leader's memory, so this holds while the shard's leader
+stays put; after a failover the group resumes from its durable position anyway.
 
 ## Retries and giving up
 

@@ -29,7 +29,12 @@ for what the current release guarantees.
   (`FEATURE_GROUP_CONSUMER`, `0x10_0000`), `Client::group_poll_as` and
   `ClusterClient::group_poll_as` take a `GroupMember`, and the Python and Node
   `group_poll` take `consumer` and `reclaim`. A restarted member no longer
-  waits out the visibility timeout for its records. (#962)
+  waits out the visibility timeout for its records. A member is the name and
+  the connection's principal, and a name is 1 to 128 bytes. A connection's
+  first poll with `reclaim` reserves the claims the member holds from older
+  connections; they go back to it before anything else, over as many polls as
+  it takes, until taken back or lapsed. Later reclaims on that connection, and
+  reclaims from older connections, do nothing. (#962)
 - `felix-client` re-exports `AckMode`, `BrokerEndpoint` and `ShardRouting`,
   so an application no longer needs `felix-wire` as a direct dependency to
   call it. (#937)
@@ -61,6 +66,9 @@ for what the current release guarantees.
 
 ### Changed
 
+- Connection ids (`felix_transport::ConnectionId`) count up from 1 per process
+  instead of reusing quinn's `stable_id`, which is an address and can repeat
+  once a connection is freed.
 - The control plane accepts RS256 ID tokens from an upstream identity
   provider by default, next to ES256. Most providers sign with RS256, so a
   first setup against Dex, Keycloak, Auth0, Entra ID, Google or Okta no longer

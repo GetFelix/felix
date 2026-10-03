@@ -569,9 +569,8 @@ async fn a_restarted_member_reclaims_what_it_held() {
         .await
         .expect("publish");
     let publish_ctx = context(&leader);
-    let as_member = |reclaim| felix_broker::GroupConsumer {
-        id: "snapshotter".to_string(),
-        reclaim,
+    let as_member = |connection, reclaim| {
+        felix_broker::GroupConsumer::new("", "snapshotter", connection, reclaim)
     };
     let poll_one = |member: felix_broker::GroupConsumer| {
         let broker = Arc::clone(&leader.broker);
@@ -595,10 +594,10 @@ async fn a_restarted_member_reclaims_what_it_held() {
         }
     };
 
-    let held = poll_one(as_member(false)).await;
+    let held = poll_one(as_member(1, false)).await;
     assert_eq!(held[0].payload.as_ref(), b"first");
 
-    let back = poll_one(as_member(true)).await;
+    let back = poll_one(as_member(2, true)).await;
     assert_eq!(back[0].offset, held[0].offset);
     assert_eq!(back[0].attempts, 2);
 }

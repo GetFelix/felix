@@ -83,13 +83,8 @@ pub(crate) enum LaneCommand {
 }
 
 /// One instance per QUIC connection (see `handle_connection`'s `PublishContext`
-/// construction). Previously this was cached in a process-wide static keyed on
-/// `connection.info().id.0` (QUIC's `stable_id()`), which is only unique *within one
-/// QUIC endpoint* — across independently created endpoints (e.g. one per test) it can
-/// collide, silently sharing lane state (and its background tasks) between unrelated
-/// connections, and the cache never evicted entries, leaking a manager + its spawned
-/// tasks per historical connection for the life of the process. Constructing a fresh
-/// instance per connection and letting it drop with the connection avoids both.
+/// construction), dropped with it, so lane state and its background tasks are
+/// never shared between connections or kept after one closes.
 #[derive(Debug)]
 pub(crate) struct WriterLaneManager {
     pub(super) lanes: Vec<mpsc::Sender<LaneCommand>>,
