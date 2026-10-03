@@ -151,6 +151,31 @@ async fn a_quorum_batch_waits_for_the_mark_and_is_released_in_order() {
     assert_eq!(&next(&mut live).await[..], b"second");
 }
 
+/// **A held batch goes out once the bound covers it, even if the mark never
+/// moves again.** The bound also turns on the shard's route and lease, and a
+/// change there kicks nothing. A release that gave up at the last kick left
+/// the batch held for good: on disk and in every read, but never delivered.
+#[tokio::test]
+async fn a_held_batch_goes_out_when_the_bound_covers_it_without_a_kick() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bounds) = broker_with(dir.path(), ReadBound::Committed(0)).await;
+    let mut live = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
+    publish(&broker, "quorum", b"held").await;
+
+    // The mark passes the batch while the shard is refused here, so the kick
+    // that comes with it releases nothing.
+    bounds.set(ReadBound::Refused);
+    release(&broker, "quorum").await;
+    nothing(&mut live).await;
+
+    // Served again with the mark already past it, and no kick.
+    bounds.set(ReadBound::Committed(1));
+    assert_eq!(&next(&mut live).await[..], b"held");
+}
+
 /// **A `Leader` stream behaves exactly as before**: delivered at durability,
 /// counted as delivered, and the bound is never even asked for.
 #[tokio::test]

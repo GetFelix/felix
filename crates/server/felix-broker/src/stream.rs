@@ -17,7 +17,7 @@ pub use committed::{ReadBound, ReadBounds};
 pub use delivery::{DeliveryEnvelope, SubQueuePolicy};
 pub use subscription::{Subscription, SubscriptionGuard, SubscriptionReceiver};
 
-pub(crate) use committed::{HeldBatch, ReadSource};
+pub(crate) use committed::{HeldBatch, Pass, ReadSource};
 pub(crate) use delivery::QueuedDelivery;
 pub(crate) use producers::Sequenced;
 pub(crate) use state::{StreamState, SubscriberEntry};

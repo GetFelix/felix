@@ -69,6 +69,8 @@ pub(crate) struct CommitHold {
     /// overtake the batches ahead of it.
     busy: AtomicBool,
     queue: Mutex<Queue>,
+    /// Wakes a release waiting for the bound to cover the front batch.
+    wake: tokio::sync::Notify,
 }
 
 impl CommitHold {
@@ -111,7 +113,7 @@ impl CommitHold {
         let mut queue = self.queue.lock();
         queue.held.push_back(batch);
         self.busy.store(true, Ordering::SeqCst);
-        queue.start()
+        self.start(&mut queue)
     }
 
     /// Ask for another look at the bound. True when the caller must start a
@@ -121,7 +123,20 @@ impl CommitHold {
         if queue.held.is_empty() && !queue.releasing {
             return false;
         }
-        queue.start()
+        self.start(&mut queue)
+    }
+
+    fn start(&self, queue: &mut Queue) -> bool {
+        let start = queue.start();
+        if !start {
+            self.wake.notify_one();
+        }
+        start
+    }
+
+    /// Resolves on the next kick or push while a release is running.
+    pub(crate) async fn woken(&self) {
+        self.wake.notified().await;
     }
 
     /// Called by the release before it reads the bound, so a kick after the
@@ -130,9 +145,14 @@ impl CommitHold {
         self.queue.lock().again = false;
     }
 
-    /// The batches the bound now covers, oldest first; `None` once there is
-    /// nothing more to do, which ends the release.
-    pub(crate) fn take_ready(&self, bound: ReadBound) -> Option<Vec<HeldBatch>> {
+    /// The batches the bound now covers, oldest first.
+    ///
+    /// [`Pass::Wait`] while some stay held: the release keeps running and
+    /// looks again, because the bound can come to cover them without the
+    /// mark moving (the shard's route or lease changing back), and nothing
+    /// kicks the hold then. [`Pass::Done`] once nothing is held, which ends
+    /// the release.
+    pub(crate) fn take_ready(&self, bound: ReadBound) -> Pass {
         let mut queue = self.queue.lock();
         let mut ready = Vec::new();
         while let Some(front) = queue.held.front()
@@ -141,11 +161,14 @@ impl CommitHold {
             ready.extend(queue.held.pop_front());
         }
         if !ready.is_empty() || queue.again {
-            return Some(ready);
+            return Pass::Ready(ready);
+        }
+        if !queue.held.is_empty() {
+            return Pass::Wait;
         }
         queue.releasing = false;
-        self.busy.store(!queue.held.is_empty(), Ordering::SeqCst);
-        None
+        self.busy.store(false, Ordering::SeqCst);
+        Pass::Done
     }
 
     /// Drop everything held. For a shard this broker stopped leading: what
@@ -156,8 +179,22 @@ impl CommitHold {
         let dropped = queue.held.len();
         queue.held.clear();
         self.busy.store(queue.releasing, Ordering::SeqCst);
+        if queue.releasing {
+            self.wake.notify_one();
+        }
         dropped
     }
+}
+
+/// What a release does after one look at the bound.
+#[derive(Debug)]
+pub(crate) enum Pass {
+    /// Append and fan these out, then look again.
+    Ready(Vec<HeldBatch>),
+    /// Something is held that the bound does not cover yet.
+    Wait,
+    /// Nothing is held; the release ends.
+    Done,
 }
 
 /// Where a hold asks for its bound.
