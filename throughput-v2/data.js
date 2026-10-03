@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791030287129,
+  "lastUpdate": 1791047033675,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22880,6 +22880,58 @@ window.BENCHMARK_DATA = {
             "range": "41336.79",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 819306.26\nmean: 805709.84\nstdev: 41336.79\ncv: 5.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f2a09626d5774b3c7f03aa7a9de47c509cee0408",
+          "message": "docs(deploy): pull the 0.6.0-preview images and check doc pins at release (#972)\n\nThe Compose, installation and Kubernetes pages still pulled 0.5.0. A\nrelease tag now fails check_release_version.py while a doc pins a felix\nimage at another version.\n\nCloses #957.",
+          "timestamp": "2026-10-03T09:57:23-07:00",
+          "tree_id": "e62b9b942ec2d1b73dd18c24b93287518f43f2e2",
+          "url": "https://github.com/gabloe/felix/commit/f2a09626d5774b3c7f03aa7a9de47c509cee0408"
+        },
+        "date": 1791047033231,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 345215.29,
+            "range": "5679.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345215.29\nmean: 346273.60\nstdev: 5679.53\ncv: 1.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 345215.29,
+            "range": "5679.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345215.29\nmean: 346273.60\nstdev: 5679.53\ncv: 1.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82224.33,
+            "range": "619.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82224.33\nmean: 82038.06\nstdev: 619.95\ncv: 0.76%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 822243.26,
+            "range": "6199.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 822243.26\nmean: 820380.62\nstdev: 6199.50\ncv: 0.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
