@@ -49,6 +49,8 @@ impl Broker {
     /// durable tail. Handing out a cursor from the ring would then name a
     /// position that is already in the past on disk, and replaying from it
     /// fails as too old rather than resuming where the caller actually was.
+    /// The tail is read after appends already started have landed, so a
+    /// cancelled publish still being written is not left above the cursor.
     ///
     /// On a `Quorum` stream the tail is the committed mark: a position past it
     /// may name records a failover replaces.
@@ -66,7 +68,7 @@ impl Broker {
         let next_seq = match &handle.state.durable {
             Some(log) => committed_tail(
                 handle.state.read_bound(),
-                log.tail_offset().await?,
+                log.settled_tail_offset().await?,
                 stream,
                 shard,
             )?,

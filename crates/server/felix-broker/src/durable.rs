@@ -370,6 +370,15 @@ impl StreamLog {
         self.log.tail_offset().await.map_err(BrokerError::from)
     }
 
+    /// [`StreamLog::tail_offset`], after every append already started has
+    /// landed, including one whose caller was cancelled.
+    pub async fn settled_tail_offset(&self) -> Result<Offset> {
+        self.log
+            .settled_tail_offset()
+            .await
+            .map_err(BrokerError::from)
+    }
+
     /// Oldest offset still on disk.
     ///
     /// Rises as retention trims the head, so this is the floor a resuming

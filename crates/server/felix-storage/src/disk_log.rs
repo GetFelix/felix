@@ -347,6 +347,21 @@ impl DiskLog {
         self.inner.check_healthy()
     }
 
+    /// The tail once every append already handed to the append thread has
+    /// been written or skipped.
+    ///
+    /// An append whose caller was cancelled still lands if the thread had
+    /// started on it, so a plain tail read taken after the cancellation can
+    /// name a position below that record. This read queues behind it instead.
+    pub async fn settled_tail_offset(&self) -> Result<Offset> {
+        let inner = Arc::clone(&self.inner);
+        self.inner
+            .appender
+            .run(move || Ok(inner.segments.read().tail_offset()))
+            .await
+            .map_err(StorageError::Io)
+    }
+
     /// Force a flush regardless of the configured policy.
     pub async fn sync(&self) -> Result<()> {
         self.inner
