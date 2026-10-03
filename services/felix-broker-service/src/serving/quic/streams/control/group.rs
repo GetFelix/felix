@@ -28,6 +28,7 @@ pub(super) async fn group_poll(
     max_records: u32,
     wait_ms: u64,
     request_id: u64,
+    consumer: Option<felix_broker::GroupConsumer>,
 ) -> Result<Step> {
     let Ctx {
         broker,
@@ -93,6 +94,7 @@ pub(super) async fn group_poll(
         // Capped, so a client cannot hold a broker stream open for
         // as long as it likes.
         Duration::from_millis(wait_ms.min(config.group_max_wait_ms)),
+        consumer.as_ref(),
     )
     .await;
     let records = match polled {

@@ -48,6 +48,7 @@ pub(crate) async fn poll(
     group: &str,
     max_records: usize,
     wait: Duration,
+    consumer: Option<&felix_broker::GroupConsumer>,
 ) -> Result<Vec<GroupRecord>, ClientError> {
     poll_rechecking(
         broker,
@@ -61,6 +62,7 @@ pub(crate) async fn poll(
         max_records,
         wait,
         WAIT_RECHECK,
+        consumer,
     )
     .await
 }
@@ -79,6 +81,7 @@ async fn poll_rechecking(
     max_records: usize,
     wait: Duration,
     recheck: Duration,
+    consumer: Option<&felix_broker::GroupConsumer>,
 ) -> Result<Vec<GroupRecord>, ClientError> {
     let (reader, log, owned) =
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
@@ -130,6 +133,7 @@ async fn poll_rechecking(
                 committed.unwrap_or(u64::MAX),
                 max_records,
                 Instant::now(),
+                consumer,
             )
             .await
             .map_err(storage);

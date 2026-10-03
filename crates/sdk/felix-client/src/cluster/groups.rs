@@ -71,6 +71,39 @@ impl ClusterClient {
         .await
     }
 
+    /// [`Client::group_poll_as`], on whichever broker leads the shard.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn group_poll_as(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        member: Option<&crate::GroupMember>,
+        max_records: u32,
+        wait: Duration,
+    ) -> Result<Vec<felix_wire::GroupRecord>> {
+        self.on_group_shard(
+            shard_key(tenant_id, namespace, stream, shard),
+            |client| async move {
+                client
+                    .group_poll_as(
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                        group,
+                        member,
+                        max_records,
+                        wait,
+                    )
+                    .await
+            },
+        )
+        .await
+    }
+
     /// [`Client::group_ack`], on whichever broker leads the shard.
     pub async fn group_ack(
         &self,

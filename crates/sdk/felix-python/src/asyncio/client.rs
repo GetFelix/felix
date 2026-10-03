@@ -339,7 +339,7 @@ impl AsyncClient {
 
     /// Take up to `max_records` for this group, waiting up to `wait` seconds.
     /// See the synchronous `Client.group_poll` for what the options mean.
-    #[pyo3(signature = (tenant_id, namespace, stream, shard, group, *, max_records=32, wait=5.0))]
+    #[pyo3(signature = (tenant_id, namespace, stream, shard, group, *, max_records=32, wait=5.0, consumer=None, reclaim=false))]
     fn group_poll<'py>(
         &self,
         py: Python<'py>,
@@ -350,6 +350,8 @@ impl AsyncClient {
         group: &str,
         max_records: u32,
         wait: f64,
+        consumer: Option<String>,
+        reclaim: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         let (tenant_id, namespace, stream, group) = (
@@ -359,14 +361,16 @@ impl AsyncClient {
             group.to_string(),
         );
         let wait = std::time::Duration::from_secs_f64(wait.max(0.0));
+        let member = consumer.map(|consumer| felix_client::GroupMember { consumer, reclaim });
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let records = inner
-                .group_poll_wait(
+                .group_poll_as(
                     &tenant_id,
                     &namespace,
                     &stream,
                     shard,
                     &group,
+                    member.as_ref(),
                     max_records,
                     wait,
                 )

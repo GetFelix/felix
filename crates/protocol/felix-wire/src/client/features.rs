@@ -212,6 +212,14 @@ pub const FEATURE_STREAM_PUBLISH_WINDOW: u32 = 0x0002_0000;
 /// redirected or forwarded.
 pub const FEATURE_SHARD_OWNERS: u32 = 0x0004_0000;
 
+/// The broker records which member holds each claim when a `group_poll`
+/// names its `consumer`, and takes back that member's claims on `reclaim`.
+///
+/// Advertised by a *broker*, with `FEATURE_CONSUMER_GROUP`. A broker that
+/// predates it ignores both fields, so a client checks this before relying on
+/// a reclaim.
+pub const FEATURE_GROUP_CONSUMER: u32 = 0x0010_0000;
+
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -231,7 +239,8 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_PUBLISH_PIPELINE
     | FEATURE_ATOMIC_COMMIT
     | FEATURE_STREAM_PUBLISH_WINDOW
-    | FEATURE_SHARD_OWNERS;
+    | FEATURE_SHARD_OWNERS
+    | FEATURE_GROUP_CONSUMER;
 
 /// True if `features` advertises `feature`.
 pub fn supports_feature(features: u32, feature: u32) -> bool {

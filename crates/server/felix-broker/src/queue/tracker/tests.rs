@@ -626,3 +626,59 @@ fn filling_the_cap_with_everything_available_is_not_capped() {
     assert!(!claim.capped);
     assert!(!group.claim(3, 10, now, VIS).capped);
 }
+
+fn member(id: &str, reclaim: bool) -> GroupConsumer {
+    GroupConsumer {
+        id: id.to_string(),
+        reclaim,
+    }
+}
+
+/// **A restarted member takes back what its predecessor held**, before newer
+/// records and without waiting for the claims to lapse. Records held by other
+/// members are left with them.
+#[test]
+fn a_member_that_reclaims_gets_its_standing_claims_back_first() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    let first = member("snapshotter", false);
+    assert_eq!(
+        group.claim_as(10, 2, now, VIS, Some(&first)).offsets,
+        vec![0, 1]
+    );
+    assert_eq!(
+        group
+            .claim_as(10, 1, now, VIS, Some(&member("other", false)))
+            .offsets,
+        vec![2]
+    );
+
+    // The process restarts under the same name.
+    let back = group.claim_as(10, 10, now, VIS, Some(&member("snapshotter", true)));
+    assert_eq!(back.offsets[..2], [0, 1]);
+    assert!(
+        !back.offsets.contains(&2),
+        "another member's claim is left alone"
+    );
+    assert_eq!(
+        group.attempts(0),
+        2,
+        "taking a record back is another attempt"
+    );
+}
+
+/// Without `reclaim` a named member's poll takes new records, as any poll does.
+#[test]
+fn a_named_poll_without_reclaim_leaves_its_claims_standing() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    let snapshotter = member("snapshotter", false);
+    assert_eq!(
+        group.claim_as(10, 2, now, VIS, Some(&snapshotter)).offsets,
+        vec![0, 1]
+    );
+    assert_eq!(
+        group.claim_as(10, 2, now, VIS, Some(&snapshotter)).offsets,
+        vec![2, 3]
+    );
+}

@@ -69,6 +69,19 @@ fast producer.
 > `the_cursor_does_not_advance_over_a_gap`,
 > `owed_records_go_out_before_new_ones`.
 
+## A member that restarts
+
+A claim belongs to the group, not to a process, so a member that dies leaves
+its records claimed until the visibility timeout (`FELIX_GROUP_VISIBILITY_TIMEOUT_MS`,
+30 s by default) lapses, and its replacement gets newer records first. A member
+that names itself takes them back at once: poll with a stable `consumer` name
+(`group_poll_as` with a `GroupMember` in Rust, `consumer=` in Python, the
+`consumer` argument in Node), and on the first poll after a restart set
+`reclaim`. The records the previous process held under that name come back
+before anything else, each counted as another attempt. Claims are kept in the
+leader's memory, so this holds while the shard's leader stays put; after a
+failover the group resumes from its durable position anyway.
+
 ## Retries and giving up
 
 Every delivery carries `attempts`, counting this one. `1` is a first attempt;

@@ -403,7 +403,7 @@ impl Client {
     /// for this group right now. `wait=0` polls without blocking, which spins
     /// if you loop on it — prefer a few seconds so the broker holds the
     /// request open instead.
-    #[pyo3(signature = (tenant_id, namespace, stream, shard, group, *, max_records=32, wait=5.0))]
+    #[pyo3(signature = (tenant_id, namespace, stream, shard, group, *, max_records=32, wait=5.0, consumer=None, reclaim=false))]
     fn group_poll(
         &self,
         py: Python<'_>,
@@ -414,18 +414,22 @@ impl Client {
         group: &str,
         max_records: u32,
         wait: f64,
+        consumer: Option<String>,
+        reclaim: bool,
     ) -> PyResult<Vec<Py<GroupRecord>>> {
         let inner = Arc::clone(&self.inner);
         let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
         let wait = std::time::Duration::from_secs_f64(wait.max(0.0));
+        let member = consumer.map(|consumer| felix_client::GroupMember { consumer, reclaim });
         let records = block_on(py, async move {
             inner
-                .group_poll_wait(
+                .group_poll_as(
                     &tenant_id,
                     &namespace,
                     &stream,
                     shard,
                     &group,
+                    member.as_ref(),
                     max_records,
                     wait,
                 )

@@ -19,3 +19,4 @@ mod tracker;
 pub use cursors::ConsumerGroups;
 pub use dead_letters::DeadLetters;
 pub use reader::{Claimed, GroupKey, GroupReader};
+pub use tracker::GroupConsumer;

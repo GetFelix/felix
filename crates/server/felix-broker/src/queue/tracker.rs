@@ -50,6 +50,9 @@ pub(crate) struct GroupTracker {
     /// yet finished. Settling one has to clear that record too, or every
     /// later leader would redeliver it again.
     redriven: BTreeSet<u64>,
+    /// Which consumer holds each claim, for claims made by one that named
+    /// itself. Kept in step with `in_flight`.
+    holders: BTreeMap<u64, String>,
     /// Most times a record is handed out before it is given up on.
     ///
     /// Without a bound a record that always fails is redelivered for ever and
@@ -76,6 +79,7 @@ impl GroupTracker {
             redeliver: BTreeSet::new(),
             attempts: BTreeMap::new(),
             redriven: BTreeSet::new(),
+            holders: BTreeMap::new(),
             max_attempts: max_attempts.max(1),
             max_in_flight: usize::MAX,
         }
@@ -122,13 +126,8 @@ impl GroupTracker {
         self.committed
     }
 
-    /// Take up to `max` offsets to deliver, claimed until `now + visibility`.
-    ///
-    /// Owed offsets come before new ones. A group that always preferred new
-    /// records would starve the redeliveries behind a fast producer, and those
-    /// are precisely the records a consumer already failed to finish once.
-    ///
-    /// `tail` is the shard's log tail: nothing at or above it exists yet.
+    /// [`Self::claim_as`] for a consumer that did not name itself.
+    #[cfg(test)]
     pub(crate) fn claim(
         &mut self,
         tail: u64,
@@ -136,7 +135,43 @@ impl GroupTracker {
         now: Instant,
         visibility: Duration,
     ) -> Claim {
+        self.claim_as(tail, max, now, visibility, None)
+    }
+
+    /// Take up to `max` offsets to deliver, claimed until `now + visibility`.
+    ///
+    /// Owed offsets come before new ones. A group that always preferred new
+    /// records would starve the redeliveries behind a fast producer, and those
+    /// are precisely the records a consumer already failed to finish once.
+    ///
+    /// `tail` is the shard's log tail: nothing at or above it exists yet.
+    ///
+    /// A `consumer` that named itself has its claims recorded as its own. With
+    /// `reclaim`, the claims it already holds, left by an earlier process under
+    /// the same name, are owed again first, so it gets them back now rather
+    /// than when they lapse.
+    pub(crate) fn claim_as(
+        &mut self,
+        tail: u64,
+        max: usize,
+        now: Instant,
+        visibility: Duration,
+        consumer: Option<&GroupConsumer>,
+    ) -> Claim {
         self.expire(now);
+        if let Some(consumer) = consumer.filter(|consumer| consumer.reclaim) {
+            let held: Vec<u64> = self
+                .holders
+                .iter()
+                .filter(|(_, holder)| **holder == consumer.id)
+                .map(|(offset, _)| *offset)
+                .collect();
+            for offset in held {
+                self.take_in_flight(offset);
+                self.redeliver.insert(offset);
+            }
+        }
+        let holder = consumer.map(|consumer| consumer.id.as_str());
 
         let wanted = max.min(MAX_CLAIM);
         let room = self.max_in_flight.saturating_sub(self.in_flight.len());
@@ -161,7 +196,7 @@ impl GroupTracker {
                 claim.dead_lettered.push(DeadLettered { offset, attempts });
                 continue;
             }
-            self.hand_out(offset, deadline);
+            self.hand_out(offset, deadline, holder);
             claim.offsets.push(offset);
         }
 
@@ -175,7 +210,7 @@ impl GroupTracker {
             {
                 continue;
             }
-            self.hand_out(offset, deadline);
+            self.hand_out(offset, deadline, holder);
             claim.offsets.push(offset);
         }
 
@@ -309,6 +344,7 @@ impl GroupTracker {
         {
             self.lapses.pop_first();
             self.in_flight.remove(&offset);
+            self.holders.remove(&offset);
             self.redeliver.insert(offset);
         }
     }
@@ -320,16 +356,20 @@ impl GroupTracker {
         self.in_flight.len()
     }
 
-    fn hand_out(&mut self, offset: u64, deadline: Instant) {
+    fn hand_out(&mut self, offset: u64, deadline: Instant, holder: Option<&str>) {
         // A redelivery replaces the claim it was owed under, if one stands.
         self.take_in_flight(offset);
         self.in_flight.insert(offset, deadline);
         self.lapses.insert((deadline, offset));
+        if let Some(holder) = holder {
+            self.holders.insert(offset, holder.to_string());
+        }
         *self.attempts.entry(offset).or_insert(0) += 1;
     }
 
     /// Drop the claim on `offset`, returning whether there was one.
     fn take_in_flight(&mut self, offset: u64) -> bool {
+        self.holders.remove(&offset);
         match self.in_flight.remove(&offset) {
             Some(deadline) => {
                 self.lapses.remove(&(deadline, offset));
@@ -338,6 +378,16 @@ impl GroupTracker {
             None => false,
         }
     }
+}
+
+/// A group member that names itself when it polls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupConsumer {
+    /// Stable across restarts of the same member, so a new process can take
+    /// back what the one before it held.
+    pub id: String,
+    /// Take back this member's standing claims before anything else.
+    pub reclaim: bool,
 }
 
 /// Most offsets one claim hands out, whatever the client asked for. A request

@@ -19,7 +19,7 @@ use tokio::sync::{Mutex, Notify, OnceCell};
 
 use super::cursors::ConsumerGroups;
 use super::dead_letters::DeadLetters;
-use super::tracker::GroupTracker;
+use super::tracker::{GroupConsumer, GroupTracker};
 use crate::error::{BrokerError, Result};
 
 /// Every group this broker is serving, and the state each one holds.
@@ -168,7 +168,7 @@ impl GroupReader {
         max: usize,
         now: Instant,
     ) -> Result<Vec<Claimed>> {
-        self.poll_below(key, log, u64::MAX, max, now).await
+        self.poll_below(key, log, u64::MAX, max, now, None).await
     }
 
     /// [`Self::poll`], handing out nothing at or past `committed`.
@@ -185,6 +185,7 @@ impl GroupReader {
         committed: u64,
         max: usize,
         now: Instant,
+        consumer: Option<&GroupConsumer>,
     ) -> Result<Vec<Claimed>> {
         let log_tail = log.tail_offset().await?;
         // Past a poisoned log's durable offset may be a batch whose publish
@@ -196,7 +197,7 @@ impl GroupReader {
             let mut tracker = tracker.lock().await;
             tracker.inherit_below(log_tail);
             tracker.set_max_in_flight(self.max_in_flight());
-            tracker.claim(tail, max, now, self.visibility)
+            tracker.claim_as(tail, max, now, self.visibility, consumer)
         };
         if claim.capped {
             self.capped.fetch_add(1, Ordering::Relaxed);

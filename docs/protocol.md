@@ -247,8 +247,17 @@ the stream end after its last event, byte for byte as before. See
 ```
 { "type": "group_poll", "tenant_id": "<string>", "namespace": "<string>",
   "stream": "<string>", "shard": <number>, "group": "<string>",
-  "max_records": <number>, "wait_ms": <number>, "request_id": <number> }
+  "max_records": <number>, "wait_ms": <number>, "request_id": <number>,
+  "consumer": "<string>"?, "reclaim": <bool>? }
 ```
+
+`consumer` names the member polling, stable across its restarts, and the broker
+records the claims it hands out as that member's. With `reclaim: true` the
+member's standing claims, left by a process that restarted under the same name,
+are owed again before anything else, so this poll takes them back rather than
+waiting out the visibility timeout. Both are optional and left out when unused,
+so an older broker reads the request it always did. Only a broker that
+advertised `FEATURE_GROUP_CONSUMER` honours them; an older one ignores them.
 
 Sent only to a broker that advertised `FEATURE_CONSUMER_GROUP`, and only to the
 broker that leads the shard.
@@ -1181,6 +1190,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x1_0000` | `FEATURE_ATOMIC_COMMIT` | The broker accepts `commit` and `state_get`. See [atomic commits](atomic-commit.md) |
 | `0x2_0000` | `FEATURE_STREAM_PUBLISH_WINDOW` | The broker's `publish_window` is per stream, so each pipelining stream has its own. See [pipelined publishes](#pipelined-publishes) |
 | `0x4_0000` | `FEATURE_SHARD_OWNERS` | The broker answers `shard_owners` |
+| `0x10_0000` | `FEATURE_GROUP_CONSUMER` | The broker records which member holds each claim when `group_poll` names a `consumer`, and takes that member's claims back on `reclaim` |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:

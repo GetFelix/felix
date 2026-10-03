@@ -13,6 +13,12 @@ for what the current release guarantees.
 
 ### Added
 
+- A consumer-group member can name itself and take back what a previous
+  process under its name held: `group_poll` accepts `consumer` and `reclaim`
+  (`FEATURE_GROUP_CONSUMER`, `0x10_0000`), `Client::group_poll_as` and
+  `ClusterClient::group_poll_as` take a `GroupMember`, and the Python and Node
+  `group_poll` take `consumer` and `reclaim`. A restarted member no longer
+  waits out the visibility timeout for its records. (#962)
 - `felix-client` re-exports `AckMode`, `BrokerEndpoint` and `ShardRouting`,
   so an application no longer needs `felix-wire` as a direct dependency to
   call it. (#937)

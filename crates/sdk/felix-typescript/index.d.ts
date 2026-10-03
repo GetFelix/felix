@@ -512,6 +512,13 @@ export declare class Client {
     group: string,
     maxRecords?: number,
     waitMs?: number,
+    /**
+     * This member's name, stable across its restarts. With `reclaim`, the
+     * records a previous process under the same name still held come back
+     * first, instead of after the visibility timeout.
+     */
+    consumer?: string,
+    reclaim?: boolean,
   ): Promise<GroupRecord[]>;
 
   /** Finish a record: it will not be handed out again. */

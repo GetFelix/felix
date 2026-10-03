@@ -55,6 +55,7 @@ async fn claimed_one() -> (Leader, PublishContext) {
         GROUP,
         1,
         Duration::ZERO,
+        None,
     )
     .await
     .expect("served before the move");
@@ -278,6 +279,7 @@ async fn a_quorum_group_poll_stops_at_the_quorum_mark() {
             GROUP,
             10,
             Duration::ZERO,
+            None,
         )
         .await
         .expect("poll")
@@ -311,6 +313,7 @@ async fn a_poll_after_the_fence_is_refused() {
             GROUP,
             1,
             Duration::ZERO,
+            None,
         )
         .await
         .is_err(),
@@ -375,6 +378,7 @@ async fn a_waiting_poll_that_loses_its_shard_answers_empty() {
         GROUP,
         1,
         Duration::ZERO,
+        None,
     )
     .await
     .expect("poll");
@@ -395,6 +399,7 @@ async fn a_waiting_poll_that_loses_its_shard_answers_empty() {
                 GROUP,
                 1,
                 Duration::from_secs(5),
+                None,
             )
             .await
         }
@@ -432,6 +437,7 @@ fn waiting_poll(
             10,
             Duration::from_secs(60),
             NEVER,
+            None,
         )
         .await
     })
@@ -488,6 +494,7 @@ async fn a_waiting_poll_is_woken_by_a_hand_back() {
         GROUP,
         10,
         Duration::ZERO,
+        None,
     )
     .await
     .expect("poll");
@@ -541,4 +548,57 @@ async fn a_poll_at_the_cap_is_woken_by_an_ack() {
     .await
     .expect("ack");
     assert_eq!(answered(waiting, "an ack").await, vec![1]);
+}
+
+/// **A member that restarts under its name gets its records back at once.**
+/// The first process claimed a record and died; the next, polling as the
+/// same member with `reclaim`, is handed that record rather than the newer one
+/// behind it, without waiting out the visibility timeout.
+#[tokio::test]
+async fn a_restarted_member_reclaims_what_it_held() {
+    let leader = Leader::start().await;
+    leader
+        .broker
+        .publish_batch(
+            TENANT,
+            NAMESPACE,
+            DURABLE,
+            0,
+            &[Bytes::from_static(b"first"), Bytes::from_static(b"second")],
+        )
+        .await
+        .expect("publish");
+    let publish_ctx = context(&leader);
+    let as_member = |reclaim| felix_broker::GroupConsumer {
+        id: "snapshotter".to_string(),
+        reclaim,
+    };
+    let poll_one = |member: felix_broker::GroupConsumer| {
+        let broker = Arc::clone(&leader.broker);
+        let publish_ctx = publish_ctx.clone();
+        async move {
+            poll(
+                &broker,
+                &publish_ctx,
+                None,
+                TENANT,
+                NAMESPACE,
+                DURABLE,
+                0,
+                GROUP,
+                1,
+                Duration::ZERO,
+                Some(&member),
+            )
+            .await
+            .expect("poll")
+        }
+    };
+
+    let held = poll_one(as_member(false)).await;
+    assert_eq!(held[0].payload.as_ref(), b"first");
+
+    let back = poll_one(as_member(true)).await;
+    assert_eq!(back[0].offset, held[0].offset);
+    assert_eq!(back[0].attempts, 2);
 }
