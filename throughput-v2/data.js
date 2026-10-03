@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791055651226,
+  "lastUpdate": 1791056014790,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -23244,6 +23244,58 @@ window.BENCHMARK_DATA = {
             "range": "7348.67",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1243359.43\nmean: 1244400.22\nstdev: 7348.67\ncv: 0.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bd199134a273a203720ca64154e8efa598135756",
+          "message": "fix(broker): keep a standalone broker's control-plane credential current (#996)\n\nA broker without FELIX_NODE_ID read its node token once at startup, so its\ncatalog sync was refused once an exchanged token expired. The token file\nwatch and the refresh loop now run for any broker with a credential and a\ncontrol plane, and the two file settings move from MembershipConfig to\nBrokerConfig.\n\nCloses #955.",
+          "timestamp": "2026-10-03T12:27:21-07:00",
+          "tree_id": "a7304af93bcbd73b32a4ac95d184ce8026cea252",
+          "url": "https://github.com/gabloe/felix/commit/bd199134a273a203720ca64154e8efa598135756"
+        },
+        "date": 1791056014111,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 352735.59,
+            "range": "7788.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352735.59\nmean: 353579.09\nstdev: 7788.88\ncv: 2.20%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 352735.59,
+            "range": "7788.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352735.59\nmean: 353579.09\nstdev: 7788.88\ncv: 2.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81907.4,
+            "range": "688.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81907.40\nmean: 81894.32\nstdev: 688.48\ncv: 0.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819073.99,
+            "range": "6884.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819073.99\nmean: 818943.21\nstdev: 6884.79\ncv: 0.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
