@@ -749,9 +749,29 @@ jobs:
       - name: Install the napi CLI
         run: npm install -g @napi-rs/cli@2
 
+      # A Linux addon links against the glibc it is built with, and the
+      # runners' is new enough that bookworm, RHEL 8 and Amazon Linux could
+      # not load it. zig links against glibc 2.28's symbols instead.
+      - name: Install cargo-zigbuild
+        if: contains(matrix.target, 'linux-gnu')
+        run: pip install cargo-zigbuild
+
       - name: Build the addon
         working-directory: crates/sdk/felix-typescript
-        run: napi build --platform --release --target ${{ matrix.target }}
+        env:
+          ZIG: ${{ contains(matrix.target, 'linux-gnu') && '--zig --zig-abi-suffix 2.28' || '' }}
+        run: napi build --platform --release --target ${{ matrix.target }} $ZIG
+
+      - name: The addon needs no glibc newer than 2.28
+        if: contains(matrix.target, 'linux-gnu')
+        working-directory: crates/sdk/felix-typescript
+        run: |
+          newest=$(objdump -T *.node | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -Vu | tail -1)
+          echo "newest glibc symbol: $newest"
+          if [ "$(printf '%s\n2.28\n' "$newest" | sort -V | tail -1)" != "2.28" ]; then
+            echo "the addon needs glibc $newest, newer than 2.28" >&2
+            exit 1
+          fi
 
       # The addon is named by platform (felix.darwin-arm64.node and so on), so
       # every leg's artifact can merge into one directory without colliding.

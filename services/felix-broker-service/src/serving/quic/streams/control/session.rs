@@ -67,6 +67,12 @@ pub(super) async fn authenticate(
             // frame the client cannot parse, and an undecodable
             // frame costs the connection.
             session.peer_features = client_features.unwrap_or(0);
+            // Per connection, on top of the broker-wide setting.
+            session.commit_ack = config.ack_on_commit
+                || felix_wire::supports_feature(
+                    session.peer_features,
+                    felix_wire::FEATURE_ACK_ON_COMMIT,
+                );
             // A window only for a client that asked and can read the answer:
             // any other client keeps completion-order acks and its old frame.
             let publish_window = (client_flags.is_some()
@@ -100,6 +106,7 @@ pub(super) async fn authenticate(
                     // broker unable to offer a request it can serve.
                     server_features: Some(
                         felix_wire::FEATURE_CACHE_DELETE
+                            | felix_wire::FEATURE_ACK_ON_COMMIT
                             // Only when the cache store can observe
                             // its writes. A watch's contract is
                             // built on log offsets, so a broker

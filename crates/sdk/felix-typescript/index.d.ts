@@ -37,6 +37,12 @@ export interface GroupRecord {
    * treat a retry differently. `0` means the broker did not report it.
    */
   attempts: number;
+  /**
+   * How many offsets directly below this one were settled without being
+   * delivered (generation starts, records retention removed). A hole with this
+   * count will not fill. `0n` from a broker that predates it.
+   */
+  skippedBefore: bigint;
 }
 
 /** One change observed by a cache watch. */

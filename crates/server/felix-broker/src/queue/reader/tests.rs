@@ -882,3 +882,55 @@ async fn a_trailing_generation_start_does_not_stall_a_group() {
     fx.reader.ack(&key, 0).await.expect("ack");
     assert_eq!(fx.reader.committed(&key).await.expect("committed"), Some(2));
 }
+
+/// **A record says how many offsets below it were settled without delivery.**
+/// Generation-start records are not a client's, so the record after a run of
+/// them reports the run, and a consumer can tell the hole will not fill. The
+/// run is reported again after a poll that ended on it.
+#[tokio::test]
+async fn a_record_after_generation_starts_reports_them_as_skipped() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    publish(&fx.log, &["a"]).await;
+    fx.log.append_generation_start(2).await.expect("start");
+    fx.log.append_generation_start(3).await.expect("start");
+    publish(&fx.log, &["b"]).await;
+
+    let claimed = fx
+        .reader
+        .poll(&key(), &fx.log, 10, Instant::now())
+        .await
+        .expect("poll");
+
+    assert_eq!(payloads(&claimed), vec!["a", "b"]);
+    let skipped: Vec<(u64, u64)> = claimed
+        .iter()
+        .map(|c| (c.offset, c.skipped_before))
+        .collect();
+    assert_eq!(skipped, vec![(0, 0), (3, 2)]);
+}
+
+/// A poll that settles a run and stops short of the record after it leaves
+/// the count for the poll that delivers that record.
+#[tokio::test]
+async fn the_skip_count_survives_into_the_next_poll() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    fx.log.append_generation_start(2).await.expect("start");
+    publish(&fx.log, &["a"]).await;
+    let now = Instant::now();
+
+    let first = fx.reader.poll(&key(), &fx.log, 1, now).await.expect("poll");
+    assert!(
+        first.is_empty(),
+        "the one offset claimed was a generation start"
+    );
+    let second = fx.reader.poll(&key(), &fx.log, 1, now).await.expect("poll");
+    assert_eq!(
+        second
+            .iter()
+            .map(|c| (c.offset, c.skipped_before))
+            .collect::<Vec<_>>(),
+        vec![(1, 1)]
+    );
+}

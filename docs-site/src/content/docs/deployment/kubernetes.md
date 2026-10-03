@@ -17,15 +17,16 @@ The chart names `ghcr.io/gabloe/felix-broker` and
 `ghcr.io/gabloe/felix-controlplane`, which releases publish and which pull
 without credentials. The image tag defaults to the chart's `appVersion`.
 
-On `main` that is `0.6.0-preview`, which no release carries, so a default
-install from `main` asks for an image that does not exist. The chart on `main`
-also sets variables that the `0.5.0` binaries do not read (the zone and peer
-opt-out settings among them), so pinning `image.tag=0.5.0` under it is not a
-match either. Use one of these:
+On `main` that is the next version, which is published only once it is
+released, so a default install from `main` can ask for an image that does not
+exist yet. The chart on `main` can also set variables an older release's
+binaries do not read, so pinning an older `image.tag` under it is not a match
+either. Use one of these:
 
 - **A release.** Check out the release tag and install the chart from there.
-  Its `appVersion` is that release's image tag (`v0.5.0` renders
-  `ghcr.io/gabloe/felix-broker:0.5.0`), and its templates match those binaries.
+  Its `appVersion` is that release's image tag (`v0.6.0-preview` renders
+  `ghcr.io/gabloe/felix-broker:0.6.0-preview`), and its templates match those
+  binaries.
 - **`main`.** Build both images from the same commit as the chart (the
   [Docker Compose page](/felix/deployment/docker-compose/) has the build
   commands), push them to a registry your cluster can reach, and point
@@ -41,7 +42,7 @@ workflow's OIDC identity, so there is no key to store or rotate and the
 signature names the workflow that produced the image. Verify before you pin:
 
 ```bash
-cosign verify ghcr.io/gabloe/felix-broker:0.5.0 \
+cosign verify ghcr.io/gabloe/felix-broker:0.6.0-preview \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
   --certificate-identity-regexp='^https://github.com/gabloe/felix/\.github/workflows/release\.yml@refs/tags/v'
 ```

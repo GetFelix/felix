@@ -22,12 +22,12 @@ Detailed RBAC mutation/delegation rules and canonical grammar are documented in 
 Felix supports any OIDC-compliant IdP that exposes a JWKS endpoint (either via OIDC discovery or a direct `jwks_url`) and uses an allowed upstream OIDC signing algorithm.
 
 Supported upstream OIDC JWT signing algorithms:
-- `ES256` (default)
-- `RS256`, `RS384`, `RS512`
+- `ES256` and `RS256` (the default)
+- `RS384`, `RS512`
 - `PS256`, `PS384`, `PS512`
 
 Control plane configuration:
-- YAML: `oidc_allowed_algorithms: ["ES256"]`
+- YAML: `oidc_allowed_algorithms: ["ES256", "RS256"]`
 - Env: `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS=ES256,RS256,...`
 
 This includes common providers like:

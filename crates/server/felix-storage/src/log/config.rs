@@ -126,7 +126,61 @@ pub struct LogConfig {
     pub max_open_sealed_segments: usize,
 }
 
+/// The bounds retention deletes a log's oldest segments by. Either, both or
+/// neither may be set; neither keeps everything.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Retention {
+    /// See [`LogConfig::retention_bytes`].
+    pub bytes: Option<u64>,
+    /// See [`LogConfig::retention_age`].
+    pub age: Option<Duration>,
+}
+
+impl Retention {
+    /// These bounds, with each one left unset taken from `fallback`.
+    pub fn or(self, fallback: Retention) -> Retention {
+        Retention {
+            bytes: self.bytes.or(fallback.bytes),
+            age: self.age.or(fallback.age),
+        }
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.bytes.is_some() || self.age.is_some()
+    }
+}
+
 impl LogConfig {
+    /// The retention bounds this configuration sets.
+    pub fn retention(&self) -> Retention {
+        Retention {
+            bytes: self.retention_bytes,
+            age: self.retention_age,
+        }
+    }
+
+    /// Whether `retention` can be enforced under this configuration.
+    pub(crate) fn check_retention(&self, retention: Retention) -> Result<()> {
+        // Zero is not "retain nothing" — the active segment is never deleted, so
+        // it would be a bound the log can never satisfy, re-evaluated forever.
+        if retention.bytes == Some(0) {
+            return Err(StorageError::InvalidConfig(
+                "retention_bytes must be greater than zero; omit it to disable retention",
+            ));
+        }
+        if retention.age == Some(Duration::ZERO) {
+            return Err(StorageError::InvalidConfig(
+                "retention_age must be greater than zero; omit it to disable retention",
+            ));
+        }
+        if retention.is_set() && self.retention_check_interval.is_zero() {
+            return Err(StorageError::InvalidConfig(
+                "retention_check_interval must be greater than zero",
+            ));
+        }
+        Ok(())
+    }
+
     /// Reject configurations that cannot produce a working log.
     ///
     /// Called once when a log is opened rather than on the append path, so a
@@ -150,25 +204,7 @@ impl LogConfig {
                 "max_records_per_read must be greater than zero",
             ));
         }
-        // Zero is not "retain nothing" — the active segment is never deleted, so
-        // it would be a bound the log can never satisfy, re-evaluated forever.
-        if self.retention_bytes == Some(0) {
-            return Err(StorageError::InvalidConfig(
-                "retention_bytes must be greater than zero; omit it to disable retention",
-            ));
-        }
-        if self.retention_age == Some(Duration::ZERO) {
-            return Err(StorageError::InvalidConfig(
-                "retention_age must be greater than zero; omit it to disable retention",
-            ));
-        }
-        if (self.retention_bytes.is_some() || self.retention_age.is_some())
-            && self.retention_check_interval.is_zero()
-        {
-            return Err(StorageError::InvalidConfig(
-                "retention_check_interval must be greater than zero",
-            ));
-        }
+        self.check_retention(self.retention())?;
         if self.max_open_sealed_segments == 0 {
             return Err(StorageError::InvalidConfig(
                 "max_open_sealed_segments must be greater than zero",

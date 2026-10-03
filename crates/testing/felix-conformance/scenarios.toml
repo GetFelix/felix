@@ -480,6 +480,13 @@ forever instead turns a routine shutdown into a hung consumer.
 # A stall is shorter than the idle timeout, so the connection never dies, and
 # an error during one fails the scenario too: every publish is acknowledged
 # and every record arrives.
+#
+# `during = "cache"`: through the interposed client, `records` times, put key
+# `<id>-<n>` with its own name as the value, then add 1 to counter `<id>-count`,
+# in the fixture's `cache`. Every call must return, with an answer or an error.
+# Once the fault is over a put must succeed again, and then, read through the
+# same client: every acknowledged put has its value, and the counter is at
+# least the acknowledged adds and at most `records`.
 # ---------------------------------------------------------------------------
 
 [[scenario]]
@@ -546,6 +553,17 @@ Every packet is late and none is lost. The records published during the stall
 arrive after it, in order, with contiguous offsets.
 """
 step = { during = "subscribe", fault = "stall", after_records = 3, records = 10, hold_ms = 2000 }
+
+[[scenario]]
+id = "fault.cache_through_a_reset_link"
+required = true
+title = "Cache calls on a reset connection move to another connection"
+detail = """
+The connection the client entered by dies for good. Cache and counter calls
+must not keep going to it: each returns, the next ones land on a new
+connection, and every acknowledged write reads back.
+"""
+step = { during = "cache", fault = "reset", after_records = 2, records = 6, hold_ms = 0 }
 
 # ---------------------------------------------------------------------------
 # Queues (consumer groups)

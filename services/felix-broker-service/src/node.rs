@@ -20,6 +20,7 @@
 //! submodule. Their order is load-bearing, and the comments at each step say
 //! why.
 
+mod cache_expiry;
 mod cluster;
 mod handoff;
 mod listeners;
@@ -292,6 +293,12 @@ where
     // life of the process rather than the one token it was given.
     let credential = (!config.controlplane_token.is_empty())
         .then(|| credential::NodeCredential::new(config.controlplane_token.clone()));
+    tokio::spawn(cache_expiry::run(
+        Arc::clone(&broker),
+        ingress_router.clone(),
+        cache_expiry::INTERVAL,
+        sync_shutdown.clone(),
+    ));
     let (seeded_tx, seeded_rx) = tokio::sync::oneshot::channel();
     let controlplane_task = sync::spawn_catalog_sync(
         &config,
@@ -311,7 +318,13 @@ where
     );
 
     let membership_client = crate::cluster::controlplane_client::build()?;
-    let (membership, credential_refresh) = match membership::spawn(
+    let credential_refresh = membership::keep_credential_current(
+        &config,
+        &membership_client,
+        &credential,
+        &sync_shutdown,
+    );
+    let membership = membership::spawn(
         &config,
         &membership_client,
         gate_readiness_on_sync,
@@ -320,10 +333,7 @@ where
         &fleet,
         &credential,
         &sync_shutdown,
-    ) {
-        Some(joined) => (Some(joined.membership), joined.credential_refresh),
-        None => (None, None),
-    };
+    );
     // Its own token, so a stopping broker can stop taking forwarded writes
     // while it still ships to followers over the pool.
     let peer_listener_shutdown = peer_shutdown.child_token();

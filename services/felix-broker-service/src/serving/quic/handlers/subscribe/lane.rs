@@ -276,19 +276,10 @@ impl WriterLaneManager {
         };
         let sender = self.ensure_connection_writer(connection_id, connection.as_ref());
         let wait_start = Instant::now();
-        let is_control = matches!(
-            &cmd,
-            ConnectionCommand::Register { .. } | ConnectionCommand::Unregister { .. }
-        );
-        let result = match (self.lane_queue_policy, is_control) {
-            (_, true) | (felix_broker::SubQueuePolicy::Block, false) => {
-                sender.send(cmd).await.map_err(|_| ())
-            }
-            (felix_broker::SubQueuePolicy::DropNew, false)
-            | (felix_broker::SubQueuePolicy::DropOld, false) => {
-                sender.try_send(cmd).map_err(|_| ())
-            }
-        };
+        // Waits under every policy. The writer sheds per subscription, and
+        // shedding here would drop frames for every subscription on the
+        // connection whenever one fanout outnumbers this queue.
+        let result = sender.send(cmd).await.map_err(|_| ());
         let wait_ns = wait_start.elapsed().as_nanos() as u64;
         timings::record_sub_queue_wait_ns(wait_ns);
         t_histogram!("felix_broker_sub_queue_wait_ns").record(wait_ns as f64);
@@ -327,48 +318,19 @@ impl WriterLaneManager {
         let lane = lane_idx.to_string();
         let sender = &self.lanes[lane_idx];
         let enqueue_wait_start = Instant::now();
-        let is_control = matches!(
-            &cmd,
-            LaneCommand::Register { .. } | LaneCommand::Unregister { .. }
-        );
-        let result = match (self.lane_queue_policy, is_control) {
-            (_, true) | (felix_broker::SubQueuePolicy::Block, false) => {
-                sender.send(cmd).await.map_err(|_| ())
-            }
-            (felix_broker::SubQueuePolicy::DropNew, false) => sender.try_send(cmd).map_err(|err| {
-                if matches!(err, tokio::sync::mpsc::error::TrySendError::Full(_)) {
-                    t_counter!("broker_sub_lane_queue_full_total", "lane" => lane.clone())
-                        .increment(1);
-                }
-            }),
-            (felix_broker::SubQueuePolicy::DropOld, false) => sender.try_send(cmd).map_err(|err| {
-                if matches!(err, tokio::sync::mpsc::error::TrySendError::Full(_)) {
-                    t_counter!("broker_sub_lane_queue_full_total", "lane" => lane.clone())
-                        .increment(1);
-                    t_counter!(
-                        "broker_sub_lane_drop_old_emulated_total",
-                        "lane" => lane.clone()
-                    )
-                    .increment(1);
-                }
-            }),
-        };
+        // Waits under every policy, like `enqueue_connection`: a feeder that
+        // waits here leaves its records in its own broker queue, which sheds
+        // for that subscription alone.
+        let result = sender.send(cmd).await.map_err(|_| ());
         let enqueue_wait_ns = enqueue_wait_start.elapsed().as_nanos() as u64;
         t_histogram!("broker_sub_lane_enqueue_block_ns", "lane" => lane.clone())
             .record(enqueue_wait_ns as f64);
-        match result {
-            Ok(()) => {
-                t_counter!("broker_sub_lane_enqueued_total", "lane" => lane.clone()).increment(1);
-                self.update_lane_queue_highwater(lane_idx);
-                let queue_len = self.lane_queue_capacity.saturating_sub(sender.capacity());
-                metrics::gauge!("felix_sub_lane_queue_len", "lane" => lane).set(queue_len as f64);
-                Ok(())
-            }
-            Err(()) => {
-                t_counter!("broker_sub_lane_dropped_total", "lane" => lane).increment(1);
-                Err(())
-            }
-        }
+        result?;
+        t_counter!("broker_sub_lane_enqueued_total", "lane" => lane.clone()).increment(1);
+        self.update_lane_queue_highwater(lane_idx);
+        let queue_len = self.lane_queue_capacity.saturating_sub(sender.capacity());
+        metrics::gauge!("felix_sub_lane_queue_len", "lane" => lane).set(queue_len as f64);
+        Ok(())
     }
 }
 

@@ -138,10 +138,10 @@ impl Client {
             .auth_tenant_id
             .clone()
             .context("FELIX_AUTH_TENANT must be set")?;
-        let credentials = Arc::new(Credentials::new(
-            auth_tenant_id.clone(),
-            client_config.tokens()?,
-        ));
+        let credentials = Arc::new(
+            Credentials::new(auth_tenant_id.clone(), client_config.tokens()?)
+                .with_ack_on_commit(client_config.ack_on_commit),
+        );
         let publish_pool_size = client_config.publish_conn_pool;
         let publish_streams_per_conn = client_config.publish_streams_per_conn;
         if publish_pool_size == 0 || publish_streams_per_conn == 0 {

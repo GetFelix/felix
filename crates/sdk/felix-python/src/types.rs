@@ -58,6 +58,10 @@ pub struct GroupRecord {
     /// than first, because claiming a first attempt for an unknown one would
     /// skip exactly the retry handling that was wanted.
     pub attempts: u32,
+    /// How many offsets directly below this one were settled without being
+    /// delivered (generation starts, records retention removed), so a hole
+    /// with this count will not fill. `0` from a broker that predates it.
+    pub skipped_before: u64,
 }
 
 #[pymethods]
@@ -322,6 +326,7 @@ pub(crate) struct OwnedGroupRecord {
     pub offset: u64,
     pub payload: Vec<u8>,
     pub attempts: u32,
+    pub skipped_before: u64,
 }
 
 impl From<felix_wire::GroupRecord> for OwnedGroupRecord {
@@ -330,6 +335,7 @@ impl From<felix_wire::GroupRecord> for OwnedGroupRecord {
             offset: record.offset,
             payload: record.payload.to_vec(),
             attempts: record.attempts,
+            skipped_before: record.skipped_before,
         }
     }
 }
@@ -346,6 +352,7 @@ impl<'py> IntoPyObject<'py> for OwnedGroupRecord {
                 offset: self.offset,
                 payload: PyBytes::new(py, &self.payload).unbind(),
                 attempts: self.attempts,
+                skipped_before: self.skipped_before,
             },
         )
     }

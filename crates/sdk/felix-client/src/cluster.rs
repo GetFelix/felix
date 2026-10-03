@@ -243,10 +243,12 @@ impl ClusterClient {
     pub async fn refresh_topology(&self) -> Result<usize> {
         let client = self.client().await;
         let reported = client.topology().await?;
-        let discovered: Vec<SocketAddr> = reported
-            .iter()
-            .filter_map(|broker| broker.addr.parse().ok())
-            .collect();
+        let mut discovered = Vec::with_capacity(reported.len());
+        for broker in &reported {
+            if let Some(addr) = self.nodes.resolve(&broker.addr).await {
+                discovered.push(addr);
+            }
+        }
 
         let mut endpoints = self.endpoints.write().await;
         // Rebuilt rather than appended to, so a broker that has left the
@@ -266,6 +268,12 @@ impl ClusterClient {
     /// plays for this cluster client.
     pub(crate) async fn connect_to(&self, addr: SocketAddr) -> Result<Arc<Client>> {
         self.nodes.connect_to(addr).await
+    }
+
+    /// Where a broker that advertised `addr`, an address or a name, is
+    /// reached now. See `Nodes::resolve`.
+    pub(crate) async fn resolve(&self, advertised: &str) -> Option<SocketAddr> {
+        self.nodes.resolve(advertised).await
     }
 
     /// Live connections to each broker this client holds one for.

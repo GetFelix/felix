@@ -87,6 +87,7 @@ pub(super) fn recover_shard(dir: &Path, label: &str, config: &LogConfig) -> Resu
     // break in the offset chain. See `discard_abandoned_preparations`.
     let abandoned = discard_blank_interior(dir, label, config, mark, &mut ids)?
         + discard_abandoned_preparations(dir, label, config, mark, &mut ids)?;
+    discard_blank_first(dir, label, &mut ids)?;
     let recovered = match ids.split_last() {
         None => Recovered {
             sealed: Vec::new(),
@@ -150,11 +151,14 @@ pub(super) fn recover_shard(dir: &Path, label: &str, config: &LogConfig) -> Resu
 /// without needing to be told again.
 pub(super) fn place_empty_shard(
     dir: &Path,
+    label: &str,
     config: &LogConfig,
     base_offset: Offset,
 ) -> Result<bool> {
     create_dir_all_durable(dir)?;
-    if !discover_segment_ids(dir)?.is_empty() {
+    let mut ids = discover_segment_ids(dir)?;
+    discard_blank_first(dir, label, &mut ids)?;
+    if !ids.is_empty() {
         return Ok(false);
     }
     let mut writer = SegmentWriter::create(
@@ -477,6 +481,25 @@ fn repair_unsealed_retired(
     file.set_len(retired.valid_bytes)?;
     crate::io::sync_data(&file)?;
     Ok(true)
+}
+
+/// Remove a log's first segment when it is the only one and has no header.
+///
+/// Its creation failed, on a full disk say, or a crash came before the
+/// header. It never held a record, so the log starts again as if new. Only
+/// segment 0 qualifies: any later one follows records that were somewhere.
+fn discard_blank_first(dir: &Path, label: &str, ids: &mut Vec<SegmentId>) -> Result<()> {
+    if ids.as_slice() != [0] || !header_never_written(&dir.join(segment_file_name(0)))? {
+        return Ok(());
+    }
+    tracing::warn!(
+        shard = label,
+        "discarding a first segment whose creation never finished"
+    );
+    remove_segment_files(dir, 0)?;
+    sync_dir(dir)?;
+    ids.clear();
+    Ok(())
 }
 
 /// Unlink a segment and its index. The caller syncs the directory.

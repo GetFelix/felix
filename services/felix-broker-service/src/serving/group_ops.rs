@@ -149,6 +149,7 @@ async fn poll_rechecking(
                     offset: claimed.offset,
                     payload: claimed.payload,
                     attempts: claimed.attempts,
+                    skipped_before: claimed.skipped_before,
                 })
                 .collect());
         }

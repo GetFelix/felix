@@ -62,7 +62,6 @@ const DEFAULT_PG_MAX_CONNECTIONS: u32 = 10;
 const DEFAULT_PG_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_PG_ACQUIRE_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_BOOTSTRAP_BIND_ADDR: &str = "127.0.0.1:9095";
-const DEFAULT_OIDC_ALLOWED_ALGORITHMS: [Algorithm; 1] = [Algorithm::ES256];
 
 /// Everything the control plane is configured with.
 #[derive(Debug, Clone)]

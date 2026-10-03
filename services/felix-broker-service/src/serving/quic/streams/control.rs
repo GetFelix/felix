@@ -115,6 +115,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
         auth_ctx: None,
         peer_flags: felix_wire::ORIGINAL_V1_FLAGS,
         peer_features: 0,
+        commit_ack: false,
         error_codes,
         ack_order,
         publish_window: None,
@@ -224,7 +225,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     &frame,
                     session.auth_ctx.as_ref(),
                     throttled,
-                    config.ack_on_commit,
+                    session.commit_ack,
                     sample,
                     &out_ack_tx,
                     &out_ack_depth,
@@ -850,6 +851,9 @@ struct Session {
     /// Optional messages this client understands. Nothing until an `Auth` says
     /// otherwise.
     peer_features: u32,
+    /// Acknowledged publishes are answered after the write: the broker-wide
+    /// `ack_on_commit`, or `FEATURE_ACK_ON_COMMIT` from this client.
+    commit_ack: bool,
     /// Shared with the writer, which shapes every error to what `Auth` offered.
     error_codes: Arc<ErrorCodeSupport>,
     /// Shared with the writer, which holds answers back into request order

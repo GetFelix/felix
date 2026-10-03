@@ -99,6 +99,8 @@ class GroupRecord:
     offset: int
     payload: bytes
     attempts: int
+    skipped_before: int
+    """Offsets directly below this one settled without delivery; such a hole will not fill."""
 
 class CacheChange:
     key: str

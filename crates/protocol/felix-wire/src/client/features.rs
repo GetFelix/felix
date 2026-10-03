@@ -212,6 +212,17 @@ pub const FEATURE_STREAM_PUBLISH_WINDOW: u32 = 0x0002_0000;
 /// redirected or forwarded.
 pub const FEATURE_SHARD_OWNERS: u32 = 0x0004_0000;
 
+/// The client wants each acknowledged publish answered after its write, with
+/// its offset, rather than when it is queued.
+///
+/// Offered by a *client*, which is the side asking, and advertised by a
+/// broker that honours it, which is how the client learns its acks mean what
+/// it asked. The same answer a broker gives everyone under
+/// `FELIX_ACK_ON_COMMIT=true`, for this connection only. A client offers it
+/// only when its application asked: it trades latency for the offset, so
+/// clients do not offer every bit they know here, as they do elsewhere.
+pub const FEATURE_ACK_ON_COMMIT: u32 = 0x0008_0000;
+
 /// The broker records which member holds each claim when a `group_poll`
 /// names its `consumer`, and takes back that member's claims on `reclaim`.
 ///
@@ -240,6 +251,7 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_ATOMIC_COMMIT
     | FEATURE_STREAM_PUBLISH_WINDOW
     | FEATURE_SHARD_OWNERS
+    | FEATURE_ACK_ON_COMMIT
     | FEATURE_GROUP_CONSUMER;
 
 /// True if `features` advertises `feature`.

@@ -74,11 +74,13 @@ fn message_cache_operations() {
                 offset: 7,
                 payload: Bytes::from_static(b"one"),
                 attempts: 1,
+                skipped_before: 0,
             },
             crate::GroupRecord {
                 offset: 9,
                 payload: Bytes::new(),
                 attempts: 3,
+                skipped_before: 1,
             },
         ],
         request_id: 42,
@@ -388,4 +390,24 @@ fn counter_messages_round_trip() {
         "absent must be omitted: {json}"
     );
     assert_eq!(Message::decode(frame).expect("decode"), missing);
+}
+
+/// A group record that skipped nothing is the frame an older client always
+/// got: the new field is left out rather than sent as zero.
+#[test]
+fn a_group_record_with_nothing_skipped_omits_the_field() {
+    let record = crate::GroupRecord {
+        offset: 7,
+        payload: Bytes::from_static(b"one"),
+        attempts: 1,
+        skipped_before: 0,
+    };
+    let json = serde_json::to_string(&record).expect("encode");
+    assert!(!json.contains("skipped_before"), "{json}");
+    let skipped = crate::GroupRecord {
+        skipped_before: 2,
+        ..record
+    };
+    let json = serde_json::to_string(&skipped).expect("encode");
+    assert!(json.contains("\"skipped_before\":2"), "{json}");
 }

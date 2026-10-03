@@ -173,8 +173,7 @@ impl AsyncClient {
         let value = Bytes::copy_from_slice(value);
         let ttl_ms = ttl.map(|seconds| (seconds.max(0.0) * 1000.0) as u64);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let client = inner.client().await;
-            client
+            inner
                 .cache_put(&tenant_id, &namespace, &cache, &key, value, ttl_ms)
                 .await
                 .map_err(to_py_err)
@@ -197,8 +196,7 @@ impl AsyncClient {
             key.to_string(),
         );
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let client = inner.client().await;
-            let value = client
+            let value = inner
                 .cache_get(&tenant_id, &namespace, &cache, &key)
                 .await
                 .map_err(to_py_err)?;
@@ -277,8 +275,7 @@ impl AsyncClient {
             key.to_string(),
         );
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let client = inner.client().await;
-            let value = client
+            let value = inner
                 .cache_delete(&tenant_id, &namespace, &cache, &key)
                 .await
                 .map_err(to_py_err)?;
@@ -303,8 +300,7 @@ impl AsyncClient {
             key.to_string(),
         );
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let client = inner.client().await;
-            client
+            inner
                 .counter_add(&tenant_id, &namespace, &cache, &key, delta)
                 .await
                 .map_err(to_py_err)
@@ -327,8 +323,7 @@ impl AsyncClient {
             key.to_string(),
         );
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let client = inner.client().await;
-            client
+            inner
                 .counter_get(&tenant_id, &namespace, &cache, &key)
                 .await
                 .map_err(to_py_err)
@@ -562,8 +557,7 @@ impl AsyncClient {
             stream.to_string(),
         );
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let client = inner.client().await;
-            client
+            inner
                 .stream_shards(&tenant_id, &namespace, &stream)
                 .await
                 .map_err(to_py_err)

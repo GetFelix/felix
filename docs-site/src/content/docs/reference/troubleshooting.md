@@ -72,6 +72,15 @@ upgrade does not roll back. See
 [Durable Storage](/felix/architecture/durable-storage/) and
 [Upgrades](/felix/deployment/upgrades/#storage-format-the-one-that-does-not-roll-back).
 
+### The disk is full
+
+A write or a log creation that finds no space fails with `storage full`, and
+clients see `overloaded` with nothing written. `felix_storage_full_total`
+counts them. Each new log reserves a whole segment up front
+(`FELIX_DURABLE_SEGMENT_BYTES`, 256 MiB by default), and a stream shard with
+consumer groups has three logs, so a disk can fill on the first group poll of
+a new shard. Free space or lower the segment size; nothing needs repairing.
+
 ## Clients cannot connect
 
 A started listener logs its address:

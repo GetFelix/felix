@@ -237,8 +237,7 @@ impl Client {
         namespace: String,
         stream: String,
     ) -> Result<u32> {
-        let client = self.cluster()?.client().await;
-        client
+        self.cluster()?
             .stream_shards(&tenant_id, &namespace, &stream)
             .await
             .map_err(classify)
@@ -272,8 +271,7 @@ impl Client {
         // unit into the signature.
         let ttl_ms = ttl_seconds.map(|s| (s.max(0.0) * 1000.0) as u64);
         let value = Bytes::copy_from_slice(&value);
-        let client = self.cluster()?.client().await;
-        client
+        self.cluster()?
             .cache_put(&tenant_id, &namespace, &cache, &key, value, ttl_ms)
             .await
             .map_err(classify)
@@ -288,8 +286,8 @@ impl Client {
         cache: String,
         key: String,
     ) -> Result<Option<Buffer>> {
-        let client = self.cluster()?.client().await;
-        let value = client
+        let value = self
+            .cluster()?
             .cache_get(&tenant_id, &namespace, &cache, &key)
             .await
             .map_err(classify)?;
@@ -309,8 +307,8 @@ impl Client {
         cache: String,
         key: String,
     ) -> Result<Option<Buffer>> {
-        let client = self.cluster()?.client().await;
-        let previous = client
+        let previous = self
+            .cluster()?
             .cache_delete(&tenant_id, &namespace, &cache, &key)
             .await
             .map_err(classify)?;
@@ -373,8 +371,7 @@ impl Client {
         key: String,
         delta: i64,
     ) -> Result<i64> {
-        let client = self.cluster()?.client().await;
-        client
+        self.cluster()?
             .counter_add(&tenant_id, &namespace, &cache, &key, delta)
             .await
             .map_err(classify)
@@ -392,8 +389,7 @@ impl Client {
         cache: String,
         key: String,
     ) -> Result<Option<i64>> {
-        let client = self.cluster()?.client().await;
-        client
+        self.cluster()?
             .counter_get(&tenant_id, &namespace, &cache, &key)
             .await
             .map_err(classify)
@@ -508,6 +504,7 @@ impl Client {
                 offset: BigInt::from(r.offset),
                 payload: r.payload.to_vec().into(),
                 attempts: r.attempts,
+                skipped_before: BigInt::from(r.skipped_before),
             })
             .collect())
     }

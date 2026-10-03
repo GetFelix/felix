@@ -31,3 +31,15 @@ async fn broker_error_display() {
     assert!(err.to_string().contains("ns1"));
     assert!(err.to_string().contains("s1"));
 }
+
+#[test]
+fn a_full_disk_stays_distinct_from_other_storage_failures() {
+    let full =
+        felix_storage::StorageError::Full(std::io::Error::from(std::io::ErrorKind::StorageFull));
+    assert!(matches!(
+        BrokerError::from(full),
+        BrokerError::StorageFull(_)
+    ));
+    let other = felix_storage::StorageError::Io(std::io::Error::other("eio"));
+    assert!(matches!(BrokerError::from(other), BrokerError::Storage(_)));
+}

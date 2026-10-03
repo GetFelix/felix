@@ -524,8 +524,8 @@ Success answers. Each names the request it answers where there is one.
 
 `subscribed` confirms a subscription, and its id matches the
 `event_stream_hello` on the event stream. `start_offset` and `live_offset` are
-sent only for a subscribe with a `start`, on a durable stream, to a client that
-negotiated event offsets. `publish_ok` answers an acked publish and `cache_ok` a
+sent on a durable stream to a client that negotiated event offsets, whose
+subscribe with no `start` is treated as `latest`. `publish_ok` answers an acked publish and `cache_ok` a
 cache write that carried a `request_id`. Plain `ok` answers `auth` from a client
 that offered no flags, and a cache write without a `request_id`.
 
@@ -786,6 +786,7 @@ advertised its bit.
 | `0x8000` | `FEATURE_PUBLISH_PIPELINE` | Acked publishes are pipelined under a `publish_window` (below) |
 | `0x2_0000` | `FEATURE_STREAM_PUBLISH_WINDOW` | The `publish_window` is per stream rather than per connection (below) |
 | `0x4_0000` | `FEATURE_SHARD_OWNERS` | The broker answers `shard_owners`: which broker owns each shard of a stream or cache |
+| `0x8_0000` | `FEATURE_ACK_ON_COMMIT` | Offered by a client that wants its acked publishes answered after the write, with their offsets, on this connection only. Advertised by a broker that honours it |
 | `0x10_0000` | `FEATURE_GROUP_CONSUMER` | A `group_poll` may name its `consumer`; with `reclaim` that member takes back the claims a previous process under its name held |
 
 The full list, with what each depends on, is in
@@ -998,10 +999,10 @@ in-memory stream it is absent, since the sequence means nothing on another
 broker, and the client resumes at the new owner's tail.
 
 The old owner ends its readers a moment before its own routes catch up with the
-move. A subscribe that reaches it in that moment is answered `shard_unavailable`
-with reason `moving`, not accepted: nothing would end a subscription registered
-after the others were ended, and it would wait on a shard no longer written
-there. The client retries and finds the new owner.
+move. A subscribe or cache watch that reaches it in that moment is answered
+`shard_unavailable` with reason `moving`, not accepted: nothing would end one
+registered after the others were ended, and it would wait on a shard no longer
+written there. The client retries and finds the new owner.
 
 ## Stream Types and Lifecycle
 

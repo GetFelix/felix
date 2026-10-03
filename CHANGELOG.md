@@ -13,6 +13,17 @@ for what the current release guarantees.
 
 ### Added
 
+- A client can ask for commit acks, and the offsets they carry, on its own
+  connections: `ClientConfig::ack_on_commit` offers `FEATURE_ACK_ON_COMMIT`
+  (`0x8_0000`), and a broker that honours it answers that connection's
+  acknowledged publishes after the write, as `FELIX_ACK_ON_COMMIT=true` does
+  for every client. `Client::supports_ack_on_commit` says whether a broker
+  does. Other clients on the broker are unchanged. (#956)
+- A consumer-group record says how many offsets directly below it were
+  settled without delivery (generation-start records, records retention
+  removed first): `skipped_before` on `GroupRecord`, in the wire's
+  `group_records`, and in the Python and Node clients (`skippedBefore`).
+  Left out when zero, so older clients get the same frames. (#963)
 - A consumer-group member can name itself and take back what a previous
   process under its name held: `group_poll` accepts `consumer` and `reclaim`
   (`FEATURE_GROUP_CONSUMER`, `0x10_0000`), `Client::group_poll_as` and
@@ -50,6 +61,21 @@ for what the current release guarantees.
 
 ### Changed
 
+- The control plane accepts RS256 ID tokens from an upstream identity
+  provider by default, next to ES256. Most providers sign with RS256, so a
+  first setup against Dex, Keycloak, Auth0, Entra ID, Google or Okta no longer
+  fails with an unsupported algorithm. `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS`
+  still narrows it. (#984)
+- A subscribe with no start position, from a client that negotiated event
+  offsets, is now `latest`: on a durable stream its `subscribed` carries
+  `start_offset` and `live_offset`, so the client knows where live delivery
+  began. Before, only an explicit `latest` reported them. Clients without
+  offsets get the frame they always did. (#961)
+- A cache entry whose TTL passes is now a change a watch receives. The
+  shard's leader writes a delete for it within about a second, through the
+  write fence and replicated like any write, so a watcher no longer has to
+  run its own timers. Reads still treat an entry as absent the moment it
+  lapses. `StorageApi` gains `open_shards` and `expire_due`. (#960)
 - `felixctl pub` says how many acknowledgements came back without an offset
   and why, instead of leaving it to a `null` in `--json`. An owner that acks
   on enqueue (`ack_on_commit` off) answers before the record has an offset,
@@ -76,6 +102,80 @@ for what the current release guarantees.
 
 ### Fixed
 
+- **A stream's retention from the control plane now bounds its logs.** It
+  was stored and never read: every durable stream got the broker-wide
+  `FELIX_DURABLE_RETENTION_BYTES` / `FELIX_DURABLE_RETENTION_SECONDS`. A
+  stream's `max_size_bytes` and `max_age_seconds` now bound its shard logs,
+  each falling back to the broker's setting when unset, and a patch reaches
+  open logs without a restart. The control plane refuses a zero bound.
+  `StreamMetadata` gains `retention`, and `DiskLog::set_retention` and
+  `DiskLogProvider::set_stream_retention` set bounds after a log opens. (#964)
+- The Docker Compose, installation and Kubernetes pages pull the
+  `0.6.0-preview` images instead of `0.5.0`, and a release tag now fails
+  `check_release_version.py` while any doc pins a `ghcr.io/gabloe/felix*`
+  image at another version. (#957)
+- `felixctl` saves its config through a temporary file that is synced and
+  renamed into place, and makes it owner-only even when it already existed
+  with wider permissions. A crash mid-save no longer leaves an empty config.
+- **The npm client's Linux addons load on glibc 2.28.** They were built
+  against the release runners' glibc 2.38 and failed to load on Debian
+  bookworm, RHEL 8 and `node:*-bookworm` images. The release now links them
+  against glibc 2.28 with cargo-zigbuild and fails if an addon needs a newer
+  glibc symbol. (#981)
+- **A broker promoted after it moved a shard away is fenced again.** A
+  broker that had drained a shard into a move kept that fact after the move
+  finished, and when a later failover gave it the shard back it took that
+  for a cancelled move and opened without fencing. The previous leader, cut
+  off rather than gone, could then still commit a write with a follower that
+  had not heard of the promotion, at the offset the new leader started its
+  generation at. The history campaign saw one value at two offsets and a
+  subscriber told the first held no event. Only the generation right after
+  the draining one now counts as a hand-back. (#971)
+- **Cluster discovery reaches brokers that advertise a DNS name.**
+  `ClusterClient` kept only advertised client addresses that parsed as IP
+  addresses, silently, so a cluster advertising names looked like its seeds
+  alone, and shard owners, cache owners, redirects and moved-shard hints given
+  by name fell back to the entry broker. It now resolves a name each time it
+  is handed one, logs one that does not resolve, and checks that broker's
+  certificate against the name. The broker refuses a `FELIX_CLIENT_ADVERTISE_ADDR`
+  that is not `host:port` at startup. (#982)
+- **The npm and Python clients' cache, counter and stream-shard calls fail
+  over.** They called the broker the client entered by directly, so once it
+  died they kept going to it while other seeds were up. They now go through
+  `ClusterClient` like publishes do, which routes cache calls to the key's
+  owner and moves to another broker when the one in use is gone.
+  `ClusterClient::stream_shards` is new. The conformance catalogue gains
+  `fault.cache_through_a_reset_link`. (#979)
+- **A full disk is reported as a full disk.** When the disk filled while a
+  log was being created, its first segment was left with no header, and every
+  later open reported corruption, even once space was freed. Group polls on a
+  new shard hit it first, since a shard's cursor and dead-letter logs are made
+  on demand. A segment whose creation fails is now removed, and recovery
+  starts a log whose only segment never got a header afresh. `ENOSPC` and
+  quota errors are `StorageError::Full` and `BrokerError::StorageFull`,
+  counted by `felix_storage_full_total`, and clients see `overloaded` (retry
+  after) with nothing written. Breaking for code that matches either enum
+  exhaustively. (#983)
+- **A cache watch that reaches a broker just after it stopped serving the
+  shard is refused instead of left waiting**, as subscribes already were. One
+  registered in that moment was never ended and looked like a quiet key. It
+  is now answered `shard_unavailable` (`moving`), and the client retries
+  where the shard is served. (#986)
+- **Many subscriptions on one connection no longer lose deliveries at the
+  default queue bound.** A publish fanned out to every subscription on a
+  connection put one entry per subscription on the connection's writer lane
+  and on its connection writer queue, both 64 deep by default, and under
+  `drop_new` the overflow was dropped, the connection queue's without a
+  count. Those two hand-offs now wait when full. Drops happen only in each
+  subscription's own queues and are all counted in
+  `felix_sub_queue_dropped_total`. `felix_subscriber_lane_dropped_total` is
+  gone, since nothing is dropped where it counted. (#978)
+- **A standalone broker keeps its control-plane credential current.** A
+  broker without `FELIX_NODE_ID` read its node token once at startup and
+  never refreshed it, so its catalog sync was refused once an exchanged token
+  expired, fifteen minutes in. It now re-reads `FELIX_NODE_TOKEN_FILE` and
+  honours `FELIX_NODE_REFRESH_TOKEN_FILE` the way cluster members do. The two
+  settings moved from `MembershipConfig` to `BrokerConfig`. (#955)
 - **A subscribe that reaches a broker just after it stopped serving the shard
   is refused instead of left waiting.** A broker ends a shard's readers before
   its routes catch up with the move or failover, so for that moment it still
