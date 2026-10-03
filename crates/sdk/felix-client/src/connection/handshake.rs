@@ -17,11 +17,26 @@ use crate::frame_io::{read_message_with_limit, write_message};
 pub(crate) struct Credentials {
     tenant_id: String,
     tokens: Arc<dyn TokenProvider>,
+    /// The feature bits offered in `Auth`.
+    features: u32,
 }
 
 impl Credentials {
     pub(crate) fn new(tenant_id: String, tokens: Arc<dyn TokenProvider>) -> Self {
-        Self { tenant_id, tokens }
+        Self {
+            tenant_id,
+            tokens,
+            features: felix_wire::KNOWN_FEATURES & !felix_wire::FEATURE_ACK_ON_COMMIT,
+        }
+    }
+
+    /// Also ask for acknowledgements after the write. See
+    /// [`felix_wire::FEATURE_ACK_ON_COMMIT`].
+    pub(crate) fn with_ack_on_commit(mut self, ack_on_commit: bool) -> Self {
+        if ack_on_commit {
+            self.features |= felix_wire::FEATURE_ACK_ON_COMMIT;
+        }
+        self
     }
 
     /// Authenticate `first`, a stream just opened on `connection`, with the
@@ -50,6 +65,7 @@ impl Credentials {
                 &mut recv,
                 &self.tenant_id,
                 &token,
+                self.features,
                 max_frame_bytes,
             )
             .await
@@ -135,6 +151,7 @@ async fn authenticate_stream(
     recv: &mut RecvStream,
     tenant_id: &str,
     token: &str,
+    features: u32,
     max_frame_bytes: usize,
 ) -> Result<Negotiated> {
     write_message(
@@ -143,7 +160,7 @@ async fn authenticate_stream(
             tenant_id: tenant_id.to_string(),
             token: token.to_string(),
             client_flags: Some(felix_wire::KNOWN_FLAGS),
-            client_features: Some(felix_wire::KNOWN_FEATURES),
+            client_features: Some(features),
         },
     )
     .await

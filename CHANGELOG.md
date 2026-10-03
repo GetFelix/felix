@@ -13,6 +13,12 @@ for what the current release guarantees.
 
 ### Added
 
+- A client can ask for commit acks, and the offsets they carry, on its own
+  connections: `ClientConfig::ack_on_commit` offers `FEATURE_ACK_ON_COMMIT`
+  (`0x8_0000`), and a broker that honours it answers that connection's
+  acknowledged publishes after the write, as `FELIX_ACK_ON_COMMIT=true` does
+  for every client. `Client::supports_ack_on_commit` says whether a broker
+  does. Other clients on the broker are unchanged. (#956)
 - `felix-client` re-exports `AckMode`, `BrokerEndpoint` and `ShardRouting`,
   so an application no longer needs `felix-wire` as a direct dependency to
   call it. (#937)
