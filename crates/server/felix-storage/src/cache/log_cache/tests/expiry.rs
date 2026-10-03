@@ -111,3 +111,79 @@ async fn len_counts_live_entries_only() {
     assert_eq!(cache.len().await, 1, "only b is live");
     assert!(!cache.is_empty().await);
 }
+
+/// **An entry whose TTL passes is deleted in the log**, so a watch hears it
+/// go rather than holding it forever, and one still live is left alone.
+#[tokio::test]
+async fn an_expired_entry_is_deleted_and_the_observer_is_told() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = cache(dir.path()).await;
+    let observer = Arc::new(RecordingObserver::default());
+    assert!(cache.set_change_observer(observer.clone()));
+    let short = Some(Duration::from_millis(1));
+    cache
+        .put(T, NS, C, 0, "gone", Bytes::from_static(b"v"), short)
+        .await
+        .unwrap();
+    cache
+        .put(T, NS, C, 0, "kept", Bytes::from_static(b"v"), None)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    assert_eq!(cache.expire_due(T, NS, C, 0, 100).await.unwrap(), 1);
+    let changes = observer.changes.lock().clone();
+    let last = changes.last().expect("a change");
+    assert_eq!((last.key.as_str(), last.value.as_ref()), ("gone", None));
+    assert_eq!(
+        cache.keys(T, NS, C, 0).await.unwrap(),
+        vec!["kept".to_string()]
+    );
+    // Nothing more is due.
+    assert_eq!(cache.expire_due(T, NS, C, 0, 100).await.unwrap(), 0);
+}
+
+/// A key refreshed after its old TTL passed keeps its new value: the delete
+/// is decided when it is staged, not when the key was found due.
+#[tokio::test]
+async fn a_refreshed_entry_is_not_expired() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = cache(dir.path()).await;
+    cache
+        .put(
+            T,
+            NS,
+            C,
+            0,
+            "k",
+            Bytes::from_static(b"old"),
+            Some(Duration::from_millis(1)),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    // Found due here, then refreshed before its delete is staged.
+    let found_due_at = shard::now_millis();
+    cache
+        .put(
+            T,
+            NS,
+            C,
+            0,
+            "k",
+            Bytes::from_static(b"new"),
+            Some(Duration::from_secs(300)),
+        )
+        .await
+        .unwrap();
+
+    let deleted = cache
+        .delete_entry(T, NS, C, 0, "k", Some(found_due_at))
+        .await
+        .unwrap();
+    assert!(!deleted.written);
+    assert_eq!(
+        cache.get(T, NS, C, 0, "k").await.unwrap().as_deref(),
+        Some(&b"new"[..])
+    );
+}

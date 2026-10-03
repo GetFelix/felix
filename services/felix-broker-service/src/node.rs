@@ -20,6 +20,7 @@
 //! submodule. Their order is load-bearing, and the comments at each step say
 //! why.
 
+mod cache_expiry;
 mod cluster;
 mod handoff;
 mod listeners;
@@ -292,6 +293,12 @@ where
     // life of the process rather than the one token it was given.
     let credential = (!config.controlplane_token.is_empty())
         .then(|| credential::NodeCredential::new(config.controlplane_token.clone()));
+    tokio::spawn(cache_expiry::run(
+        Arc::clone(&broker),
+        ingress_router.clone(),
+        cache_expiry::INTERVAL,
+        sync_shutdown.clone(),
+    ));
     let (seeded_tx, seeded_rx) = tokio::sync::oneshot::channel();
     let controlplane_task = sync::spawn_catalog_sync(
         &config,

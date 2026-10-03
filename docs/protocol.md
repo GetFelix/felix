@@ -629,9 +629,9 @@ field of `detail` is optional. See [Error codes](#error-codes).
   duplicate by the same register-before-read discipline a stream resume uses. A
   resume whose history compaction collapsed is answered with `resnapshot: true`
   and current values; a watch that falls behind is ended with
-  `cache_watch_lagged` naming the offset to re-watch from. TTL expiry is not a
-  change: nothing is appended when an entry lapses, so no event is delivered;
-  a watcher that cares about expiry reads `expires_at_millis` off the put.
+  `cache_watch_lagged` naming the offset to re-watch from. TTL expiry is a
+  change: the shard's leader writes a delete for an entry within about a second
+  of its TTL passing, and watchers receive it as a delete.
 - A `retained` CacheWatch delivers current state first: each matching key's
   current value at the offset of the write that produced it, then live changes
   from `resume_offset`, so a client joins and immediately holds the state
