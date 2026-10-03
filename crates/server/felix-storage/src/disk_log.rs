@@ -20,21 +20,21 @@
 //!
 //! ## Where the blocking happens
 //!
-//! Two kinds of blocking I/O live behind this API, and they are treated
-//! differently on purpose:
+//! The blocking I/O on the publish path stays off reactor threads:
 //!
-//! * A `write` into the page cache is sub-microsecond in the normal case, so the
-//!   append path performs it inline. Handing it to `spawn_blocking` would add
-//!   more scheduling latency than the syscall itself costs, and this project
-//!   cares about p999.
-//! * A *rollover* is the exception on that path: sealing a segment and creating
-//!   its successor fsync two files and a directory. Appends that trigger one
-//!   roll on a blocking thread first, so the flush cost never lands on a
-//!   reactor worker.
+//! * An append's `write` into the page cache usually takes microseconds, but
+//!   it blocks for as long as the kernel likes once it starts throttling a
+//!   process that dirties pages faster than the device takes them. Appends run
+//!   on the log's own append thread, which also does everything else that
+//!   changes the active segment, and the write itself runs with no lock held.
+//!   A reactor thread waits for an append the way it waits for a socket.
+//! * A *rollover* seals a segment and creates its successor, which fsyncs two
+//!   files and a directory. The inline roll runs on the append thread; the
+//!   background roll builds and seals on blocking threads, so only its pointer
+//!   swap waits for appends.
 //! * An `fsync` genuinely blocks, for milliseconds on slow hardware. It runs on
-//!   the log's own flush thread so it cannot stall a reactor thread, and does
-//!   not queue behind other work on the shared blocking pool. Flushes are
-//!   grouped, so one runs for many appends.
+//!   the log's own flush thread, so it does not queue behind other work on the
+//!   shared blocking pool. Flushes are grouped, so one runs for many appends.
 //! * `read_range` may touch cold blocks, so it runs entirely on `spawn_blocking`.
 //!   It is a replay and catch-up path, not the publish hot path.
 
@@ -232,12 +232,44 @@ impl DiskLog {
     /// The returned [`PendingAppend`] must be passed to [`DiskLog::commit`] for
     /// the configured fsync policy to be honoured. Dropping it does not undo
     /// the write.
+    ///
+    /// The write runs on the log's append thread, so a caller can be cancelled
+    /// in the moment after its offsets are spent and before it learns them. A
+    /// caller that must claim its place in an order the moment offsets are
+    /// spent uses [`Self::append_claimed`], which cannot lose that claim.
     pub async fn append_pending(&self, records: &[AppendRecord]) -> Result<PendingAppend> {
-        let records = records.to_vec();
         let inner = Arc::clone(&self.inner);
-        Self::write_batch(inner, records, append::WriteIf::Always)
+        Self::write_batch(inner, records.to_vec(), append::WriteIf::Always, None)
             .await
-            .map(|pending| pending.expect("an unconditional write is always written"))
+            .map(|written| {
+                written
+                    .expect("an unconditional write is always written")
+                    .pending
+            })
+    }
+
+    /// [`Self::append_pending`], claiming the batch's range in `order` on the
+    /// append thread the moment its offsets are assigned.
+    ///
+    /// A caller cancelled after its batch is kept, but before it hears so,
+    /// never receives the claim, and dropping it releases the range, so the
+    /// writers ordered behind the batch are not left waiting for a turn nobody
+    /// holds.
+    pub async fn append_claimed(
+        &self,
+        records: &[AppendRecord],
+        order: &Arc<crate::CommitSequencer>,
+    ) -> Result<(PendingAppend, crate::CommitTurn<'static>)> {
+        let inner = Arc::clone(&self.inner);
+        let written = Self::write_batch(
+            inner,
+            records.to_vec(),
+            append::WriteIf::Always,
+            Some(Arc::clone(order)),
+        )
+        .await?
+        .expect("an unconditional write is always written");
+        Ok(claimed(written))
     }
 
     /// [`DiskLog::append_pending`], only if the batch would start at exactly
@@ -254,7 +286,14 @@ impl DiskLog {
         records: &[AppendRecord],
     ) -> Result<Option<PendingAppend>> {
         let inner = Arc::clone(&self.inner);
-        Self::write_batch(inner, records.to_vec(), append::WriteIf::At(first_offset)).await
+        let written = Self::write_batch(
+            inner,
+            records.to_vec(),
+            append::WriteIf::At(first_offset),
+            None,
+        )
+        .await?;
+        Ok(written.map(|written| written.pending))
     }
 
     /// Write the rest of `producer_id`'s batch `sequence`, which the log holds
@@ -272,15 +311,41 @@ impl DiskLog {
     ) -> Result<Option<PendingAppend>> {
         debug_assert!(records.iter().all(|r| r.mark == RecordMark::Continues));
         let inner = Arc::clone(&self.inner);
-        Self::write_batch(
+        let written = Self::write_batch(
             inner,
             records.to_vec(),
             append::WriteIf::Continuing {
                 producer_id,
                 sequence,
             },
+            None,
         )
-        .await
+        .await?;
+        Ok(written.map(|written| written.pending))
+    }
+
+    /// [`Self::continue_pending`], claiming the range in `order` as
+    /// [`Self::append_claimed`] does.
+    pub async fn continue_claimed(
+        &self,
+        producer_id: u64,
+        sequence: u64,
+        records: &[AppendRecord],
+        order: &Arc<crate::CommitSequencer>,
+    ) -> Result<Option<(PendingAppend, crate::CommitTurn<'static>)>> {
+        debug_assert!(records.iter().all(|r| r.mark == RecordMark::Continues));
+        let inner = Arc::clone(&self.inner);
+        let written = Self::write_batch(
+            inner,
+            records.to_vec(),
+            append::WriteIf::Continuing {
+                producer_id,
+                sequence,
+            },
+            Some(Arc::clone(order)),
+        )
+        .await?;
+        Ok(written.map(claimed))
     }
 
     /// Wait until every record below `offset` satisfies the configured fsync
@@ -355,31 +420,33 @@ impl DiskLog {
         let inner = Arc::clone(&self.inner);
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
-        tokio::task::spawn_blocking(move || {
-            let mut segments = operation.segments.write();
-            let commit = operation.commit_offset.load(Ordering::Acquire);
-            let discarded_from = segments.base_offset().max(base_offset);
-            if discarded_from < commit.min(segments.tail_offset()) {
-                return Err(StorageError::BelowCommit {
-                    offset: discarded_from,
-                    commit,
-                });
-            }
-            segments.check_open()?;
-            let rewound = (|| {
-                segments.reset_to(base_offset)?;
-                segments.active_mut().sync()?;
-                operation.note_rewound(&segments)?;
-                operation.durability.reset_after_truncate(base_offset);
-                let mut epochs = operation.epochs.lock();
-                *epochs = epochs::EpochMap::default();
-                epochs::store(&operation.dir, &epochs)?;
-                operation.reset_producers(&segments)
-            })();
-            operation.poison_after_rewind(rewound)
-        })
-        .await
-        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+        inner
+            .append_thread
+            .call(move || {
+                let mut segments = operation.segments.write();
+                let commit = operation.commit_offset.load(Ordering::Acquire);
+                let discarded_from = segments.base_offset().max(base_offset);
+                if discarded_from < commit.min(segments.tail_offset()) {
+                    return Err(StorageError::BelowCommit {
+                        offset: discarded_from,
+                        commit,
+                    });
+                }
+                segments.check_open()?;
+                let rewound = (|| {
+                    segments.reset_to(base_offset)?;
+                    segments.active_mut().sync()?;
+                    operation.note_rewound(&segments)?;
+                    operation.durability.reset_after_truncate(base_offset);
+                    let mut epochs = operation.epochs.lock();
+                    *epochs = epochs::EpochMap::default();
+                    epochs::store(&operation.dir, &epochs)?;
+                    operation.reset_producers(&segments)
+                })();
+                operation.poison_after_rewind(rewound)
+            })
+            .await
+            .map_err(StorageError::Io)?
     }
 
     /// Cut the log back to `offset` to put a copy of it back as it stood at
@@ -397,35 +464,39 @@ impl DiskLog {
         let inner = Arc::clone(&self.inner);
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
-        tokio::task::spawn_blocking(move || {
-            let mut segments = operation.segments.write();
-            segments.check_open()?;
-            let (base, tail) = (segments.base_offset(), segments.tail_offset());
-            if offset > tail || offset < base {
-                return Err(StorageError::OutsideLog { offset, base, tail });
-            }
-            // Lowered on disk before anything is cut, so a restore interrupted
-            // between the two can simply be run again.
-            {
-                let mut persisted = operation.replica_persisted.lock();
-                if operation.commit_offset.load(Ordering::Acquire) > offset {
-                    let state = replica_state::ReplicaState {
-                        accepted_generation: operation.accepted_generation.load(Ordering::Acquire),
-                        commit_offset: offset,
-                    };
-                    replica_state::store(&operation.dir, &state)?;
-                    operation.commit_offset.store(offset, Ordering::Release);
-                    *persisted = (state, Some(std::time::Instant::now()));
+        inner
+            .append_thread
+            .call(move || {
+                let mut segments = operation.segments.write();
+                segments.check_open()?;
+                let (base, tail) = (segments.base_offset(), segments.tail_offset());
+                if offset > tail || offset < base {
+                    return Err(StorageError::OutsideLog { offset, base, tail });
                 }
-            }
-            if offset == tail {
-                return Ok(());
-            }
-            let rewound = operation.cut_suffix(&mut segments, offset);
-            operation.poison_after_rewind(rewound)
-        })
-        .await
-        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+                // Lowered on disk before anything is cut, so a restore interrupted
+                // between the two can simply be run again.
+                {
+                    let mut persisted = operation.replica_persisted.lock();
+                    if operation.commit_offset.load(Ordering::Acquire) > offset {
+                        let state = replica_state::ReplicaState {
+                            accepted_generation: operation
+                                .accepted_generation
+                                .load(Ordering::Acquire),
+                            commit_offset: offset,
+                        };
+                        replica_state::store(&operation.dir, &state)?;
+                        operation.commit_offset.store(offset, Ordering::Release);
+                        *persisted = (state, Some(std::time::Instant::now()));
+                    }
+                }
+                if offset == tail {
+                    return Ok(());
+                }
+                let rewound = operation.cut_suffix(&mut segments, offset);
+                operation.poison_after_rewind(rewound)
+            })
+            .await
+            .map_err(StorageError::Io)?
     }
 
     /// The highest leadership generation a leader of this shard was accepted
@@ -566,8 +637,14 @@ impl DiskLog {
         }
         // First, so nothing written from here on can race the flush below or
         // a log opened after this returns. Every file change checks it under
-        // the lock taken here.
-        self.inner.segments.write().close();
+        // the lock taken here, and on the append thread, so an append already
+        // writing finishes before this does.
+        let closer = Arc::clone(&self.inner);
+        self.inner
+            .append_thread
+            .call(move || closer.segments.write().close())
+            .await
+            .map_err(StorageError::Io)?;
         let stopped = self.stop_background().await;
         let flushed = match stopped {
             Ok(()) => match self.persist_replica_state().await {
@@ -686,7 +763,6 @@ impl DiskLog {
             label,
             config: config.clone(),
             segments: RwLock::new(segments),
-            roll_gate: tokio::sync::RwLock::new(()),
             durability: Durability::new(config.fsync_mode, durable_upto),
             syncer: Mutex::new(None),
             retention: Mutex::new(None),
@@ -716,10 +792,18 @@ impl DiskLog {
             flushes: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             inline_roll_active: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            hold_next_append: Mutex::new(None),
+            #[cfg(test)]
+            append_held: std::sync::atomic::AtomicBool::new(false),
             roll_task: Mutex::new(None),
             pending_seal: Mutex::new(None),
             mark,
-            flusher: crate::io::flusher::Flusher::new("felix-flush"),
+            flusher: crate::io::log_thread::LogThread::new("felix-flush"),
+            append_thread: crate::io::log_thread::LogThread::spinning(
+                "felix-append",
+                append::APPEND_SPIN,
+            ),
         });
 
         if let FsyncMode::Periodic { interval } = config.fsync_mode {
@@ -768,15 +852,15 @@ impl DiskLog {
 
 impl AppendOnlyLog for DiskLog {
     fn append(&self, records: &[AppendRecord]) -> BoxFuture<'_, Result<AppendResult>> {
-        // `records` is borrowed for the duration of the future, so the write
-        // happens first and only offsets cross the await.
         let records = records.to_vec();
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             let started = std::time::Instant::now();
-            let pending = Self::write_batch(Arc::clone(&inner), records, append::WriteIf::Always)
-                .await?
-                .expect("an unconditional write is always written");
+            let pending =
+                Self::write_batch(Arc::clone(&inner), records, append::WriteIf::Always, None)
+                    .await?
+                    .expect("an unconditional write is always written")
+                    .pending;
 
             // `OnCommit` is the only policy that makes the caller wait. The
             // others acknowledge once the bytes are in the page cache and rely
@@ -878,47 +962,53 @@ impl AppendOnlyLog for DiskLog {
         Box::pin(async move {
             let _flush_guard = inner.durability.lock_flushes().await;
             let operation = Arc::clone(&inner);
-            tokio::task::spawn_blocking(move || {
-                let mut segments = operation.segments.write();
-                let commit = operation.commit_offset.load(Ordering::Acquire);
-                if offset < commit.min(segments.tail_offset()) {
-                    return Err(StorageError::BelowCommit { offset, commit });
-                }
-                segments.check_open()?;
-                let rewound = operation.cut_suffix(&mut segments, offset);
-                operation.poison_after_rewind(rewound)
-            })
-            .await
-            .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+            inner
+                .append_thread
+                .call(move || {
+                    let mut segments = operation.segments.write();
+                    let commit = operation.commit_offset.load(Ordering::Acquire);
+                    if offset < commit.min(segments.tail_offset()) {
+                        return Err(StorageError::BelowCommit { offset, commit });
+                    }
+                    segments.check_open()?;
+                    let rewound = operation.cut_suffix(&mut segments, offset);
+                    operation.poison_after_rewind(rewound)
+                })
+                .await
+                .map_err(StorageError::Io)?
         })
     }
 
     fn seal(&self) -> BoxFuture<'_, Result<SealedSegment>> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
-                let mut segments = inner.segments.write();
-                inner.sync_pending_seal()?;
-                let (descriptor, checksum) = match segments.seal_active() {
-                    Ok(sealed) => sealed,
-                    Err(err) => {
-                        inner.poison_after_writer_failure(&segments);
-                        return Err(err);
+            let sealer = Arc::clone(&inner);
+            inner
+                .append_thread
+                .call(move || {
+                    let inner = sealer;
+                    let mut segments = inner.segments.write();
+                    inner.sync_pending_seal()?;
+                    let (descriptor, checksum) = match segments.seal_active() {
+                        Ok(sealed) => sealed,
+                        Err(err) => {
+                            inner.poison_after_writer_failure(&segments);
+                            return Err(err);
+                        }
+                    };
+                    // Start a fresh segment so the sealed one is immutable from here
+                    // on, which is what makes its checksum meaningful.
+                    if segments.active().record_count() > 0 {
+                        segments.roll()?;
+                        inner.note_sealed_before(segments.active().id());
                     }
-                };
-                // Start a fresh segment so the sealed one is immutable from here
-                // on, which is what makes its checksum meaningful.
-                if segments.active().record_count() > 0 {
-                    segments.roll()?;
-                    inner.note_sealed_before(segments.active().id());
-                }
-                Ok(SealedSegment {
-                    descriptor,
-                    checksum,
+                    Ok(SealedSegment {
+                        descriptor,
+                        checksum,
+                    })
                 })
-            })
-            .await
-            .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+                .await
+                .map_err(StorageError::Io)?
         })
     }
 }
@@ -946,17 +1036,23 @@ struct LogInner {
     label: String,
     config: LogConfig,
     /// Guards the segment set. Held only for pointer work: a range read plans
-    /// under the read lock and does its I/O after releasing it, and a write
-    /// lock serialises appends, which must assign offsets in order anyway.
-    segments: RwLock<SegmentSet>,
-    /// Held shared by appends, exclusively by an inline rollover.
+    /// under the read lock and does its I/O after releasing it, and an append
+    /// takes the write lock to stage its batch and again to account for it,
+    /// but not across the write between.
     ///
-    /// `segments` is synchronous, so a publisher queued on it parks a Tokio
-    /// worker instead of yielding it — for the two device flushes a rollover
-    /// holds it across, that stalls the whole runtime. Waiting on this gate
-    /// instead yields. Layered above `segments` rather than replacing it so
-    /// the uncontended append stays a `try_read`.
-    roll_gate: tokio::sync::RwLock<()>,
+    /// Synchronous, so a reactor thread that waits on it is parked rather than
+    /// yielded. What still holds it across a flush, an inline rollover or a
+    /// truncation, runs on `append_thread`.
+    segments: RwLock<SegmentSet>,
+    /// Where this log's appends run, and everything else that changes the
+    /// active segment: rollovers, truncation, sealing, closing.
+    ///
+    /// A `write` into the page cache blocks once the kernel throttles dirty
+    /// pages, so it cannot run on a reactor thread. Running every change to
+    /// the active segment here, one at a time, is also what lets an append
+    /// release `segments` for its write: nothing else can change the segment
+    /// between staging a batch and accounting for it.
+    append_thread: crate::io::log_thread::LogThread,
     durability: Durability,
     /// `None` unless the fsync policy is `Periodic`. Taken on shutdown.
     syncer: Mutex<Option<PeriodicSyncer>>,
@@ -1006,7 +1102,7 @@ struct LogInner {
     /// quietly reporting them durable.
     pending_seal: Mutex<Option<Arc<std::fs::File>>>,
     /// Where this log's device flushes run.
-    flusher: crate::io::flusher::Flusher,
+    flusher: crate::io::log_thread::LogThread,
     /// How far the active segment is known to be synced, for recovery after
     /// a power loss. Written after every flush.
     mark: durable_mark::MarkFile,
@@ -1046,6 +1142,14 @@ struct LogInner {
     /// Set while a stretched inline rollover holds the segment lock.
     #[cfg(test)]
     inline_roll_active: std::sync::atomic::AtomicBool,
+    /// Stops the next append at a point on the append thread, until the
+    /// sender is used or dropped, or two seconds pass. Before its write, it
+    /// stands in for a write the kernel is throttling.
+    #[cfg(test)]
+    hold_next_append: Mutex<Option<(append::HoldAt, std::sync::mpsc::Receiver<()>)>>,
+    /// Set while `hold_next_append` holds an append.
+    #[cfg(test)]
+    append_held: std::sync::atomic::AtomicBool,
     /// Device flushes performed, so tests can assert group-commit fan-in —
     /// per instance, where the global `SYNC_TOTAL` counter cannot isolate one
     /// log from the rest of a parallel test run.
@@ -1152,6 +1256,15 @@ impl LogInner {
         *self.producers.lock() = state;
         Ok(())
     }
+}
+
+/// A written batch and the claim made for it, which
+/// [`DiskLog::write_batch`] makes whenever it is given an order.
+fn claimed(written: append::Written) -> (PendingAppend, crate::CommitTurn<'static>) {
+    let turn = written
+        .turn
+        .expect("a claim is made when an order is given");
+    (written.pending, turn)
 }
 
 fn now_micros() -> u64 {

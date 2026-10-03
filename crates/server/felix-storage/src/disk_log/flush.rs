@@ -17,29 +17,40 @@ impl LogInner {
     /// The file handle and the offset it covers are captured under the lock,
     /// then the lock is released before the flush: an `fsync` must never be held
     /// across the lock that appends need.
+    ///
+    /// The capture runs on the append thread, behind the appends already
+    /// queued there. Those are microseconds from done and the flush is
+    /// milliseconds, so waiting for them is what lets one flush cover every
+    /// append in flight: group commit only has something to group if the
+    /// appends land before the flush decides how far it reaches.
     pub(super) async fn flush(self: Arc<Self>) -> Result<Offset> {
         // After a failed fsync the kernel may have dropped the dirty pages and
         // cleared the error, so the next fsync "succeeds" having written
         // nothing. Only refusing to flush again keeps `durable_upto` below the
         // lost bytes.
         self.check_healthy()?;
-        let (handle, segment_id, synced_bytes, durable_upto) = {
-            let segments = self.segments.read();
-            let active = segments.active();
-            // The writer's own sync (a seal, a truncation) failed. Flushing
-            // through a cloned handle would not see that.
-            if active.is_poisoned() {
-                self.poison_after_writer_failure(&segments);
-                drop(segments);
-                return Err(self.check_healthy().expect_err("just poisoned"));
-            }
-            (
-                active.sync_handle(),
-                active.id(),
-                active.size_bytes(),
-                segments.tail_offset(),
-            )
-        };
+        let capturer = Arc::clone(&self);
+        let (handle, segment_id, synced_bytes, durable_upto) = self
+            .append_thread
+            .call(move || {
+                let segments = capturer.segments.read();
+                let active = segments.active();
+                // The writer's own sync (a seal, a truncation) failed. Flushing
+                // through a cloned handle would not see that.
+                if active.is_poisoned() {
+                    capturer.poison_after_writer_failure(&segments);
+                    drop(segments);
+                    return Err(capturer.check_healthy().expect_err("just poisoned"));
+                }
+                Ok((
+                    active.sync_handle(),
+                    active.id(),
+                    active.size_bytes(),
+                    segments.tail_offset(),
+                ))
+            })
+            .await
+            .map_err(StorageError::Io)??;
         // Taken after the active handle, so a rollover that lands in between is
         // seen here rather than missed: `commit_roll` sets it before releasing
         // the lock this read just took.

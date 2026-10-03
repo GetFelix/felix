@@ -26,10 +26,11 @@
 //! Every platform-specific call degrades to a correct no-op or to the portable
 //! equivalent, so an unsupported target loses performance and never correctness.
 //!
-//! A log's flushes run on its own thread (`flusher`), or on Linux can be
-//! submitted to `io_uring` instead (`uring_fsync`).
+//! A log's appends and flushes each run on a thread of its own (`log_thread`),
+//! and on Linux the flushes can be submitted to `io_uring` instead
+//! (`uring_fsync`).
 
-pub(crate) mod flusher;
+pub(crate) mod log_thread;
 #[cfg(all(
     target_os = "linux",
     any(test, debug_assertions, feature = "fault-injection")
@@ -39,7 +40,7 @@ pub(crate) mod power_loss;
 pub(crate) mod uring_fsync;
 
 use std::fs::File;
-use std::io::{self, Write};
+use std::io;
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
 #[cfg(windows)]
@@ -325,21 +326,26 @@ fn before_sync_dir(path: &std::path::Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Write all of `buf` at the file's cursor, for a segment append.
+/// Write all of `buf` at `offset`, for a segment append.
 ///
-/// Passes the write fault from `crate::fault` first, which in a release build
-/// without `fault-injection` is compiled out. An injected failure writes half
-/// of `buf` before it reports, like a disk that fills mid-batch.
-pub(crate) fn write_all(mut file: &File, buf: &[u8]) -> io::Result<()> {
+/// Positioned, so it needs no cursor and so no lock shared with anything else
+/// that uses the descriptor. Passes the write fault from `crate::fault` first,
+/// which in a release build without `fault-injection` is compiled out. An
+/// injected failure writes half of `buf` before it reports, like a disk that
+/// fills mid-batch.
+pub(crate) fn write_segment_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
     #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
     {
         crate::fault::refresh();
+        if let Some(delay) = crate::fault::write_delay() {
+            std::thread::sleep(delay);
+        }
         if let Some(err) = crate::fault::injected_write_failure() {
-            file.write_all(&buf[..buf.len() / 2])?;
+            write_at(file, &buf[..buf.len() / 2], offset)?;
             return Err(err);
         }
     }
-    file.write_all(buf)
+    write_at(file, buf, offset)
 }
 
 /// A slow or failing device, from `crate::fault`.

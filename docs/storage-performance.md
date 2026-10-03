@@ -126,7 +126,7 @@ and one wake-up. The thread starts on the log's first flush and exits after 10 s
 without one, so quiet shards do not hold threads.
 
 Round trip for a no-op flush, i.e. the dispatch alone (`dispatch_overhead` in
-`crates/server/felix-storage/src/io/flusher/tests.rs`, release build, 4 runtime
+`crates/server/felix-storage/src/io/log_thread/tests.rs`, release build, 4 runtime
 workers, one task per log), mean / p99 in µs:
 
 | Logs flushing at once | macOS `spawn_blocking` | macOS flush thread | Linux `spawn_blocking` | Linux flush thread |
@@ -171,6 +171,47 @@ segments, so the cache compacted mid-run with about 20 MiB live:
 Before, the one put that triggered compaction waited the entire rewrite, about
 20 seconds. After, no put waited for compaction; the remaining tail tracks
 segment rolls and machine load, and one run in six was slow throughout.
+
+### 11. Appends write on the log's own thread
+
+A `write` into the page cache is cheap until the kernel starts throttling a
+process that dirties pages faster than the device takes them; then it blocks
+inside `write()` for up to hundreds of milliseconds. On a reactor thread that
+stalls every task scheduled there, so each log's appends run on a thread of
+their own, in order, and the `write` runs with the segment lock released (see
+`docs/durable-storage.md`, "Where the append runs").
+
+A plain hand-off costs a kernel wake-up on each side, about as much as the
+`write` it moves. The thread polls for the next append for 20 µs before it
+parks, and a caller alone in the queue polls for its result for as long before
+it yields. A flush also takes its bound on the append thread, behind the
+appends queued there, so it covers all of them.
+
+`felix-log-tool bench`, 128-byte payloads, records/s and p50/p99 append
+latency in µs, two runs each, on the Mac Studio below with the log on an
+external SSD. Before is the `write` on the caller's reactor thread:
+
+| fsync | batch | publishers | before rec/s | after rec/s | before p50/p99 | after p50/p99 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| none | 1 | 1 | 258k–260k | 229k–248k | 3 / 6–7 | 3 / 6–7 |
+| none | 1 | 8 | 102k–104k | 205k–208k | 41–43 / 405–408 | 37–38 / 49–51 |
+| none | 16 | 1 | 1.73M–1.87M | 1.59M–1.63M | 6–7 / 9 | 7 / 11–13 |
+| none | 16 | 8 | 1.27M–1.30M | 1.87M–2.18M | 9 / 2,100–2,152 | 55–63 / 69–83 |
+| periodic | 1 | 8 | 100k–102k | 203k–212k | 41–42 / 409–418 | 37–38 / 49–53 |
+| periodic | 16 | 8 | 1.26M–1.33M | 2.10M–2.14M | 9 / 2,085–2,128 | 55–56 / 66–71 |
+| on_commit | 1 | 8 | 1.3k–1.9k | 1.6k–2.3k | 3,824–5,887 / 7,840–13,156 | 3,597–5,106 / 4,352–7,470 |
+| on_commit | 16 | 8 | 18.1k–25.8k | 22.3k–34.5k | 4,010–6,006 / 11,950–17,319 | 3,656–5,526 / 6,694–7,933 |
+
+A single publisher keeps its latency percentiles and loses 4–15% of its
+throughput to the hand-off, the most with batches of 16. Several publishers on
+one log gain the most. Before, they queued on the segment lock across each
+other's `write`, which is where the 400 µs and 2 ms tails came from; now they
+queue on the thread in turn. That is also why the median for eight
+publishers of 16-record batches rose from 9 µs to about 60 µs: the lock is not
+fair, so most appends got through at once and a few waited milliseconds, while
+the queue makes every append wait for the batches in front of it. `on_commit` rows are three runs each and are dominated by
+the device flush (`F_FULLFSYNC`, several milliseconds); the gain there is group
+commit covering more appends per flush.
 
 ## Where the time goes
 

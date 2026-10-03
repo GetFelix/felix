@@ -41,6 +41,8 @@ for what the current release guarantees.
   it (asked once per cache with `shard_owners`), else through the broker in
   use, which forwards; a failed read is asked again once, a write is not sent
   twice. `felixctl cache` uses them. (#937)
+- The storage fault file takes `write_delay_ms=<n>`, which delays every
+  segment write the way a throttled `write()` does. (#909)
 
 ### Changed
 
@@ -70,6 +72,25 @@ for what the current release guarantees.
 
 ### Fixed
 
+- **A slow or throttled disk no longer stalls the broker's runtime.** A
+  durable append's `write()` ran on the Tokio worker that called it, under a
+  synchronous lock every other append and reader of that log also took. Once
+  Linux throttles a process that dirties pages faster than the device takes
+  them, `write()` blocks for up to hundreds of milliseconds, which could stall
+  every worker, the QUIC endpoint's included. Each log now appends on a
+  thread of its own, in offset order, and the write runs with the lock
+  released, so only the appends queued behind a stalled write wait for it.
+  Rollovers, truncation, sealing and closing run on the same thread. A single
+  publisher pays 4–15% of its throughput for the hand-off; several
+  publishers on one log get about twice the throughput and a p99 of tens of
+  microseconds instead of hundreds, and group commit covers more appends per
+  flush. Cancelling an append still leaves nothing behind unless its offsets
+  were already spent. See `docs/storage-performance.md`. (#909)
+- **Breaking:** `StreamLog::begin_append`, `begin_append_marked` and
+  `continue_batch` take the stream's `CommitSequencer` and return the claimed
+  `CommitTurn` with the `PendingAppend`. `DiskLog::append_claimed` and
+  `continue_claimed` make that claim on the append thread, so a caller
+  cancelled before it hears its offsets still releases its range. (#909)
 - **A stalled shard no longer stalls publishes to healthy shards on the same
   connection.** The pipelined publish window was counted per connection, so a
   stream whose publishes waited on one stuck shard (a quorum wait, say) could

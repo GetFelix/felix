@@ -1,5 +1,5 @@
 //! Test-only faults at the I/O seam: a slow device, one whose flushes fail,
-//! and one that refuses writes.
+//! and one that refuses or stalls writes.
 //!
 //! Compiled into debug builds and into builds with the `fault-injection`
 //! feature, never into a plain release build. Nothing here does anything until
@@ -10,7 +10,7 @@
 //! `sync_dir`, and the `io_uring` submission), and each of those consults this
 //! module first. That is what makes a fault here reach every durability path,
 //! including the macOS `F_FULLFSYNC` branch and the ring. A segment append's
-//! write goes through `io::write_all` the same way.
+//! write goes through `io::write_segment_at` the same way.
 //!
 //! A process that cannot be called into, such as a broker under the cluster
 //! harness, takes its faults from the file `FELIX_STORAGE_FAULT_FILE` names,
@@ -25,6 +25,9 @@
 //! - `write=enospc` or `write=eio` fails every segment write with that error
 //!   until the file changes; `write=eio_once` fails the next one only. A new
 //!   `write_generation=<n>` arms `eio_once` again.
+//! - `write_delay_ms=<u64>` delays every segment write, the way a write blocks
+//!   once the kernel throttles a process that dirties pages faster than the
+//!   device takes them.
 //!
 //! - `power_loss=<seed>` with `power_loss_into=<dir>` builds the tree a
 //!   reboot after a power loss would find into `<dir>` and kills the process.
@@ -52,6 +55,9 @@ const REREAD_AFTER: Duration = Duration::from_millis(50);
 
 /// Microseconds each flush waits before it is issued. Zero means no delay.
 static FSYNC_DELAY_MICROS: AtomicU64 = AtomicU64::new(0);
+/// Microseconds each segment write waits before it is issued. Zero means no
+/// delay.
+static WRITE_DELAY_MICROS: AtomicU64 = AtomicU64::new(0);
 /// A [`FsyncFailure`], as its discriminant.
 static FSYNC_FAILURE: AtomicU8 = AtomicU8::new(FsyncFailure::None as u8);
 /// A [`WriteFailure`], as its discriminant.
@@ -138,6 +144,26 @@ pub fn fsync_delay() -> Option<Duration> {
     }
 }
 
+/// Make every segment write in this process wait `delay` first. Process-wide,
+/// like the flush delay. `Duration::ZERO` turns it off.
+pub fn set_write_delay(delay: Duration) {
+    let micros = u64::try_from(delay.as_micros()).unwrap_or(u64::MAX);
+    if WRITE_DELAY_MICROS.swap(micros, Ordering::Relaxed) != micros {
+        tracing::warn!(
+            delay_ms = delay.as_millis() as u64,
+            "storage fault injection: every segment write is delayed (test-only facility)",
+        );
+    }
+}
+
+/// The delay currently injected before each segment write, if any.
+pub fn write_delay() -> Option<Duration> {
+    match WRITE_DELAY_MICROS.load(Ordering::Relaxed) {
+        0 => None,
+        micros => Some(Duration::from_micros(micros)),
+    }
+}
+
 /// Make flushes in this process fail. Process-wide, like the delay.
 pub fn set_fsync_failure(failure: FsyncFailure) {
     if FSYNC_FAILURE.swap(failure as u8, Ordering::AcqRel) != failure as u8 {
@@ -198,6 +224,7 @@ pub(crate) fn refresh() {
         return;
     }
     set_fsync_delay(setting.delay);
+    set_write_delay(setting.write_delay);
     if rearms(follower.applied.as_ref(), &setting) {
         set_fsync_failure(setting.failure);
     }
@@ -298,6 +325,7 @@ pub(crate) struct FileSetting {
     pub(crate) generation: u64,
     pub(crate) write: WriteFailure,
     pub(crate) write_generation: u64,
+    pub(crate) write_delay: Duration,
 }
 
 impl Default for FileSetting {
@@ -308,6 +336,7 @@ impl Default for FileSetting {
             generation: 0,
             write: WriteFailure::None,
             write_generation: 0,
+            write_delay: Duration::ZERO,
         }
     }
 }
@@ -345,6 +374,11 @@ impl FileSetting {
                     }
                 }
                 "write_generation" => setting.write_generation = value.parse().unwrap_or(0),
+                "write_delay_ms" => {
+                    if let Ok(ms) = value.parse() {
+                        setting.write_delay = Duration::from_millis(ms);
+                    }
+                }
                 _ => {}
             }
         }

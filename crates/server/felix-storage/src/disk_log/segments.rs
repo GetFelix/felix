@@ -11,7 +11,7 @@ mod truncation;
 #[cfg(test)]
 mod test_support;
 
-pub(super) use rollover::RollOutcome;
+pub(super) use rollover::{PreparedSegment, RollOutcome};
 #[cfg(all(test, target_os = "linux"))]
 pub(super) use truncation::stop_after_unlinks;
 
@@ -23,6 +23,7 @@ pub(crate) use super::sealed::SealedEntry;
 use super::sealed::{SealedFiles, SealedLocator};
 use crate::io::read_at;
 use crate::log::{AppendRecord, LogConfig, LogRecord, Offset, SegmentDescriptor, SegmentId};
+use crate::segment::writer::StagedAppend;
 use crate::segment::{
     ReadBudget, SegmentReader, SegmentWriter, index_file_name, segment_file_name,
 };
@@ -153,37 +154,30 @@ impl SegmentSet {
             .collect()
     }
 
-    /// [`Self::append_within`] with no background roll in flight, for tests
-    /// that drive the set directly.
-    #[cfg(test)]
-    pub(super) fn append(&mut self, records: &[AppendRecord]) -> Result<(Offset, Offset)> {
-        self.append_within(records, false)
-    }
-
-    /// Append a batch, rolling to a new segment first if it would not fit.
+    /// Append a batch, rolling to a new segment first if it would not fit, for
+    /// tests that drive the set directly. The log stages and writes in two
+    /// steps instead; see `append`.
     ///
     /// A batch is never split across segments: offsets stay contiguous either
     /// way, but keeping a batch whole means one `write` call and one index
-    /// update per append regardless of where the boundary falls.
-    ///
-    /// `roll_pending` must be what the caller just passed to
-    /// [`Self::would_roll_within`]. Rolling at the configured size while a
-    /// background roll is sealing would sync this segment ahead of the retired
-    /// one, and a power loss could then keep this one and lose that one's tail.
-    pub(super) fn append_within(
-        &mut self,
-        records: &[AppendRecord],
-        roll_pending: bool,
-    ) -> Result<(Offset, Offset)> {
+    /// update per append regardless of where the boundary falls. An empty
+    /// active segment accepts the batch even when it is oversized, or a record
+    /// larger than `segment_size_bytes` could never be written at all.
+    #[cfg(test)]
+    pub(super) fn append(&mut self, records: &[AppendRecord]) -> Result<(Offset, Offset)> {
         self.check_open()?;
-        // An empty active segment must accept the batch even when it is
-        // oversized — otherwise a record larger than `segment_size_bytes` could
-        // never be written at all. Such a record gets a segment to itself and
-        // the next append rolls again.
-        if self.would_roll_within(records, roll_pending) {
+        if self.would_roll_within(records, false) {
             self.roll_for(records)?;
         }
         self.active.append(records)
+    }
+
+    /// Encode `records` at the end of the active segment without writing
+    /// them. See [`SegmentWriter::stage`]; the caller has already rolled if
+    /// [`Self::would_roll_within`] said to.
+    pub(super) fn stage(&mut self, records: &[AppendRecord]) -> Result<StagedAppend> {
+        self.check_open()?;
+        self.active.stage(records)
     }
 
     /// Read records from `start` onward, spending at most `budget`.

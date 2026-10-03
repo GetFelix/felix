@@ -13,6 +13,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Read, Write};
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::Result;
 use crate::log::Offset;
@@ -177,7 +178,9 @@ impl SparseIndex {
 /// entries are searched.
 #[derive(Debug)]
 pub struct IndexWriter {
-    file: File,
+    /// Shared with a staged batch, whose entries are written without the lock
+    /// that guards this writer. Opened for append, so no cursor is shared.
+    file: Arc<File>,
     index: SparseIndex,
     spacing_bytes: u64,
     /// Segment bytes written since the last entry was emitted.
@@ -209,7 +212,7 @@ impl IndexWriter {
             .encode(),
         )?;
         drop(file);
-        let file = OpenOptions::new().append(true).open(path)?;
+        let file = Arc::new(OpenOptions::new().append(true).open(path)?);
         Ok(Self {
             file,
             index,
@@ -223,7 +226,7 @@ impl IndexWriter {
         // The index was just rebuilt or loaded, so rewrite it whole and append
         // from there. This is what makes a stale index self-correcting.
         index.persist(path)?;
-        let file = OpenOptions::new().append(true).open(path)?;
+        let file = Arc::new(OpenOptions::new().append(true).open(path)?);
         Ok(Self {
             file,
             index,
@@ -254,7 +257,7 @@ impl IndexWriter {
         if first_entry || self.bytes_since_entry >= self.spacing_bytes {
             let entry = IndexEntry { offset, position };
             self.index.push(entry);
-            self.file.write_all(&entry.encode())?;
+            (&*self.file).write_all(&entry.encode())?;
             self.bytes_since_entry = 0;
         }
         self.bytes_since_entry = self.bytes_since_entry.saturating_add(record_len);
@@ -264,7 +267,7 @@ impl IndexWriter {
     /// Flush buffered entries to the OS. Not an fsync: the index is rebuildable,
     /// so paying for a second device sync per append would buy nothing.
     pub fn flush(&mut self) -> Result<()> {
-        self.file.flush()?;
+        (&*self.file).flush()?;
         Ok(())
     }
 
@@ -278,6 +281,60 @@ impl IndexWriter {
 
     pub fn into_index(self) -> SparseIndex {
         self.index
+    }
+
+    /// The entries a batch with these record boundaries adds, worked out
+    /// without adding them. `boundaries` are `(offset, position, length)` in
+    /// order. [`Self::apply`] puts them in memory and [`IndexPlan::write`] in
+    /// the file.
+    pub(crate) fn plan(&self, boundaries: &[(Offset, u64, u64)]) -> IndexPlan {
+        let mut entries = Vec::new();
+        let mut bytes_since_entry = self.bytes_since_entry;
+        for &(offset, position, record_len) in boundaries {
+            let first_entry = self.index.is_empty() && entries.is_empty();
+            if first_entry || bytes_since_entry >= self.spacing_bytes {
+                entries.push(IndexEntry { offset, position });
+                bytes_since_entry = 0;
+            }
+            bytes_since_entry = bytes_since_entry.saturating_add(record_len);
+        }
+        IndexPlan {
+            entries,
+            bytes_since_entry,
+            file: Arc::clone(&self.file),
+        }
+    }
+
+    /// Take a plan's entries into memory. The file is the plan's business: the
+    /// in-memory index is what reads use, and a short file is rebuilt on the
+    /// next open.
+    pub(crate) fn apply(&mut self, plan: &IndexPlan) {
+        for entry in &plan.entries {
+            self.index.push(*entry);
+        }
+        self.bytes_since_entry = plan.bytes_since_entry;
+    }
+}
+
+/// Index entries a staged batch will add. See [`IndexWriter::plan`].
+#[derive(Debug)]
+pub(crate) struct IndexPlan {
+    entries: Vec<IndexEntry>,
+    bytes_since_entry: u64,
+    file: Arc<File>,
+}
+
+impl IndexPlan {
+    /// Append the entries to the index file, in one write.
+    pub(crate) fn write(&self) -> std::io::Result<()> {
+        if self.entries.is_empty() {
+            return Ok(());
+        }
+        let mut buf = Vec::with_capacity(self.entries.len() * INDEX_ENTRY_LEN as usize);
+        for entry in &self.entries {
+            buf.extend_from_slice(&entry.encode());
+        }
+        (&*self.file).write_all(&buf)
     }
 }
 

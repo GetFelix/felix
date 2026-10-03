@@ -19,18 +19,18 @@
 //!   allocation at all beyond growing it once to the high-water batch size.
 
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::Result;
-use crate::io::{preallocate, sync_data, sync_dir};
+use crate::io::{preallocate, sync_data, sync_dir, write_segment_at};
 use crate::log::{AppendRecord, Offset, RecordMark, SegmentDescriptor, SegmentId};
 use crate::segment::format::{
     BASELINE_VERSION, FORMAT_VERSION, MAX_PAYLOAD_BYTES, SEGMENT_HEADER_LEN, SegmentHeader,
     encode_record,
 };
-use crate::segment::index::{IndexWriter, SparseIndex};
+use crate::segment::index::{IndexPlan, IndexWriter, SparseIndex};
 use crate::segment::{index_file_name, segment_file_name};
 use crate::{StorageError, metrics_names};
 
@@ -51,8 +51,8 @@ pub struct SegmentWriter {
     record_count: u64,
     /// Reused across appends so steady state allocates nothing.
     staging: Vec<u8>,
-    /// A duplicate descriptor used only for flushing, so a sync never has to
-    /// hold the lock that guards `file`.
+    /// A duplicate descriptor for work that runs without the lock that guards
+    /// `file`: flushes, and a staged batch's write.
     sync_handle: Arc<File>,
     /// Set when this writer can no longer make truthful claims about the
     /// segment: an append that could not be rolled back, so its real length is
@@ -134,12 +134,9 @@ impl SegmentWriter {
         let path = dir.join(segment_file_name(id));
         let file = OpenOptions::new().write(true).open(&path)?;
         // Recovery has already decided where valid data ends; make the file
-        // agree so an append cannot land after a hole, and position the write
-        // cursor there — a freshly opened handle starts at zero and would
-        // otherwise overwrite the segment header.
-        let mut file = file;
+        // agree so an append cannot land after a hole. Appends are positioned
+        // writes at `size_bytes`, so the cursor does not matter.
         file.set_len(valid_bytes)?;
-        file.seek(SeekFrom::Start(valid_bytes))?;
         sync_data(&file)?;
 
         let index = IndexWriter::open(&dir.join(index_file_name(id)), index)?
@@ -296,6 +293,28 @@ impl SegmentWriter {
     /// durable until [`SegmentWriter::sync`] succeeds. Callers that promise
     /// durability must sequence the two.
     pub fn append(&mut self, records: &[AppendRecord]) -> Result<(Offset, Offset)> {
+        let staged = self.stage(records)?;
+        if let Err(err) = staged.write() {
+            return Err(self.abandon(staged, err));
+        }
+        let (first_offset, last_offset, index) = self.finish(staged);
+        if let Err(err) = index.write() {
+            self.index_write_failed(first_offset, &err);
+        }
+        Ok((first_offset, last_offset))
+    }
+
+    /// The first half of [`Self::append`]: encode `records` at the end of the
+    /// segment and work out their offsets, changing nothing yet.
+    ///
+    /// The split lets the write run without the lock that guards this writer,
+    /// so a write the kernel stalls does not stall everything else that needs
+    /// the lock. That is sound only while nothing else changes this segment
+    /// between `stage` and [`Self::finish`] or [`Self::abandon`], which the
+    /// caller guarantees by staging from one thread at a time. The index
+    /// entries [`Self::finish`] hands back are written after it, so an
+    /// abandoned batch leaves none behind.
+    pub(crate) fn stage(&mut self, records: &[AppendRecord]) -> Result<StagedAppend> {
         debug_assert!(!records.is_empty());
 
         if self.poisoned {
@@ -317,8 +336,8 @@ impl SegmentWriter {
             ));
         }
 
-        self.staging.clear();
-        let first_offset = self.next_offset;
+        let mut bytes = std::mem::take(&mut self.staging);
+        bytes.clear();
         // Record boundaries for the index, captured while encoding so the index
         // never needs a second pass over the batch.
         let mut boundaries = Vec::with_capacity(records.len());
@@ -326,7 +345,7 @@ impl SegmentWriter {
         let mut offset = self.next_offset;
         for record in records {
             let written = encode_record(
-                &mut self.staging,
+                &mut bytes,
                 offset,
                 record.timestamp_micros,
                 &record.payload,
@@ -336,62 +355,89 @@ impl SegmentWriter {
             position += written;
             offset += 1;
         }
+        Ok(StagedAppend {
+            index: self.index.plan(&boundaries),
+            bytes,
+            position: self.size_bytes,
+            file: Arc::clone(&self.sync_handle),
+            first_offset: self.next_offset,
+            next_offset: offset,
+            records: records.len() as u64,
+        })
+    }
 
-        // One syscall for the whole batch.
-        //
-        // A failure here can still have written some of the buffer: `write_all`
-        // loops over partial writes, so an error means "some prefix landed",
-        // not "nothing happened". Left alone, those bytes sit past the last
-        // record this writer knows about, the file cursor points past them, and
-        // the next append lands after the debris - turning a failed write into
-        // interior corruption that recovery must refuse to start on, or into a
-        // duplicate if the caller retries.
-        //
-        // So a failed append rewinds the file to the last good byte. If the
-        // rewind itself fails there is no way to restore the invariant, and the
-        // writer refuses further appends rather than building on a file whose
-        // shape it no longer knows.
-        if let Err(err) = crate::io::write_all(&self.file, &self.staging) {
-            self.rewind_after_failed_write()?;
-            return Err(StorageError::Io(err));
+    /// Take a staged batch whose write succeeded into this writer's state.
+    /// Returns its first and last offsets, and the index entries it adds for
+    /// the caller to write to the index file, with no lock held.
+    pub(crate) fn finish(&mut self, staged: StagedAppend) -> (Offset, Offset, IndexPlan) {
+        let StagedAppend {
+            bytes,
+            position,
+            index,
+            first_offset,
+            next_offset,
+            records,
+            ..
+        } = staged;
+        debug_assert_eq!(position, self.size_bytes, "staged against another tail");
+        self.size_bytes = position + bytes.len() as u64;
+        self.next_offset = next_offset;
+        self.record_count += records;
+        self.index.apply(&index);
+
+        metrics::counter!(metrics_names::APPEND_RECORDS_TOTAL).increment(records);
+        metrics::counter!(metrics_names::APPEND_BYTES_TOTAL).increment(bytes.len() as u64);
+        metrics::histogram!(metrics_names::APPEND_BATCH_RECORDS).record(records as f64);
+        self.staging = bytes;
+
+        (first_offset, next_offset - 1, index)
+    }
+
+    /// Report a failed write of the index entries for the batch at
+    /// `first_offset`.
+    ///
+    /// The index is an accelerator, not a record of truth: a missing or stale
+    /// one is rebuilt from the segment on open, and every read re-validates
+    /// the records it lands on. So an index write that fails must not fail the
+    /// append. Returning `Err` would be actively harmful: the data write has
+    /// already succeeded and the offsets are already spent, so the error would
+    /// look retryable to a caller who cannot retry. Retrying appends the batch
+    /// a second time under new offsets, and not retrying leaves a publish
+    /// reported as failed that is in fact durably stored.
+    pub(crate) fn index_write_failed(&mut self, first_offset: Offset, err: &std::io::Error) {
+        if self.index_degraded {
+            return;
         }
+        self.index_degraded = true;
+        tracing::warn!(
+            segment = self.id,
+            offset = first_offset,
+            error = %err,
+            "sparse index write failed; the index will be rebuilt on next open"
+        );
+        metrics::counter!(metrics_names::INDEX_WRITE_FAILURES_TOTAL).increment(1);
+    }
 
-        self.size_bytes = position;
-        self.next_offset = offset;
-        self.record_count += records.len() as u64;
-        // The index is an accelerator, not a record of truth: a missing or
-        // stale one is rebuilt from the segment on open, and every read
-        // re-validates the records it lands on. So an index write that fails
-        // must not fail the append.
-        //
-        // Returning `Err` here would be actively harmful. The data write has
-        // already succeeded and the offsets are already spent, so the error
-        // would look retryable to a caller who cannot retry: retrying appends
-        // the batch a second time under new offsets, and not retrying leaves a
-        // publish reported as failed that is in fact durably stored.
-        for (offset, position, written) in boundaries {
-            if let Err(err) = self.index.observe_record(offset, position, written) {
-                if !self.index_degraded {
-                    self.index_degraded = true;
-                    tracing::warn!(
-                        segment = self.id,
-                        offset,
-                        error = %err,
-                        "sparse index write failed; the index will be rebuilt on next open"
-                    );
-                    metrics::counter!(metrics_names::INDEX_WRITE_FAILURES_TOTAL).increment(1);
-                }
-                // Stop feeding a writer that is already failing; the remaining
-                // boundaries would only repeat the same error.
-                break;
-            }
+    /// Undo a staged batch whose write failed, or that its caller no longer
+    /// wants, and return the error to report.
+    ///
+    /// A failed write can still have landed some of the batch: the write loops
+    /// over partial writes, so an error means "some prefix landed", not
+    /// "nothing happened". Left alone, those bytes sit past the last record
+    /// this writer knows about and the next append lands after the debris,
+    /// turning a failed write into interior corruption that recovery must
+    /// refuse to start on, or into a duplicate if the caller retries.
+    ///
+    /// So the file goes back to the last good byte, and no offset is spent. If
+    /// that fails there is no way to restore the invariant, and the writer
+    /// refuses further appends rather than building on a file whose shape it no
+    /// longer knows.
+    pub(crate) fn abandon(&mut self, staged: StagedAppend, err: std::io::Error) -> StorageError {
+        self.staging = staged.bytes;
+        match self.rewind_after_failed_write() {
+            Ok(()) => StorageError::Io(err),
+            Err(rewind) => rewind,
         }
-
-        metrics::counter!(metrics_names::APPEND_RECORDS_TOTAL).increment(records.len() as u64);
-        metrics::counter!(metrics_names::APPEND_BYTES_TOTAL).increment(self.staging.len() as u64);
-        metrics::histogram!(metrics_names::APPEND_BATCH_RECORDS).record(records.len() as f64);
-
-        Ok((first_offset, self.next_offset - 1))
     }
 
     /// Flush every written byte to stable storage.
@@ -466,11 +512,7 @@ impl SegmentWriter {
     /// trace and the segment stays exactly as it was before the attempt.
     fn rewind_after_failed_write(&mut self) -> Result<()> {
         let valid = self.size_bytes;
-        let restore = self
-            .file
-            .set_len(valid)
-            .and_then(|()| self.file.seek(SeekFrom::Start(valid)).map(|_| ()));
-        match restore {
+        match self.file.set_len(valid) {
             Ok(()) => Ok(()),
             Err(err) => {
                 // The segment's on-disk shape no longer matches this writer's
@@ -481,6 +523,29 @@ impl SegmentWriter {
                 ))))
             }
         }
+    }
+}
+
+/// A batch [`SegmentWriter::stage`] has encoded and placed, to be written with
+/// no lock held and then finished or abandoned.
+#[derive(Debug)]
+pub(crate) struct StagedAppend {
+    bytes: Vec<u8>,
+    /// Where the batch starts in the segment.
+    position: u64,
+    file: Arc<File>,
+    index: IndexPlan,
+    first_offset: Offset,
+    /// One past the batch's last offset.
+    next_offset: Offset,
+    records: u64,
+}
+
+impl StagedAppend {
+    /// Write the batch. One syscall for the batch: syscall count is what
+    /// scales with batch size otherwise, and it dominates at small payloads.
+    pub(crate) fn write(&self) -> std::io::Result<()> {
+        write_segment_at(&self.file, &self.bytes, self.position)
     }
 }
 

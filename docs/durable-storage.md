@@ -131,8 +131,8 @@ sequenceDiagram
 
     C->>B: publish(payload)
     B->>L: append(records)
-    L->>OS: one write() for the whole batch
-    Note over L,OS: offsets assigned under the segment lock
+    L->>OS: one write() for the whole batch, on the append thread
+    Note over L,OS: offsets assigned on that thread, in queue order
 
     alt FsyncMode::OnCommit
         L->>D: ensure_durable(target)
@@ -150,9 +150,9 @@ sequenceDiagram
 
 ### One order, not three
 
-Offsets are assigned under the segment lock, but the fsync wait happens after it
-is released, so two concurrent publishes can resume from a shared group-commit
-flush in either order. Left alone, the log on disk could read `A, B` while a
+Offsets are assigned on the log's append thread, one batch at a time, but the
+fsync wait happens after the append returns, so two concurrent publishes can
+resume from a shared group-commit flush in either order. Left alone, the log on disk could read `A, B` while a
 cursor replay and a live subscriber both saw `B, A`.
 
 A per-stream commit sequencer closes that gap. After its durable append, each
@@ -243,6 +243,46 @@ flush.
 
 This is the same mechanism behind PostgreSQL's `commit_delay` and the WAL
 group-commit paths in MySQL and RocksDB.
+
+### Where the append runs
+
+An append's `write` lands in the page cache and normally takes microseconds.
+It is still blocking I/O: once a process dirties pages faster than the device
+takes them, Linux throttles it inside `write()` (`balance_dirty_pages`) for
+up to hundreds of milliseconds. A reactor thread caught there takes every
+task scheduled on it down too, the QUIC endpoint included, and every other
+reactor thread that reaches the same log's lock queues behind it.
+
+So each log has an append thread, like its flush thread, and every append runs
+there in submission order, which is offset order. A publisher awaits the
+result the way it awaits a socket. Everything else that changes the active
+segment runs on the same thread: rollovers, truncation, sealing and closing.
+That single writer is what lets the write itself run with no lock held. The
+batch is encoded and placed under the segment lock, the lock is released for
+the `write`, and it is taken again to make the batch visible. A reader, a
+flush or the periodic syncer needs that lock only for pointer work, so none of
+them waits on the disk behind an append.
+
+A flush decides how far it reaches on the append thread too, behind the
+appends already queued there. Those are microseconds from done and a flush is
+milliseconds, so waiting for them is what lets one flush cover every append in
+flight. A flush therefore also waits for an append whose `write` the kernel is
+holding.
+
+The hand-off costs a wake-up on each side, about as much as the `write`. The
+thread polls for its next append for 20 µs before it parks, and a caller whose
+append is the only one queued polls for the result for as long before it
+yields, so back-to-back appends pay neither wake-up. Measured at
+[storage-performance.md](storage-performance.md#11-appends-write-on-the-logs-own-thread).
+
+Cancelling an append is as safe as it was when the write ran in the caller's
+own poll. A batch whose caller has gone before the batch is made visible is
+not kept: the thread cuts the file back to its last good byte, as after a
+failed write, and spends no offsets. One whose caller goes a moment later
+holds its offsets before the cancellation returns, like a publish cancelled
+while it waits for its flush. A caller that orders its batches by offset, such
+as the broker's commit sequencer, claims the batch's range on the append
+thread, so that claim is released even if the caller never hears the offsets.
 
 ### Where the flush runs
 

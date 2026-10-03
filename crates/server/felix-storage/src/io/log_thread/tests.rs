@@ -4,23 +4,23 @@ use super::*;
 
 #[tokio::test]
 async fn the_result_of_the_work_reaches_the_caller() {
-    let flusher = Flusher::new("test-flush");
-    flusher.run(|| Ok(())).await.expect("ok");
-    let err = flusher
+    let thread = LogThread::new("test-thread");
+    thread.run(|| Ok(())).await.expect("ok");
+    let err = thread
         .run(|| Err(io::Error::other("device gone")))
         .await
         .expect_err("the failure must be reported");
     assert_eq!(err.to_string(), "device gone");
     // A failed flush does not take the thread with it.
-    flusher.run(|| Ok(())).await.expect("ok after a failure");
+    thread.run(|| Ok(())).await.expect("ok after a failure");
 }
 
 #[tokio::test]
 async fn work_runs_off_the_calling_thread() {
-    let flusher = Flusher::new("test-flush");
+    let thread = LogThread::new("test-thread");
     let caller = std::thread::current().id();
     let (tx, rx) = std::sync::mpsc::channel();
-    flusher
+    thread
         .run(move || {
             let _ = tx.send(std::thread::current().id());
             Ok(())
@@ -32,16 +32,16 @@ async fn work_runs_off_the_calling_thread() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_callers_are_served_one_at_a_time() {
-    let flusher = Arc::new(Flusher::new("test-flush"));
+    let thread = Arc::new(LogThread::new("test-thread"));
     let running = Arc::new(AtomicUsize::new(0));
     let done = Arc::new(AtomicUsize::new(0));
     let mut tasks = Vec::new();
     for _ in 0..64 {
-        let flusher = Arc::clone(&flusher);
+        let thread = Arc::clone(&thread);
         let running = Arc::clone(&running);
         let done = Arc::clone(&done);
         tasks.push(tokio::spawn(async move {
-            flusher
+            thread
                 .run(move || {
                     assert_eq!(
                         running.fetch_add(1, Ordering::SeqCst),
@@ -66,11 +66,11 @@ async fn concurrent_callers_are_served_one_at_a_time() {
 /// finds nothing to do would be trusting a sync that never happened.
 #[tokio::test]
 async fn an_abandoned_call_still_runs_its_work() {
-    let flusher = Flusher::new("test-flush");
+    let thread = LogThread::new("test-thread");
     let (started_tx, started) = std::sync::mpsc::channel();
     let (release, held) = std::sync::mpsc::channel::<()>();
     let (ran_tx, ran) = std::sync::mpsc::channel();
-    let call = flusher.run(move || {
+    let call = thread.run(move || {
         let _ = started_tx.send(());
         let _ = held.recv();
         let _ = ran_tx.send(());
@@ -82,7 +82,7 @@ async fn an_abandoned_call_still_runs_its_work() {
     release.send(()).expect("release");
     ran.recv_timeout(Duration::from_secs(5))
         .expect("the work finished after its caller left");
-    flusher
+    thread
         .run(|| Ok(()))
         .await
         .expect("the thread still serves");
@@ -90,24 +90,24 @@ async fn an_abandoned_call_still_runs_its_work() {
 
 #[tokio::test]
 async fn a_panicking_job_is_reported_and_the_thread_keeps_serving() {
-    let flusher = Flusher::new("test-flush");
-    let err = flusher
+    let thread = LogThread::new("test-thread");
+    let err = thread
         .run(|| panic!("injected"))
         .await
         .expect_err("a panic is a failed flush");
     assert!(err.to_string().contains("panicked"), "{err}");
-    flusher.run(|| Ok(())).await.expect("the next flush");
+    thread.run(|| Ok(())).await.expect("the next flush");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_flush_queued_behind_a_panicking_one_still_runs() {
-    let flusher = Arc::new(Flusher::new("test-flush"));
+    let thread = Arc::new(LogThread::new("test-thread"));
     let (started_tx, started) = std::sync::mpsc::channel();
     let (release, release_rx) = std::sync::mpsc::channel::<()>();
     let first = {
-        let flusher = Arc::clone(&flusher);
+        let thread = Arc::clone(&thread);
         tokio::spawn(async move {
-            flusher
+            thread
                 .run(move || {
                     started_tx.send(()).expect("started");
                     release_rx.recv().expect("release");
@@ -119,8 +119,8 @@ async fn a_flush_queued_behind_a_panicking_one_still_runs() {
     started.recv().expect("the first flush started");
     // Queued on the same thread while the first is still running.
     let second = {
-        let flusher = Arc::clone(&flusher);
-        tokio::spawn(async move { flusher.run(|| Ok(())).await })
+        let thread = Arc::clone(&thread);
+        tokio::spawn(async move { thread.run(|| Ok(())).await })
     };
     tokio::time::sleep(Duration::from_millis(50)).await;
     release.send(()).expect("release");
@@ -137,10 +137,10 @@ fn the_thread_exits_when_the_log_is_dropped() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("runtime");
-    let flusher = Flusher::new("test-flush");
+    let thread = LogThread::new("test-thread");
     let (tx, rx) = std::sync::mpsc::channel();
     runtime
-        .block_on(flusher.run(move || {
+        .block_on(thread.run(move || {
             // Dropped when the thread's stack unwinds on exit.
             struct Exit(std::sync::mpsc::Sender<()>);
             impl Drop for Exit {
@@ -153,41 +153,41 @@ fn the_thread_exits_when_the_log_is_dropped() {
             Ok(())
         }))
         .expect("run");
-    drop(flusher);
+    drop(thread);
     rx.recv_timeout(Duration::from_secs(5))
         .expect("the flush thread outlived its log");
 }
 
 #[tokio::test]
 async fn an_idle_thread_exits_and_the_next_flush_starts_another() {
-    let flusher = Flusher::with_idle("test-flush", Duration::from_millis(5));
-    let first = thread_of(&flusher).await;
+    let thread = LogThread::with_idle("test-thread", Duration::from_millis(5));
+    let first = thread_of(&thread).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
-        flusher.queue.lock().is_none(),
+        thread.queue.lock().is_none(),
         "the idle thread should have exited"
     );
-    assert_ne!(thread_of(&flusher).await, first);
+    assert_ne!(thread_of(&thread).await, first);
 }
 
 /// A flush submitted just as the thread decides it is idle must still run.
 /// Losing it would fail a durable append for no reason at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_flush_racing_the_idle_exit_is_not_lost() {
-    let flusher = Flusher::with_idle("test-flush", Duration::from_micros(200));
+    let thread = LogThread::with_idle("test-thread", Duration::from_micros(200));
     for round in 0..2_000u32 {
         // Land submissions on both sides of the idle deadline.
         std::thread::sleep(Duration::from_micros(150 + u64::from(round % 100)));
-        flusher
+        thread
             .run(|| Ok(()))
             .await
             .unwrap_or_else(|err| panic!("round {round}: {err}"));
     }
 }
 
-async fn thread_of(flusher: &Flusher) -> std::thread::ThreadId {
+async fn thread_of(thread: &LogThread) -> std::thread::ThreadId {
     let (tx, rx) = std::sync::mpsc::channel();
-    flusher
+    thread
         .run(move || {
             let _ = tx.send(std::thread::current().id());
             Ok(())
@@ -215,7 +215,7 @@ fn dispatch_overhead() {
                 let mut tasks = Vec::new();
                 for _ in 0..logs {
                     tasks.push(tokio::spawn(async move {
-                        let flusher = Flusher::new("bench-flush");
+                        let thread = LogThread::new("bench-thread");
                         let mut samples = Vec::with_capacity(ROUNDS);
                         for _ in 0..ROUNDS {
                             let started = std::time::Instant::now();
@@ -225,7 +225,7 @@ fn dispatch_overhead() {
                                     .expect("join")
                                     .expect("run");
                             } else {
-                                flusher.run(|| Ok(())).await.expect("run");
+                                thread.run(|| Ok(())).await.expect("run");
                             }
                             samples.push(started.elapsed());
                         }

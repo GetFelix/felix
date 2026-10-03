@@ -70,7 +70,7 @@ sequenceDiagram
 
     C->>B: publish(payload)
     B->>L: append(records)
-    L->>L: encode batch, one write() to the page cache
+    L->>L: on the append thread, encode batch, one write() to the page cache
 
     alt FsyncMode::OnCommit
         L->>D: fsync (shared with concurrent appends)
@@ -89,6 +89,24 @@ acknowledged to the publisher but lost in a crash is a silent hole in a log that
 consumers believe they have read. Writing first turns a storage failure into a
 failed publish, which the publisher can retry. A storage error can never produce
 a success acknowledgement.
+
+### Where the write runs
+
+The `write()` into the page cache usually takes microseconds, but once Linux
+throttles a process that dirties pages faster than the device takes them, it
+blocks for up to hundreds of milliseconds. So no Tokio worker makes it. Each
+log has an append thread, and every append runs there in offset order; the
+publisher awaits the result as it would a socket. The thread also does
+everything else that changes the active segment (rollovers, truncation,
+sealing, closing), and that is what lets the write run with the segment lock
+released. A reader or a flush needs the lock only briefly, so nothing waits on
+the disk behind an append except the appends queued after it.
+
+The thread polls briefly for the next append before it parks, and a lone
+caller polls briefly for its result, so back-to-back appends do not pay a
+kernel wake-up on either side. A flush takes its bound on the same thread,
+behind the appends already queued, so group commit covers all of them. The
+measurements are in `docs/storage-performance.md`.
 
 ## Durability policies
 
