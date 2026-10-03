@@ -15,6 +15,12 @@ pub fn free_tcp() -> Result<SocketAddr> {
     listener.local_addr().context("read TCP port")
 }
 
+/// A free TCP port on loopback that `taken` does not claim: one already handed
+/// to the same process, whose socket was closed and so is free to the OS.
+pub fn free_tcp_except(taken: impl Fn(u16) -> bool) -> Result<SocketAddr> {
+    pick_except(free_tcp, taken)
+}
+
 /// The host a Docker container on this machine reaches the host's ports by.
 ///
 /// On Linux a `--network host` container shares loopback. Docker Desktop runs
@@ -32,6 +38,26 @@ pub fn docker_host() -> &'static str {
 pub fn free_udp() -> Result<SocketAddr> {
     let socket = UdpSocket::bind("127.0.0.1:0").context("bind ephemeral UDP port")?;
     socket.local_addr().context("read UDP port")
+}
+
+/// A free UDP port on loopback that `taken` does not claim. See
+/// [`free_tcp_except`].
+pub fn free_udp_except(taken: impl Fn(u16) -> bool) -> Result<SocketAddr> {
+    pick_except(free_udp, taken)
+}
+
+fn pick_except(
+    pick: impl Fn() -> Result<SocketAddr>,
+    taken: impl Fn(u16) -> bool,
+) -> Result<SocketAddr> {
+    const ATTEMPTS: usize = 50;
+    for _ in 0..ATTEMPTS {
+        let addr = pick()?;
+        if !taken(addr.port()) {
+            return Ok(addr);
+        }
+    }
+    anyhow::bail!("no free port outside those already picked after {ATTEMPTS} attempts")
 }
 
 /// A run of `count` consecutive free UDP ports on loopback.

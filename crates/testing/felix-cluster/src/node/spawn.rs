@@ -26,7 +26,9 @@ pub(crate) fn spawn_broker(
     } else {
         ports::free_udp()?
     };
-    let internal_addr = ports::free_udp()?;
+    // Each pick closes its socket, so the OS can hand the same port out again.
+    let client_ports = client_addr.port()..client_addr.port() + config.quic_listeners as u16;
+    let internal_addr = ports::free_udp_except(|port| client_ports.contains(&port))?;
     let (advertise_addr, control_plane_url) = match links {
         Some(links) => {
             let route = links.route(&node_id, internal_addr)?;
@@ -95,7 +97,7 @@ pub(crate) fn spawn_broker(
             std::env::var("RUST_LOG").as_deref().unwrap_or("info"),
         );
     let kafka_addr = if config.kafka {
-        let port = ports::free_tcp()?.port();
+        let port = ports::free_tcp_except(|port| port == metrics_addr.port())?.port();
         let advertise = format!("{}:{port}", ports::docker_host());
         command
             .env("FELIX_KAFKA_LISTEN", format!("0.0.0.0:{port}"))
