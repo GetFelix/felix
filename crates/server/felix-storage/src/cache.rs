@@ -120,6 +120,20 @@ pub trait StorageApi: Debug + Send + Sync {
         false
     }
 
+    /// The offset below which every write to one shard has been applied, and
+    /// its watchers told; `None` from a store with no log. A watch joins here
+    /// rather than at the log's tail: a write already in the log but not yet
+    /// applied is in no snapshot, and its change is still to come.
+    async fn applied_through(
+        &self,
+        _tenant_id: &str,
+        _namespace: &str,
+        _cache: &str,
+        _shard: u32,
+    ) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
     /// Every live key in one shard with its current value and offset, for a
     /// watch that must begin from current state.
     ///

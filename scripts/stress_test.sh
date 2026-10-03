@@ -40,5 +40,5 @@ wait "${loops[@]}"
 
 failed=$(grep -c '^FAIL$' "$failures" || true)
 echo "$test: $failed of $((per_loop * parallel)) runs failed under load"
-grep -v '^FAIL$' "$failures" | sort | uniq -c | head -5
+grep -v "^FAIL$" "$failures" | sort | uniq -c | head -5 || true
 [ "$failed" -eq 0 ]

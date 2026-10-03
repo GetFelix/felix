@@ -588,6 +588,25 @@ impl StorageApi for LogCache {
             .await
     }
 
+    async fn applied_through(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+    ) -> Result<Option<u64>> {
+        let shard = self.shard(tenant_id, namespace, cache, shard)?;
+        let mut state = shard.state.lock().await;
+        shard.ensure_index(&mut state).await?;
+        // Applied writes release their turns under this lock, so with writers
+        // in flight the sequencer is the frontier; idle, the tail is.
+        let applied = shard.sequencer.next_offset();
+        if state.sequenced_through == Some(applied) {
+            return state.log.tail_offset().await.map(Some);
+        }
+        Ok(Some(applied))
+    }
+
     async fn len(&self) -> usize {
         let shards = self.shards.open_values();
         let now = now_millis();
