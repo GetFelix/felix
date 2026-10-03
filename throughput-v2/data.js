@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790987137617,
+  "lastUpdate": 1790989263984,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22568,6 +22568,58 @@ window.BENCHMARK_DATA = {
             "range": "5925.38",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 808223.39\nmean: 808556.51\nstdev: 5925.38\ncv: 0.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0c2863ea772830a2f008a2a27fa2923909293fc2",
+          "message": "perf(azure): NATS JetStream comparison harness on session A's VMs (#916)\n\n* perf(azure): NATS JetStream harness on session A's VMs\n\nRuns nats-server 2.15.0 and nats bench (natscli 0.5.0) on the same broker\nVM, NVMe array and generators as session A, in cells laid out like Felix's\nso summarize.py reports both in one table. Covers JetStream durability\nmodes always/memory/default, async, fast-batch and core publish, a one-knob\ntuning sweep for NATS's best shape, and a README fairness section listing\nwhat is matched and what cannot be.\n\n* perf(azure): fairness fixes for the NATS comparison\n\nStream count becomes a matrix dimension (12 and 48 to match Felix's keys,\n64 extra) with a streams x window sweep under sync always. Each generator\nruns one continuous, calibrated nats bench cut by SIGINT at the cell's end,\nmeasured from server counters. Fast batch with flow 1 leads the acked\npairing. NIC MTU is applied, path-checked and enforced per cell. Memory\nstreams retain what Felix's in-memory ring does, with GOMEMLIMIT set.\nGenerator CPU sums every nats process and saturated cells rerun with more\nprocesses. Failed scrapes are NA. /data is trimmed per cell, and\ninterleave.sh alternates Felix and NATS cells. The summary adds records/s\nand payload MB/s.\n\n* perf(azure): flag failed scrapes and balance interleave order\n\nsummarize.py counts NA samples per cell (ss_na_pct) and flags cells above\n5%; Felix's sampler now writes NA for a failed scrape too. interleave.sh\nruns an even AB_TRIALS (default 4), Felix first on odd trials and NATS\nfirst on even ones.\n\n* perf(azure): NATS publish latency, measured as felix-loadgen measures Felix\n\nnats/latency/ is a standalone port of felix-loadgen's pubsub scenario at\nbatch 1 (same pre-flight, payload header, closed loop with one in flight,\nwarmup/total, sort-based percentiles and LOADGEN_JSON fields), on\nasync-nats 0.50.0. JetStream publish-to-PubAck plus delivery through an\nordered push consumer; core NATS with a flush as the floor.\n\nnats-latency.sh builds it on generator 0 and alternates Felix and NATS\nlatency cells per pair: on_commit vs sync_interval always, periodic vs\ndefault sync, in-memory vs a memory stream, plus core NATS.\n\n* perf(azure): batched in-memory and periodic pairs, smaller flow-64 window\n\nAdds inmem-b64 (memory stream, fast flow 64) and per-b64 (Felix periodic\nagainst NATS default sync) to the interleave, and runs flow-64 pairs with\nAB_FLOW64_WINDOW=16: window 64 at flow 64 leaves 4096 messages per client\nunacked, which in always mode outlasts nats bench's ack timeout.\n\n* perf(nats): add an atomic batch publish kind and a dur-a64 pair\n\nIn always mode a fast batch fsyncs every message, while an atomic batch\nsyncs once per batch. Felix's batch-64 publish is one request with one\nack, so js pub atomic --batch 64 is its counterpart. Streams for the kind\nallow atomic batch publish, and publishers are pinned to one stream as\nfor js-fast, since a batch cannot span streams.\n\n* perf(azure): tune NATS atomic batch by client count; separate NATS publisher count in pairs\n\n* perf(azure): tune NATS fast batch window and publisher count per mode\n\n* perf(azure): NATS async publish in tuning and as an alternative batched pair\n\n* perf(azure): keep the NATS step scripts executable\n\n* perf(azure): NATS fast batch at higher stream counts",
+          "timestamp": "2026-10-02T17:55:28-07:00",
+          "tree_id": "287a75f14487b183f7305d328427b074fc495eab",
+          "url": "https://github.com/gabloe/felix/commit/0c2863ea772830a2f008a2a27fa2923909293fc2"
+        },
+        "date": 1790989263252,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 346521.46,
+            "range": "4428.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346521.46\nmean: 347135.10\nstdev: 4428.33\ncv: 1.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 346521.46,
+            "range": "4428.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346521.46\nmean: 347135.10\nstdev: 4428.33\ncv: 1.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82037.72,
+            "range": "319.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82037.72\nmean: 81991.04\nstdev: 319.19\ncv: 0.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 820377.24,
+            "range": "3191.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 820377.24\nmean: 819910.47\nstdev: 3191.86\ncv: 0.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
