@@ -52,6 +52,12 @@ tasks:
         if [ -z "${CI:-}" ]; then
           task pg:down
         fi
+  # A test that has failed under load and passed alone, run hundreds of
+  # times with every core busy. CI runs it after the suite.
+  test:stress:
+    cmds:
+      - "scripts/stress_test.sh felix-storage cache::log_cache::tests::concurrency::a_cancelled_put_is_still_applied 200"
+
   pg:up:
     cmds:
       - |
