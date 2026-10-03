@@ -68,7 +68,7 @@ impl DurableStorage {
     ) -> Result<()> {
         self.provider
             .set_stream_retention(tenant, namespace, stream, retention)
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     pub fn config(&self) -> &LogConfig {
