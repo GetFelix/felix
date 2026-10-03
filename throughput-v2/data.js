@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790989263984,
+  "lastUpdate": 1790989600029,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22620,6 +22620,58 @@ window.BENCHMARK_DATA = {
             "range": "3191.86",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 820377.24\nmean: 819910.47\nstdev: 3191.86\ncv: 0.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "59b689cf12f0f68e6e9250a7beb5baf972fd53d4",
+          "message": "feat(client): close the felix-client API gaps felixctl found (#937) (#947)\n\n* feat(client): re-export AckMode, BrokerEndpoint and ShardRouting\n\nThey appear in felix-client's signatures, so a caller needed felix-wire as\na direct dependency just to name them. felixctl and the docs now import them\nfrom felix-client.\n\nPart of #937.\n\n* feat(client): build QUIC TLS with a client certificate and a CA file\n\nquic_client_config_with_identity presents a ClientIdentity, and\nClientIdentity::from_pem_files and root_store_from_pem_file read the\ncertificate, key and CA from PEM files. Before, a client certificate meant\nbuilding the rustls config by hand and remembering to set the ALPN, which\nis what felixctl did. It now calls these and no longer depends on rustls or\nfelix-wire.\n\nPart of #937.\n\n* feat(client): ClusterClient::subscribe_shard for one chosen shard\n\nThe cluster client could follow shard 0 or every shard, but not one shard\nthe caller names. subscribe_shard opens that shard through the same redirect\nand retry path and returns a ClusterSubscription, so it follows moves and\nlost brokers like the others. subscribe_from now delegates to it.\n\nfelixctl sub --shard used a plain Client and followed one NotLeader by hand;\nit now uses subscribe_shard and follows a moved shard too.\n\nPart of #937.\n\n* feat(client): ClusterClient::finish flushes unacknowledged publishes\n\nAn AckMode::None publish returns once queued, so a process exiting right\nafter one could lose it. Publisher::finish covered one Client; the cluster\nclient had nothing, and its publishes can sit on any broker it holds a\nconnection to. finish now finishes the shard publisher of each of those,\nwhich ends both the pooled streams and the per-shard publish streams.\n\nfelixctl pub --ack none opened a single Client's publisher just to have a\nfinish; it now publishes through the cluster client, which routes to the\nowner, and calls ClusterClient::finish.\n\nPart of #937.\n\n* feat(client): keyed idempotent publishes\n\nThe wire and the broker already took a key on an idempotent batch and\nchecked its sequence per shard, but the producer kept one sequence per\nstream and sent no key. Keying it that way would number two shards'\nbatches from one counter and leave each with gaps.\n\nIdempotentProducer::publish_keyed and publish_batch_keyed now route by key,\nand the producer keeps a cursor and a remembered leader per shard. The shard\ncomes from the stream's width and mapping, asked once; an unknown width is\nan error rather than a guess, since a guess would number the batch against\nthe wrong shard. A batch in doubt is re-sent only with its own key, because\nanother key on that shard under the same sequence would be answered from\nmemory and dropped. A keyed binary frame is used only when the broker\nnegotiated both the idempotent and keyed layouts; otherwise the JSON\npublish_idempotent carries the key.\n\nUnder a ClusterClient each keyed batch goes on its shard's own publish\nstream, so a shard's sequences only ever go out on one writer; a plain\nClient's producer stays on the hashed pool with that client's other\npublishes, keeping HashStream's one writer per stream.\n\nfelixctl pub now allows --idempotent with --key.\n\nPart of #937.\n\n* feat(broker,client): shard_owners names each shard's owner\n\nA client learned a shard's owner only by sending it something and being\nredirected or forwarded, so felixctl topology read owners from the control\nplane and showed none without a control-plane URL.\n\nBrokers now answer shard_owners (FEATURE_SHARD_OWNERS, 0x4_0000): one entry\nper shard of a stream or cache, from the same dispatch a request for that\nshard would take, with the owner's node id, client address and generation,\nor the shard_unavailable reason when nobody can serve it. A broker not in a\ncluster answers one shard with no node id. The bit is advertised, never\nassumed, so an older broker is never sent the request.\n\nClient::shard_owners asks it; ShardKind and ShardOwner are re-exported.\nfelixctl topology takes owners from the broker, falls back to the control\nplane's leader only for an older broker, and still adds replicas and state\nfrom the control plane when a URL is set.\n\nSpec-Unaffected: a read-only query of the routing snapshot; no lease, fence,\nreplication or placement transition changes.\n\nPart of #937.\n\n* feat(client): cache and counter calls on ClusterClient\n\nCaches needed the single-broker Client from ClusterClient::client(), which\nneither reconnects nor routes. ClusterClient now has cache_put, cache_get,\ncache_delete, counter_add and counter_get.\n\nEach goes to the owner of the key's shard when the client knows it, saving\nthe forward a non-owner would make, and otherwise through the broker in use.\nCache answers name no owner, unlike a forwarded publish's ack, so the owners\nare asked once per cache with shard_owners and dropped when one fails. The\nretry rules are publish's: a write that may have landed is not sent again,\nexcept when the owner said it applied nothing; a read is asked again once.\n\nfelixctl cache get/put/del use them.\n\nPart of #937.\n\n* docs: status rows for shard owners and keyed idempotent publishes\n\nPart of #937.\n\n* test(wire): every feature bit is distinct\n\nThe per-bit tests mask a bit out of KNOWN_FEATURES, which two constants\nsharing a value pass, so FEATURE_SHARD_OWNERS and\nFEATURE_STREAM_PUBLISH_WINDOW could both be 0x2_0000 without a failure. This\nlists every constant, requires each to be one bit not already taken, and\nrequires the list to equal KNOWN_FEATURES.\n\nPart of #937.\n\n* test(cluster): compare a shard owner's generation with its assignment\n\nA shard's first generation is 0, so asserting it was above 0 failed on a\ncorrect answer.",
+          "timestamp": "2026-10-02T17:56:03-07:00",
+          "tree_id": "28fedfeb7bc71c06915ec65f1b168d2b7efe3325",
+          "url": "https://github.com/gabloe/felix/commit/59b689cf12f0f68e6e9250a7beb5baf972fd53d4"
+        },
+        "date": 1790989599266,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351826.79,
+            "range": "15008.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351826.79\nmean: 346489.91\nstdev: 15008.93\ncv: 4.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351826.79,
+            "range": "15008.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351826.79\nmean: 346489.91\nstdev: 15008.93\ncv: 4.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82218.63,
+            "range": "382.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82218.63\nmean: 82315.91\nstdev: 382.52\ncv: 0.46%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 822186.33,
+            "range": "3825.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 822186.33\nmean: 823159.14\nstdev: 3825.20\ncv: 0.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
