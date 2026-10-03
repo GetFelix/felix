@@ -21,6 +21,22 @@ fn the_replacement_is_written_whole_or_not_at_all() {
     assert!(!path.with_extension("tmp").exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn the_replacement_is_readable_by_its_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("refresh.token");
+    // A temporary left behind with a broad mode must not carry it over.
+    let stale = path.with_extension("tmp");
+    std::fs::write(&stale, "stale\n").expect("stale");
+    std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+
+    persist(&path, "replacement").expect("persist");
+    let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "refresh token written with mode {mode:o}");
+}
+
 #[test]
 fn persisting_leaves_nothing_behind_on_a_bad_path() {
     let dir = tempfile::tempdir().expect("tempdir");

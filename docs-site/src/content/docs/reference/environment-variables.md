@@ -41,7 +41,12 @@ ports starting at `FELIX_QUIC_BIND`.
 
 **Type**: Integer (at least 1)
 
-**Default**: `1`
+**Default**: derived from the cores the broker may use, as
+`max(1, min(cores / 2, 4))`: `1` up to 3 cores, `2` at 4 or 5, `4` from 8.
+On Linux the core count respects cgroup CPU limits. Unset, the count is also
+shortened so the range stops before `FELIX_INTERNAL_BIND` and port 65535, so a
+cluster member on the default ports (client `5000`, internal `5001`) keeps one
+listener.
 
 **Example**:
 ```bash
@@ -59,12 +64,17 @@ export FELIX_QUIC_LISTENERS=4          # binds 5000, 5001, 5002, 5003
 - The broker advertises the port set during authentication, and a client
   spreads its connection pools across it. A client that predates this ignores
   the advertisement and keeps using the single address it dialled.
+- **Why the default stops at half the cores**: on an 8-vCPU Azure broker,
+  4 listeners measured 4099 MB/s and 8 measured 3437 MB/s. Past half the
+  cores, listeners contend with the broker's own threads.
 - Every port in the range must be open in firewalls, security groups and
-  service definitions, not just `FELIX_QUIC_BIND`.
-- `FELIX_INTERNAL_BIND` must sit outside the range. Startup fails if it does
-  not, since peer traffic and client traffic must not share a listener.
-- Startup also fails if the range would run past port 65535, rather than
-  binding fewer listeners than asked for.
+  service definitions, not just `FELIX_QUIC_BIND`. Clients dial the advertised
+  ports on the host they connected to, so a container that publishes only
+  `5000`, or remaps it to another host port, needs `FELIX_QUIC_LISTENERS=1`.
+- An explicit `FELIX_INTERNAL_BIND` inside an explicit range fails startup,
+  since peer traffic and client traffic must not share a listener.
+- An explicit count whose range would run past port 65535 also fails startup,
+  rather than binding fewer listeners than asked for.
 - Adding brokers remains the horizontal lever. This raises what one broker can
   do before you need another.
 - Do not pin [`FELIX_IO_RUNTIME_THREADS`](#felix_io_runtime_threads) below one
@@ -458,9 +468,14 @@ export FELIX_EVENT_BATCH_MAX_BYTES="1048576"  # 1 MiB
 
 ### `FELIX_EVENT_BATCH_MAX_DELAY_US`
 
-**Description**: Maximum delay before flushing batch (microseconds), counted
-from the batch's first event. The broker's timers fire on millisecond ticks, so
-a value under 1000 can wait until the next tick.
+**Description**: The most a subscription batch waits for more events under
+load (microseconds). A batch takes whatever events are already queued for the subscriber and
+flushes at once, so an event that arrives alone is sent without waiting. Only
+when the previous batch found events queued behind its first (events arriving
+faster than the broker drains them) does the next batch wait, up to this long
+from its first event, for more to fill it. Tokio timers have 1 ms resolution,
+so a non-zero delay below 1000 µs waits until the next millisecond tick; `0`
+never waits on a timer.
 
 **Type**: Unsigned integer
 
@@ -469,15 +484,15 @@ a value under 1000 can wait until the next tick.
 **Example**:
 ```bash
 export FELIX_EVENT_BATCH_MAX_DELAY_US="250"
-export FELIX_EVENT_BATCH_MAX_DELAY_US="50"    # Ultra-low latency
-export FELIX_EVENT_BATCH_MAX_DELAY_US="1000"  # Prioritize batching
-export FELIX_EVENT_BATCH_MAX_DELAY_US="5000"  # Maximum batching
+export FELIX_EVENT_BATCH_MAX_DELAY_US="0"     # Never wait; batch only what is queued
+export FELIX_EVENT_BATCH_MAX_DELAY_US="1000"  # Bigger batches under load
 ```
 
 **Tuning**:
-- Lower: Reduced latency, more frequent sends
-- Higher: Better batching, higher latency
-- Typical range: 50-1000 microseconds
+- It does not affect an idle or lightly loaded subscriber, which is sent each
+  event as it arrives
+- Lower: lower delivery latency under load, more frames
+- Higher: fewer, fuller frames under load, higher latency under load
 
 ### `FELIX_FANOUT_BATCH`
 
@@ -923,6 +938,24 @@ export FELIX_PUB_STREAMS_PER_CONN="2"
 export FELIX_PUB_STREAMS_PER_CONN="4"  # More concurrency
 ```
 
+### `FELIX_PUB_SHARD_STREAMS`
+
+**Description**: Most publish streams a `ClusterClient` opens per broker for
+one shard each, beside the pooled ones (client). Each of its publishes goes on
+its shard's own stream, so a stalled shard holds up only itself. Shards past
+the cap share the pool. `0` turns them off. A plain `Client` does not use
+them.
+
+**Type**: Non-negative integer (count)
+
+**Default**: `16`
+
+**Example**:
+```bash
+export FELIX_PUB_SHARD_STREAMS="16"
+export FELIX_PUB_SHARD_STREAMS="0"   # Every publish on the pool
+```
+
 ### `FELIX_PUBLISH_CHUNK_BYTES`
 
 **Description**: Chunk size for publishing large messages (client).
@@ -1057,7 +1090,7 @@ export FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES="16777216"
 
 ### `FELIX_BROKER_PUBLISH_WINDOW`
 
-**Description**: The most acknowledged publishes one connection may have unanswered when its client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker grants this number in `AuthOk.publish_window`, answers a pipelining stream's publishes in the order it sent them, and stops reading that connection's publishes while this many are outstanding. `0` turns pipelining off: no client is granted a window, and acks come back in completion order.
+**Description**: The most acknowledged publishes one stream may have unanswered when its client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker grants this number in `AuthOk.publish_window`, answers a pipelining stream's publishes in the order it sent them, and stops reading that stream's publishes while this many are outstanding on it. Each stream has its own window, so one stuck behind a stalled shard does not stall the others on its connection. `0` turns pipelining off: no client is granted a window, and acks come back in completion order.
 
 **Type**: Non-negative integer
 
@@ -1226,9 +1259,10 @@ experiment.
 **Type**: Non-negative integer
 
 **Default**: derived on macOS as one runtime per server endpoint plus one for
-clients, so a broker with one client listener gets `2`, and one with
-`FELIX_QUIC_LISTENERS=4` gets `6` (four client listeners, the internal
-listener, and the client runtime). `0` elsewhere.
+clients, so a broker with one client listener gets `2`, and a cluster member
+with four client listeners gets `6` (four client listeners, the internal
+listener, and the client runtime). `0` elsewhere. It follows the listener
+count whether that was set or derived, so the two defaults never conflict.
 
 ```bash
 export FELIX_IO_RUNTIME_THREADS="2"
@@ -2012,3 +2046,24 @@ absent. They are listed in that script rather than here.
 | `FELIX_WORKER_THREADS` | unset | Tokio worker threads. Defaults to the core count. |
 | `FELIX_TIMING_SAMPLE_EVERY` | unset | Sample rate for timing histograms. |
 | `FELIX_SERVICE_INSTANCE_ID` | unset | Instance identity reported in telemetry. |
+
+### felixctl
+
+`felixctl` reads these to override the current context. A flag overrides the
+variable, and the variable overrides the context. See
+[felixctl](/felix/getting-started/felixctl/).
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `FELIX_CLI_CONFIG` | `felixctl/config.toml` in the platform config directory | The file holding the contexts. |
+| `FELIX_CONTEXT` | the file's current context | Context to use. |
+| `FELIX_BROKERS` | unset | Broker addresses, `host:port`, comma-separated. |
+| `FELIX_AUTH_TENANT` | unset | Tenant, the same variable the client reads. |
+| `FELIX_NAMESPACE` | `default` | Namespace. |
+| `FELIX_AUTH_TOKEN`, `FELIX_AUTH_TOKEN_FILE` | unset | Broker token, or a file holding it. |
+| `FELIX_CONTROLPLANE_URL` | unset | Control-plane base URL, for the listing commands and shard owners. |
+| `FELIX_CONTROLPLANE_TOKEN`, `FELIX_CONTROLPLANE_TOKEN_FILE` | unset | Control-plane token, or a file holding it. Brokers and the control plane accept different tokens. |
+| `FELIX_CA_FILE` | platform trust store | PEM bundle broker certificates are checked against. |
+| `FELIX_CLIENT_CERT_FILE`, `FELIX_CLIENT_KEY_FILE` | unset | Client certificate and key to present to brokers. |
+| `FELIX_CONTROLPLANE_CA` | platform trust store | PEM bundle an `https://` control plane is checked against, as for brokers. |
+| `FELIX_SERVER_NAME` | the first broker's host name, or `localhost` | TLS server name sent to brokers. |

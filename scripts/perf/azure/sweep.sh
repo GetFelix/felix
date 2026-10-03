@@ -37,7 +37,7 @@ done
 flags=("$@")
 
 record_session "sweep ${tag}"
-distribute_token || exit 1
+refresh_client_token || exit 1
 
 # run_combo <index> <broker-kv...> ; client knobs accumulate in combo_client.
 combo_client=""

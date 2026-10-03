@@ -209,6 +209,10 @@ broker:
     # Raising this claims ports `client` .. `client + listeners - 1`, so
     # `internal` has to move out of the way. Startup fails loudly if it does
     # not, rather than putting peer and client traffic on one listener.
+    #
+    # Always set explicitly here, unlike a bare broker, which derives
+    # max(1, min(cores / 2, 4)): the Services and NetworkPolicy have to list
+    # every port. Up to half the pod's CPU limit is a good value.
     listeners: 1
     # Brokers forward and replicate to each other here (QUIC). Never exposed
     # outside the cluster: see networkPolicy and peerTls.

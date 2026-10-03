@@ -71,6 +71,31 @@ async fn concurrent_appends_share_one_flush() {
     assert!(count < 32, "expected group commit, got {count} flushes");
 }
 
+/// A waiter whose target another flush has covered returns without taking
+/// the flush lock, so one flush releases every waiter together rather than
+/// each in turn as the lock is handed down.
+#[tokio::test]
+async fn a_covered_waiter_returns_without_the_flush_lock() {
+    let durability = Arc::new(Durability::new(FsyncMode::OnCommit, 0));
+    let flushes = Arc::new(AtomicUsize::new(0));
+    // Someone else is flushing, and holds the lock throughout.
+    let flushing = durability.lock_flushes().await;
+    let waiter = {
+        let durability = Arc::clone(&durability);
+        let flush = counting_flush(Arc::clone(&flushes), Arc::new(AtomicU64::new(0)));
+        tokio::spawn(async move { durability.ensure_durable(7, flush).await })
+    };
+    tokio::task::yield_now().await;
+    durability.note_durable(7);
+    tokio::time::timeout(Duration::from_secs(5), waiter)
+        .await
+        .expect("a covered waiter waited for the flush lock")
+        .expect("join")
+        .expect("durable");
+    drop(flushing);
+    assert_eq!(flushes.load(Ordering::SeqCst), 0);
+}
+
 #[tokio::test]
 async fn a_flush_failure_propagates_to_the_caller() {
     let durability = Durability::new(FsyncMode::OnCommit, 0);

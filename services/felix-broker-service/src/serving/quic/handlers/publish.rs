@@ -79,7 +79,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
-use tokio::sync::{Semaphore, oneshot};
+use tokio::sync::oneshot;
 
 use super::subscribe::WriterLaneManager;
 use crate::serving::quic::preauth::PreAuthGate;
@@ -159,10 +159,11 @@ pub(crate) struct PublishContext {
     /// Per-tenant publish quotas. Shared by every connection and listener of
     /// the broker; see `serve_with_shutdown`.
     pub(crate) tenant_rates: Arc<crate::serving::limits::TenantRates>,
-    /// This connection's publish window: one permit per acknowledged publish
-    /// a pipelining stream has unanswered. `None` when the broker does not
-    /// pipeline (`publish_window = 0`).
-    pub(crate) publish_window: Option<Arc<Semaphore>>,
+    /// The window each pipelining stream is granted: how many acknowledged
+    /// publishes it may have unanswered. `0` when the broker does not
+    /// pipeline. Every stream gets its own, so a stream stuck behind a stalled
+    /// shard cannot use up the slots the connection's other streams need.
+    pub(crate) publish_window: u32,
 }
 
 impl PublishContext {
@@ -184,8 +185,7 @@ impl PublishContext {
             subscriptions: Arc::new(SubscriptionLimiter::new()),
             lane_manager: WriterLaneManager::new(config),
             preauth: Arc::new(PreAuthGate::new(config)),
-            publish_window: (config.publish_window > 0)
-                .then(|| Arc::new(Semaphore::new(config.publish_window as usize))),
+            publish_window: config.publish_window,
             ..self.clone()
         }
     }

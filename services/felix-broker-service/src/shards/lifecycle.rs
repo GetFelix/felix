@@ -1378,8 +1378,8 @@ async fn accept_led_generation(
 }
 
 /// Write this leader's generation-start record, unless the log already starts
-/// the generation with one (an earlier attempt to open got that far) or the
-/// generation already has records of its own.
+/// the generation with one (an earlier attempt to open got that far), the
+/// generation already has records of its own, or the stream is in-memory.
 ///
 /// It goes at the generation's recorded start, before any client write, so
 /// the quorum mark can cover records this leader inherited once a majority
@@ -1390,6 +1390,18 @@ pub async fn write_generation_start(
     key: &ShardKey,
     generation: u64,
 ) -> anyhow::Result<()> {
+    // An in-memory stream's publishes never reach the shard's log: they take
+    // no offsets, nothing ships, and no `Quorum` write waits on a mark. So
+    // there is no inherited record for a start record to cover, and the
+    // broker has no log to append one to.
+    let durable = broker
+        .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+        .await
+        .map_err(|err| anyhow::anyhow!("resolve the stream: {err}"))?
+        .is_durable();
+    if !durable {
+        return Ok(());
+    }
     if felix_replication::quorum::generation_start(log, generation)
         .await
         .is_some()

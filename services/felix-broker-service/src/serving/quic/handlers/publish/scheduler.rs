@@ -183,7 +183,7 @@ impl Partition {
                 let mut queue = self.queue.lock();
                 if let Some((lane, job)) = queue.pop() {
                     drop(queue);
-                    self.popped();
+                    self.popped(1);
                     let guard = LaneGuard {
                         partition: Arc::clone(self),
                         lane,
@@ -219,13 +219,13 @@ impl Partition {
         Ok(())
     }
 
-    fn popped(&self) {
+    fn popped(&self, jobs: usize) {
         let global = GLOBAL_INGRESS_DEPTH
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
-                Some(depth.saturating_sub(1))
+                Some(depth.saturating_sub(jobs))
             })
             .unwrap_or(0)
-            .saturating_sub(1);
+            .saturating_sub(jobs);
         t_gauge!("felix_broker_ingress_queue_depth").set(global as f64);
         if self.waiting.load(Ordering::SeqCst) > 0 {
             self.space.notify_waiters();
@@ -259,7 +259,7 @@ impl Partition {
     #[cfg(test)]
     pub(crate) fn try_take(self: &Arc<Self>) -> Option<PublishJob> {
         let (lane, job) = self.queue.lock().pop()?;
-        self.popped();
+        self.popped(1);
         self.complete(&lane);
         Some(job)
     }
@@ -274,6 +274,26 @@ impl Partition {
 pub(crate) struct LaneGuard {
     partition: Arc<Partition>,
     lane: LaneKey,
+}
+
+impl LaneGuard {
+    /// Take up to `max` more of this lane's queued jobs, in order, while
+    /// `take` accepts the next one; it sees each job and its scheduling cost.
+    /// They run under this guard, as part of the job it was taken for.
+    pub(crate) fn take_more(
+        &self,
+        max: usize,
+        take: impl FnMut(&PublishJob, usize) -> bool,
+    ) -> Vec<PublishJob> {
+        if max == 0 {
+            return Vec::new();
+        }
+        let taken = self.partition.queue.lock().take_more(&self.lane, max, take);
+        if !taken.is_empty() {
+            self.partition.popped(taken.len());
+        }
+        taken
+    }
 }
 
 impl Drop for LaneGuard {

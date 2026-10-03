@@ -328,9 +328,14 @@ event_batch_max_bytes: 65536
 
 ### `event_batch_max_delay_us`
 
-**Description**: Maximum delay before flushing a subscription batch, counted
-from the batch's first event. The broker's timers fire on millisecond ticks, so
-a value under 1000 can wait until the next tick.
+**Description**: The most a subscription batch waits for more events under
+load. A batch takes whatever events are already queued for the subscriber and
+flushes at once, so an event that arrives alone is sent without waiting. Only
+when the previous batch found events queued behind its first (events arriving
+faster than the broker drains them) does the next batch wait, up to this long
+from its first event, for more to fill it. Tokio timers have 1 ms resolution,
+so a non-zero delay below 1000 µs waits until the next millisecond tick; `0`
+never waits on a timer.
 
 **Type**: `u64` (microseconds)
 
@@ -748,7 +753,7 @@ pub_conn_inflight_bytes: 16777216
 
 ### `publish_window`
 
-**Description**: The most acknowledged publishes one connection may have unanswered when its client pipelines them. Granted to a client that offers `FEATURE_PUBLISH_PIPELINE`, in `AuthOk.publish_window`. The broker answers that client's publishes on each stream in the order they were sent, and stops reading the connection's publishes while this many are outstanding, so the client is slowed by QUIC flow control instead of being refused.
+**Description**: The most acknowledged publishes one stream may have unanswered when its client pipelines them. Granted to a client that offers `FEATURE_PUBLISH_PIPELINE`, in `AuthOk.publish_window`. The broker answers that client's publishes on each stream in the order they were sent, and stops reading a stream's publishes while this many are outstanding on it, so the client is slowed by QUIC flow control instead of being refused. Each stream has its own window, so a stream stuck behind a stalled shard does not stall the others on its connection.
 
 **Type**: `u32`
 

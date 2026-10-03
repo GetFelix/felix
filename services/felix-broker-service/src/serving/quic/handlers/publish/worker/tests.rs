@@ -455,3 +455,275 @@ mod fence {
         assert_eq!(tail, 1);
     }
 }
+
+/// Durable publishes queued on one lane are claimed together: one append,
+/// with each publish answered with its own offsets, in lane order.
+mod lane_claim {
+    use felix_broker::{DurableStorage, StreamHandle, StreamMetadata};
+    use felix_storage::log::{FsyncMode, LogConfig};
+
+    use super::*;
+    use crate::test_support::leader::{DURABLE, GENERATION, Leader, NAMESPACE, TENANT, stream_key};
+
+    type Answer = oneshot::Receiver<Result<Option<u64>>>;
+
+    async fn durable_broker() -> Result<(tempfile::TempDir, Arc<Broker>, StreamHandle)> {
+        let dir = tempfile::tempdir()?;
+        let log_config = LogConfig {
+            fsync_mode: FsyncMode::OnCommit,
+            preallocate_segments: false,
+            ..LogConfig::default()
+        };
+        let broker = Broker::new(EphemeralCache::new().into())
+            .with_durable_storage(DurableStorage::open(dir.path(), log_config)?);
+        broker.register_tenant("t1").await?;
+        broker.register_namespace("t1", "default").await?;
+        broker
+            .register_stream(
+                "t1",
+                "default",
+                "orders",
+                StreamMetadata {
+                    durable: true,
+                    shards: 1,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let broker = Arc::new(broker);
+        let handle = broker
+            .resolve_stream_handle("t1", "default", "orders", 0)
+            .await?;
+        Ok((dir, broker, handle))
+    }
+
+    fn job(
+        handle: &StreamHandle,
+        shard: Option<crate::shards::ShardKey>,
+        generation: u64,
+        records: usize,
+    ) -> (PublishJob, Answer) {
+        let (response_tx, response_rx) = oneshot::channel();
+        let job = PublishJob {
+            target: PublishTarget::Resolved {
+                handle: handle.clone(),
+                shard,
+                generation,
+                fenced: None,
+            },
+            payloads: (0..records)
+                .map(|n| Bytes::from(format!("record {n}")))
+                .collect(),
+            response: Some(response_tx),
+            acked_on_enqueue: false,
+            admission_permit: None,
+            fenced: None,
+        };
+        (job, response_rx)
+    }
+
+    /// One executor, so nothing runs until the test first waits: every job
+    /// is queued on the lane before the executor takes the first.
+    fn context(broker: &Arc<Broker>, cluster: ClusterContext) -> PublishContext {
+        let config = BrokerConfig {
+            pub_workers_per_conn: 1,
+            pub_queue_depth: 64,
+            ..BrokerConfig::default()
+        };
+        build_publish_context(Arc::clone(broker), &config, cluster)
+    }
+
+    fn offset(answer: Result<Result<Option<u64>>, oneshot::error::RecvError>) -> Option<u64> {
+        answer
+            .expect("worker response")
+            .expect("publish acknowledged")
+    }
+
+    #[tokio::test]
+    async fn queued_publishes_on_one_lane_are_claimed_as_one_append() -> Result<()> {
+        let (_dir, broker, handle) = durable_broker().await?;
+        let (mut deliveries, _guard) = broker
+            .subscribe("t1", "default", "orders", 0)
+            .await?
+            .into_parts();
+        let publish_ctx = context(&broker, ClusterContext::default());
+        // A publish of three records in the middle, so each answer has to be
+        // sliced from the claim by record count, not by position.
+        let sizes = [1, 1, 3, 1, 1, 1, 1, 1];
+        let mut answers = Vec::new();
+        for records in sizes {
+            let (job, answer) = job(&handle, None, 0, records);
+            publish_ctx.scheduler.send(job).await;
+            answers.push(answer);
+        }
+
+        let mut expected = 0;
+        for (answer, records) in answers.into_iter().zip(sizes) {
+            assert_eq!(offset(answer.await), Some(expected));
+            expected += records as u64;
+        }
+        let envelope = deliveries.try_recv().expect("the claim was fanned out");
+        assert_eq!(envelope.base_offset(), Some(0));
+        assert_eq!(
+            envelope.len() as u64,
+            expected,
+            "the queued publishes were appended one by one, not as one claim"
+        );
+        assert!(deliveries.try_recv().is_err(), "more than one append");
+        Ok(())
+    }
+
+    /// The members of a claim are answered in lane order: by the time the
+    /// last is answered, every earlier one already has been.
+    #[tokio::test]
+    async fn no_publish_in_a_claim_is_answered_before_an_earlier_one() -> Result<()> {
+        let (_dir, broker, handle) = durable_broker().await?;
+        let publish_ctx = context(&broker, ClusterContext::default());
+        let mut answers = Vec::new();
+        for _ in 0..6 {
+            let (job, answer) = job(&handle, None, 0, 1);
+            publish_ctx.scheduler.send(job).await;
+            answers.push(answer);
+        }
+        let last = answers.pop().expect("six answers");
+        assert_eq!(offset(last.await), Some(5));
+        for (n, mut answer) in answers.into_iter().enumerate() {
+            let earlier = answer
+                .try_recv()
+                .expect("an earlier publish was answered after a later one");
+            assert_eq!(earlier.expect("acknowledged"), Some(n as u64));
+        }
+        Ok(())
+    }
+
+    /// A claim that cannot be appended fails every publish in it, and
+    /// nothing is written: the members share the one append.
+    #[tokio::test]
+    async fn a_claim_that_fails_fails_every_publish_in_it() -> Result<()> {
+        let (_dir, broker, handle) = durable_broker().await?;
+        broker.remove_stream("t1", "default", "orders").await?;
+        let publish_ctx = context(&broker, ClusterContext::default());
+        let mut answers = Vec::new();
+        for _ in 0..4 {
+            let (job, answer) = job(&handle, None, 0, 1);
+            publish_ctx.scheduler.send(job).await;
+            answers.push(answer);
+        }
+        for answer in answers {
+            let err = answer
+                .await
+                .expect("worker response")
+                .expect_err("a publish in a failed claim was acknowledged");
+            let err = crate::serving::quic::client_error::ClientError::from_anyhow(&err);
+            assert_ne!(
+                err.code(),
+                &felix_wire::ErrorCode::Internal,
+                "the shared failure lost its classification: {err:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A quorum timeout on a claim leaves every member's outcome unknown, so
+    /// none of them may be told it is safe to send again.
+    #[tokio::test]
+    async fn a_claim_whose_quorum_wait_times_out_leaves_every_member_unknown() {
+        let mut answers = Vec::new();
+        let mut members = Vec::new();
+        for _ in 0..2 {
+            let (tx, rx) = oneshot::channel();
+            members.push(GroupMember {
+                response: Some(tx),
+                acked_on_enqueue: false,
+                records: 1,
+            });
+            answers.push(rx);
+        }
+        let timeout = felix_replication::quorum::QuorumError::TimedOut {
+            what: "publish",
+            timeout: Duration::from_millis(5),
+        };
+        settle_group(members, None, Err(timeout.into()));
+        for answer in answers {
+            let err = answer
+                .await
+                .expect("worker response")
+                .expect_err("a publish whose quorum wait timed out was acknowledged");
+            let err = crate::serving::quic::client_error::ClientError::from_anyhow(&err);
+            assert_eq!(err.code(), &felix_wire::ErrorCode::QuorumTimeout, "{err:?}");
+            assert_eq!(
+                err.retry(),
+                felix_wire::RetryClass::OutcomeUnknown,
+                "{err:?}"
+            );
+        }
+    }
+
+    /// A publish whose caller stopped waiting is still written in its place,
+    /// and the publishes around it keep their own offsets and answers.
+    #[tokio::test]
+    async fn a_publish_nobody_waits_for_keeps_its_place_in_the_claim() -> Result<()> {
+        let (_dir, broker, handle) = durable_broker().await?;
+        let publish_ctx = context(&broker, ClusterContext::default());
+        let mut answers = Vec::new();
+        for _ in 0..4 {
+            let (job, answer) = job(&handle, None, 0, 1);
+            publish_ctx.scheduler.send(job).await;
+            answers.push(answer);
+        }
+        drop(answers.remove(1));
+        let offsets: Vec<_> = futures::future::join_all(answers)
+            .await
+            .into_iter()
+            .map(offset)
+            .collect();
+        assert_eq!(offsets, [Some(0), Some(2), Some(3)]);
+        let tail = broker
+            .cursor_tail("t1", "default", "orders", 0)
+            .await?
+            .next_seq();
+        assert_eq!(tail, 4);
+        Ok(())
+    }
+
+    /// The fence is checked per publish. One it refuses is answered with the
+    /// refusal and left out of the claim; the rest are written around it
+    /// with contiguous offsets, and none of them is failed for it.
+    #[tokio::test]
+    async fn a_publish_the_fence_refuses_is_left_out_of_the_claim() {
+        let leader = Leader::start().await;
+        let handle = leader
+            .broker
+            .resolve_stream_handle(TENANT, NAMESPACE, DURABLE, 0)
+            .await
+            .expect("handle");
+        let publish_ctx = context(
+            &leader.broker,
+            ClusterContext {
+                ingress: Some(Arc::clone(&leader.ingress)),
+                ..ClusterContext::default()
+            },
+        );
+        let key = Some(stream_key(DURABLE));
+        let mut answers = Vec::new();
+        for n in 0..4 {
+            // Admitted at a generation the shard is not served at.
+            let generation = if n == 2 { GENERATION + 1 } else { GENERATION };
+            let (job, answer) = job(&handle, key.clone(), generation, 1);
+            publish_ctx.scheduler.send(job).await;
+            answers.push(answer);
+        }
+        let mut answers = futures::future::join_all(answers).await.into_iter();
+        assert_eq!(offset(answers.next().expect("first")), Some(0));
+        assert_eq!(offset(answers.next().expect("second")), Some(1));
+        let refused = answers
+            .next()
+            .expect("third")
+            .expect("worker response")
+            .expect_err("a fenced publish was acknowledged");
+        let refused = crate::serving::quic::client_error::ClientError::from_anyhow(&refused);
+        assert_eq!(refused.code(), &felix_wire::ErrorCode::ShardUnavailable);
+        assert_eq!(offset(answers.next().expect("fourth")), Some(2));
+        assert_eq!(leader.tail(DURABLE).await, 3);
+    }
+}

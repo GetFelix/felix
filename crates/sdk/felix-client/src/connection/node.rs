@@ -281,15 +281,31 @@ impl StreamLease {
         &self.link.router
     }
 
-    /// The connection's publish window, sized by the first stream to ask.
-    /// Every stream on a connection negotiates with the same broker, so they
-    /// all ask for the same size.
-    pub(crate) fn publish_window(&self, size: u32) -> Arc<Semaphore> {
-        Arc::clone(
+    /// The publish window this stream's acked publishes take slots from, or
+    /// `None` when the broker granted none.
+    ///
+    /// A broker that advertises `FEATURE_STREAM_PUBLISH_WINDOW` counts the
+    /// window per stream, so the stream gets one of its own and a stream stuck
+    /// behind a stalled shard cannot hold the slots its neighbours need. Any
+    /// other broker counts it per connection, and every stream on the
+    /// connection shares one, sized by the first to ask: they all negotiate
+    /// with the same broker, so they all ask for the same size.
+    pub(crate) fn publish_window(&self, negotiated: &Negotiated) -> Option<Arc<Semaphore>> {
+        let size = negotiated.publish_window as usize;
+        if size == 0 {
+            return None;
+        }
+        if felix_wire::supports_feature(
+            negotiated.server_features,
+            felix_wire::FEATURE_STREAM_PUBLISH_WINDOW,
+        ) {
+            return Some(Arc::new(Semaphore::new(size)));
+        }
+        Some(Arc::clone(
             self.link
                 .publish_window
-                .get_or_init(|| Arc::new(Semaphore::new(size as usize))),
-        )
+                .get_or_init(|| Arc::new(Semaphore::new(size))),
+        ))
     }
 
     /// The connection's position in the set, stable while it lives and below
@@ -328,7 +344,7 @@ struct Link {
     router: mpsc::Sender<EventRouterCommand>,
     streams: AtomicUsize,
     /// One permit per acknowledged publish the connection has unanswered,
-    /// shared by every publish stream on it, because the broker counts the
+    /// shared by every publish stream on it, for a broker that counts the
     /// window per connection.
     publish_window: std::sync::OnceLock<Arc<Semaphore>>,
 }

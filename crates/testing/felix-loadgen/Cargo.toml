@@ -7,17 +7,21 @@ rust-version.workspace = true
 description = "Load generator that drives a remote Felix cluster for the real-network performance suite"
 repository.workspace = true
 homepage.workspace = true
-readme.workspace = true
+readme = "README.md"
+keywords = ["felix", "benchmark", "load-testing", "pubsub", "quic"]
+categories = ["development-tools::profiling", "network-programming"]
 
 # The measuring instrument for the real-network perf suite
 # (docs/perf-real-network.md). Drives a *remote* Felix cluster — every other
 # load driver in the repo is loopback-bound — and emits both the stdout shape
 # scripts/perf expects and one machine-readable JSON line per case.
 #
-# Not published: an internal instrument, not a library anyone consumes from a
-# registry, and it links Felix internals through felix-client (AGPL, per
-# LICENSING.md).
-publish = false
+# Publishable because felixctl, which is, links its scenarios for `felixctl
+# bench`. AGPL like the rest of the server side (LICENSING.md).
+
+# A library too, so `felixctl bench` runs the same scenarios.
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "felix-loadgen"

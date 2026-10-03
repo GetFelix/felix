@@ -88,8 +88,14 @@ merely until the frame is written.
 
 A client that negotiates `FEATURE_PUBLISH_PIPELINE` also gets a publish window
 from the broker (`FELIX_BROKER_PUBLISH_WINDOW`, 256 by default): up to that many
-acked publishes may be unanswered on a connection, and their acks come back in
-the order the stream sent them.
+acked publishes may be unanswered on each stream, and their acks come back in
+the order the stream sent them. Every stream has its own window, so publishes
+stuck behind a stalled shard do not hold up the other streams on the same
+connection. A Rust `ClusterClient` also gives each shard a stream of its own,
+since it knows the shard of every publish, so a stalled shard holds up only
+its own publishes, not the stream's other shards. It keeps up to 16 such
+streams per broker (`publish_shard_streams`); shards past that share the
+pooled streams. A plain `Client` keeps each stream on one pooled stream.
 
 A single caller that awaits each publish before issuing the next still
 pays one round trip per publish. Batch, or publish concurrently, to amortize
@@ -98,17 +104,19 @@ it.
 ### Broker side
 
 The broker coalesces events into delivery batches per subscription. A batch
-flushes when **any** bound is hit:
+takes every event already queued for the subscriber and flushes as soon as
+nothing more is waiting, or when a bound is hit:
 
 ```yaml
 event_batch_max_events: 64      # this many events, or
 event_batch_max_bytes: 262144   # this many bytes, or
-event_batch_max_delay_us: 250   # this much time since the first event
+event_batch_max_delay_us: 250   # under load, this much time since the first event
 ```
 
-Small events under a steady load flush on the count bound; big events flush
-on bytes; a trickle flushes on the delay, which is therefore the latency
-floor batching adds. Delivery uses binary `EventBatch` framing by default.
+A trickle is sent event by event with no added delay. Once events arrive
+faster than the broker drains them, so a batch finds others queued behind its
+first, the next batch waits up to the delay to fill. Small events under a
+steady load then flush on the count bound and big events on bytes. Delivery uses binary `EventBatch` framing by default.
 
 ## Ordering
 

@@ -55,12 +55,15 @@ impl Publisher {
     pub(super) async fn publish_batch_binary_inner(
         &self,
         key: Option<&[u8]>,
+        shard: Option<u32>,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
         payloads: &[Vec<u8>],
     ) -> AckOutcome {
-        let worker = self.select_worker(tenant_id, namespace, stream)?;
+        let worker = self
+            .route(tenant_id, namespace, stream, known_shard(key, shard))
+            .await?;
         let payloads_with_ts;
         let payloads = if self.inner.bench_embed_ts {
             payloads_with_ts = payloads
@@ -127,9 +130,11 @@ impl Publisher {
         answer
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn publish_batch_binary_acked_inner(
         &self,
         key: Option<&[u8]>,
+        shard: Option<u32>,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
@@ -138,10 +143,12 @@ impl Publisher {
     ) -> AckOutcome {
         if ack == AckMode::None {
             return self
-                .publish_batch_binary_inner(key, tenant_id, namespace, stream, &payloads)
+                .publish_batch_binary_inner(key, shard, tenant_id, namespace, stream, &payloads)
                 .await;
         }
-        let worker = self.select_worker(tenant_id, namespace, stream)?;
+        let worker = self
+            .route(tenant_id, namespace, stream, known_shard(key, shard))
+            .await?;
         let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
         let request_id = worker.request_counter.fetch_add(1, Ordering::Relaxed);
         #[cfg(feature = "telemetry")]
@@ -202,7 +209,14 @@ impl Publisher {
         key: Option<bytes::Bytes>,
         ack: AckMode,
     ) -> AckOutcome {
-        let worker = self.select_worker(tenant_id, namespace, stream)?;
+        let worker = self
+            .route(
+                tenant_id,
+                namespace,
+                stream,
+                known_shard(key.as_deref(), None),
+            )
+            .await?;
         let payload = maybe_append_publish_ts(payload, self.inner.bench_embed_ts);
         // Enqueue publish on the single-writer publisher task.
         let (response_tx, response_rx) = oneshot::channel();
@@ -265,7 +279,14 @@ impl Publisher {
         key: Option<bytes::Bytes>,
         ack: AckMode,
     ) -> Result<Option<u64>> {
-        let worker = self.select_worker(tenant_id, namespace, stream)?;
+        let worker = self
+            .route(
+                tenant_id,
+                namespace,
+                stream,
+                known_shard(key.as_deref(), None),
+            )
+            .await?;
         let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
         let request_id = if ack == AckMode::None {
             None
@@ -281,7 +302,7 @@ impl Publisher {
             request_id,
             ack: Some(ack),
         };
-        self.send_message(worker, message, ack, request_id)
+        self.send_message(&worker, message, ack, request_id)
             .await
             .map(|acked| acked.offset)
     }
@@ -332,6 +353,18 @@ impl Publisher {
             .context("publish batch response dropped")?;
         cancelled.answered();
         answer
+    }
+}
+
+/// The shard a publish lands on, when the client can tell without asking.
+///
+/// An unkeyed publish is always shard 0 (`felix_wire::routing::shard_for`). A
+/// keyed one is known only to a caller that has the stream's width, which
+/// passes it as `shard`.
+pub(super) fn known_shard(key: Option<&[u8]>, shard: Option<u32>) -> Option<u32> {
+    match key {
+        None => Some(0),
+        Some(_) => shard,
     }
 }
 

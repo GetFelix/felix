@@ -1,5 +1,5 @@
-//! A pipelining stream: its publishes are answered in request order, and the
-//! connection's window stops the reads when it is full.
+//! A pipelining stream: its publishes are answered in request order, and its
+//! window stops the reads when it is full.
 
 use super::*;
 use crate::serving::quic::handlers::publish::AckOrder;
@@ -32,22 +32,9 @@ fn answered(outgoing: &Outgoing) -> Option<u64> {
     }
 }
 
-/// **A full window stops the reads.** With a window of two and no answer
-/// ever written, the third publish is not read, let alone answered, until
-/// the first answer is released and its slot freed.
-#[tokio::test]
-async fn a_full_window_stops_reading_until_an_answer_frees_a_slot() -> Result<()> {
-    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
-    broker.register_tenant("t1").await?;
-    broker.register_namespace("t1", "default").await?;
-    broker
-        .register_stream("t1", "default", "updates", Default::default())
-        .await?;
-    let auth = auth_fixture("t1", default_perms());
-    let window = Arc::new(Semaphore::new(2));
-    let mut publish_ctx = build_publish_context(Arc::clone(&broker)).await;
-    publish_ctx.publish_window = Some(Arc::clone(&window));
-
+/// A connection to a server that accepts it and does nothing else, for the
+/// control loops to run on.
+async fn idle_connection() -> Result<QuicConnection> {
     let (server_config, cert) = build_server_config()?;
     let server = QuicServer::bind(
         "127.0.0.1:0".parse()?,
@@ -55,7 +42,7 @@ async fn a_full_window_stops_reading_until_an_answer_frees_a_slot() -> Result<()
         TransportConfig::default(),
     )?;
     let addr = server.local_addr()?;
-    let _server_task = tokio::spawn(async move {
+    tokio::spawn(async move {
         let _connection = server.accept().await?;
         tokio::time::sleep(Duration::from_secs(5)).await;
         Result::<()>::Ok(())
@@ -65,30 +52,56 @@ async fn a_full_window_stops_reading_until_an_answer_frees_a_slot() -> Result<()
         build_quinn_client_config(cert)?,
         TransportConfig::default(),
     )?;
-    let connection = client.connect(addr, "localhost").await?;
+    client.connect(addr, "localhost").await
+}
 
-    let frames = vec![
-        Ok(Some(frame_from_message(pipelining_auth(&auth)))),
-        Ok(Some(frame_from_message(acked_publish(1)))),
-        Ok(Some(frame_from_message(acked_publish(2)))),
-        Ok(Some(frame_from_message(acked_publish(3)))),
-    ];
-    let mut source = TestFrameSource::new(frames);
-    let (out_ack_tx, mut out_ack_rx) = mpsc::channel(8);
+/// A broker holding `t1/default/updates`.
+async fn updates_broker() -> Result<Arc<Broker>> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_stream("t1", "default", "updates", Default::default())
+        .await?;
+    Ok(broker)
+}
+
+/// One pipelining stream's control loop reading `frames`, with no writer:
+/// nothing releases its answers, so every slot it takes stays taken until the
+/// test hands an answer to the returned order.
+fn spawn_pipelining_stream(
+    broker: &Arc<Broker>,
+    connection: &QuicConnection,
+    auth: &AuthFixture,
+    publish_ctx: &PublishContext,
+    frames: Vec<Frame>,
+) -> (
+    tokio::task::JoinHandle<Result<bool>>,
+    mpsc::Receiver<Outgoing>,
+    Arc<AckOrder>,
+) {
+    let mut source = TestFrameSource::new(frames.into_iter().map(|f| Ok(Some(f))).collect());
+    let (out_ack_tx, out_ack_rx) = mpsc::channel(8);
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let (ack_waiter_tx, _ack_waiter_rx) = mpsc::channel(8);
+    let (ack_waiter_tx, ack_waiter_rx) = mpsc::channel(8);
     let ack_timeout_state = Arc::new(Mutex::new(AckTimeoutState::new(std::time::Instant::now())));
     let order = Arc::new(AckOrder::new());
     let loop_order = Arc::clone(&order);
+    let broker = Arc::clone(broker);
+    let connection = connection.clone();
+    let auth = Arc::clone(&auth.auth);
+    let publish_ctx = publish_ctx.clone();
     let control = tokio::spawn(async move {
+        // Held so the loop's ack waiters have somewhere to go.
+        let _ack_waiter_rx = ack_waiter_rx;
         let mut scratch = crate::serving::quic::FrameScratch::new();
         run_control_loop(
             &mut source,
             broker,
             connection,
             BrokerConfig::default(),
-            Arc::clone(&auth.auth),
+            auth,
             publish_ctx,
             HashMap::new(),
             String::new(),
@@ -108,11 +121,19 @@ async fn a_full_window_stops_reading_until_an_answer_frees_a_slot() -> Result<()
         )
         .await
     });
+    (control, out_ack_rx, order)
+}
 
-    // AuthOk, then the two publishes the window admits.
+/// Read publish answers off `out_ack_rx` until there are `count`, failing if
+/// one takes longer than `wait`. `AuthOk` must grant a window.
+async fn read_answers(
+    out_ack_rx: &mut mpsc::Receiver<Outgoing>,
+    count: usize,
+    wait: Duration,
+) -> Result<Vec<u64>> {
     let mut answers = Vec::new();
-    while answers.len() < 2 {
-        let outgoing = timeout(Duration::from_secs(5), out_ack_rx.recv())
+    while answers.len() < count {
+        let outgoing = timeout(wait, out_ack_rx.recv())
             .await
             .context("an admitted publish was not answered")?
             .context("control loop ended")?;
@@ -123,14 +144,39 @@ async fn a_full_window_stops_reading_until_an_answer_frees_a_slot() -> Result<()
             other => answers.extend(answered(&other)),
         }
     }
-    assert_eq!(answers, vec![1, 2]);
+    Ok(answers)
+}
+
+/// **A full window stops the reads.** With a window of two and no answer
+/// ever written, the third publish is not read, let alone answered, until
+/// the first answer is released and its slot freed.
+#[tokio::test]
+async fn a_full_window_stops_reading_until_an_answer_frees_a_slot() -> Result<()> {
+    let broker = updates_broker().await?;
+    let auth = auth_fixture("t1", default_perms());
+    let mut publish_ctx = build_publish_context(Arc::clone(&broker)).await;
+    publish_ctx.publish_window = 2;
+    let connection = idle_connection().await?;
+    let frames = vec![
+        frame_from_message(pipelining_auth(&auth)),
+        frame_from_message(acked_publish(1)),
+        frame_from_message(acked_publish(2)),
+        frame_from_message(acked_publish(3)),
+    ];
+    let (control, mut out_ack_rx, order) =
+        spawn_pipelining_stream(&broker, &connection, &auth, &publish_ctx, frames);
+
+    // AuthOk, then the two publishes the window admits.
+    assert_eq!(
+        read_answers(&mut out_ack_rx, 2, Duration::from_secs(5)).await?,
+        vec![1, 2]
+    );
     assert!(
         timeout(Duration::from_millis(300), out_ack_rx.recv())
             .await
             .is_err(),
         "a publish past the window was read and answered"
     );
-    assert_eq!(window.available_permits(), 0);
 
     // What the writer does once it has written the answer to 1.
     let mut ready = Vec::new();
@@ -148,6 +194,54 @@ async fn a_full_window_stops_reading_until_an_answer_frees_a_slot() -> Result<()
     assert_eq!(answered(&third), Some(3));
     let ended = timeout(Duration::from_secs(5), control).await??;
     assert!(ended?, "the stream did not end cleanly");
+    Ok(())
+}
+
+/// **A stream stuck with a full window does not stall its neighbours.** Two
+/// pipelining streams share a connection. One has a full window whose answers
+/// never go out, as when its publishes wait on a shard that has stalled; the
+/// other's publishes are still read and answered.
+#[tokio::test]
+async fn a_stuck_stream_does_not_stall_another_on_the_same_connection() -> Result<()> {
+    let broker = updates_broker().await?;
+    let auth = auth_fixture("t1", default_perms());
+    let mut publish_ctx = build_publish_context(Arc::clone(&broker)).await;
+    publish_ctx.publish_window = 2;
+    let connection = idle_connection().await?;
+
+    let stuck_frames = vec![
+        frame_from_message(pipelining_auth(&auth)),
+        frame_from_message(acked_publish(1)),
+        frame_from_message(acked_publish(2)),
+        frame_from_message(acked_publish(3)),
+    ];
+    let (stuck, mut stuck_rx, _stuck_order) =
+        spawn_pipelining_stream(&broker, &connection, &auth, &publish_ctx, stuck_frames);
+    assert_eq!(
+        read_answers(&mut stuck_rx, 2, Duration::from_secs(5)).await?,
+        vec![1, 2]
+    );
+    assert!(
+        timeout(Duration::from_millis(200), stuck_rx.recv())
+            .await
+            .is_err(),
+        "the stuck stream read past its window"
+    );
+
+    let healthy_frames = vec![
+        frame_from_message(pipelining_auth(&auth)),
+        frame_from_message(acked_publish(1)),
+        frame_from_message(acked_publish(2)),
+    ];
+    let (_healthy, mut healthy_rx, _healthy_order) =
+        spawn_pipelining_stream(&broker, &connection, &auth, &publish_ctx, healthy_frames);
+    assert_eq!(
+        read_answers(&mut healthy_rx, 2, Duration::from_secs(2))
+            .await
+            .context("the stuck stream's window stalled its neighbour")?,
+        vec![1, 2]
+    );
+    stuck.abort();
     Ok(())
 }
 

@@ -47,6 +47,7 @@ data/soak/
 # of how a published number was obtained -- a figure in the docs with its
 # evidence on one laptop is a figure nobody else can check.
 scripts/perf/azure/sessions/*.env
+scripts/perf/azure/sessions/*.blob
 scripts/perf/azure/*.env
 !scripts/perf/azure/session.env.example
 scripts/perf/azure/main.json

@@ -118,6 +118,9 @@ let config = ClientConfig {
     
     // Publish sharding
     publish_sharding: PublishSharding::HashStream,
+    // ClusterClient only: streams of their own for up to this many shards
+    // per broker (0 turns them off)
+    publish_shard_streams: 16,
 
     ..ClientConfig::optimized_defaults(quinn)
 };
@@ -200,7 +203,10 @@ as it was queued instead of once it was written (a `Leader` stream with
 `ack_on_commit` off), when the stream has no log, and against a broker older
 than the offset flag. An unacknowledged publish always returns `None`. On a
 `Quorum` stream the offset is where the batch was committed, and a re-sent
-`IdempotentProducer` batch reports where the first copy landed.
+`IdempotentProducer` batch reports where the first copy landed. Only the
+broker that owns the shard acknowledges before writing; a publish forwarded
+through another broker is answered after the write and has its offset, so one
+stream can return both.
 
 ### The routing key decides the shard
 
@@ -306,6 +312,19 @@ same writer, so each stream's publishes reach the broker in order.
 `RoundRobin` spreads load evenly across writers, but publishes to one stream
 can arrive out of order.
 
+A `ClusterClient` goes one step further under `HashStream`: it knows the
+shard of every publish it makes, so each shard gets a stream of its own. The
+broker answers a stream's pipelined publishes in order, so shards sharing a
+stream would wait on the slowest; on separate streams a shard stalled on a
+quorum holds up only itself. The stream opens on the shard's first publish,
+which pays one extra round trip to authenticate it, and stays open. It keeps
+at most `publish_shard_streams` of them per broker (16 by default,
+`FELIX_PUB_SHARD_STREAMS`); shards past that share the pool. A plain `Client`
+does not know a stream's width, so it keeps every publish to a stream on one
+writer as described above. A publisher taken from `ClusterClient::client()`
+is a plain one, so mixing it with the `ClusterClient`'s own publishes to the
+same stream puts that stream on two writers.
+
 ### Errors you can act on
 
 Calls return `anyhow::Result`, and the cases worth branching on are carried as
@@ -406,7 +425,7 @@ let batches: Vec<Vec<Vec<u8>>> = orders.iter().map(|order| vec![order.encode()])
 producer.publish_batches("acme", "prod", "orders", batches).await?;
 ```
 
-The window is whatever the broker granted the connection
+The window is whatever the broker granted the stream
 (`FELIX_BROKER_PUBLISH_WINDOW`, 256 by default), capped at 64 because the leader
 remembers 64 sequences per producer. The broker answers a pipelining stream in
 the order it sent the batches, so when one fails the producer knows it is the

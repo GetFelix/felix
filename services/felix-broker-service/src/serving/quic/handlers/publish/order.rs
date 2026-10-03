@@ -8,9 +8,9 @@
 //! answered. Holding back is the only change: nothing is answered that would
 //! not have been, and nothing is answered differently.
 //!
-//! Each registration can carry a permit from the connection's publish window.
+//! Each registration can carry a permit from the stream's publish window.
 //! It is released when the answer is written, which is what bounds how many
-//! acknowledged publishes one connection has unanswered.
+//! acknowledged publishes one stream has unanswered.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;

@@ -37,7 +37,7 @@ source "${here}/cells.sh"
 
 [ "${SHARDS}" -ge 48 ] || echo "!! the stream has ${SHARDS} shards; ARM_KEYS up to 48 wants SHARDS=48" >&2
 record_session session-a
-distribute_token || exit 1
+refresh_client_token || exit 1
 NGEN="${#LOADGEN_VMS[@]}"
 
 # Every sweep point uses the same client shape; only the pool size follows N

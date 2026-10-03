@@ -142,7 +142,7 @@ impl<'a> IdempotentProducer<'a> {
     ///
     /// Against a broker that pipelines publishes (`FEATURE_PUBLISH_PIPELINE`)
     /// the batches go out without waiting for each other's answers, up to the
-    /// connection's window and never more than 64 at once; against any other
+    /// publish window and never more than 64 at once; against any other
     /// broker they go one at a time. Either way the result is the same as
     /// calling [`Self::publish_batch`] for each in turn: every batch is
     /// appended once, in order, or the call fails.
@@ -471,9 +471,15 @@ impl<'a> IdempotentProducer<'a> {
         batches: &[Vec<Vec<u8>>],
         first: u64,
     ) -> (Vec<Option<u64>>, Result<()>) {
-        let publisher = match client.publisher().await {
-            Ok(publisher) => publisher,
-            Err(err) => return (Vec::new(), Err(err)),
+        // Under a ClusterClient every publish names its shard, so each shard
+        // can have its own stream. A plain Client's do not, so its producer
+        // stays on the pool with the rest of that client's publishes.
+        let publisher = match self.source {
+            Source::Cluster(_) => client.shard_publisher(),
+            Source::Single(_) => match client.publisher().await {
+                Ok(publisher) => publisher,
+                Err(err) => return (Vec::new(), Err(err)),
+            },
         };
         publisher
             .publish_idempotent_pipelined(

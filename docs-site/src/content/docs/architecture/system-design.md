@@ -263,9 +263,9 @@ fsync or a stopped VM can take arbitrarily long, and a lease that was valid when
 the request arrived may have expired by the time the bytes reach the disk. On failover, only a replica that actually holds the log is promoted: a
 shard whose leader is gone and whose replicas are behind is left unavailable
 rather than reopened empty, because a silently empty shard *is* the data loss.
-Once the fleet has finalized `generation_start`, every new leader, promoted or
-moved in, writes a generation-start record before it serves and counts a
-majority toward its quorum mark only from there, so it never acknowledges an
+Once the fleet has finalized `generation_start`, every new leader of a durable
+stream shard, promoted or moved in, writes a generation-start record before it
+serves and counts a majority toward its quorum mark only from there, so it never acknowledges an
 inherited record that a later promotion could replace (Raft's Figure 8). Once
 it has also finalized `majority_ack`, a `Quorum` stream's writes need no lease
 at all: admission, commit and acknowledgement go by the followers' answers,

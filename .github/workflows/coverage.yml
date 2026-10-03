@@ -17,7 +17,7 @@ jobs:
   # Self-hosted for pushes to main, GitHub-hosted for PRs; see ci.yml's test
   # job.
   coverage:
-    runs-on: ${{ github.event_name != 'pull_request' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
+    runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
     timeout-minutes: 150
     permissions:
       contents: write

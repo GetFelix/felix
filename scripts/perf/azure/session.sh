@@ -35,6 +35,17 @@ set -euo pipefail
 # instrument, which on a D4 is well past the old 30 minutes.
 : "${PROVISION_TIMEOUT_MIN:=120}"
 : "${SSH_KEY_FILE:=$HOME/.ssh/id_ed25519.pub}"
+# Only the L-series has local NVMe. With the flag on any other size the template
+# attaches no data disk, and /data lands on the 30 GB OS disk.
+case "${BROKER_VM_SIZE:-Standard_D4as_v5}" in
+  Standard_L*) ;;
+  *)
+    if [ "${USE_LOCAL_NVME:-false}" = true ]; then
+      echo "!! USE_LOCAL_NVME=true, but ${BROKER_VM_SIZE:-Standard_D4as_v5} has no local NVMe; set USE_LOCAL_NVME=false" >&2
+      exit 1
+    fi
+    ;;
+esac
 
 here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib.sh

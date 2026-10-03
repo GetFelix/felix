@@ -20,7 +20,8 @@ about reciprocity, not about who is allowed to make money.
 | `services/felix-broker-service/`, `services/felix-controlplane-service/` | AGPL-3.0-only | The runnable server binaries. |
 | `crates/testing/felix-conformance/` | AGPL-3.0-only | The client conformance kit: the scenario catalogue, the verifier, and a suite that runs against the reference broker. It links `felix-broker-service`, `felix-broker`, `felix-storage` and `felix-authz`, so a build of it is AGPL whatever its manifest says. Running it against your client's results puts no obligation on your client. Not published. |
 | `crates/testing/felix-cluster/` | AGPL-3.0-only | Local multi-node cluster harness for integration and failure tests. It embeds the control plane and drives the broker, so it is internal tooling rather than something a third-party implementer runs. Not published. |
-| `crates/testing/felix-loadgen/` | AGPL-3.0-only | Load generator for the real-network performance suite. It drives a remote cluster through `felix-client` and is internal instrumentation, not something a third-party implementer runs. Not published. |
+| `crates/testing/felix-loadgen/` | AGPL-3.0-only | Load generator for the real-network performance suite. It drives a remote cluster through `felix-client`. Publishable, because `felixctl bench` links its scenarios. |
+| `crates/tools/felixctl/` | AGPL-3.0-only | The `felixctl` command-line tool. AGPL because `felixctl bench` links `felix-loadgen`. Publishable. |
 
 The root [`LICENSE`](LICENSE) file is AGPL-3.0 (the license for
 the project as a whole / the deployable server). [`LICENSE-APACHE`](LICENSE-APACHE)
@@ -71,8 +72,9 @@ Two practical consequences worth stating plainly:
   That is what the Apache-2.0 half is for. `felix-client` and the two crates it
   is built on, `felix-wire` and `felix-transport`, are everything an application
   needs to *talk to* Felix, and they carry no copyleft obligation at all. They
-  are also the only crates published to crates.io. Build whatever you like on
-  top.
+  are the only library crates published to crates.io; `felixctl` and the
+  `felix-loadgen` it links are tools, AGPL, and meant to be run rather than
+  built on. Build whatever you like on top of the client.
 - **Many organisations ban AGPL dependencies outright.** That is a real cost
   and it is accepted knowingly: the crates such an organisation actually needs
   to depend on are the Apache-2.0 ones.

@@ -205,8 +205,17 @@ fn persist(path: &Path, token: &str) -> std::io::Result<()> {
     use std::io::Write;
 
     let temporary = path.with_extension("tmp");
+    // The mode only applies to a file being created, so a temporary left by a
+    // crash must not be reused with whatever mode it has.
+    let _ = std::fs::remove_file(&temporary);
     {
-        let mut file = std::fs::File::create(&temporary)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        // A refresh token outlives many access tokens and mints node
+        // credentials; nobody but the broker's own user may read it.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&temporary)?;
         file.write_all(token.as_bytes())?;
         file.write_all(b"\n")?;
         // Durable before the rename, or a crash can leave the file present and

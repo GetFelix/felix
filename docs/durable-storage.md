@@ -215,15 +215,24 @@ sequenceDiagram
     participant A3 as append C
     participant FL as flush lock
     participant DEV as Device
+    participant DB as durable bound
 
     A1->>FL: acquire
-    A2->>FL: (queued)
-    A3->>FL: (queued)
+    A2->>FL: (queued, watching the bound)
+    A3->>FL: (queued, watching the bound)
     A1->>DEV: fsync
     DEV-->>A1: durable through offset N
+    A1->>DB: publish N
     A1->>FL: release
-    Note over A2,A3: wake, find their target<br/>already durable, return<br/>without flushing
+    DB-->>A2: covered
+    DB-->>A3: covered
+    Note over A2,A3: return together<br/>without flushing
 ```
+
+A waiter queues for the lock and watches the durable bound at the same time,
+and stops at whichever comes first. One flush therefore wakes every append it
+covered together; waiting on the lock alone would hand it down the queue and
+wake them one after another.
 
 Measured on a Mac Studio (Apple M4 Max, APFS): 253 durable appends/second at
 concurrency 1,

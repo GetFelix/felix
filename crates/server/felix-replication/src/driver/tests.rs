@@ -39,7 +39,8 @@ const NAMESPACE: &str = "ns";
 const STREAM: &str = "orders";
 const LOCAL: &str = "broker-a";
 
-/// A follower that stores everything and records which shard it was for.
+/// A follower that stores everything and records which shard it was for. A
+/// `Quorum` cache's counter log is acknowledged but not recorded.
 #[derive(Default)]
 struct AcceptingFollower {
     sent: Mutex<Vec<(String, ReplicateRecords)>>,
@@ -63,8 +64,16 @@ impl PeerRequester for AcceptingFollower {
         _addr: SocketAddr,
         message: InternalMessage,
     ) -> std::result::Result<InternalMessage, PeerError> {
-        let InternalMessage::ReplicateRecords(batch) = message else {
-            panic!("the driver sent something other than a replication batch");
+        let batch = match message {
+            InternalMessage::ReplicateRecords(batch)
+            | InternalMessage::ReplicateCacheRecords(batch) => batch,
+            InternalMessage::ReplicateCounterRecords(batch) => {
+                return Ok(InternalMessage::ReplicateOk(ReplicateOk {
+                    correlation_id: 0,
+                    durable_offset: batch.first_offset + batch.payloads.len() as u64,
+                }));
+            }
+            _ => panic!("the driver sent something other than a replication batch"),
         };
         let durable_offset = batch.first_offset + batch.payloads.len() as u64;
         self.sent

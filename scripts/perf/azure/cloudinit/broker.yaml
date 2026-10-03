@@ -4,10 +4,12 @@
 # those), {1} the control plane's private IP, {2} the local-NVMe flag and {3}
 # the listener count.
 #
-# The broker unit is installed but not started: it needs a node token that
-# does not exist until the control plane is bootstrapped and seeded, so
-# seed.sh drops the token and starts the service — provisioning and
-# credentialling stay separate steps with separate failures.
+# The broker unit is installed but not started: it needs a node credential
+# that does not exist until the control plane is bootstrapped and seeded, so
+# seed.sh drops it and starts the service — provisioning and credentialling
+# stay separate steps with separate failures. The broker refreshes its access
+# token before it expires and writes each rotated refresh token back to
+# node.refresh_token, so /etc/felix must stay writable by it (it runs as root).
 package_update: true
 write_files:
   # Felix asks for 8 MiB UDP socket buffers, but Linux silently clamps
@@ -49,6 +51,7 @@ write_files:
       FELIX_BROKER_METRICS_BIND=$ip:9100
       FELIX_DURABLE_STORAGE_DIR=/data/felix
       FELIX_NODE_TOKEN_FILE=/etc/felix/node.token
+      FELIX_NODE_REFRESH_TOKEN_FILE=/etc/felix/node.refresh_token
       # Perf VMs share a private VNet with nothing else on it; no peer PKI.
       FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true
       # Keep MTU discovery in the Linux-safe, fast-converging band. Azure VNet

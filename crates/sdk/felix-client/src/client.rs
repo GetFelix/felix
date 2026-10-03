@@ -25,7 +25,7 @@ use felix_transport::QuicConnection;
 use crate::cache::CacheWorker;
 use crate::config::ClientRuntimeConfig;
 use crate::connection::NodeConnections;
-use crate::publish::{PublishAdmission, PublishSharding, PublishWorker};
+use crate::publish::{PublishAdmission, PublishSharding, PublishWorker, ShardStreams};
 
 /// A client of one broker, over multiplexed QUIC connections.
 ///
@@ -52,6 +52,8 @@ pub struct Client {
     // Shared by every publisher from this client, so a stream keeps one
     // writer however many publishers publish to it.
     publish_stream_hasher: ahash::RandomState,
+    // Opened on demand, one per shard published to, beside the pool.
+    publish_shard_streams: Arc<ShardStreams>,
 
     // Per-stream cache workers: each owns exactly one bi-directional QUIC stream and
     // serializes cache round-trips (encode -> write -> read -> decode).

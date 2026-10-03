@@ -113,7 +113,9 @@ atLeastOnce?)`. Pass `undefined` to skip one.
 `publish` resolves to the offset the record landed at, as a `bigint` like
 `Event.offset`, or `null` when the broker acknowledged it before writing it (a
 `Leader` stream without `ack_on_commit`), the stream has no log, the broker is
-too old to say, or `ack` is `"none"`.
+too old to say, or `ack` is `"none"`. Only the broker that owns the shard
+acknowledges before writing; a publish forwarded through another broker is
+answered after the write and has its offset, so one stream can return both.
 
 ### The routing key decides the shard
 

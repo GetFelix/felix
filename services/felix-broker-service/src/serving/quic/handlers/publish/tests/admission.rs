@@ -49,7 +49,7 @@ async fn enqueue_publish_drop_sheds_load_when_byte_budget_exhausted() {
             &crate::config::BrokerConfig::default(),
         )),
         tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
-        publish_window: None,
+        publish_window: 0,
     };
     // Queue depth (8) has room, but the shared byte budget (4 bytes) does not fit this
     // 7-byte payload, so the job must be shed even though the item-count queue is empty.
@@ -84,7 +84,7 @@ async fn enqueue_publish_drop_sheds_load_when_conn_byte_budget_exhausted() {
             &crate::config::BrokerConfig::default(),
         )),
         tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
-        publish_window: None,
+        publish_window: 0,
     };
     let mut job = make_job();
     job.payloads = vec![Bytes::from_static(b"payload")];
@@ -118,7 +118,7 @@ async fn enqueue_publish_conn_budget_does_not_starve_other_connections() {
             &crate::config::BrokerConfig::default(),
         )),
         tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
-        publish_window: None,
+        publish_window: 0,
     };
     let ctx_b = PublishContext {
         ingress: None,

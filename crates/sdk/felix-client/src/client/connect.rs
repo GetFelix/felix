@@ -17,7 +17,9 @@ use crate::config::{
     event_transport_config, shared_transport_config,
 };
 use crate::connection::{Credentials, NodeConnections, NodeLimits, OpenedStream};
-use crate::publish::{PublishAdmission, PublishWorker, run_publisher_writer_with_limit};
+use crate::publish::{
+    OpenWorker, PublishAdmission, PublishWorker, ShardStreams, run_publisher_writer_with_limit,
+};
 
 impl Client {
     /// Connect to the broker at `addr` with default transport settings.
@@ -235,12 +237,12 @@ impl Client {
         for node in dedup(&nodes) {
             node.learn_listeners(addr, &negotiated.listener_ports);
         }
+        note_connection(&mut worker_connections, first.lease.connection());
         publish_workers.push(spawn_publish_worker(
             first,
             &runtime_config,
             publish_queue_depth,
             publish_chunk_bytes,
-            &mut worker_connections,
         ));
         if layout == Layout::Pooled {
             publish_node.fill(publish_pool_size, false).await?;
@@ -248,14 +250,42 @@ impl Client {
         for _ in 1..publish_stream_count {
             let opened = publish_node.open().await?;
             debug!("client publish stream authenticated");
+            note_connection(&mut worker_connections, opened.lease.connection());
             publish_workers.push(spawn_publish_worker(
                 opened,
                 &runtime_config,
                 publish_queue_depth,
                 publish_chunk_bytes,
-                &mut worker_connections,
             ));
         }
+        // A client that has lost a pooled stream's connection is finished
+        // (`is_usable`), so it does not open shard streams on a fresh one: the
+        // caller replaces the client instead.
+        let open_shard_stream: OpenWorker = {
+            let node = Arc::clone(&publish_node);
+            let pooled = worker_connections.clone();
+            Arc::new(move || {
+                let node = Arc::clone(&node);
+                let lost = pooled
+                    .iter()
+                    .any(|connection| connection.close_reason().is_some());
+                Box::pin(async move {
+                    anyhow::ensure!(!lost, "the client's connection to the broker was lost");
+                    let opened = node.open().await?;
+                    debug!("client shard publish stream authenticated");
+                    Ok(spawn_publish_worker(
+                        opened,
+                        &runtime_config,
+                        publish_queue_depth,
+                        publish_chunk_bytes,
+                    ))
+                })
+            })
+        };
+        let publish_shard_streams = Arc::new(ShardStreams::new(
+            client_config.publish_shard_streams,
+            open_shard_stream,
+        ));
 
         // Several streams per cache connection: a new connection per cache op
         // would pay a handshake each time, and one stream would head-of-line
@@ -315,6 +345,7 @@ impl Client {
             server_features,
             publish_workers: Arc::new(publish_workers),
             publish_stream_hasher: ahash::RandomState::new(),
+            publish_shard_streams,
             publish_sharding: client_config.publish_sharding,
             publish_admission,
             cache_workers,
@@ -400,7 +431,6 @@ fn spawn_publish_worker(
     runtime_config: &ClientRuntimeConfig,
     publish_queue_depth: usize,
     publish_chunk_bytes: usize,
-    worker_connections: &mut Vec<QuicConnection>,
 ) -> PublishWorker {
     let OpenedStream {
         send,
@@ -408,11 +438,9 @@ fn spawn_publish_worker(
         negotiated,
         lease,
     } = opened;
-    note_connection(worker_connections, lease.connection());
     let (tx, rx) = mpsc::channel(publish_queue_depth);
     let max_frame_bytes = runtime_config.max_frame_bytes;
-    let window =
-        (negotiated.publish_window > 0).then(|| lease.publish_window(negotiated.publish_window));
+    let window = lease.publish_window(&negotiated);
     // Not colocated with the transport drivers (unlike the subscription read
     // pump): publisher writers block in `write_all` against a full send
     // window, and parking them on the I/O thread starves the drivers they

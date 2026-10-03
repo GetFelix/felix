@@ -308,3 +308,74 @@ async fn a_promoted_shard_ships_nothing_before_its_fence() {
     assert!(gate.awaiting(&watch_key(&key())).is_none());
     driver.stop().await;
 }
+
+/// Fenced every time, and kept closed every time, as the broker does when it
+/// cannot write the shard's generation-start record.
+struct KeptClosed {
+    opens: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl crate::promotion::PromotionGate for KeptClosed {
+    fn awaiting(&self, _key: &crate::ShardKey) -> Option<u64> {
+        Some(4)
+    }
+
+    async fn open(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        self.opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        false
+    }
+}
+
+/// **A shard the broker keeps closed after its fence backs off** rather than
+/// fencing again every [`FENCE_RETRY`] for as long as the failure lasts, and
+/// appends to other shards do not hurry it.
+#[tokio::test(start_paused = true)]
+async fn a_shard_kept_closed_after_its_fence_backs_off() {
+    use std::sync::atomic::Ordering;
+
+    let (broker, _dir) = leader_with(3).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let followers = Arc::new(FencingFollowers::default());
+    followers.fence_ready.store(true, Ordering::SeqCst);
+    let gate = Arc::new(KeptClosed {
+        opens: Default::default(),
+    });
+    let driver = spawn(
+        Arc::clone(&followers),
+        Arc::clone(&broker),
+        Arc::clone(&router),
+        Arc::new(Unfenced),
+        Arc::clone(&gate) as Arc<dyn crate::promotion::PromotionGate>,
+        Published {
+            marks: Arc::new(QuorumMarks::new()),
+            halted: Arc::new(crate::halted::HaltedReplicas::new()),
+        },
+        None,
+        Duration::from_secs(300),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        CancellationToken::new(),
+    );
+
+    // 20 s of appends: every 200 ms would be 100 attempts. Backed off it is
+    // 0, 0.2, 0.6, 1.4, 3.0, then every 2 s.
+    for _ in 0..200 {
+        append(&broker, 0).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let opens = gate.opens.load(Ordering::SeqCst);
+    assert!((10..=20).contains(&opens), "{opens} attempts in 20 s");
+    driver.stop().await;
+}
+
+#[test]
+fn the_fence_backoff_doubles_to_its_cap() {
+    let waits: Vec<_> = (1..=7).map(fence_backoff).collect();
+    assert_eq!(waits[0], FENCE_RETRY);
+    assert_eq!(waits[1], FENCE_RETRY * 2);
+    assert_eq!(waits[3], FENCE_RETRY * 8);
+    assert_eq!(waits[6], FENCE_RETRY_MAX);
+    assert_eq!(fence_backoff(u32::MAX), FENCE_RETRY_MAX);
+}

@@ -416,6 +416,13 @@ cluster-admin. A member refuses to start in Raft mode without a token of at
 least 32 characters unless `FELIX_RAFT_INSECURE_PEERS=true` says otherwise,
 which is for throwaway local groups.
 
+A member that refuses a connection, times out, or answers with any non-2xx
+status is treated as unreachable: the leader backs off before retrying it,
+starting at one heartbeat interval and doubling up to one second. The
+leader's log names the status and the start of the reply body, for example
+`peer answered 403 Forbidden: ...`. Elections and replication to healthy
+members are not delayed by it.
+
 With `FELIX_RAFT_TLS_CERT`, `FELIX_RAFT_TLS_KEY` and `FELIX_RAFT_TLS_CA`
 set, the peer listener terminates mTLS and refuses the handshake to any
 client without a certificate from that CA, and the member's own peer client

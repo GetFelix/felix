@@ -3,18 +3,12 @@
 
 use anyhow::{Context, Result, bail};
 
-use crate::scenarios::{Common, IngestOptions};
+use felix_loadgen::{Common, IngestOptions, Scenario};
 
 /// What the command line asked for.
 pub(crate) struct Args {
     pub(crate) common: Common,
-    pub(crate) ingest: IngestOptions,
-    pub(crate) scenario: String,
-    pub(crate) stream: String,
-    pub(crate) cache: String,
-    pub(crate) binary: bool,
-    /// pubsub: publish through the first broker instead of the shard's owner.
-    pub(crate) via_entry: bool,
+    pub(crate) scenario: Scenario,
 }
 
 /// Print the flags and exit with status 2.
@@ -30,6 +24,8 @@ pub(crate) fn usage() -> ! {
   --stream <name>             stream for pubsub (default: perf)
   --keys <n>                  ingest: spread batches over n routing keys (default 0,
                               unkeyed -- every record lands on shard 0)
+  --shards <n>                ingest: the stream's shard count, so --keys can be chosen
+                              to cover every shard (default: ask the broker)
   --in-flight <n>             ingest: acked batches each publisher keeps outstanding
                               (default 0, fire-and-forget)
   --duration-secs <n>         ingest: publish for n seconds instead of --total records
@@ -135,6 +131,7 @@ pub(crate) fn parse_args() -> Result<Args> {
             // shard 0 regardless of the stream's shard count -- which is what
             // made every multi-shard measurement so far a single-shard one.
             "--keys" => ingest.keys = value("--keys")?.parse().context("--keys")?,
+            "--shards" => ingest.shards = Some(value("--shards")?.parse().context("--shards")?),
             "--in-flight" => {
                 ingest.in_flight = value("--in-flight")?.parse().context("--in-flight")?
             }
@@ -168,27 +165,35 @@ pub(crate) fn parse_args() -> Result<Args> {
     let token = token.context("--token or --token-file is required")?;
     let scenario = scenario.context("--scenario is required")?;
 
-    Ok(Args {
-        ingest,
-        common: Common {
-            brokers,
-            tenant,
-            namespace,
-            token,
-            warmup,
-            total,
-            payload_bytes,
-            fanout,
-            batch,
-            concurrency,
-            environment,
-            slow_subscribers,
-            slow_delay: std::time::Duration::from_millis(slow_delay_ms),
+    let scenario = match scenario.as_str() {
+        "pubsub" => Scenario::Pubsub {
+            stream,
+            binary,
+            via_entry,
         },
-        scenario,
-        stream,
-        cache,
-        binary,
-        via_entry,
-    })
+        "cache" => Scenario::Cache { cache },
+        "counter" => Scenario::Counter { cache },
+        "watch" => Scenario::Watch { cache },
+        "queue" => Scenario::Queue { stream },
+        "retained" => Scenario::Retained { cache },
+        "ingest" => Scenario::Ingest {
+            stream,
+            options: ingest,
+        },
+        other => bail!(
+            "unknown scenario {other:?} (pubsub | cache | counter | watch | queue | retained | ingest)"
+        ),
+    };
+
+    let mut common = Common::new(brokers, tenant, namespace, token);
+    common.warmup = warmup;
+    common.total = total;
+    common.payload_bytes = payload_bytes;
+    common.fanout = fanout;
+    common.batch = batch;
+    common.concurrency = concurrency;
+    common.environment = environment;
+    common.slow_subscribers = slow_subscribers;
+    common.slow_delay = std::time::Duration::from_millis(slow_delay_ms);
+    Ok(Args { common, scenario })
 }

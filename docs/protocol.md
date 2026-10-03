@@ -699,7 +699,7 @@ A client that offers `FEATURE_PUBLISH_PIPELINE` in `auth` may be granted a
 publish window, answered in `auth_ok`:
 
 ```json
-{"type":"auth_ok","server_flags":2047,"server_features":65060,"publish_window":256}
+{"type":"auth_ok","server_flags":2047,"server_features":196132,"publish_window":256}
 ```
 
 The grant is two promises about every acked publish on that connection
@@ -711,16 +711,22 @@ with `FLAG_BINARY_PUBLISH_ACKED`, and every `publish_idempotent`):
   else changes: each publish gets the answer it would have got, only later.
   Other responses on the stream (`cache_value`, `subscribed`, and so on) are
   not held back.
-- **At most `publish_window` are unanswered per connection**, across all its
-  streams. At that depth the broker stops reading the connection's publishes
-  until an answer is written. A client that sends more is slowed by QUIC flow
+- **At most `publish_window` are unanswered per stream.** At that depth the
+  broker stops reading that stream's publishes until one of its answers is
+  written. Each stream has its own window, so a stream whose publishes wait
+  on a stalled shard holds only its own slots, and the connection's other
+  streams keep publishing. The Rust `ClusterClient` puts each shard on a
+  stream of its own (see below), which makes that true per shard. A broker says so by advertising
+  `FEATURE_STREAM_PUBLISH_WINDOW` with the grant. A broker that predates that
+  bit counts the window across the whole connection, and a client must share
+  one window between its streams there. A client that sends more is slowed by QUIC flow
   control, not refused; the frames wait in the transport rather than in the
   tenant's share of the publish queue, which is what keeps a pipelining client
   to its fair share.
 
 `publish_window` is present only when the client offered the bit and the broker
 grants it; a broker configured with `publish_window = 0`
-(`FELIX_BROKER_PUBLISH_WINDOW=0`) neither advertises the bit nor grants a
+(`FELIX_BROKER_PUBLISH_WINDOW=0`) neither advertises the bits nor grants a
 window. A client that did not offer it, and one that predates negotiation, get
 exactly the frames they always got: completion-order answers and no window. A
 client reads a window without the bit as no window.
@@ -733,6 +739,20 @@ answer behind it forever. Every publish is answered within its enqueue wait
 plus its ack wait, so a broker whose oldest held answer is overdue by twice
 that closes the stream instead; the client sees the stream fail and every
 unanswered publish on it as failed.
+
+**One stream per shard.** Request order and the window are both per stream,
+so shards that share a stream share a fate: a shard stuck on a quorum wait
+holds back answers the others have committed, then fills the window and stops
+the stream. The Rust `ClusterClient` therefore sends each publish on a stream
+that carries only its shard, opened on the shard's first publish on the same
+connection. It can, because it computes the shard of every publish to pick
+the owner: keyed, unkeyed (shard 0) and idempotent alike. It keeps at most
+`publish_shard_streams` such streams per broker (16 by default); shards past
+that share the hashed pool, and a shard never changes stream while its writer
+lives, so its publishes stay in order. A plain `Client` does not know a
+stream's width, so it keeps every publish to a stream on one pooled stream.
+Nothing on the wire changes: the broker cannot tell these streams from any
+other.
 
 **Why the order matters to an idempotent producer.** With answers in request
 order, the first failure a producer reads is the earliest one, never a
@@ -1002,14 +1022,37 @@ u64 offset
 ```
 
 A batch's offsets are contiguous, so the record at index `i` is at `offset + i`.
-The broker leaves the bit off when it has no offset to give: it acknowledged the
-batch when it was queued rather than once it was written (`ack_on_commit` off, on
-a stream that does not need a majority), or the stream has no log. On a `Quorum`
-stream the ack is sent once a majority holds the batch, so the offset is the one it
-was committed at. A duplicate idempotent batch is answered with the offset of the
-batch already in the log, which the log's producer marks keep. A forwarded batch
-reports the offset the owner wrote it at, when the owner is recent enough to say
-(see `FORWARD_OFFSETS` in `docs/internal-protocol.md`).
+
+An ack carries an offset only if the broker sent it after the batch was
+written. The broker leaves the bit off when it has no offset to give: the stream
+has no log, or the broker acknowledged the batch when it was queued. It does
+that only for a `Leader` stream whose shard it owns, with `ack_on_commit` off
+(the default), and not when the publish was admitted too close to the end of
+the shard's lease (see `docs/semantics.md`). Every other acked publish is
+answered after the write and carries its offset:
+
+- with `ack_on_commit` on;
+- on a `Quorum` stream, once a majority holds the batch, at the offset it was
+  committed at;
+- an idempotent batch; a duplicate is answered with the offset of the batch
+  already in the log, which the log's producer marks keep;
+- a forwarded batch, which the entry broker answers only once the owner has,
+  with the offset the owner wrote it at when the owner is recent enough to say
+  (see `FORWARD_OFFSETS` in `docs/internal-protocol.md`).
+
+So whether an ack has an offset depends on the ack, not on the stream. With
+`ack_on_commit` off, the same publish to the same stream comes back without an
+offset from the shard's owner and with one through a broker that forwards it.
+A client that needs the offset of every record publishes idempotently, or needs
+brokers that run with `ack_on_commit` on.
+
+The broker never makes up an offset for a batch it has only queued. A queued
+batch has no offset yet: offsets are taken when the batch is appended. And
+until the write is durable, a crash can lose the batch and give its offsets to
+a later record, so an early offset could end up naming a different record.
+An offset in an ack is as durable as the write it reports. Under
+`FELIX_DURABLE_FSYNC_MODE=on_commit` the record is on disk. Under the other
+fsync modes a machine crash can still lose it, along with its offset.
 
 The same offer adds `offset` to the JSON `publish_ok`, under the same rules:
 
@@ -1102,6 +1145,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x4000` | `FEATURE_SEQUENCE_REUSED` | The client reads `publish_refused` with `sequence_reused`; see [idempotent producers](#idempotent-producers) |
 | `0x8000` | `FEATURE_PUBLISH_PIPELINE` | The client pipelines acked publishes; the broker grants a `publish_window` and answers each stream's publishes in request order. See [pipelined publishes](#pipelined-publishes) |
 | `0x1_0000` | `FEATURE_ATOMIC_COMMIT` | The broker accepts `commit` and `state_get`. See [atomic commits](atomic-commit.md) |
+| `0x2_0000` | `FEATURE_STREAM_PUBLISH_WINDOW` | The broker's `publish_window` is per stream, so each pipelining stream has its own. See [pipelined publishes](#pipelined-publishes) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:

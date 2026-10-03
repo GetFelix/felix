@@ -37,7 +37,14 @@ pub async fn publish(
 ) -> Result<()>
 ```
 
-1. **Worker selection.** `select_worker()` picks one of the pool's
+1. **Worker selection.** A `ClusterClient` publisher (`Client::shard_publisher`)
+   names the shard of every publish, and `route()` first asks `ShardStreams`
+   (`publish/shard_streams.rs`) for the shard's own stream, opening it on the
+   shard's first publish. A pipelining stream is answered in request order, so
+   a shard that shared a stream with others would hold back their answers
+   while it waited on a quorum. Past `publish_shard_streams` (16) shards, and
+   for every publish through a plain `Client`, `select_worker()` picks one of
+   the pool's
    `PublishWorker`s, either round-robin or by hashing `(tenant_id, namespace,
    stream)` (`PublishSharding::HashStream`, the mode that keeps a stream's
    messages on one QUIC stream, preserving order). The hash result is cached
@@ -168,10 +175,47 @@ do not mean more concurrent callers contending on shared stream state.
 
    | Job | Ordered, on the lane | Handed to its own task |
    |---|---|---|
-   | Durable publish | fence check, `claim_publish` (offsets taken) | device flush, fanout, quorum wait, the answer |
+   | Durable publish | fence check, `claim_publish` (offsets taken) for it and the durable publishes queued behind it | device flush, fanout, quorum wait, the answers |
    | Ephemeral publish | fence check, `publish_batch_with_outcome` | quorum wait, the answer |
    | Idempotent publish | sequence check and append (offsets taken), off the executor | device flush, quorum wait, the answer |
    | Forward | the whole round trip, off the executor | nothing |
+
+   A durable publish does not go alone if more are queued on its lane. The
+   executor takes the plain durable publishes queued behind it, in order and
+   up to 64 of them or 1 MiB of payload, and claims them all with one
+   `claim_publish`. That is one write, one commit wait, one commit turn and
+   one fanout for the lot, which is most of what an unbatched durable publish
+   costs. Each publish still gets its own answer: its offset is the claim's
+   first plus the records ahead of it, and the answers go out in lane order
+   once the claim is durable. The tenant is charged for every publish it
+   took, and pays any excess in later turns. Taking stops at the first queued
+   job that cannot join (an idempotent or empty publish), so nothing
+   overtakes it. `felix_broker_publish_claim_jobs` reports the group sizes.
+
+   Failures follow what the members share. The fence and lease are checked
+   per publish: one the fence refuses is answered with the refusal and left
+   out, and the rest are written around it. Everything after that is shared:
+   a failed append, flush or quorum wait fails every publish in the claim,
+   because none of them can have succeeded without the others. Every member
+   gets the same error. A quorum timeout leaves the outcome unknown for each
+   of them, so none is told it is safe to send again. Exactly-once needs the
+   idempotent producer, whose publishes are never grouped. A publish whose
+   caller stopped waiting keeps its place, as it would alone.
+
+   > `queued_publishes_on_one_lane_are_claimed_as_one_append`: eight
+   > publishes queued on one lane, one of them three records long, are
+   > answered with offsets 0, 1, 2, 5, 6, ... and reach the subscriber as
+   > one delivery.
+
+   > `no_publish_in_a_claim_is_answered_before_an_earlier_one`: when the
+   > last publish of a claim is answered, every earlier one already is.
+
+   > `a_publish_the_fence_refuses_is_left_out_of_the_claim`: the refused
+   > publish gets `ShardUnavailable`, and the others are written at 0, 1, 2.
+
+   > `a_claim_whose_quorum_wait_times_out_leaves_every_member_unknown`: both
+   > members of a claim whose quorum wait timed out get `QuorumTimeout` with
+   > retry class `OutcomeUnknown`.
 
    A durable shard may have `pub_flush_concurrency` flushes outstanding.
    Past that, its next claim waits for one off the executor, holding only its

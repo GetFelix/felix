@@ -58,6 +58,7 @@ export default defineConfig({
             { label: 'What Felix Is For', slug: 'getting-started/what-felix-is-for' },
             { label: 'Overview', slug: 'getting-started/overview' },
             { label: 'Quickstart', slug: 'getting-started/quickstart' },
+            { label: 'felixctl', slug: 'getting-started/felixctl' },
             { label: 'Installation', slug: 'getting-started/installation' },
           ],
         },

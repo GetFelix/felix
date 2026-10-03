@@ -101,7 +101,7 @@ services:
       - FELIX_DURABLE_STORAGE_DIR=/var/lib/felix
       - RUST_LOG=info
     ports:
-      - "5000:5000/udp"  # client QUIC
+      - "5000-5003:5000-5003/udp"  # client QUIC, one port per listener
       - "8080:8080"      # metrics, /live, /ready
     volumes:
       - felix-data:/var/lib/felix
@@ -412,9 +412,13 @@ docker compose logs felix-broker | grep -i -e warn -e error
 ### Port conflicts
 
 `port is already allocated` means another process holds a host port. Change
-the host side of the mapping:
+the host side of the mapping. Clients dial the broker's other listeners on the
+ports it advertises, which are its container ports, so a remapped broker needs
+one listener:
 
 ```yaml
+environment:
+  - FELIX_QUIC_LISTENERS=1
 ports:
   - "5001:5000/udp"
   - "8081:8080"

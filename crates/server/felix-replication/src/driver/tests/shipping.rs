@@ -334,6 +334,132 @@ async fn an_append_ships_without_waiting_for_the_tick() {
     );
 }
 
+/// The cache shard of the tests' stream name, led here at generation 4.
+struct LedCache;
+
+impl crate::quorum::ShardServing for LedCache {
+    fn replicated(&self, _key: &crate::ShardKey) -> bool {
+        true
+    }
+
+    fn generation(&self, _key: &crate::ShardKey) -> Option<u64> {
+        Some(4)
+    }
+
+    fn lease_valid(&self) -> bool {
+        true
+    }
+
+    fn record_ack_refusal(&self) {}
+}
+
+/// **A `Quorum` cache put acks without waiting for the tick.** The put went
+/// to the log but never woke the driver, so every put waited out the tick
+/// before it shipped (#928).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_quorum_cache_put_ships_without_waiting_for_the_tick() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    let broker = Arc::new(Broker::new(Box::new(
+        felix_storage::LogCache::open(dir.path().join("caches"), config).expect("cache"),
+    )));
+    broker.register_tenant(TENANT).await.expect("tenant");
+    broker
+        .register_namespace(TENANT, NAMESPACE)
+        .await
+        .expect("namespace");
+    broker
+        .register_cache(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            felix_broker::CacheMetadata {
+                consistency: felix_broker::ConsistencyLevel::Quorum,
+            },
+        )
+        .await
+        .expect("cache");
+    let cache = ShardKey {
+        kind: felix_router::ShardKind::Cache,
+        ..key()
+    };
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    ));
+    let nodes = nodes();
+    router.publish(
+        RoutingTable::build(
+            [(
+                cache.clone(),
+                LOCAL.to_string(),
+                vec!["broker-b".to_string(), "broker-c".to_string()],
+                4,
+            )],
+            &nodes,
+        ),
+        &nodes,
+    );
+    let marks = Arc::new(QuorumMarks::new());
+
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(AcceptingFollower::default()),
+        Arc::clone(&broker),
+        router,
+        Arc::new(Unfenced),
+        Arc::new(crate::promotion::NoGate),
+        Published {
+            marks: Arc::clone(&marks),
+            halted: Arc::new(crate::halted::HaltedReplicas::new()),
+        },
+        None,
+        Duration::from_secs(300),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+    // Let the interval's immediate first tick pass.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    broker
+        .cache()
+        .put(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            0,
+            "k",
+            Bytes::from_static(b"v"),
+            None,
+        )
+        .await
+        .expect("put");
+    let acked = crate::quorum::await_cache_quorum(
+        &broker,
+        &watch_key(&cache),
+        Some(&marks),
+        Some(&LedCache),
+        Duration::from_secs(5),
+        crate::quorum::Access::Write,
+    )
+    .await;
+
+    shutdown.cancel();
+    driver.stop().await;
+
+    acked.expect(
+        "the put was not on a majority within 5s, against a 300s tick: the \
+         cache write is not waking the driver",
+    );
+}
+
 /// A route change runs a pass without waiting for the tick.
 ///
 /// A fenced shard's drained report and a new leader's first shipment both wait

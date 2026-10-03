@@ -4,12 +4,18 @@
 //! is what keeps them in order. The hash is cached per stream so a hot
 //! stream does not rehash on every publish.
 //!
+//! A `ClusterClient` publisher sends each shard to its own stream first
+//! (`shard_streams`), and only falls back to the hash when the client has no
+//! room for another.
+//!
 //! The hash is seeded per client. Each worker's connection sits on one broker
 //! listener, so a seed shared by every client in a process would send all of
 //! them publishing one stream through the same listener.
 
 use std::collections::VecDeque;
 use std::hash::Hash;
+use std::ops::Deref;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use ahash::RandomState;
@@ -29,6 +35,11 @@ pub enum PublishSharding {
     RoundRobin,
     /// Pick the stream by hashing the stream's name, so each stream's
     /// publishes share one writer and stay in order. The default.
+    ///
+    /// A [`crate::ClusterClient`] narrows that to each shard: every shard of
+    /// a stream has one writer, its own while the client has room for one,
+    /// so a shard's publishes stay in order and a stalled shard holds up no
+    /// other.
     HashStream,
 }
 
@@ -43,7 +54,47 @@ impl PublishSharding {
     }
 }
 
+/// The writer a publish goes to: one from the pool, or its shard's own.
+pub(super) enum Selected<'a> {
+    Pooled(&'a PublishWorker),
+    Shard(Arc<PublishWorker>),
+}
+
+impl Deref for Selected<'_> {
+    type Target = PublishWorker;
+
+    fn deref(&self) -> &PublishWorker {
+        match self {
+            Self::Pooled(worker) => worker,
+            Self::Shard(worker) => worker,
+        }
+    }
+}
+
 impl Publisher {
+    /// The writer for a publish to `shard` of the stream, when the caller
+    /// knows the shard: the shard's own stream when it has or can get one,
+    /// else the pool.
+    ///
+    /// Round-robin skips the shard's stream. It asked for spreading over
+    /// order, and a stream of its own would put every publish on one writer.
+    pub(super) async fn route(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: Option<u32>,
+    ) -> Result<Selected<'_>> {
+        if self.inner.sharding == PublishSharding::HashStream
+            && let (Some(shard), Some(streams)) = (shard, &self.inner.shard_streams)
+            && let Some(worker) = streams.worker(tenant_id, namespace, stream, shard).await?
+        {
+            return Ok(Selected::Shard(worker));
+        }
+        self.select_worker(tenant_id, namespace, stream)
+            .map(Selected::Pooled)
+    }
+
     pub(super) fn select_worker(
         &self,
         tenant_id: &str,
