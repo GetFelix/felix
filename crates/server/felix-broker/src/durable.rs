@@ -57,6 +57,20 @@ impl DurableStorage {
         self.provider.root()
     }
 
+    /// Bound one stream's logs by `retention`, open and future, with the
+    /// broker-wide bounds for any it leaves unset.
+    pub fn set_stream_retention(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        retention: felix_storage::log::Retention,
+    ) -> Result<()> {
+        self.provider
+            .set_stream_retention(tenant, namespace, stream, retention)
+            .map_err(BrokerError::from)
+    }
+
     pub fn config(&self) -> &LogConfig {
         self.provider.config()
     }

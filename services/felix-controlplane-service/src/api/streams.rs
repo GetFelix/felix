@@ -97,6 +97,9 @@ pub(crate) async fn create_stream(
 ) -> Result<impl IntoResponse, ApiError> {
     require_stream_manage(&state, &tenant_id, &headers, &namespace, &body.stream).await?;
     validate_identifier("stream", &body.stream).map_err(|err| api_validation_error(&err))?;
+    body.retention
+        .validate()
+        .map_err(|err| api_validation_error(&err))?;
     ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
     let region = match body.region {
         Some(region) if region.trim().is_empty() => {
@@ -213,6 +216,11 @@ pub(crate) async fn patch_stream(
     Json(body): Json<StreamPatchRequest>,
 ) -> Result<Json<Stream>, ApiError> {
     require_stream_manage(&state, &tenant_id, &headers, &namespace, &stream).await?;
+    if let Some(retention) = &body.retention {
+        retention
+            .validate()
+            .map_err(|err| api_validation_error(&err))?;
+    }
     ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
     let key = StreamKey {
         tenant_id: tenant_id.clone(),

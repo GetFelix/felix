@@ -249,6 +249,7 @@ async fn a_consistency_change_reaches_a_live_stream() {
                 durable: true,
                 shards: 1,
                 consistency: felix_broker::ConsistencyLevel::Quorum,
+                ..Default::default()
             },
         )
         .await
@@ -282,6 +283,7 @@ async fn lowering_the_consistency_also_reaches_a_live_stream() {
                     durable: true,
                     shards: 1,
                     consistency: level,
+                    ..Default::default()
                 },
             )
             .await

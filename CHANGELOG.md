@@ -102,6 +102,14 @@ for what the current release guarantees.
 
 ### Fixed
 
+- **A stream's retention from the control plane now bounds its logs.** It
+  was stored and never read: every durable stream got the broker-wide
+  `FELIX_DURABLE_RETENTION_BYTES` / `FELIX_DURABLE_RETENTION_SECONDS`. A
+  stream's `max_size_bytes` and `max_age_seconds` now bound its shard logs,
+  each falling back to the broker's setting when unset, and a patch reaches
+  open logs without a restart. The control plane refuses a zero bound.
+  `StreamMetadata` gains `retention`, and `DiskLog::set_retention` and
+  `DiskLogProvider::set_stream_retention` set bounds after a log opens. (#964)
 - The Docker Compose, installation and Kubernetes pages pull the
   `0.6.0-preview` images instead of `0.5.0`, and a release tag now fails
   `check_release_version.py` while any doc pins a `ghcr.io/gabloe/felix*`
