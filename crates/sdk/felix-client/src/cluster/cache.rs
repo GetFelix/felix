@@ -1,5 +1,6 @@
 //! Cache and counter requests through a [`ClusterClient`], sent to the
-//! owner of the key's shard when the client knows it.
+//! owner of the key's shard when the client knows it, and the other requests
+//! any broker answers.
 //!
 //! Any broker serves a cache request: one that does not own the key's shard
 //! forwards it. Going to the owner saves that hop, as the owner cache does for
@@ -183,6 +184,34 @@ impl ClusterClient {
             );
         }
 
+        self.through_entry(read, request).await
+    }
+
+    /// How many shards `stream` was placed with. See [`Client::stream_shards`].
+    ///
+    /// Asked of the broker in use, and once more through another broker if
+    /// that one is gone.
+    pub async fn stream_shards(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> Result<u32> {
+        self.through_entry(true, |client| async move {
+            client.stream_shards(tenant_id, namespace, stream).await
+        })
+        .await
+    }
+
+    /// `request` through the broker in use, moving to another broker when
+    /// that one is gone. A `read` is asked again there. Anything else may have
+    /// been applied, so its failure is returned with the connection already
+    /// replaced.
+    async fn through_entry<T, F, Fut>(&self, read: bool, request: F) -> Result<T>
+    where
+        F: Fn(Arc<Client>) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
         let err = match request(self.client().await).await {
             Ok(answer) => return Ok(answer),
             Err(err) if !wants_reconnect(&err) => return Err(err),
@@ -190,11 +219,11 @@ impl ClusterClient {
         };
         if let Err(reconnect_err) = self.reconnect().await {
             return Err(err.context(format!(
-                "cache request failed and no other broker answered: {reconnect_err:#}"
+                "request failed and no other broker answered: {reconnect_err:#}"
             )));
         }
         if !read {
-            return Err(err.context("cache request failed; reconnected to another broker"));
+            return Err(err.context("request failed; reconnected to another broker"));
         }
         request(self.client().await).await
     }

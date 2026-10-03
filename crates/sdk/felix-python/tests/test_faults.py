@@ -1,5 +1,5 @@
-"""Connection faults: the link to a broker drops, resets or stalls mid-publish
-and mid-subscribe.
+"""Connection faults: the link to a broker drops, resets or stalls mid-publish,
+mid-subscribe and between cache calls.
 
 The steps come from the fixture, which copies them out of the catalogue, and
 the fault comes from its `/link` endpoint: an interposer between this client
@@ -31,6 +31,7 @@ FAULT_IDS = [
     "fault.subscription_through_a_dropped_link",
     "fault.subscription_through_a_reset_link",
     "fault.subscription_through_a_stalled_link",
+    "fault.cache_through_a_reset_link",
 ]
 
 
@@ -88,8 +89,64 @@ def test_a_connection_fault(scenario_id, fixture, client, linked):
     step = _step(fixture, scenario_id)
     if step["during"] == "publish":
         _publish_through_a_fault(scenario_id, step, fixture, client, linked)
+    elif step["during"] == "cache":
+        _cache_through_a_fault(scenario_id, step, fixture, linked)
     else:
         _subscribe_through_a_fault(scenario_id, step, fixture, client, linked)
+
+
+def _cache_through_a_fault(scenario_id, step, fixture, linked):
+    import felix
+
+    tenant, namespace, cache = (
+        fixture["tenant_id"],
+        fixture["namespace"],
+        fixture["cache"],
+    )
+    hold = step["hold_ms"] / 1000
+    stamp = f"{scenario_id}-{time.monotonic_ns()}"
+    counter = f"{stamp}-count"
+    acked = []
+    added = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+
+        def call(label, fn, *args):
+            try:
+                pool.submit(fn, *args).result(timeout=hold + SETTLE)
+                return True
+            except concurrent.futures.TimeoutError:
+                pytest.fail(f"{label} neither returned nor failed")
+            except felix.FelixError:
+                return False
+
+        for index in range(step["records"]):
+            if index == step["after_records"]:
+                _inject(fixture, step)
+            key = f"{stamp}-{index}"
+            if call(f"put {index}", linked.cache_put, tenant, namespace, cache, key, key.encode()):
+                acked.append(key)
+            if call(f"add {index}", linked.counter_add, tenant, namespace, cache, counter, 1):
+                added += 1
+
+    after = f"{stamp}-after"
+    deadline = time.monotonic() + SETTLE
+    while True:
+        try:
+            linked.cache_put(tenant, namespace, cache, after, after.encode())
+            acked.append(after)
+            break
+        except felix.FelixError as err:
+            if time.monotonic() >= deadline:
+                pytest.fail(f"the client never wrote to the cache again after the fault: {err!r}")
+            time.sleep(POLL)
+
+    for key in acked:
+        value = linked.cache_get(tenant, namespace, cache, key)
+        assert value == key.encode(), f"the acknowledged put of {key} did not read back"
+    count = linked.counter_get(tenant, namespace, cache, counter) or 0
+    assert added <= count <= step["records"], (
+        f"the counter is {count} after {added} acknowledged adds of {step['records']}"
+    )
 
 
 def _publish_through_a_fault(scenario_id, step, fixture, direct, linked):

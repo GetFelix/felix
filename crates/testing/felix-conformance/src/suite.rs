@@ -38,8 +38,17 @@ pub(crate) async fn run_protocol_suite() -> Result<()> {
     // Durable storage for the fault scenarios, which need offsets to resume
     // from and to check for gaps.
     let storage_dir = tempfile::tempdir().context("create a storage directory")?;
-    let storage = DurableStorage::open(storage_dir.path(), LogConfig::default())?;
-    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    let storage = DurableStorage::open(storage_dir.path().join("streams"), LogConfig::default())?;
+    // Counters for the cache fault scenario, which adds to one.
+    let counters = felix_storage::CounterStore::open(
+        storage_dir.path().join("counters"),
+        LogConfig::default(),
+    )?;
+    let broker = Arc::new(
+        Broker::new(EphemeralCache::new().into())
+            .with_durable_storage(storage)
+            .with_counters(Arc::new(counters)),
+    );
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;
     broker
