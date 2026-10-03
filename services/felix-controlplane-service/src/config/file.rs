@@ -72,6 +72,7 @@ struct BootstrapOverride {
     token: Option<String>,
     previous_token: Option<String>,
     tls: Option<BootstrapTlsConfig>,
+    dev_tokens: Option<bool>,
 }
 
 impl ControlPlaneConfig {
@@ -183,6 +184,9 @@ impl ControlPlaneConfig {
             }
             if let Some(tls) = bootstrap_override.tls {
                 config.bootstrap.tls = Some(tls);
+            }
+            if let Some(dev_tokens) = bootstrap_override.dev_tokens {
+                config.bootstrap.dev_tokens = dev_tokens;
             }
         }
         Ok(())

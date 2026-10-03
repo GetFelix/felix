@@ -212,6 +212,11 @@ jobs:
           FELIX_TEST_TIMEOUT_SCALE: "3"
         run: task test
 
+      # Failed 74 times in 640 under load, and never alone, before cache puts
+      # staged on a task of their own.
+      - name: Cancelled put under load
+        run: task test:stress
+
       - name: cargo-deny
         run: task deny
 

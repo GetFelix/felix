@@ -278,11 +278,26 @@ pub fn build_router(state: AppState) -> Router {
 
 /// The bootstrap listener's router: tenant auth initialization and nothing else.
 pub fn build_bootstrap_router(state: AppState) -> Router {
-    Router::new()
+    bootstrap_routes()
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
+}
+
+/// [`build_bootstrap_router`] that also mints development tokens. See
+/// [`api::bootstrap::dev_token`].
+pub fn build_bootstrap_router_with_dev_tokens(state: AppState) -> Router {
+    bootstrap_routes()
         .route(
-            "/internal/bootstrap/tenants/{tenant_id}/initialize",
-            axum::routing::post(api::bootstrap::initialize),
+            "/internal/bootstrap/tenants/{tenant_id}/dev-token",
+            axum::routing::post(api::bootstrap::dev_token),
         )
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+fn bootstrap_routes() -> Router<AppState> {
+    Router::new().route(
+        "/internal/bootstrap/tenants/{tenant_id}/initialize",
+        axum::routing::post(api::bootstrap::initialize),
+    )
 }

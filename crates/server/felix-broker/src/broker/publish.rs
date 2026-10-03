@@ -151,30 +151,35 @@ impl Broker {
             // behind them queues on this range. Claiming it only after a
             // *successful* wait stranded the stream: a failed or cancelled
             // publish abandoned its range, and every later publish waited
-            // on a turn that could never arrive.
-            let pending = match append {
-                Append::Plain => durable.begin_append(payloads).await?,
-                Append::Marked(marks) => durable.begin_append_marked(payloads, marks).await?,
+            // on a turn that could never arrive. The log claims it where it
+            // assigns the offsets, so a publish cancelled before this returns
+            // still releases it.
+            let order = &handle.state.commit_sequencer;
+            let (pending, turn) = match append {
+                Append::Plain => durable.begin_append(payloads, order).await?,
+                Append::Marked(marks) => {
+                    durable.begin_append_marked(payloads, marks, order).await?
+                }
                 Append::Commit(record) => {
                     durable
-                        .begin_append_marked(std::slice::from_ref(record), &[RecordMark::Commit])
+                        .begin_append_marked(
+                            std::slice::from_ref(record),
+                            &[RecordMark::Commit],
+                            order,
+                        )
                         .await?
                 }
                 Append::Continuing {
                     producer_id,
                     sequence,
                 } => match durable
-                    .continue_batch(producer_id, sequence, payloads)
+                    .continue_batch(producer_id, sequence, payloads, order)
                     .await?
                 {
-                    Some(pending) => pending,
+                    Some(claimed) => claimed,
                     None => return Ok(None),
                 },
             };
-            let turn = handle
-                .state
-                .commit_sequencer
-                .reserve_owned(pending.first_offset(), pending.last_offset() + 1);
             claimed.durable = Some(ClaimedDurable {
                 pending,
                 turn,

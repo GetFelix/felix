@@ -15,6 +15,7 @@ mod replica_state;
 mod restore;
 mod retention;
 mod rollover;
+mod stalled_write;
 mod truncation;
 
 use std::time::Duration;

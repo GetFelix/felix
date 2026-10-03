@@ -307,9 +307,21 @@ pub(crate) async fn handle_cache_watch_message(
             .await?;
         return Ok(true);
     };
-    let tail = match log.tail_offset().await {
-        Ok(tail) => tail,
-        Err(err) => {
+    // The applied frontier where the cache reports one: a write already in
+    // the log but not yet applied is in no snapshot, and with the log's tail
+    // its change would arrive below the live edge and be dropped.
+    let applied = broker
+        .cache()
+        .applied_through(
+            &request.tenant_id,
+            &request.namespace,
+            &request.cache,
+            shard,
+        )
+        .await;
+    let tail = match (log.tail_offset().await, applied) {
+        (Ok(tail), Ok(applied)) => applied.map_or(tail, |applied| applied.min(tail)),
+        (Err(err), _) | (_, Err(err)) => {
             subscriptions.release();
             responder
                 .send(

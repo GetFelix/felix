@@ -4,6 +4,7 @@
 //! commit in `sync` hand a single flush to many waiting appends.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::LogInner;
 use crate::io::sync_data;
@@ -17,29 +18,40 @@ impl LogInner {
     /// The file handle and the offset it covers are captured under the lock,
     /// then the lock is released before the flush: an `fsync` must never be held
     /// across the lock that appends need.
+    ///
+    /// The capture runs on the append thread, behind the appends already
+    /// queued there, so one flush covers every append in flight. Taken
+    /// straight away it would miss the ones still queued, and each of those
+    /// would wait for a flush of its own.
     pub(super) async fn flush(self: Arc<Self>) -> Result<Offset> {
         // After a failed fsync the kernel may have dropped the dirty pages and
         // cleared the error, so the next fsync "succeeds" having written
         // nothing. Only refusing to flush again keeps `durable_upto` below the
         // lost bytes.
         self.check_healthy()?;
-        let (handle, segment_id, synced_bytes, durable_upto) = {
-            let segments = self.segments.read();
-            let active = segments.active();
-            // The writer's own sync (a seal, a truncation) failed. Flushing
-            // through a cloned handle would not see that.
-            if active.is_poisoned() {
-                self.poison_after_writer_failure(&segments);
-                drop(segments);
-                return Err(self.check_healthy().expect_err("just poisoned"));
-            }
-            (
-                active.sync_handle(),
-                active.id(),
-                active.size_bytes(),
-                segments.tail_offset(),
-            )
-        };
+        let capturer = Arc::clone(&self);
+        let (handle, segment_id, synced_bytes, durable_upto, written) = self
+            .appender
+            .run(move || {
+                let segments = capturer.segments.read();
+                let active = segments.active();
+                // The writer's own sync (a seal, a truncation) failed. Flushing
+                // through a cloned handle would not see that.
+                if active.is_poisoned() {
+                    capturer.poison_after_writer_failure(&segments);
+                    drop(segments);
+                    return Ok(Err(capturer.check_healthy().expect_err("just poisoned")));
+                }
+                Ok(Ok((
+                    active.sync_handle(),
+                    active.id(),
+                    active.size_bytes(),
+                    segments.tail_offset(),
+                    capturer.records_written.load(Ordering::Relaxed),
+                )))
+            })
+            .await
+            .map_err(StorageError::Io)??;
         // Taken after the active handle, so a rollover that lands in between is
         // seen here rather than missed: `commit_roll` sets it before releasing
         // the lock this read just took.
@@ -110,6 +122,16 @@ impl LogInner {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         metrics::histogram!(metrics_names::SYNC_DURATION_SECONDS)
             .record(started.elapsed().as_secs_f64());
+        // Counted from what this flush covers rather than the callers waiting
+        // when it starts: appends still queued on the append thread are covered
+        // too, and have not started waiting yet. Records rather than appends,
+        // because the broker merges publishes that queue up into one append,
+        // and those share the flush as much as separate appends do. Flushes are
+        // serialised, so the swap sees the previous flush's count.
+        let covered = written - self.records_flushed.swap(written, Ordering::Relaxed);
+        if covered > 0 && !self.durability.acknowledges_before_sync() {
+            metrics::histogram!(metrics_names::SYNC_BATCH_APPENDS).record(covered as f64);
+        }
 
         {
             let mut segments = self.segments.write();

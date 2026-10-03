@@ -26,10 +26,11 @@
 //! Every platform-specific call degrades to a correct no-op or to the portable
 //! equivalent, so an unsupported target loses performance and never correctness.
 //!
-//! A log's flushes run on its own thread (`flusher`), or on Linux can be
-//! submitted to `io_uring` instead (`uring_fsync`).
+//! A log's appends and flushes each run on a thread of its own
+//! (`log_thread`), and on Linux the flushes can be submitted to `io_uring`
+//! instead (`uring_fsync`).
 
-pub(crate) mod flusher;
+pub(crate) mod log_thread;
 #[cfg(all(
     target_os = "linux",
     any(test, debug_assertions, feature = "fault-injection")
@@ -341,6 +342,9 @@ pub(crate) fn write_all(mut file: &File, buf: &[u8]) -> io::Result<()> {
     #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
     {
         crate::fault::refresh();
+        if let Some(delay) = crate::fault::write_delay() {
+            std::thread::sleep(delay);
+        }
         if let Some(err) = crate::fault::injected_write_failure() {
             file.write_all(&buf[..buf.len() / 2])?;
             return Err(err);

@@ -14,7 +14,7 @@ use std::time::Duration;
 use felix_common::lifecycle::Readiness;
 use tokio_util::sync::CancellationToken;
 
-use crate::api::{build_bootstrap_router, build_router};
+use crate::api::{build_bootstrap_router, build_bootstrap_router_with_dev_tokens, build_router};
 use crate::cluster::{membership, placement};
 use crate::config::ControlPlaneConfig;
 use crate::raft::LeadershipGate;
@@ -135,7 +135,16 @@ where
 
     let bootstrap_task = if config.bootstrap.enabled {
         let bootstrap_addr = config.bootstrap.bind_addr;
-        let bootstrap_app = build_bootstrap_router(state.clone());
+        let bootstrap_app = if config.bootstrap.dev_tokens {
+            tracing::warn!(
+                addr = %bootstrap_addr,
+                "bootstrap dev tokens are ENABLED: the bootstrap token mints a token for any \
+                 principal; for local development only",
+            );
+            build_bootstrap_router_with_dev_tokens(state.clone())
+        } else {
+            build_bootstrap_router(state.clone())
+        };
         let api_shutdown = api_shutdown.clone();
         // Loaded before the task spawns: unreadable key material is a
         // misconfiguration that must fail startup, not a log line inside a

@@ -133,7 +133,30 @@ pub async fn exchange_token(
         .map(|group| scoped_group(&validated.issuer, group))
         .collect();
     let principal = principal::from_claims(&validated.issuer, &validated.subject, scoped);
+    mint_for_principal(
+        &state,
+        &tenant_id,
+        &principal.principal_id,
+        &principal.groups,
+        &request,
+        audience,
+    )
+    .await
+    .map(Json)
+}
 
+/// The Felix token and refresh token for `principal_id` in `tenant_id`, with
+/// the permissions RBAC grants it, narrowed by `request`. `groups` are the
+/// identity provider's group claims, already scoped by issuer.
+pub(crate) async fn mint_for_principal(
+    state: &AppState,
+    tenant_id: &str,
+    principal_id: &str,
+    groups: &[String],
+    request: &TokenExchangeRequest,
+    audience: &str,
+) -> Result<TokenExchangeResponse, ApiError> {
+    let tenant_id = tenant_id.to_string();
     let policies = state
         .store
         .list_rbac_policies(&tenant_id)
@@ -146,8 +169,8 @@ pub async fn exchange_token(
         .map_err(|err| api_internal("failed to load groupings", &err))?;
     add_group_claim_groupings(
         &mut groupings,
-        &principal.principal_id,
-        &with_legacy_names(&principal.groups, legacy_unscoped_groups()),
+        principal_id,
+        &with_legacy_names(groups, legacy_unscoped_groups()),
     );
 
     let enforcer = build_enforcer(&policies, &groupings, &tenant_id)
@@ -157,7 +180,7 @@ pub async fn exchange_token(
             api_internal_message("failed to build enforcer")
         })?;
 
-    let mut perms = effective_permissions(&enforcer, &principal.principal_id, &tenant_id);
+    let mut perms = effective_permissions(&enforcer, principal_id, &tenant_id);
 
     perms = filter_permissions(
         perms,
@@ -179,15 +202,8 @@ pub async fn exchange_token(
         .map_err(|err| api_internal("failed to load signing keys", &err))?;
 
     let ttl = access_token_ttl();
-    let felix_token = mint_token_for(
-        &keys,
-        &tenant_id,
-        &principal.principal_id,
-        perms,
-        ttl,
-        audience,
-    )
-    .map_err(|_| api_internal_message("failed to mint token"))?;
+    let felix_token = mint_token_for(&keys, &tenant_id, principal_id, perms, ttl, audience)
+        .map_err(|_| api_internal_message("failed to mint token"))?;
 
     // The refresh token is what makes the short access TTL above workable for
     // anything long-running. Its group claims are recorded rather than its
@@ -197,8 +213,8 @@ pub async fn exchange_token(
     let refresh_ttl = crate::auth::refresh::refresh_ttl();
     let (mut record, refresh_secret) = crate::auth::refresh::issue(
         &tenant_id,
-        &principal.principal_id,
-        principal.groups.clone(),
+        principal_id,
+        groups.to_vec(),
         None,
         crate::auth::refresh::now_secs(),
         refresh_ttl,
@@ -215,13 +231,13 @@ pub async fn exchange_token(
         .map_err(|err| api_internal("failed to store refresh token", &err))?;
     metrics::counter!("felix_refresh_tokens_issued_total", "via" => "exchange").increment(1);
 
-    Ok(Json(TokenExchangeResponse {
+    Ok(TokenExchangeResponse {
         felix_token,
         expires_in: ttl.as_secs(),
         token_type: "Bearer".to_string(),
         refresh_token: refresh_secret,
         refresh_expires_in: refresh_ttl.as_secs(),
-    }))
+    })
 }
 
 /// The audience a caller asked for, `felix-broker` when it did not say.
