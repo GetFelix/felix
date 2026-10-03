@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791047033675,
+  "lastUpdate": 1791047305684,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22932,6 +22932,58 @@ window.BENCHMARK_DATA = {
             "range": "6199.50",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 822243.26\nmean: 820380.62\nstdev: 6199.50\ncv: 0.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5330948d4628e1e52b64a4fbcfaf5b8bc8b030c1",
+          "message": "fix(controlplane): accept RS256 ID tokens by default (#992)\n\nMost identity providers sign ID tokens with RS256, the algorithm OIDC\nrequires every provider to support, and the control plane accepted only\nES256 unless configured, so a first setup against Dex, Keycloak, Auth0 or\nEntra ID failed. The default is now ES256 and RS256, kept in one place, and\nan explicit setting still narrows it.\n\nCloses #984.",
+          "timestamp": "2026-10-03T09:57:46-07:00",
+          "tree_id": "b52547d162d81a7bf5ee77495ae72fcfb6d76602",
+          "url": "https://github.com/gabloe/felix/commit/5330948d4628e1e52b64a4fbcfaf5b8bc8b030c1"
+        },
+        "date": 1791047305257,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 513067.38,
+            "range": "20534.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 513067.38\nmean: 519997.73\nstdev: 20534.26\ncv: 3.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 513067.38,
+            "range": "20534.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 513067.38\nmean: 519997.73\nstdev: 20534.26\ncv: 3.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123616.6,
+            "range": "629.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123616.60\nmean: 123625.33\nstdev: 629.15\ncv: 0.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1236165.98,
+            "range": "6291.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1236165.98\nmean: 1236253.27\nstdev: 6291.53\ncv: 0.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
