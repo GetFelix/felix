@@ -1377,9 +1377,9 @@ ends every subscription and cache watch it was serving on that shard. It waits
 (briefly) for the writes already inside the shard's write fence to land and fan
 out, so each reader first receives everything this broker committed. To a client
 that offered `FEATURE_SHARD_MOVED` it then sends `shard_moved` and finishes the
-stream. A subscribe that reaches it after that, while its routes have not yet
-caught up, is answered `shard_unavailable` with reason `moving` rather than
-registered, since nothing would end it.
+stream. A subscribe or cache watch that reaches it after that, while its
+routes have not yet caught up, is answered `shard_unavailable` with reason
+`moving` rather than registered, since nothing would end it.
 
 - `resume_from` is the first offset this broker did not offer the reader. For a
   stream subscription every record below it was sent to the subscriber or dropped
