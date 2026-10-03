@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791056014790,
+  "lastUpdate": 1791057261113,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -23296,6 +23296,58 @@ window.BENCHMARK_DATA = {
             "range": "6884.79",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 819073.99\nmean: 818943.21\nstdev: 6884.79\ncv: 0.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6be110aab4141bf038cfcc96e854484559a72c56",
+          "message": "feat(client,broker): commit acks per connection, by negotiation (#998)\n\nAn acked publish reported its offset only when the broker acked after the\nwrite, which took the broker-wide FELIX_ACK_ON_COMMIT. A client can now offer\nFEATURE_ACK_ON_COMMIT (ClientConfig::ack_on_commit) and the broker answers\nthat connection's acked publishes after the write, with offsets, leaving\nevery other client on the broker as it was. Clients offer the bit only when\nasked, not as part of every bit they know.\n\nCloses #956.\n\nSpec-Unaffected: changes only when a connection's publishes are acknowledged by the broker it reached, which the broker-wide setting already did; the lease, the mark, quorum acks and promotion are untouched.",
+          "timestamp": "2026-10-03T12:32:46-07:00",
+          "tree_id": "7d02c7e5cd09cf6b335e0929a1e025d7eab32b94",
+          "url": "https://github.com/gabloe/felix/commit/6be110aab4141bf038cfcc96e854484559a72c56"
+        },
+        "date": 1791057260466,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358130.87,
+            "range": "13438.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358130.87\nmean: 360344.29\nstdev: 13438.48\ncv: 3.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358130.87,
+            "range": "13438.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358130.87\nmean: 360344.29\nstdev: 13438.48\ncv: 3.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82676.21,
+            "range": "837.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82676.21\nmean: 83092.42\nstdev: 837.08\ncv: 1.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 826762.06,
+            "range": "8370.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 826762.06\nmean: 830924.15\nstdev: 8370.78\ncv: 1.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
