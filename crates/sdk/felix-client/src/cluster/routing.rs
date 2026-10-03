@@ -1,8 +1,6 @@
 //! The owner cache: which broker to send a shard's publishes to, learned
 //! from acks that say the publish was forwarded.
 
-use std::net::SocketAddr;
-
 use super::{ClusterClient, Owner, ShardKey, StreamKey};
 
 impl ClusterClient {
@@ -60,12 +58,7 @@ impl ClusterClient {
         let Some(addr) = owner.addr.as_deref() else {
             return;
         };
-        let Ok(addr) = addr.parse::<SocketAddr>() else {
-            tracing::debug!(
-                owner = %owner.node_id,
-                addr,
-                "the shard owner's address does not parse; still forwarding",
-            );
+        let Some(addr) = self.resolve(addr).await else {
             return;
         };
 

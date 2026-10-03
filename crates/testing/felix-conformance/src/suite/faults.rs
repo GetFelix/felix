@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use felix_broker::{Broker, StreamMetadata};
+use felix_broker::{Broker, CacheMetadata, StreamMetadata};
 use felix_client::{Client, ClientConfig, ClusterClient, ClusterSubscription, Event, Subscription};
 use felix_conformance::kit::{self, FaultScenario, Phase};
 use felix_conformance::link::{Interposer, LinkFault};
@@ -65,20 +65,27 @@ pub(crate) async fn run_link_faults(
         let vias: &[Via] = match case.step.during {
             Phase::Publish => &[Via::Cluster, Via::Pipelined],
             Phase::Subscribe => &[Via::Cluster, Via::Plain],
+            Phase::Cache => &[Via::Cluster],
         };
         for (n, via) in vias.iter().enumerate() {
             let stream = format!("link-fault-{index}-{n}");
-            broker
-                .register_stream(
-                    TENANT,
-                    NAMESPACE,
-                    &stream,
-                    StreamMetadata {
-                        durable: true,
-                        ..Default::default()
-                    },
-                )
-                .await?;
+            if case.step.during == Phase::Cache {
+                broker
+                    .register_cache(TENANT, NAMESPACE, &stream, CacheMetadata::default())
+                    .await?;
+            } else {
+                broker
+                    .register_stream(
+                        TENANT,
+                        NAMESPACE,
+                        &stream,
+                        StreamMetadata {
+                            durable: true,
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+            }
             let case = case.clone();
             let config = config.clone();
             let via = *via;
@@ -122,7 +129,89 @@ async fn run_case(
         }
         Phase::Publish => publish_case(case, &link, &direct, stream, config).await,
         Phase::Subscribe => subscribe_case(case, via, &link, &direct, stream, config).await,
+        Phase::Cache => cache_case(case, &link, stream, config).await,
     }
+}
+
+/// Cache puts and counter adds through the interposed client, the fault
+/// landing partway. Every call returns; once the fault is over a put lands
+/// again; every acknowledged put reads back, and the counter holds at least
+/// every acknowledged add and no more than were sent.
+async fn cache_case(
+    case: &FaultScenario,
+    link: &Interposer,
+    cache: &str,
+    config: ClientConfig,
+) -> Result<&'static str> {
+    let step = &case.step;
+    let hold = Duration::from_millis(step.hold_ms);
+    let cluster = ClusterClient::connect(&[link.addr()], "localhost", config).await?;
+    let counter = format!("{}-count", case.id);
+    let mut acked = Vec::new();
+    let (mut added, mut errors) = (0i64, 0);
+    let mut healed_at = None;
+    for index in 0..step.records {
+        if index == step.after_records {
+            link.inject(step.fault, hold);
+            healed_at = Some(Instant::now() + hold);
+        }
+        let key = format!("{}-{index}", case.id);
+        let put = cluster.cache_put(TENANT, NAMESPACE, cache, &key, key.clone().into(), None);
+        match timeout(hold + SETTLE, put).await {
+            Err(_) => bail!("put {index} neither returned nor failed"),
+            Ok(Ok(())) => acked.push(key),
+            Ok(Err(_)) => errors += 1,
+        }
+        let add = cluster.counter_add(TENANT, NAMESPACE, cache, &counter, 1);
+        match timeout(hold + SETTLE, add).await {
+            Err(_) => bail!("add {index} neither returned nor failed"),
+            Ok(Ok(_)) => added += 1,
+            Ok(Err(_)) => errors += 1,
+        }
+    }
+
+    if let Some(at) = healed_at {
+        tokio::time::sleep_until(at).await;
+    }
+    let after = format!("{}-after", case.id);
+    let deadline = Instant::now() + SETTLE;
+    loop {
+        match cluster
+            .cache_put(TENANT, NAMESPACE, cache, &after, after.clone().into(), None)
+            .await
+        {
+            Ok(()) => {
+                acked.push(after);
+                break;
+            }
+            Err(err) if Instant::now() >= deadline => {
+                bail!("the client never wrote to the cache again after the fault: {err:#}")
+            }
+            Err(_) => tokio::time::sleep(POLL).await,
+        }
+    }
+
+    for key in &acked {
+        let value = cluster.cache_get(TENANT, NAMESPACE, cache, key).await?;
+        if value.as_deref() != Some(key.as_bytes()) {
+            bail!("the acknowledged put of {key} reads back as {value:?}");
+        }
+    }
+    let count = cluster
+        .counter_get(TENANT, NAMESPACE, cache, &counter)
+        .await?
+        .unwrap_or(0);
+    if count < added || count > i64::from(step.records) {
+        bail!(
+            "the counter is {count} after {added} acknowledged adds of {}",
+            step.records
+        );
+    }
+    Ok(if errors == 0 {
+        "every call acknowledged"
+    } else {
+        "reported the loss, then recovered"
+    })
 }
 
 async fn publish_case(

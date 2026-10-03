@@ -153,6 +153,7 @@ felix_storage_sync_duration_seconds
 felix_storage_sync_batch_appends       # records made durable per device flush
 felix_storage_unsynced_bytes           # what a crash would lose right now
 felix_storage_sync_failures_total      # non-zero: acknowledged durability in doubt
+felix_storage_full_total               # writes refused on a full disk; nothing written
 ```
 
 If sync dominates append, the fsync policy is the cost. A

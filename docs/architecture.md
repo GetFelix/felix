@@ -95,7 +95,7 @@ The wire protocol is versioned and explicitly framed to allow forward compatibil
 - **Durable:** a segmented, checksummed append-only log on persistent volumes,
   selected per stream by `durable: true`. See
   [Durable Storage](durable-storage.md).
-- **Retention:** implemented per broker via `FELIX_DURABLE_RETENTION_BYTES` / `_SECONDS`, and off unless set. A *per-stream* policy is recorded and not yet read, so a stream's declared retention is not the one enforced. `truncate` exists for replication's
+- **Retention:** a stream's own `retention` (`max_size_bytes`, `max_age_seconds`) bounds its logs, and a bound it leaves unset comes from the broker's `FELIX_DURABLE_RETENTION_BYTES` / `_SECONDS`. Off unless one of them is set. `truncate` exists for replication's
   benefit; nothing deletes segments on age or size.
 - **Tiering:** not yet implemented. `TieredStore` is declared and unimplemented;
   tracked as [#172](https://github.com/gabloe/felix/issues/172).

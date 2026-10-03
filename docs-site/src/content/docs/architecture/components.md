@@ -441,13 +441,10 @@ the oldest segments are discarded, and a subscription resuming below the oldest
 retained offset is answered with a typed error naming that offset rather than
 silently restarting at the tail.
 
-:::caution[A stream's `retention` field is not enforced]
-The control plane accepts a per-stream `RetentionPolicy` (`max_age_seconds`,
-`max_size_bytes`) and stores it, but no broker code reads it. What a durable log
-actually obeys is the broker-wide configuration above, whatever a stream
-declares. This is the same shape as `DeliveryGuarantee`: declared in metadata,
-not wired to behaviour. Do not rely on it.
-:::
+A stream's own `RetentionPolicy` in the control plane (`max_age_seconds`,
+`max_size_bytes`) overrides those bounds for that stream's logs, one bound at a
+time: a bound it leaves unset is the broker's. A patch reaches logs that are
+already open, so it needs no restart. Zero is refused.
 
 ## felix-replication: Broker-to-Broker Replication
 

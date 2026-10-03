@@ -3,7 +3,7 @@
 
 mod config;
 
-pub use config::{FsyncMode, LogConfig};
+pub use config::{FsyncMode, LogConfig, Retention};
 
 use std::future::Future;
 use std::pin::Pin;

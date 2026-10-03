@@ -62,6 +62,9 @@ pub enum StorageError {
         expected: String,
         found: String,
     },
+    /// The device or the quota is out of space. Nothing was written, so the
+    /// same request can succeed once space is freed.
+    Full(std::io::Error),
     Io(std::io::Error),
 }
 
@@ -96,6 +99,7 @@ impl fmt::Display for StorageError {
                 f,
                 "shard directory {dir} belongs to {found}, not {expected}; refusing to open it"
             ),
+            StorageError::Full(err) => write!(f, "storage full: {err}"),
             StorageError::Io(err) => write!(f, "io error: {err}"),
         }
     }
@@ -104,7 +108,7 @@ impl fmt::Display for StorageError {
 impl std::error::Error for StorageError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            StorageError::Io(err) => Some(err),
+            StorageError::Full(err) | StorageError::Io(err) => Some(err),
             _ => None,
         }
     }
@@ -118,6 +122,13 @@ impl From<Corruption> for StorageError {
 
 impl From<std::io::Error> for StorageError {
     fn from(err: std::io::Error) -> Self {
+        if matches!(
+            err.kind(),
+            std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded
+        ) {
+            metrics::counter!(crate::metrics_names::STORAGE_FULL_TOTAL).increment(1);
+            return StorageError::Full(err);
+        }
         StorageError::Io(err)
     }
 }

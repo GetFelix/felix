@@ -251,6 +251,39 @@ pub(crate) async fn handle_cache_watch_message(
         WATCH_QUEUE_CAPACITY,
     );
 
+    // The lifecycle closes a shard's fence and ends its watches before the
+    // routes that admitted this request catch up. A watch registered after
+    // that would never be ended and would sit on a shard nobody writes here,
+    // so it is refused and the client retries where the shard is now.
+    // Checked after registering: a fence still open means the ending is yet
+    // to come and will include it.
+    let shard_key = crate::shards::ShardKey {
+        tenant_id: request.tenant_id.clone(),
+        namespace: request.namespace.clone(),
+        stream: request.cache.clone(),
+        shard,
+        kind: crate::shards::ShardKind::Cache,
+    };
+    if publish_ctx
+        .ingress
+        .as_deref()
+        .is_some_and(|ingress| ingress.fence().is_closed(&shard_key))
+    {
+        drop(watch);
+        subscriptions.release();
+        let reason = crate::shards::routing::Reason::Moving;
+        responder
+            .send(
+                ClientError::unavailable(
+                    &reason,
+                    format!("cache {} stopped being served here", request.cache),
+                )
+                .into_message(),
+            )
+            .await?;
+        return Ok(true);
+    }
+
     let Some(log) = broker
         .cache()
         .shard_log(
@@ -309,13 +342,7 @@ pub(crate) async fn handle_cache_watch_message(
     // cache it waits for the mark to get there first.
     let gate = CommitGate {
         broker: Arc::clone(&broker),
-        key: crate::shards::ShardKey {
-            tenant_id: request.tenant_id.clone(),
-            namespace: request.namespace.clone(),
-            stream: request.cache.clone(),
-            shard,
-            kind: crate::shards::ShardKind::Cache,
-        },
+        key: shard_key,
         marks: publish_ctx.marks.clone(),
         ingress: publish_ctx.ingress.clone(),
         timeout: publish_ctx.quorum_timeout,
@@ -716,3 +743,6 @@ async fn run_watch_delivery(
     let _ = event_send.finish();
     subscriptions.release();
 }
+
+#[cfg(test)]
+mod tests;

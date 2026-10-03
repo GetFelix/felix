@@ -200,9 +200,9 @@ to disk before it is fanned out or acknowledged.
   fails startup loudly rather than discarding acknowledged records
 - **Historical replay:** paged reads from disk by offset
 
-Retention is implemented and off by default: set
-`FELIX_DURABLE_RETENTION_BYTES` or `FELIX_DURABLE_RETENTION_SECONDS` and the
-oldest segments are discarded, with a resume below the oldest retained offset
+Retention is implemented and off by default: set a stream's `retention`, or
+`FELIX_DURABLE_RETENTION_BYTES` or `FELIX_DURABLE_RETENTION_SECONDS` for every
+stream that sets none, and the oldest segments are discarded, with a resume below the oldest retained offset
 answered by a typed error rather than a silent restart at the tail. Unset,
 nothing deletes segments and a log grows without bound.
 

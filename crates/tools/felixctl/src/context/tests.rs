@@ -316,6 +316,34 @@ fn the_config_file_round_trips_and_is_private() {
     }
 }
 
+/// An existing config readable by others is made private when saved over,
+/// not only one the save creates.
+#[cfg(unix)]
+#[test]
+fn saving_over_a_readable_config_makes_it_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "").expect("write");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+
+    let config = config_with("dev", full_profile());
+    config.save(&path).expect("save");
+
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(
+        mode & 0o077,
+        0,
+        "the config is readable by others: {mode:o}"
+    );
+    assert_eq!(ConfigFile::load(&path).expect("load"), config);
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+        .expect("list")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect();
+    assert_eq!(leftovers, vec![std::ffi::OsString::from("config.toml")]);
+}
+
 #[test]
 fn an_unknown_key_in_the_config_file_is_refused() {
     let dir = tempfile::tempdir().expect("tempdir");

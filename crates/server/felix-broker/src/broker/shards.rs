@@ -244,13 +244,13 @@ impl Broker {
             .cache
             .close_shard(tenant_id, namespace, cache, shard)
             .await
-            .map_err(|err| BrokerError::Storage(err.to_string()));
+            .map_err(BrokerError::from);
         if let Some(counters) = &self.counters {
             closed = closed.and(
                 counters
                     .close_shard(tenant_id, namespace, cache, shard)
                     .await
-                    .map_err(|err| BrokerError::Storage(err.to_string())),
+                    .map_err(BrokerError::from),
             );
         }
         closed

@@ -428,6 +428,7 @@ async fn quorum_leader(count: usize, generation: u64) -> (Arc<Broker>, tempfile:
                 durable: true,
                 shards: 1,
                 consistency: felix_broker::ConsistencyLevel::Quorum,
+                ..Default::default()
             },
         )
         .await

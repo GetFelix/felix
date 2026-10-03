@@ -30,17 +30,78 @@ fn entry_and_owner(
     StubBroker,
     rustls::pki_types::CertificateDer<'static>,
 )> {
+    entry_and_owner_advertised(owner_script, |owner| owner.to_string())
+}
+
+/// [`entry_and_owner`], with the owner advertising whatever `advertise` makes
+/// of its address.
+fn entry_and_owner_advertised(
+    owner_script: impl Fn(u64) -> Message + Send + Sync + 'static,
+    advertise: impl Fn(std::net::SocketAddr) -> String,
+) -> Result<(
+    StubBroker,
+    StubBroker,
+    rustls::pki_types::CertificateDer<'static>,
+)> {
     let (server_config, cert) = build_server_config()?;
     let owner = StubBroker::start_with(server_config.clone(), owner_script)?;
     let entry = StubBroker::start_with(server_config, success)?;
     entry.set_cache_owners(vec![ShardOwner {
         shard: 0,
         node_id: Some("broker-2".into()),
-        addr: Some(owner.addr.to_string()),
+        addr: Some(advertise(owner.addr)),
         generation: 1,
         unavailable: None,
     }]);
     Ok((entry, owner, cert))
+}
+
+/// **An owner that advertises a name is resolved and reached**, rather than
+/// dropped for not parsing as an address. The name is also what its
+/// certificate is checked against, and the stub's says `localhost`.
+#[tokio::test]
+#[serial_test::serial]
+async fn an_owner_advertised_by_name_is_reached() -> Result<()> {
+    let (entry, owner, cert) =
+        entry_and_owner_advertised(success, |addr| format!("localhost:{}", addr.port()))?;
+    let cluster = ClusterClient::connect_with_policy(
+        &[entry.addr],
+        "localhost",
+        build_client_config_with_overrides(cert, 1)?,
+        fast_policy(),
+    )
+    .await?;
+
+    cluster
+        .cache_put("t1", "default", "sessions", "alice", "v".into(), None)
+        .await?;
+
+    assert_eq!(owner.cache_requests(), 1);
+    assert_eq!(entry.cache_requests(), 0);
+    Ok(())
+}
+
+/// A name that does not resolve leaves the request with the entry broker.
+#[tokio::test]
+#[serial_test::serial]
+async fn an_owner_whose_name_does_not_resolve_is_skipped() -> Result<()> {
+    let (entry, owner, cert) =
+        entry_and_owner_advertised(success, |_| "felix-absent.invalid:5000".to_string())?;
+    let cluster = ClusterClient::connect_with_policy(
+        &[entry.addr],
+        "localhost",
+        build_client_config_with_overrides(cert, 1)?,
+        fast_policy(),
+    )
+    .await?;
+
+    cluster
+        .cache_put("t1", "default", "sessions", "alice", "v".into(), None)
+        .await?;
+
+    assert_eq!(owner.cache_requests(), 0);
+    assert_eq!(entry.cache_requests(), 1);
+    Ok(())
 }
 
 /// **A cache request goes straight to the shard's owner.** The entry broker

@@ -53,7 +53,9 @@ broker that has not seen the log would serve it empty. It is **moved**:
    [Upgrades](/felix/deployment/upgrades/)), it first appends a
    generation-start record, and its quorum mark counts nothing it inherited
    until that record is on a majority. A cancelled move hands the shard back
-   the same way.
+   the same way. A broker given a shard back at any later generation, after
+   the move finished and its destination led, is promoted instead and fences
+   the replicas first, as after any failover.
 
 ```mermaid
 sequenceDiagram

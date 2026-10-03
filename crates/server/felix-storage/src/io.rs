@@ -122,6 +122,13 @@ pub(crate) fn preallocate(file: &File, len: u64) -> io::Result<()> {
     if len == 0 {
         return Ok(());
     }
+    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+    {
+        crate::fault::refresh();
+        if let Some(err) = crate::fault::injected_no_space() {
+            return Err(err);
+        }
+    }
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::io::AsRawFd;

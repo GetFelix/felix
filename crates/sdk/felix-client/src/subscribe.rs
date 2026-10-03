@@ -58,8 +58,8 @@ impl Subscription {
 
     /// The first offset this subscription delivers.
     ///
-    /// `None` for a plain tail subscribe, an in-memory stream, or an older
-    /// broker.
+    /// `None` for an in-memory stream, or from a broker older than event
+    /// offsets. A plain tail subscribe reports the tail, as `Latest` does.
     pub fn start_offset(&self) -> Option<u64> {
         self.start_offset
     }

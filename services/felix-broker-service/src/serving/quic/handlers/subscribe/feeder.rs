@@ -308,9 +308,9 @@ pub(super) async fn enqueue_lane_frame(
         first_enqueued_at,
         enqueue_at: Instant::now(),
     };
-    if manager.enqueue(lane_idx, cmd).await.is_err() {
-        metrics::counter!("felix_subscriber_lane_dropped_total").increment(1);
-    }
+    // Fails only once the connection's lanes are gone, and its subscriptions
+    // with them.
+    let _ = manager.enqueue(lane_idx, cmd).await;
 }
 
 /// The last frame of a subscription whose shard moved away.

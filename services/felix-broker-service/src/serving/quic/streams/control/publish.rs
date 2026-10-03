@@ -29,7 +29,6 @@ pub(super) async fn publish(
 ) -> Result<Step> {
     let Ctx {
         broker,
-        config,
         publish_ctx,
         authz_ctx,
         out_ack_tx,
@@ -63,7 +62,7 @@ pub(super) async fn publish(
         &mut session.stream_cache,
         &mut session.stream_cache_key,
         throttled,
-        config.ack_on_commit,
+        session.commit_ack,
         out_ack_tx,
         out_ack_depth,
         ack_throttle_tx,
@@ -104,7 +103,6 @@ pub(super) async fn publish_batch(
 ) -> Result<Step> {
     let Ctx {
         broker,
-        config,
         publish_ctx,
         authz_ctx,
         out_ack_tx,
@@ -138,7 +136,7 @@ pub(super) async fn publish_batch(
         &mut session.stream_cache,
         &mut session.stream_cache_key,
         throttled,
-        config.ack_on_commit,
+        session.commit_ack,
         AckEncoding::Json,
         out_ack_tx,
         out_ack_depth,
@@ -181,7 +179,6 @@ pub(super) async fn publish_idempotent(
 ) -> Result<Step> {
     let Ctx {
         broker,
-        config,
         publish_ctx,
         authz_ctx,
         out_ack_tx,
@@ -215,7 +212,7 @@ pub(super) async fn publish_idempotent(
         &mut session.stream_cache,
         &mut session.stream_cache_key,
         throttled,
-        config.ack_on_commit,
+        session.commit_ack,
         AckEncoding::Idempotent,
         out_ack_tx,
         out_ack_depth,

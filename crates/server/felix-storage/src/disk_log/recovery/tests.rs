@@ -96,6 +96,43 @@ fn a_crash_before_the_header_is_written_leaves_the_log_openable() {
     assert!(!path.exists());
 }
 
+/// What a full disk left when the log's first segment could not be reserved.
+fn plant_blank_first_segment(dir: &TempDir) -> PathBuf {
+    let path = segment_path(dir.path(), 0);
+    std::fs::write(&path, b"").expect("create");
+    path
+}
+
+#[test]
+fn a_first_segment_that_never_got_a_header_starts_the_log_afresh() {
+    let dir = tempdir().expect("dir");
+    plant_blank_first_segment(&dir);
+
+    let mut recovered = reopen(&dir).expect("recover");
+    assert_eq!(recovered.active.next_offset(), 0);
+    assert_eq!(
+        recovered.active.append(&[record("a")]).expect("append"),
+        (0, 0)
+    );
+}
+
+#[test]
+fn placing_a_shard_over_a_blank_first_segment_keeps_its_base() {
+    let dir = tempdir().expect("dir");
+    plant_blank_first_segment(&dir);
+
+    assert!(place_empty_shard(dir.path(), "t/ns/s/0", &config(), 40).expect("place"));
+    assert_eq!(reopen(&dir).expect("recover").active.next_offset(), 40);
+}
+
+#[test]
+fn a_later_segment_alone_without_a_header_is_still_refused() {
+    let dir = tempdir().expect("dir");
+    std::fs::write(segment_path(dir.path(), 3), b"").expect("create");
+
+    assert!(matches!(reopen(&dir), Err(StorageError::Corruption(_))));
+}
+
 #[test]
 fn a_partially_written_header_is_also_an_uninstalled_rollover() {
     let dir = tempdir().expect("dir");

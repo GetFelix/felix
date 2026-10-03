@@ -156,11 +156,11 @@ impl BrokerConfig {
     /// A token passed by value is not a seam anything can write, which is why
     /// the file is what counts rather than merely having a token.
     fn validate_credential_can_outlive_itself(&self) -> Result<()> {
-        let Some(membership) = self.membership.as_ref() else {
+        if self.membership.is_none() {
             // Not joining a cluster: no heartbeat, no lease, nothing to lose.
             return Ok(());
-        };
-        if membership.refresh_token_file.is_some() || membership.node_token_file.is_some() {
+        }
+        if self.node_refresh_token_file.is_some() || self.node_token_file.is_some() {
             return Ok(());
         }
         // Only a token that says when it expires. One this broker cannot read

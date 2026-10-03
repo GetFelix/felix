@@ -448,7 +448,7 @@ subscriber_writer_lanes: 4
 
 #### `subscriber_lane_queue_depth`
 
-**Description**: Bounded command queue depth per writer lane.
+**Description**: Frames the connection writer queues for one subscription before the subscription's queue policy applies. Also bounds the writer lanes and the connection writer's command queue, which wait when full rather than drop.
 
 **Type**: `usize` (count)
 
@@ -462,7 +462,7 @@ subscriber_lane_queue_depth: 64
 
 #### `subscriber_lane_queue_policy`
 
-**Description**: Backpressure policy for the writer-lane command queue (downstream of `subscriber_queue_policy`; gates the actual QUIC write).
+**Description**: What the connection writer does when one subscription's frame queue is full (downstream of `subscriber_queue_policy`; gates the actual QUIC write). `drop_new` drops the frame for that subscription alone, counted in `felix_sub_queue_dropped_total`; `block` stops the writer taking frames until it drains.
 
 **Type**: `enum` (`block`, `drop_new`, `drop_old`)
 

@@ -16,6 +16,12 @@ impl Client {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_TOPOLOGY)
     }
 
+    /// Whether this broker answers acknowledged publishes after the write when
+    /// [`crate::ClientConfig::ack_on_commit`] asks it to.
+    pub fn supports_ack_on_commit(&self) -> bool {
+        felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_ACK_ON_COMMIT)
+    }
+
     /// Whether this broker answers [`Client::stream_shards`].
     pub fn supports_stream_shards(&self) -> bool {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_STREAM_SHARDS)

@@ -18,7 +18,9 @@ npm install felix-client
 The binary ships as one package per platform, declared as optional
 dependencies, so npm fetches only the one your machine needs. Nothing is
 compiled at install time and no Rust toolchain is required. Linux (x86-64 and
-arm64, glibc), macOS (Intel and Apple silicon) and Windows x86-64 are covered.
+arm64, glibc 2.28 or newer: Debian bookworm, RHEL 8, Amazon Linux 2023), macOS
+(Intel and Apple silicon) and Windows x86-64 are covered. Alpine and other musl
+systems are not.
 
 To build it from the repository instead:
 
@@ -387,6 +389,12 @@ const current = await client.counterGet("t1", "default", "limits", "user:42:reqs
 `counterGet` returns `null` for a counter that was never written, which is not
 the same as zero. A retry after a lost acknowledgement counts twice. Counters
 need a durable broker that advertises `FEATURE_COUNTERS`.
+
+Cache and counter calls go to the key's shard owner when the client knows it,
+like a publish. If the broker the client entered by goes away, the next call
+moves to another one: a read (a get) is asked again there, while a write that
+may have landed (a put, delete or add) returns its error with the client
+already moved, and is not sent twice. `streamShards` moves the same way.
 
 ## Cache watches
 

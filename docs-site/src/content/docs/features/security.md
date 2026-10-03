@@ -255,12 +255,12 @@ principal to it, and exchange. The same route gives a broker its
 Felix supports any OIDC-compliant IdP that exposes a JWKS endpoint (via discovery or direct JWKS URL) and uses an allowed upstream OIDC signing algorithm.
 
 Supported upstream OIDC JWT signing algorithms:
-- `ES256` (default)
-- `RS256`, `RS384`, `RS512`
+- `ES256` and `RS256` (the default)
+- `RS384`, `RS512`
 - `PS256`, `PS384`, `PS512`
 
 Control plane configuration:
-- YAML: `oidc_allowed_algorithms: ["ES256"]`
+- YAML: `oidc_allowed_algorithms: ["ES256", "RS256"]`
 - Env: `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS=ES256,RS256,...`
 
 Common providers that work out of the box include Microsoft Entra ID, Okta,

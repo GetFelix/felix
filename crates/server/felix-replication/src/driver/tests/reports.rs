@@ -398,6 +398,7 @@ async fn registered_leader(
                 durable: true,
                 shards: 1,
                 consistency,
+                ..Default::default()
             },
         )
         .await
