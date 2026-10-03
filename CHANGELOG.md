@@ -72,6 +72,13 @@ for what the current release guarantees.
 
 ### Fixed
 
+- **A subscribe that reaches a broker just after it stopped serving the shard
+  is refused instead of left waiting.** A broker ends a shard's readers before
+  its routes catch up with the move or failover, so for that moment it still
+  accepted subscribes, and one registered then was never ended: it delivered
+  nothing more, for good. It is now answered `shard_unavailable` (`moving`),
+  and the client retries where the shard is served.
+
 - **A `Quorum` stream's held batch is no longer stranded when the last mark
   that covers it arrives while the shard's bound is refused or settling.** The
   release now rechecks the bound while anything is held, so a route or lease

@@ -996,6 +996,12 @@ repeats nor skips a record the subscriber would otherwise have received. On an
 in-memory stream it is absent, since the sequence means nothing on another
 broker, and the client resumes at the new owner's tail.
 
+The old owner ends its readers a moment before its own routes catch up with the
+move. A subscribe that reaches it in that moment is answered `shard_unavailable`
+with reason `moving`, not accepted: nothing would end a subscription registered
+after the others were ended, and it would wait on a shard no longer written
+there. The client retries and finds the new owner.
+
 ## Stream Types and Lifecycle
 
 Felix uses different QUIC stream patterns for different workload characteristics:
