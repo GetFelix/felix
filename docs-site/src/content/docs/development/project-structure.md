@@ -97,8 +97,8 @@ published to crates.io.
 A segment store, not a WAL. The crate docs in `src/lib.rs` are the map:
 
 - `log.rs`: the `AppendOnlyLog` trait and its types.
-- `disk_log.rs` and `disk_log/`: the durable log. `append.rs` (the append path
-  and background rollover), `flush.rs`, `sync/` (fsync policy and group
+- `disk_log.rs` and `disk_log/`: the durable log. `append.rs` (the append path,
+  which runs on the log's append thread, and background rollover), `flush.rs`, `sync/` (fsync policy and group
   commit), `segments/` (with `rollover` and `truncation`), `recovery/`
   (startup validation and torn-tail repair), `retention.rs`, and the per-shard
   state files (`durable_mark`, `replica_state`, `epochs`, `producers`).
@@ -106,7 +106,7 @@ A segment store, not a WAL. The crate docs in `src/lib.rs` are the map:
   `scan` (torn tail or corruption), `reader`, `writer`, `cursor`, and the
   sparse `index`.
 - `io.rs`: positioned reads, preallocation and flushes (`F_FULLFSYNC` on
-  macOS).
+  macOS), and `log_thread`, the per-log threads appends and flushes run on.
 - `cache.rs` (`EphemeralCache` and `LogCache`) and `counter_log.rs`: stores
   projected from their own logs, compacted in the background by
   `compaction.rs`.

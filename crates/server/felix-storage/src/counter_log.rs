@@ -80,20 +80,26 @@ impl CounterStore {
         delta: i64,
     ) -> Result<(i64, Offset)> {
         let shard = self.shard(tenant_id, namespace, scope, shard)?;
-        let mut state = shard.state.lock().await;
-        shard.ensure_index(&mut state).await?;
-        let offset = shard
-            .write(
-                &mut state,
-                CounterOp::Delta {
-                    key: key.to_string(),
-                    delta,
-                },
-            )
-            .await?;
-        let sum = state.index.entries.get(key).map_or(0, |entry| entry.sum);
-        shard.maybe_compact(&state.index);
-        Ok((sum, offset))
+        let key = key.to_string();
+        // Run to the end even if the caller stops waiting: a delta in the log
+        // must be in the sum too.
+        crate::task::run_to_end(async move {
+            let mut state = shard.state.lock().await;
+            shard.ensure_index(&mut state).await?;
+            let offset = shard
+                .write(
+                    &mut state,
+                    CounterOp::Delta {
+                        key: key.clone(),
+                        delta,
+                    },
+                )
+                .await?;
+            let sum = state.index.entries.get(&key).map_or(0, |entry| entry.sum);
+            shard.maybe_compact(&state.index);
+            Ok((sum, offset))
+        })
+        .await
     }
 
     /// The current sum, or `None` for a counter nothing has ever touched.

@@ -4,10 +4,10 @@ use super::*;
 
 #[tokio::test]
 async fn the_result_of_the_work_reaches_the_caller() {
-    let flusher = Flusher::new("test-flush");
+    let flusher = LogThread::new("test-flush");
     flusher.run(|| Ok(())).await.expect("ok");
     let err = flusher
-        .run(|| Err(io::Error::other("device gone")))
+        .run(|| Err::<(), _>(io::Error::other("device gone")))
         .await
         .expect_err("the failure must be reported");
     assert_eq!(err.to_string(), "device gone");
@@ -17,7 +17,7 @@ async fn the_result_of_the_work_reaches_the_caller() {
 
 #[tokio::test]
 async fn work_runs_off_the_calling_thread() {
-    let flusher = Flusher::new("test-flush");
+    let flusher = LogThread::new("test-flush");
     let caller = std::thread::current().id();
     let (tx, rx) = std::sync::mpsc::channel();
     flusher
@@ -32,7 +32,7 @@ async fn work_runs_off_the_calling_thread() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_callers_are_served_one_at_a_time() {
-    let flusher = Arc::new(Flusher::new("test-flush"));
+    let flusher = Arc::new(LogThread::new("test-flush"));
     let running = Arc::new(AtomicUsize::new(0));
     let done = Arc::new(AtomicUsize::new(0));
     let mut tasks = Vec::new();
@@ -66,7 +66,7 @@ async fn concurrent_callers_are_served_one_at_a_time() {
 /// finds nothing to do would be trusting a sync that never happened.
 #[tokio::test]
 async fn an_abandoned_call_still_runs_its_work() {
-    let flusher = Flusher::new("test-flush");
+    let flusher = LogThread::new("test-flush");
     let (started_tx, started) = std::sync::mpsc::channel();
     let (release, held) = std::sync::mpsc::channel::<()>();
     let (ran_tx, ran) = std::sync::mpsc::channel();
@@ -90,9 +90,9 @@ async fn an_abandoned_call_still_runs_its_work() {
 
 #[tokio::test]
 async fn a_panicking_job_is_reported_and_the_thread_keeps_serving() {
-    let flusher = Flusher::new("test-flush");
+    let flusher = LogThread::new("test-flush");
     let err = flusher
-        .run(|| panic!("injected"))
+        .run(|| -> io::Result<()> { panic!("injected") })
         .await
         .expect_err("a panic is a failed flush");
     assert!(err.to_string().contains("panicked"), "{err}");
@@ -101,14 +101,14 @@ async fn a_panicking_job_is_reported_and_the_thread_keeps_serving() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_flush_queued_behind_a_panicking_one_still_runs() {
-    let flusher = Arc::new(Flusher::new("test-flush"));
+    let flusher = Arc::new(LogThread::new("test-flush"));
     let (started_tx, started) = std::sync::mpsc::channel();
     let (release, release_rx) = std::sync::mpsc::channel::<()>();
     let first = {
         let flusher = Arc::clone(&flusher);
         tokio::spawn(async move {
             flusher
-                .run(move || {
+                .run(move || -> io::Result<()> {
                     started_tx.send(()).expect("started");
                     release_rx.recv().expect("release");
                     panic!("injected")
@@ -137,7 +137,7 @@ fn the_thread_exits_when_the_log_is_dropped() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("runtime");
-    let flusher = Flusher::new("test-flush");
+    let flusher = LogThread::new("test-flush");
     let (tx, rx) = std::sync::mpsc::channel();
     runtime
         .block_on(flusher.run(move || {
@@ -160,7 +160,7 @@ fn the_thread_exits_when_the_log_is_dropped() {
 
 #[tokio::test]
 async fn an_idle_thread_exits_and_the_next_flush_starts_another() {
-    let flusher = Flusher::with_idle("test-flush", Duration::from_millis(5));
+    let flusher = LogThread::with_idle("test-flush", Duration::from_millis(5));
     let first = thread_of(&flusher).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
@@ -174,7 +174,7 @@ async fn an_idle_thread_exits_and_the_next_flush_starts_another() {
 /// Losing it would fail a durable append for no reason at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_flush_racing_the_idle_exit_is_not_lost() {
-    let flusher = Flusher::with_idle("test-flush", Duration::from_micros(200));
+    let flusher = LogThread::with_idle("test-flush", Duration::from_micros(200));
     for round in 0..2_000u32 {
         // Land submissions on both sides of the idle deadline.
         std::thread::sleep(Duration::from_micros(150 + u64::from(round % 100)));
@@ -185,7 +185,7 @@ async fn a_flush_racing_the_idle_exit_is_not_lost() {
     }
 }
 
-async fn thread_of(flusher: &Flusher) -> std::thread::ThreadId {
+async fn thread_of(flusher: &LogThread) -> std::thread::ThreadId {
     let (tx, rx) = std::sync::mpsc::channel();
     flusher
         .run(move || {
@@ -215,7 +215,7 @@ fn dispatch_overhead() {
                 let mut tasks = Vec::new();
                 for _ in 0..logs {
                     tasks.push(tokio::spawn(async move {
-                        let flusher = Flusher::new("bench-flush");
+                        let flusher = LogThread::new("bench-flush");
                         let mut samples = Vec::with_capacity(ROUNDS);
                         for _ in 0..ROUNDS {
                             let started = std::time::Instant::now();

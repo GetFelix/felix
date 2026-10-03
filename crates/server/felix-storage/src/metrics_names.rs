@@ -7,8 +7,8 @@
 //! * *Is durability the bottleneck?* Compare `append_duration_seconds` against
 //!   `sync_duration_seconds`. If sync dominates, the fsync policy is the cost.
 //! * *Is group commit working?* `sync_batch_appends` is the fan-in per device
-//!   flush. A value near 1 under concurrent load means appends are serialising
-//!   on the device instead of sharing a flush.
+//!   flush, in records. A value near 1 under concurrent single-record load
+//!   means appends are serialising on the device instead of sharing a flush.
 //! * *Is the periodic policy honouring its window?* `unsynced_bytes` is the data
 //!   at risk right now; `sync_lag_seconds` is how long the oldest unsynced byte
 //!   has been waiting.
@@ -29,7 +29,9 @@ pub const APPEND_DURATION_SECONDS: &str = "felix_storage_append_duration_seconds
 pub const SYNC_TOTAL: &str = "felix_storage_sync_total";
 /// Time spent inside a single flush.
 pub const SYNC_DURATION_SECONDS: &str = "felix_storage_sync_duration_seconds";
-/// Appends served by one flush — the group-commit fan-in.
+/// Records made durable by one `OnCommit` flush: the group-commit fan-in. A
+/// batch of N records counts N, whether one client sent it or the broker
+/// merged N publishes into one append.
 pub const SYNC_BATCH_APPENDS: &str = "felix_storage_sync_batch_appends";
 /// Flushes that failed. Any non-zero value means acknowledged durability is in
 /// doubt.

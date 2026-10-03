@@ -55,6 +55,7 @@ pub mod log;
 pub mod metrics_names;
 pub mod segment;
 mod shard_slots;
+mod task;
 pub mod tiered;
 
 pub use cache::{

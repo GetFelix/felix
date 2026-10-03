@@ -393,6 +393,7 @@ makes, whether the broker leads the log or follows it:
 write=enospc         # every segment write fails with ENOSPC; or eio
 write=eio_once       # the next segment write fails with EIO, later ones succeed
 write_generation=1   # a new value arms eio_once again
+write_delay_ms=200   # each segment write waits first, like a throttled write()
 ```
 
 A failed write lands the first half of its batch and then reports, as a disk
