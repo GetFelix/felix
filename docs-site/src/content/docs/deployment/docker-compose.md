@@ -8,13 +8,15 @@ Running Felix under Docker Compose, for local development and testing.
 The images are published to GHCR and are pullable without credentials:
 
 ```bash
-docker pull ghcr.io/gabloe/felix-broker:0.5.0
-docker pull ghcr.io/gabloe/felix-controlplane:0.5.0
+docker pull ghcr.io/gabloe/felix-broker:0.6.0-preview
+docker pull ghcr.io/gabloe/felix-controlplane:0.6.0-preview
 ```
 
-Each release publishes three tags: the full version (`0.5.0`), the minor
-series (`0.5`), and `latest` on releases without a pre-release suffix. Use a
-version tag in anything you deploy, because `latest` moves.
+Each release publishes the full version (`0.6.0-preview`). A release without a
+pre-release suffix also publishes its minor series (`0.6`) and `latest`. Use a
+full version tag in anything you deploy, because the other two move. A client
+negotiates its features with the broker it connects to, so a newer client
+against older images runs without whatever the images predate.
 
 To build them yourself instead, for a change you have not released or an
 architecture the release does not build:
@@ -77,7 +79,7 @@ services:
       retries: 5
 
   felix-controlplane:
-    image: ghcr.io/gabloe/felix-controlplane:0.5.0
+    image: ghcr.io/gabloe/felix-controlplane:0.6.0-preview
     environment:
       - FELIX_CONTROLPLANE_POSTGRES_URL=postgres://felix:felix@postgres:5432/felix
       # Day 0 only: the bootstrap API is how the broker credential is made.
@@ -94,7 +96,7 @@ services:
         condition: service_healthy
 
   felix-broker:
-    image: ghcr.io/gabloe/felix-broker:0.5.0
+    image: ghcr.io/gabloe/felix-broker:0.6.0-preview
     environment:
       - FELIX_CONTROLPLANE_URL=http://felix-controlplane:8443
       - FELIX_NODE_TOKEN_FILE=/run/secrets/felix-node-token
