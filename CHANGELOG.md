@@ -87,8 +87,10 @@ for what the current release guarantees.
   flush thread, and the write runs with the lock released. A lone unbatched
   publisher keeps its throughput, one sending batches of 16 loses up to a
   quarter, and several publishers on one log get about twice the throughput
-  with p99 in tens of microseconds. `felix_storage_sync_batch_appends` now counts the appends each
-  flush covered rather than the callers waiting when it started. See
+  with p99 in tens of microseconds. `felix_storage_sync_batch_appends` now counts the records each
+  flush covered rather than the callers waiting when it started, so publishes
+  the broker merges into one append count once each, and a client batch of N
+  records counts N. See
   `docs/storage-performance.md`. (#909)
 - **Breaking:** `StreamLog::begin_append`, `begin_append_marked` and
   `continue_batch` take the stream's `CommitSequencer` and return the claimed

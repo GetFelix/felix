@@ -363,7 +363,7 @@ FELIX_DURABLE_FSYNC_MODE=on_commit \
 | --- | --- |
 | `felix_storage_append_duration_seconds` | how long a durable publish takes end to end |
 | `felix_storage_sync_duration_seconds` | how much of that is the device |
-| `felix_storage_sync_batch_appends` | group-commit fan-in; near 1 under load means no batching |
+| `felix_storage_sync_batch_appends` | group-commit fan-in in records per flush; near 1 under single-record load means no batching |
 | `felix_storage_unsynced_bytes` | data a crash would lose right now |
 | `felix_storage_sync_failures_total` | non-zero means acknowledged durability is in doubt |
 | `felix_storage_recovery_truncated_bytes` | bytes discarded from a torn tail |

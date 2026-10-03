@@ -238,8 +238,11 @@ Measured on a Mac Studio (Apple M4 Max, APFS): 253 durable appends/second at
 concurrency 1,
 14,387 at concurrency 64, a 57× gain from the same code path. The fan-in
 actually achieved is reported as `felix_storage_sync_batch_appends`, the number
-of appends each flush covered; a value near 1 under load means appends are
-serialising on the device instead of sharing a flush.
+of records each flush covered. Records rather than appends, because the broker
+merges publishes that queue on a shard into one append, and those share the
+flush too. A client batch of N records counts N, so read it under
+single-record publishes, or divide by the batch size. A value near 1 under load
+means appends are serialising on the device instead of sharing a flush.
 
 This is the same mechanism behind PostgreSQL's `commit_delay` and the WAL
 group-commit paths in MySQL and RocksDB.
@@ -724,7 +727,7 @@ FELIX_DURABLE_FSYNC_MODE=on_commit \
 | --- | --- |
 | `felix_storage_append_duration_seconds` | how long a durable publish takes end to end |
 | `felix_storage_sync_duration_seconds` | how much of that is the device |
-| `felix_storage_sync_batch_appends` | group-commit fan-in; near 1 under load means no batching |
+| `felix_storage_sync_batch_appends` | group-commit fan-in in records per flush; near 1 under single-record load means no batching |
 | `felix_storage_unsynced_bytes` | data a crash would lose right now |
 | `felix_storage_sync_failures_total` | non-zero means acknowledged durability is in doubt |
 | `felix_storage_segment_roll_total` | rollover rate |

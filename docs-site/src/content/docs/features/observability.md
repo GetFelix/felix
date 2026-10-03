@@ -150,14 +150,15 @@ watch the group-commit fan-in:
 ```prometheus
 felix_storage_append_duration_seconds
 felix_storage_sync_duration_seconds
-felix_storage_sync_batch_appends       # appends served per device flush
+felix_storage_sync_batch_appends       # records made durable per device flush
 felix_storage_unsynced_bytes           # what a crash would lose right now
 felix_storage_sync_failures_total      # non-zero: acknowledged durability in doubt
 ```
 
 If sync dominates append, the fsync policy is the cost. A
-`sync_batch_appends` near 1 under concurrent load means appends are
-serializing on the device instead of sharing a flush.
+`sync_batch_appends` near 1 under concurrent single-record publishes means
+appends are serializing on the device instead of sharing a flush. It counts
+records, so a client batch of N reads N on its own.
 
 **Is the cluster healthy?** Membership from both sides, replication, and
 leases:

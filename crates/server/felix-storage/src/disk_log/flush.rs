@@ -30,7 +30,7 @@ impl LogInner {
         // lost bytes.
         self.check_healthy()?;
         let capturer = Arc::clone(&self);
-        let (handle, segment_id, synced_bytes, durable_upto, appends) = self
+        let (handle, segment_id, synced_bytes, durable_upto, written) = self
             .appender
             .run(move || {
                 let segments = capturer.segments.read();
@@ -47,7 +47,7 @@ impl LogInner {
                     active.id(),
                     active.size_bytes(),
                     segments.tail_offset(),
-                    capturer.appends.load(Ordering::Relaxed),
+                    capturer.records_written.load(Ordering::Relaxed),
                 )))
             })
             .await
@@ -122,11 +122,13 @@ impl LogInner {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         metrics::histogram!(metrics_names::SYNC_DURATION_SECONDS)
             .record(started.elapsed().as_secs_f64());
-        // Counted from the appends this flush covers rather than the callers
-        // waiting when it starts: those still queued on the append thread are
-        // covered too, and have not started waiting yet. Flushes are serialised,
-        // so the swap sees the previous flush's count.
-        let covered = appends - self.appends_flushed.swap(appends, Ordering::Relaxed);
+        // Counted from what this flush covers rather than the callers waiting
+        // when it starts: appends still queued on the append thread are covered
+        // too, and have not started waiting yet. Records rather than appends,
+        // because the broker merges publishes that queue up into one append,
+        // and those share the flush as much as separate appends do. Flushes are
+        // serialised, so the swap sees the previous flush's count.
+        let covered = written - self.records_flushed.swap(written, Ordering::Relaxed);
         if covered > 0 && !self.durability.acknowledges_before_sync() {
             metrics::histogram!(metrics_names::SYNC_BATCH_APPENDS).record(covered as f64);
         }

@@ -735,8 +735,8 @@ impl DiskLog {
             config: config.clone(),
             segments: RwLock::new(segments),
             append_lock: Mutex::new(()),
-            appends: AtomicU64::new(0),
-            appends_flushed: AtomicU64::new(0),
+            records_written: AtomicU64::new(0),
+            records_flushed: AtomicU64::new(0),
             durability: Durability::new(config.fsync_mode, durable_upto),
             syncer: Mutex::new(None),
             retention: Mutex::new(None),
@@ -1013,10 +1013,10 @@ struct LogInner {
     /// install, truncation, reset, restore, seal and close. Taken only off the
     /// reactor.
     append_lock: Mutex<()>,
-    /// Appends written, and how many of them the last flush covered, for
+    /// Records written, and how many of them the last flush covered, for
     /// reporting group-commit fan-in.
-    appends: AtomicU64,
-    appends_flushed: AtomicU64,
+    records_written: AtomicU64,
+    records_flushed: AtomicU64,
     durability: Durability,
     /// `None` unless the fsync policy is `Periodic`. Taken on shutdown.
     syncer: Mutex<Option<PeriodicSyncer>>,

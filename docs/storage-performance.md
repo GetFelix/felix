@@ -27,7 +27,8 @@ making each append buy its own device flush.
 
 This is the mechanism behind PostgreSQL's `commit_delay`, MySQL's binlog group
 commit, and RocksDB's WAL group commit. `felix_storage_sync_batch_appends`
-reports the fan-in actually achieved. A value near 1 under concurrent load means
+reports the fan-in actually achieved, in records per flush (a client batch of N
+records counts N). A value near 1 under concurrent single-record load means
 appends are serialising on the device and something has regressed.
 
 ### 2. One `write` per batch, not per record
@@ -299,7 +300,7 @@ against, and a breach is a design conversation rather than an automatic failure.
 | `none` / `periodic` throughput, batch 1, concurrency 1 | ≥ 300k records/s | ~60% of measured. Guards against a per-record syscall or allocation creeping in |
 | `on_commit` p50 | ≤ 1.5× one device flush | The floor is hardware. Exceeding it means an append is buying more than one flush |
 | `on_commit` throughput at concurrency 64 | ≥ 40× the concurrency-1 figure | Group commit is the design. Falling toward 1× means the flush lock has stopped batching |
-| `felix_storage_sync_batch_appends` under concurrent load | ≥ 8 | Direct measurement of the above; alertable in production |
+| `felix_storage_sync_batch_appends` under concurrent single-record load | ≥ 8 | Direct measurement of the above; alertable in production |
 | Batch-16 throughput vs batch-1 | ≥ 4× | Confirms one `write` per batch, not per record |
 | Recovery time | ≤ 1s per GiB of active segment | Measured at 0.32s for a 1.01 GiB segment (~3.2 GiB/s), so the budget carries about 3× headroom. Only the active segment is fully scanned |
 

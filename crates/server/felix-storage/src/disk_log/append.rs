@@ -216,7 +216,8 @@ impl LogInner {
         let segment = segments.active().id();
         let ((first_offset, last_offset), index) = segments.active_mut().finish(staged, wrote)?;
         self.observe_marks(first_offset, records, digests);
-        self.appends.fetch_add(1, Ordering::Relaxed);
+        self.records_written
+            .fetch_add(records.len() as u64, Ordering::Relaxed);
         let durable_target = segments.tail_offset();
         let prepare_roll = segments.should_prepare_roll();
         drop(segments);
