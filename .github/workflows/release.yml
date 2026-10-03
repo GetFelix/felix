@@ -285,14 +285,113 @@ jobs:
   # Registry: GHCR under the repository owner. It needs no credential beyond
   # the workflow's own token, the namespace follows the repository rather than
   # being claimed separately, and it is what the docs already referenced.
+  #
+  # Each platform builds on a runner of its own architecture and is pushed by
+  # digest alone; `images-merge` then tags one manifest list over both and signs
+  # it. Compiling the arm64 half under QEMU instead took up to 92 minutes.
   images:
-    name: Container images
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+    name: Container image ${{ matrix.image.name }} (${{ matrix.platform.arch }})
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 90
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
       REGISTRY: ghcr.io
       PUSH: ${{ vars.PUBLISH_IMAGES == 'true' && !inputs.dry_run }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: felix-broker
+            dockerfile: docker/broker.Dockerfile
+          - name: felix-controlplane
+            dockerfile: docker/controlplane.Dockerfile
+          - name: felixctl
+            dockerfile: docker/felixctl.Dockerfile
+        platform:
+          - name: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - name: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SOURCE_REF }}
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: env.PUSH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Same tag rules as the merge job, so the version label baked into each
+      # platform's image matches the tags the manifest list gets.
+      - name: Labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image.name }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }}
+            type=raw,value=latest,enable=${{ !contains(env.RELEASE_TAG, '-') }}
+
+      - name: Build${{ env.PUSH == 'true' && ' and push by digest' || ' (not pushed)' }}
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          platforms: ${{ matrix.platform.name }}
+          # Untagged: a tag here would point at one platform until the merge
+          # job moved it, and a pull in that window gets the wrong image.
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image.name }},push-by-digest=true,name-canonical=true,push=${{ env.PUSH == 'true' }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Provenance and SBOM travel with the image rather than beside it, so
+          # a puller can ask what is in it without trusting a separate file.
+          # The merge job carries them into the manifest list.
+          provenance: mode=max
+          sbom: true
+          # Scoped by platform too, or the two runners evict each other's cache.
+          cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }}
+
+      - name: Record the digest
+        if: env.PUSH == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload the digest
+        if: env.PUSH == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ matrix.image.name }}-${{ matrix.platform.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # A dry run pushed nothing, so there are no digests to merge.
+  images-merge:
+    name: Container image ${{ matrix.image }} (manifest list)
+    needs: images
+    if: ${{ vars.PUBLISH_IMAGES == 'true' && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      REGISTRY: ghcr.io
     permissions:
       contents: read
       packages: write
@@ -303,37 +402,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - image: felix-broker
-            dockerfile: docker/broker.Dockerfile
-          - image: felix-controlplane
-            dockerfile: docker/controlplane.Dockerfile
-          - image: felixctl
-            dockerfile: docker/felixctl.Dockerfile
+        image: [felix-broker, felix-controlplane, felixctl]
     steps:
-      - name: Checkout release tag
-        uses: actions/checkout@v7
+      - name: Download the platform digests
+        uses: actions/download-artifact@v8
         with:
-          ref: ${{ env.SOURCE_REF }}
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ matrix.image }}-*
+          merge-multiple: true
 
-      # arm64 is emulated here. It is slow, and it is the difference between
-      # "runs on a developer's laptop" and "does not".
-      - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
 
       - name: Install cosign
-        if: env.PUSH == 'true'
         uses: sigstore/cosign-installer@v3
 
       - name: Log in to GHCR
-        if: env.PUSH == 'true'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Tags and labels
+      - name: Tags
         id: meta
         uses: docker/metadata-action@v6
         with:
@@ -345,30 +435,28 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }}
             type=raw,value=latest,enable=${{ !contains(env.RELEASE_TAG, '-') }}
 
-      - name: Build${{ env.PUSH == 'true' && ' and push' || ' (not pushed)' }}
-        id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
-          push: ${{ env.PUSH == 'true' }}
-          # Loading a multi-arch result into the local daemon is not possible,
-          # so an unpushed build proves it compiles and nothing more. That is
-          # the point of running it anyway.
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # Provenance and SBOM travel with the image rather than beside it, so
-          # a puller can ask what is in it without trusting a separate file.
-          provenance: mode=max
-          sbom: true
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+      - name: Create the manifest list
+        id: merge
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          count=$(ls | wc -l)
+          if [ "$count" -ne 2 ]; then
+            echo "::error::expected 2 platform digests for ${IMAGE}, found ${count}"
+            exit 1
+          fi
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
+          tag=$(jq -r '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          digest=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Sign the image
-        if: env.PUSH == 'true'
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.merge.outputs.digest }}
           IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
         run: |
           # Signed by digest, never by tag: a tag can be moved to point at
@@ -376,12 +464,11 @@ jobs:
           cosign sign --yes "${IMAGE}@${DIGEST}"
 
       - name: What was published
-        if: env.PUSH == 'true'
         run: |
           echo "### Images" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "digest: ${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "digest: ${{ steps.merge.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   python-conformance:
@@ -834,16 +921,26 @@ jobs:
         run: |
           set -euo pipefail
           version=$(node -p "require('./package.json').version")
-          missing=0
-          for pkg in felix-client $(node -p "Object.keys(require('./package.json').optionalDependencies).join(' ')"); do
-            if npm view "${pkg}@${version}" version >/dev/null 2>&1; then
-              echo "ok      ${pkg}@${version}"
-            else
-              echo "MISSING ${pkg}@${version}"
-              missing=1
-            fi
+          # The registry lags a publish by seconds to minutes, so a version
+          # missing on the first look is not yet a failed publish.
+          pending=(felix-client $(node -p "Object.keys(require('./package.json').optionalDependencies).join(' ')"))
+          for try in $(seq 1 20); do
+            still=()
+            for pkg in "${pending[@]}"; do
+              if npm view "${pkg}@${version}" version >/dev/null 2>&1; then
+                echo "ok      ${pkg}@${version} (try ${try})"
+              else
+                still+=("$pkg")
+              fi
+            done
+            pending=(${still[@]+"${still[@]}"})
+            [ "${#pending[@]}" -eq 0 ] && exit 0
+            [ "$try" -lt 20 ] && sleep 15
           done
-          exit "$missing"
+          for pkg in "${pending[@]}"; do
+            echo "MISSING ${pkg}@${version} after 20 tries"
+          done
+          exit 1
 
       - name: What a maintainer needs to promote
         if: ${{ inputs.npm_stage }}
