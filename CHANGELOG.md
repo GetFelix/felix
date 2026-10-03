@@ -24,6 +24,12 @@ for what the current release guarantees.
   removed first): `skipped_before` on `GroupRecord`, in the wire's
   `group_records`, and in the Python and Node clients (`skippedBefore`).
   Left out when zero, so older clients get the same frames. (#963)
+- Development tokens without an identity provider. With
+  `FELIX_BOOTSTRAP_DEV_TOKENS=true` the bootstrap listener serves
+  `POST /internal/bootstrap/tenants/{tenant}/dev-token`, which mints a Felix
+  token (and refresh token) for any principal of an initialized tenant with
+  what RBAC grants it. Startup refuses it unless bootstrap is on a loopback
+  bind. (#954)
 - `felix-client` re-exports `AckMode`, `BrokerEndpoint` and `ShardRouting`,
   so an application no longer needs `felix-wire` as a direct dependency to
   call it. (#937)

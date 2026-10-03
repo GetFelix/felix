@@ -221,6 +221,79 @@ pub async fn initialize(
     }))
 }
 
+/// What a development token is minted for.
+#[derive(Debug, Deserialize, ToSchema, Clone)]
+pub struct DevTokenRequest {
+    /// The principal id the token names, as RBAC policies and groupings name
+    /// it (`p:alice`, say). It gets what RBAC grants it, no more.
+    pub principal: String,
+    /// Narrowing, exactly as on token exchange.
+    #[serde(flatten)]
+    pub narrowing: crate::auth::exchange::TokenExchangeRequest,
+}
+
+/// Mint a Felix token for a principal of an initialized tenant without an
+/// identity provider, for local development and CI.
+///
+/// Served only when `FELIX_BOOTSTRAP_DEV_TOKENS` is set, which startup refuses
+/// unless the bootstrap listener is on loopback, and only with the bootstrap
+/// token. The permissions are what RBAC grants the principal, narrowed as on
+/// exchange, and the answer carries a refresh token as an exchange does.
+#[utoipa::path(
+    post,
+    path = "/internal/bootstrap/tenants/{tenant_id}/dev-token",
+    tag = "auth",
+    params(("tenant_id" = String, Path, description = "Tenant identifier")),
+    request_body = DevTokenRequest,
+    responses(
+        (status = 200, description = "Token minted", body = crate::auth::exchange::TokenExchangeResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "No permissions, or the tenant does not exist"),
+        (status = 404, description = "Not enabled")
+    )
+)]
+pub async fn dev_token(
+    Path(tenant_id): Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<DevTokenRequest>,
+) -> Result<Json<crate::auth::exchange::TokenExchangeResponse>, ApiError> {
+    if !state.bootstrap_enabled {
+        return Err(api_not_enabled("bootstrap not enabled"));
+    }
+    ensure_bootstrap_authorized(&state, &headers, &tenant_id)?;
+    if body.principal.trim().is_empty() {
+        return Err(api_validation_error("principal is required"));
+    }
+    let audience = crate::auth::exchange::token_audience(body.narrowing.audience.as_deref())?;
+    let tenant_exists = state
+        .store
+        .tenant_exists(&tenant_id)
+        .await
+        .map_err(|err| api_internal("failed to check tenant", &err))?;
+    if !tenant_exists {
+        return Err(crate::auth::bearer::refused(
+            crate::auth::bearer::Refusal::Forbidden,
+            "tenant not allowed",
+        ));
+    }
+    tracing::warn!(
+        tenant_id,
+        principal = %body.principal,
+        "minted a development token through the bootstrap listener",
+    );
+    crate::auth::exchange::mint_for_principal(
+        &state,
+        &tenant_id,
+        &body.principal,
+        &[],
+        &body.narrowing,
+        audience,
+    )
+    .await
+    .map(Json)
+}
+
 /// The bootstrap credential check: a shared token, with room for two.
 ///
 /// Two accepted tokens is what makes rotation a rolling deploy instead of an
