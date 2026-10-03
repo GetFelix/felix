@@ -87,6 +87,7 @@ pub(crate) async fn handle_subscribe_message(
     config: crate::config::BrokerConfig,
     subscriptions: &Arc<SubscriptionLimiter>,
     lane_manager: &Arc<WriterLaneManager>,
+    ingress: Option<&crate::shards::routing::IngressRouter>,
     out_ack_tx: &mpsc::Sender<Outgoing>,
     out_ack_depth: &Arc<std::sync::atomic::AtomicUsize>,
     ack_throttle_tx: &tokio::sync::watch::Sender<bool>,
@@ -205,6 +206,38 @@ pub(crate) async fn handle_subscribe_message(
                 }
             },
         };
+
+        // A shard's fence closes before its readers are ended, and the routes
+        // that admitted this request catch up only after. A subscription that
+        // registered after the ending would never be ended and would wait on
+        // a shard nobody writes here, so it is refused and the client retries
+        // where the shard is now. Checked after registering: a fence still
+        // open here means the ending is yet to come and will include it.
+        let key = crate::shards::ShardKey {
+            tenant_id: tenant_id.clone(),
+            namespace: namespace.clone(),
+            stream: stream.clone(),
+            shard,
+            kind: crate::shards::ShardKind::Stream,
+        };
+        if ingress.is_some_and(|ingress| ingress.fence().is_closed(&key)) {
+            drop(subscription);
+            let reason = crate::shards::routing::Reason::Moving;
+            return subscribe_failed(
+                ClientError::unavailable(
+                    &reason,
+                    format!("stream {stream} stopped being served here"),
+                )
+                .into_message(),
+                subscriptions,
+                out_ack_tx,
+                out_ack_depth,
+                ack_throttle_tx,
+                ack_timeout_state,
+                cancel_tx,
+            )
+            .await;
+        }
 
         // Open a uni stream for event delivery. If this fails, respond with error on
         // control stream.
