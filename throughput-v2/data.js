@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791059948657,
+  "lastUpdate": 1791062512935,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -23400,6 +23400,58 @@ window.BENCHMARK_DATA = {
             "range": "5456.96",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 848047.63\nmean: 849963.26\nstdev: 5456.96\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cbc010b4244e52af9e2a1998130cdfbea270b6cc",
+          "message": "feat(controlplane): mint development tokens without an identity provider (#997)\n\n* feat(controlplane): mint development tokens without an identity provider\n\nA local stack or CI job that only wants to publish and subscribe had to run\nits own identity provider to get a client token. With\nFELIX_BOOTSTRAP_DEV_TOKENS the bootstrap listener mints a Felix token for any\nprincipal of an initialized tenant, with what RBAC grants it, through the\nsame code token exchange now uses. Startup refuses the switch unless\nbootstrap is on a loopback bind.\n\nCloses #954.\n\n* fix(common): keep the env registry sorted",
+          "timestamp": "2026-10-03T14:16:58-07:00",
+          "tree_id": "84879900398480f7b240b553549833610739dd22",
+          "url": "https://github.com/gabloe/felix/commit/cbc010b4244e52af9e2a1998130cdfbea270b6cc"
+        },
+        "date": 1791062512186,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 524809.61,
+            "range": "15114.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 524809.61\nmean: 527829.46\nstdev: 15114.52\ncv: 2.86%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 524809.61,
+            "range": "15114.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 524809.61\nmean: 527829.46\nstdev: 15114.52\ncv: 2.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 126488.98,
+            "range": "795.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 126488.98\nmean: 126343.28\nstdev: 795.86\ncv: 0.63%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1264889.75,
+            "range": "7958.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1264889.75\nmean: 1263432.77\nstdev: 7958.54\ncv: 0.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
