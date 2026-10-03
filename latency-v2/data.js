@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791008243839,
+  "lastUpdate": 1791030283663,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -28974,6 +28974,72 @@ window.BENCHMARK_DATA = {
             "range": "61.06",
             "unit": "us",
             "extra": "trials: 5\nmedian: 584.00\nmean: 588.00\nstdev: 61.06\ncv: 10.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d29753fb0e9d577ff908333f2f980bea34322423",
+          "message": "fix(broker): refuse a subscribe that lands after the shard's readers ended (#970)\n\nWhen a broker stops serving a shard, the lifecycle closes the shard's fence\nand ends its readers during the reconcile pass, but the ingress routes are\nonly republished after that pass. In between, the routes still say the shard\nis served here, so the redirect check and the read bound both admit a new\nsubscribe. One registered then misses the ending: it stays on a broker that\nno longer receives the shard's writes and delivers nothing more, for good.\n\nThe history campaign hit this as a subscriber stopping short of the log tail\nright before the next leader's generation-start records. The records were in\nevery read; the subscriber was parked on the old owner.\n\nThe subscribe handler now checks the shard's fence after registering. The\nfence closes before the readers are ended, so a closed fence means the ending\nalready ran and the subscription is dropped and answered shard_unavailable\n(moving); an open one means the ending is still to come and will include it.\n\nSpec-Unaffected: only refuses a subscribe on a broker whose fence for the shard is already closed; what readers are handed and when is unchanged, as are the lease, the mark, promotion and handoff.",
+          "timestamp": "2026-10-03T05:21:15-07:00",
+          "tree_id": "3d73ad61e6c8cd077d84e40e4ff954899ecc744c",
+          "url": "https://github.com/gabloe/felix/commit/d29753fb0e9d577ff908333f2f980bea34322423"
+        },
+        "date": 1791030280546,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 176,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 176.00\nmean: 176.60\nstdev: 0.89\ncv: 0.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 241,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 241.00\nmean: 241.20\nstdev: 1.92\ncv: 0.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 298,
+            "range": "12.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 298.00\nmean: 297.00\nstdev: 12.77\ncv: 4.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 210,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 210.00\nmean: 210.40\nstdev: 1.67\ncv: 0.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 432,
+            "range": "17.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 432.00\nmean: 431.20\nstdev: 17.15\ncv: 3.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 679,
+            "range": "514.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 679.00\nmean: 914.00\nstdev: 514.35\ncv: 56.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
