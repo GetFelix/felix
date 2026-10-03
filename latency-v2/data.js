@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791054559401,
+  "lastUpdate": 1791055014716,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -29304,6 +29304,72 @@ window.BENCHMARK_DATA = {
             "range": "1023.04",
             "unit": "us",
             "extra": "trials: 5\nmedian: 513.00\nmean: 958.40\nstdev: 1023.04\ncv: 106.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f5fb1d41fadac223eb6fe99a6f1da2a625df6b17",
+          "message": "fix(client): resolve brokers that advertise a DNS name (#994)\n\nClusterClient kept only advertised client addresses that parsed as IP\naddresses, so discovery silently dropped brokers advertising names, and\nowners, redirects and moved-shard hints given by name fell back to the entry\nbroker. Every advertised address now goes through one resolver, which looks a\nname up each time, logs one that does not resolve, and remembers it as what\nthat broker's certificate is checked against. The broker refuses a client\nadvertise address that is not host:port at startup.\n\nCloses #982.",
+          "timestamp": "2026-10-03T12:12:42-07:00",
+          "tree_id": "e7ed3ff005e2106d9beece8182d852759ae02b8a",
+          "url": "https://github.com/gabloe/felix/commit/f5fb1d41fadac223eb6fe99a6f1da2a625df6b17"
+        },
+        "date": 1791055011514,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "1.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 69.20\nstdev: 1.79\ncv: 2.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 91,
+            "range": "2.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 91.00\nmean: 90.80\nstdev: 2.39\ncv: 2.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 116,
+            "range": "5.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 116.00\nmean: 113.40\nstdev: 5.90\ncv: 5.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 88,
+            "range": "1.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 88.00\nmean: 88.00\nstdev: 1.58\ncv: 1.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 201,
+            "range": "16.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 208.40\nstdev: 16.50\ncv: 7.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 284,
+            "range": "875.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 284.00\nmean: 911.40\nstdev: 875.34\ncv: 96.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
