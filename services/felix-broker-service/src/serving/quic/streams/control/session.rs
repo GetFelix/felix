@@ -140,6 +140,7 @@ pub(super) async fn authenticate(
                             | match broker.group_reader() {
                                 Some(_) => {
                                     felix_wire::FEATURE_CONSUMER_GROUP
+                                        | felix_wire::FEATURE_GROUP_CONSUMER
                                         | felix_wire::FEATURE_GROUP_DEAD_LETTERS
                                         | felix_wire::FEATURE_GROUP_SKIPPED
                                 }

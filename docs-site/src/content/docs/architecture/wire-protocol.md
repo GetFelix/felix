@@ -792,7 +792,8 @@ advertised its bit.
 | `0x2_0000` | `FEATURE_STREAM_PUBLISH_WINDOW` | The `publish_window` is per stream rather than per connection (below) |
 | `0x4_0000` | `FEATURE_SHARD_OWNERS` | The broker answers `shard_owners`: which broker owns each shard of a stream or cache |
 | `0x8_0000` | `FEATURE_ACK_ON_COMMIT` | Offered by a client that wants its acked publishes answered after the write, with their offsets, on this connection only. Advertised by a broker that honours it |
-| `0x10_0000` | `FEATURE_GROUP_SKIPPED` | Offered by a client that reads `skipped_before` on a group record. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |
+| `0x10_0000` | `FEATURE_GROUP_CONSUMER` | A `group_poll` may name its `consumer` (per principal, up to 128 bytes); with `reclaim`, a connection's first such poll reserves the claims that member holds from older connections and takes them back ahead of anything else |
+| `0x40_0000` | `FEATURE_GROUP_SKIPPED` | Offered by a client that reads `skipped_before` on a group record. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |
 
 The full list, with what each depends on, is in
 [`docs/protocol.md`](https://github.com/gabloe/felix/blob/main/docs/protocol.md).

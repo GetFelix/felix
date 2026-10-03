@@ -19,6 +19,20 @@ use crate::NotLeaderError;
 use crate::connection::OpenedStream;
 use crate::frame_io::{read_message_with_limit, write_message};
 
+/// A member of a consumer group that names itself when it polls. See
+/// [`Client::group_poll_as`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupMember {
+    /// Stable across restarts of the same member, and unique within the group
+    /// for the principal. 1 to 128 bytes.
+    pub consumer: String,
+    /// Take back the records this member holds from older connections, left
+    /// by a process that restarted, before anything else. The broker honours
+    /// it on the connection's first such poll and ignores it after, so it is
+    /// safe to leave set.
+    pub reclaim: bool,
+}
+
 impl Client {
     /// Take up to `max_records` for a consumer group on one shard.
     ///
@@ -71,7 +85,43 @@ impl Client {
         max_records: u32,
         wait: std::time::Duration,
     ) -> Result<Vec<felix_wire::GroupRecord>> {
+        self.group_poll_as(
+            tenant_id,
+            namespace,
+            stream,
+            shard,
+            group,
+            None,
+            max_records,
+            wait,
+        )
+        .await
+    }
+
+    /// [`Client::group_poll_wait`] as a named member of the group, or as
+    /// none when `member` is `None`.
+    ///
+    /// The broker records the records it hands out as `member`'s, scoped to
+    /// the principal this client authenticated as. A process that restarts
+    /// under the same name with [`GroupMember::reclaim`] gets back the records
+    /// its predecessor held, before anything else and over as many polls as it
+    /// takes, instead of waiting out the visibility timeout. A member is
+    /// refused by a broker that predates it, which would silently ignore the
+    /// name.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn group_poll_as(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        member: Option<&GroupMember>,
+        max_records: u32,
+        wait: std::time::Duration,
+    ) -> Result<Vec<felix_wire::GroupRecord>> {
         self.require_groups()?;
+        require_member_support(self.server_features, member)?;
         let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
         let message = Message::GroupPoll {
             tenant_id: tenant_id.to_string(),
@@ -82,6 +132,8 @@ impl Client {
             max_records,
             wait_ms: wait.as_millis() as u64,
             request_id,
+            consumer: member.map(|member| member.consumer.clone()),
+            reclaim: member.is_some_and(|member| member.reclaim),
         };
         match self.group_round_trip(message, request_id).await? {
             Message::GroupRecords { records, .. } => Ok(records),
@@ -376,3 +428,17 @@ fn group_response_id(message: &Message) -> Option<u64> {
         _ => None,
     }
 }
+
+/// Refuse a named poll to a broker without `FEATURE_GROUP_CONSUMER`. It would
+/// ignore the name, so a reclaim would silently do nothing.
+fn require_member_support(server_features: u32, member: Option<&GroupMember>) -> Result<()> {
+    if member.is_some()
+        && !felix_wire::supports_feature(server_features, felix_wire::FEATURE_GROUP_CONSUMER)
+    {
+        anyhow::bail!("this broker does not record which member holds a group's records");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

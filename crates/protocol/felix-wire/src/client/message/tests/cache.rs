@@ -40,9 +40,33 @@ fn message_cache_operations() {
         max_records: 32,
         wait_ms: 5_000,
         request_id: 42,
+        consumer: None,
+        reclaim: false,
     };
     let frame = message.encode().expect("encode");
+    // Without a consumer the frame is the one an older broker always read.
+    let text = std::str::from_utf8(&frame.payload)
+        .expect("utf8")
+        .to_string();
+    assert!(
+        !text.contains("consumer") && !text.contains("reclaim"),
+        "{text}"
+    );
     assert_eq!(Message::decode(frame).expect("decode"), message);
+    let named = Message::GroupPoll {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "jobs".to_string(),
+        shard: 3,
+        group: "workers".to_string(),
+        max_records: 32,
+        wait_ms: 0,
+        request_id: 43,
+        consumer: Some("snapshotter".to_string()),
+        reclaim: true,
+    };
+    let frame = named.encode().expect("encode");
+    assert_eq!(Message::decode(frame).expect("decode"), named);
 
     let message = Message::GroupRecords {
         records: vec![

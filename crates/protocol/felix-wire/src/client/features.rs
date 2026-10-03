@@ -223,13 +223,21 @@ pub const FEATURE_SHARD_OWNERS: u32 = 0x0004_0000;
 /// clients do not offer every bit they know here, as they do elsewhere.
 pub const FEATURE_ACK_ON_COMMIT: u32 = 0x0008_0000;
 
+/// The broker records which member holds each claim when a `group_poll`
+/// names its `consumer`, and takes back that member's claims on `reclaim`.
+///
+/// Advertised by a *broker*, with `FEATURE_CONSUMER_GROUP`. A broker that
+/// predates it ignores both fields, so a client checks this before relying on
+/// a reclaim.
+pub const FEATURE_GROUP_CONSUMER: u32 = 0x0010_0000;
+
 /// The client reads `skipped_before` on a `GroupRecord`.
 ///
 /// Offered by a *client* and advertised by a broker that reports it, which
 /// is how the client learns that an absent field means `0` rather than "not
 /// reported". A client that did not offer it gets the record without the
 /// field, so its frames are byte-identical to the ones it always got.
-pub const FEATURE_GROUP_SKIPPED: u32 = 0x0010_0000;
+pub const FEATURE_GROUP_SKIPPED: u32 = 0x0040_0000;
 
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
@@ -252,6 +260,7 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_STREAM_PUBLISH_WINDOW
     | FEATURE_SHARD_OWNERS
     | FEATURE_ACK_ON_COMMIT
+    | FEATURE_GROUP_CONSUMER
     | FEATURE_GROUP_SKIPPED;
 
 /// True if `features` advertises `feature`.

@@ -3,6 +3,7 @@
 
 use std::net::SocketAddr;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use quinn::{Connection, RecvStream, SendStream};
@@ -29,9 +30,12 @@ pub struct QuicConnection {
 
 impl QuicConnection {
     pub(crate) fn new(connection: Connection, io_handle: Option<tokio::runtime::Handle>) -> Self {
-        // Quinn exposes a stable connection id for logging.
+        // Not quinn's `stable_id`: that is an address, reused once a
+        // connection is freed, and a consumer group tells a restarted member's
+        // connection from its predecessor's by this id.
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         let info = ConnectionInfo {
-            id: ConnectionId(u64::try_from(connection.stable_id()).expect("stable id fits u64")),
+            id: ConnectionId(NEXT_ID.fetch_add(1, Ordering::Relaxed)),
             peer_addr: connection.remote_address(),
         };
         Self {
@@ -208,7 +212,8 @@ pub struct ConnectionInfo {
     pub peer_addr: SocketAddr,
 }
 
-/// Stable connection identifier used for tracing/logging.
+/// Identifies a connection within this process. Assigned in the order
+/// connections are made, starting at 1, and never reused.
 ///
 /// ```
 /// use felix_transport::ConnectionId;

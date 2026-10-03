@@ -261,8 +261,36 @@ the stream end after its last event, byte for byte as before. See
 ```
 { "type": "group_poll", "tenant_id": "<string>", "namespace": "<string>",
   "stream": "<string>", "shard": <number>, "group": "<string>",
-  "max_records": <number>, "wait_ms": <number>, "request_id": <number> }
+  "max_records": <number>, "wait_ms": <number>, "request_id": <number>,
+  "consumer": "<string>"?, "reclaim": <bool>? }
 ```
+
+`consumer` names the member polling, stable across its restarts, and the broker
+records the claims it hands out as that member's. A member is the name together
+with the principal the connection authenticated as, so one principal's name
+never reaches another's claims. A name must be 1 to 128 bytes; anything else is
+refused with `invalid_request`.
+
+With `reclaim: true`, the broker reserves for this connection every claim the
+member holds from an older connection: the claims a process that restarted left
+behind. They go to this connection ahead of everything else, records owed to
+the group included, lowest offset first, over as many polls as `max_records`
+takes; other members do not get them meanwhile. Each counts as another attempt,
+so one at the attempt bound is dead-lettered instead. A reserved claim that
+lapses before it is taken back is owed to the whole group, like any lapsed
+claim. The reservation is made once per connection: later polls on it that set
+`reclaim` again are ordinary polls, as is any `reclaim` from a connection older
+than the last one that reclaimed. So a client that always sets it, or two live
+processes under one name, cannot keep taking claims still being worked on. Two
+live processes under one name are still a mistake: the newer one takes what
+the older held when it first reclaimed.
+
+Claims and members live in the shard leader's memory, so after a failover there
+is nothing to reclaim: the group resumes from its durable position anyway.
+
+Both fields are optional and left out when unused, so an older broker reads the
+request it always did. Only a broker that advertised `FEATURE_GROUP_CONSUMER`
+honours them; an older one ignores them, so a client refuses a named poll to it.
 
 Sent only to a broker that advertised `FEATURE_CONSUMER_GROUP`, and only to the
 broker that leads the shard.
@@ -1219,7 +1247,8 @@ Features are advertised in the same handshake, in an optional field:
 | `0x2_0000` | `FEATURE_STREAM_PUBLISH_WINDOW` | The broker's `publish_window` is per stream, so each pipelining stream has its own. See [pipelined publishes](#pipelined-publishes) |
 | `0x4_0000` | `FEATURE_SHARD_OWNERS` | The broker answers `shard_owners` |
 | `0x8_0000` | `FEATURE_ACK_ON_COMMIT` | Offered by a client that wants this connection's acked publishes answered after the write, with their offsets, as `FELIX_ACK_ON_COMMIT=true` does for every client. Advertised by a broker that honours it. A client offers it only when asked to (`ClientConfig::ack_on_commit`) |
-| `0x10_0000` | `FEATURE_GROUP_SKIPPED` | Offered by a client that reads `skipped_before` on a `GroupRecord`. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |
+| `0x10_0000` | `FEATURE_GROUP_CONSUMER` | The broker records which member holds each claim when `group_poll` names a `consumer`, scoped to the principal, and on a connection's first `reclaim` hands that member's claims from older connections back to it first. See [GroupPoll](#grouppoll) |
+| `0x40_0000` | `FEATURE_GROUP_SKIPPED` | Offered by a client that reads `skipped_before` on a `GroupRecord`. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:

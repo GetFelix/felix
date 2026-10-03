@@ -475,17 +475,24 @@ impl Client {
         group: String,
         max_records: Option<u32>,
         wait_ms: Option<u32>,
+        consumer: Option<String>,
+        reclaim: Option<bool>,
     ) -> Result<Vec<GroupRecord>> {
         let max_records = max_records.unwrap_or(32);
         let wait_ms = wait_ms.unwrap_or(0);
+        let member = consumer.map(|consumer| felix_client::GroupMember {
+            consumer,
+            reclaim: reclaim.unwrap_or(false),
+        });
         let records = self
             .cluster()?
-            .group_poll_wait(
+            .group_poll_as(
                 &tenant_id,
                 &namespace,
                 &stream,
                 shard,
                 &group,
+                member.as_ref(),
                 max_records,
                 std::time::Duration::from_millis(u64::from(wait_ms)),
             )

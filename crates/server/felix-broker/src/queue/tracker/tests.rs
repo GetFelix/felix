@@ -627,6 +627,229 @@ fn filling_the_cap_with_everything_available_is_not_capped() {
     assert!(!group.claim(3, 10, now, VIS).capped);
 }
 
+/// `name` polling as principal `p` on `connection`.
+fn member(name: &str, connection: u64, reclaim: bool) -> GroupConsumer {
+    GroupConsumer::new("p", name, connection, reclaim)
+}
+
+/// **A restarted member takes back what its predecessor held**, before newer
+/// records and without waiting for the claims to lapse. Records held by other
+/// members are left with them.
+#[test]
+fn a_member_that_reclaims_gets_its_standing_claims_back_first() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    assert_eq!(
+        group
+            .claim_as(10, 2, now, VIS, Some(&member("snapshotter", 1, false)))
+            .offsets,
+        vec![0, 1]
+    );
+    assert_eq!(
+        group
+            .claim_as(10, 1, now, VIS, Some(&member("other", 1, false)))
+            .offsets,
+        vec![2]
+    );
+
+    // The process restarts under the same name, on a new connection.
+    let back = group.claim_as(10, 10, now, VIS, Some(&member("snapshotter", 2, true)));
+    assert_eq!(back.offsets[..2], [0, 1]);
+    assert!(
+        !back.offsets.contains(&2),
+        "another member's claim is left alone"
+    );
+    assert_eq!(
+        group.attempts(0),
+        2,
+        "taking a record back is another attempt"
+    );
+
+    for offset in 0..10 {
+        group.ack(offset);
+    }
+    assert!(
+        group.members.is_empty(),
+        "a member holding nothing is forgotten"
+    );
+}
+
+/// Without `reclaim` a named member's poll takes new records, as any poll does.
+#[test]
+fn a_named_poll_without_reclaim_leaves_its_claims_standing() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    let snapshotter = member("snapshotter", 1, false);
+    assert_eq!(
+        group.claim_as(10, 2, now, VIS, Some(&snapshotter)).offsets,
+        vec![0, 1]
+    );
+    assert_eq!(
+        group.claim_as(10, 2, now, VIS, Some(&snapshotter)).offsets,
+        vec![2, 3]
+    );
+}
+
+/// **A name reaches only its own principal's claims.** Another principal
+/// that polls under the same name takes new records and leaves the first
+/// one's claims, and their attempt counts, alone.
+#[test]
+fn another_principal_using_the_name_cannot_reclaim() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    let alice = GroupConsumer::new("alice", "worker", 1, false);
+    assert_eq!(
+        group.claim_as(10, 2, now, VIS, Some(&alice)).offsets,
+        [0, 1]
+    );
+
+    let mallory = GroupConsumer::new("mallory", "worker", 2, true);
+    assert_eq!(
+        group.claim_as(10, 2, now, VIS, Some(&mallory)).offsets,
+        [2, 3]
+    );
+    assert_eq!(group.attempts(0), 1);
+    assert_eq!(group.attempts(1), 1);
+}
+
+/// **A reclaim happens once per connection, and only from older ones.** Two
+/// live processes under one name, both leaving `reclaim` set: the newer takes
+/// what the older held when it first polled, once. After that neither takes
+/// the other's claims, so neither burns attempts on records still being
+/// worked on.
+#[test]
+fn two_live_members_under_one_name_reclaim_once() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    let older = member("worker", 1, true);
+    let newer = member("worker", 2, true);
+
+    assert_eq!(
+        group.claim_as(10, 2, now, VIS, Some(&older)).offsets,
+        [0, 1]
+    );
+    assert_eq!(
+        group.claim_as(10, 2, now, VIS, Some(&newer)).offsets,
+        [0, 1]
+    );
+
+    // The older one carries on, and claims something new.
+    assert_eq!(group.claim_as(10, 1, now, VIS, Some(&older)).offsets, [2]);
+    // The newer one's next poll still says `reclaim`: it is not a reclaim.
+    assert_eq!(group.claim_as(10, 1, now, VIS, Some(&newer)).offsets, [3]);
+    assert_eq!(group.attempts(2), 1, "the older one's new claim is its own");
+    assert_eq!(group.attempts(0), 2);
+}
+
+/// An older connection's reclaim takes nothing from a newer one.
+#[test]
+fn an_older_connection_cannot_reclaim_from_a_newer_one() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    assert_eq!(
+        group
+            .claim_as(10, 2, now, VIS, Some(&member("worker", 5, false)))
+            .offsets,
+        [0, 1]
+    );
+    assert_eq!(
+        group
+            .claim_as(10, 2, now, VIS, Some(&member("worker", 3, true)))
+            .offsets,
+        [2, 3]
+    );
+}
+
+/// **Reclaimed records go first, ahead of records owed to the group** even
+/// when those have lower offsets.
+#[test]
+fn reclaimed_records_go_out_before_owed_ones() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    assert_eq!(group.claim(10, 1, now, VIS).offsets, [0]);
+    assert_eq!(
+        group
+            .claim_as(10, 2, now, VIS, Some(&member("worker", 1, false)))
+            .offsets,
+        [1, 2]
+    );
+    group.nack(0);
+
+    let back = group.claim_as(10, 2, now, VIS, Some(&member("worker", 2, true)));
+    assert_eq!(back.offsets, [1, 2]);
+    assert_eq!(group.claim(10, 1, now, VIS).offsets, [0], "still owed");
+}
+
+/// **Asking for fewer than were held** leaves the rest reserved for the
+/// member, across polls: other members do not get them in the meantime.
+#[test]
+fn reclaimed_records_beyond_max_records_wait_for_the_member() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    assert_eq!(
+        group
+            .claim_as(10, 4, now, VIS, Some(&member("worker", 1, false)))
+            .offsets,
+        [0, 1, 2, 3]
+    );
+
+    let restarted = member("worker", 2, true);
+    assert_eq!(
+        group.claim_as(10, 2, now, VIS, Some(&restarted)).offsets,
+        [0, 1]
+    );
+    assert_eq!(
+        group
+            .claim_as(10, 10, now, VIS, Some(&member("other", 3, false)))
+            .offsets,
+        [4, 5, 6, 7, 8, 9],
+        "the rest are not anyone else's"
+    );
+    let next = member("worker", 2, false);
+    assert_eq!(
+        group.claim_as(12, 3, now, VIS, Some(&next)).offsets,
+        [2, 3, 10]
+    );
+    assert_eq!(group.attempts(3), 2);
+}
+
+/// **A reserved claim that lapses during the takeover** is owed to the whole
+/// group like any lapsed claim, and the member does not get it a second time
+/// once someone else has it.
+#[test]
+fn a_reserved_claim_that_lapses_goes_to_the_group() {
+    let start = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    assert_eq!(
+        group
+            .claim_as(10, 3, start, VIS, Some(&member("worker", 1, false)))
+            .offsets,
+        [0, 1, 2]
+    );
+    let restarted = member("worker", 2, true);
+    assert_eq!(
+        group
+            .claim_as(10, 1, at(start, 20), VIS, Some(&restarted))
+            .offsets,
+        [0]
+    );
+
+    // Offsets 1 and 2 were claimed at `start`, so they lapse at 30 s.
+    assert_eq!(
+        group
+            .claim_as(10, 2, at(start, 31), VIS, Some(&member("other", 3, false)))
+            .offsets,
+        [1, 2]
+    );
+    assert_eq!(
+        group
+            .claim_as(10, 2, at(start, 32), VIS, Some(&member("worker", 2, false)))
+            .offsets,
+        [3, 4],
+        "a reservation someone else now holds is skipped"
+    );
+}
+
 #[test]
 fn a_run_of_skipped_offsets_is_counted_and_dropped_once_passed() {
     let mut group = GroupTracker::new(0, MANY);
