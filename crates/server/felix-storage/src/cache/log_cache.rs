@@ -31,7 +31,7 @@ use crate::cache::{CacheChange, CacheObserver, CacheSnapshotEntry, StorageApi};
 use crate::commit_order::CommitSequencer;
 use crate::compaction::Compactor;
 use crate::disk_log::{DiskLog, layout};
-use crate::log::{AppendRecord, LogConfig, ShardKey};
+use crate::log::{AppendOnlyLog, AppendRecord, LogConfig, ShardKey};
 use crate::shard_slots::ShardSlots;
 use crate::{Result, StorageError};
 
