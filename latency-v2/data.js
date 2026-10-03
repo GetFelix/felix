@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790994836242,
+  "lastUpdate": 1790998857205,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -28842,6 +28842,72 @@ window.BENCHMARK_DATA = {
             "range": "33.92",
             "unit": "us",
             "extra": "trials: 5\nmedian: 629.00\nmean: 609.60\nstdev: 33.92\ncv: 5.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "774110cfef38cf2d98bd92842040c93687c15178",
+          "message": "test(transport): reproduce a silent idle timeout ending in a stateless reset (#725) (#953)\n\nA UDP relay drops only the client's datagrams. The server times out\nwithout sending anything while its keep-alives keep the client's timer\nopen, and the client's next packet draws a stateless reset, which the\nclient reports as ConnectionError::Reset.\n\nA second test routes the client's datagrams to an endpoint that answers\nwith a reset under its own key. The client ignores it and the\nconnection carries on once the route is restored.",
+          "timestamp": "2026-10-02T20:34:38-07:00",
+          "tree_id": "028e0c9e8d2583c94903866f5ac1e350f4f8656c",
+          "url": "https://github.com/gabloe/felix/commit/774110cfef38cf2d98bd92842040c93687c15178"
+        },
+        "date": 1790998853778,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 179,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 178.20\nstdev: 1.30\ncv: 0.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 244,
+            "range": "2.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 244.00\nmean: 243.60\nstdev: 2.97\ncv: 1.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 299,
+            "range": "13.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 299.00\nmean: 299.80\nstdev: 13.70\ncv: 4.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 212,
+            "range": "7.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 212.00\nmean: 215.40\nstdev: 7.06\ncv: 3.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 430,
+            "range": "415.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 430.00\nmean: 617.80\nstdev: 415.04\ncv: 67.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 597,
+            "range": "858.93",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 597.00\nmean: 1077.40\nstdev: 858.93\ncv: 79.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
