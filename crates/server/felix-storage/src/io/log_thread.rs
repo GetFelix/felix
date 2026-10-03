@@ -26,8 +26,9 @@ use tokio::sync::oneshot;
 /// keep-alive the blocking pool uses for its threads.
 const IDLE: Duration = Duration::from_secs(10);
 
-/// A job, which sends its own result back.
-type Job = Box<dyn FnOnce() + Send>;
+/// A job, which sends its own result back, given the count of jobs not yet
+/// finished.
+type Job = Box<dyn FnOnce(&AtomicUsize) + Send>;
 
 /// Runs one log's jobs of one kind on a dedicated thread, one at a time, in
 /// the order they were submitted.
@@ -82,18 +83,30 @@ impl LogThread {
         &self,
         work: impl FnOnce() -> io::Result<T> + Send + 'static,
     ) -> io::Result<T> {
+        self.run_then(move |_| (work(), ()), |()| {}).await
+    }
+
+    /// [`Self::run`], with `then` run on the thread after the caller has its
+    /// result: work the caller does not wait for. The next job still waits
+    /// behind it. `work` is told whether the caller has stopped waiting.
+    pub(crate) async fn run_then<T: Send + 'static, A: Send + 'static>(
+        &self,
+        work: impl FnOnce(&dyn Fn() -> bool) -> (io::Result<T>, A) + Send + 'static,
+        then: impl FnOnce(A) + Send + 'static,
+    ) -> io::Result<T> {
         let (reply, mut answer) = oneshot::channel();
-        let pending = Arc::clone(&self.pending);
         // Behind other jobs a caller would poll for nothing, on a worker with
         // better things to do.
-        let alone = pending.fetch_add(1, Ordering::AcqRel) == 0;
-        let job: Job = Box::new(move || {
-            let result = work();
+        let alone = self.pending.fetch_add(1, Ordering::AcqRel) == 0;
+        let job: Job = Box::new(move |pending: &AtomicUsize| {
+            let (result, after) = work(&|| reply.is_closed());
             pending.fetch_sub(1, Ordering::AcqRel);
             let _ = reply.send(result);
+            then(after);
         });
         if let Err(job) = self.submit(job) {
-            tokio::task::spawn_blocking(job)
+            let pending = Arc::clone(&self.pending);
+            tokio::task::spawn_blocking(move || job(&pending))
                 .await
                 .map_err(io::Error::other)?;
         }
@@ -125,10 +138,11 @@ impl LogThread {
         };
         let (sender, receiver) = mpsc::channel();
         let slot = Arc::downgrade(&self.queue);
+        let pending = Arc::clone(&self.pending);
         let (idle, spin) = (self.idle, self.spin);
         let started = std::thread::Builder::new()
             .name(self.name.clone())
-            .spawn(move || serve(receiver, slot, idle, spin));
+            .spawn(move || serve(receiver, slot, &pending, idle, spin));
         match started {
             Ok(_) => {
                 // The thread cannot exit before it takes the lock held here.
@@ -158,6 +172,7 @@ impl std::fmt::Debug for LogThread {
 fn serve(
     queue: mpsc::Receiver<Job>,
     slot: Weak<Mutex<Option<mpsc::Sender<Job>>>>,
+    pending: &AtomicUsize,
     idle: Duration,
     spin: Duration,
 ) {
@@ -182,7 +197,7 @@ fn serve(
         };
         // A panic is this job's failure, not the thread's: if it took the
         // thread down, jobs already queued behind it would fail with it.
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(pending)));
     }
 }
 

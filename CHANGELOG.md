@@ -92,9 +92,11 @@ for what the current release guarantees.
   `write()` blocks for up to hundreds of milliseconds. Each log now appends on
   a thread of its own, started on demand and stopped after 10 s idle like its
   flush thread, and the write runs with the lock released. A lone unbatched
-  publisher keeps its throughput, one sending batches of 16 loses up to a
-  quarter, and several publishers on one log get about twice the throughput
-  with p99 in tens of microseconds. `felix_storage_sync_batch_appends` now counts the records each
+  publisher loses 4 to 6% of its throughput to the hand-off, one sending
+  batches of 16 gains about a tenth, and several publishers on one log get
+  about twice the throughput with p99 in tens of microseconds. Sparse index
+  entries are written 256 at a time instead of with each append that crosses
+  an interval. `felix_storage_sync_batch_appends` now counts the records each
   flush covered rather than the callers waiting when it started, so publishes
   the broker merges into one append count once each, and a client batch of N
   records counts N. See

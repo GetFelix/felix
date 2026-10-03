@@ -6,7 +6,7 @@
 //! is terminal for the log: see [`RollState`].
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 use super::segments::{RollOutcome, SegmentSet};
 use super::{DiskLog, LogInner, PendingAppend, producers};
@@ -44,19 +44,43 @@ impl DiskLog {
             Vec::new()
         };
 
-        // Set if this future is dropped before the append thread keeps the
-        // batch, which then skips it or cuts it back off.
-        let abandoned = Arc::new(AtomicBool::new(false));
-        let _abandon = AbandonOnDrop(Arc::clone(&abandoned));
         let appender = Arc::clone(&inner);
         let order = order.cloned();
         let appended = inner
             .appender
-            .run(move || {
-                Ok(appender.append_now(&records, &digests, condition, order.as_ref(), &abandoned))
-            })
+            .run_then(
+                // `gone` turns true once this future is dropped: a batch not
+                // yet kept is then skipped, or cut back off.
+                move |gone| {
+                    let kept =
+                        appender.append_now(&records, &digests, condition, order.as_ref(), gone);
+                    let (reply, index) = match kept {
+                        Ok(Some(kept)) => (
+                            Ok(Some((kept.written, kept.prepare_roll))),
+                            (!kept.index.is_empty())
+                                .then(|| (kept.index, kept.segment, Arc::clone(&appender))),
+                        ),
+                        Ok(None) => (Ok(None), None),
+                        Err(err) => (Err(err), None),
+                    };
+                    (Ok((reply, records, appender)), index)
+                },
+                // After the reply: a lone caller does not wait for the index
+                // write.
+                |index| {
+                    if let Some((index, segment, inner)) = index {
+                        let _appends = inner.append_lock.lock();
+                        index.write(segment);
+                    }
+                },
+            )
             .await
-            .map_err(StorageError::Io)??;
+            .map_err(StorageError::Io)?;
+        // Dropped here rather than on the append thread, so neither the batch's
+        // memory nor the log's reference count changes hands per append.
+        let (appended, records, appender) = appended;
+        drop((records, appender));
+        let appended = appended?;
         let Some((written, prepare_roll)) = appended else {
             return Ok(None);
         };
@@ -124,13 +148,13 @@ impl Written {
     }
 }
 
-/// Marks an append abandoned when its caller's future is dropped.
-struct AbandonOnDrop(Arc<AtomicBool>);
-
-impl Drop for AbandonOnDrop {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Release);
-    }
+/// What [`LogInner::append_now`] kept: the batch, whether the segment has
+/// crossed the early-roll threshold, and index entries still to write.
+struct Kept {
+    written: Written,
+    prepare_roll: bool,
+    index: crate::segment::index::UnwrittenEntries,
+    segment: u64,
 }
 
 /// Where a test holds an append.
@@ -169,10 +193,10 @@ impl LogInner {
         digests: &[u64],
         condition: WriteIf,
         order: Option<&Arc<CommitSequencer>>,
-        abandoned: &AtomicBool,
-    ) -> Result<Option<(Written, bool)>> {
+        gone: &dyn Fn() -> bool,
+    ) -> Result<Option<Kept>> {
         let _appends = self.append_lock.lock();
-        if abandoned.load(Ordering::Acquire) {
+        if gone() {
             return Ok(None);
         }
         let mut segments = self.segments.write();
@@ -210,7 +234,7 @@ impl LogInner {
         let mut wrote = staged.write();
 
         let mut segments = self.segments.write();
-        if wrote.is_ok() && abandoned.load(Ordering::Acquire) {
+        if wrote.is_ok() && gone() {
             wrote = Err(std::io::Error::other("the caller gave up"));
         }
         let segment = segments.active().id();
@@ -221,7 +245,6 @@ impl LogInner {
         let durable_target = segments.tail_offset();
         let prepare_roll = segments.should_prepare_roll();
         drop(segments);
-        index.write(segment);
 
         let pending = PendingAppend {
             result: AppendResult {
@@ -232,7 +255,12 @@ impl LogInner {
         };
         let turn = order.map(|order| order.reserve_owned(first_offset, last_offset + 1));
         self.hold_append_at(HoldAt::Reply);
-        Ok(Some((Written { pending, turn }, prepare_roll)))
+        Ok(Some(Kept {
+            written: Written { pending, turn },
+            prepare_roll,
+            index,
+            segment,
+        }))
     }
 
     /// Build the next segment and swap it in, with every fsync off the lock.

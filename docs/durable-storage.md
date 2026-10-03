@@ -271,7 +271,8 @@ the same lifecycle as its flush thread, and every append runs there in
 submission order, which is offset order. The publisher awaits the result.
 The thread polls for its next append for 20 µs before it parks, and a caller
 alone in the queue polls as long for its result, so back-to-back appends do
-not pay a wake-up on either side.
+not pay a wake-up on either side. The caller hears its result before the
+thread writes any index entries, and frees its batch itself.
 
 The batch is encoded and given its place under the segment lock, written with
 the lock released, and made visible under the lock again. A reader or a flush

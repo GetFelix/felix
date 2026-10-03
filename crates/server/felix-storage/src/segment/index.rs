@@ -270,10 +270,20 @@ impl IndexWriter {
     }
 
     /// The entries observed since the last call, to write without holding
-    /// whatever guards this writer.
+    /// whatever guards this writer, once there are enough of them to be worth
+    /// a `write`. Fewer stay buffered until a later call or [`Self::flush`].
     pub(crate) fn take_unwritten(&mut self) -> UnwrittenEntries {
+        // An entry per few KiB of records made this a second syscall on
+        // every other batched append. Entries still buffered at a crash cost
+        // nothing: the active segment is scanned in full on open, and its
+        // index rebuilt from it.
+        let bytes = if self.unwritten.len() >= INDEX_WRITE_BYTES {
+            std::mem::take(&mut self.unwritten)
+        } else {
+            Vec::new()
+        };
         UnwrittenEntries {
-            bytes: std::mem::take(&mut self.unwritten),
+            bytes,
             file: Arc::clone(&self.file),
             degraded: Arc::clone(&self.degraded),
         }
@@ -301,6 +311,10 @@ impl IndexWriter {
     }
 }
 
+/// How many bytes of index entries [`IndexWriter::take_unwritten`] waits
+/// for: 256 entries.
+const INDEX_WRITE_BYTES: usize = 4096;
+
 /// Index entries from [`IndexWriter::take_unwritten`].
 #[derive(Debug)]
 pub(crate) struct UnwrittenEntries {
@@ -310,6 +324,10 @@ pub(crate) struct UnwrittenEntries {
 }
 
 impl UnwrittenEntries {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
     /// Append the entries to the index file.
     ///
     /// A failure is logged and otherwise ignored. The index is an accelerator,

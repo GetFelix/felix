@@ -184,26 +184,47 @@ The thread polls for its next append for 20 µs before it parks, and a caller
 whose append is the only one queued polls as long for its result, so
 back-to-back appends pay no wake-up on either side.
 
+The caller hears its result before the thread writes any index entries, and
+the batch is freed by the caller that allocated it, so a lone publisher waits
+only for the `write`. Index entries go to the file 256 at a time rather than
+with the append that crossed each interval: with 4 KiB spacing that was a
+second `write` on every other batch of 16. Entries still buffered at a crash
+cost nothing, because the active segment is scanned in full on open and its
+index rewritten.
+
 `felix-log-tool bench`, 128-byte payloads, records/s and p50/p99 append
-latency in µs, three runs each, on an M4 Max with the log on an external SSD.
-Before is the `write` on the caller's reactor thread:
+latency in µs, three rounds of each row run back to back, on an M4 Max with
+the log on an external SSD. 200,000 records per run (20,000 under
+`on_commit`), 2,000 warm-up. A container stack was running on the same
+machine (load average 2.5 to 4), so read the ratios within each round. Before
+is the `write` on the caller's reactor thread:
 
-| fsync | batch | publishers | before rec/s | after rec/s | before p50/p99 | after p50/p99 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| none | 1 | 1 | 226k–292k | 223k–234k | 3 / 5–8 | 3–4 / 7 |
-| none | 1 | 8 | 102k–120k | 208k–213k | 14–40 / 403–439 | 37 / 48–55 |
-| none | 16 | 1 | 1.69M–1.94M | 1.25M–1.66M | 6–7 / 8–11 | 7–9 / 9–14 |
-| none | 16 | 8 | 939k–1.35M | 1.77M–1.93M | 10–12 / 1,726–2,184 | 61–63 / 75–126 |
-| on_commit | 1 | 8 | 1.2k–1.3k | 1.5k–1.6k | 5,908–5,949 / 12,044–14,127 | 5,255–5,395 / 7,681–11,331 |
-| on_commit | 16 | 8 | 19k | 22k–34k | 5,921–5,966 / 12,157–12,727 | 3,619–5,394 / 6,940–11,606 |
+| fsync | batch | publishers | before rec/s | after rec/s | after/before per round | before p50/p99 | after p50/p99 |
+| --- | ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| none | 1 | 1 | 273k–277k | 260k–264k | 0.96, 0.96, 0.94 | 3 / 6 | 3 / 4 |
+| none | 1 | 8 | 99k–102k | 206k–207k | 2.05, 2.07, 2.02 | 38–43 / 410–417 | 37 / 51–53 |
+| none | 16 | 1 | 2.00M–2.04M | 2.17M–2.27M | 1.13, 1.08, 1.08 | 6 / 9–11 | 4 / 6–7 |
+| none | 16 | 8 | 1.46M–1.48M | 3.12M–3.16M | 2.11, 2.12, 2.17 | 37 / 1,465–1,559 | 36–37 / 51–56 |
+| periodic | 1 | 8 | 100k–101k | 204k–206k | 2.04, 2.05, 2.05 | 41–42 / 409–414 | 37 / 49 |
+| periodic | 16 | 8 | 1.39M–1.47M | 3.10M–3.17M | 2.27, 2.14, 2.16 | 37 / 1,365–1,551 | 36–37 / 51–57 |
+| on_commit | 1 | 8 | 1.2k–2.0k | 1.6k–1.9k | 0.91, 1.51, 0.82 | 3,552–5,974 / 6,946–12,648 | 3,946–4,923 / 7,053–10,895 |
+| on_commit | 16 | 8 | 19k–31k | 22k–36k | 1.20, 1.12, 1.20 | 3,740–5,982 / 7,589–12,742 | 3,582–5,381 / 6,737–11,472 |
 
-A lone unbatched publisher keeps its throughput and latency. With batches of
-16 it still loses up to a quarter to the hand-off. Several publishers on one
-log gain, because they queue on the thread instead of on the segment lock
-across each other's `write`, which is where the 400 µs and multi-millisecond
-tails came from. Under `on_commit` a flush now covers every append queued when
-it starts: with 16 publishers of 4 KiB records, 15–16 appends per flush
-against 12–13 before, counted from `DiskLog::flushes`.
+A lone unbatched publisher pays for the hand-off: 4 to 6% of its throughput,
+about a fifth of a microsecond per append, which is the round trip between two
+cores; its p99 is lower. With batches of 16 a lone publisher is faster than
+before, because of the index change. Several publishers on one log gain,
+because they queue on the thread instead of on the segment lock across each
+other's `write`, which is where the 400 µs and multi-millisecond tails came
+from. The `on_commit` rows swing with the device's flush time from round to
+round. Under `on_commit` a flush covers every append queued when it starts:
+with 16 publishers of 4 KiB records, 15–16 appends per flush against 12–13
+before, counted from `DiskLog::flushes`.
+
+`tests/slow_disk.rs` checks the point of all this: with every segment write
+held 50 ms, eight appends on four logs and two workers leave a 1 ms ticker
+running, and finish faster than two workers writing in turn could. With the
+write on the caller, the ticker stops for 280–340 ms.
 
 ## Where the time goes
 
