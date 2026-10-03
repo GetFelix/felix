@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791062928353,
+  "lastUpdate": 1791067261907,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -23504,6 +23504,58 @@ window.BENCHMARK_DATA = {
             "range": "8193.01",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805963.62\nmean: 807412.08\nstdev: 8193.01\ncv: 1.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7f3ac092f80288473b9ca8d4e8c226c2f6f96432",
+          "message": "feat(groups): a restarted member takes back its predecessor's claims (#1002)\n\n* feat(groups): a restarted member takes back its predecessor's claims\n\nClaims carried no consumer identity, so a member that restarted got newer\nrecords first and its predecessor's only after the visibility timeout. A\ngroup_poll may now name its consumer, recorded on the claims it takes, and\nwith reclaim that member's standing claims are owed again before anything\nelse. Negotiated as FEATURE_GROUP_CONSUMER; the fields are left out when\nunused, so older brokers read the same request.\n\nSpec-Unaffected: changes which consumer a claim is recorded against and when a standing claim becomes owed within one leader; the durable cursor, the lease, the mark and promotion are untouched.\n\nCloses #962.\n\n* fix(broker): map set_stream_retention errors with BrokerError::from\n\n* fix(groups): scope a member to its principal and reclaim once per connection\n\nA consumer name is capped at 128 bytes and refused past it, and claims\nshare one interned key per member instead of a copy each. A member is the\nname plus the authenticated principal, so naming another principal's\nmember reaches none of its claims.\n\nA connection's first reclaim reserves the claims the member holds from\nolder connections. They go back to it before owed records, across polls\nwhen max_records is smaller, until taken back or lapsed. Later reclaims\non the connection, and reclaims from older connections, are ordinary\npolls, so a client that always sets reclaim or two live processes under\none name cannot keep burning attempts.\n\nConnection ids now count up per process: quinn's stable_id is an address\nand can repeat, which would let a restarted member look like its\npredecessor.\n\n* test(groups): leave the captured frames out of an assertion message\n\n* test(groups): name the failing refusal by index instead of printing them",
+          "timestamp": "2026-10-03T15:35:49-07:00",
+          "tree_id": "4b8c63cbd4ef73294859c8818c55c9a2782a6ae5",
+          "url": "https://github.com/gabloe/felix/commit/7f3ac092f80288473b9ca8d4e8c226c2f6f96432"
+        },
+        "date": 1791067261253,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 326162.12,
+            "range": "9372.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 326162.12\nmean: 326869.86\nstdev: 9372.98\ncv: 2.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 326162.12,
+            "range": "9372.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 326162.12\nmean: 326869.86\nstdev: 9372.98\ncv: 2.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79609.37,
+            "range": "694.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79609.37\nmean: 79832.15\nstdev: 694.10\ncv: 0.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 796093.74,
+            "range": "6940.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 796093.74\nmean: 798321.52\nstdev: 6940.98\ncv: 0.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
