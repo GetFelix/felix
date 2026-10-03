@@ -27,7 +27,8 @@ making each append buy its own device flush.
 
 This is the mechanism behind PostgreSQL's `commit_delay`, MySQL's binlog group
 commit, and RocksDB's WAL group commit. `felix_storage_sync_batch_appends`
-reports the fan-in actually achieved. A value near 1 under concurrent load means
+reports the fan-in actually achieved, in records per flush (a client batch of N
+records counts N). A value near 1 under concurrent single-record load means
 appends are serialising on the device and something has regressed.
 
 ### 2. One `write` per batch, not per record
@@ -126,7 +127,7 @@ and one wake-up. The thread starts on the log's first flush and exits after 10 s
 without one, so quiet shards do not hold threads.
 
 Round trip for a no-op flush, i.e. the dispatch alone (`dispatch_overhead` in
-`crates/server/felix-storage/src/io/flusher/tests.rs`, release build, 4 runtime
+`crates/server/felix-storage/src/io/log_thread/tests.rs`, release build, 4 runtime
 workers, one task per log), mean / p99 in µs:
 
 | Logs flushing at once | macOS `spawn_blocking` | macOS flush thread | Linux `spawn_blocking` | Linux flush thread |
@@ -171,6 +172,59 @@ segments, so the cache compacted mid-run with about 20 MiB live:
 Before, the one put that triggered compaction waited the entire rewrite, about
 20 seconds. After, no put waited for compaction; the remaining tail tracks
 segment rolls and machine load, and one run in six was slow throughout.
+
+### 11. Appends write on the log's own thread
+
+A `write` into the page cache blocks once the kernel throttles a process that
+dirties pages faster than the device takes them, so each log's appends run on
+a thread of their own, with the segment lock released during the `write` (see
+`docs/durable-storage.md`, "Where the append runs").
+
+The thread polls for its next append for 20 µs before it parks, and a caller
+whose append is the only one queued polls as long for its result, so
+back-to-back appends pay no wake-up on either side.
+
+The caller hears its result before the thread writes any index entries, and
+the batch is freed by the caller that allocated it, so a lone publisher waits
+only for the `write`. Index entries go to the file 256 at a time rather than
+with the append that crossed each interval: with 4 KiB spacing that was a
+second `write` on every other batch of 16. Entries still buffered at a crash
+cost nothing, because the active segment is scanned in full on open and its
+index rewritten.
+
+`felix-log-tool bench`, 128-byte payloads, records/s and p50/p99 append
+latency in µs, three rounds of each row run back to back, on an M4 Max with
+the log on an external SSD. 200,000 records per run (20,000 under
+`on_commit`), 2,000 warm-up. A container stack was running on the same
+machine (load average 2.5 to 4), so read the ratios within each round. Before
+is the `write` on the caller's reactor thread:
+
+| fsync | batch | publishers | before rec/s | after rec/s | after/before per round | before p50/p99 | after p50/p99 |
+| --- | ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| none | 1 | 1 | 273k–277k | 260k–264k | 0.96, 0.96, 0.94 | 3 / 6 | 3 / 4 |
+| none | 1 | 8 | 99k–102k | 206k–207k | 2.05, 2.07, 2.02 | 38–43 / 410–417 | 37 / 51–53 |
+| none | 16 | 1 | 2.00M–2.04M | 2.17M–2.27M | 1.13, 1.08, 1.08 | 6 / 9–11 | 4 / 6–7 |
+| none | 16 | 8 | 1.46M–1.48M | 3.12M–3.16M | 2.11, 2.12, 2.17 | 37 / 1,465–1,559 | 36–37 / 51–56 |
+| periodic | 1 | 8 | 100k–101k | 204k–206k | 2.04, 2.05, 2.05 | 41–42 / 409–414 | 37 / 49 |
+| periodic | 16 | 8 | 1.39M–1.47M | 3.10M–3.17M | 2.27, 2.14, 2.16 | 37 / 1,365–1,551 | 36–37 / 51–57 |
+| on_commit | 1 | 8 | 1.2k–2.0k | 1.6k–1.9k | 0.91, 1.51, 0.82 | 3,552–5,974 / 6,946–12,648 | 3,946–4,923 / 7,053–10,895 |
+| on_commit | 16 | 8 | 19k–31k | 22k–36k | 1.20, 1.12, 1.20 | 3,740–5,982 / 7,589–12,742 | 3,582–5,381 / 6,737–11,472 |
+
+A lone unbatched publisher pays for the hand-off: 4 to 6% of its throughput,
+about a fifth of a microsecond per append, which is the round trip between two
+cores; its p99 is lower. With batches of 16 a lone publisher is faster than
+before, because of the index change. Several publishers on one log gain,
+because they queue on the thread instead of on the segment lock across each
+other's `write`, which is where the 400 µs and multi-millisecond tails came
+from. The `on_commit` rows swing with the device's flush time from round to
+round. Under `on_commit` a flush covers every append queued when it starts:
+with 16 publishers of 4 KiB records, 15–16 appends per flush against 12–13
+before, counted from `DiskLog::flushes`.
+
+`tests/slow_disk.rs` checks the point of all this: with every segment write
+held 50 ms, eight appends on four logs and two workers leave a 1 ms ticker
+running, and finish faster than two workers writing in turn could. With the
+write on the caller, the ticker stops for 280–340 ms.
 
 ## Where the time goes
 
@@ -267,7 +321,7 @@ against, and a breach is a design conversation rather than an automatic failure.
 | `none` / `periodic` throughput, batch 1, concurrency 1 | ≥ 300k records/s | ~60% of measured. Guards against a per-record syscall or allocation creeping in |
 | `on_commit` p50 | ≤ 1.5× one device flush | The floor is hardware. Exceeding it means an append is buying more than one flush |
 | `on_commit` throughput at concurrency 64 | ≥ 40× the concurrency-1 figure | Group commit is the design. Falling toward 1× means the flush lock has stopped batching |
-| `felix_storage_sync_batch_appends` under concurrent load | ≥ 8 | Direct measurement of the above; alertable in production |
+| `felix_storage_sync_batch_appends` under concurrent single-record load | ≥ 8 | Direct measurement of the above; alertable in production |
 | Batch-16 throughput vs batch-1 | ≥ 4× | Confirms one `write` per batch, not per record |
 | Recovery time | ≤ 1s per GiB of active segment | Measured at 0.32s for a 1.01 GiB segment (~3.2 GiB/s), so the budget carries about 3× headroom. Only the active segment is fully scanned |
 

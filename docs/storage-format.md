@@ -249,6 +249,9 @@ Entries are emitted for the segment's first record and thereafter every
 `index_spacing_bytes` of segment data. They are strictly ascending by offset,
 which is what `seek_position`'s binary search relies on.
 
+Entries reach the file 256 at a time, and the rest when the segment is
+sealed, so after a crash the active segment's index can be short. Recovery
+scans the active segment in full and rewrites its index, so that costs nothing.
 A torn final entry, the signature of a crash mid-append, is tolerated on load:
 the file is read up to the last whole entry.
 

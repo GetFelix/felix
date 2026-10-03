@@ -13,6 +13,8 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Read, Write};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::Result;
 use crate::log::Offset;
@@ -177,11 +179,16 @@ impl SparseIndex {
 /// entries are searched.
 #[derive(Debug)]
 pub struct IndexWriter {
-    file: File,
+    file: Arc<File>,
     index: SparseIndex,
     spacing_bytes: u64,
     /// Segment bytes written since the last entry was emitted.
     bytes_since_entry: u64,
+    /// Entries already in `index` but not yet in the file.
+    unwritten: Vec<u8>,
+    /// Set once a write to the file has failed, so the failure is reported
+    /// once.
+    degraded: Arc<AtomicBool>,
 }
 
 impl IndexWriter {
@@ -210,12 +217,7 @@ impl IndexWriter {
         )?;
         drop(file);
         let file = OpenOptions::new().append(true).open(path)?;
-        Ok(Self {
-            file,
-            index,
-            spacing_bytes: spacing_bytes.max(1),
-            bytes_since_entry: 0,
-        })
+        Ok(Self::new(file, index, spacing_bytes.max(1)))
     }
 
     /// Open `path` for appending, seeding in-memory state from `index`.
@@ -224,14 +226,20 @@ impl IndexWriter {
         // from there. This is what makes a stale index self-correcting.
         index.persist(path)?;
         let file = OpenOptions::new().append(true).open(path)?;
-        Ok(Self {
-            file,
+        // Replaced by `with_spacing`; a zero here would emit an entry per
+        // record, so start from the documented default instead.
+        Ok(Self::new(file, index, 4 * 1024))
+    }
+
+    fn new(file: File, index: SparseIndex, spacing_bytes: u64) -> Self {
+        Self {
+            file: Arc::new(file),
             index,
-            // Replaced by `with_spacing`; a zero here would emit an entry per
-            // record, so start from the documented default instead.
-            spacing_bytes: 4 * 1024,
+            spacing_bytes,
             bytes_since_entry: 0,
-        })
+            unwritten: Vec::new(),
+            degraded: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     pub fn with_spacing(mut self, spacing_bytes: u64) -> Self {
@@ -248,23 +256,45 @@ impl IndexWriter {
     /// Offer a record boundary to the index.
     ///
     /// Emits an entry when the spacing threshold has been crossed, otherwise
-    /// just accumulates. `record_len` is the record's full on-disk size.
-    pub fn observe_record(&mut self, offset: Offset, position: u64, record_len: u64) -> Result<()> {
+    /// just accumulates. `record_len` is the record's full on-disk size. The
+    /// entry reaches the file with [`Self::take_unwritten`] or [`Self::flush`].
+    pub fn observe_record(&mut self, offset: Offset, position: u64, record_len: u64) {
         let first_entry = self.index.is_empty();
         if first_entry || self.bytes_since_entry >= self.spacing_bytes {
             let entry = IndexEntry { offset, position };
             self.index.push(entry);
-            self.file.write_all(&entry.encode())?;
+            self.unwritten.extend_from_slice(&entry.encode());
             self.bytes_since_entry = 0;
         }
         self.bytes_since_entry = self.bytes_since_entry.saturating_add(record_len);
-        Ok(())
     }
 
-    /// Flush buffered entries to the OS. Not an fsync: the index is rebuildable,
-    /// so paying for a second device sync per append would buy nothing.
+    /// The entries observed since the last call, to write without holding
+    /// whatever guards this writer, once there are enough of them to be worth
+    /// a `write`. Fewer stay buffered until a later call or [`Self::flush`].
+    pub(crate) fn take_unwritten(&mut self) -> UnwrittenEntries {
+        // An entry per few KiB of records made this a second syscall on
+        // every other batched append. Entries still buffered at a crash cost
+        // nothing: the active segment is scanned in full on open, and its
+        // index rebuilt from it.
+        let bytes = if self.unwritten.len() >= INDEX_WRITE_BYTES {
+            std::mem::take(&mut self.unwritten)
+        } else {
+            Vec::new()
+        };
+        UnwrittenEntries {
+            bytes,
+            file: Arc::clone(&self.file),
+            degraded: Arc::clone(&self.degraded),
+        }
+    }
+
+    /// Hand unwritten entries to the OS. Not an fsync: the index is
+    /// rebuildable, so paying for a second device sync per append would buy
+    /// nothing.
     pub fn flush(&mut self) -> Result<()> {
-        self.file.flush()?;
+        (&*self.file).write_all(&self.unwritten)?;
+        self.unwritten.clear();
         Ok(())
     }
 
@@ -278,6 +308,48 @@ impl IndexWriter {
 
     pub fn into_index(self) -> SparseIndex {
         self.index
+    }
+}
+
+/// How many bytes of index entries [`IndexWriter::take_unwritten`] waits
+/// for: 256 entries.
+const INDEX_WRITE_BYTES: usize = 4096;
+
+/// Index entries from [`IndexWriter::take_unwritten`].
+#[derive(Debug)]
+pub(crate) struct UnwrittenEntries {
+    bytes: Vec<u8>,
+    file: Arc<File>,
+    degraded: Arc<AtomicBool>,
+}
+
+impl UnwrittenEntries {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    /// Append the entries to the index file.
+    ///
+    /// A failure is logged and otherwise ignored. The index is an accelerator,
+    /// not a record of truth: a missing or stale one is rebuilt from the
+    /// segment on open, and every read re-validates the records it lands on.
+    /// Failing the append instead would be actively harmful, since its records
+    /// are already written and their offsets spent: retrying would store the
+    /// batch twice, and not retrying would report a stored publish as failed.
+    pub(crate) fn write(self, segment: u64) {
+        if self.bytes.is_empty() {
+            return;
+        }
+        if let Err(err) = (&*self.file).write_all(&self.bytes)
+            && !self.degraded.swap(true, Ordering::Relaxed)
+        {
+            tracing::warn!(
+                segment,
+                error = %err,
+                "sparse index write failed; the index will be rebuilt on next open"
+            );
+            metrics::counter!(crate::metrics_names::INDEX_WRITE_FAILURES_TOTAL).increment(1);
+        }
     }
 }
 

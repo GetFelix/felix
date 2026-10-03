@@ -163,7 +163,10 @@ curl -sS -X POST http://127.0.0.1:9095/internal/bootstrap/tenants/ops/initialize
 ```
 
 The token exchange needs an identity provider that the tenant trusts
-(`idp_issuers`). Felix has no built-in development login. Exchange with
+(`idp_issuers`). For a development stack with no identity provider, set
+`FELIX_BOOTSTRAP_DEV_TOKENS=true` and ask the bootstrap listener for a
+[development token](/felix/features/security/#development-tokens) for
+`p:broker` with `"audience": "felix-controlplane"` instead. Otherwise exchange with
 `"audience": "felix-controlplane"` and write the Felix token to
 `./felix-node-token`. The
 [bootstrap flow](/felix/features/security/#bootstrap-mode-day-0) and

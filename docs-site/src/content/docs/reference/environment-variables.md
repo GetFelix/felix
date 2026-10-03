@@ -1983,6 +1983,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_BOOTSTRAP_TOKEN` | unset | Token the bootstrap endpoints require. |
 | `FELIX_BOOTSTRAP_TOKEN_PREVIOUS` | unset | The token being rotated out, still accepted alongside the current one so a rotation is a rolling deploy rather than an outage. Requires `FELIX_BOOTSTRAP_TOKEN`. |
 | `FELIX_BOOTSTRAP_BIND_ADDR` | `127.0.0.1:9095` | Restricts bootstrap to a separate listener. |
+| `FELIX_BOOTSTRAP_DEV_TOKENS` | `false` | Development only. The bootstrap listener also serves `POST /internal/bootstrap/tenants/{tenant}/dev-token`, which mints a Felix token for any principal of an initialized tenant with no identity provider. Startup fails unless bootstrap is enabled on a loopback `FELIX_BOOTSTRAP_BIND_ADDR`. |
 | `FELIX_BOOTSTRAP_TLS_CERT` | unset | PEM certificate chain the bootstrap listener presents. All three TLS variables together, or startup fails. A partial set is a misconfiguration, not "TLS off". |
 | `FELIX_BOOTSTRAP_TLS_KEY` | unset | PEM private key for the bootstrap listener's certificate. |
 | `FELIX_BOOTSTRAP_TLS_CLIENT_CA` | unset | PEM CA bundle. Only clients presenting a certificate signed by it can complete the TLS handshake with the bootstrap listener. |

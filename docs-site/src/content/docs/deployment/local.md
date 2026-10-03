@@ -80,8 +80,10 @@ with. Without it the broker still starts, warns that
 and serves no streams. The token comes out of the control plane's day-0
 bootstrap and a token exchange with your identity provider; the
 [Docker Compose page](/felix/deployment/docker-compose/#broker-credential)
-shows the requests. Felix has no built-in development login, which is why
-`felix-cluster` mints the tokens itself.
+shows the requests. A development stack with no identity provider can ask the
+bootstrap listener for a
+[development token](/felix/features/security/#development-tokens) instead;
+`felix-cluster` mints its tokens itself.
 
 A started broker logs a `quic listener started` line with its address for
 each client listener. By default that is UDP `0.0.0.0:5000`, with metrics and

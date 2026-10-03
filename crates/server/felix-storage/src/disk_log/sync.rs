@@ -51,8 +51,6 @@ pub(super) struct Durability {
     /// Held by whichever task is currently flushing. Everyone else queues here
     /// and finds the work already done when they get in.
     flush_lock: Mutex<()>,
-    /// Appends currently waiting for durability, sampled to report fan-in.
-    waiting: AtomicU64,
     /// Flushes actually issued. One relaxed increment against a syscall that
     /// costs microseconds at best, so it is always on rather than behind a
     /// feature -- and it is the only machine-independent way to see group
@@ -70,7 +68,6 @@ impl Durability {
             mode,
             durable_tx: watch::channel(durable_upto).0,
             flush_lock: Mutex::new(()),
-            waiting: AtomicU64::new(0),
             flushes: AtomicU64::new(0),
         }
     }
@@ -108,10 +105,7 @@ impl Durability {
             return Ok(());
         }
 
-        self.waiting.fetch_add(1, Ordering::Relaxed);
-        let result = self.flush_until(target, flush, &mut receiver).await;
-        self.waiting.fetch_sub(1, Ordering::Relaxed);
-        result
+        self.flush_until(target, flush, &mut receiver).await
     }
 
     /// Run an unconditional flush under the same lock used by group commit.
@@ -186,9 +180,6 @@ impl Durability {
                 return Ok(());
             }
 
-            // Sampled inside the lock so it reflects the appends this one flush
-            // is about to satisfy.
-            let fan_in = self.waiting.load(Ordering::Relaxed);
             self.flushes.fetch_add(1, Ordering::Relaxed);
             let outcome = flush().await;
             // Published before the lock goes, so the next holder does not
@@ -200,8 +191,6 @@ impl Durability {
 
             match outcome {
                 Ok(durable_upto) => {
-                    metrics::histogram!(metrics_names::SYNC_BATCH_APPENDS)
-                        .record(fan_in.max(1) as f64);
                     if durable_upto >= target {
                         return Ok(());
                     }
