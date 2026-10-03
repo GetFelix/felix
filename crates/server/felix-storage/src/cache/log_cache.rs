@@ -183,6 +183,70 @@ impl LogCache {
         shard: u32,
         key: &str,
     ) -> Result<Option<Bytes>> {
+        self.delete_entry(tenant_id, namespace, cache, shard, key, None)
+            .await
+            .map(|deleted| deleted.previous)
+    }
+
+    /// Write a delete for each key in one shard whose TTL has passed, at most
+    /// `limit` of them, so a watch hears that it is gone and compaction can
+    /// drop it. Returns how many were written.
+    ///
+    /// For the shard's leader only, like any write. Each key is checked again
+    /// when its delete is staged, under the lock a put stages under, so a
+    /// put that refreshed it in between keeps its value.
+    pub async fn expire_due(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        limit: usize,
+    ) -> Result<usize> {
+        let now = now_millis();
+        let due: Vec<String> = {
+            let handle = self.shard(tenant_id, namespace, cache, shard)?;
+            let mut state = handle.state.lock().await;
+            handle.ensure_index(&mut state).await?;
+            state
+                .index
+                .entries
+                .iter()
+                .filter(|(_, entry)| entry.is_expired(now))
+                .map(|(key, _)| key.clone())
+                .take(limit)
+                .collect()
+        };
+        let mut written = 0;
+        for key in due {
+            let deleted = self
+                .delete_entry(tenant_id, namespace, cache, shard, &key, Some(now))
+                .await?;
+            written += usize::from(deleted.written);
+        }
+        Ok(written)
+    }
+
+    /// Every shard this store has open, as tenant, namespace, cache, shard.
+    pub fn open_shards(&self) -> Vec<(String, String, String, u32)> {
+        self.shards
+            .open_entries()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// Stage and apply a delete of `key`, or nothing when the key is absent
+    /// or, with `expired_at`, not expired at that time.
+    async fn delete_entry(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+        expired_at: Option<u64>,
+    ) -> Result<Deleted> {
         let shard_index = shard;
         let shard = self.shard(tenant_id, namespace, cache, shard_index)?;
         let op = CacheOp::Delete {
@@ -193,8 +257,11 @@ impl LogCache {
             let mut state = shard.state.lock().await;
             shard.ensure_index(&mut state).await?;
             let Some(entry) = state.index.entries.get(key).copied() else {
-                return Ok(None);
+                return Ok(Deleted::default());
             };
+            if expired_at.is_some_and(|now| !entry.is_expired(now)) {
+                return Ok(Deleted::default());
+            }
             let previous = if entry.is_expired(now_millis()) {
                 None
             } else {
@@ -240,7 +307,10 @@ impl LogCache {
         staged.commit().await?;
         let mut state = shard.state.lock().await;
         staged.apply(&mut state);
-        Ok(previous)
+        Ok(Deleted {
+            written: true,
+            previous,
+        })
     }
 
     /// Every live key in one shard of one cache.
@@ -545,6 +615,21 @@ impl StorageApi for LogCache {
         LogCache::close_shard(self, tenant_id, namespace, cache, shard).await
     }
 
+    fn open_shards(&self) -> Vec<(String, String, String, u32)> {
+        LogCache::open_shards(self)
+    }
+
+    async fn expire_due(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        limit: usize,
+    ) -> Result<usize> {
+        LogCache::expire_due(self, tenant_id, namespace, cache, shard, limit).await
+    }
+
     fn set_change_observer(&self, observer: Arc<dyn CacheObserver>) -> bool {
         *self.observer.lock() = Some(observer);
         true
@@ -590,6 +675,14 @@ impl StorageApi for LogCache {
 /// Tenant, namespace, cache, and shard. The shard is part of the identity
 /// because each one is a separate log in a separate directory.
 type CacheId = (String, String, String, u32);
+
+/// What [`LogCache::delete_entry`] did.
+#[derive(Default)]
+struct Deleted {
+    written: bool,
+    /// The value the key held, if it was live.
+    previous: Option<Bytes>,
+}
 
 #[cfg(test)]
 mod tests;

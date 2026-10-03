@@ -54,6 +54,11 @@ for what the current release guarantees.
   `start_offset` and `live_offset`, so the client knows where live delivery
   began. Before, only an explicit `latest` reported them. Clients without
   offsets get the frame they always did. (#961)
+- A cache entry whose TTL passes is now a change a watch receives. The
+  shard's leader writes a delete for it within about a second, through the
+  write fence and replicated like any write, so a watcher no longer has to
+  run its own timers. Reads still treat an entry as absent the moment it
+  lapses. `StorageApi` gains `open_shards` and `expire_due`. (#960)
 - `felixctl pub` says how many acknowledgements came back without an offset
   and why, instead of leaving it to a `null` in `--json`. An owner that acks
   on enqueue (`ack_on_commit` off) answers before the record has an offset,
