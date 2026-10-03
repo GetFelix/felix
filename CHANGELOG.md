@@ -82,6 +82,11 @@ for what the current release guarantees.
 - `felixctl` saves its config through a temporary file that is synced and
   renamed into place, and makes it owner-only even when it already existed
   with wider permissions. A crash mid-save no longer leaves an empty config.
+- **The npm client's Linux addons load on glibc 2.28.** They were built
+  against the release runners' glibc 2.38 and failed to load on Debian
+  bookworm, RHEL 8 and `node:*-bookworm` images. The release now links them
+  against glibc 2.28 with cargo-zigbuild and fails if an addon needs a newer
+  glibc symbol. (#981)
 - **A subscribe that reaches a broker just after it stopped serving the shard
   is refused instead of left waiting.** A broker ends a shard's readers before
   its routes catch up with the move or failover, so for that moment it still

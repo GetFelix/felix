@@ -16,8 +16,10 @@ npm install felix-client
 
 The binary ships as one package per platform, declared as optional
 dependencies, so npm fetches only the one your machine needs. Nothing is
-compiled at install time. Linux (x86-64 and arm64, glibc), macOS (Intel and
-Apple silicon) and Windows x86-64 are covered. Node 18 or newer.
+compiled at install time. Linux (x86-64 and arm64, glibc 2.28 or newer, so
+Debian bookworm, RHEL 8 and Amazon Linux 2023), macOS (Intel and Apple silicon)
+and Windows x86-64 are covered. Alpine and other musl systems are not. Node 18
+or newer.
 
 Full documentation: https://gabloe.github.io/felix/clients/typescript/
 
