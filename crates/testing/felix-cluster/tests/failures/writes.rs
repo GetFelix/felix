@@ -38,9 +38,14 @@ fn on_commit(streams: Vec<StreamSpec>) -> ClusterConfig {
     }
 }
 
-/// Publish through `node` and expect a refusal typed `code`, sent as
-/// `outcome_unknown`.
-async fn expect_refused(cluster: &Cluster, node: &str, payload: &str, code: ErrorCode) {
+/// Publish through `node` and expect a refusal typed `code` and `retry`.
+async fn expect_refused(
+    cluster: &Cluster,
+    node: &str,
+    payload: &str,
+    code: ErrorCode,
+    retry: RetryClass,
+) {
     let err = cluster
         .publish_via(node, STREAM, payload.as_bytes().to_vec())
         .await
@@ -48,11 +53,7 @@ async fn expect_refused(cluster: &Cluster, node: &str, payload: &str, code: Erro
     // Not formatted: it came over TLS, and the code is what a client acts on.
     let typed = scenarios::broker_error(&err).expect("the refusal had no code");
     assert_eq!(typed.code, code, "refusal of {payload}");
-    assert_eq!(
-        typed.retry,
-        RetryClass::OutcomeUnknown,
-        "refusal of {payload}"
-    );
+    assert_eq!(typed.retry, retry, "refusal of {payload}");
 }
 
 /// Publish through `node`, retrying for a while: a healed follower may need
@@ -99,8 +100,8 @@ async fn replay(cluster: &Cluster, node: &str) -> Vec<String> {
     held
 }
 
-/// **A full disk fails the publish, and healing it loses nothing and adds
-/// nothing.** Half the refused batch reaches the file before `ENOSPC`; the
+/// **A full disk fails the publish as `overloaded`, and healing it loses
+/// nothing and adds nothing.** Half the refused batch reaches the file before `ENOSPC`; the
 /// writer cuts it off again, so after healing the log holds exactly what was
 /// acknowledged and the next append lands where the refused one would have.
 /// The restart makes the replay come from the segment on disk, which
@@ -122,8 +123,22 @@ async fn a_full_disk_fails_the_publish_and_leaves_no_trace() {
         fault: WriteFault::NoSpace,
     };
     cluster.inject(&fault).await.expect("inject");
-    expect_refused(&cluster, &owner, "disk-full-1", ErrorCode::Storage).await;
-    expect_refused(&cluster, &owner, "disk-full-2", ErrorCode::Storage).await;
+    expect_refused(
+        &cluster,
+        &owner,
+        "disk-full-1",
+        ErrorCode::Overloaded,
+        RetryClass::RetryAfter,
+    )
+    .await;
+    expect_refused(
+        &cluster,
+        &owner,
+        "disk-full-2",
+        ErrorCode::Overloaded,
+        RetryClass::RetryAfter,
+    )
+    .await;
 
     cluster.heal(&fault).await.expect("heal");
     cluster
@@ -164,7 +179,14 @@ async fn a_single_failed_write_does_not_stop_the_log() {
     cluster.inject(&fault).await.expect("inject");
     // The only log on `owner` taking writes is this one, so the failure is
     // this publish's.
-    expect_refused(&cluster, &owner, "refused", ErrorCode::Storage).await;
+    expect_refused(
+        &cluster,
+        &owner,
+        "refused",
+        ErrorCode::Storage,
+        RetryClass::OutcomeUnknown,
+    )
+    .await;
     cluster
         .publish_via(&owner, STREAM, b"after".to_vec())
         .await
@@ -193,7 +215,14 @@ async fn a_quorum_leader_whose_write_fails_does_not_ack() {
         fault: WriteFault::Io,
     };
     cluster.inject(&fault).await.expect("inject");
-    expect_refused(&cluster, &leader, "leader-disk-bad", ErrorCode::Storage).await;
+    expect_refused(
+        &cluster,
+        &leader,
+        "leader-disk-bad",
+        ErrorCode::Storage,
+        RetryClass::OutcomeUnknown,
+    )
+    .await;
 
     cluster.heal(&fault).await.expect("heal");
     publish_eventually(&cluster, &leader, "after").await;
@@ -241,6 +270,7 @@ async fn a_follower_whose_write_fails_does_not_count_toward_the_majority() {
         &leader,
         "both-followers-full",
         ErrorCode::QuorumTimeout,
+        RetryClass::OutcomeUnknown,
     )
     .await;
 

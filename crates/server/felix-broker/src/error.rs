@@ -68,6 +68,10 @@ pub enum BrokerError {
     /// exists to prevent.
     #[error("durable storage error: {0}")]
     Storage(String),
+    /// The disk or quota under durable storage is full. Nothing was written,
+    /// so the same request can succeed once space is freed.
+    #[error("durable storage is full: {0}")]
+    StorageFull(String),
     /// An idempotent batch skipped ahead of the sequence this broker expected.
     /// What was skipped is not here, so continuing past it would leave a hole
     /// the producer believes is filled.
@@ -138,6 +142,15 @@ pub enum NotReadable {
 
 /// Shorthand for results carrying a [`BrokerError`].
 pub type Result<T> = std::result::Result<T, BrokerError>;
+
+impl From<felix_storage::StorageError> for BrokerError {
+    fn from(err: felix_storage::StorageError) -> Self {
+        match err {
+            felix_storage::StorageError::Full(_) => BrokerError::StorageFull(err.to_string()),
+            other => BrokerError::Storage(other.to_string()),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests;

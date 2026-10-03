@@ -105,13 +105,20 @@ impl SegmentWriter {
         index_spacing_bytes: u64,
         version: u16,
     ) -> Result<Self> {
-        let mut writer = BlankSegment::create(dir, id, preallocate_bytes, index_spacing_bytes)?
-            .activate(base_offset, created_at_micros, version)?;
-        // The header must be durable before any record claims to live here. The
-        // directory entry already is: `BlankSegment::create` synced it.
-        sync_data(&writer.file)?;
-        writer.mark_synced(SEGMENT_HEADER_LEN);
-        Ok(writer)
+        let created = BlankSegment::create(dir, id, preallocate_bytes, index_spacing_bytes)?
+            .activate(base_offset, created_at_micros, version)
+            .and_then(|mut writer| {
+                // The header must be durable before any record claims to live
+                // here. The directory entry already is: `BlankSegment::create`
+                // synced it.
+                sync_data(&writer.file)?;
+                writer.mark_synced(SEGMENT_HEADER_LEN);
+                Ok(writer)
+            });
+        if created.is_err() {
+            remove_unused_segment(dir, id);
+        }
+        created
     }
 
     /// Reopen an existing, already validated segment for further appends.
@@ -353,7 +360,7 @@ impl SegmentWriter {
         // shape it no longer knows.
         if let Err(err) = crate::io::write_all(&self.file, &self.staging) {
             self.rewind_after_failed_write()?;
-            return Err(StorageError::Io(err));
+            return Err(err.into());
         }
 
         self.size_bytes = position;
@@ -526,8 +533,13 @@ impl BlankSegment {
             .write(true)
             .create_new(true)
             .open(&path)?;
-        preallocate(&file, preallocate_bytes)?;
-        sync_dir(dir)?;
+        if let Err(err) = preallocate(&file, preallocate_bytes).and_then(|()| sync_dir(dir)) {
+            // On a full disk the reservation is what fails. A file left behind
+            // would be a log's only segment with no header.
+            drop(file);
+            remove_unused_segment(dir, id);
+            return Err(err.into());
+        }
         Ok(Self {
             id,
             path,
@@ -606,6 +618,17 @@ impl BlankSegment {
             sync_dir(&dir)?;
         }
         Ok(())
+    }
+}
+
+/// Best effort removal of a segment that never held a record, after its
+/// creation failed. One that stays is headerless, and recovery discards it.
+fn remove_unused_segment(dir: &Path, id: SegmentId) {
+    for path in [
+        dir.join(segment_file_name(id)),
+        dir.join(index_file_name(id)),
+    ] {
+        let _ = std::fs::remove_file(path);
     }
 }
 
