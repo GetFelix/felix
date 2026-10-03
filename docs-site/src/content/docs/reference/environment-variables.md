@@ -589,7 +589,7 @@ export FELIX_SUB_EGRESS_LANES="4"
 
 ### `FELIX_SUB_LANE_QUEUE_DEPTH`
 
-**Description**: Queue depth per outbound writer lane.
+**Description**: Frames queued for one subscription in its connection's writer before `FELIX_SUB_QUEUE_MODE` applies. The writer lanes and the connection writer's command queue use the same bound and wait when full.
 
 **Type**: Positive integer (count)
 
@@ -603,7 +603,7 @@ export FELIX_SUB_QUEUE_BOUND="64"
 
 ### `FELIX_SUB_QUEUE_MODE`
 
-**Description**: Backpressure policy for the writer-lane command queue (downstream of `FELIX_SUB_QUEUE_POLICY`, which gates the earlier broker-core fanout enqueue).
+**Description**: What the connection writer does when one subscription's frame queue is full (downstream of `FELIX_SUB_QUEUE_POLICY`, which gates the earlier broker-core fanout enqueue).
 
 **Type**: Enum (`block`, `drop_new`, `drop_old`)
 

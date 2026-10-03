@@ -26,7 +26,7 @@ In publish → delivery order:
 | 3 | Broker `PublishAdmission` | in-flight publish **bytes**, process-wide | none, always waits (within `EnqueuePolicy::Wait`'s timeout) | `pub_inflight_bytes` = 64 MiB |
 | 4 | Broker publish scheduler queue | queued publish **items**, process-wide (or per core shard), shared between tenants by deficit round robin | `EnqueuePolicy`: `Drop` / `Fail` / `Wait` / `Backpressure`; an acked publish that finds no room is answered `overloaded` (`publish_queue_full`) | `pub_queue_depth` × `pub_workers_per_conn` in all, `pub_queue_depth` guaranteed per tenant; `Drop` unless `pub_ingress_wait` (then `Backpressure`) |
 | 5 | Broker-core subscriber channel | queued `DeliveryEnvelope`s per subscriber | `subscriber_queue_policy`: `Block` / `DropNew` / `DropOld` | `subscriber_queue_capacity` = 512, `drop_new` |
-| 6 | Writer lane channel | queued `LaneCommand`s per lane | `subscriber_lane_queue_policy`: same three | `subscriber_lane_queue_depth` = 64, `drop_new` |
+| 6 | Connection writer, per subscriber | frames queued for one subscription's QUIC stream | `subscriber_lane_queue_policy`: same three | `subscriber_lane_queue_depth` = 64, `drop_new` |
 
 Checkpoints 1-2 are client-side (see
 [Internals: The Publish Path](/felix/development/internals-publish/#client-side-publisherpublish)),
@@ -56,15 +56,22 @@ reflects real resident memory, not just admission-time throughput.
 
 `subscriber_queue_policy` (5) gates the broker-core fanout in
 `Broker::complete_publish` (`crates/server/felix-broker/src/broker/publish/completion.rs`),
-the first hand-off after a batch is durable and appended to the replay ring. `subscriber_lane_queue_policy` (6) gates a second,
-independent hand-off one hop later, from a subscription's feeder task to
-its writer lane. They're separate because they guard against different
-failure modes: (5) is about a subscriber's application-level consumer
-falling behind (not reading fast enough). (6) is about the lane, shared
-across many subscribers, being saturated, e.g. because one lane's
-connection writer is stuck on a flow-control-blocked QUIC stream. A
-subscriber can be perfectly healthy at checkpoint 5 and still get shed at
-checkpoint 6 because it happens to share a lane with a slow neighbor.
+the first hand-off after a batch is durable and appended to the replay ring. `subscriber_lane_queue_policy` (6) gates the last one, in
+the connection writer, where each subscription has its own queue of encoded
+frames waiting for its QUIC stream. They're separate because they guard
+against different failure modes: (5) is a subscriber whose feeder cannot keep
+up, (6) is a subscription whose QUIC stream is flow-controlled because the
+client is not reading it.
+
+Between them, the feeder hands frames to a writer lane and the lane hands
+them to the connection writer. Both hand-offs are bounded by
+`subscriber_lane_queue_depth` and wait when full, under every policy. They
+are shared by every subscription on the connection, so shedding there would
+drop frames for all of them whenever one publish fans out to more
+subscriptions than the queue holds. Waiting there only backs records up into
+each subscriber's own queue at checkpoint 5, and the connection writer never
+stops taking frames under `drop_new`, so a slow subscription still sheds
+alone. Every drop is counted in `felix_sub_queue_dropped_total`.
 
 ### `Block` vs `DropNew`/`DropOld`
 
