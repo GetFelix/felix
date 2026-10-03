@@ -105,10 +105,11 @@ async fn a_stalled_write_holds_up_only_the_appends_behind_it() {
     assert_eq!(log.tail_offset().await.expect("tail"), 6);
 }
 
-/// A caller that gives up during its write leaves nothing behind: no record,
-/// no spent offset, no claim.
+/// A caller that gives up during its write does not undo it, as it could not
+/// when the write ran in its own poll: the batch is kept and its claim
+/// released, and nothing is cut back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_append_abandoned_during_its_write_is_undone() {
+async fn an_append_abandoned_during_its_write_is_kept() {
     let dir = tempdir().expect("dir");
     let log = Arc::new(open(&dir, FsyncMode::None));
     let order = Arc::new(CommitSequencer::new(0));
@@ -130,16 +131,19 @@ async fn an_append_abandoned_during_its_write_is_undone() {
         .expect("append");
     assert_eq!(
         pending.first_offset(),
-        0,
-        "the abandoned batch spent an offset"
+        1,
+        "the abandoned batch holds offset 0"
     );
-    turn.wait().await.expect("turn");
+    tokio::time::timeout(Duration::from_secs(5), turn.wait())
+        .await
+        .expect("the abandoned batch's range was never released")
+        .expect("turn");
     drop(turn);
-    assert_eq!(read_all(&log, 0).await, ["next"]);
+    assert_eq!(read_all(&log, 0).await, ["abandoned", "next"]);
 
     drop(log);
     let reopened = open(&dir, FsyncMode::None);
-    assert_eq!(read_all(&reopened, 0).await, ["next"]);
+    assert_eq!(read_all(&reopened, 0).await, ["abandoned", "next"]);
 }
 
 /// A caller that gives up just after its batch is kept does not hear its

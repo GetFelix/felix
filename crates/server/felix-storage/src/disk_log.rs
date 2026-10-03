@@ -251,7 +251,8 @@ impl DiskLog {
     /// [`DiskLog::append_pending`], with the batch's range claimed in `order`
     /// as soon as its offsets are assigned. A caller dropped before this
     /// returns still releases the range, so the writers behind it are not
-    /// stranded.
+    /// stranded, but the batch may still be written: run this to completion
+    /// if what follows it must happen.
     pub async fn append_claimed(
         &self,
         records: &[AppendRecord],

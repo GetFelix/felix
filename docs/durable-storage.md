@@ -288,13 +288,21 @@ it would miss the appends still queued, and each would wait for a flush of its
 own. The cost is that a flush also waits for an append whose `write` the kernel
 is holding.
 
-An append whose caller gives up before its batch is made visible is skipped,
-or cut back to the last good byte if already written, and spends no offsets,
-as when the write ran in the caller's own poll. A caller that orders batches
-by offset, such as the broker's commit sequencer, passes its sequencer to
-`DiskLog::append_claimed`, which claims the range on the append thread. A
-caller that gives up a moment after its batch is kept then still releases the
-range, and the writers behind it are not stranded.
+An append whose caller gives up before the append thread starts on it is
+skipped and spends no offsets. Once started, the batch is written and kept
+whatever the caller does, as it was when the write ran in the caller's own
+poll: cutting it back would free the blocks preallocated past it, and a flush
+may already have covered it. A caller that orders batches by offset, such as
+the broker's commit sequencer, passes its sequencer to
+`DiskLog::append_claimed`, which claims the range on the append thread, so a
+caller that gives up after its batch is kept still releases the range and the
+writers behind it are not stranded.
+
+A caller with work to do once its record is in the log runs the append and
+that work to the end on a task of its own, so cancelling it only stops the
+wait. A cache put or delete stages there (append, then the guard that applies
+the write and tells the watchers), and a counter add appends and folds there.
+The broker's publish executors are never cancelled mid-claim.
 
 ## Segments and rollover
 

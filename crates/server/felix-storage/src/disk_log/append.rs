@@ -20,9 +20,11 @@ impl DiskLog {
     /// batch's range is claimed there as soon as its offsets are assigned.
     ///
     /// The work runs on the log's append thread. A batch whose caller gives
-    /// up before it is kept is skipped, or cut back off if already written,
-    /// as when the write ran in the caller's own poll. One kept the moment
-    /// before has its claim dropped with the reply, which releases the range.
+    /// up before the thread starts on it is skipped. Once started it is
+    /// written and kept whatever the caller does; a caller gone by then never
+    /// hears its offsets, and its claim is released with the reply. So a
+    /// caller with work to finish after the append must not be cancelled
+    /// while it waits (see `cache::log_cache` and `counter_log`).
     pub(super) async fn write_batch(
         inner: Arc<LogInner>,
         records: Vec<AppendRecord>,
@@ -49,8 +51,8 @@ impl DiskLog {
         let appended = inner
             .appender
             .run_then(
-                // `gone` turns true once this future is dropped: a batch not
-                // yet kept is then skipped, or cut back off.
+                // `gone` turns true once this future is dropped: a batch the
+                // thread has not started on is then skipped.
                 move |gone| {
                     let kept =
                         appender.append_now(&records, &digests, condition, order.as_ref(), gone);
@@ -184,7 +186,8 @@ impl LogInner {
     /// The append itself, on the log's append thread: roll if the batch will
     /// not fit, then encode the batch and give it its place under `segments`,
     /// write it without that lock, and take it in under the lock again.
-    /// `None` when `condition` does not hold or the caller has given up;
+    /// `None` when `condition` does not hold or the caller gave up before the
+    /// thread got to it;
     /// otherwise the batch, and whether the segment has crossed the early-roll
     /// threshold.
     fn append_now(
@@ -231,12 +234,12 @@ impl LogInner {
         drop(segments);
 
         self.hold_append_at(HoldAt::Write);
-        let mut wrote = staged.write();
+        let wrote = staged.write();
 
+        // Kept even if the caller has gone by now, as when the write ran in
+        // its poll: cutting the batch back would free the preallocated blocks
+        // past it, and a flush may already have covered it.
         let mut segments = self.segments.write();
-        if wrote.is_ok() && gone() {
-            wrote = Err(std::io::Error::other("the caller gave up"));
-        }
         let segment = segments.active().id();
         let ((first_offset, last_offset), index) = segments.active_mut().finish(staged, wrote)?;
         self.observe_marks(first_offset, records, digests);

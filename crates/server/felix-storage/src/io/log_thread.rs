@@ -105,12 +105,18 @@ impl LogThread {
             then(after);
         });
         if let Err(job) = self.submit(job) {
+            // Off the thread, jobs keep their order only through whatever
+            // locks they take: the append lock, for appends. Callers that
+            // need submission order (a shard's claims) are serialised above.
             let pending = Arc::clone(&self.pending);
             tokio::task::spawn_blocking(move || job(&pending))
                 .await
                 .map_err(io::Error::other)?;
         }
-        if alone && !self.spin.is_zero() {
+        if alone
+            && !self.spin.is_zero()
+            && let Some(_spinning) = Spinning::enter()
+        {
             let started = Instant::now();
             while started.elapsed() < self.spin {
                 if let Ok(result) = answer.try_recv() {
@@ -164,6 +170,37 @@ impl std::fmt::Debug for LogThread {
         f.debug_struct("LogThread")
             .field("name", &self.name)
             .finish_non_exhaustive()
+    }
+}
+
+/// Callers polling for a result right now, across every log.
+static SPINNING: AtomicUsize = AtomicUsize::new(0);
+
+/// A caller's turn to poll for its result instead of parking.
+///
+/// Capped at a quarter of the cores, so hundreds of logs each with one
+/// append in flight cannot keep every runtime worker polling. Past the cap a
+/// caller parks and pays the wake-up.
+struct Spinning;
+
+impl Spinning {
+    fn enter() -> Option<Self> {
+        static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let cap = *CAP.get_or_init(|| {
+            std::thread::available_parallelism().map_or(1, |cores| (cores.get() / 4).max(1))
+        });
+        SPINNING
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |now| {
+                (now < cap).then_some(now + 1)
+            })
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for Spinning {
+    fn drop(&mut self) {
+        SPINNING.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
