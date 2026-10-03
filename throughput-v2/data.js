@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791008246351,
+  "lastUpdate": 1791030287129,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22828,6 +22828,58 @@ window.BENCHMARK_DATA = {
             "range": "5310.69",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 821179.63\nmean: 818736.71\nstdev: 5310.69\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d29753fb0e9d577ff908333f2f980bea34322423",
+          "message": "fix(broker): refuse a subscribe that lands after the shard's readers ended (#970)\n\nWhen a broker stops serving a shard, the lifecycle closes the shard's fence\nand ends its readers during the reconcile pass, but the ingress routes are\nonly republished after that pass. In between, the routes still say the shard\nis served here, so the redirect check and the read bound both admit a new\nsubscribe. One registered then misses the ending: it stays on a broker that\nno longer receives the shard's writes and delivers nothing more, for good.\n\nThe history campaign hit this as a subscriber stopping short of the log tail\nright before the next leader's generation-start records. The records were in\nevery read; the subscriber was parked on the old owner.\n\nThe subscribe handler now checks the shard's fence after registering. The\nfence closes before the readers are ended, so a closed fence means the ending\nalready ran and the subscription is dropped and answered shard_unavailable\n(moving); an open one means the ending is still to come and will include it.\n\nSpec-Unaffected: only refuses a subscribe on a broker whose fence for the shard is already closed; what readers are handed and when is unchanged, as are the lease, the mark, promotion and handoff.",
+          "timestamp": "2026-10-03T05:21:15-07:00",
+          "tree_id": "3d73ad61e6c8cd077d84e40e4ff954899ecc744c",
+          "url": "https://github.com/gabloe/felix/commit/d29753fb0e9d577ff908333f2f980bea34322423"
+        },
+        "date": 1791030286357,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 350003.83,
+            "range": "8052.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350003.83\nmean: 352293.88\nstdev: 8052.80\ncv: 2.29%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 350003.83,
+            "range": "8052.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350003.83\nmean: 352293.88\nstdev: 8052.80\ncv: 2.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81930.63,
+            "range": "4133.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81930.63\nmean: 80570.98\nstdev: 4133.68\ncv: 5.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819306.26,
+            "range": "41336.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819306.26\nmean: 805709.84\nstdev: 41336.79\ncv: 5.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
