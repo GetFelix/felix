@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791047030715,
+  "lastUpdate": 1791047303423,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -29106,6 +29106,72 @@ window.BENCHMARK_DATA = {
             "range": "296.38",
             "unit": "us",
             "extra": "trials: 5\nmedian: 985.00\nmean: 980.60\nstdev: 296.38\ncv: 30.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5330948d4628e1e52b64a4fbcfaf5b8bc8b030c1",
+          "message": "fix(controlplane): accept RS256 ID tokens by default (#992)\n\nMost identity providers sign ID tokens with RS256, the algorithm OIDC\nrequires every provider to support, and the control plane accepted only\nES256 unless configured, so a first setup against Dex, Keycloak, Auth0 or\nEntra ID failed. The default is now ES256 and RS256, kept in one place, and\nan explicit setting still narrows it.\n\nCloses #984.",
+          "timestamp": "2026-10-03T09:57:46-07:00",
+          "tree_id": "b52547d162d81a7bf5ee77495ae72fcfb6d76602",
+          "url": "https://github.com/gabloe/felix/commit/5330948d4628e1e52b64a4fbcfaf5b8bc8b030c1"
+        },
+        "date": 1791047300226,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 104,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 104.00\nmean: 104.40\nstdev: 0.55\ncv: 0.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 188,
+            "range": "20.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 188.00\nmean: 179.80\nstdev: 20.98\ncv: 11.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 250,
+            "range": "35.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 250.00\nmean: 254.40\nstdev: 35.78\ncv: 14.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 137,
+            "range": "2.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 137.00\nmean: 137.60\nstdev: 2.19\ncv: 1.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 277,
+            "range": "31.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 277.00\nmean: 286.80\nstdev: 31.19\ncv: 10.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 463,
+            "range": "837.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 463.00\nmean: 976.00\nstdev: 837.79\ncv: 85.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
