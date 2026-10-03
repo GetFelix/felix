@@ -19,6 +19,11 @@ for what the current release guarantees.
   acknowledged publishes after the write, as `FELIX_ACK_ON_COMMIT=true` does
   for every client. `Client::supports_ack_on_commit` says whether a broker
   does. Other clients on the broker are unchanged. (#956)
+- A consumer-group record says how many offsets directly below it were
+  settled without delivery (generation-start records, records retention
+  removed first): `skipped_before` on `GroupRecord`, in the wire's
+  `group_records`, and in the Python and Node clients (`skippedBefore`).
+  Left out when zero, so older clients get the same frames. (#963)
 - `felix-client` re-exports `AckMode`, `BrokerEndpoint` and `ShardRouting`,
   so an application no longer needs `felix-wire` as a direct dependency to
   call it. (#937)

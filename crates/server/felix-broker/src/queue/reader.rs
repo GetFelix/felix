@@ -253,16 +253,21 @@ impl GroupReader {
                     // Not a client's record, so nothing to deliver. Settled like a
                     // trimmed one; left owed it would stall the group here.
                     Some(record) if record.mark.is_generation_start() => {
+                        tracker.lock().await.skip(offset);
                         self.settle(key, &tracker, offset).await?;
                     }
                     Some(record) => {
                         let record = crate::commit::client_record(record);
-                        let attempts = tracker.lock().await.attempts(offset);
+                        let (attempts, skipped_before) = {
+                            let tracker = tracker.lock().await;
+                            (tracker.attempts(offset), tracker.skipped_before(offset))
+                        };
                         bytes += record.payload.len();
                         claimed.push(Claimed {
                             offset,
                             payload: record.payload,
                             attempts,
+                            skipped_before,
                         })
                     }
                     // The offset is below the tail and yet holds nothing. Give
@@ -277,6 +282,7 @@ impl GroupReader {
                     // leaving it owed would stall the group for ever on a record
                     // that no longer exists anywhere.
                     self.trimmed.fetch_add(1, Ordering::Relaxed);
+                    tracker.lock().await.skip(offset);
                     self.settle(key, &tracker, offset).await?;
                 }
                 Err(err) => {
@@ -599,6 +605,11 @@ pub struct Claimed {
     /// How many times this record has been handed out, this delivery included.
     /// `1` is the first attempt; anything higher is a redelivery.
     pub attempts: u32,
+    /// How many offsets directly below this one were settled without being
+    /// delivered: generation-start records, and records retention removed
+    /// before the group reached them. A gap with this count is not a record
+    /// still to come.
+    pub skipped_before: u64,
 }
 
 #[cfg(test)]

@@ -497,6 +497,7 @@ impl Client {
                 offset: BigInt::from(r.offset),
                 payload: r.payload.to_vec().into(),
                 attempts: r.attempts,
+                skipped_before: BigInt::from(r.skipped_before),
             })
             .collect())
     }
