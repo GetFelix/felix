@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790998857205,
+  "lastUpdate": 1791008243839,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -28908,6 +28908,72 @@ window.BENCHMARK_DATA = {
             "range": "858.93",
             "unit": "us",
             "extra": "trials: 5\nmedian: 597.00\nmean: 1077.40\nstdev: 858.93\ncv: 79.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cda07ca1e4c34ed431eee958b377333448babf25",
+          "message": "fix(broker): keep releasing a Quorum hold until the bound covers it (#959)\n\nA Quorum stream's batch past the committed mark waits in the stream's\nCommitHold and goes out when a mark publish kicks the release. The release\nread the bound once per kick and stopped if it did not cover the front\nbatch. But the bound also turns on the shard's route and lease: a kick that\nlands while the bound is Refused or Settling, or reads it before the route\ncatches up, releases nothing, and when the bound then covers the batch no\nkick follows. With no later publish to move the mark, the batch stays held:\non disk and in every read, never delivered to live subscribers.\n\nThe release now keeps running while anything is held, woken by a kick or a\npush and otherwise looking again every 250 ms, the same recheck\nread_committed already uses for a bound that moves without a wake. It ends\nwhen nothing is held, and drops what a closed shard still holds.\n\nGrouped durable claims made this likelier: the publishes queued while a\nshard moves now land as one batch with one last mark, where before each\npublish brought its own mark and a later one usually rescued the hold.\n\nSpec-Unaffected: liveness of the hold release only; what is held and when it\nmay be delivered are unchanged.",
+          "timestamp": "2026-10-02T23:13:16-07:00",
+          "tree_id": "5ff8c1a27e8e8293cd998c5f95d38df4151fbda6",
+          "url": "https://github.com/gabloe/felix/commit/cda07ca1e4c34ed431eee958b377333448babf25"
+        },
+        "date": 1791008240797,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 176,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 176.00\nmean: 176.20\nstdev: 1.48\ncv: 0.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 245,
+            "range": "8.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 245.00\nmean: 249.20\nstdev: 8.76\ncv: 3.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 309,
+            "range": "26.62",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 309.00\nmean: 314.20\nstdev: 26.62\ncv: 8.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 212,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 212.00\nmean: 212.20\nstdev: 1.10\ncv: 0.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 431,
+            "range": "13.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 431.00\nmean: 427.80\nstdev: 13.07\ncv: 3.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 584,
+            "range": "61.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 584.00\nmean: 588.00\nstdev: 61.06\ncv: 10.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
