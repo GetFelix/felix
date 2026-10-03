@@ -126,6 +126,43 @@ fn placing_a_shard_over_a_blank_first_segment_keeps_its_base() {
 }
 
 #[test]
+fn a_first_segment_of_only_zeros_starts_the_log_afresh() {
+    let dir = tempdir().expect("dir");
+    let path = segment_path(dir.path(), 0);
+    std::fs::write(&path, vec![0u8; SEGMENT_HEADER_LEN as usize + 64]).expect("create");
+
+    assert_eq!(reopen(&dir).expect("recover").active.next_offset(), 0);
+}
+
+/// A zeroed header in front of real records is rot on acknowledged data.
+#[test]
+fn a_zeroed_first_header_with_records_after_it_is_refused() {
+    let dir = tempdir().expect("dir");
+    populate(&dir, 1);
+    assert_eq!(discover_segment_ids(dir.path()).expect("ids"), [0]);
+    let path = segment_path(dir.path(), 0);
+    let mut bytes = std::fs::read(&path).expect("read");
+    bytes[..SEGMENT_HEADER_LEN as usize].fill(0);
+    std::fs::write(&path, bytes).expect("write");
+
+    assert!(matches!(reopen(&dir), Err(StorageError::Corruption(_))));
+    assert!(path.exists());
+}
+
+/// The bytes after the header read as zeros, but the mark says they were
+/// synced: the records were acknowledged and are gone.
+#[test]
+fn a_zeroed_first_segment_the_mark_vouches_for_is_refused() {
+    let dir = tempdir().expect("dir");
+    let path = segment_path(dir.path(), 0);
+    std::fs::write(&path, vec![0u8; SEGMENT_HEADER_LEN as usize + 64]).expect("create");
+    record_mark(&dir, 0, SEGMENT_HEADER_LEN + 64);
+
+    assert!(matches!(reopen(&dir), Err(StorageError::Corruption(_))));
+    assert!(path.exists());
+}
+
+#[test]
 fn a_later_segment_alone_without_a_header_is_still_refused() {
     let dir = tempdir().expect("dir");
     std::fs::write(segment_path(dir.path(), 3), b"").expect("create");
