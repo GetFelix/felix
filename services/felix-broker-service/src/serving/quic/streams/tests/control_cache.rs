@@ -804,7 +804,7 @@ async fn control_loop_group_poll_with_an_oversized_consumer_is_refused() -> Resu
             _ => None,
         })
         .collect();
-    assert_eq!(refusals.len(), 2, "{messages:?}");
+    assert_eq!(refusals.len(), 2, "both polls are refused");
     assert!(
         refusals
             .iter()
