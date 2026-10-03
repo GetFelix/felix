@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791057261113,
+  "lastUpdate": 1791059948657,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -23348,6 +23348,58 @@ window.BENCHMARK_DATA = {
             "range": "8370.78",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 826762.06\nmean: 830924.15\nstdev: 8370.78\ncv: 1.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1d4c4a0a0d3c4d2b1a42d5c27bc9be6b1d1f82a3",
+          "message": "fix(broker): map set_stream_retention errors with BrokerError::from (#1004)",
+          "timestamp": "2026-10-03T12:56:14-07:00",
+          "tree_id": "48b7721318ed38d38ecb5f46a1c6472ecb54bf06",
+          "url": "https://github.com/gabloe/felix/commit/1d4c4a0a0d3c4d2b1a42d5c27bc9be6b1d1f82a3"
+        },
+        "date": 1791059947843,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 368927.49,
+            "range": "10593.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 368927.49\nmean: 371086.33\nstdev: 10593.76\ncv: 2.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 368927.49,
+            "range": "10593.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 368927.49\nmean: 371086.33\nstdev: 10593.76\ncv: 2.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 84804.76,
+            "range": "545.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 84804.76\nmean: 84996.33\nstdev: 545.69\ncv: 0.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 848047.63,
+            "range": "5456.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 848047.63\nmean: 849963.26\nstdev: 5456.96\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
