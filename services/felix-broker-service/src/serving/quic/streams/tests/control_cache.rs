@@ -805,11 +805,11 @@ async fn control_loop_group_poll_with_an_oversized_consumer_is_refused() -> Resu
         })
         .collect();
     assert_eq!(refusals.len(), 2, "both polls are refused");
-    assert!(
-        refusals
-            .iter()
-            .all(|message| message.contains("group consumer name must be 1 to 128 bytes")),
-        "{refusals:?}"
-    );
+    for (index, message) in refusals.iter().enumerate() {
+        assert!(
+            message.contains("group consumer name must be 1 to 128 bytes"),
+            "refusal {index} does not name the limit"
+        );
+    }
     Ok(())
 }
