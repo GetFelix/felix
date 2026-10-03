@@ -453,7 +453,10 @@ Four properties:
    acknowledged, so it is repaired by default. Zeros with anything after them
    are still interior corruption. Bytes past the durable mark, an unfinished
    background roll, and an empty segment a lost roll race left mid-chain are
-   repaired too, never below what the mark says was synced. See
+   repaired too, never below what the mark says was synced. So is a log whose
+   only segment is its first and has no header: its creation failed, usually
+   on a full disk, before it could hold a record, and the log starts again
+   empty (or at its placed base). See
    `docs/storage-format.md`, "What recovery may repair".
    A **failed fsync poisons the log**, whichever path issued it (the group
    commit flush, the io_uring flusher, a seal, a truncation): the durable bound
@@ -693,6 +696,7 @@ FELIX_DURABLE_FSYNC_MODE=on_commit \
 | `felix_storage_sync_batch_appends` | group-commit fan-in; near 1 under load means no batching |
 | `felix_storage_unsynced_bytes` | data a crash would lose right now |
 | `felix_storage_sync_failures_total` | non-zero means acknowledged durability is in doubt |
+| `felix_storage_full_total` | writes and log creations refused because the disk or quota was full; none of them wrote anything |
 | `felix_storage_segment_roll_total` | rollover rate |
 | `felix_storage_recovery_duration_seconds` | startup cost |
 | `felix_storage_recovery_truncated_bytes` | bytes discarded from a torn tail |

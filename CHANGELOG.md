@@ -111,6 +111,16 @@ for what the current release guarantees.
   owner and moves to another broker when the one in use is gone.
   `ClusterClient::stream_shards` is new. The conformance catalogue gains
   `fault.cache_through_a_reset_link`. (#979)
+- **A full disk is reported as a full disk.** When the disk filled while a
+  log was being created, its first segment was left with no header, and every
+  later open reported corruption, even once space was freed. Group polls on a
+  new shard hit it first, since a shard's cursor and dead-letter logs are made
+  on demand. A segment whose creation fails is now removed, and recovery
+  starts a log whose only segment never got a header afresh. `ENOSPC` and
+  quota errors are `StorageError::Full` and `BrokerError::StorageFull`,
+  counted by `felix_storage_full_total`, and clients see `overloaded` (retry
+  after) with nothing written. Breaking for code that matches either enum
+  exhaustively. (#983)
 - **A subscribe that reaches a broker just after it stopped serving the shard
   is refused instead of left waiting.** A broker ends a shard's readers before
   its routes catch up with the move or failover, so for that moment it still

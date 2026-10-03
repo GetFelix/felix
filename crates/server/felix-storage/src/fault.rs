@@ -23,7 +23,7 @@
 //!   `generation=<n>` arms it again.
 //!
 //! - `write=enospc` or `write=eio` fails every segment write with that error
-//!   until the file changes; `write=eio_once` fails the next one only. A new
+//!   until the file changes, and `enospc` fails every preallocation too; `write=eio_once` fails the next one only. A new
 //!   `write_generation=<n>` arms `eio_once` again.
 //!
 //! - `power_loss=<seed>` with `power_loss_into=<dir>` builds the tree a
@@ -242,6 +242,11 @@ pub(crate) fn injected_write_failure() -> Option<std::io::Error> {
             .then(eio),
         _ => None,
     }
+}
+
+/// `ENOSPC` while a full disk is injected, for a reservation of blocks.
+pub(crate) fn injected_no_space() -> Option<std::io::Error> {
+    (WRITE_FAILURE.load(Ordering::Acquire) == WriteFailure::NoSpace as u8).then(enospc)
 }
 
 /// Whether reading `next` after `applied` sets the failure again.

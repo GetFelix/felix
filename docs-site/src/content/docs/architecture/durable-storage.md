@@ -236,7 +236,8 @@ Four properties hold:
 
 1. **A torn tail is repaired.** A crash mid-append leaves a partial record at the
    end of the newest segment. It was never acknowledged under any policy, so it
-   is truncated away.
+   is truncated away. A log whose only segment never got its header, because
+   the disk filled while the log was being created, starts again empty.
 2. **Committed data is never silently discarded.** Corruption anywhere else is a
    startup error naming the shard, segment and byte position. Refusing to start
    beats losing acknowledged records quietly.
@@ -355,6 +356,7 @@ FELIX_DURABLE_FSYNC_MODE=on_commit \
 | `felix_storage_sync_batch_appends` | group-commit fan-in; near 1 under load means no batching |
 | `felix_storage_unsynced_bytes` | data a crash would lose right now |
 | `felix_storage_sync_failures_total` | non-zero means acknowledged durability is in doubt |
+| `felix_storage_full_total` | writes and log creations refused because the disk or quota was full; none of them wrote anything |
 | `felix_storage_recovery_truncated_bytes` | bytes discarded from a torn tail |
 | `felix_storage_producer_state_rebuilt_total` | opens or truncations that read sealed segments to rebuild idempotent producers' state, because the snapshot was missing or out of date |
 

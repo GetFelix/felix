@@ -42,7 +42,7 @@ pub struct DurableStorage {
 impl DurableStorage {
     /// Open (and recover) durable storage rooted at `root`.
     pub fn open(root: impl Into<std::path::PathBuf>, config: LogConfig) -> Result<Self> {
-        let provider = DiskLogProvider::new(root, config).map_err(storage_error)?;
+        let provider = DiskLogProvider::new(root, config).map_err(BrokerError::from)?;
         Ok(Self {
             provider: Arc::new(provider),
         })
@@ -89,7 +89,7 @@ impl DurableStorage {
         let log = self
             .provider
             .open_shard_at(&key, base_offset)
-            .map_err(storage_error)?;
+            .map_err(BrokerError::from)?;
         Ok(StreamLog { log })
     }
 
@@ -106,7 +106,7 @@ impl DurableStorage {
             stream: stream.to_string(),
             shard,
         };
-        let log = self.provider.open_shard(&key).map_err(storage_error)?;
+        let log = self.provider.open_shard(&key).map_err(BrokerError::from)?;
         Ok(StreamLog { log })
     }
 
@@ -127,12 +127,15 @@ impl DurableStorage {
             stream: stream.to_string(),
             shard,
         };
-        self.provider.close_shard(&key).await.map_err(storage_error)
+        self.provider
+            .close_shard(&key)
+            .await
+            .map_err(BrokerError::from)
     }
 
     /// Flush and stop every open log. Call once during graceful shutdown.
     pub async fn shutdown(&self) -> Result<()> {
-        self.provider.shutdown().await.map_err(storage_error)
+        self.provider.shutdown().await.map_err(BrokerError::from)
     }
 }
 
@@ -175,7 +178,7 @@ impl StreamLog {
         self.log
             .append_pending(&records)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// [`Self::begin_append_marked`], only if the batch starts at exactly
@@ -190,7 +193,7 @@ impl StreamLog {
         self.log
             .append_pending_at(first_offset, &records)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// Write the rest of a producer batch the log holds only the start of,
@@ -208,7 +211,7 @@ impl StreamLog {
         self.log
             .continue_pending(producer_id, sequence, &records)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// Where an idempotent producer's batch stands in this log.
@@ -225,13 +228,16 @@ impl StreamLog {
     /// Wait until every record below `offset` is as durable as a commit would
     /// have made it.
     pub async fn wait_durable(&self, offset: Offset) -> Result<()> {
-        self.log.wait_durable(offset).await.map_err(storage_error)
+        self.log
+            .wait_durable(offset)
+            .await
+            .map_err(BrokerError::from)
     }
 
     /// Wait until a batch from [`StreamLog::begin_append`] satisfies the
     /// configured fsync policy.
     pub async fn commit(&self, pending: &PendingAppend) -> Result<()> {
-        self.log.commit(pending).await.map_err(storage_error)
+        self.log.commit(pending).await.map_err(BrokerError::from)
     }
 
     /// Persist a publish batch, returning the offsets it was assigned.
@@ -240,7 +246,7 @@ impl StreamLog {
     /// `FsyncMode::OnCommit` the bytes are on the device before this resolves.
     pub async fn append(&self, payloads: &[Bytes]) -> Result<AppendResult> {
         let records = records(payloads, &[])?;
-        self.log.append(&records).await.map_err(storage_error)
+        self.log.append(&records).await.map_err(BrokerError::from)
     }
 
     /// Replay persisted records from `start`, bounded by `max_bytes`.
@@ -285,7 +291,7 @@ impl StreamLog {
                 felix_storage::StorageError::Trimmed { requested, oldest } => {
                     BrokerError::CursorTooOld { oldest, requested }
                 }
-                other => storage_error(other),
+                other => BrokerError::from(other),
             })
     }
 
@@ -326,7 +332,7 @@ impl StreamLog {
             .log
             .append(std::slice::from_ref(&record))
             .await
-            .map_err(storage_error)?;
+            .map_err(BrokerError::from)?;
         Ok(appended.first_offset)
     }
 
@@ -339,7 +345,7 @@ impl StreamLog {
 
     /// Offset the next published record will take.
     pub async fn tail_offset(&self) -> Result<Offset> {
-        self.log.tail_offset().await.map_err(storage_error)
+        self.log.tail_offset().await.map_err(BrokerError::from)
     }
 
     /// Oldest offset still on disk.
@@ -353,7 +359,7 @@ impl StreamLog {
     /// follower discards an uncommitted suffix left by a leader that is gone.
     /// Bounded by the generation history — see `docs/replication-design.md`.
     pub async fn truncate(&self, offset: Offset) -> Result<()> {
-        self.log.truncate(offset).await.map_err(storage_error)
+        self.log.truncate(offset).await.map_err(BrokerError::from)
     }
 
     /// The tail as far as every record below it has been acknowledged, or
@@ -375,7 +381,7 @@ impl StreamLog {
     /// to put a copy back as it stood at a backup point. Offline only; see
     /// `DiskLog::restore_to`.
     pub async fn restore_to(&self, offset: Offset) -> Result<()> {
-        self.log.restore_to(offset).await.map_err(storage_error)
+        self.log.restore_to(offset).await.map_err(BrokerError::from)
     }
 
     /// Discard this log and start again, empty, at `base_offset`.
@@ -383,14 +389,17 @@ impl StreamLog {
     /// For a follower rebuilding a diverged copy of a shard; see
     /// `DiskLog::reset_to`.
     pub async fn rebuild_at(&self, base_offset: Offset) -> Result<()> {
-        self.log.reset_to(base_offset).await.map_err(storage_error)
+        self.log
+            .reset_to(base_offset)
+            .await
+            .map_err(BrokerError::from)
     }
 
     /// Note that `generation` begins at `start_offset`.
     pub fn record_generation(&self, generation: u64, start_offset: Offset) -> Result<bool> {
         self.log
             .record_generation(generation, start_offset)
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// Label the records from `from` on with the generations that wrote them.
@@ -402,7 +411,7 @@ impl StreamLog {
     ) -> Result<()> {
         self.log
             .label_generations(from, generations)
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// The highest generation a leader of this shard was accepted at here.
@@ -419,7 +428,7 @@ impl StreamLog {
         self.log
             .accept_generation(generation)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// One past the last record known committed; truncation and rebuild
@@ -433,7 +442,7 @@ impl StreamLog {
         self.log
             .advance_commit_offset(offset)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// Where each leadership generation began here, oldest first.
@@ -461,7 +470,7 @@ impl StreamLog {
             .enforce_retention_now()
             .await
             .map(|outcome| outcome.segments_deleted)
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// Exclusive bound on offsets that survive a crash right now.
@@ -482,7 +491,7 @@ impl StreamLog {
 
     /// Force a flush regardless of the configured policy.
     pub async fn sync(&self) -> Result<()> {
-        self.log.sync().await.map_err(storage_error)
+        self.log.sync().await.map_err(BrokerError::from)
     }
 }
 
@@ -508,10 +517,6 @@ fn records(payloads: &[Bytes], marks: &[RecordMark]) -> Result<Vec<AppendRecord>
             mark,
         })
         .collect())
-}
-
-fn storage_error(err: felix_storage::StorageError) -> BrokerError {
-    BrokerError::Storage(err.to_string())
 }
 
 fn now_micros() -> u64 {

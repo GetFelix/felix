@@ -250,6 +250,8 @@ impl ClientError {
                 Self::internal(message).with_retry(RetryClass::Fatal)
             }
             E::Storage(_) => Self::new(ErrorCode::Storage, message),
+            // Nothing was written, so the request can go again once space is freed.
+            E::StorageFull(_) => Self::overloaded(message),
             // Written to a log that was then reset: it may or may not survive.
             E::PublishSuperseded { .. } => Self::new(ErrorCode::Unacknowledged, message),
             // Nothing was read; the shard is served again here once a mark or

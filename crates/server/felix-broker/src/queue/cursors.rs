@@ -40,7 +40,7 @@ impl ConsumerGroups {
     /// Open group state rooted at `root`, recovering whatever is on disk.
     pub fn open(root: impl Into<std::path::PathBuf>, config: LogConfig) -> Result<Self> {
         Ok(Self {
-            cursors: LogCache::open(root, config).map_err(storage_error)?,
+            cursors: LogCache::open(root, config).map_err(BrokerError::from)?,
             locks: SyncMutex::new(HashMap::new()),
         })
     }
@@ -61,7 +61,7 @@ impl ConsumerGroups {
             .cursors
             .get_checked(tenant_id, namespace, stream, shard, group)
             .await
-            .map_err(storage_error)?;
+            .map_err(BrokerError::from)?;
         stored.as_deref().map(decode_offset).transpose()
     }
 
@@ -108,7 +108,7 @@ impl ConsumerGroups {
                 None,
             )
             .await
-            .map_err(storage_error)?;
+            .map_err(BrokerError::from)?;
         Ok(offset)
     }
 
@@ -130,7 +130,7 @@ impl ConsumerGroups {
             .cursors
             .delete_checked(tenant_id, namespace, stream, shard, group)
             .await
-            .map_err(storage_error)?;
+            .map_err(BrokerError::from)?;
         Ok(removed.is_some())
     }
 
@@ -148,7 +148,7 @@ impl ConsumerGroups {
         self.cursors
             .shard_log(tenant_id, namespace, stream, shard)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// [`ConsumerGroups::shard_log`], created at `base_offset` if absent.
@@ -163,7 +163,7 @@ impl ConsumerGroups {
         self.cursors
             .shard_log_at(tenant_id, namespace, stream, shard, base_offset)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// Close a shard's cursor log, for a shard this broker no longer holds.
@@ -178,12 +178,12 @@ impl ConsumerGroups {
         self.cursors
             .close_shard(tenant_id, namespace, stream, shard)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// Flush every open cursor log. Call once during graceful shutdown.
     pub async fn shutdown(&self) -> Result<()> {
-        self.cursors.shutdown().await.map_err(storage_error)
+        self.cursors.shutdown().await.map_err(BrokerError::from)
     }
 
     fn lock_for(
@@ -215,12 +215,6 @@ fn decode_offset(bytes: &[u8]) -> Result<u64> {
         ))
     })?;
     Ok(u64::from_be_bytes(raw))
-}
-
-/// Storage failures reach callers as `BrokerError::Storage`, the same way the
-/// durable stream path reports them.
-fn storage_error(err: felix_storage::StorageError) -> BrokerError {
-    BrokerError::Storage(err.to_string())
 }
 
 #[cfg(test)]
