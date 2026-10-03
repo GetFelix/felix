@@ -70,7 +70,7 @@ sequenceDiagram
 
     C->>B: publish(payload)
     B->>L: append(records)
-    L->>L: encode batch, one write() to the page cache
+    L->>L: on the append thread, encode batch, one write() to the page cache
 
     alt FsyncMode::OnCommit
         L->>D: fsync (shared with concurrent appends)
@@ -89,6 +89,17 @@ acknowledged to the publisher but lost in a crash is a silent hole in a log that
 consumers believe they have read. Writing first turns a storage failure into a
 failed publish, which the publisher can retry. A storage error can never produce
 a success acknowledgement.
+
+### Where the write runs
+
+The `write()` into the page cache usually takes microseconds, but once Linux
+throttles a process that dirties pages faster than the device takes them, it
+blocks for up to hundreds of milliseconds. So no Tokio worker makes it. Each
+log has an append thread, and every append runs there in offset order while
+the publisher awaits the result. The write runs with the segment lock
+released, so readers and flushes never wait on the disk behind it, and a flush
+takes its bound on the same thread, behind the appends already queued, so
+group commit covers all of them.
 
 ## Durability policies
 

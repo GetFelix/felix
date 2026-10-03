@@ -1,16 +1,18 @@
-//! A log's own flush thread.
+//! A thread that belongs to one log and runs one kind of its blocking work:
+//! its flushes on one, its appends on another.
 //!
-//! An `fsync` blocks, so it cannot run on a reactor thread, but Tokio's
-//! blocking pool is a poor place for it too. Every `spawn_blocking` goes
-//! through one queue shared with reads, rollovers and every other shard's
-//! flushes, so a flush waits behind all of them and the dispatch cost climbs
-//! with the number of shards flushing at once. A thread that belongs to one
-//! log and does nothing but its flushes is one channel send and one wake-up
-//! away, whatever else the process is doing.
+//! An `fsync` blocks, and so does a `write` once the kernel throttles a
+//! process that dirties pages faster than the device takes them, so neither
+//! can run on a reactor thread. Tokio's blocking pool is a poor place for them
+//! too. Every `spawn_blocking` goes through one queue shared with reads,
+//! rollovers and every other shard's work, so a job waits behind all of them
+//! and the dispatch cost climbs with the number of shards busy at once. A
+//! thread of the log's own is one channel send and one wake-up away, whatever
+//! else the process is doing.
 //!
-//! The thread starts on the first flush and exits after `IDLE` without one,
-//! so a broker holding many quiet shards does not hold a thread per shard.
-//! See `docs/storage-performance.md` for the measurements.
+//! The thread starts on the first job and exits after `IDLE` without one, so
+//! a broker holding many quiet shards does not hold threads for them. See
+//! `docs/storage-performance.md` for the measurements.
 
 use std::io;
 use std::sync::{Arc, Weak, mpsc};
@@ -19,20 +21,16 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
 
-/// How long the thread waits for another flush before exiting. The same
+/// How long the thread waits for another job before exiting. The same
 /// keep-alive the blocking pool uses for its threads.
 const IDLE: Duration = Duration::from_secs(10);
 
-type Work = Box<dyn FnOnce() -> io::Result<()> + Send>;
+/// A job, which sends its own result back.
+type Job = Box<dyn FnOnce() + Send>;
 
-struct Job {
-    work: Work,
-    reply: oneshot::Sender<io::Result<()>>,
-}
-
-/// Runs one log's flushes on a dedicated thread, one at a time, in the order
-/// they were submitted.
-pub(crate) struct Flusher {
+/// Runs one log's jobs of one kind on a dedicated thread, one at a time, in
+/// the order they were submitted.
+pub(crate) struct LogThread {
     name: String,
     idle: Duration,
     /// The running thread's queue, if there is a thread. Jobs are only sent
@@ -41,7 +39,7 @@ pub(crate) struct Flusher {
     queue: Arc<Mutex<Option<mpsc::Sender<Job>>>>,
 }
 
-impl Flusher {
+impl LogThread {
     pub(crate) fn new(name: impl Into<String>) -> Self {
         Self::with_idle(name, IDLE)
     }
@@ -54,29 +52,30 @@ impl Flusher {
         }
     }
 
-    /// Run `work` on the flush thread and return its result.
+    /// Run `work` on the thread and return its result.
     ///
-    /// The work owns everything it touches, so a caller that stops waiting
-    /// does not close a file under a sync in progress. If no thread can be
-    /// started the work goes to the blocking pool instead: durability must not
-    /// depend on getting a thread of our own.
-    pub(crate) async fn run(
+    /// The work owns everything it touches and runs to the end even if the
+    /// caller stops waiting, so a caller that gives up does not close a file
+    /// under a sync in progress. If no thread can be started the work goes to
+    /// the blocking pool instead: durability must not depend on getting a
+    /// thread of our own.
+    pub(crate) async fn run<T: Send + 'static>(
         &self,
-        work: impl FnOnce() -> io::Result<()> + Send + 'static,
-    ) -> io::Result<()> {
+        work: impl FnOnce() -> io::Result<T> + Send + 'static,
+    ) -> io::Result<T> {
         let (reply, answer) = oneshot::channel();
-        let job = Job {
-            work: Box::new(work),
-            reply,
-        };
+        let job: Job = Box::new(move || {
+            let _ = reply.send(work());
+        });
         if let Err(job) = self.submit(job) {
-            return tokio::task::spawn_blocking(job.work)
+            tokio::task::spawn_blocking(job)
                 .await
                 .map_err(io::Error::other)?;
         }
+        // The reply is dropped unsent only if the work panicked.
         answer
             .await
-            .unwrap_or_else(|_| Err(io::Error::other("flush thread stopped")))
+            .unwrap_or_else(|_| Err(io::Error::other("the job panicked")))
     }
 
     /// Hand `job` to the thread, starting one if there is none. Gives the job
@@ -104,7 +103,7 @@ impl Flusher {
                 result
             }
             Err(err) => {
-                tracing::warn!(error = %err, "could not start a flush thread; using the blocking pool");
+                tracing::warn!(error = %err, "could not start a log thread; using the blocking pool");
                 *queue = None;
                 Err(job)
             }
@@ -112,9 +111,9 @@ impl Flusher {
     }
 }
 
-impl std::fmt::Debug for Flusher {
+impl std::fmt::Debug for LogThread {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Flusher")
+        f.debug_struct("LogThread")
             .field("name", &self.name)
             .finish_non_exhaustive()
     }
@@ -142,13 +141,9 @@ fn serve(queue: mpsc::Receiver<Job>, slot: Weak<Mutex<Option<mpsc::Sender<Job>>>
                 }
             }
         };
-        // A panic is this flush's failure, not the thread's: if it took the
-        // thread down, flushes already queued behind it would fail with it.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job.work))
-            .unwrap_or_else(|_| Err(io::Error::other("flush panicked")));
-        // A caller that stopped waiting is not an error here: the sync still
-        // ran, and a later flush relies on it having run.
-        let _ = job.reply.send(result);
+        // A panic is this job's failure, not the thread's: if it took the
+        // thread down, jobs already queued behind it would fail with it.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
     }
 }
 

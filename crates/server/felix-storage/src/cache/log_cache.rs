@@ -103,20 +103,21 @@ impl LogCache {
             shard.ensure_index(&mut state).await?;
             let payload = op.encode();
             let bytes = payload.len() as u64;
-            let pending = state
+            // Claimed by the log the moment the offsets are consumed. The guard
+            // releases the range on every exit path, including a cancellation
+            // before the append returns, so a failed commit cannot strand the
+            // writers queued behind it.
+            let (pending, turn) = state
                 .log
-                .append_pending(&[AppendRecord {
-                    payload,
-                    timestamp_micros: now_millis() * 1000,
-                    mark: Default::default(),
-                }])
+                .append_claimed(
+                    &[AppendRecord {
+                        payload,
+                        timestamp_micros: now_millis() * 1000,
+                        mark: Default::default(),
+                    }],
+                    &shard.sequencer,
+                )
                 .await?;
-            // Claimed the moment the offsets are consumed. The guard releases
-            // the range on every exit path — error, cancellation mid-await —
-            // so a failed commit cannot strand the writers queued behind it.
-            let turn = shard
-                .sequencer
-                .reserve_owned(pending.first_offset(), pending.last_offset() + 1);
             state.sequenced_through = Some(pending.last_offset() + 1);
             FinishOnDrop::new(StagedWrite {
                 shard: Arc::clone(&shard),
@@ -202,17 +203,17 @@ impl LogCache {
             };
             let payload = op.encode();
             let bytes = payload.len() as u64;
-            let pending = state
+            let (pending, turn) = state
                 .log
-                .append_pending(&[AppendRecord {
-                    payload,
-                    timestamp_micros: now_millis() * 1000,
-                    mark: Default::default(),
-                }])
+                .append_claimed(
+                    &[AppendRecord {
+                        payload,
+                        timestamp_micros: now_millis() * 1000,
+                        mark: Default::default(),
+                    }],
+                    &shard.sequencer,
+                )
                 .await?;
-            let turn = shard
-                .sequencer
-                .reserve_owned(pending.first_offset(), pending.last_offset() + 1);
             state.sequenced_through = Some(pending.last_offset() + 1);
             let staged = FinishOnDrop::new(StagedWrite {
                 shard: Arc::clone(&shard),

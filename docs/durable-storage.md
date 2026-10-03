@@ -131,8 +131,8 @@ sequenceDiagram
 
     C->>B: publish(payload)
     B->>L: append(records)
-    L->>OS: one write() for the whole batch
-    Note over L,OS: offsets assigned under the segment lock
+    L->>OS: one write() for the whole batch, on the append thread
+    Note over L,OS: offsets assigned on that thread, in queue order
 
     alt FsyncMode::OnCommit
         L->>D: ensure_durable(target)
@@ -150,9 +150,9 @@ sequenceDiagram
 
 ### One order, not three
 
-Offsets are assigned under the segment lock, but the fsync wait happens after it
-is released, so two concurrent publishes can resume from a shared group-commit
-flush in either order. Left alone, the log on disk could read `A, B` while a
+Offsets are assigned on the log's append thread, one batch at a time, but the
+fsync wait happens after the append returns, so two concurrent publishes can
+resume from a shared group-commit flush in either order. Left alone, the log on disk could read `A, B` while a
 cursor replay and a live subscriber both saw `B, A`.
 
 A per-stream commit sequencer closes that gap. After its durable append, each
@@ -237,9 +237,9 @@ wake them one after another.
 Measured on a Mac Studio (Apple M4 Max, APFS): 253 durable appends/second at
 concurrency 1,
 14,387 at concurrency 64, a 57× gain from the same code path. The fan-in
-actually achieved is reported as `felix_storage_sync_batch_appends`; a value near
-1 under load means appends are serialising on the device instead of sharing a
-flush.
+actually achieved is reported as `felix_storage_sync_batch_appends`, the number
+of appends each flush covered; a value near 1 under load means appends are
+serialising on the device instead of sharing a flush.
 
 This is the same mechanism behind PostgreSQL's `commit_delay` and the WAL
 group-commit paths in MySQL and RocksDB.
@@ -257,6 +257,37 @@ sync in progress, and the sync still completes for whoever flushes next. If a
 thread cannot be started, the flush falls back to the blocking pool.
 [storage-performance.md](storage-performance.md#9-each-log-flushes-on-its-own-thread)
 has the measurements.
+
+### Where the append runs
+
+A `write` into the page cache normally takes microseconds, but once a process
+dirties pages faster than the device takes them, Linux throttles it inside
+`write()` for up to hundreds of milliseconds. A reactor thread caught there
+stalls every task scheduled on it. So each log also has an append thread, with
+the same lifecycle as its flush thread, and every append runs there in
+submission order, which is offset order. The publisher awaits the result.
+
+The batch is encoded and given its place under the segment lock, written with
+the lock released, and made visible under the lock again. A reader or a flush
+needs that lock only for pointer work, so neither waits on the disk behind an
+append. Appends to one log run one at a time, and anything else that changes
+the active segment (a background roll's install, truncation, reset, restore,
+seal, close) takes the same append lock, so nothing moves the segment under a
+write in flight. An inline rollover runs on the append thread with the append.
+
+A flush takes its bound on the append thread too, behind the appends already
+queued there, so one flush covers every append in flight. Taken on the caller,
+it would miss the appends still queued, and each would wait for a flush of its
+own. The cost is that a flush also waits for an append whose `write` the kernel
+is holding.
+
+An append whose caller gives up before its batch is made visible is skipped,
+or cut back to the last good byte if already written, and spends no offsets,
+as when the write ran in the caller's own poll. A caller that orders batches
+by offset, such as the broker's commit sequencer, passes its sequencer to
+`DiskLog::append_claimed`, which claims the range on the append thread. A
+caller that gives up a moment after its batch is kept then still releases the
+range, and the writers behind it are not stranded.
 
 ## Segments and rollover
 

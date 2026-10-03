@@ -24,12 +24,12 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_storage::DiskLogProvider;
 use felix_storage::disk_log::{DiskLog, PendingAppend, ProducerSequence};
 use felix_storage::log::{
     AppendOnlyLog, AppendRecord, AppendResult, FsyncMode, LogConfig, LogRecord, Offset, ReadRange,
     RecordMark, ShardKey,
 };
+use felix_storage::{CommitSequencer, CommitTurn, DiskLogProvider};
 
 use crate::error::{BrokerError, Result};
 
@@ -153,15 +153,21 @@ impl StreamLog {
     }
 
     /// Write a publish batch and return its offsets *before* waiting for
-    /// durability.
+    /// durability, with its range claimed in `order`.
     ///
     /// The caller must pair this with [`StreamLog::commit`]. The split exists
     /// so the broker can claim the batch's place in the stream's commit order
     /// the instant its offsets are consumed: from that point the records are on
     /// disk holding those offsets, and every later publish queues behind them
-    /// whether this one goes on to succeed, fail, or be cancelled.
-    pub async fn begin_append(&self, payloads: &[Bytes]) -> Result<PendingAppend> {
-        self.begin_append_marked(payloads, &[]).await
+    /// whether this one goes on to succeed, fail, or be cancelled. The claim is
+    /// made where the offsets are assigned, so even a caller cancelled before
+    /// this returns releases its range.
+    pub async fn begin_append(
+        &self,
+        payloads: &[Bytes],
+        order: &Arc<CommitSequencer>,
+    ) -> Result<(PendingAppend, CommitTurn<'static>)> {
+        self.begin_append_marked(payloads, &[], order).await
     }
 
     /// [`StreamLog::begin_append`] with a producer mark per record, or none
@@ -170,10 +176,11 @@ impl StreamLog {
         &self,
         payloads: &[Bytes],
         marks: &[RecordMark],
-    ) -> Result<PendingAppend> {
+        order: &Arc<CommitSequencer>,
+    ) -> Result<(PendingAppend, CommitTurn<'static>)> {
         let records = records(payloads, marks)?;
         self.log
-            .append_pending(&records)
+            .append_claimed(&records, order)
             .await
             .map_err(storage_error)
     }
@@ -196,17 +203,18 @@ impl StreamLog {
     /// Write the rest of a producer batch the log holds only the start of,
     /// without waiting for durability. `None`, and nothing written, when the
     /// batch is no longer the last thing in the log. See
-    /// `DiskLog::continue_pending`.
+    /// `DiskLog::continue_claimed`.
     pub async fn continue_batch(
         &self,
         producer_id: u64,
         sequence: u64,
         payloads: &[Bytes],
-    ) -> Result<Option<PendingAppend>> {
+        order: &Arc<CommitSequencer>,
+    ) -> Result<Option<(PendingAppend, CommitTurn<'static>)>> {
         let marks = vec![RecordMark::Continues; payloads.len()];
         let records = records(payloads, &marks)?;
         self.log
-            .continue_pending(producer_id, sequence, &records)
+            .continue_claimed(producer_id, sequence, &records, order)
             .await
             .map_err(storage_error)
     }

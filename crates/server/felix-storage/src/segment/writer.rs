@@ -30,7 +30,7 @@ use crate::segment::format::{
     BASELINE_VERSION, FORMAT_VERSION, MAX_PAYLOAD_BYTES, SEGMENT_HEADER_LEN, SegmentHeader,
     encode_record,
 };
-use crate::segment::index::{IndexWriter, SparseIndex};
+use crate::segment::index::{IndexWriter, SparseIndex, UnwrittenEntries};
 use crate::segment::{index_file_name, segment_file_name};
 use crate::{StorageError, metrics_names};
 
@@ -51,8 +51,8 @@ pub struct SegmentWriter {
     record_count: u64,
     /// Reused across appends so steady state allocates nothing.
     staging: Vec<u8>,
-    /// A duplicate descriptor used only for flushing, so a sync never has to
-    /// hold the lock that guards `file`.
+    /// A duplicate descriptor for work that runs without the lock that guards
+    /// `file`: flushes, and a staged batch's write.
     sync_handle: Arc<File>,
     /// Set when this writer can no longer make truthful claims about the
     /// segment: an append that could not be rolled back, so its real length is
@@ -65,9 +65,6 @@ pub struct SegmentWriter {
     /// Test-only: make the next `sync` take the failure path.
     #[cfg(test)]
     fail_next_sync: bool,
-    /// Set when an index write has failed. Purely informational: the index is
-    /// rebuilt from the segment on the next open, so the log stays correct.
-    index_degraded: bool,
     /// The layout version in the segment header. A segment reopened from an
     /// older build is rolled before a record it cannot hold goes in: that
     /// build reading it would take the new flag bit for a bad length.
@@ -161,7 +158,6 @@ impl SegmentWriter {
             poisoned: false,
             #[cfg(test)]
             fail_next_sync: false,
-            index_degraded: false,
             version,
         })
     }
@@ -296,6 +292,18 @@ impl SegmentWriter {
     /// durable until [`SegmentWriter::sync`] succeeds. Callers that promise
     /// durability must sequence the two.
     pub fn append(&mut self, records: &[AppendRecord]) -> Result<(Offset, Offset)> {
+        let staged = self.stage(records)?;
+        let written = staged.write();
+        let (offsets, index) = self.finish(staged, written)?;
+        index.write(self.id);
+        Ok(offsets)
+    }
+
+    /// The first step of [`Self::append`], split out so a log can write a
+    /// batch without holding the lock around this writer: encode `records`
+    /// for the end of the segment and change nothing. Nothing else may change
+    /// this segment until [`Self::finish`].
+    pub(crate) fn stage(&mut self, records: &[AppendRecord]) -> Result<StagedAppend> {
         debug_assert!(!records.is_empty());
 
         if self.poisoned {
@@ -317,16 +325,15 @@ impl SegmentWriter {
             ));
         }
 
-        self.staging.clear();
-        let first_offset = self.next_offset;
+        let mut bytes = std::mem::take(&mut self.staging);
+        bytes.clear();
         // Record boundaries for the index, captured while encoding so the index
         // never needs a second pass over the batch.
         let mut boundaries = Vec::with_capacity(records.len());
         let mut position = self.size_bytes;
-        let mut offset = self.next_offset;
-        for record in records {
+        for (offset, record) in (self.next_offset..).zip(records) {
             let written = encode_record(
-                &mut self.staging,
+                &mut bytes,
                 offset,
                 record.timestamp_micros,
                 &record.payload,
@@ -334,12 +341,29 @@ impl SegmentWriter {
             );
             boundaries.push((offset, position, written));
             position += written;
-            offset += 1;
         }
+        Ok(StagedAppend {
+            bytes,
+            boundaries,
+            file: Arc::clone(&self.sync_handle),
+        })
+    }
 
-        // One syscall for the whole batch.
-        //
-        // A failure here can still have written some of the buffer: `write_all`
+    /// Take in a batch from [`Self::stage`] once its write has returned
+    /// `written`. Returns its first and last offsets, and the index entries
+    /// it added, for the caller to write once it has released the lock.
+    pub(crate) fn finish(
+        &mut self,
+        staged: StagedAppend,
+        written: std::io::Result<()>,
+    ) -> Result<((Offset, Offset), UnwrittenEntries)> {
+        let StagedAppend {
+            bytes, boundaries, ..
+        } = staged;
+        let len = bytes.len() as u64;
+        self.staging = bytes;
+
+        // A failed write can still have written some of the buffer: `write_all`
         // loops over partial writes, so an error means "some prefix landed",
         // not "nothing happened". Left alone, those bytes sit past the last
         // record this writer knows about, the file cursor points past them, and
@@ -351,47 +375,27 @@ impl SegmentWriter {
         // rewind itself fails there is no way to restore the invariant, and the
         // writer refuses further appends rather than building on a file whose
         // shape it no longer knows.
-        if let Err(err) = crate::io::write_all(&self.file, &self.staging) {
+        if let Err(err) = written {
             self.rewind_after_failed_write()?;
             return Err(StorageError::Io(err));
         }
 
-        self.size_bytes = position;
-        self.next_offset = offset;
-        self.record_count += records.len() as u64;
-        // The index is an accelerator, not a record of truth: a missing or
-        // stale one is rebuilt from the segment on open, and every read
-        // re-validates the records it lands on. So an index write that fails
-        // must not fail the append.
-        //
-        // Returning `Err` here would be actively harmful. The data write has
-        // already succeeded and the offsets are already spent, so the error
-        // would look retryable to a caller who cannot retry: retrying appends
-        // the batch a second time under new offsets, and not retrying leaves a
-        // publish reported as failed that is in fact durably stored.
-        for (offset, position, written) in boundaries {
-            if let Err(err) = self.index.observe_record(offset, position, written) {
-                if !self.index_degraded {
-                    self.index_degraded = true;
-                    tracing::warn!(
-                        segment = self.id,
-                        offset,
-                        error = %err,
-                        "sparse index write failed; the index will be rebuilt on next open"
-                    );
-                    metrics::counter!(metrics_names::INDEX_WRITE_FAILURES_TOTAL).increment(1);
-                }
-                // Stop feeding a writer that is already failing; the remaining
-                // boundaries would only repeat the same error.
-                break;
-            }
+        let first_offset = self.next_offset;
+        self.size_bytes += len;
+        self.next_offset += boundaries.len() as u64;
+        self.record_count += boundaries.len() as u64;
+        for &(offset, position, written) in &boundaries {
+            self.index.observe_record(offset, position, written);
         }
 
-        metrics::counter!(metrics_names::APPEND_RECORDS_TOTAL).increment(records.len() as u64);
-        metrics::counter!(metrics_names::APPEND_BYTES_TOTAL).increment(self.staging.len() as u64);
-        metrics::histogram!(metrics_names::APPEND_BATCH_RECORDS).record(records.len() as f64);
+        metrics::counter!(metrics_names::APPEND_RECORDS_TOTAL).increment(boundaries.len() as u64);
+        metrics::counter!(metrics_names::APPEND_BYTES_TOTAL).increment(len);
+        metrics::histogram!(metrics_names::APPEND_BATCH_RECORDS).record(boundaries.len() as f64);
 
-        Ok((first_offset, self.next_offset - 1))
+        Ok((
+            (first_offset, self.next_offset - 1),
+            self.index.take_unwritten(),
+        ))
     }
 
     /// Flush every written byte to stable storage.
@@ -481,6 +485,25 @@ impl SegmentWriter {
                 ))))
             }
         }
+    }
+}
+
+/// A batch [`SegmentWriter::stage`] has encoded, to write and then hand to
+/// [`SegmentWriter::finish`].
+#[derive(Debug)]
+pub(crate) struct StagedAppend {
+    bytes: Vec<u8>,
+    /// `(offset, position, length)` of each record.
+    boundaries: Vec<(Offset, u64, u64)>,
+    /// Shares the writer's cursor, which `stage` left at the end of the file.
+    file: Arc<File>,
+}
+
+impl StagedAppend {
+    /// Write the batch, in one syscall: syscall count is what scales with
+    /// batch size otherwise, and it dominates at small payloads.
+    pub(crate) fn write(&self) -> std::io::Result<()> {
+        crate::io::write_all(&self.file, &self.bytes)
     }
 }
 
@@ -578,7 +601,6 @@ impl BlankSegment {
             poisoned: false,
             #[cfg(test)]
             fail_next_sync: false,
-            index_degraded: false,
             version,
         })
     }

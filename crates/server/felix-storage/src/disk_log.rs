@@ -70,12 +70,13 @@ use self::producers::ProducerState;
 use self::sealed::SealedFiles;
 use self::segments::SegmentSet;
 use self::sync::{Durability, PeriodicSyncer};
+use crate::io::log_thread::LogThread;
 use crate::log::{
     AppendOnlyLog, AppendRecord, AppendResult, BoxFuture, Epoch, FsyncMode, LogConfig, LogRecord,
     Offset, ReadRange, RecordMark, SealedSegment, SegmentDescriptor,
 };
 use crate::segment::ReadBudget;
-use crate::{Result, StorageError, metrics_names};
+use crate::{CommitSequencer, CommitTurn, Result, StorageError, metrics_names};
 
 /// How often an advancing commit offset is written behind when the log is not
 /// fsynced on commit. Its records are written behind too, so an offset that
@@ -223,21 +224,45 @@ impl DiskLog {
     ///
     /// Split out of [`AppendOnlyLog::append`] so a caller can learn the offsets
     /// the moment they are consumed, rather than only once the batch is
-    /// durable. Anything that has to stay consistent with the log's offset
-    /// order — the broker's commit sequencer, for one — has to claim its place
-    /// at *assignment* time: after this returns, the records exist on disk and
-    /// hold their offsets whether or not the durability wait that follows
-    /// succeeds, fails, or is cancelled.
+    /// durable. After this returns, the records exist on disk and hold their
+    /// offsets whether or not the durability wait that follows succeeds,
+    /// fails, or is cancelled. A caller dropped before it returns may still
+    /// have its batch written; one that must claim a place in the log's offset
+    /// order uses [`Self::append_claimed`] instead.
     ///
     /// The returned [`PendingAppend`] must be passed to [`DiskLog::commit`] for
     /// the configured fsync policy to be honoured. Dropping it does not undo
     /// the write.
     pub async fn append_pending(&self, records: &[AppendRecord]) -> Result<PendingAppend> {
-        let records = records.to_vec();
         let inner = Arc::clone(&self.inner);
-        Self::write_batch(inner, records, append::WriteIf::Always)
+        Self::write_batch(inner, records.to_vec(), append::WriteIf::Always, None)
             .await
-            .map(|pending| pending.expect("an unconditional write is always written"))
+            .map(|written| {
+                written
+                    .expect("an unconditional write is always written")
+                    .pending
+            })
+    }
+
+    /// [`DiskLog::append_pending`], with the batch's range claimed in `order`
+    /// as soon as its offsets are assigned. A caller dropped before this
+    /// returns still releases the range, so the writers behind it are not
+    /// stranded.
+    pub async fn append_claimed(
+        &self,
+        records: &[AppendRecord],
+        order: &Arc<CommitSequencer>,
+    ) -> Result<(PendingAppend, CommitTurn<'static>)> {
+        let inner = Arc::clone(&self.inner);
+        let written = Self::write_batch(
+            inner,
+            records.to_vec(),
+            append::WriteIf::Always,
+            Some(order),
+        )
+        .await?
+        .expect("an unconditional write is always written");
+        Ok(written.claimed())
     }
 
     /// [`DiskLog::append_pending`], only if the batch would start at exactly
@@ -254,33 +279,44 @@ impl DiskLog {
         records: &[AppendRecord],
     ) -> Result<Option<PendingAppend>> {
         let inner = Arc::clone(&self.inner);
-        Self::write_batch(inner, records.to_vec(), append::WriteIf::At(first_offset)).await
+        let written = Self::write_batch(
+            inner,
+            records.to_vec(),
+            append::WriteIf::At(first_offset),
+            None,
+        )
+        .await?;
+        Ok(written.map(|written| written.pending))
     }
 
     /// Write the rest of `producer_id`'s batch `sequence`, which the log holds
     /// only part of ([`ProducerSequence::Partial`]), without waiting for
-    /// durability. `records` must be marked [`RecordMark::Continues`].
+    /// durability, claimed in `order` as [`Self::append_claimed`] does.
+    /// `records` must be marked [`RecordMark::Continues`].
     ///
     /// `None`, and nothing written, when the batch is no longer open at the
     /// tail: something else was appended after its first part, so its rest can
     /// never follow it.
-    pub async fn continue_pending(
+    pub async fn continue_claimed(
         &self,
         producer_id: u64,
         sequence: u64,
         records: &[AppendRecord],
-    ) -> Result<Option<PendingAppend>> {
+        order: &Arc<CommitSequencer>,
+    ) -> Result<Option<(PendingAppend, CommitTurn<'static>)>> {
         debug_assert!(records.iter().all(|r| r.mark == RecordMark::Continues));
         let inner = Arc::clone(&self.inner);
-        Self::write_batch(
+        let written = Self::write_batch(
             inner,
             records.to_vec(),
             append::WriteIf::Continuing {
                 producer_id,
                 sequence,
             },
+            Some(order),
         )
-        .await
+        .await?;
+        Ok(written.map(append::Written::claimed))
     }
 
     /// Wait until every record below `offset` satisfies the configured fsync
@@ -356,6 +392,7 @@ impl DiskLog {
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
         tokio::task::spawn_blocking(move || {
+            let _appends = operation.append_lock.lock();
             let mut segments = operation.segments.write();
             let commit = operation.commit_offset.load(Ordering::Acquire);
             let discarded_from = segments.base_offset().max(base_offset);
@@ -398,6 +435,7 @@ impl DiskLog {
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
         tokio::task::spawn_blocking(move || {
+            let _appends = operation.append_lock.lock();
             let mut segments = operation.segments.write();
             segments.check_open()?;
             let (base, tail) = (segments.base_offset(), segments.tail_offset());
@@ -567,7 +605,13 @@ impl DiskLog {
         // First, so nothing written from here on can race the flush below or
         // a log opened after this returns. Every file change checks it under
         // the lock taken here.
-        self.inner.segments.write().close();
+        let inner = Arc::clone(&self.inner);
+        tokio::task::spawn_blocking(move || {
+            let _appends = inner.append_lock.lock();
+            inner.segments.write().close();
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?;
         let stopped = self.stop_background().await;
         let flushed = match stopped {
             Ok(()) => match self.persist_replica_state().await {
@@ -686,7 +730,9 @@ impl DiskLog {
             label,
             config: config.clone(),
             segments: RwLock::new(segments),
-            roll_gate: tokio::sync::RwLock::new(()),
+            append_lock: Mutex::new(()),
+            appends: AtomicU64::new(0),
+            appends_flushed: AtomicU64::new(0),
             durability: Durability::new(config.fsync_mode, durable_upto),
             syncer: Mutex::new(None),
             retention: Mutex::new(None),
@@ -716,10 +762,15 @@ impl DiskLog {
             flushes: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             inline_roll_active: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            hold_next_append: Mutex::new(None),
+            #[cfg(test)]
+            append_held: std::sync::atomic::AtomicBool::new(false),
             roll_task: Mutex::new(None),
             pending_seal: Mutex::new(None),
             mark,
-            flusher: crate::io::flusher::Flusher::new("felix-flush"),
+            appender: LogThread::new("felix-append"),
+            flusher: LogThread::new("felix-flush"),
         });
 
         if let FsyncMode::Periodic { interval } = config.fsync_mode {
@@ -774,9 +825,11 @@ impl AppendOnlyLog for DiskLog {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             let started = std::time::Instant::now();
-            let pending = Self::write_batch(Arc::clone(&inner), records, append::WriteIf::Always)
-                .await?
-                .expect("an unconditional write is always written");
+            let pending =
+                Self::write_batch(Arc::clone(&inner), records, append::WriteIf::Always, None)
+                    .await?
+                    .expect("an unconditional write is always written")
+                    .pending;
 
             // `OnCommit` is the only policy that makes the caller wait. The
             // others acknowledge once the bytes are in the page cache and rely
@@ -879,6 +932,7 @@ impl AppendOnlyLog for DiskLog {
             let _flush_guard = inner.durability.lock_flushes().await;
             let operation = Arc::clone(&inner);
             tokio::task::spawn_blocking(move || {
+                let _appends = operation.append_lock.lock();
                 let mut segments = operation.segments.write();
                 let commit = operation.commit_offset.load(Ordering::Acquire);
                 if offset < commit.min(segments.tail_offset()) {
@@ -897,6 +951,7 @@ impl AppendOnlyLog for DiskLog {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
+                let _appends = inner.append_lock.lock();
                 let mut segments = inner.segments.write();
                 inner.sync_pending_seal()?;
                 let (descriptor, checksum) = match segments.seal_active() {
@@ -946,17 +1001,18 @@ struct LogInner {
     label: String,
     config: LogConfig,
     /// Guards the segment set. Held only for pointer work: a range read plans
-    /// under the read lock and does its I/O after releasing it, and a write
-    /// lock serialises appends, which must assign offsets in order anyway.
+    /// under the read lock and does its I/O after releasing it, and an append
+    /// writes its batch after releasing it.
     segments: RwLock<SegmentSet>,
-    /// Held shared by appends, exclusively by an inline rollover.
-    ///
-    /// `segments` is synchronous, so a publisher queued on it parks a Tokio
-    /// worker instead of yielding it — for the two device flushes a rollover
-    /// holds it across, that stalls the whole runtime. Waiting on this gate
-    /// instead yields. Layered above `segments` rather than replacing it so
-    /// the uncontended append stays a `try_read`.
-    roll_gate: tokio::sync::RwLock<()>,
+    /// Held by an append from placing its batch to taking it in, and by
+    /// anything else that changes the active segment: a background roll's
+    /// install, truncation, reset, restore, seal and close. Taken only off the
+    /// reactor.
+    append_lock: Mutex<()>,
+    /// Appends written, and how many of them the last flush covered, for
+    /// reporting group-commit fan-in.
+    appends: AtomicU64,
+    appends_flushed: AtomicU64,
     durability: Durability,
     /// `None` unless the fsync policy is `Periodic`. Taken on shutdown.
     syncer: Mutex<Option<PeriodicSyncer>>,
@@ -1005,8 +1061,10 @@ struct LogInner {
     /// so every later flush keeps trying to cover those records rather than
     /// quietly reporting them durable.
     pending_seal: Mutex<Option<Arc<std::fs::File>>>,
+    /// Where this log's appends run.
+    appender: LogThread,
     /// Where this log's device flushes run.
-    flusher: crate::io::flusher::Flusher,
+    flusher: LogThread,
     /// How far the active segment is known to be synced, for recovery after
     /// a power loss. Written after every flush.
     mark: durable_mark::MarkFile,
@@ -1046,6 +1104,12 @@ struct LogInner {
     /// Set while a stretched inline rollover holds the segment lock.
     #[cfg(test)]
     inline_roll_active: std::sync::atomic::AtomicBool,
+    /// Holds the next append at a point, until the sender is used or dropped.
+    #[cfg(test)]
+    hold_next_append: Mutex<Option<(append::HoldAt, std::sync::mpsc::Receiver<()>)>>,
+    /// Set while an append is held there.
+    #[cfg(test)]
+    append_held: std::sync::atomic::AtomicBool,
     /// Device flushes performed, so tests can assert group-commit fan-in —
     /// per instance, where the global `SYNC_TOTAL` counter cannot isolate one
     /// log from the rest of a parallel test run.
