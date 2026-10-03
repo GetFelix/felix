@@ -44,6 +44,11 @@ for what the current release guarantees.
 
 ### Changed
 
+- The control plane accepts RS256 ID tokens from an upstream identity
+  provider by default, next to ES256. Most providers sign with RS256, so a
+  first setup against Dex, Keycloak, Auth0, Entra ID, Google or Okta no longer
+  fails with an unsupported algorithm. `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS`
+  still narrows it. (#984)
 - `felixctl pub` says how many acknowledgements came back without an offset
   and why, instead of leaving it to a `null` in `--json`. An owner that acks
   on enqueue (`ack_on_commit` off) answers before the record has an offset,

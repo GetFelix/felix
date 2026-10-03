@@ -10,12 +10,11 @@ use super::{
     BootstrapConfig, ControlPlaneConfig, DEFAULT_BOOTSTRAP_BIND_ADDR,
     DEFAULT_CHANGE_RETENTION_MAX_ROWS, DEFAULT_CHANGES_LIMIT,
     DEFAULT_NODE_EXPIRY_SWEEP_INTERVAL_MS, DEFAULT_NODE_EXPIRY_TIMEOUT_MS,
-    DEFAULT_NODE_HEARTBEAT_INTERVAL_MS, DEFAULT_OIDC_ALLOWED_ALGORITHMS,
-    DEFAULT_PG_ACQUIRE_TIMEOUT_MS, DEFAULT_PG_CONNECT_TIMEOUT_MS, DEFAULT_PG_MAX_CONNECTIONS,
-    DEFAULT_READINESS_CACHE_TTL_MS, DEFAULT_READINESS_TIMEOUT_MS,
-    DEFAULT_SHARD_RECONCILE_INTERVAL_MS, DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
-    DEFAULT_SHUTDOWN_PREDRAIN_MS, NodeLivenessConfig, PostgresConfig, StorageBackend,
-    parse_oidc_allowed_algorithms_csv, parse_positive_env,
+    DEFAULT_NODE_HEARTBEAT_INTERVAL_MS, DEFAULT_PG_ACQUIRE_TIMEOUT_MS,
+    DEFAULT_PG_CONNECT_TIMEOUT_MS, DEFAULT_PG_MAX_CONNECTIONS, DEFAULT_READINESS_CACHE_TTL_MS,
+    DEFAULT_READINESS_TIMEOUT_MS, DEFAULT_SHARD_RECONCILE_INTERVAL_MS,
+    DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS, DEFAULT_SHUTDOWN_PREDRAIN_MS, NodeLivenessConfig,
+    PostgresConfig, StorageBackend, parse_oidc_allowed_algorithms_csv, parse_positive_env,
 };
 
 impl ControlPlaneConfig {
@@ -121,7 +120,7 @@ impl ControlPlaneConfig {
                 .ok()
                 .map(|value| parse_oidc_allowed_algorithms_csv(&value))
                 .transpose()?
-                .unwrap_or_else(|| DEFAULT_OIDC_ALLOWED_ALGORITHMS.to_vec()),
+                .unwrap_or_else(|| crate::auth::oidc::DEFAULT_ALLOWED_ALGORITHMS.to_vec()),
             bootstrap: BootstrapConfig {
                 enabled: std::env::var("FELIX_BOOTSTRAP_ENABLED")
                     .ok()
