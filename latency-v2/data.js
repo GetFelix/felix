@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790986476943,
+  "lastUpdate": 1790987134411,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -28578,6 +28578,72 @@ window.BENCHMARK_DATA = {
             "range": "712.82",
             "unit": "us",
             "extra": "trials: 5\nmedian: 608.00\nmean: 1104.20\nstdev: 712.82\ncv: 64.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5b02065ece0772941b0eb1e6c613939539935eba",
+          "message": "perf(broker): claim a lane's queued publishes as one durable append (#932)\n\n* perf(broker): claim a lane's queued publishes as one durable append\n\nWhen an executor takes a durable publish, it also takes the plain durable\npublishes queued behind it on the same lane (up to 64 jobs or 1 MiB) and\nclaims them with one claim_publish: one write, one commit wait, one commit\nturn, one fanout and one spawned task. Each publish is still answered with\nits own offset, sliced from the claim by record count, in lane order.\n\nThe fence is checked per publish and a refused one is left out. A failed\nappend, flush or quorum wait fails every member, since they share it.\nFairQueue::take_more charges the tenant for every job taken, letting its\ndeficit go negative so the excess is paid in later turns.\n\nGroup commit waiters now also watch the durable bound while queued on the\nflush lock, so one flush wakes them together rather than one by one.\n\nSpec-Unaffected: per-publish fence and lease checks, claim order and commit\norder are unchanged; only how many publishes share one claim changes.\n\n* test(broker): a claim's quorum timeout leaves every member's outcome unknown\n\nBoth members of a grouped durable publish whose quorum wait times out are\nanswered with QuorumTimeout and retry class OutcomeUnknown. The publish\ninternals page now says a grouped failure reaches every member with the\nsame error and that exactly-once needs the idempotent producer, whose\npublishes are never grouped.\n\nSpec-Unaffected: test and docs only; settle_group is unchanged.",
+          "timestamp": "2026-10-02T17:09:22-07:00",
+          "tree_id": "3d75a93899747bcef6d582373f4d1aeccba45801",
+          "url": "https://github.com/gabloe/felix/commit/5b02065ece0772941b0eb1e6c613939539935eba"
+        },
+        "date": 1790987131186,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 182,
+            "range": "2.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 180.80\nstdev: 2.68\ncv: 1.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 250,
+            "range": "16.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 250.00\nmean: 258.40\nstdev: 16.27\ncv: 6.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 331,
+            "range": "768.11",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 331.00\nmean: 824.20\nstdev: 768.11\ncv: 93.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 215,
+            "range": "2.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 215.00\nmean: 215.60\nstdev: 2.41\ncv: 1.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 440,
+            "range": "31.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 440.00\nmean: 451.80\nstdev: 31.85\ncv: 7.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 644,
+            "range": "238.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 644.00\nmean: 749.40\nstdev: 238.96\ncv: 31.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
