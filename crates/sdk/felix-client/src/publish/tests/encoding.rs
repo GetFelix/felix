@@ -242,6 +242,7 @@ async fn publish_batch_binary_appends_bench_ts_when_enabled() -> Result<()> {
                 crate::config::DEFAULT_PUBLISH_INFLIGHT_BYTES,
             )),
             ahash::RandomState::new(),
+            None,
             true,
         )),
     };

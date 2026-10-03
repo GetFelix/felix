@@ -715,7 +715,8 @@ with `FLAG_BINARY_PUBLISH_ACKED`, and every `publish_idempotent`):
   broker stops reading that stream's publishes until one of its answers is
   written. Each stream has its own window, so a stream whose publishes wait
   on a stalled shard holds only its own slots, and the connection's other
-  streams keep publishing. A broker says so by advertising
+  streams keep publishing. The Rust `ClusterClient` puts each shard on a
+  stream of its own (see below), which makes that true per shard. A broker says so by advertising
   `FEATURE_STREAM_PUBLISH_WINDOW` with the grant. A broker that predates that
   bit counts the window across the whole connection, and a client must share
   one window between its streams there. A client that sends more is slowed by QUIC flow
@@ -738,6 +739,20 @@ answer behind it forever. Every publish is answered within its enqueue wait
 plus its ack wait, so a broker whose oldest held answer is overdue by twice
 that closes the stream instead; the client sees the stream fail and every
 unanswered publish on it as failed.
+
+**One stream per shard.** Request order and the window are both per stream,
+so shards that share a stream share a fate: a shard stuck on a quorum wait
+holds back answers the others have committed, then fills the window and stops
+the stream. The Rust `ClusterClient` therefore sends each publish on a stream
+that carries only its shard, opened on the shard's first publish on the same
+connection. It can, because it computes the shard of every publish to pick
+the owner: keyed, unkeyed (shard 0) and idempotent alike. It keeps at most
+`publish_shard_streams` such streams per broker (16 by default); shards past
+that share the hashed pool, and a shard never changes stream while its writer
+lives, so its publishes stay in order. A plain `Client` does not know a
+stream's width, so it keeps every publish to a stream on one pooled stream.
+Nothing on the wire changes: the broker cannot tell these streams from any
+other.
 
 **Why the order matters to an idempotent producer.** With answers in request
 order, the first failure a producer reads is the earliest one, never a
