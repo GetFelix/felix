@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790986479909,
+  "lastUpdate": 1790987137617,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22516,6 +22516,58 @@ window.BENCHMARK_DATA = {
             "range": "41533.65",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 816877.02\nmean: 800415.28\nstdev: 41533.65\ncv: 5.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5b02065ece0772941b0eb1e6c613939539935eba",
+          "message": "perf(broker): claim a lane's queued publishes as one durable append (#932)\n\n* perf(broker): claim a lane's queued publishes as one durable append\n\nWhen an executor takes a durable publish, it also takes the plain durable\npublishes queued behind it on the same lane (up to 64 jobs or 1 MiB) and\nclaims them with one claim_publish: one write, one commit wait, one commit\nturn, one fanout and one spawned task. Each publish is still answered with\nits own offset, sliced from the claim by record count, in lane order.\n\nThe fence is checked per publish and a refused one is left out. A failed\nappend, flush or quorum wait fails every member, since they share it.\nFairQueue::take_more charges the tenant for every job taken, letting its\ndeficit go negative so the excess is paid in later turns.\n\nGroup commit waiters now also watch the durable bound while queued on the\nflush lock, so one flush wakes them together rather than one by one.\n\nSpec-Unaffected: per-publish fence and lease checks, claim order and commit\norder are unchanged; only how many publishes share one claim changes.\n\n* test(broker): a claim's quorum timeout leaves every member's outcome unknown\n\nBoth members of a grouped durable publish whose quorum wait times out are\nanswered with QuorumTimeout and retry class OutcomeUnknown. The publish\ninternals page now says a grouped failure reaches every member with the\nsame error and that exactly-once needs the idempotent producer, whose\npublishes are never grouped.\n\nSpec-Unaffected: test and docs only; settle_group is unchanged.",
+          "timestamp": "2026-10-02T17:09:22-07:00",
+          "tree_id": "3d75a93899747bcef6d582373f4d1aeccba45801",
+          "url": "https://github.com/gabloe/felix/commit/5b02065ece0772941b0eb1e6c613939539935eba"
+        },
+        "date": 1790987136822,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 337258.3,
+            "range": "7113.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337258.30\nmean: 338979.07\nstdev: 7113.52\ncv: 2.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 337258.3,
+            "range": "7113.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337258.30\nmean: 338979.07\nstdev: 7113.52\ncv: 2.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80822.34,
+            "range": "592.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80822.34\nmean: 80855.65\nstdev: 592.54\ncv: 0.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 808223.39,
+            "range": "5925.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 808223.39\nmean: 808556.51\nstdev: 5925.38\ncv: 0.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
