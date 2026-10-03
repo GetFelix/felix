@@ -582,6 +582,8 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 max_records,
                 wait_ms,
                 request_id,
+                consumer,
+                reclaim,
             } => {
                 group::group_poll(
                     &cx,
@@ -594,6 +596,8 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     max_records,
                     wait_ms,
                     request_id,
+                    consumer,
+                    reclaim,
                 )
                 .await?
             }

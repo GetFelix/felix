@@ -767,6 +767,18 @@ pub enum Message {
         #[serde(default)]
         wait_ms: u64,
         request_id: u64,
+        /// The member polling, stable across its restarts, 1 to 128 bytes. Its
+        /// claims are recorded as its own, under the connection's principal.
+        /// Absent for a member that does not name itself, which is every
+        /// client before `FEATURE_GROUP_CONSUMER`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        consumer: Option<String>,
+        /// With `consumer`: take back the claims that member holds from older
+        /// connections, which a restarted process left behind, ahead of
+        /// anything else, rather than wait for them to lapse. Honoured on the
+        /// connection's first such poll only.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        reclaim: bool,
     },
     /// Records claimed by a `GroupPoll`, in offset order.
     ///

@@ -223,6 +223,14 @@ pub const FEATURE_SHARD_OWNERS: u32 = 0x0004_0000;
 /// clients do not offer every bit they know here, as they do elsewhere.
 pub const FEATURE_ACK_ON_COMMIT: u32 = 0x0008_0000;
 
+/// The broker records which member holds each claim when a `group_poll`
+/// names its `consumer`, and takes back that member's claims on `reclaim`.
+///
+/// Advertised by a *broker*, with `FEATURE_CONSUMER_GROUP`. A broker that
+/// predates it ignores both fields, so a client checks this before relying on
+/// a reclaim.
+pub const FEATURE_GROUP_CONSUMER: u32 = 0x0010_0000;
+
 /// The client can read `subscription_lagged` on an event stream.
 ///
 /// Offered by a *client*, like `FEATURE_SHARD_MOVED`. A broker that sees it
@@ -255,6 +263,7 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_STREAM_PUBLISH_WINDOW
     | FEATURE_SHARD_OWNERS
     | FEATURE_ACK_ON_COMMIT
+    | FEATURE_GROUP_CONSUMER
     | FEATURE_SUBSCRIPTION_LAGGED;
 
 /// True if `features` advertises `feature`.

@@ -761,3 +761,55 @@ async fn control_loop_refuses_a_watch_with_an_ambiguous_filter() -> Result<()> {
     assert_eq!(refusals, 2, "both shapes must be refused");
     Ok(())
 }
+
+/// **A `group_poll` naming a consumer longer than the cap is refused** with an
+/// error that says so, before it reaches the group. Each claim records its
+/// holder, so an uncapped name would cost its length per record handed out.
+#[tokio::test]
+async fn control_loop_group_poll_with_an_oversized_consumer_is_refused() -> Result<()> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    let auth = auth_fixture("t1", vec!["group.consume:stream:t1/*/*".to_string()]);
+    let poll = |consumer: String, request_id| {
+        Ok(Some(frame_from_message(Message::GroupPoll {
+            tenant_id: "t1".to_string(),
+            namespace: "default".to_string(),
+            stream: "orders".to_string(),
+            shard: 0,
+            group: "workers".to_string(),
+            max_records: 10,
+            wait_ms: 0,
+            request_id,
+            consumer: Some(consumer),
+            reclaim: true,
+        })))
+    };
+    let frames = vec![
+        Ok(Some(frame_from_message(auth_message(&auth)))),
+        poll("w".repeat(129), 1),
+        poll(String::new(), 2),
+        Ok(None),
+    ];
+    let (result, messages) = run_control_loop_with_frames(
+        broker,
+        Arc::clone(&auth.auth),
+        frames,
+        BrokerConfig::default(),
+    )
+    .await?;
+    assert!(result, "a refused poll leaves the stream open");
+    let refusals: Vec<&str> = messages
+        .iter()
+        .filter_map(|message| match message {
+            Outgoing::Message(Message::Error { message, .. }) => Some(message.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(refusals.len(), 2, "both polls are refused");
+    for (index, message) in refusals.iter().enumerate() {
+        assert!(
+            message.contains("group consumer name must be 1 to 128 bytes"),
+            "refusal {index} does not name the limit"
+        );
+    }
+    Ok(())
+}

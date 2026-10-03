@@ -36,6 +36,17 @@ for what the current release guarantees.
   removed first): `skipped_before` on `GroupRecord`, in the wire's
   `group_records`, and in the Python and Node clients (`skippedBefore`).
   Left out when zero, so older clients get the same frames. (#963)
+- A consumer-group member can name itself and take back what a previous
+  process under its name held: `group_poll` accepts `consumer` and `reclaim`
+  (`FEATURE_GROUP_CONSUMER`, `0x10_0000`), `Client::group_poll_as` and
+  `ClusterClient::group_poll_as` take a `GroupMember`, and the Python and Node
+  `group_poll` take `consumer` and `reclaim`. A restarted member no longer
+  waits out the visibility timeout for its records. A member is the name and
+  the connection's principal, and a name is 1 to 128 bytes. A connection's
+  first poll with `reclaim` reserves the claims the member holds from older
+  connections; they go back to it before anything else, over as many polls as
+  it takes, until taken back or lapsed. Later reclaims on that connection, and
+  reclaims from older connections, do nothing. (#962)
 - Development tokens without an identity provider. With
   `FELIX_BOOTSTRAP_DEV_TOKENS=true` the bootstrap listener serves
   `POST /internal/bootstrap/tenants/{tenant}/dev-token`, which mints a Felix
@@ -80,6 +91,9 @@ for what the current release guarantees.
   the broker's. In-memory streams, which have no offset to resume from, keep
   dropping as before. (#965)
 
+- Connection ids (`felix_transport::ConnectionId`) count up from 1 per process
+  instead of reusing quinn's `stable_id`, which is an address and can repeat
+  once a connection is freed.
 - The control plane accepts RS256 ID tokens from an upstream identity
   provider by default, next to ES256. Most providers sign with RS256, so a
   first setup against Dex, Keycloak, Auth0, Entra ID, Google or Okta no longer

@@ -286,6 +286,8 @@ class Client:
         *,
         max_records: int = 32,
         wait: float = 5.0,
+        consumer: str | None = None,
+        reclaim: bool = False,
     ) -> list[GroupRecord]: ...
     def group_ack(
         self, tenant_id: str, namespace: str, stream: str, shard: int, group: str, offset: int
@@ -418,6 +420,8 @@ class AsyncClient:
         *,
         max_records: int = 32,
         wait: float = 5.0,
+        consumer: str | None = None,
+        reclaim: bool = False,
     ) -> list[GroupRecord]: ...
     async def group_ack(
         self, tenant_id: str, namespace: str, stream: str, shard: int, group: str, offset: int

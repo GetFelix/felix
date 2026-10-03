@@ -13,6 +13,8 @@ mod commit;
 mod connect;
 mod discovery;
 mod groups;
+
+pub use groups::GroupMember;
 mod publish;
 mod subscribe;
 
