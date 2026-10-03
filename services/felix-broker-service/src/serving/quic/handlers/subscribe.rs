@@ -156,12 +156,15 @@ pub(crate) async fn handle_subscribe_message(
 
         // Ask broker core for a managed subscriber queue.
         //
-        // Without a start position this is the tail-only path every client used
-        // before resume existed, and it stays byte-for-byte what it was. With one,
-        // the broker registers the live subscription first and hands back the
-        // history needed to reach it -- see `Broker::subscribe_from`.
+        // With a start position the broker registers the live subscription
+        // first and hands back the history needed to reach it -- see
+        // `Broker::subscribe_from`. A plain subscribe from a client that reads
+        // offsets is `latest`, so it learns where live delivery began. Without
+        // offsets it is the tail-only path every client used before resume
+        // existed, byte for byte.
         // On failure, respond on the control stream (through the ack queue) and keep
         // the stream alive.
+        let start = start.or(offsets_enabled.then_some(StartPosition::Latest));
         let mut replay = None;
         let mut join = None;
         let mut subscription = match start {

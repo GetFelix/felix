@@ -209,9 +209,10 @@ the stream's tail when the subscriber was registered: anything below it was
 already in the stream, anything from it on was written after, and nothing falls
 between. It leaves out generation-start records the log ends with (they hold an
 offset but never an event, so a reader waiting for the raw tail would wait
-forever), but is never below `start_offset`. For `latest` the two are equal. Both are sent only for a subscribe
-with a `start`, on a durable stream, to a client that negotiated
-`FLAG_EVENT_BATCH_OFFSETS`. Otherwise the frame is unchanged.
+forever), but is never below `start_offset`. For `latest` the two are equal. Both are sent on a durable stream to a client
+that negotiated `FLAG_EVENT_BATCH_OFFSETS`, and from such a client a subscribe
+with no `start` is `latest`, so it reports them too. To any other client the
+frame is unchanged.
 
 ### Event (server -> client)
 ```

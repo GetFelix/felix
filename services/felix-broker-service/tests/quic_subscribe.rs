@@ -494,9 +494,9 @@ async fn quic_subscribe_resumes_from_a_checkpointed_offset() -> Result<()> {
 
     // Phase 1: subscribe live, take the first few, then "crash".
     let mut sub = client.subscribe("t1", "default", "orders").await?;
-    // A plain tail subscribe names no start, so nothing is reported and the
-    // `subscribed` frame is the one it always was.
-    assert_eq!((sub.start_offset(), sub.live_offset()), (None, None));
+    // A plain tail subscribe from a client that reads offsets is `latest`:
+    // it says where live delivery began, which on an empty stream is 0.
+    assert_eq!((sub.start_offset(), sub.live_offset()), (Some(0), Some(0)));
     for i in 0..5usize {
         publisher
             .publish(
