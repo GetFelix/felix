@@ -253,13 +253,17 @@ impl ClusterClient {
             .shard_owners(tenant_id, namespace, cache, crate::ShardKind::Cache)
             .await
         {
-            Ok(owners) => owners
-                .into_iter()
-                .map(|owner| {
-                    let addr = owner.addr?.parse::<SocketAddr>().ok()?;
-                    Some((owner.node_id?, addr))
-                })
-                .collect(),
+            Ok(owners) => {
+                let mut resolved = Vec::with_capacity(owners.len());
+                for owner in owners {
+                    let addr = match owner.addr.as_deref() {
+                        Some(addr) => self.resolve(addr).await,
+                        None => None,
+                    };
+                    resolved.push(owner.node_id.zip(addr));
+                }
+                resolved
+            }
             Err(err) => {
                 tracing::debug!(
                     cache = %cache,

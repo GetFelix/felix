@@ -155,16 +155,28 @@ pub(super) fn membership_from_env(
         Err(_) => Vec::new(),
     };
 
+    // A name is allowed: clients resolve it. A value that is not even
+    // `host:port` would be skipped by every client, so it fails here.
+    let client_advertise_addr = std::env::var("FELIX_CLIENT_ADVERTISE_ADDR")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(addr) = &client_advertise_addr
+        && !is_host_port(addr)
+    {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("FELIX_CLIENT_ADVERTISE_ADDR is not host:port: {addr}"),
+        ));
+    }
+
     Ok(Some(MembershipConfig {
         node_id,
         region_bridges,
         refresh_token_file,
         node_token_file,
         advertise_addr,
-        client_advertise_addr: std::env::var("FELIX_CLIENT_ADVERTISE_ADDR")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty()),
+        client_advertise_addr,
         kafka_advertise_addr: kafka_advertise_addr(
             std::env::var("FELIX_KAFKA_ADVERTISE_ADDR").ok().as_deref(),
             std::env::var("FELIX_KAFKA_LISTEN").ok().as_deref(),
@@ -261,3 +273,14 @@ pub(super) fn warn_on_unreachable_advertise(
         );
     }
 }
+
+/// Whether `addr` is a host, or a bracketed IPv6 address, and a port.
+fn is_host_port(addr: &str) -> bool {
+    addr.parse::<SocketAddr>().is_ok()
+        || addr.rsplit_once(':').is_some_and(|(host, port)| {
+            !host.is_empty() && !host.contains(':') && port.parse::<u16>().is_ok()
+        })
+}
+
+#[cfg(test)]
+mod tests;
