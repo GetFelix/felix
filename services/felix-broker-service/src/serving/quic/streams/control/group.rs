@@ -8,12 +8,16 @@ use felix_wire::Message;
 
 use super::authz::authorize_group;
 use super::{Ctx, Session, Step};
+use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::{
     Outgoing, PublishContext, handle_ack_enqueue_result, send_outgoing_critical,
 };
 use crate::shards::lifecycle::fence::FenceGuard;
 use crate::shards::routing::{Dispatch, dispatch_write};
 use crate::shards::{ShardKey, ShardKind};
+
+/// Longest `consumer` name a `group_poll` may carry.
+const MAX_CONSUMER_NAME_BYTES: usize = 128;
 
 // One parameter per field of the message it answers.
 #[allow(clippy::too_many_arguments)]
@@ -28,9 +32,12 @@ pub(super) async fn group_poll(
     max_records: u32,
     wait_ms: u64,
     request_id: u64,
+    consumer: Option<String>,
+    reclaim: bool,
 ) -> Result<Step> {
     let Ctx {
         broker,
+        connection,
         config,
         publish_ctx,
         authz_ctx,
@@ -56,6 +63,40 @@ pub(super) async fn group_poll(
     {
         return Ok(Step::Close(false));
     }
+    // Each claim records its holder, so an unbounded name would cost its
+    // length per record handed out.
+    if let Some(name) = &consumer
+        && (name.is_empty() || name.len() > MAX_CONSUMER_NAME_BYTES)
+    {
+        let refusal = ClientError::invalid(format!(
+            "group consumer name must be 1 to {MAX_CONSUMER_NAME_BYTES} bytes, got {}",
+            name.len()
+        ));
+        handle_ack_enqueue_result(
+            send_outgoing_critical(
+                out_ack_tx,
+                out_ack_depth,
+                "felix_broker_out_ack_depth",
+                ack_throttle_tx,
+                Outgoing::Message(refusal.into_message()),
+            )
+            .await,
+            ack_timeout_state,
+            ack_throttle_tx,
+            cancel_tx,
+        )
+        .await?;
+        return Ok(Step::Next);
+    }
+    // Scoped to the principal, so naming another principal's member reaches
+    // nothing of theirs. Unauthenticated brokers share the empty principal.
+    let consumer = consumer.map(|name| {
+        let principal = session
+            .auth_ctx
+            .as_ref()
+            .map_or("", |auth| auth.subject.as_str());
+        felix_broker::GroupConsumer::new(principal, &name, connection.info().id.0, reclaim)
+    });
     let admitted = match group_admit(
         publish_ctx,
         session.peer_features,
@@ -93,6 +134,7 @@ pub(super) async fn group_poll(
         // Capped, so a client cannot hold a broker stream open for
         // as long as it likes.
         Duration::from_millis(wait_ms.min(config.group_max_wait_ms)),
+        consumer.as_ref(),
     )
     .await;
     let records = match polled {
