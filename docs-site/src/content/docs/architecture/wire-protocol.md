@@ -525,7 +525,12 @@ Success answers. Each names the request it answers where there is one.
 `subscribed` confirms a subscription, and its id matches the
 `event_stream_hello` on the event stream. `start_offset` and `live_offset` are
 sent on a durable stream to a client that negotiated event offsets, whose
-subscribe with no `start` is treated as `latest`. `publish_ok` answers an acked publish and `cache_ok` a
+subscribe with no `start` is treated as `latest`. Like an explicit `latest`, it
+can then be refused on a `Quorum` shard that is still settling (`not_ready`) or
+refuses reads (`fenced`), both retryable. A `ClusterSubscription` that loses
+its connection resumes an idle plain subscription from that `start_offset`, so
+without a gap, and can fail with a `too_old` cursor if retention passed it in
+the meantime. `publish_ok` answers an acked publish and `cache_ok` a
 cache write that carried a `request_id`. Plain `ok` answers `auth` from a client
 that offered no flags, and a cache write without a `request_id`.
 

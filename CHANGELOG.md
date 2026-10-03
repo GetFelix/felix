@@ -66,7 +66,12 @@ for what the current release guarantees.
   offsets, is now `latest`: on a durable stream its `subscribed` carries
   `start_offset` and `live_offset`, so the client knows where live delivery
   began. Before, only an explicit `latest` reported them. Clients without
-  offsets get the frame they always did. (#961)
+  offsets get the frame they always did. Like an explicit `latest`, such a
+  subscribe can now be refused with a retryable `not_ready` or `fenced` on a
+  `Quorum` shard that is settling or refusing reads. And a
+  `ClusterSubscription` that loses its connection before delivering anything
+  now resumes from that exact offset rather than the new tail: no gap, but it
+  can fail with "cursor too old" if retention passed it meanwhile. (#961)
 - A cache entry whose TTL passes is now a change a watch receives. The
   shard's leader writes a delete for it within about a second, through the
   write fence and replicated like any write, so a watcher no longer has to

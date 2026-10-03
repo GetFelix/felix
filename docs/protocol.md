@@ -214,6 +214,19 @@ that negotiated `FLAG_EVENT_BATCH_OFFSETS`, and from such a client a subscribe
 with no `start` is `latest`, so it reports them too. To any other client the
 frame is unchanged.
 
+Because it is `latest`, such a plain subscribe can be refused the way an
+explicit `latest` is. On a `Quorum` shard whose readable bound is still
+settling after a promotion it is `shard_unavailable` with reason `not_ready`,
+and on one that refuses reads it is `fenced`; both are retryable. A client
+that sent no offsets flag still takes the tail-only path and is never refused
+this way.
+
+A `ClusterSubscription` that loses its connection resubscribes from an exact
+offset: the one after the last event it delivered, or, if it delivered
+nothing yet, the `start_offset` this frame reported. So an idle plain
+subscription resumes without a gap too. It can then fail with a cursor error
+(`too_old`) if retention removed that offset while it was disconnected.
+
 ### Event (server -> client)
 ```
 { "type": "event", "tenant_id": "<string>", "namespace": "<string>", "stream": "<string>", "payload": "<base64>", "offset": <number|absent> }
