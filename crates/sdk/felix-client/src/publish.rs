@@ -67,6 +67,14 @@ impl Publisher {
     /// before writing it, the stream has no log, the broker predates
     /// `FLAG_BINARY_PUBLISH_ACK_OFFSET`, or `ack` is `AckMode::None`.
     ///
+    /// A broker acknowledges before writing only when it owns the shard of a
+    /// `Leader` stream and runs with `ack_on_commit` off; every other ack comes
+    /// after the write. A publish forwarded through another broker is one of
+    /// those, so the same stream can give an offset for one record and `None`
+    /// for the next, depending on which broker answered. An offset is never
+    /// reported before the write, and is as durable as the broker's fsync
+    /// policy makes the write.
+    ///
     /// **Not cancel-safe.** Dropping this future — a `timeout`, a losing
     /// `select!` branch — after the record reaches the worker does not stop the
     /// publish. The record is sent and very likely lands; what is lost is
@@ -134,6 +142,14 @@ impl Publisher {
     /// contiguously. `None` when the broker acknowledged before writing the
     /// batch, the stream has no log, the broker predates
     /// `FLAG_BINARY_PUBLISH_ACK_OFFSET`, or `ack` is `AckMode::None`.
+    ///
+    /// A broker acknowledges before writing only when it owns the shard of a
+    /// `Leader` stream and runs with `ack_on_commit` off; every other ack comes
+    /// after the write. A publish forwarded through another broker is one of
+    /// those, so the same stream can give an offset for one record and `None`
+    /// for the next, depending on which broker answered. An offset is never
+    /// reported before the write, and is as durable as the broker's fsync
+    /// policy makes the write.
     pub async fn publish_batch(
         &self,
         tenant_id: &str,

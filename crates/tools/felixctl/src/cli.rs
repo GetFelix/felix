@@ -136,7 +136,10 @@ pub(crate) enum Command {
                       The message comes from the DATA argument, from --file, or from \
                       stdin. Stdin is read one message per line unless --whole is given. \
                       By default each publish waits for the broker's acknowledgement and \
-                      reports the record's offset.",
+                      reports the record's offset when the ack carries one. A broker that \
+                      owns the shard and acks on enqueue (FELIX_ACK_ON_COMMIT off) answers \
+                      before the record has an offset. An --idempotent publish is always answered \
+                      after the write.",
         after_long_help = "Examples:
   felixctl pub orders 'hello'
   felixctl pub orders --key customer-42 '{\"total\": 10}'

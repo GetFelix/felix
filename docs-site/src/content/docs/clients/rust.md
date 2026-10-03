@@ -200,7 +200,10 @@ as it was queued instead of once it was written (a `Leader` stream with
 `ack_on_commit` off), when the stream has no log, and against a broker older
 than the offset flag. An unacknowledged publish always returns `None`. On a
 `Quorum` stream the offset is where the batch was committed, and a re-sent
-`IdempotentProducer` batch reports where the first copy landed.
+`IdempotentProducer` batch reports where the first copy landed. Only the
+broker that owns the shard acknowledges before writing; a publish forwarded
+through another broker is answered after the write and has its offset, so one
+stream can return both.
 
 ### The routing key decides the shard
 
