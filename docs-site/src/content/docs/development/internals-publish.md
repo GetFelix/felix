@@ -284,7 +284,10 @@ claim_publish                      │   complete_publish                       
    shares with other waiters. It then waits for its commit turn, so every
    earlier batch has been appended and fanned out first. On a `Quorum` stream
    a batch the committed mark has not passed is held back from readers and
-   released once a majority holds it.
+   released once a majority holds it. The release is woken when the mark
+   moves and also rechecks the bound every 250 ms while anything is held,
+   since a route or lease change can make the bound cover a batch without
+   the mark moving.
 
 3. **`append_batch_at`** appends to the in-memory replay ring under one lock
    per batch and trims it to `log_capacity`. On a durable stream the ring's

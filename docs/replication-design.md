@@ -879,7 +879,11 @@ QUIC subscriptions are gated too. A durable batch past the mark joins a
 per-stream hold under its commit turn, so the hold is in offset order; when the
 mark moves, the driver releases what it covers, appending to the replay ring
 and fanning out together, with one shared envelope as an unheld publish does.
-The ring therefore holds only committed records. A restart keeps that: a
+The bound also depends on the shard's route and lease, which can change with
+no mark moving, so while anything is held the release also looks again every
+250 ms. Otherwise a batch whose last mark arrived while the bound was
+`Refused` or `Settling` stays held for good: readable from disk, never
+delivered live. The ring therefore holds only committed records. A restart keeps that: a
 `Quorum` ring is refilled from disk only when the commit offset reaches the
 tail, and otherwise starts empty, since a ring stopping at the commit offset
 would leave a hole before the tail. `Latest` and `cursor_tail`

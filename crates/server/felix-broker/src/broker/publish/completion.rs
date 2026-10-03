@@ -16,6 +16,8 @@
 //! `stream/committed.rs`.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use bytes::Bytes;
 
@@ -23,9 +25,15 @@ use super::{ClaimedDurable, ClaimedPublish, PublishOutcome};
 use crate::broker::shards::StreamHandle;
 use crate::commit::StateOp;
 use crate::error::{BrokerError, Result};
-use crate::stream::{DeliveryEnvelope, HeldBatch, QueuedDelivery, SubQueuePolicy, SubscriberEntry};
+use crate::stream::{
+    DeliveryEnvelope, HeldBatch, Pass, QueuedDelivery, SubQueuePolicy, SubscriberEntry,
+};
 use crate::telemetry::{t_histogram, t_now_if};
 use crate::timings;
+
+/// How often a release with batches still held looks at the bound without
+/// being kicked.
+const RELEASE_RECHECK: Duration = Duration::from_millis(250);
 
 /// Everything left to do for one claimed batch, and how far it has got.
 pub(super) struct Completion {
@@ -339,7 +347,8 @@ pub(crate) fn spawn_release(handle: &StreamHandle) {
 }
 
 /// Append and fan out, in order, every held batch the bound covers, until
-/// none is left that it does.
+/// nothing is held. A kick wakes it; so does a recheck, since the bound can
+/// move without one.
 ///
 /// One per stream at a time (`CommitHold` sees to it), which is what keeps
 /// released batches in offset order across subscribers and the ring.
@@ -349,8 +358,19 @@ async fn release(handle: StreamHandle) {
     loop {
         state.held.begin_pass();
         let bound = state.read_bound();
-        let Some(ready) = state.held.take_ready(bound) else {
-            return;
+        let ready = match state.held.take_ready(bound) {
+            Pass::Ready(ready) => ready,
+            Pass::Done => return,
+            Pass::Wait => {
+                // A closed shard's held batches go nowhere; dropping them
+                // ends this release on the next pass.
+                if !state.active.load(Ordering::Acquire) {
+                    state.held.discard();
+                    continue;
+                }
+                let _ = tokio::time::timeout(RELEASE_RECHECK, state.held.woken()).await;
+                continue;
+            }
         };
         for batch in ready {
             let mut completion = Completion::released(handle.clone(), batch, log_capacity);

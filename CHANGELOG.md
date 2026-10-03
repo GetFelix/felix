@@ -70,6 +70,12 @@ for what the current release guarantees.
 
 ### Fixed
 
+- **A `Quorum` stream's held batch is no longer stranded when the last mark
+  that covers it arrives while the shard's bound is refused or settling.** The
+  release now rechecks the bound while anything is held, so a route or lease
+  change that makes the bound cover it delivers it to live subscribers. Before,
+  a subscriber could stop short of records every read of the log returned.
+
 - **A stalled shard no longer stalls publishes to healthy shards on the same
   connection.** The pipelined publish window was counted per connection, so a
   stream whose publishes waited on one stuck shard (a quorum wait, say) could
