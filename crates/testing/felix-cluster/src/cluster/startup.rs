@@ -129,6 +129,8 @@ impl Cluster {
                     // with different ports.
                     if attempts < MAX_SPAWN_ATTEMPTS {
                         attempts += 1;
+                        let node_id = &self.nodes[index].node_id;
+                        tracing::warn!(%node_id, "broker exited during start-up; starting it again");
                         self.respawn(index)?;
                         continue;
                     }
@@ -161,9 +163,7 @@ impl Cluster {
     /// Keeps the node id and data directory: this is the same broker having
     /// another go, not a different one, and a durable log it already wrote must
     /// still be there.
-    fn respawn(&mut self, index: usize) -> Result<()> {
-        let node_id = self.nodes[index].node_id.clone();
-        tracing::warn!(%node_id, "broker exited during start-up; starting it again");
+    pub(super) fn respawn(&mut self, index: usize) -> Result<()> {
         let control_plane = self
             .control_plane
             .as_ref()

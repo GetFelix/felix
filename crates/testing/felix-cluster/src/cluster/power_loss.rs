@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::Cluster;
-use crate::node::{power_loss_image, spawn_broker, storage_fault_file};
+use super::startup::MAX_SPAWN_ATTEMPTS;
+use crate::node::{power_loss_image, storage_fault_file};
 
 /// How long a broker told to lose power has to build its image and die. The
 /// image is a copy of its storage, which in a harness run is small.
@@ -116,23 +117,32 @@ impl Cluster {
         for index in &stopped {
             let log = self.nodes[*index].data_dir.join("broker.log");
             let _ = std::fs::rename(&log, log.with_extension("log.previous"));
-            let control_plane = self
-                .control_plane
-                .as_ref()
-                .ok_or_else(|| anyhow!("control plane is gone"))?;
-            let node = spawn_broker(
-                &self.binary,
-                control_plane,
-                &self.config,
-                self._root.path(),
-                *index,
-                self.links.as_ref(),
-            )
-            .with_context(|| format!("restart {}", self.nodes[*index].node_id))?;
-            self.nodes[*index] = node;
+            self.respawn(*index)?;
         }
+        // A restarted broker can lose a port race like a single restart can
+        // (see `restart_node`). Only that exit is retried.
         for index in stopped {
-            self.await_placeable(index).await?;
+            let mut attempts = 1;
+            loop {
+                match self.await_placeable(index).await {
+                    Err(_)
+                        if attempts < MAX_SPAWN_ATTEMPTS
+                            && self.nodes[index].exited().is_some()
+                            && self.nodes[index].lost_port_race() =>
+                    {
+                        attempts += 1;
+                        tracing::warn!(
+                            node_id = %self.nodes[index].node_id,
+                            "broker lost a port after a power loss; starting it again"
+                        );
+                        self.respawn(index)?;
+                    }
+                    result => {
+                        result?;
+                        break;
+                    }
+                }
+            }
         }
         Ok(())
     }
