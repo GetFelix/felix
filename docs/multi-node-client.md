@@ -100,6 +100,11 @@ them to what it will try.
   broker). One that has not is left out rather than handed over at an address
   that would refuse the connection.
 - An empty answer is normal on a single-node deployment. It is not an error.
+- A broker may advertise a DNS name. The client resolves it when it is
+  handed it, at discovery, in a redirect, or as a shard or cache owner, so a
+  reconnect picks up a broker that moved to a new IP. It checks that broker's
+  certificate against the name rather than the seeds' server name. A name
+  that does not resolve is logged and left out.
 
 `ClusterClient::endpoints()` returns everywhere the client would try, seeds
 included. `refresh_topology()` asks again on demand; you do not normally need

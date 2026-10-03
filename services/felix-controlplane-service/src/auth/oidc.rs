@@ -57,6 +57,14 @@ pub struct UpstreamOidcValidator {
     allow_private: bool,
 }
 
+/// The upstream algorithms accepted when none are configured.
+///
+/// RS256 is the one every OIDC provider must support and most sign with by
+/// default. Allowing it next to ES256 opens no algorithm confusion: HMAC is
+/// never accepted, the key comes from the issuer's JWKS by `kid`, and its type
+/// is checked against the header's `alg` before verification.
+pub(crate) const DEFAULT_ALLOWED_ALGORITHMS: [Algorithm; 2] = [Algorithm::ES256, Algorithm::RS256];
+
 impl Default for UpstreamOidcValidator {
     fn default() -> Self {
         Self::new(Duration::from_secs(3600), Duration::from_secs(3600), 60)
@@ -64,21 +72,22 @@ impl Default for UpstreamOidcValidator {
 }
 
 impl UpstreamOidcValidator {
-    /// ES256-only validator with the given cache TTLs and clock skew.
-    /// Shorter TTLs reduce exposure to stale keys at the cost of more fetches.
+    /// A validator accepting [`DEFAULT_ALLOWED_ALGORITHMS`], with the given
+    /// cache TTLs and clock skew. Shorter TTLs reduce exposure to stale keys
+    /// at the cost of more fetches.
     pub fn new(jwks_ttl: Duration, discovery_ttl: Duration, clock_skew_seconds: u64) -> Self {
         Self::new_with_allowed_algorithms(
             jwks_ttl,
             discovery_ttl,
             clock_skew_seconds,
-            vec![Algorithm::ES256],
+            DEFAULT_ALLOWED_ALGORITHMS.to_vec(),
         )
     }
 
     /// Create a new validator with an explicit upstream JWT algorithm allowlist.
     ///
     /// The allowlist is checked against the JWT header `alg` before any key
-    /// lookup or signature verification. If empty, defaults to ES256-only.
+    /// lookup or signature verification. If empty, [`DEFAULT_ALLOWED_ALGORITHMS`].
     pub fn new_with_allowed_algorithms(
         jwks_ttl: Duration,
         discovery_ttl: Duration,
@@ -86,7 +95,7 @@ impl UpstreamOidcValidator {
         mut allowed_algorithms: Vec<Algorithm>,
     ) -> Self {
         if allowed_algorithms.is_empty() {
-            allowed_algorithms.push(Algorithm::ES256);
+            allowed_algorithms.extend(DEFAULT_ALLOWED_ALGORITHMS);
         }
         allowed_algorithms.sort_unstable_by_key(|alg| *alg as u8);
         allowed_algorithms.dedup();

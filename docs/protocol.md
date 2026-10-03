@@ -209,9 +209,10 @@ the stream's tail when the subscriber was registered: anything below it was
 already in the stream, anything from it on was written after, and nothing falls
 between. It leaves out generation-start records the log ends with (they hold an
 offset but never an event, so a reader waiting for the raw tail would wait
-forever), but is never below `start_offset`. For `latest` the two are equal. Both are sent only for a subscribe
-with a `start`, on a durable stream, to a client that negotiated
-`FLAG_EVENT_BATCH_OFFSETS`. Otherwise the frame is unchanged.
+forever), but is never below `start_offset`. For `latest` the two are equal. Both are sent on a durable stream to a client
+that negotiated `FLAG_EVENT_BATCH_OFFSETS`, and from such a client a subscribe
+with no `start` is `latest`, so it reports them too. To any other client the
+frame is unchanged.
 
 ### Event (server -> client)
 ```
@@ -289,7 +290,8 @@ hand-backs or lapsed claims free room.
 ### GroupRecords (server -> client)
 ```
 { "type": "group_records",
-  "records": [{ "offset": <number>, "payload": "<base64>", "attempts": <number> }],
+  "records": [{ "offset": <number>, "payload": "<base64>", "attempts": <number>,
+                "skipped_before": <number>? }],
   "request_id": <number> }
 ```
 
@@ -297,6 +299,13 @@ hand-backs or lapsed claims free room.
 anything higher is a redelivery. Absent means the broker did not report it,
 which is not the same as a first attempt, and a consumer should not treat it as
 one.
+
+`skipped_before` is how many offsets directly below this record the broker
+settled without delivering: generation-start records, which are not a client's,
+and records retention removed before the group reached them. A gap in the
+offsets a consumer receives that this count covers will never fill, and one it
+does not cover is a record still to come. Absent means `0`, and the broker
+leaves it out when it is `0`, so an older client gets the frame it always did.
 
 ### GroupDeadLetters / GroupDiscard / GroupRedrive
 ```
@@ -647,9 +656,9 @@ field of `detail` is optional. See [Error codes](#error-codes).
   duplicate by the same register-before-read discipline a stream resume uses. A
   resume whose history compaction collapsed is answered with `resnapshot: true`
   and current values; a watch that falls behind is ended with
-  `cache_watch_lagged` naming the offset to re-watch from. TTL expiry is not a
-  change: nothing is appended when an entry lapses, so no event is delivered;
-  a watcher that cares about expiry reads `expires_at_millis` off the put.
+  `cache_watch_lagged` naming the offset to re-watch from. TTL expiry is a
+  change: the shard's leader writes a delete for an entry within about a second
+  of its TTL passing, and watchers receive it as a delete.
 - A `retained` CacheWatch delivers current state first: each matching key's
   current value at the offset of the write that produced it, then live changes
   from `resume_offset`, so a client joins and immediately holds the state
@@ -776,6 +785,16 @@ with `FLAG_BINARY_PUBLISH_ACKED`, and every `publish_idempotent`):
   control, not refused; the frames wait in the transport rather than in the
   tenant's share of the publish queue, which is what keeps a pipelining client
   to its fair share.
+
+Because the window is per stream, what one connection can have outstanding
+grows with its streams: up to streams × `publish_window` unanswered publishes,
+each a batch, rather than one `publish_window` for the whole connection. Two
+limits bound it. QUIC caps a connection at 1024 concurrent streams each way,
+and the broker admits at most `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`
+(16 MiB) of one connection's publish payloads at a time, so publishes past
+that wait in QUIC flow control. A client should bound its own side the same
+way: the Rust client counts every unanswered publish's bytes against one
+`publish_inflight_bytes` budget (4 MiB by default) across all its streams.
 
 `publish_window` is present only when the client offered the bit and the broker
 grants it; a broker configured with `publish_window = 0`
@@ -1200,6 +1219,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x1_0000` | `FEATURE_ATOMIC_COMMIT` | The broker accepts `commit` and `state_get`. See [atomic commits](atomic-commit.md) |
 | `0x2_0000` | `FEATURE_STREAM_PUBLISH_WINDOW` | The broker's `publish_window` is per stream, so each pipelining stream has its own. See [pipelined publishes](#pipelined-publishes) |
 | `0x4_0000` | `FEATURE_SHARD_OWNERS` | The broker answers `shard_owners` |
+| `0x8_0000` | `FEATURE_ACK_ON_COMMIT` | Offered by a client that wants this connection's acked publishes answered after the write, with their offsets, as `FELIX_ACK_ON_COMMIT=true` does for every client. Advertised by a broker that honours it. A client offers it only when asked to (`ClientConfig::ack_on_commit`) |
 | `0x20_0000` | `FEATURE_SUBSCRIPTION_LAGGED` | The client reads `subscription_lagged`, and the broker ends a durable-stream subscription at its first queue drop with it |
 
 Features are advertised in **both** directions. A client offers its own in the
@@ -1297,7 +1317,7 @@ client MUST act on the class it received, not on this table.
 | `quorum_timeout` | `outcome_unknown` | 7 | The leader wrote the batch; a majority did not confirm it in time. It may survive. | A write to a `Quorum` stream or cache. |
 | `leadership_lost` | `outcome_unknown` | 8 | Leadership moved after the leader wrote the batch and before a majority held it. | A write to a `Quorum` stream or cache during a move. |
 | `unacknowledged` | `outcome_unknown` | 9 | The broker stopped waiting for the write's outcome. | A forwarded batch whose answer never came; a commit that outlasted the ack wait; a publish whose shard's log was reset (the broker became a follower, or the log was rebuilt) while it waited behind earlier publishes. That publish reached no reader or subscriber. |
-| `overloaded` | `retry_after` | 10 | The broker is shedding load. | A full ingress queue or ack path. Sent as `outcome_unknown` when the batch was already queued before the broker ran out of room to track its ack. With `detail.reason = "publish_queue_full"` when the broker's publish queue had no room for the publish's tenant (`FELIX_BROKER_PUB_QUEUE_DEPTH`); nothing was queued, the message still reads "publish queue full", and `detail.retry_after_ms` suggests a short wait. No new code or flag: a client that predates the reason retries it like any other `overloaded`. With `detail.reason = "tenant_quota"` when the publish's tenant is over its publish quota (`FELIX_TENANT_PUBLISH_*`); nothing was queued, and `detail.retry_after_ms` says when the tenant is back under. An older client sees the reason as text and backs off as for any other overload. |
+| `overloaded` | `retry_after` | 10 | The broker is shedding load. | A full ingress queue or ack path, or a full disk under durable storage, where nothing was written. Sent as `outcome_unknown` when the batch was already queued before the broker ran out of room to track its ack. With `detail.reason = "publish_queue_full"` when the broker's publish queue had no room for the publish's tenant (`FELIX_BROKER_PUB_QUEUE_DEPTH`); nothing was queued, the message still reads "publish queue full", and `detail.retry_after_ms` suggests a short wait. No new code or flag: a client that predates the reason retries it like any other `overloaded`. With `detail.reason = "tenant_quota"` when the publish's tenant is over its publish quota (`FELIX_TENANT_PUBLISH_*`); nothing was queued, and `detail.retry_after_ms` says when the tenant is back under. An older client sees the reason as text and backs off as for any other overload. |
 | `limit_exceeded` | `fatal` | 11 | The request exceeds a configured limit. | Too many subscriptions on one connection. |
 | `draining` | `retry` | 12 | The broker is shutting down and takes no new work. | In answer to `auth` on a control stream opened while the connection drains. Connect to another broker. |
 | `internal` | `outcome_unknown` | 13 | Something failed inside the broker. | Anything not covered above. Sent as `retry` for reads and failures before any write, `fatal` for configuration the request cannot change. |
@@ -1387,9 +1407,9 @@ ends every subscription and cache watch it was serving on that shard. It waits
 (briefly) for the writes already inside the shard's write fence to land and fan
 out, so each reader first receives everything this broker committed. To a client
 that offered `FEATURE_SHARD_MOVED` it then sends `shard_moved` and finishes the
-stream. A subscribe that reaches it after that, while its routes have not yet
-caught up, is answered `shard_unavailable` with reason `moving` rather than
-registered, since nothing would end it.
+stream. A subscribe or cache watch that reaches it after that, while its
+routes have not yet caught up, is answered `shard_unavailable` with reason
+`moving` rather than registered, since nothing would end it.
 
 - `resume_from` is the first offset this broker did not offer the reader. For a
   stream subscription every record below it was sent to the subscriber or dropped

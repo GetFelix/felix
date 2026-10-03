@@ -25,9 +25,9 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         BrokerError::StreamHandleInactive(_)
         | BrokerError::NotReadable { .. }
         | BrokerError::PublishSuperseded { .. } => ResponseError::NotLeaderOrFollower,
-        BrokerError::Storage(_) | BrokerError::DurableStorageNotConfigured { .. } => {
-            ResponseError::KafkaStorageError
-        }
+        BrokerError::Storage(_)
+        | BrokerError::StorageFull(_)
+        | BrokerError::DurableStorageNotConfigured { .. } => ResponseError::KafkaStorageError,
         // An idempotent producer's refusals, as librdkafka reads them. A
         // gap is fatal to the producer, since something it believes written
         // is not. An unknown producer makes it take a new id and start its

@@ -126,3 +126,75 @@ async fn remove_stream_succeeds() {
         .expect("remove");
     assert!(!broker.stream_exists("t1", "default", "orders").await);
 }
+
+/// A durable broker whose segments hold about two records each.
+fn small_segment_broker(dir: &std::path::Path) -> Broker {
+    let config = felix_storage::log::LogConfig {
+        segment_size_bytes: felix_storage::segment::SEGMENT_HEADER_LEN + 80,
+        index_spacing_bytes: 32,
+        fsync_mode: felix_storage::log::FsyncMode::None,
+        preallocate_segments: false,
+        // The test sweeps by hand.
+        retention_check_interval: std::time::Duration::from_secs(3600),
+        ..Default::default()
+    };
+    Broker::new(EphemeralCache::new().into())
+        .with_durable_storage(crate::DurableStorage::open(dir, config).expect("durable storage"))
+}
+
+async fn fill_and_sweep(broker: &Broker, stream: &str) -> u64 {
+    for payload in ["a", "b", "c", "d", "e", "f", "g", "h"] {
+        broker
+            .publish_batch("t1", "default", stream, 0, &[Bytes::from(payload)])
+            .await
+            .expect("publish");
+    }
+    let log = broker
+        .shard_log(crate::LogKind::Stream, "t1", "default", stream, 0)
+        .await
+        .expect("log");
+    log.enforce_retention_now().await.expect("sweep");
+    log.base_offset()
+}
+
+/// **A stream's retention bounds its own log**, the others keep the broker's
+/// (here none), and a later update reaches the open log without a restart.
+#[tokio::test]
+async fn a_streams_retention_bounds_its_log_and_updates_in_place() {
+    let dir = tempfile::tempdir().expect("dir");
+    let broker = small_segment_broker(dir.path());
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "default")
+        .await
+        .expect("namespace");
+    let bounded = StreamMetadata {
+        durable: true,
+        retention: felix_storage::log::Retention {
+            bytes: Some(felix_storage::segment::SEGMENT_HEADER_LEN + 120),
+            age: None,
+        },
+        ..StreamMetadata::default()
+    };
+    let unbounded = StreamMetadata {
+        durable: true,
+        ..StreamMetadata::default()
+    };
+    broker
+        .register_stream("t1", "default", "orders", bounded.clone())
+        .await
+        .expect("orders");
+    broker
+        .register_stream("t1", "default", "events", unbounded)
+        .await
+        .expect("events");
+
+    assert!(fill_and_sweep(&broker, "orders").await > 0);
+    assert_eq!(fill_and_sweep(&broker, "events").await, 0);
+
+    broker
+        .register_stream("t1", "default", "events", bounded)
+        .await
+        .expect("events updated");
+    assert!(fill_and_sweep(&broker, "events").await > 0);
+}

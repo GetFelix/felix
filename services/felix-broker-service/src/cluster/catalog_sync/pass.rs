@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use felix_broker::{Broker, BrokerError, CacheMetadata, StreamMetadata};
+use felix_broker::{Broker, BrokerError, CacheMetadata};
 
 use super::SyncState;
 use super::apply::{
@@ -116,16 +116,13 @@ pub(super) async fn sync_once(
         match fetch_snapshot(client, base_url, bearer).await {
             Ok(snapshot) => {
                 for stream in snapshot.items {
+                    let metadata = stream.metadata()?;
                     apply_stream_upsert(
                         broker,
                         stream.tenant_id,
                         stream.namespace,
                         stream.stream,
-                        StreamMetadata {
-                            durable: stream.durable,
-                            shards: stream.shards,
-                            consistency: read_consistency(stream.consistency.as_deref())?,
-                        },
+                        metadata,
                     )
                     .await?;
                 }
@@ -263,16 +260,13 @@ pub(super) async fn sync_once(
                 match change.op {
                     StreamChangeOp::Created | StreamChangeOp::Updated => {
                         if let Some(stream) = change.stream {
+                            let metadata = stream.metadata()?;
                             apply_stream_upsert(
                                 broker,
                                 stream.tenant_id,
                                 stream.namespace,
                                 stream.stream,
-                                StreamMetadata {
-                                    durable: stream.durable,
-                                    shards: stream.shards,
-                                    consistency: read_consistency(stream.consistency.as_deref())?,
-                                },
+                                metadata,
                             )
                             .await?;
                         }

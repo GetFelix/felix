@@ -353,6 +353,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                                 shards: 2,
                                 durable: true,
                                 consistency: None,
+                                retention: None,
                             }),
                         }],
                         next_seq: 2,

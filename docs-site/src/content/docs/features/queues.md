@@ -69,6 +69,14 @@ fast producer.
 > `the_cursor_does_not_advance_over_a_gap`,
 > `owed_records_go_out_before_new_ones`.
 
+## Holes that will not fill
+
+Some offsets are settled by the broker and never delivered: generation-start
+records a new leader writes, and records retention removed before the group got
+to them. A record says how many offsets directly below it went that way
+(`skipped_before`; `skippedBefore` in Node). A consumer that applies records in
+offset order can wait for a missing offset unless this count covers it.
+
 ## Retries and giving up
 
 Every delivery carries `attempts`, counting this one. `1` is a first attempt;

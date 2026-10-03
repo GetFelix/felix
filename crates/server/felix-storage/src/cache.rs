@@ -111,6 +111,25 @@ pub trait StorageApi: Debug + Send + Sync {
         Ok(())
     }
 
+    /// Every shard this store has open, as tenant, namespace, cache, shard.
+    /// Empty for a store with no log, whose expiry stays lazy.
+    fn open_shards(&self) -> Vec<(String, String, String, u32)> {
+        Vec::new()
+    }
+
+    /// Write a delete for keys whose TTL has passed, so watches see them go.
+    /// See `LogCache::expire_due`. A no-op for a store with no log.
+    async fn expire_due(
+        &self,
+        _tenant_id: &str,
+        _namespace: &str,
+        _cache: &str,
+        _shard: u32,
+        _limit: usize,
+    ) -> Result<usize> {
+        Ok(0)
+    }
+
     /// Install the observer every applied write is reported to.
     ///
     /// `false` means this store cannot observe writes, and the caller must not

@@ -221,7 +221,10 @@ fn from_env_uses_defaults() {
     assert_eq!(config.metrics_bind.to_string(), "0.0.0.0:8080");
     assert_eq!(config.region_id, "local");
     assert_eq!(config.changes_limit, DEFAULT_CHANGES_LIMIT);
-    assert_eq!(config.oidc_allowed_algorithms, vec![Algorithm::ES256]);
+    assert_eq!(
+        config.oidc_allowed_algorithms,
+        vec![Algorithm::ES256, Algorithm::RS256]
+    );
     assert!(matches!(config.storage, StorageBackend::Memory));
     let _env = clear_felix_env();
 }

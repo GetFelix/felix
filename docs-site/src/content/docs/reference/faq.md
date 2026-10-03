@@ -20,7 +20,7 @@ No. Felix is in early active development and has not been run in production
 by anyone. Quite a lot works: multi-broker clusters, durable replicated
 streams, quorum acknowledgement, failover, consumer groups, the log-backed
 cache, and OIDC auth with RBAC. It is tested hard, including fault-injection
-suites. Releases are tagged (the latest is v0.5.0) and publish container images, but
+suites. Releases are tagged (the newest is v0.6.0-preview) and publish container images, but
 there is no second implementation of anything, and the faults it is proven
 against are the ones a single machine can produce.
 Use it for prototyping, benchmarking, and contributing.
@@ -102,9 +102,9 @@ which always waits (see [`ack_on_commit`](/felix/reference/configuration/#ack_on
 marked durable on a broker without a storage dir is rejected, not silently
 downgraded.
 
-Retention is available and off by default. Set
-`FELIX_DURABLE_RETENTION_BYTES` / `FELIX_DURABLE_RETENTION_SECONDS`, or a
-log grows until the disk ends. See
+Retention is available and off by default. Set a stream's `retention`, or
+`FELIX_DURABLE_RETENTION_BYTES` / `FELIX_DURABLE_RETENTION_SECONDS` for every
+stream that sets none, or a log grows until the disk ends. See
 [Durable Storage](/felix/architecture/durable-storage/).
 
 ## How does clustering work?

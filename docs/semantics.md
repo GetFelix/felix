@@ -373,7 +373,7 @@ accepts them and stores them; the broker reads only `durable`, `shards` and
 | Field | What actually decides |
 | --- | --- |
 | `delivery` (`AtMostOnce` / `AtLeastOnce`) | How a client reads: a plain subscription, or a consumer group |
-| `retention` (`max_age_seconds`, `max_size_bytes`) | The broker-wide `FELIX_DURABLE_RETENTION_*` settings |
+| `retention` (`max_age_seconds`, `max_size_bytes`) | Itself, for a durable stream. A bound left unset is the broker's `FELIX_DURABLE_RETENTION_*` |
 | `kind` (`Stream` / `Queue` / `Cache`) | Nothing. A queue is a way of *reading* a stream, not a kind of stream |
 
 `kind` is the one most likely to mislead. Creating a stream with `kind: Queue`
@@ -691,7 +691,9 @@ Stated because a guarantee without its failure model is a slogan.
   > `crates/testing/felix-cluster/tests/queues/consumer_groups.rs`, including
   > `a_group_position_survives_a_leader_failover` and
   > `a_dead_letter_survives_a_leader_failover`.
-- **Retention is set per broker and unbounded by default.** The broker applies
-  `FELIX_DURABLE_RETENTION_BYTES` and `FELIX_DURABLE_RETENTION_SECONDS` to each
-  stream's log. The retention policy recorded on a stream is not read. With
-  neither variable set, a log grows until the disk is full.
+- **Retention is set per stream and unbounded by default.** A stream's
+  `retention` bounds each of its shard logs on every broker that holds one, and
+  a patch reaches open logs without a restart. A bound the stream leaves unset
+  is the broker's `FELIX_DURABLE_RETENTION_BYTES` or
+  `FELIX_DURABLE_RETENTION_SECONDS`. With neither set, a log grows until the
+  disk is full.

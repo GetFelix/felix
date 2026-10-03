@@ -7,7 +7,7 @@ use bytes::Bytes;
 use tempfile::tempdir;
 
 use super::*;
-use crate::log::{AppendOnlyLog, AppendRecord, FsyncMode, ReadRange};
+use crate::log::{AppendOnlyLog, AppendRecord, FsyncMode, ReadRange, Retention};
 
 fn config() -> LogConfig {
     LogConfig {
@@ -212,4 +212,102 @@ async fn a_fresh_root_keeps_its_acknowledged_record_through_a_power_loss() {
         recovered.shutdown().await.expect("shutdown");
     }
     provider.shutdown().await.expect("shutdown");
+}
+
+/// **A stream's own retention bounds its logs and no other stream's**, both
+/// the shards already open when it is set and the ones opened after.
+#[tokio::test]
+async fn a_streams_retention_bounds_only_its_own_logs() {
+    let dir = tempdir().expect("dir");
+    let config = LogConfig {
+        segment_size_bytes: crate::segment::SEGMENT_HEADER_LEN + 80,
+        index_spacing_bytes: 32,
+        retention_check_interval: Duration::from_secs(3600),
+        ..config()
+    };
+    let provider = DiskLogProvider::new(dir.path(), config).expect("provider");
+    let orders = provider.open_shard(&shard("orders")).expect("open");
+    let events = provider.open_shard(&shard("events")).expect("open");
+
+    let bound = Retention {
+        bytes: Some(crate::segment::SEGMENT_HEADER_LEN + 120),
+        age: None,
+    };
+    provider
+        .set_stream_retention("t", "ns", "orders", bound)
+        .expect("set retention");
+    let later = provider
+        .open_shard(&ShardKey {
+            shard: 1,
+            ..shard("orders")
+        })
+        .expect("open");
+    assert_eq!(later.retention(), bound);
+    assert_eq!(events.retention(), Retention::default());
+
+    for log in [&orders, &events] {
+        for payload in ["a", "b", "c", "d", "e", "f", "g", "h"] {
+            log.append(&[record(payload)]).await.expect("append");
+        }
+    }
+    assert!(
+        orders
+            .enforce_retention_now()
+            .await
+            .expect("sweep")
+            .segments_deleted
+            > 0
+    );
+    assert!(orders.base_offset() > 0);
+    assert_eq!(
+        events
+            .enforce_retention_now()
+            .await
+            .expect("sweep")
+            .segments_deleted,
+        0
+    );
+    assert_eq!(events.base_offset(), 0);
+}
+
+/// A bound the stream leaves unset comes from the provider's configuration,
+/// and a zero is refused rather than read as "keep nothing".
+#[tokio::test]
+async fn a_streams_retention_falls_back_per_bound_and_refuses_zero() {
+    let dir = tempdir().expect("dir");
+    let config = LogConfig {
+        retention_age: Some(Duration::from_secs(60)),
+        retention_check_interval: Duration::from_secs(3600),
+        ..config()
+    };
+    let provider = DiskLogProvider::new(dir.path(), config).expect("provider");
+    let orders = provider.open_shard(&shard("orders")).expect("open");
+
+    provider
+        .set_stream_retention(
+            "t",
+            "ns",
+            "orders",
+            Retention {
+                bytes: Some(1 << 20),
+                age: None,
+            },
+        )
+        .expect("set retention");
+    assert_eq!(
+        orders.retention(),
+        Retention {
+            bytes: Some(1 << 20),
+            age: Some(Duration::from_secs(60)),
+        }
+    );
+
+    let zero = Retention {
+        bytes: Some(0),
+        age: None,
+    };
+    assert!(matches!(
+        provider.set_stream_retention("t", "ns", "orders", zero),
+        Err(StorageError::InvalidConfig(_))
+    ));
 }

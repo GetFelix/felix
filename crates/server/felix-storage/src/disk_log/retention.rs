@@ -117,12 +117,13 @@ impl LogInner {
         let inner = Arc::clone(&self);
         tokio::task::spawn_blocking(move || {
             let mut outcome = RetentionOutcome::default();
-            if inner.config.retention_bytes.is_none() && inner.config.retention_age.is_none() {
+            let bounds = *inner.retention_bounds.lock();
+            if !bounds.is_set() {
                 outcome.base_offset = inner.segments.read().base_offset();
                 return Ok(outcome);
             }
             let plan = inner.segments.read().retention_plan();
-            let chosen = plan.choose(&inner.config, now_micros(), &inner.label)?;
+            let chosen = plan.choose(bounds, now_micros(), &inner.label)?;
             let removed = {
                 let mut segments = inner.segments.write();
                 let removed = segments.remove_head(&chosen)?;

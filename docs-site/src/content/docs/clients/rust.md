@@ -223,6 +223,13 @@ broker that owns the shard acknowledges before writing; a publish forwarded
 through another broker is answered after the write and has its offset, so one
 stream can return both.
 
+To get the offset of every acknowledged publish without turning
+`FELIX_ACK_ON_COMMIT` on for the whole broker, set `ack_on_commit: true` in the
+`ClientConfig`. That client's connections ask for commit acks
+(`FEATURE_ACK_ON_COMMIT`), and every other client on the broker keeps the
+broker's default. `Client::supports_ack_on_commit()` says whether the broker
+honours it; one that predates it answers as before.
+
 ### The routing key decides the shard
 
 **Without a key every record lands on shard 0**, so a multi-shard stream

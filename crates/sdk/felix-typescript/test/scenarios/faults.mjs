@@ -1,5 +1,5 @@
-// Connection faults: the link to a broker drops, resets or stalls mid-publish
-// and mid-subscribe.
+// Connection faults: the link to a broker drops, resets or stalls mid-publish,
+// mid-subscribe and between cache calls.
 //
 // The steps come from the fixture, which copies them out of the catalogue, and
 // the fault comes from its `/link` endpoint: an interposer between this client
@@ -23,6 +23,7 @@ const FAULT_IDS = [
   "fault.subscription_through_a_dropped_link",
   "fault.subscription_through_a_reset_link",
   "fault.subscription_through_a_stalled_link",
+  "fault.cache_through_a_reset_link",
 ];
 
 const PENDING = Symbol("pending");
@@ -71,6 +72,7 @@ export default function register(ctx) {
         const linked = await connect(fixture, { addrs: [fixture.link_addr] });
         try {
           if (step.during === "publish") await publishThroughAFault(ctx, step, linked);
+          else if (step.during === "cache") await cacheThroughAFault(ctx, step, linked);
           else await subscribeThroughAFault(ctx, step, linked);
         } finally {
           linked.close();
@@ -142,6 +144,52 @@ async function publishThroughAFault(ctx, step, linked) {
     await check.close();
   }
   assert.equal(missing.size, 0, `${missing.size} acknowledged records were not in the stream`);
+}
+
+async function cacheThroughAFault(ctx, step, linked) {
+  const { fixture } = ctx;
+  const { tenant_id: tenant, namespace, cache } = fixture;
+  const stamp = `${step.id}-${process.hrtime.bigint()}`;
+  const counter = `${stamp}-count`;
+  const call = async (label, promise) => {
+    const outcome = await settleWithin(promise, step.hold_ms + SETTLE);
+    if (outcome.kind === PENDING) assert.fail(`${label} neither returned nor failed`);
+    return outcome;
+  };
+
+  const acked = [];
+  let added = 0;
+  for (let index = 0; index < step.records; index++) {
+    if (index === step.after_records) await inject(fixture, step);
+    const key = `${stamp}-${index}`;
+    const put = await call(`put ${index}`, linked.cachePut(tenant, namespace, cache, key, Buffer.from(key)));
+    if (put.kind === "value") acked.push(key);
+    const add = await call(`add ${index}`, linked.counterAdd(tenant, namespace, cache, counter, 1));
+    if (add.kind === "value") added += 1;
+  }
+
+  const after = `${stamp}-after`;
+  const deadline = Date.now() + SETTLE;
+  for (;;) {
+    try {
+      await linked.cachePut(tenant, namespace, cache, after, Buffer.from(after));
+      acked.push(after);
+      break;
+    } catch (err) {
+      if (Date.now() >= deadline) assert.fail(`the client never wrote to the cache again after the fault: ${err}`);
+      await sleep(POLL);
+    }
+  }
+
+  for (const key of acked) {
+    const value = await linked.cacheGet(tenant, namespace, cache, key);
+    assert.equal(value?.toString(), key, `the acknowledged put of ${key} did not read back`);
+  }
+  const count = Number((await linked.counterGet(tenant, namespace, cache, counter)) ?? 0);
+  assert.ok(
+    count >= added && count <= step.records,
+    `the counter is ${count} after ${added} acknowledged adds of ${step.records}`,
+  );
 }
 
 async function subscribeThroughAFault(ctx, step, linked) {

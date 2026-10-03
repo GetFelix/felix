@@ -1877,6 +1877,7 @@ async fn hydration_leaves_uncommitted_records_out_of_a_quorum_ring() {
                     durable: true,
                     shards: 1,
                     consistency: felix_broker::ConsistencyLevel::Quorum,
+                    ..Default::default()
                 },
             )
             .await

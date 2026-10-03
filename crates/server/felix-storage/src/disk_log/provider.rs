@@ -2,8 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
+use std::collections::HashMap;
+
 use super::{DiskLog, layout};
-use crate::log::{BoxFuture, LogConfig, LogProvider, Offset, ShardKey};
+use crate::log::{BoxFuture, LogConfig, LogProvider, Offset, Retention, ShardKey};
 use crate::shard_slots::ShardSlots;
 use crate::{Result, StorageError};
 
@@ -18,6 +20,9 @@ pub struct DiskLogProvider {
     root: PathBuf,
     config: LogConfig,
     open_logs: ShardSlots<ShardKey, DiskLog>,
+    /// Retention set for one stream, keyed by tenant, namespace and stream.
+    /// A bound a stream leaves unset comes from `config`.
+    stream_retention: parking_lot::RwLock<HashMap<(String, String, String), Retention>>,
     /// Runs inside every open, under the shard's lock, so tests can make an
     /// open slow and watch what waits on it.
     #[cfg(test)]
@@ -44,6 +49,7 @@ impl DiskLogProvider {
             root,
             config,
             open_logs: ShardSlots::new(),
+            stream_retention: parking_lot::RwLock::new(HashMap::new()),
             #[cfg(test)]
             open_hook: parking_lot::Mutex::new(None),
         })
@@ -85,6 +91,38 @@ impl DiskLogProvider {
         self.open_logs
             .close(shard, |log: DiskLog| async move { log.close().await })
             .await
+    }
+
+    /// Bound one stream's logs by `retention`, falling back to this
+    /// provider's configuration for a bound it leaves unset. Applies to the
+    /// stream's shards already open and to every one opened later.
+    pub fn set_stream_retention(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        retention: Retention,
+    ) -> Result<()> {
+        let effective = retention.or(self.config.retention());
+        self.config.check_retention(effective)?;
+        let scope = (
+            tenant.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        self.stream_retention.write().insert(scope, retention);
+        for (key, log) in self.open_logs.open_entries() {
+            if key.tenant != tenant || key.namespace != namespace || key.stream != stream {
+                continue;
+            }
+            match log.set_retention(effective) {
+                // Closing because the shard moved away; the next open reads
+                // the map.
+                Err(StorageError::Closed(_)) => {}
+                other => other?,
+            }
+        }
+        Ok(())
     }
 
     /// Shard keys this provider currently has open.
@@ -130,13 +168,33 @@ impl DiskLogProvider {
                 }
                 let dir = layout::shard_dir(&self.root, shard);
                 let label = layout::shard_label(shard);
+                let config = self.config_for(shard);
                 match base_offset {
-                    Some(base) => DiskLog::open_at(dir, label, self.config.clone(), base),
-                    None => DiskLog::open(dir, label, self.config.clone()),
+                    Some(base) => DiskLog::open_at(dir, label, config, base),
+                    None => DiskLog::open(dir, label, config),
                 }
             },
             || StorageError::Closed(layout::shard_label(shard)),
         )
+    }
+}
+
+impl DiskLogProvider {
+    /// The configuration `shard` opens with: this provider's, with its
+    /// stream's retention.
+    fn config_for(&self, shard: &ShardKey) -> LogConfig {
+        let scope = (
+            shard.tenant.clone(),
+            shard.namespace.clone(),
+            shard.stream.clone(),
+        );
+        let mut config = self.config.clone();
+        if let Some(retention) = self.stream_retention.read().get(&scope) {
+            let effective = retention.or(self.config.retention());
+            config.retention_bytes = effective.bytes;
+            config.retention_age = effective.age;
+        }
+        config
     }
 }
 

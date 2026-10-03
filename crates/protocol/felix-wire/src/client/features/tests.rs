@@ -296,6 +296,7 @@ fn every_feature_bit_is_distinct_and_known() {
             "FEATURE_STREAM_PUBLISH_WINDOW",
             crate::FEATURE_STREAM_PUBLISH_WINDOW,
         ),
+        ("FEATURE_ACK_ON_COMMIT", crate::FEATURE_ACK_ON_COMMIT),
         ("FEATURE_SHARD_OWNERS", crate::FEATURE_SHARD_OWNERS),
         (
             "FEATURE_SUBSCRIPTION_LAGGED",

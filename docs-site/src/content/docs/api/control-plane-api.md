@@ -329,6 +329,12 @@ Content-Type: application/json
   "consistency": "Leader", "delivery": "AtLeastOnce", "durable": true }
 ```
 
+`retention` bounds a durable stream's logs on every broker that holds one:
+`max_size_bytes` per shard log, `max_age_seconds` by the newest record of each
+segment. A bound left `null` is the broker's own (`FELIX_DURABLE_RETENTION_BYTES`,
+`FELIX_DURABLE_RETENTION_SECONDS`), zero is refused, and a `PATCH` takes effect
+without restarting a broker.
+
 A stream may also name a `region`, such as `"region": "eu-west-1"`, and is
 then placed only on brokers in that region or in one the control plane's
 `FELIX_REGION_BRIDGES` bridges it to. That variable takes comma-separated

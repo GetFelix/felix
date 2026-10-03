@@ -407,9 +407,10 @@ pub enum Message {
     /// Subscription confirmation with server-assigned ID.
     Subscribed {
         subscription_id: u64,
-        /// The first offset this subscription delivers. Sent only for a
-        /// subscribe with a `start`, on a durable stream, to a client that
-        /// negotiated offsets, so a plain subscribe gets the frame it always did.
+        /// The first offset this subscription delivers. Sent only on a durable
+        /// stream, to a client that negotiated offsets, which is the client
+        /// that can read it. A plain subscribe from such a client is `latest`;
+        /// any other client gets the frame it always did.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         start_offset: Option<u64>,
         /// The stream's tail when the subscriber was registered. Records below

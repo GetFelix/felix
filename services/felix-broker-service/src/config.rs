@@ -85,6 +85,29 @@ pub struct BrokerConfig {
     pub controlplane_ca: Option<String>,
     /// The certificate the client-facing listeners present.
     pub client_tls: ClientTlsConfig,
+    /// Where this broker's refresh token lives, when it has one.
+    ///
+    /// A path rather than a value, and that is forced by rotation: refreshing
+    /// spends the token and mints a replacement, so whatever the broker was
+    /// given at startup stops working the first time it refreshes. It has to
+    /// write the replacement somewhere it will read on restart, or a restart
+    /// presents a spent token — which the control plane correctly reads as a
+    /// replay and answers by revoking the whole chain, locking the broker out
+    /// for good.
+    ///
+    /// `None` means no refresh: the broker runs on the token it was given and
+    /// stops being able to call the control plane when that expires, which is the behaviour every
+    /// deployment had before refresh existed.
+    pub node_refresh_token_file: Option<std::path::PathBuf>,
+    /// Where the *access* token was read from, when it came from a file.
+    ///
+    /// Two jobs. It is the path re-read when something outside the broker
+    /// rotates the credential -- a Vault agent, SPIRE, a sidecar -- so that
+    /// rotation takes effect without a restart, the way the refresh token file
+    /// already does. And it is what makes an expiring credential legitimate
+    /// without `node_refresh_token_file`: a file is a seam something else can write,
+    /// where a token passed by value is not.
+    pub node_token_file: Option<std::path::PathBuf>,
     /// Cluster membership identity, when this broker joins one.
     pub membership: Option<MembershipConfig>,
     /// Broker-internal transport, present only when this broker joins a cluster.
@@ -358,6 +381,8 @@ impl Default for BrokerConfig {
             metrics_bind: SocketAddr::from(([0, 0, 0, 0], 8080)),
             controlplane_url: None,
             controlplane_token: String::new(),
+            node_refresh_token_file: None,
+            node_token_file: None,
             controlplane_sync_interval_ms: 2000,
             controlplane_ca: None,
             client_tls: ClientTlsConfig::default(),
