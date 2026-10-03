@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790998860044,
+  "lastUpdate": 1791008246351,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22776,6 +22776,58 @@ window.BENCHMARK_DATA = {
             "range": "6417.13",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 815407.56\nmean: 814967.14\nstdev: 6417.13\ncv: 0.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cda07ca1e4c34ed431eee958b377333448babf25",
+          "message": "fix(broker): keep releasing a Quorum hold until the bound covers it (#959)\n\nA Quorum stream's batch past the committed mark waits in the stream's\nCommitHold and goes out when a mark publish kicks the release. The release\nread the bound once per kick and stopped if it did not cover the front\nbatch. But the bound also turns on the shard's route and lease: a kick that\nlands while the bound is Refused or Settling, or reads it before the route\ncatches up, releases nothing, and when the bound then covers the batch no\nkick follows. With no later publish to move the mark, the batch stays held:\non disk and in every read, never delivered to live subscribers.\n\nThe release now keeps running while anything is held, woken by a kick or a\npush and otherwise looking again every 250 ms, the same recheck\nread_committed already uses for a bound that moves without a wake. It ends\nwhen nothing is held, and drops what a closed shard still holds.\n\nGrouped durable claims made this likelier: the publishes queued while a\nshard moves now land as one batch with one last mark, where before each\npublish brought its own mark and a later one usually rescued the hold.\n\nSpec-Unaffected: liveness of the hold release only; what is held and when it\nmay be delivered are unchanged.",
+          "timestamp": "2026-10-02T23:13:16-07:00",
+          "tree_id": "5ff8c1a27e8e8293cd998c5f95d38df4151fbda6",
+          "url": "https://github.com/gabloe/felix/commit/cda07ca1e4c34ed431eee958b377333448babf25"
+        },
+        "date": 1791008245738,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 339935.39,
+            "range": "7818.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 339935.39\nmean: 337508.02\nstdev: 7818.26\ncv: 2.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 339935.39,
+            "range": "7818.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 339935.39\nmean: 337508.02\nstdev: 7818.26\ncv: 2.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82117.96,
+            "range": "531.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82117.96\nmean: 81873.67\nstdev: 531.07\ncv: 0.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 821179.63,
+            "range": "5310.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 821179.63\nmean: 818736.71\nstdev: 5310.69\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
