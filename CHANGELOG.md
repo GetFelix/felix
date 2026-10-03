@@ -20,8 +20,10 @@ for what the current release guarantees.
   `Subscription::next_event` returns a `SubscriptionLagged { resume_from }`
   error. `ClusterSubscription` resubscribes after its last event, which replays
   the dropped records from the log, and `ShardedSubscription` reports the shard
-  lost and recovers it the same way. Drops a resume already filled from disk do
-  not count. (#965)
+  lost and recovers it the same way, also after its last event. Neither resumes
+  at `resume_from`: the broker's connection writer can drop a frame for a slow
+  subscription without reporting it, below that offset. Drops a resume already
+  filled from disk do not count. (#965)
 
 - A client can ask for commit acks, and the offsets they carry, on its own
   connections: `ClientConfig::ack_on_commit` offers `FEATURE_ACK_ON_COMMIT`

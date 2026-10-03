@@ -490,9 +490,12 @@ queue on the broker dropped records; the broker ends the stream after it.
 - Sent only to a client that offered `FEATURE_SUBSCRIPTION_LAGGED` and
   negotiated event offsets. Any other client keeps the subscription and sees a
   drop only as a jump in offsets on a later event
-- `resume_from` is the first dropped offset. Everything below it was delivered
-  first, and nothing at or above it was, so subscribing from `resume_from` is
-  gapless
+- `resume_from` is the first offset the subscriber's queue dropped (or where a
+  resumed subscription's catch-up ended, if the drops before it were filled
+  from disk). Nothing at or above it was sent. A frame below it can still have
+  been dropped by the connection writer's queue for the subscription, which is
+  not reported, so a client resumes after the last event it received, and from
+  `resume_from` only when it received none
 - Sent once the events queued before the drop are written, without waiting for
   another publish
 - Sent instead of `shard_moved` when both apply

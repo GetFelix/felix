@@ -179,8 +179,9 @@ impl ClusterSubscription {
             }
             let next = match self.subscription.next_event().await {
                 Ok(next) => next,
-                // Falling behind is followed like a loss: everything below the
-                // drop was delivered, so resuming after the last event is exact.
+                // Falling behind is followed like a loss, resuming after the
+                // last event rather than at `resume_from`: a frame dropped on
+                // the way out can sit below that.
                 Err(err)
                     if err.chain().any(|cause| {
                         cause.is::<SubscriptionLost>() || cause.is::<SubscriptionLagged>()

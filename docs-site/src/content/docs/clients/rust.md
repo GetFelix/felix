@@ -701,17 +701,26 @@ See [Multi-node client](https://github.com/gabloe/felix/blob/main/docs/multi-nod
 Under `DropNew` or `DropOld`, a subscriber that cannot keep up loses records,
 in the broker's queue for it or in the client's own. On a durable stream the
 subscription then ends: `next_event` returns the events queued before the drop
-and then a `SubscriptionLagged` error whose `resume_from` is the first offset
-dropped. It comes as soon as the drop happens, not with the next publish.
+and then a `SubscriptionLagged` error whose `resume_from` is where the
+broker's queue first dropped. It comes as soon as the drop happens, not with
+the next publish. Resubscribe after the last event you received, not at
+`resume_from`: the broker can also drop a frame on its way out to a slow
+subscriber without reporting it, and that frame can sit below `resume_from`.
 
 ```rust
+let mut last = None;
 loop {
     match subscription.next_event().await {
-        Ok(Some(event)) => handle(&event),
+        Ok(Some(event)) => {
+            last = event.offset;
+            handle(&event);
+        }
         Ok(None) => break,
         Err(err) => match err.downcast_ref::<felix_client::SubscriptionLagged>() {
-            // Subscribe again from here; the log still has the records.
-            Some(lagged) => break resubscribe_from(lagged.resume_from),
+            // Subscribe again after the last record; the log still has the rest.
+            Some(lagged) => {
+                break resubscribe_from(last.map_or(lagged.resume_from, |last| last + 1));
+            }
             None => return Err(err),
         },
     }

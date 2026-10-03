@@ -319,10 +319,16 @@ throughput rather than correctness.
   durable-stream subscription at its first drop with `subscription_lagged`,
   naming the offset to resume from, for a client that offered
   `FEATURE_SUBSCRIPTION_LAGGED`. felix-client reports drops in its own queue
-  the same way, as a `SubscriptionLagged` error.
+  the same way, as a `SubscriptionLagged` error. A lag is reported over a
+  shard move, since the move's resume point is past the drop. The connection
+  writer's queue for a subscription can also drop a frame, unreported and below
+  that offset, so felix-client resumes after the last event it delivered.
 
   > `a_subscription_ends_at_its_first_drop_and_says_where_to_resume`,
   > `lane_feeder_ends_a_lagged_subscription_with_where_to_resume`,
+  > `lane_feeder_reports_a_lag_over_a_shard_move`,
+  > `a_lag_after_catch_up_ends_where_the_replay_did`,
+  > `a_lagged_shard_resumes_after_its_last_event`,
   > `the_clients_own_drop_ends_the_subscription`.
 - **A subscription can resume.** `Subscribe` takes `latest`, `earliest`, or an
   offset; stored history joins live delivery with no gap.

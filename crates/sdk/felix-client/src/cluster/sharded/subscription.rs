@@ -273,6 +273,8 @@ async fn forward_shard(
     // Where the old owner said to resume, when following a move failed and the
     // reconnect loop below has to do it instead.
     let mut moved_resume_from: Option<u64> = None;
+    // Where to resume after the subscription fell behind.
+    let mut lag_resume_from: Option<u64> = None;
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -329,7 +331,8 @@ async fn forward_shard(
             },
             Err(err) => {
                 if let Some(lagged) = err.downcast_ref::<crate::SubscriptionLagged>() {
-                    moved_resume_from = Some(lagged.resume_from);
+                    let started = feed.1.start_offset().or(feed.1.live_offset());
+                    lag_resume_from = Some(resume_after_lag(last_offset, started, lagged));
                 }
                 format!("{err:#}")
             }
@@ -358,13 +361,17 @@ async fn forward_shard(
             // owner said. `Latest` only with neither — there is no offset to
             // resume from, and replaying from the start would duplicate a
             // history the caller never asked for.
-            let at = Some(resume_position(last_offset, moved_resume_from));
+            let at = Some(match lag_resume_from {
+                Some(from) => StartPosition::Offset(from),
+                None => resume_position(last_offset, moved_resume_from),
+            });
             if let Ok(next) = cluster
                 .subscribe_shard_following_redirects(&tenant_id, &namespace, &stream, shard, at)
                 .await
             {
                 feed = next;
                 moved_resume_from = None;
+                lag_resume_from = None;
                 if tx.send(ShardEvent::ShardRecovered { shard }).await.is_err() {
                     return;
                 }
@@ -372,4 +379,23 @@ async fn forward_shard(
             }
         }
     }
+}
+
+/// Where a shard resumes after it fell behind: after the last event it
+/// delivered, or where it started if it delivered none.
+///
+/// Not the broker's `resume_from`: that is where its subscriber queue first
+/// dropped, and a frame dropped further along, in the connection writer's
+/// queue for this subscription, can sit below it. Resuming after the last
+/// event replays those too. `resume_from` is used only with nothing else to
+/// go on.
+fn resume_after_lag(
+    last_offset: Option<u64>,
+    started: Option<u64>,
+    lagged: &crate::SubscriptionLagged,
+) -> u64 {
+    last_offset
+        .map(|last| last.saturating_add(1))
+        .or(started)
+        .unwrap_or(lagged.resume_from)
 }

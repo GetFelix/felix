@@ -85,6 +85,15 @@ impl Recorder {
 
 /// A broker with a durable stream, so history can be paged from disk.
 async fn durable_broker() -> (Arc<Broker>, TempDir) {
+    durable_broker_with(|broker| broker).await
+}
+
+/// [`durable_broker`] with each subscriber's queue holding `capacity` batches.
+async fn durable_broker_holding(capacity: usize) -> (Arc<Broker>, TempDir) {
+    durable_broker_with(|broker| broker.with_topic_capacity(capacity).expect("capacity")).await
+}
+
+async fn durable_broker_with(configure: impl FnOnce(Broker) -> Broker) -> (Arc<Broker>, TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let storage = felix_broker::DurableStorage::open(
         dir.path(),
@@ -97,7 +106,7 @@ async fn durable_broker() -> (Arc<Broker>, TempDir) {
         },
     )
     .expect("storage");
-    let broker = Broker::new(EphemeralCache::new().into()).with_durable_storage(storage);
+    let broker = configure(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
     broker.register_tenant(TENANT).await.expect("tenant");
     broker
         .register_namespace(TENANT, NAMESPACE)
@@ -763,4 +772,50 @@ mod batching {
         let mut batch = ReplayBatch::new(64, 1024);
         assert!(batch.take().is_none());
     }
+}
+
+/// **Drops the replay filled from disk do not end the subscription; a drop
+/// after it does, without a gap.** The live queue holds one batch and drops 3
+/// and 4 while history is written, but history covers them. Once caught up, 5
+/// is queued and 6 dropped. The queue keeps only its first and latest drop, and
+/// the first was covered, so it ends where the replay did, at 5: 5 comes again
+/// on the resubscribe and nothing is skipped.
+#[tokio::test]
+async fn a_lag_after_catch_up_ends_where_the_replay_did() {
+    let (broker, _dir) = durable_broker_holding(1).await;
+    publish(&broker, &["a", "b"]).await;
+    let mut subscription = broker
+        .subscribe(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("subscribe");
+    // 2 is queued; 3 and 4 find the queue full.
+    publish(&broker, &["c", "d", "e"]).await;
+    let mut sink = Recorder::default();
+
+    replay(
+        &mut sink,
+        &broker,
+        Some(HistoryRange {
+            from_offset: 0,
+            until_offset: 5,
+        }),
+        Vec::new(),
+        5,
+        &mut subscription,
+        64,
+    )
+    .await
+    .expect("replay");
+    assert_eq!(sink.offsets(), vec![0, 1, 2, 3, 4]);
+
+    let (mut live, _guard) = subscription.into_parts();
+    live.end_on_lag();
+    assert_eq!(live.lagged(), None, "every drop so far was replayed");
+    // 5 is queued; 6 is dropped.
+    publish(&broker, &["f", "g"]).await;
+    let end = tokio::time::timeout(std::time::Duration::from_secs(2), live.recv())
+        .await
+        .expect("the drop ends the subscription");
+    assert!(end.is_none());
+    assert_eq!(live.lag_ended(), Some(5));
 }

@@ -240,12 +240,16 @@ the stream end after its last event, byte for byte as before. See
 ```
 
 The last frame on the event stream of a durable-stream subscription whose queue
-on the broker dropped records. `resume_from` is the first dropped offset:
-every event below it was sent before this frame and none at or above it was, so
-subscribing again from `resume_from` neither repeats nor skips a record. The
-broker sends it as soon as the events queued before the drop are written, not
-when the next publish arrives, and finishes the stream after it. Drops a
-resumed subscription's catch-up already filled from disk do not count.
+on the broker dropped records. `resume_from` is the first offset that queue
+dropped, or where a resumed subscription's catch-up ended when the drops before
+that were filled from disk. Nothing at or above it was sent. Below it, a frame
+can still have been dropped after the queue, by the connection writer's queue
+for this subscription (`felix_sub_queue_dropped_total`), which ends nothing and
+is not reported. So a client resumes after the last event it received, and
+from `resume_from` only when it received none; felix-client's
+`ClusterSubscription` and `ShardedSubscription` do that. The broker sends it as
+soon as the events queued before the drop are written, not when the next
+publish arrives, and finishes the stream after it.
 
 Sent only to a client that offered `FEATURE_SUBSCRIPTION_LAGGED` and negotiated
 `FLAG_EVENT_BATCH_OFFSETS`. Any other client keeps its subscription after a drop

@@ -474,9 +474,13 @@ pub enum Message {
     /// in offsets, once a later event arrives.
     SubscriptionLagged {
         subscription_id: u64,
-        /// The first dropped offset. Every event below it was sent before
-        /// this message and none at or above it was, so resubscribing from
-        /// here neither repeats nor skips a record.
+        /// Where the broker's queue for this subscriber first dropped a
+        /// record, or where a resumed subscription's catch-up ended if that
+        /// drop was already covered. Nothing at or above it was sent. A record
+        /// below it can still have been dropped on the way out, by the
+        /// connection's write queue for this subscription, so a client
+        /// resumes after the last event it received and uses this only when
+        /// it received none.
         resume_from: u64,
     },
     /// Single event delivered to a subscriber.

@@ -166,9 +166,9 @@ tail.
 
 Subscriber queues shed under the default policy rather than blocking the
 publisher. On a durable stream a reader that falls behind does not lose
-records: the broker or this client ends the subscription at the first drop
-with the offset to resume from, and the subscription resubscribes there and
-catches up from the log. A shard reader of a sharded subscription reports the
+records: the broker or this client ends the subscription at the first drop,
+and the subscription resubscribes after the last record it delivered,
+catching up from the log. A shard reader of a sharded subscription reports the
 shard lost and recovered while it does.
 
 Against a broker that predates that, or on an in-memory stream, a subscriber

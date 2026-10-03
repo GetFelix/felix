@@ -231,10 +231,10 @@ async fn lane_feeder_with_zero_delay_flushes_a_busy_batch_without_a_timer() -> R
     Ok(())
 }
 
-/// A subscription that asked to end at its first drop sends what was queued
-/// before it and then `subscription_lagged`, with nothing published after.
-#[tokio::test]
-async fn lane_feeder_ends_a_lagged_subscription_with_where_to_resume() -> Result<()> {
+/// A durable stream whose subscriber queue holds one batch, and a
+/// subscription on it that ends at its first drop, with three publishes made:
+/// the first queued, the other two dropped.
+async fn lagged_subscription() -> Result<Lagged> {
     let dir = tempfile::tempdir()?;
     let storage = felix_broker::DurableStorage::open(
         dir.path(),
@@ -261,21 +261,40 @@ async fn lane_feeder_ends_a_lagged_subscription_with_where_to_resume() -> Result
             },
         )
         .await?;
-    let (mut event_rx, _guard) = broker
+    let (mut event_rx, guard) = broker
         .subscribe("t1", "default", "orders", 0)
         .await?
         .into_parts();
     event_rx.end_on_lag();
-    // A queue of one: the first is queued, the next two dropped.
     for _ in 0..3 {
         publish(&broker).await?;
     }
+    Ok(Lagged {
+        _dir: dir,
+        broker,
+        event_rx,
+        _guard: guard,
+    })
+}
 
+struct Lagged {
+    _dir: tempfile::TempDir,
+    broker: Broker,
+    event_rx: felix_broker::SubscriptionReceiver,
+    _guard: felix_broker::SubscriptionGuard,
+}
+
+/// Feed `event_rx` through a lane and return how many records it delivered
+/// and the frame that ended it.
+async fn feed_to_the_end(
+    event_rx: felix_broker::SubscriptionReceiver,
+    shard_moved_enabled: bool,
+) -> Result<(usize, Message)> {
     let (manager, mut lane_rx) = capture_lane();
     let config = EventWriterConfig {
         offsets_enabled: true,
         skip_enabled: false,
-        shard_moved_enabled: false,
+        shard_moved_enabled,
         subscription_id: 1,
         max_events: 64,
         max_bytes: 64 * 1024,
@@ -294,25 +313,72 @@ async fn lane_feeder_ends_a_lagged_subscription_with_where_to_resume() -> Result
         Arc::new(SubscriptionLimiter::new()),
         TenantDelivery::for_tenant("t1"),
     ));
-
-    let delivered = tokio::time::timeout(Duration::from_secs(2), lane_rx.recv())
-        .await?
-        .expect("lane open");
-    assert_eq!(item_count(delivered), 1);
-    let last = match tokio::time::timeout(Duration::from_secs(2), lane_rx.recv())
-        .await?
-        .expect("lane open")
-    {
-        LaneCommand::Unregister { last, .. } => last.expect("a last frame"),
-        other => panic!("expected the end of the subscription, got {other:?}"),
+    let mut delivered = 0;
+    let last = loop {
+        match tokio::time::timeout(Duration::from_secs(2), lane_rx.recv())
+            .await?
+            .expect("lane open")
+        {
+            LaneCommand::Unregister { last, .. } => break last.expect("a last frame"),
+            other => delivered += item_count(other),
+        }
     };
-    assert_eq!(
+    tokio::time::timeout(Duration::from_secs(2), feeder).await??;
+    Ok((
+        delivered,
         Message::decode(felix_wire::Frame::decode(last)?)?,
+    ))
+}
+
+/// A subscription that asked to end at its first drop sends what was queued
+/// before it and then `subscription_lagged`, with nothing published after.
+#[tokio::test]
+async fn lane_feeder_ends_a_lagged_subscription_with_where_to_resume() -> Result<()> {
+    let lagged = lagged_subscription().await?;
+
+    let (delivered, last) = feed_to_the_end(lagged.event_rx, false).await?;
+    assert_eq!(delivered, 1);
+    assert_eq!(
+        last,
         Message::SubscriptionLagged {
             subscription_id: 1,
             resume_from: 1,
         }
     );
-    tokio::time::timeout(Duration::from_secs(2), feeder).await??;
+    Ok(())
+}
+
+/// **A lag outranks a shard move.** The move's `resume_from` is the stream's
+/// position at the move, past the records this subscriber's queue dropped, so
+/// a client that followed it would skip them. Ending with the lag sends it
+/// back to where the drop began.
+#[tokio::test]
+async fn lane_feeder_reports_a_lag_over_a_shard_move() -> Result<()> {
+    let lagged = lagged_subscription().await?;
+    let ended = lagged
+        .broker
+        .end_subscriptions(
+            "t1",
+            "default",
+            "orders",
+            0,
+            Some(felix_broker::ShardHandoff {
+                node_id: Some("b".to_string()),
+                addr: None,
+                generation: 2,
+            }),
+        )
+        .await;
+    assert_eq!(ended, 1);
+
+    let (delivered, last) = feed_to_the_end(lagged.event_rx, true).await?;
+    assert_eq!(delivered, 1);
+    assert_eq!(
+        last,
+        Message::SubscriptionLagged {
+            subscription_id: 1,
+            resume_from: 1,
+        }
+    );
     Ok(())
 }
