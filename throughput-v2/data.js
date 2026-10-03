@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791055017738,
+  "lastUpdate": 1791055408685,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -23140,6 +23140,58 @@ window.BENCHMARK_DATA = {
             "range": "38416.38",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1631196.18\nmean: 1619861.67\nstdev: 38416.38\ncv: 2.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "15381a88e5c97e5d86d42513018f1afcce5672f0",
+          "message": "fix(clients): fail over cache, counter and stream-shard calls in npm and Python (#993)\n\nBoth bindings called the broker the client entered by directly for these, so\nonce it died they kept going to it while other seeds were up. They now go\nthrough ClusterClient, which routes cache calls to the key's owner and moves\nto another broker when the one in use is gone. ClusterClient gains\nstream_shards, sharing the entry-broker retry path with the cache calls.\n\nAdds fault.cache_through_a_reset_link to the conformance catalogue, run by the\nRust, Python and TypeScript suites.\n\nCloses #979.",
+          "timestamp": "2026-10-03T12:15:13-07:00",
+          "tree_id": "82da7646c508506e581c63f017d9d0e8f6191743",
+          "url": "https://github.com/gabloe/felix/commit/15381a88e5c97e5d86d42513018f1afcce5672f0"
+        },
+        "date": 1791055407813,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 349612.03,
+            "range": "6940.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349612.03\nmean: 352549.73\nstdev: 6940.84\ncv: 1.97%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 349612.03,
+            "range": "6940.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349612.03\nmean: 352549.73\nstdev: 6940.84\ncv: 1.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81702.77,
+            "range": "691.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81702.77\nmean: 81836.97\nstdev: 691.35\ncv: 0.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 817027.73,
+            "range": "6913.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 817027.73\nmean: 818369.76\nstdev: 6913.47\ncv: 0.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
