@@ -10,6 +10,11 @@ through two releases because nothing looked.
 
 Run with a tag to check a release (`v0.5.0`), or with no argument to check only
 that the files agree with each other, which is what a pull request wants.
+
+With a tag it also checks the image tags the docs tell readers to pull. Those
+name the newest release, not the tree, because between releases `main` carries
+a version that has no images yet. Checking them when a release is tagged is
+what keeps them from going stale.
 """
 
 from __future__ import annotations
@@ -46,6 +51,24 @@ def read(path: str, kind: str) -> str | None:
     return match.group(1) if match else None
 
 
+#: Where the docs pin a released image, as `ghcr.io/gabloe/<image>:<version>`.
+DOC_ROOTS = ["docs", "docs-site/src/content/docs", "crates/tools/felixctl/README.md"]
+IMAGE_PIN = re.compile(r"ghcr\.io/gabloe/felix[a-z-]*:(\d[0-9A-Za-z.+-]*)")
+
+
+def stale_doc_pins(expected: str) -> list[str]:
+    stale = []
+    for root in DOC_ROOTS:
+        base = REPO / root
+        files = [base] if base.is_file() else sorted(base.rglob("*.md*"))
+        for path in files:
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                for match in IMAGE_PIN.finditer(line):
+                    if match.group(1) != expected:
+                        stale.append(f"{path.relative_to(REPO)}:{number}: {match.group(0)}")
+    return stale
+
+
 def main() -> int:
     tag = sys.argv[1] if len(sys.argv) > 1 else None
     expected = tag[1:] if tag and tag.startswith("v") else tag
@@ -69,8 +92,16 @@ def main() -> int:
             marker = " " if version == expected else "<-"
             print(f"     {marker} {version}  {path}")
 
+    stale = stale_doc_pins(expected) if expected is not None else []
+    if stale:
+        print(f"FAIL the docs pin images other than {expected}:")
+        for pin in stale:
+            print(f"       {pin}")
+
     if missing or disagree or mismatched:
         print("\nBump every file above, then run `task lock:refresh`.")
+        return 1
+    if stale:
         return 1
 
     agreed = versions.pop()

@@ -304,6 +304,10 @@ When the fence applies:
 - Only on a promotion. A move's destination takes over from a leader that
   drained into it, and a cancelled move hands the shard back to the leader
   that had it; neither is fenced, and the model does not fence them either.
+  A hand-back is the generation right after the draining one. A broker that
+  drained a shard and is given it back at any later generation is promoted
+  and fenced: the move may have finished and its destination led in between
+  (`a_promotion_after_a_finished_move_away_is_fenced`).
 - Only for stream shards. A cache shard's log opens lazily and is compacted
   underneath, and keeps the lease.
 - Only when every replica in the new set offers both `FENCE` and

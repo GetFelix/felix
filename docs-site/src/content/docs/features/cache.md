@@ -338,9 +338,11 @@ everything above: a retained watch that later falls behind still lags loudly, an
 whose newest write races past the join arrives as the first live change
 instead of in the state, folding to the same result.
 
-TTL expiry delivers no event, since expiry is lazy and appends nothing to the
-log. Every put carries its `expires_at_millis`, so a watcher that mirrors the
-cache can expire entries itself.
+TTL expiry is delivered as a delete. Reads treat an entry as absent the moment
+its TTL passes, and within about a second the shard's leader writes a delete
+for it, which every watch of that key receives. A watcher that mirrors the
+cache needs no timers of its own. Every put still carries its
+`expires_at_millis`.
 
 The features are negotiated (`FEATURE_CACHE_WATCH`, with retained delivery as
 its own `FEATURE_CACHE_WATCH_RETAINED` bit) and advertised only by brokers

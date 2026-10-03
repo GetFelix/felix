@@ -317,6 +317,11 @@ export FELIX_ACK_ON_COMMIT="yes"
 - `false`: Fire-and-forget, lower latency
 - `true`: Explicit acks, higher latency guarantee
 
+A client can ask for the `true` behaviour on its own connections without
+changing it for everyone: `ClientConfig::ack_on_commit` in felix-client offers
+`FEATURE_ACK_ON_COMMIT`, and its acknowledged publishes are then answered after
+the write, with their offsets.
+
 ### `FELIX_MAX_FRAME_BYTES`
 
 **Description**: Maximum frame size accepted on QUIC streams.
@@ -589,7 +594,7 @@ export FELIX_SUB_EGRESS_LANES="4"
 
 ### `FELIX_SUB_LANE_QUEUE_DEPTH`
 
-**Description**: Queue depth per outbound writer lane.
+**Description**: Frames queued for one subscription in its connection's writer before `FELIX_SUB_QUEUE_MODE` applies. The writer lanes and the connection writer's command queue use the same bound and wait when full.
 
 **Type**: Positive integer (count)
 
@@ -603,7 +608,7 @@ export FELIX_SUB_QUEUE_BOUND="64"
 
 ### `FELIX_SUB_QUEUE_MODE`
 
-**Description**: Backpressure policy for the writer-lane command queue (downstream of `FELIX_SUB_QUEUE_POLICY`, which gates the earlier broker-core fanout enqueue).
+**Description**: What the connection writer does when one subscription's frame queue is full (downstream of `FELIX_SUB_QUEUE_POLICY`, which gates the earlier broker-core fanout enqueue).
 
 **Type**: Enum (`block`, `drop_new`, `drop_old`)
 
@@ -1114,7 +1119,7 @@ export FELIX_BROKER_PUB_STREAM_RECV_WINDOW="16777216"
 
 ### `FELIX_BROKER_PUBLISH_WINDOW`
 
-**Description**: The most acknowledged publishes one stream may have unanswered when its client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker grants this number in `AuthOk.publish_window`, answers a pipelining stream's publishes in the order it sent them, and stops reading that stream's publishes while this many are outstanding on it. Each stream has its own window, so one stuck behind a stalled shard does not stall the others on its connection. `0` turns pipelining off: no client is granted a window, and acks come back in completion order.
+**Description**: The most acknowledged publishes one stream may have unanswered when its client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker grants this number in `AuthOk.publish_window`, answers a pipelining stream's publishes in the order it sent them, and stops reading that stream's publishes while this many are outstanding on it. Each stream has its own window, so one stuck behind a stalled shard does not stall the others on its connection. A connection's outstanding publishes therefore scale with its streams (up to QUIC's 1024) times this window; the payload bytes the broker holds for one connection stay under `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`. `0` turns pipelining off: no client is granted a window, and acks come back in completion order.
 
 **Type**: Non-negative integer
 
@@ -1944,7 +1949,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_CONTROLPLANE_POSTGRES_ACQUIRE_TIMEOUT_MS` | `5000` | Bounds waiting for a pooled connection before failing fast. |
 | `FELIX_CONTROLPLANE_CHANGES_LIMIT` | `1000` | Maximum changes returned by one changefeed page. |
 | `FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` | `10000` | Bounds the append-only change tables. Smaller means a watcher can fall behind sooner and need a fresh snapshot. |
-| `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS` | `ES256` | Comma-separated JWS algorithms accepted from an upstream IdP: any of `ES256`, `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`. |
+| `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS` | `ES256,RS256` | Comma-separated JWS algorithms accepted from an upstream IdP: any of `ES256`, `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`. Setting it replaces the default, so it can narrow it. |
 | `FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP` | `false` | Allow plain-HTTP IdP discovery and JWKS URLs on any host. Without it only `https` is accepted, plus `http` on a loopback host. For development: a JWKS fetched over plain HTTP can be replaced in transit, and whoever replaces it can mint tokens for the tenant. Also implies `FELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP`. |
 | `FELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP` | `false` | Allow IdP discovery and JWKS URLs that are, or resolve to, private, link-local or unique-local addresses. Without it those are refused (loopback is always allowed), so an issuer config cannot make the control plane fetch from internal services or a cloud metadata endpoint. |
 | `FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE` | `false` | Also accept `aud: felix-broker` tokens on the control plane's API, which otherwise takes only `felix-controlplane` ones. For migrating callers. It lets a broker replay a client's token against the API. |
@@ -1988,7 +1993,7 @@ absent. They are listed in that script rather than here.
 | --- | --- | --- |
 | `FELIX_NODE_ID` | unset | This broker's identity in the cluster. Must be stable across restarts. |
 | `FELIX_NODE_ADVERTISE_ADDR` | unset | Address peers should reach this broker on. |
-| `FELIX_CLIENT_ADVERTISE_ADDR` | unset | Address *clients* should reach it on, when it differs from the peer address. |
+| `FELIX_CLIENT_ADVERTISE_ADDR` | unset | `host:port` *clients* should reach it on, when it differs from the peer address. A DNS name is fine: clients resolve it each time they connect, so it survives the broker moving to a new IP, and check the broker's certificate against the name. A value that is not `host:port` fails startup. |
 | `FELIX_NODE_ZONE` | unset | Failure domain this broker is in within its region, such as an availability zone or a rack, sent with its registration as the node's `zone`. Placement puts each shard's copies in different zones wherever a broker with room is in one the shard lacks, and moves and drains keep that spread. Unset (or blank) means no zone: the broker is treated as sharing a zone with no other. Takes effect when the broker next registers. |
 | `FELIX_KAFKA_LISTEN` | unset | `ip:port` the Kafka-protocol listener binds (Kafka consumers and producers). Unset turns the listener off. See [Kafka compatibility](/felix/features/kafka/). |
 | `FELIX_KAFKA_ADVERTISE_ADDR` | `FELIX_KAFKA_LISTEN` | `host:port` Kafka clients are told to connect to for this broker (in Metadata responses). A hostname is fine. Registered as the node's `kafka_addr`, and ignored while `FELIX_KAFKA_LISTEN` is unset. |
@@ -1999,8 +2004,8 @@ absent. They are listed in that script rather than here.
 | `FELIX_KAFKA_MAX_CONNECTIONS_PER_IP` | `128` | Kafka connections one source IP may hold, checked before the total, so one host cannot take every slot. Refusals are counted in `felix_kafka_refused_total{reason="per_ip_limit"}`. `0` is unlimited. |
 | `FELIX_KAFKA_AUTH_TIMEOUT_MS` | `10000` | How long a Kafka connection has to finish SASL. Until it does, each request is capped at 64 KiB. A connection past the deadline is closed and counted under `reason="auth_timeout"`, an oversized unauthenticated request under `reason="unauthenticated_frame_size"`. Does not apply with `FELIX_KAFKA_ANONYMOUS_TENANT`, where every connection starts authenticated. |
 | `FELIX_REGION_BRIDGES` | unset | The same allowlist as the control plane's. A broker forwards a request to a shard's leader only in its own `FELIX_REGION_ID` or a region it has a bridge to, and refuses the rest as `shard_unavailable` with reason `region_not_routable`. Unset forwards within the broker's own region only. A malformed pair fails startup. |
-| `FELIX_NODE_TOKEN` / `FELIX_NODE_TOKEN_FILE` | unset | Access credential this broker presents to the control plane, on every call including the metadata feeds it seeds from (which require `node.view:cluster:*`). Required with `FELIX_NODE_ID`. A standalone broker may omit it, but then its sync is refused and it says so at startup. The file form is re-read every 30s, so whatever mints the credential (a Vault agent, SPIRE, a sidecar) can rotate it without a restart. A replacement that is already expired is declined rather than adopted. A broker joining a cluster refuses to start with an expiring token supplied by value and no refresh file, because nothing could then renew it. |
-| `FELIX_NODE_REFRESH_TOKEN_FILE` | unset | Path to this broker's refresh token. With it the broker re-mints its access token before expiry and stays registered indefinitely. It is a path, not a value: refreshing spends the token and mints a replacement, so the broker writes the replacement back here. A restart that presented a spent one would be read as a replay and revoke the whole chain. The path must be writable. Setting `FELIX_NODE_REFRESH_TOKEN` instead fails startup, rather than locking the broker out at its first restart. Either this or `FELIX_NODE_TOKEN_FILE` is required when the credential carries an `exp` and `FELIX_NODE_ID` is set. |
+| `FELIX_NODE_TOKEN` / `FELIX_NODE_TOKEN_FILE` | unset | Access credential this broker presents to the control plane, on every call including the metadata feeds it seeds from (which require `node.view:cluster:*`). Required with `FELIX_NODE_ID`. A standalone broker may omit it, but then its sync is refused and it says so at startup. The file form is re-read every 30s, on a standalone broker as on a cluster member, so whatever mints the credential (a Vault agent, SPIRE, a sidecar) can rotate it without a restart. A replacement that is already expired is declined rather than adopted. A broker joining a cluster refuses to start with an expiring token supplied by value and no refresh file, because nothing could then renew it. |
+| `FELIX_NODE_REFRESH_TOKEN_FILE` | unset | Path to this broker's refresh token. With it the broker re-mints its access token before expiry, so it stays registered, and its catalog sync keeps working, indefinitely. Standalone brokers use it too. It is a path, not a value: refreshing spends the token and mints a replacement, so the broker writes the replacement back here. A restart that presented a spent one would be read as a replay and revoke the whole chain. The path must be writable. Setting `FELIX_NODE_REFRESH_TOKEN` instead fails startup, rather than locking the broker out at its first restart. Either this or `FELIX_NODE_TOKEN_FILE` is required when the credential carries an `exp` and `FELIX_NODE_ID` is set. |
 | `FELIX_NODE_HEARTBEAT_INTERVAL_MS` | `5000` | How often a broker reports itself alive. |
 | `FELIX_NODE_EXPIRY_TIMEOUT_MS` | `15000` | Silence after which a node is considered gone, plus `FELIX_NODE_REGRANT_MARGIN_MS`. The sweep also waits this long after the control plane starts, becomes Raft leader, or regains its store, so an outage does not expire the fleet. Brokers take 0.75 × this as their lease. Placement will not promote a replica whose last report is older than roughly twice this. |
 | `FELIX_NODE_EXPIRY_SWEEP_INTERVAL_MS` | `2000` | How often expiry is evaluated. |

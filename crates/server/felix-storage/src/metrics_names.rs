@@ -34,6 +34,9 @@ pub const SYNC_BATCH_APPENDS: &str = "felix_storage_sync_batch_appends";
 /// Flushes that failed. Any non-zero value means acknowledged durability is in
 /// doubt.
 pub const SYNC_FAILURES_TOTAL: &str = "felix_storage_sync_failures_total";
+/// Writes and file creations refused because the device or quota was full.
+/// Nothing was written by any of them.
+pub const STORAGE_FULL_TOTAL: &str = "felix_storage_full_total";
 /// Bytes written but not yet flushed: the data a crash would lose right now.
 pub const UNSYNCED_BYTES: &str = "felix_storage_unsynced_bytes";
 

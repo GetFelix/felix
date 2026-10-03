@@ -370,3 +370,119 @@ async fn concurrent_lanes_share_one_connection_writer() {
             .all(|sender| sender.same_channel(&senders[0]))
     );
 }
+
+/// A manager whose one lane and one connection queue hold a single command
+/// each and whose receivers the test holds, so nothing drains them unless the
+/// test does.
+fn tiny_queues() -> (
+    Arc<WriterLaneManager>,
+    mpsc::Receiver<LaneCommand>,
+    mpsc::Receiver<ConnectionCommand>,
+) {
+    let (lane_tx, lane_rx) = mpsc::channel(1);
+    let (conn_tx, conn_rx) = mpsc::channel(1);
+    let connection_writers = dashmap::DashMap::new();
+    connection_writers.insert(7, conn_tx);
+    let manager = WriterLaneManager {
+        lanes: vec![lane_tx],
+        lane_queue_capacity: 1,
+        lane_queue_policy: felix_broker::SubQueuePolicy::DropNew,
+        lane_queue_highwater: vec![std::sync::atomic::AtomicUsize::new(0)],
+        connection_writers,
+        subscriber_connections: dashmap::DashMap::new(),
+        connection_queue_capacity: 1,
+        max_bytes_per_write: 64 * 1024,
+        connection_lanes: dashmap::DashMap::new(),
+        subscriber_pins: dashmap::DashMap::new(),
+        shard: crate::config::SubscriberLaneShard::Auto,
+        single_writer_per_conn: true,
+        rr_counter: std::sync::atomic::AtomicUsize::new(0),
+    };
+    (Arc::new(manager), lane_rx, conn_rx)
+}
+
+fn lane_delivery(subscriber_id: u64) -> LaneCommand {
+    let now = Instant::now();
+    LaneCommand::Delivery {
+        subscriber_id,
+        frame: Bytes::from_static(b"frame"),
+        item_count: 1,
+        first_enqueued_at: now,
+        enqueue_at: now,
+    }
+}
+
+fn connection_delivery(subscriber_id: u64) -> ConnectionCommand {
+    let now = Instant::now();
+    ConnectionCommand::Delivery {
+        subscriber_id,
+        frame: Bytes::from_static(b"frame"),
+        item_count: 1,
+        first_enqueued_at: now,
+        enqueue_at: now,
+    }
+}
+
+/// One publish fanned out to more subscriptions on a connection than its
+/// lane holds is one delivery per subscription. Under `drop_new` the lane
+/// used to shed the overflow for every one of them, uncounted.
+#[tokio::test]
+async fn a_fanout_wider_than_the_lane_waits_instead_of_dropping() -> Result<()> {
+    let (manager, mut lane_rx, _conn_rx) = tiny_queues();
+    let sending = tokio::spawn({
+        let manager = Arc::clone(&manager);
+        async move {
+            for subscriber_id in 0..3 {
+                manager
+                    .enqueue(0, lane_delivery(subscriber_id))
+                    .await
+                    .map_err(|()| anyhow::anyhow!("dropped delivery {subscriber_id}"))?;
+            }
+            anyhow::Ok(())
+        }
+    });
+    let mut received = Vec::new();
+    for _ in 0..3 {
+        let next = tokio::time::timeout(Duration::from_secs(2), lane_rx.recv())
+            .await
+            .context("a delivery never arrived")?;
+        match next.context("lane closed")? {
+            LaneCommand::Delivery { subscriber_id, .. } => received.push(subscriber_id),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    sending.await.context("sender")??;
+    assert_eq!(received, vec![0, 1, 2]);
+    Ok(())
+}
+
+/// The same for the connection writer's queue, which every lane feeds.
+#[tokio::test]
+async fn a_fanout_wider_than_the_connection_queue_waits_instead_of_dropping() -> Result<()> {
+    let (manager, _lane_rx, mut conn_rx) = tiny_queues();
+    let sending = tokio::spawn({
+        let manager = Arc::clone(&manager);
+        async move {
+            for subscriber_id in 0..3 {
+                manager
+                    .enqueue_connection(7, connection_delivery(subscriber_id))
+                    .await
+                    .map_err(|()| anyhow::anyhow!("dropped delivery {subscriber_id}"))?;
+            }
+            anyhow::Ok(())
+        }
+    });
+    let mut received = Vec::new();
+    for _ in 0..3 {
+        let next = tokio::time::timeout(Duration::from_secs(2), conn_rx.recv())
+            .await
+            .context("a delivery never arrived")?;
+        match next.context("connection queue closed")? {
+            ConnectionCommand::Delivery { subscriber_id, .. } => received.push(subscriber_id),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    sending.await.context("sender")??;
+    assert_eq!(received, vec![0, 1, 2]);
+    Ok(())
+}

@@ -45,6 +45,30 @@ impl BrokerConfig {
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(2000);
         let controlplane_token = controlplane_token_from_env()?;
+        // A value, not a path — which cannot work, so say why rather than accept
+        // it and lock the broker out at its first restart.
+        if std::env::var("FELIX_NODE_REFRESH_TOKEN")
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            anyhow::bail!(
+                "FELIX_NODE_REFRESH_TOKEN is set, but a refresh token cannot be \
+                 passed by value: refreshing spends it and mints a replacement, so \
+                 the broker has to write that replacement back somewhere. Use \
+                 FELIX_NODE_REFRESH_TOKEN_FILE and make the path writable."
+            );
+        }
+        let node_refresh_token_file = std::env::var("FELIX_NODE_REFRESH_TOKEN_FILE")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from);
+
+        let node_token_file = std::env::var("FELIX_NODE_TOKEN_FILE")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from);
         let membership = membership_from_env(&controlplane_url, &controlplane_token)?;
         let peer_transport = match &membership {
             Some(membership) => {
@@ -328,6 +352,8 @@ impl BrokerConfig {
             metrics_bind,
             controlplane_url,
             controlplane_token,
+            node_refresh_token_file,
+            node_token_file,
             controlplane_sync_interval_ms,
             controlplane_ca: super::tls::controlplane_ca_from_env(),
             client_tls: super::ClientTlsConfig::from_env()?,

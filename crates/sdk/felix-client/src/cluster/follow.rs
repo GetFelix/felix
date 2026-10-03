@@ -345,7 +345,10 @@ impl ClusterClient {
         Fut: Future<Output = Result<T>>,
     {
         let deadline = Instant::now() + self.policy.deadline.unwrap_or(FOLLOW_DEADLINE);
-        let mut hint: Option<SocketAddr> = moved.addr.as_deref().and_then(|a| a.parse().ok());
+        let mut hint: Option<SocketAddr> = match moved.addr.as_deref() {
+            Some(addr) => self.resolve(addr).await,
+            None => None,
+        };
         let mut hinted: Option<Arc<Client>> = None;
         let mut attempt = 0usize;
         loop {

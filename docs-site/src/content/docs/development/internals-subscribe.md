@@ -55,8 +55,8 @@ need a single owner to write them).
    connection_id)` and sends `LaneCommand::Register` to that lane, handing the
    subscriber's `SendStream` to the writer-lane pipeline. Nothing drains the
    subscriber's channel until this point, so live events cannot overtake the
-   replay. If the lane queue is full, the broker sends an `overloaded` error
-   and drops the subscription.
+   replay. The register waits for room in the lane queue. Only a lane that
+   has already shut down with its connection gets an `overloaded` error.
 7. Broker spawns `run_lane_feeder`, the task that pulls `DeliveryEnvelope`s
    out of this subscriber's `SubscriptionReceiver` for the rest of the
    subscription's life. If `core_shards` is enabled, this task is spawned on

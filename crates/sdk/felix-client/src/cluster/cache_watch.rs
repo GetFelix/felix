@@ -1,7 +1,6 @@
 //! Cache watches through a [`ClusterClient`], following each shard to the
 //! broker that owns it.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -195,8 +194,9 @@ impl ClusterClient {
                     "the owner's client address is not published, so there is nowhere to follow to",
                 ));
             };
-            let addr: SocketAddr = addr
-                .parse()
+            let addr = self
+                .resolve(&addr)
+                .await
                 .with_context(|| format!("the owner's address {addr:?} is not usable"))?;
             visited.push(redirect.node_id.clone());
             client = self

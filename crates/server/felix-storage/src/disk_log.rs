@@ -658,7 +658,7 @@ impl DiskLog {
         config.validate()?;
 
         if let Some(base_offset) = base_offset.filter(|base| *base > 0) {
-            recovery::place_empty_shard(&dir, &config, base_offset)?;
+            recovery::place_empty_shard(&dir, &label, &config, base_offset)?;
         }
         let recovered = recovery::recover_shard(&dir, &label, &config)?;
         if recovered.truncated_bytes > 0 {

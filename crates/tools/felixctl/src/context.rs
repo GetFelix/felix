@@ -45,21 +45,40 @@ impl ConfigFile {
     }
 
     /// Write to `path`, creating its directory. Owner-only on Unix, since a
-    /// context can hold a token.
+    /// context can hold a token, including when the file was there before.
+    ///
+    /// Written to a temporary file beside it and renamed over it, so a crash
+    /// leaves the old config or the new one, never an empty or partial file.
     pub(crate) fn save(&self, path: &Path) -> anyhow::Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-        }
+        let dir = match path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir,
+            _ => Path::new("."),
+        };
+        std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let text = toml::to_string_pretty(self).context("encode the config")?;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut file = options
-            .open(path)
-            .with_context(|| format!("write {}", path.display()))?;
-        std::io::Write::write_all(&mut file, text.as_bytes())
-            .with_context(|| format!("write {}", path.display()))
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let temp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+        let written = (|| {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            let mut file = options.open(&temp)?;
+            // `mode` applies only to a file it creates; one left by an
+            // interrupted save keeps whatever it had.
+            #[cfg(unix)]
+            std::fs::set_permissions(&temp, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+            std::io::Write::write_all(&mut file, text.as_bytes())?;
+            file.sync_all()?;
+            std::fs::rename(&temp, path)?;
+            #[cfg(unix)]
+            std::fs::File::open(dir)?.sync_all()?;
+            std::io::Result::Ok(())
+        })();
+        if written.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        written.with_context(|| format!("write {}", path.display()))
     }
 }
 

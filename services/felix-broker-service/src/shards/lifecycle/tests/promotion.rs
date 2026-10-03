@@ -266,3 +266,62 @@ mod generation_start {
         );
     }
 }
+
+/// **A promotion after a finished move is fenced**, though this broker was
+/// the move's draining leader. The move's destination led in between, and if
+/// it is cut off rather than gone it can still commit a write with a follower
+/// that has not heard of the promotion. Unfenced, this broker then starts its
+/// generation over that write.
+#[test]
+fn a_promotion_after_a_finished_move_away_is_fenced() {
+    let mut own = fencing_lifecycle();
+    own.observe(&key(0), Some(&assigned_to("broker-a", 2)));
+    own.opened(&key(0), 2);
+    own.fenced(&key(0), 2);
+    let draining = ShardAssignment {
+        leader: "broker-a".to_string(),
+        replicas: vec!["broker-b".to_string()],
+        state: "draining".to_string(),
+        successor: Some("broker-b".to_string()),
+        ..assigned_to("broker-a", 3)
+    };
+    own.observe(&key(0), Some(&draining));
+    assert_eq!(own.opened(&key(0), 3), Opened::Draining);
+
+    // The move finishes: broker-b leads, and this broker is a replica.
+    let moved = ShardAssignment {
+        replicas: vec!["broker-a".to_string()],
+        ..assigned_to("broker-b", 4)
+    };
+    assert_eq!(own.observe(&key(0), Some(&moved)), Action::None);
+
+    // broker-b fails and this broker is promoted.
+    assert!(matches!(
+        own.observe(&key(0), Some(&assigned_to("broker-a", 5))),
+        Action::Open { fence: true, .. }
+    ));
+}
+
+/// The same when the assignment that named broker-b was coalesced away and
+/// this broker sees only the draining generation and its own promotion.
+#[test]
+fn a_promotion_that_skips_generations_after_a_drain_is_fenced() {
+    let mut own = fencing_lifecycle();
+    own.observe(&key(0), Some(&assigned_to("broker-a", 2)));
+    own.opened(&key(0), 2);
+    own.fenced(&key(0), 2);
+    let draining = ShardAssignment {
+        leader: "broker-a".to_string(),
+        replicas: vec!["broker-b".to_string()],
+        state: "draining".to_string(),
+        successor: Some("broker-b".to_string()),
+        ..assigned_to("broker-a", 3)
+    };
+    own.observe(&key(0), Some(&draining));
+    assert_eq!(own.opened(&key(0), 3), Opened::Draining);
+
+    assert!(matches!(
+        own.observe(&key(0), Some(&assigned_to("broker-a", 5))),
+        Action::Open { fence: true, .. }
+    ));
+}

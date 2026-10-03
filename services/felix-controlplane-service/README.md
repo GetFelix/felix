@@ -29,7 +29,7 @@ postgres:
   acquire_timeout_ms: 5000
 changes_limit: 1000
 change_retention_max_rows: 10000
-oidc_allowed_algorithms: ["ES256"]
+oidc_allowed_algorithms: ["ES256", "RS256"]
 ```
 
 Environment variables (take precedence over YAML):
@@ -40,7 +40,7 @@ Environment variables (take precedence over YAML):
 - `FELIX_CONTROLPLANE_STORAGE_BACKEND` (`memory`|`postgres`)
 - `FELIX_CONTROLPLANE_CHANGES_LIMIT`
 - `FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS`
-- `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS` (comma-separated; default: `ES256`)
+- `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS` (comma-separated; default: `ES256,RS256`)
 
 ## Local Postgres (docker-compose)
 

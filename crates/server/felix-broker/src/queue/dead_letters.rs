@@ -64,7 +64,7 @@ impl DeadLetters {
     pub fn open(root: impl Into<PathBuf>, config: LogConfig) -> Result<Self> {
         let root = root.into();
         Ok(Self {
-            entries: LogCache::open(&root, config).map_err(storage_error)?,
+            entries: LogCache::open(&root, config).map_err(BrokerError::from)?,
             legacy_root: root,
             locks: SyncMutex::new(HashMap::new()),
             #[cfg(test)]
@@ -100,7 +100,7 @@ impl DeadLetters {
                 None,
             )
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// Offsets `group` has given up on, lowest first. Redriven ones are not
@@ -117,7 +117,7 @@ impl DeadLetters {
                         key.shard,
                     )
                     .await
-                    .map_err(storage_error)?
+                    .map_err(BrokerError::from)?
                     .into_iter()
                     .filter_map(|entry| entry.parse::<u64>().ok()),
             );
@@ -165,7 +165,7 @@ impl DeadLetters {
                 &offset.to_string(),
             )
             .await
-            .map_err(storage_error)?
+            .map_err(BrokerError::from)?
             .is_some();
         if !listed {
             return Ok(false);
@@ -180,7 +180,7 @@ impl DeadLetters {
                 &offset.to_string(),
             )
             .await
-            .map_err(storage_error)?;
+            .map_err(BrokerError::from)?;
         Ok(true)
     }
 
@@ -200,7 +200,7 @@ impl DeadLetters {
                     &entry,
                 )
                 .await
-                .map_err(storage_error)?;
+                .map_err(BrokerError::from)?;
         }
         Ok(())
     }
@@ -228,7 +228,7 @@ impl DeadLetters {
                         &entry,
                     )
                     .await
-                    .map_err(storage_error)?;
+                    .map_err(BrokerError::from)?;
                 return Ok(true);
             }
             Some(_) => return Ok(false),
@@ -249,7 +249,7 @@ impl DeadLetters {
                 &offset.to_string(),
             )
             .await
-            .map_err(storage_error)?;
+            .map_err(BrokerError::from)?;
         Ok(removed.is_some())
     }
 
@@ -267,7 +267,7 @@ impl DeadLetters {
         self.entries
             .shard_log(tenant_id, namespace, stream, shard)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// [`DeadLetters::shard_log`], created at `base_offset` if absent.
@@ -282,7 +282,7 @@ impl DeadLetters {
         self.entries
             .shard_log_at(tenant_id, namespace, stream, shard, base_offset)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// Close a shard's dead-letter log, for a shard this broker no longer
@@ -297,12 +297,12 @@ impl DeadLetters {
         self.entries
             .close_shard(tenant_id, namespace, stream, shard)
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// Flush every open dead-letter log. Call once during graceful shutdown.
     pub async fn shutdown(&self) -> Result<()> {
-        self.entries.shutdown().await.map_err(storage_error)
+        self.entries.shutdown().await.map_err(BrokerError::from)
     }
 
     async fn state(&self, key: &GroupKey, entry: &str) -> Result<Option<bytes::Bytes>> {
@@ -315,7 +315,7 @@ impl DeadLetters {
                 entry,
             )
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     async fn put(&self, key: &GroupKey, entry: &str, value: &'static [u8]) -> Result<()> {
@@ -330,7 +330,7 @@ impl DeadLetters {
                 None,
             )
             .await
-            .map_err(storage_error)
+            .map_err(BrokerError::from)
     }
 
     /// This group's entries in the per-shard log that are redriven, or not.
@@ -340,7 +340,7 @@ impl DeadLetters {
             .entries
             .live_entries_checked(&key.tenant_id, &key.namespace, &key.stream, key.shard)
             .await
-            .map_err(storage_error)?
+            .map_err(BrokerError::from)?
             .into_iter()
             .filter(|entry| (entry.value.as_ref() == REDRIVEN) == redriven)
             .filter_map(|entry| entry.key.strip_prefix(&prefix)?.parse().ok())
@@ -383,10 +383,6 @@ fn entry_key(group: &str, offset: u64) -> String {
 /// How the earlier layout named a `(stream, group)` log.
 fn legacy_scope(key: &GroupKey) -> String {
     format!("{}\u{1f}{}", key.stream, key.group)
-}
-
-fn storage_error(err: felix_storage::StorageError) -> BrokerError {
-    BrokerError::Storage(err.to_string())
 }
 
 #[cfg(test)]
