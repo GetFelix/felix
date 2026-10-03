@@ -266,6 +266,9 @@ dirties pages faster than the device takes them, Linux throttles it inside
 stalls every task scheduled on it. So each log also has an append thread, with
 the same lifecycle as its flush thread, and every append runs there in
 submission order, which is offset order. The publisher awaits the result.
+The thread polls for its next append for 20 µs before it parks, and a caller
+alone in the queue polls as long for its result, so back-to-back appends do
+not pay a wake-up on either side.
 
 The batch is encoded and given its place under the segment lock, written with
 the lock released, and made visible under the lock again. A reader or a flush

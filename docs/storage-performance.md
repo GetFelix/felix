@@ -179,27 +179,30 @@ dirties pages faster than the device takes them, so each log's appends run on
 a thread of their own, with the segment lock released during the `write` (see
 `docs/durable-storage.md`, "Where the append runs").
 
+The thread polls for its next append for 20 µs before it parks, and a caller
+whose append is the only one queued polls as long for its result, so
+back-to-back appends pay no wake-up on either side.
+
 `felix-log-tool bench`, 128-byte payloads, records/s and p50/p99 append
 latency in µs, three runs each, on an M4 Max with the log on an external SSD.
 Before is the `write` on the caller's reactor thread:
 
 | fsync | batch | publishers | before rec/s | after rec/s | before p50/p99 | after p50/p99 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| none | 1 | 1 | 223k–264k | 91k–96k | 3 / 6–8 | 9–10 / 15–16 |
-| none | 1 | 8 | 96k–106k | 209k–222k | 40–47 / 397–423 | 35–37 / 49–50 |
-| none | 16 | 1 | 1.68M–1.90M | 701k–951k | 6–7 / 9 | 13–18 / 19–27 |
-| none | 16 | 8 | 1.14M–1.52M | 1.73M–2.25M | 10–37 / 1,223–3,046 | 52–68 / 79–101 |
-| on_commit | 1 | 8 | 1.3k | 1.6k–2.3k | 5,647–5,945 / 12,194–12,251 | 3,488–5,348 / 6,904–7,754 |
-| on_commit | 16 | 8 | 19k–21k | 22k–23k | 5,367–6,010 / 11,972–12,484 | 5,394–5,543 / 7,802–11,923 |
+| none | 1 | 1 | 226k–292k | 223k–234k | 3 / 5–8 | 3–4 / 7 |
+| none | 1 | 8 | 102k–120k | 208k–213k | 14–40 / 403–439 | 37 / 48–55 |
+| none | 16 | 1 | 1.69M–1.94M | 1.25M–1.66M | 6–7 / 8–11 | 7–9 / 9–14 |
+| none | 16 | 8 | 939k–1.35M | 1.77M–1.93M | 10–12 / 1,726–2,184 | 61–63 / 75–126 |
+| on_commit | 1 | 8 | 1.2k–1.3k | 1.5k–1.6k | 5,908–5,949 / 12,044–14,127 | 5,255–5,395 / 7,681–11,331 |
+| on_commit | 16 | 8 | 19k | 22k–34k | 5,921–5,966 / 12,157–12,727 | 3,619–5,394 / 6,940–11,606 |
 
-A lone publisher pays a thread wake-up on each side of every append, about
-10 µs, which is more than the `write` it moves: it loses about 60% of its
-throughput, less once its batches are large. Several publishers on one log
-gain, because they queue on the thread instead of on the segment lock across
-each other's `write`, which is where the 400 µs and multi-millisecond tails
-came from. Under `on_commit` a flush now covers every append queued when it
-starts: with 16 publishers of 4 KiB records, 15–16 appends per flush against
-12–13 before, counted from `DiskLog::flushes`.
+A lone unbatched publisher keeps its throughput and latency. With batches of
+16 it still loses up to a quarter to the hand-off. Several publishers on one
+log gain, because they queue on the thread instead of on the segment lock
+across each other's `write`, which is where the 400 µs and multi-millisecond
+tails came from. Under `on_commit` a flush now covers every append queued when
+it starts: with 16 publishers of 4 KiB records, 15–16 appends per flush
+against 12–13 before, counted from `DiskLog::flushes`.
 
 ## Where the time goes
 

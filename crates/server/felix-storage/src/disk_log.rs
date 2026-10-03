@@ -78,6 +78,10 @@ use crate::log::{
 use crate::segment::ReadBudget;
 use crate::{CommitSequencer, CommitTurn, Result, StorageError, metrics_names};
 
+/// How long an append thread and a lone appender poll before parking. A
+/// wake-up on each side costs more than the `write` being handed over.
+const APPEND_SPIN: std::time::Duration = std::time::Duration::from_micros(20);
+
 /// How often an advancing commit offset is written behind when the log is not
 /// fsynced on commit. Its records are written behind too, so an offset that
 /// outlived them would guard nothing.
@@ -769,7 +773,7 @@ impl DiskLog {
             roll_task: Mutex::new(None),
             pending_seal: Mutex::new(None),
             mark,
-            appender: LogThread::new("felix-append"),
+            appender: LogThread::spinning("felix-append", APPEND_SPIN),
             flusher: LogThread::new("felix-flush"),
         });
 

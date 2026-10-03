@@ -15,8 +15,9 @@
 //! `docs/storage-performance.md` for the measurements.
 
 use std::io;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
@@ -33,6 +34,11 @@ type Job = Box<dyn FnOnce() + Send>;
 pub(crate) struct LogThread {
     name: String,
     idle: Duration,
+    /// How long the thread, and a caller alone in the queue, poll before
+    /// parking. See [`Self::spinning`].
+    spin: Duration,
+    /// Jobs submitted and not yet finished.
+    pending: Arc<AtomicUsize>,
     /// The running thread's queue, if there is a thread. Jobs are only sent
     /// under this lock, and the thread clears it under the same lock before
     /// exiting, so no job can be left behind in a queue nobody reads.
@@ -44,10 +50,23 @@ impl LogThread {
         Self::with_idle(name, IDLE)
     }
 
+    /// A thread for jobs shorter than a wake-up: after a job it polls for the
+    /// next for up to `spin` before parking, and a caller whose job is the only
+    /// one queued polls for its result as long before yielding. Back-to-back
+    /// jobs then pay neither wake-up.
+    pub(crate) fn spinning(name: impl Into<String>, spin: Duration) -> Self {
+        Self {
+            spin,
+            ..Self::new(name)
+        }
+    }
+
     fn with_idle(name: impl Into<String>, idle: Duration) -> Self {
         Self {
             name: name.into(),
             idle,
+            spin: Duration::ZERO,
+            pending: Arc::new(AtomicUsize::new(0)),
             queue: Arc::new(Mutex::new(None)),
         }
     }
@@ -63,14 +82,29 @@ impl LogThread {
         &self,
         work: impl FnOnce() -> io::Result<T> + Send + 'static,
     ) -> io::Result<T> {
-        let (reply, answer) = oneshot::channel();
+        let (reply, mut answer) = oneshot::channel();
+        let pending = Arc::clone(&self.pending);
+        // Behind other jobs a caller would poll for nothing, on a worker with
+        // better things to do.
+        let alone = pending.fetch_add(1, Ordering::AcqRel) == 0;
         let job: Job = Box::new(move || {
-            let _ = reply.send(work());
+            let result = work();
+            pending.fetch_sub(1, Ordering::AcqRel);
+            let _ = reply.send(result);
         });
         if let Err(job) = self.submit(job) {
             tokio::task::spawn_blocking(job)
                 .await
                 .map_err(io::Error::other)?;
+        }
+        if alone && !self.spin.is_zero() {
+            let started = Instant::now();
+            while started.elapsed() < self.spin {
+                if let Ok(result) = answer.try_recv() {
+                    return result;
+                }
+                std::hint::spin_loop();
+            }
         }
         // The reply is dropped unsent only if the work panicked.
         answer
@@ -91,10 +125,10 @@ impl LogThread {
         };
         let (sender, receiver) = mpsc::channel();
         let slot = Arc::downgrade(&self.queue);
-        let idle = self.idle;
+        let (idle, spin) = (self.idle, self.spin);
         let started = std::thread::Builder::new()
             .name(self.name.clone())
-            .spawn(move || serve(receiver, slot, idle));
+            .spawn(move || serve(receiver, slot, idle, spin));
         match started {
             Ok(_) => {
                 // The thread cannot exit before it takes the lock held here.
@@ -121,9 +155,14 @@ impl std::fmt::Debug for LogThread {
 
 /// The thread body. Returns when the log is dropped, or after `IDLE` with
 /// nothing to do.
-fn serve(queue: mpsc::Receiver<Job>, slot: Weak<Mutex<Option<mpsc::Sender<Job>>>>, idle: Duration) {
+fn serve(
+    queue: mpsc::Receiver<Job>,
+    slot: Weak<Mutex<Option<mpsc::Sender<Job>>>>,
+    idle: Duration,
+    spin: Duration,
+) {
     loop {
-        let job = match queue.recv_timeout(idle) {
+        let job = match poll(&queue, spin).map_or_else(|| queue.recv_timeout(idle), Ok) {
             Ok(job) => job,
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -144,6 +183,18 @@ fn serve(queue: mpsc::Receiver<Job>, slot: Weak<Mutex<Option<mpsc::Sender<Job>>>
         // A panic is this job's failure, not the thread's: if it took the
         // thread down, jobs already queued behind it would fail with it.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+    }
+}
+
+/// The next job, if one arrives within `spin`.
+fn poll(queue: &mpsc::Receiver<Job>, spin: Duration) -> Option<Job> {
+    let started = Instant::now();
+    loop {
+        match queue.try_recv() {
+            Ok(job) => return Some(job),
+            Err(mpsc::TryRecvError::Empty) if started.elapsed() < spin => std::hint::spin_loop(),
+            Err(_) => return None,
+        }
     }
 }
 

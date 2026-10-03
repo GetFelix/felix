@@ -85,9 +85,9 @@ for what the current release guarantees.
   `write()` blocks for up to hundreds of milliseconds. Each log now appends on
   a thread of its own, started on demand and stopped after 10 s idle like its
   flush thread, and the write runs with the lock released. A lone unbatched
-  publisher loses about 60% of its throughput to the hand-off; several
-  publishers on one log get about twice the throughput with p99 in tens of
-  microseconds. `felix_storage_sync_batch_appends` now counts the appends each
+  publisher keeps its throughput, one sending batches of 16 loses up to a
+  quarter, and several publishers on one log get about twice the throughput
+  with p99 in tens of microseconds. `felix_storage_sync_batch_appends` now counts the appends each
   flush covered rather than the callers waiting when it started. See
   `docs/storage-performance.md`. (#909)
 - **Breaking:** `StreamLog::begin_append`, `begin_append_marked` and
