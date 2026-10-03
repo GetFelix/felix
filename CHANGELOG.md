@@ -49,6 +49,11 @@ for what the current release guarantees.
   first setup against Dex, Keycloak, Auth0, Entra ID, Google or Okta no longer
   fails with an unsupported algorithm. `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS`
   still narrows it. (#984)
+- A subscribe with no start position, from a client that negotiated event
+  offsets, is now `latest`: on a durable stream its `subscribed` carries
+  `start_offset` and `live_offset`, so the client knows where live delivery
+  began. Before, only an explicit `latest` reported them. Clients without
+  offsets get the frame they always did. (#961)
 - `felixctl pub` says how many acknowledgements came back without an offset
   and why, instead of leaving it to a `null` in `--json`. An owner that acks
   on enqueue (`ack_on_commit` off) answers before the record has an offset,

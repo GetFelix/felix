@@ -524,8 +524,8 @@ Success answers. Each names the request it answers where there is one.
 
 `subscribed` confirms a subscription, and its id matches the
 `event_stream_hello` on the event stream. `start_offset` and `live_offset` are
-sent only for a subscribe with a `start`, on a durable stream, to a client that
-negotiated event offsets. `publish_ok` answers an acked publish and `cache_ok` a
+sent on a durable stream to a client that negotiated event offsets, whose
+subscribe with no `start` is treated as `latest`. `publish_ok` answers an acked publish and `cache_ok` a
 cache write that carried a `request_id`. Plain `ok` answers `auth` from a client
 that offered no flags, and a cache write without a `request_id`.
 
