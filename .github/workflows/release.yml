@@ -921,16 +921,26 @@ jobs:
         run: |
           set -euo pipefail
           version=$(node -p "require('./package.json').version")
-          missing=0
-          for pkg in felix-client $(node -p "Object.keys(require('./package.json').optionalDependencies).join(' ')"); do
-            if npm view "${pkg}@${version}" version >/dev/null 2>&1; then
-              echo "ok      ${pkg}@${version}"
-            else
-              echo "MISSING ${pkg}@${version}"
-              missing=1
-            fi
+          # The registry lags a publish by seconds to minutes, so a version
+          # missing on the first look is not yet a failed publish.
+          pending=(felix-client $(node -p "Object.keys(require('./package.json').optionalDependencies).join(' ')"))
+          for try in $(seq 1 20); do
+            still=()
+            for pkg in "${pending[@]}"; do
+              if npm view "${pkg}@${version}" version >/dev/null 2>&1; then
+                echo "ok      ${pkg}@${version} (try ${try})"
+              else
+                still+=("$pkg")
+              fi
+            done
+            pending=(${still[@]+"${still[@]}"})
+            [ "${#pending[@]}" -eq 0 ] && exit 0
+            [ "$try" -lt 20 ] && sleep 15
           done
-          exit "$missing"
+          for pkg in "${pending[@]}"; do
+            echo "MISSING ${pkg}@${version} after 20 tries"
+          done
+          exit 1
 
       - name: What a maintainer needs to promote
         if: ${{ inputs.npm_stage }}
