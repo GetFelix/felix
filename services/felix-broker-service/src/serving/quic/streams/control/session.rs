@@ -165,6 +165,8 @@ pub(super) async fn authenticate(
                             // Sent only to a client that offered it, when a
                             // shard it reads moves away.
                             | felix_wire::FEATURE_SHARD_MOVED
+                            // Likewise, when a subscriber's queue drops.
+                            | felix_wire::FEATURE_SUBSCRIPTION_LAGGED
                             // An unknown request is answered, not fatal, for a
                             // client that offered the bit.
                             | felix_wire::FEATURE_UNSUPPORTED

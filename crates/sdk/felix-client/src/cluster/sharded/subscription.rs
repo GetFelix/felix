@@ -327,7 +327,12 @@ async fn forward_shard(
                 // the broker closed it, and the other shards are still going.
                 None => "the shard's event stream ended".to_string(),
             },
-            Err(err) => format!("{err:#}"),
+            Err(err) => {
+                if let Some(lagged) = err.downcast_ref::<crate::SubscriptionLagged>() {
+                    moved_resume_from = Some(lagged.resume_from);
+                }
+                format!("{err:#}")
+            }
         };
 
         if stop.load(Ordering::Relaxed) {

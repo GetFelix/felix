@@ -297,6 +297,10 @@ fn every_feature_bit_is_distinct_and_known() {
             crate::FEATURE_STREAM_PUBLISH_WINDOW,
         ),
         ("FEATURE_SHARD_OWNERS", crate::FEATURE_SHARD_OWNERS),
+        (
+            "FEATURE_SUBSCRIPTION_LAGGED",
+            crate::FEATURE_SUBSCRIPTION_LAGGED,
+        ),
     ];
     let mut seen = 0u32;
     for (name, bit) in bits {

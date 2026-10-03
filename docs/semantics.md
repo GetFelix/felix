@@ -315,8 +315,15 @@ throughput rather than correctness.
   new leader's generation-start record, which takes an offset and is never
   delivered; a client that negotiated `EVENT_BATCH_SKIPPED` is told about it on
   the next event (`skipped_before`), and an older client reads it as a drop of
-  one. This is the only way an application can tell, and it is why offsets are
-  on the event rather than inferred.
+  one. A gap needs a later event, though, so the broker also ends a
+  durable-stream subscription at its first drop with `subscription_lagged`,
+  naming the offset to resume from, for a client that offered
+  `FEATURE_SUBSCRIPTION_LAGGED`. felix-client reports drops in its own queue
+  the same way, as a `SubscriptionLagged` error.
+
+  > `a_subscription_ends_at_its_first_drop_and_says_where_to_resume`,
+  > `lane_feeder_ends_a_lagged_subscription_with_where_to_resume`,
+  > `the_clients_own_drop_ends_the_subscription`.
 - **A subscription can resume.** `Subscribe` takes `latest`, `earliest`, or an
   offset; stored history joins live delivery with no gap.
 - **What a reader sees of a `Quorum` stream.** Every reader stops at the

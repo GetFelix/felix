@@ -113,6 +113,22 @@ pub struct SubscriptionLost {
     pub reason: String,
 }
 
+/// A durable-stream subscription fell behind and records were dropped,
+/// by the broker's queue for it or by this client's own.
+///
+/// The last thing the subscription yields: every event below `resume_from`
+/// came before it, and none at or above it did. Resubscribe from
+/// `resume_from` to carry on without a gap; [`crate::ClusterSubscription`]
+/// does that itself. Only a broker that advertised
+/// `FEATURE_SUBSCRIPTION_LAGGED` reports its own drops this way; an older one
+/// keeps the subscription going and a drop shows as a jump in offsets.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("subscription fell behind; records from offset {resume_from} were dropped")]
+pub struct SubscriptionLagged {
+    /// The first dropped offset.
+    pub resume_from: u64,
+}
+
 /// The broker refused a request and sent a typed code with it.
 ///
 /// Only a broker that advertised `FEATURE_ERROR_CODES` sends one; from any

@@ -447,9 +447,19 @@ impl StreamState {
         let (tx, rx) = mpsc::channel(self.subscriber_queue_capacity);
         let id = state.next_id;
         state.next_id += 1;
-        state.senders.insert(id, tx);
+        let lag = Arc::default();
+        state.senders.insert(
+            id,
+            RegisteredSubscriber {
+                sender: tx,
+                lag: Arc::clone(&lag),
+            },
+        );
         self.rebuild_subscriber_snapshot(&state);
-        (id, SubscriptionReceiver::new(rx, Arc::clone(&state.moved)))
+        (
+            id,
+            SubscriptionReceiver::new(rx, Arc::clone(&state.moved), lag),
+        )
     }
 
     /// Register a subscriber and capture its backlog atomically.
@@ -607,10 +617,11 @@ impl StreamState {
 
     fn rebuild_subscriber_snapshot(&self, state: &SubscriberRegistry) {
         let mut snapshot = Vec::with_capacity(state.senders.len());
-        for (id, sender) in state.senders.iter() {
+        for (id, registered) in state.senders.iter() {
             snapshot.push(SubscriberEntry {
                 id: *id,
-                sender: sender.clone(),
+                sender: registered.sender.clone(),
+                lag: Arc::clone(&registered.lag),
             });
         }
         // The fanout reads this in order and a HashMap does not have one.
@@ -626,6 +637,15 @@ impl StreamState {
 pub(crate) struct SubscriberEntry {
     pub(crate) id: u64,
     pub(crate) sender: mpsc::Sender<QueuedDelivery>,
+    /// Told where this subscriber's queue first dropped a batch.
+    pub(crate) lag: Arc<super::subscription::Lag>,
+}
+
+/// A live subscriber as the registry holds it.
+#[derive(Debug)]
+pub(crate) struct RegisteredSubscriber {
+    pub(crate) sender: mpsc::Sender<QueuedDelivery>,
+    pub(crate) lag: Arc<super::subscription::Lag>,
 }
 
 /// The stream's live subscribers, keyed by an id that is never reused.
@@ -639,7 +659,7 @@ pub(crate) struct SubscriberEntry {
 /// never delivers again.
 #[derive(Debug, Default)]
 pub(crate) struct SubscriberRegistry {
-    pub(crate) senders: HashMap<u64, mpsc::Sender<QueuedDelivery>>,
+    pub(crate) senders: HashMap<u64, RegisteredSubscriber>,
     next_id: u64,
     /// Shared with every receiver registered since the last move; set when
     /// the shard moves away.

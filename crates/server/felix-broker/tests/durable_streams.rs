@@ -1919,3 +1919,45 @@ async fn hydration_leaves_uncommitted_records_out_of_a_quorum_ring() {
     let history = resumed.history.expect("served from disk");
     assert_eq!((history.from_offset, history.until_offset), (0, 4));
 }
+
+/// A subscriber whose queue dropped the newest records hears about it even
+/// though nothing is published after them.
+#[tokio::test]
+async fn a_subscription_ends_at_its_first_drop_and_says_where_to_resume() {
+    let dir = tempdir().expect("dir");
+    let storage = DurableStorage::open(dir.path(), log_config(FsyncMode::None)).expect("storage");
+    let broker = Broker::new(EphemeralCache::new().into())
+        .with_durable_storage(storage)
+        .with_topic_capacity(1)
+        .expect("capacity");
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "default")
+        .await
+        .expect("namespace");
+    register(&broker, "orders", true).await;
+    let (mut receiver, _guard) = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await
+        .expect("subscribe")
+        .into_parts();
+    receiver.end_on_lag();
+
+    for value in ["a", "b", "c"] {
+        broker
+            .publish("t1", "default", "orders", payload(value))
+            .await
+            .expect("publish");
+    }
+
+    let first = receiver
+        .recv()
+        .await
+        .expect("the batch queued before the drop");
+    assert_eq!(first.base_offset(), Some(0));
+    let end = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+        .await
+        .expect("the drop ends the subscription without another publish");
+    assert!(end.is_none());
+    assert_eq!(receiver.lagged(), Some(1));
+}

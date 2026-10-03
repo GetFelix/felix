@@ -256,8 +256,11 @@ pub(super) async fn run_lane_feeder(
         }
     }
     if let Some(manager) = manager.upgrade() {
-        let last = match event_rx.moved() {
-            Some(moved) if config.shard_moved_enabled => {
+        // A lag outranks a move: resuming where the move says would skip
+        // the records dropped before it.
+        let last = match (event_rx.lag_ended(), event_rx.moved()) {
+            (Some(resume_from), _) => lagged_frame(config.subscription_id, resume_from),
+            (None, Some(moved)) if config.shard_moved_enabled => {
                 match shard_moved_frame(config.subscription_id, moved) {
                     Ok(frame) => Some(frame),
                     Err(err) => {
@@ -326,4 +329,20 @@ pub(super) fn shard_moved_frame(
         generation: moved.to.generation,
     };
     Ok(message.encode()?.encode())
+}
+
+/// The last frame of a subscription whose queue dropped records.
+fn lagged_frame(subscription_id: u64, resume_from: u64) -> Option<Bytes> {
+    metrics::counter!("felix_subscription_lagged_total").increment(1);
+    let message = felix_wire::Message::SubscriptionLagged {
+        subscription_id,
+        resume_from,
+    };
+    match message.encode() {
+        Ok(frame) => Some(frame.encode()),
+        Err(err) => {
+            tracing::warn!(error = %err, subscription_id, "encode subscription_lagged failed");
+            None
+        }
+    }
 }

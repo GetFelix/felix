@@ -17,7 +17,7 @@ fn payload(value: &str) -> Bytes {
 fn resuming_at(skip_below: u64) -> (mpsc::Sender<QueuedDelivery>, Subscription) {
     let (tx, rx) = mpsc::channel(16);
     let subscription = Subscription {
-        receiver: SubscriptionReceiver::new(rx, Default::default()),
+        receiver: SubscriptionReceiver::new(rx, Default::default(), Default::default()),
         // No stream to unregister from; the guard's `Weak` simply never
         // upgrades, which is the same thing it does after a stream is dropped.
         guard: SubscriptionGuard {
@@ -164,4 +164,40 @@ async fn the_split_receiver_skips_below_the_resume_point() {
     assert_eq!(straddling.payloads(), &[payload("f"), payload("g")]);
     let next = receiver.try_recv().expect("the next batch");
     assert_eq!(next.base_offset(), Some(107));
+}
+
+/// A receiver already waiting on an empty queue when the drop is recorded
+/// still ends: a dropped batch means no further delivery will wake it.
+#[tokio::test]
+async fn a_receiver_waiting_when_the_queue_drops_ends() {
+    let (_tx, rx) = mpsc::channel(1);
+    let lag = Arc::new(Lag::default());
+    let mut receiver = SubscriptionReceiver::new(rx, Default::default(), Arc::clone(&lag));
+    receiver.end_on_lag();
+    let waiting = tokio::spawn(async move { (receiver.recv().await.is_none(), receiver.lagged()) });
+    tokio::task::yield_now().await;
+    lag.dropped(3);
+    let (ended, lagged) = tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
+        .await
+        .expect("woken by the drop")
+        .expect("join");
+    assert!(ended);
+    assert_eq!(lagged, Some(3));
+}
+
+/// Drops a resume already filled from the log do not end the subscription,
+/// but one after them still does, from no later than where the fill stopped.
+#[test]
+fn drops_below_a_covered_offset_are_forgotten() {
+    let lag = Lag::default();
+    lag.dropped(4);
+    lag.covered_below(10);
+    assert_eq!(lag.first_dropped(), None);
+    lag.dropped(12);
+    assert_eq!(lag.first_dropped(), Some(10));
+
+    let lag = Lag::default();
+    lag.covered_below(10);
+    lag.dropped(15);
+    assert_eq!(lag.first_dropped(), Some(15));
 }

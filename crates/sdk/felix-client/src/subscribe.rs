@@ -88,8 +88,12 @@ impl Subscription {
     /// The next event, or `None` once the broker has closed the event stream.
     ///
     /// Losing the connection is an error, [`crate::SubscriptionLost`], not
-    /// `None`. An error is the last thing a subscription yields: the pipeline
-    /// stops after reporting it.
+    /// `None`. So is falling behind on a durable stream: when the broker's
+    /// queue for this subscription or this client's own drops records, the
+    /// events before the drop are yielded and then
+    /// [`crate::SubscriptionLagged`] says where to resume. An error is the
+    /// last thing a subscription yields: the pipeline stops after reporting
+    /// it.
     pub async fn next_event(&mut self) -> Result<Option<Event>> {
         #[cfg(feature = "telemetry")]
         {

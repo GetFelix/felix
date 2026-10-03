@@ -689,6 +689,33 @@ if let Some(moved) = subscription.shard_moved() {
 
 See [Multi-node client](https://github.com/gabloe/felix/blob/main/docs/multi-node-client.md#when-a-shard-moves).
 
+### When a subscription falls behind
+
+Under `DropNew` or `DropOld`, a subscriber that cannot keep up loses records,
+in the broker's queue for it or in the client's own. On a durable stream the
+subscription then ends: `next_event` returns the events queued before the drop
+and then a `SubscriptionLagged` error whose `resume_from` is the first offset
+dropped. It comes as soon as the drop happens, not with the next publish.
+
+```rust
+loop {
+    match subscription.next_event().await {
+        Ok(Some(event)) => handle(&event),
+        Ok(None) => break,
+        Err(err) => match err.downcast_ref::<felix_client::SubscriptionLagged>() {
+            // Subscribe again from here; the log still has the records.
+            Some(lagged) => break resubscribe_from(lagged.resume_from),
+            None => return Err(err),
+        },
+    }
+}
+```
+
+`ClusterSubscription` does this itself, so a slow reader catches up from the
+log instead of losing records. An in-memory stream has no offsets, so it keeps
+dropping as before; `felix_client_sub_queue_dropped_total` and
+`felix_client_sub_dispatch_dropped_total` count those drops.
+
 ### Multiple Subscriptions
 
 Handle multiple streams concurrently:

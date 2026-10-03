@@ -79,7 +79,8 @@ pub use cluster::{
 pub use commit::{CommitError, CommitOp, CommitReceipt, StateValue};
 pub use config::{ClientConfig, ClientSubQueuePolicy};
 pub use error::{
-    BrokerError, NotLeaderError, PublishRefused, SubscribeCursorError, SubscriptionLost,
+    BrokerError, NotLeaderError, PublishRefused, SubscribeCursorError, SubscriptionLagged,
+    SubscriptionLost,
 };
 pub use publish::{IdempotentProducer, PublishSharding, Publisher};
 pub use subscribe::{Event, ShardMoved, Subscription};

@@ -12,6 +12,16 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- A durable-stream subscription that falls behind is told so, even when
+  nothing is published after the drop. A broker ends it with
+  `subscription_lagged` (`FEATURE_SUBSCRIPTION_LAGGED`, `0x20_0000`) naming the
+  first offset its queue for that subscriber dropped, after delivering what was
+  queued before it. felix-client does the same for drops in its own queue, and
+  `Subscription::next_event` returns a `SubscriptionLagged { resume_from }`
+  error. `ClusterSubscription` resubscribes after its last event, which replays
+  the dropped records from the log, and `ShardedSubscription` reports the shard
+  lost and recovers it the same way. Drops a resume already filled from disk do
+  not count. (#965)
 
 - `felix-client` re-exports `AckMode`, `BrokerEndpoint` and `ShardRouting`,
   so an application no longer needs `felix-wire` as a direct dependency to
@@ -43,6 +53,11 @@ for what the current release guarantees.
   twice. `felixctl cache` uses them. (#937)
 
 ### Changed
+- **Breaking:** a felix-client subscription to a durable stream no longer
+  carries on past a dropped record. Under `DropNew` or `DropOld` it ends with
+  `SubscriptionLagged` at the first drop instead, in this client's queue or
+  the broker's. In-memory streams, which have no offset to resume from, keep
+  dropping as before. (#965)
 
 - `felixctl pub` says how many acknowledgements came back without an offset
   and why, instead of leaving it to a `null` in `--json`. An owner that acks

@@ -304,6 +304,9 @@ impl Completion {
                             delivery.sent += item_count;
                         }
                         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            if let Some(base) = delivery.envelope.base_offset() {
+                                subscriber.lag.dropped(base);
+                            }
                             metrics::counter!("felix_subscribe_dropped_total")
                                 .increment(item_count as u64);
                             metrics::counter!("felix_sub_queue_dropped_total")

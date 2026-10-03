@@ -464,6 +464,20 @@ pub enum Message {
         /// The assignment generation that moved the shard.
         generation: u64,
     },
+    /// Last message on the event stream of a durable-stream subscription
+    /// whose queue on the broker dropped records: the subscriber fell behind.
+    /// The broker finishes the stream after it.
+    ///
+    /// Sent only to a client that offered `FEATURE_SUBSCRIPTION_LAGGED`; any
+    /// other client keeps its subscription and sees the drop only as a jump
+    /// in offsets, once a later event arrives.
+    SubscriptionLagged {
+        subscription_id: u64,
+        /// The first dropped offset. Every event below it was sent before
+        /// this message and none at or above it was, so resubscribing from
+        /// here neither repeats nor skips a record.
+        resume_from: u64,
+    },
     /// Single event delivered to a subscriber.
     Event {
         tenant_id: String,

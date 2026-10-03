@@ -165,7 +165,14 @@ tail.
 ### Offsets are how you notice a drop
 
 Subscriber queues shed under the default policy rather than blocking the
-publisher, so a subscriber can silently miss records. On a durable stream every
+publisher. On a durable stream a reader that falls behind does not lose
+records: the broker or this client ends the subscription at the first drop
+with the offset to resume from, and the subscription resubscribes there and
+catches up from the log. A shard reader of a sharded subscription reports the
+shard lost and recovered while it does.
+
+Against a broker that predates that, or on an in-memory stream, a subscriber
+can still silently miss records. On a durable stream every
 delivered event carries its log offset, and **a jump in them is a drop**. The
 exception is a new leader's generation-start record, which takes an offset; the
 next event reports it in `skipped_before`:

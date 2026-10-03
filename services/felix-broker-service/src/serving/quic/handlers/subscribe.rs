@@ -409,7 +409,13 @@ pub(crate) async fn handle_subscribe_message(
         let connection_id = connection.info().id.0;
         let manager = Arc::clone(lane_manager);
         let lane_idx = manager.select_lane(subscription_id, Some(connection_id));
-        let (event_rx, unsubscribe_guard) = subscription.into_parts();
+        let (mut event_rx, unsubscribe_guard) = subscription.into_parts();
+        // Without offsets the client could not resume from where the drop was.
+        if offsets_enabled
+            && felix_wire::supports_feature(peer_features, felix_wire::FEATURE_SUBSCRIPTION_LAGGED)
+        {
+            event_rx.end_on_lag();
+        }
         if manager
             .enqueue(
                 lane_idx,

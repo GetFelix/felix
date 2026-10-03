@@ -473,6 +473,30 @@ The watch fell behind; the broker ends the stream after this.
 - Everything already queued was delivered first
 - Re-watching with `from_offset = resume_from` is gapless
 
+#### SubscriptionLagged
+
+The last frame on the event stream of a durable-stream subscription whose
+queue on the broker dropped records; the broker ends the stream after it.
+
+```json
+{
+  "type": "subscription_lagged",
+  "subscription_id": "number",
+  "resume_from": "number"
+}
+```
+
+**Semantics**:
+- Sent only to a client that offered `FEATURE_SUBSCRIPTION_LAGGED` and
+  negotiated event offsets. Any other client keeps the subscription and sees a
+  drop only as a jump in offsets on a later event
+- `resume_from` is the first dropped offset. Everything below it was delivered
+  first, and nothing at or above it was, so subscribing from `resume_from` is
+  gapless
+- Sent once the events queued before the drop are written, without waiting for
+  another publish
+- Sent instead of `shard_moved` when both apply
+
 #### ShardMoved
 
 The last frame on the event stream of a subscription or cache watch whose shard
@@ -786,6 +810,7 @@ advertised its bit.
 | `0x8000` | `FEATURE_PUBLISH_PIPELINE` | Acked publishes are pipelined under a `publish_window` (below) |
 | `0x2_0000` | `FEATURE_STREAM_PUBLISH_WINDOW` | The `publish_window` is per stream rather than per connection (below) |
 | `0x4_0000` | `FEATURE_SHARD_OWNERS` | The broker answers `shard_owners`: which broker owns each shard of a stream or cache |
+| `0x20_0000` | `FEATURE_SUBSCRIPTION_LAGGED` | The client reads `subscription_lagged`, which ends a durable-stream subscription at its first queue drop |
 
 The full list, with what each depends on, is in
 [`docs/protocol.md`](https://github.com/gabloe/felix/blob/main/docs/protocol.md).

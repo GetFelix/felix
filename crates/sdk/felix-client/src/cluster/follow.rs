@@ -21,9 +21,9 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use super::{Attempt, ClusterClient, Next, next_step, wants_reconnect};
-use crate::SubscriptionLost;
 use crate::client::Client;
 use crate::subscribe::{Event, ShardMoved, Subscription};
+use crate::{SubscriptionLagged, SubscriptionLost};
 
 /// How long to keep trying the new owner when the policy sets no deadline.
 ///
@@ -41,6 +41,10 @@ const FOLLOW_DEADLINE: Duration = Duration::from_secs(30);
 /// nothing is skipped that the subscriber's own queue did not drop. An
 /// in-memory stream has no offsets to resume from, so it resumes at the tail,
 /// as a resubscribe would.
+///
+/// A subscription that fell behind and had records dropped
+/// ([`crate::SubscriptionLagged`]) resubscribes after its last event, which
+/// replays the dropped records from the log.
 ///
 /// A lost connection is followed the same way when there is an offset to
 /// resume from: the last one delivered plus one, or where the subscription
@@ -175,7 +179,13 @@ impl ClusterSubscription {
             }
             let next = match self.subscription.next_event().await {
                 Ok(next) => next,
-                Err(err) if err.chain().any(|cause| cause.is::<SubscriptionLost>()) => {
+                // Falling behind is followed like a loss: everything below the
+                // drop was delivered, so resuming after the last event is exact.
+                Err(err)
+                    if err.chain().any(|cause| {
+                        cause.is::<SubscriptionLost>() || cause.is::<SubscriptionLagged>()
+                    }) =>
+                {
                     if self.resume_point().is_none() {
                         return Err(err);
                     }
