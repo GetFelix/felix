@@ -47,6 +47,7 @@ async fn lane_fanout_preserves_order_for_multiple_subscribers() -> Result<()> {
                 config.clone(),
                 &Arc::new(SubscriptionLimiter::new()),
                 &server_lane_manager,
+                None,
                 &out_ack_tx,
                 &out_ack_depth,
                 &ack_throttle_tx,

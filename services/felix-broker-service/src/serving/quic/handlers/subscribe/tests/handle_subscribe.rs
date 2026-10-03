@@ -40,6 +40,7 @@ async fn handle_subscribe_message_sends_event_stream_binary_batch() -> Result<()
             test_config(),
             &Arc::new(SubscriptionLimiter::new()),
             &server_lane_manager,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -143,6 +144,7 @@ async fn handle_subscribe_message_errors_when_stream_missing() -> Result<()> {
             test_config(),
             &Arc::new(SubscriptionLimiter::new()),
             &WriterLaneManager::new(&test_config()),
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -221,6 +223,7 @@ async fn handle_subscribe_message_batches_by_bytes() -> Result<()> {
             config,
             &Arc::new(SubscriptionLimiter::new()),
             &server_lane_manager,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -339,6 +342,7 @@ async fn handle_subscribe_message_hashed_pool_with_generated_id() -> Result<()> 
             config,
             &Arc::new(SubscriptionLimiter::new()),
             &server_lane_manager,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -437,6 +441,7 @@ async fn handle_subscribe_message_open_uni_failure_sends_error_ack() -> Result<(
             test_config(),
             &Arc::new(SubscriptionLimiter::new()),
             &WriterLaneManager::new(&test_config()),
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -514,6 +519,7 @@ async fn frames_of_a_moved_subscription(peer_features: u32) -> Result<Vec<bytes:
             test_config(),
             &Arc::new(SubscriptionLimiter::new()),
             &server_lane_manager,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -672,6 +678,7 @@ async fn frames_across_generation_starts(peer_flags: u16) -> Result<Vec<bytes::B
             test_config(),
             &Arc::new(SubscriptionLimiter::new()),
             &server_lane_manager,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -790,6 +797,100 @@ async fn generation_starts_are_reported_only_to_a_client_that_offered_the_bit() 
             .map(|(offset, skipped, _)| (*offset, *skipped))
             .collect::<Vec<_>>(),
         vec![(0, 0), (1, 0), (3, 0), (5, 0)],
+    );
+    Ok(())
+}
+
+/// **A subscribe that lands after a shard's readers were ended is refused.**
+/// The lifecycle closes the fence and ends the readers before this broker's
+/// routes catch up, so for a moment the routes still admit a subscribe. One
+/// registered then was never ended: it sat on a broker that no longer
+/// receives the shard's writes and delivered nothing more.
+#[tokio::test]
+async fn a_subscribe_after_the_readers_were_ended_is_refused() -> Result<()> {
+    use crate::test_support::leader::{self, Leader};
+
+    let mut fixture = Leader::start().await;
+    let key = leader::stream_key(leader::DURABLE);
+    fixture.fence_move(&key);
+    fixture
+        .broker
+        .end_subscriptions(leader::TENANT, leader::NAMESPACE, leader::DURABLE, 0, None)
+        .await;
+    // The window: the routes still say the shard is served here.
+    assert!(
+        crate::serving::quic::handlers::redirect::redirect_for(
+            Some(&fixture.ingress),
+            None,
+            leader::TENANT,
+            leader::NAMESPACE,
+            leader::DURABLE,
+            0,
+            crate::shards::ShardKind::Stream,
+            0,
+        )
+        .is_none()
+    );
+
+    let (server_config, cert) = make_server_config()?;
+    let transport = TransportConfig::default();
+    let server = QuicServer::bind("127.0.0.1:0".parse()?, server_config, transport.clone())?;
+    let addr = server.local_addr()?;
+    let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
+    let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
+    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
+    let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
+
+    let broker = Arc::clone(&fixture.broker);
+    let ingress = Arc::clone(&fixture.ingress);
+    let server_task = tokio::spawn(async move {
+        let connection = server.accept().await?;
+        handle_subscribe_message(
+            broker,
+            connection,
+            test_config(),
+            &Arc::new(SubscriptionLimiter::new()),
+            &WriterLaneManager::new(&test_config()),
+            Some(&ingress),
+            &out_ack_tx,
+            &out_ack_depth,
+            &ack_throttle_tx,
+            &ack_timeout_state,
+            &cancel_tx,
+            leader::TENANT.to_string(),
+            leader::NAMESPACE.to_string(),
+            leader::DURABLE.to_string(),
+            Some(13),
+            Some(StartPosition::Offset(0)),
+            None,
+            felix_wire::ORIGINAL_V1_FLAGS,
+            0,
+        )
+        .await
+    });
+
+    let client = QuicClient::bind("0.0.0.0:0".parse()?, make_client_config(cert)?, transport)?;
+    let _connection = client.connect(addr, "localhost").await?;
+
+    let ack = tokio::time::timeout(Duration::from_secs(1), out_ack_rx.recv())
+        .await
+        .context("ack timeout")?
+        .context("ack missing")?;
+    let Outgoing::Message(Message::Error { code, .. }) = ack else {
+        panic!("expected a refusal, got {ack:?}");
+    };
+    assert_eq!(code, Some(felix_wire::ErrorCode::ShardUnavailable));
+    server_task.await.context("server join")??;
+    assert_eq!(
+        fixture
+            .broker
+            .registered_subscribers(leader::TENANT, leader::NAMESPACE, leader::DURABLE, 0)
+            .await?,
+        0,
+        "the refused subscribe left a registration behind"
     );
     Ok(())
 }

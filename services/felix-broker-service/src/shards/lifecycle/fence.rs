@@ -104,6 +104,15 @@ impl ShardFence {
         }
     }
 
+    /// Whether `key` served here and its fence has since closed. False for a
+    /// shard that never opened here.
+    pub fn is_closed(&self, key: &ShardKey) -> bool {
+        self.gates
+            .read()
+            .get(key)
+            .is_some_and(|gate| gate.open_at.load(SeqCst) == CLOSED)
+    }
+
     /// Enter the fence for one write admitted at `generation`, right before it
     /// claims its place in the log. `None` means the shard stopped serving
     /// since admission and the write must be refused. Hold the guard until the
