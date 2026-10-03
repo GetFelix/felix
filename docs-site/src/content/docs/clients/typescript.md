@@ -18,7 +18,9 @@ npm install felix-client
 The binary ships as one package per platform, declared as optional
 dependencies, so npm fetches only the one your machine needs. Nothing is
 compiled at install time and no Rust toolchain is required. Linux (x86-64 and
-arm64, glibc), macOS (Intel and Apple silicon) and Windows x86-64 are covered.
+arm64, glibc 2.28 or newer: Debian bookworm, RHEL 8, Amazon Linux 2023), macOS
+(Intel and Apple silicon) and Windows x86-64 are covered. Alpine and other musl
+systems are not.
 
 To build it from the repository instead:
 
