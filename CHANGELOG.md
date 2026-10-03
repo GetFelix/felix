@@ -70,6 +70,10 @@ for what the current release guarantees.
 
 ### Fixed
 
+- The Docker Compose, installation and Kubernetes pages pull the
+  `0.6.0-preview` images instead of `0.5.0`, and a release tag now fails
+  `check_release_version.py` while any doc pins a `ghcr.io/gabloe/felix*`
+  image at another version. (#957)
 - **A subscribe that reaches a broker just after it stopped serving the shard
   is refused instead of left waiting.** A broker ends a shard's readers before
   its routes catch up with the move or failover, so for that moment it still

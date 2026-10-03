@@ -155,8 +155,8 @@ Other workflows:
 
 Pushing a `v*` tag runs `release.yml`. A tag with a `-` suffix
 (`v0.6.0-preview`) is a GitHub prerelease, and its images are not tagged
-`latest`. The tag has to match every version field in the tree
-(`scripts/check_release_version.py`), and its release notes are its
+`latest`. The tag has to match every version field in the tree, and every image tag the
+docs pin (`scripts/check_release_version.py`), and its release notes are its
 `CHANGELOG.md` section. The workflow:
 
 - creates the GitHub release with `felix-<tag>-linux-x86_64.tar.gz` (broker
