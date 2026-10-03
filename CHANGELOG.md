@@ -135,6 +135,12 @@ for what the current release guarantees.
   subscription's own queues and are all counted in
   `felix_sub_queue_dropped_total`. `felix_subscriber_lane_dropped_total` is
   gone, since nothing is dropped where it counted. (#978)
+- **A standalone broker keeps its control-plane credential current.** A
+  broker without `FELIX_NODE_ID` read its node token once at startup and
+  never refreshed it, so its catalog sync was refused once an exchanged token
+  expired, fifteen minutes in. It now re-reads `FELIX_NODE_TOKEN_FILE` and
+  honours `FELIX_NODE_REFRESH_TOKEN_FILE` the way cluster members do. The two
+  settings moved from `MembershipConfig` to `BrokerConfig`. (#955)
 - **A subscribe that reaches a broker just after it stopped serving the shard
   is refused instead of left waiting.** A broker ends a shard's readers before
   its routes catch up with the move or failover, so for that moment it still

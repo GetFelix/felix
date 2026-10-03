@@ -11,11 +11,53 @@ use crate::cluster::lease::LeaseState;
 use crate::cluster::membership::{self, MembershipTask};
 use crate::config::BrokerConfig;
 
-/// What a cluster member runs in the background, for the drain to stop.
-pub(super) struct Joined {
-    pub(super) membership: MembershipTask,
-    /// The credential refresh loop, when there is a refresh token to rotate.
-    pub(super) credential_refresh: Option<JoinHandle<()>>,
+/// Keep the node credential current for as long as the broker runs, cluster
+/// member or not: refresh it when there is a refresh token to rotate, and
+/// adopt a token file that something outside the broker rewrites. Returns the
+/// refresh loop, for the drain to stop.
+///
+/// A standalone broker needs this as much as a member does: its catalog sync
+/// presents the same credential, and an exchange token lasts minutes.
+pub(super) fn keep_credential_current(
+    config: &BrokerConfig,
+    client: &reqwest::Client,
+    credential: &Option<NodeCredential>,
+    shutdown: &CancellationToken,
+) -> Option<JoinHandle<()>> {
+    let (Some(credential), Some(base_url)) = (credential, &config.controlplane_url) else {
+        return None;
+    };
+    // The two are not alternatives: a deployment that runs both is one where
+    // either can win.
+    if let Some(node_token_file) = config.node_token_file.clone() {
+        tokio::spawn(credential::rotate::run(
+            node_token_file,
+            credential.clone(),
+            credential::rotate::POLL_INTERVAL,
+            shutdown.clone(),
+        ));
+    }
+    // Published once at startup so the series exists before the first
+    // refresh or rotation, which on a long-lived token is hours away.
+    credential::report_expiry(credential);
+    match config.node_refresh_token_file.clone() {
+        Some(refresh_token_file) => Some(tokio::spawn(credential::refresh::run(
+            credential::refresh::RefreshConfig {
+                client: client.clone(),
+                base_url: base_url.clone(),
+                credential: credential.clone(),
+                refresh_token_file,
+            },
+            shutdown.clone(),
+        ))),
+        None => {
+            tracing::info!(
+                "no FELIX_NODE_REFRESH_TOKEN_FILE: this broker runs on the credential \
+                 it was given, or what FELIX_NODE_TOKEN_FILE is rewritten to",
+            );
+            None
+        }
+    }
 }
 
 /// Spawn membership when this broker has an identity. Registration waits for
@@ -31,7 +73,7 @@ pub(super) fn spawn(
     fleet: &Arc<felix_common::fleet::FleetGate>,
     credential: &Option<NodeCredential>,
     sync_shutdown: &CancellationToken,
-) -> Option<Joined> {
+) -> Option<MembershipTask> {
     match (&config.membership, &config.controlplane_url) {
         (Some(membership_config), Some(base_url)) => {
             let serving = if gate_readiness_on_sync {
@@ -51,58 +93,16 @@ pub(super) fn spawn(
             let node_credential = credential
                 .clone()
                 .expect("a cluster member has a credential");
-            // Refresh only when the operator provided somewhere to keep the
-            // rotating half. Without it the broker runs on the token it was
-            // given, and leaves the cluster when that expires.
-            let credential_refresh = match membership_config.refresh_token_file.clone() {
-                Some(refresh_token_file) => Some(tokio::spawn(credential::refresh::run(
-                    credential::refresh::RefreshConfig {
-                        client: membership_client.clone(),
-                        base_url: base_url.clone(),
-                        credential: node_credential.clone(),
-                        refresh_token_file,
-                    },
-                    sync_shutdown.clone(),
-                ))),
-                None => {
-                    tracing::info!(
-                        "no FELIX_NODE_REFRESH_TOKEN_FILE: this broker will run on \
-                         the credential it was given and leave the cluster when it \
-                         expires",
-                    );
-                    None
-                }
-            };
-
-            // The other way a credential stays current: something outside the
-            // broker rewrites the token file. Watched whenever the token came
-            // from one, refresh loop or not -- the two are not alternatives, and
-            // a deployment that runs both is a deployment where either can win.
-            if let Some(node_token_file) = membership_config.node_token_file.clone() {
-                tokio::spawn(credential::rotate::run(
-                    node_token_file,
-                    node_credential.clone(),
-                    credential::rotate::POLL_INTERVAL,
-                    sync_shutdown.clone(),
-                ));
-            }
-
-            // Published once at startup so the series exists before the first
-            // refresh or rotation, which on a long-lived token is hours away.
-            credential::report_expiry(&node_credential);
-            Some(Joined {
-                membership: membership::spawn(
-                    membership_client.clone(),
-                    base_url.clone(),
-                    membership_config.clone(),
-                    node_credential,
-                    serving,
-                    sync_shutdown.clone(),
-                    lease,
-                    Arc::clone(fleet),
-                ),
-                credential_refresh,
-            })
+            Some(membership::spawn(
+                membership_client.clone(),
+                base_url.clone(),
+                membership_config.clone(),
+                node_credential,
+                serving,
+                sync_shutdown.clone(),
+                lease,
+                Arc::clone(fleet),
+            ))
         }
         _ => {
             tracing::info!("cluster membership disabled (FELIX_NODE_ID not set)");
@@ -119,3 +119,6 @@ pub(super) fn spawn(
 pub(super) fn initial_lease() -> LeaseState {
     LeaseState::new(std::time::Duration::from_secs(10))
 }
+
+#[cfg(test)]
+mod tests;

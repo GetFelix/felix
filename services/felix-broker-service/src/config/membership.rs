@@ -38,29 +38,6 @@ pub struct MembershipConfig {
     /// `FELIX_REGION_BRIDGES`. This broker forwards to a shard's leader only
     /// in its own region or one it has a bridge to.
     pub region_bridges: Vec<(String, String)>,
-    /// Where this broker's refresh token lives, when it has one.
-    ///
-    /// A path rather than a value, and that is forced by rotation: refreshing
-    /// spends the token and mints a replacement, so whatever the broker was
-    /// given at startup stops working the first time it refreshes. It has to
-    /// write the replacement somewhere it will read on restart, or a restart
-    /// presents a spent token — which the control plane correctly reads as a
-    /// replay and answers by revoking the whole chain, locking the broker out
-    /// for good.
-    ///
-    /// `None` means no refresh: the broker runs on the token it was given and
-    /// falls out of the cluster when that expires, which is the behaviour every
-    /// deployment had before refresh existed.
-    pub refresh_token_file: Option<std::path::PathBuf>,
-    /// Where the *access* token was read from, when it came from a file.
-    ///
-    /// Two jobs. It is the path re-read when something outside the broker
-    /// rotates the credential -- a Vault agent, SPIRE, a sidecar -- so that
-    /// rotation takes effect without a restart, the way the refresh token file
-    /// already does. And it is what makes an expiring credential legitimate
-    /// without `refresh_token_file`: a file is a seam something else can write,
-    /// where a token passed by value is not.
-    pub node_token_file: Option<std::path::PathBuf>,
     /// The fleet features this broker reports: what this build implements
     /// (`felix_common::fleet::IMPLEMENTED`).
     pub features: std::collections::BTreeSet<String>,
@@ -119,32 +96,6 @@ pub(super) fn membership_from_env(
         ));
     }
 
-    // A value, not a path — which cannot work, so say why rather than accept
-    // it and lock the broker out at its first restart.
-    if std::env::var("FELIX_NODE_REFRESH_TOKEN")
-        .ok()
-        .is_some_and(|value| !value.trim().is_empty())
-    {
-        return Err(std::io::Error::new(
-            ErrorKind::InvalidInput,
-            "FELIX_NODE_REFRESH_TOKEN is set, but a refresh token cannot be \
-             passed by value: refreshing spends it and mints a replacement, so \
-             the broker has to write that replacement back somewhere. Use \
-             FELIX_NODE_REFRESH_TOKEN_FILE and make the path writable.",
-        ));
-    }
-    let refresh_token_file = std::env::var("FELIX_NODE_REFRESH_TOKEN_FILE")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from);
-
-    let node_token_file = std::env::var("FELIX_NODE_TOKEN_FILE")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from);
-
     let region_bridges = match std::env::var("FELIX_REGION_BRIDGES") {
         Ok(spec) => felix_router::parse_bridges(&spec).map_err(|err| {
             std::io::Error::new(
@@ -173,8 +124,6 @@ pub(super) fn membership_from_env(
     Ok(Some(MembershipConfig {
         node_id,
         region_bridges,
-        refresh_token_file,
-        node_token_file,
         advertise_addr,
         client_advertise_addr,
         kafka_advertise_addr: kafka_advertise_addr(

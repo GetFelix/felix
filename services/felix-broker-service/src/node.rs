@@ -311,7 +311,13 @@ where
     );
 
     let membership_client = crate::cluster::controlplane_client::build()?;
-    let (membership, credential_refresh) = match membership::spawn(
+    let credential_refresh = membership::keep_credential_current(
+        &config,
+        &membership_client,
+        &credential,
+        &sync_shutdown,
+    );
+    let membership = membership::spawn(
         &config,
         &membership_client,
         gate_readiness_on_sync,
@@ -320,10 +326,7 @@ where
         &fleet,
         &credential,
         &sync_shutdown,
-    ) {
-        Some(joined) => (Some(joined.membership), joined.credential_refresh),
-        None => (None, None),
-    };
+    );
     // Its own token, so a stopping broker can stop taking forwarded writes
     // while it still ships to followers over the pool.
     let peer_listener_shutdown = peer_shutdown.child_token();
