@@ -23,7 +23,9 @@ for what the current release guarantees.
   settled without delivery (generation-start records, records retention
   removed first): `skipped_before` on `GroupRecord`, in the wire's
   `group_records`, and in the Python and Node clients (`skippedBefore`).
-  Left out when zero, so older clients get the same frames. (#963)
+  Negotiated as `FEATURE_GROUP_SKIPPED` (`0x10_0000`), which the Felix
+  clients offer: a client that did not offer it, or a record with nothing
+  skipped, gets the frame without the field. (#963)
 - `felix-client` re-exports `AckMode`, `BrokerEndpoint` and `ShardRouting`,
   so an application no longer needs `felix-wire` as a direct dependency to
   call it. (#937)

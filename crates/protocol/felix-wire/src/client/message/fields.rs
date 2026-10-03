@@ -151,9 +151,9 @@ pub struct GroupRecord {
     /// How many offsets directly below this one the broker settled without
     /// delivering: generation-start records, and records retention removed
     /// before the group reached them. So a consumer can tell a hole that will
-    /// never fill from a record still to come. Absent, and so `0`, from a
-    /// broker that predates it, and left out when `0` so the frame is the one
-    /// an older client always got.
+    /// never fill from a record still to come. Sent only to a client that
+    /// negotiated `FEATURE_GROUP_SKIPPED`, and left out when `0`, so any other
+    /// client gets the frame it always got.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub skipped_before: u64,
 }

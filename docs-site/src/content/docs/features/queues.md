@@ -75,7 +75,9 @@ Some offsets are settled by the broker and never delivered: generation-start
 records a new leader writes, and records retention removed before the group got
 to them. A record says how many offsets directly below it went that way
 (`skipped_before`; `skippedBefore` in Node). A consumer that applies records in
-offset order can wait for a missing offset unless this count covers it.
+offset order can wait for a missing offset unless this count covers it. The
+count is negotiated (`FEATURE_GROUP_SKIPPED`), and the Felix clients offer it,
+so a client that predates it gets the record without the field.
 
 ## Retries and giving up
 

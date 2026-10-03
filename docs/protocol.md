@@ -285,8 +285,10 @@ one.
 settled without delivering: generation-start records, which are not a client's,
 and records retention removed before the group reached them. A gap in the
 offsets a consumer receives that this count covers will never fill, and one it
-does not cover is a record still to come. Absent means `0`, and the broker
-leaves it out when it is `0`, so an older client gets the frame it always did.
+does not cover is a record still to come. It is sent only to a client that
+offered `FEATURE_GROUP_SKIPPED` in `Auth`, and left out when it is `0`, so any
+other client gets the frame it always did. A broker that advertises the bit
+reports it, so for that client an absent field means `0`.
 
 ### GroupDeadLetters / GroupDiscard / GroupRedrive
 ```
@@ -1204,6 +1206,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x2_0000` | `FEATURE_STREAM_PUBLISH_WINDOW` | The broker's `publish_window` is per stream, so each pipelining stream has its own. See [pipelined publishes](#pipelined-publishes) |
 | `0x4_0000` | `FEATURE_SHARD_OWNERS` | The broker answers `shard_owners` |
 | `0x8_0000` | `FEATURE_ACK_ON_COMMIT` | Offered by a client that wants this connection's acked publishes answered after the write, with their offsets, as `FELIX_ACK_ON_COMMIT=true` does for every client. Advertised by a broker that honours it. A client offers it only when asked to (`ClientConfig::ack_on_commit`) |
+| `0x10_0000` | `FEATURE_GROUP_SKIPPED` | Offered by a client that reads `skipped_before` on a `GroupRecord`. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
