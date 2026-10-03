@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790994838550,
+  "lastUpdate": 1790998860044,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -22724,6 +22724,58 @@ window.BENCHMARK_DATA = {
             "range": "9218.18",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 815410.56\nmean: 811205.68\nstdev: 9218.18\ncv: 1.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "774110cfef38cf2d98bd92842040c93687c15178",
+          "message": "test(transport): reproduce a silent idle timeout ending in a stateless reset (#725) (#953)\n\nA UDP relay drops only the client's datagrams. The server times out\nwithout sending anything while its keep-alives keep the client's timer\nopen, and the client's next packet draws a stateless reset, which the\nclient reports as ConnectionError::Reset.\n\nA second test routes the client's datagrams to an endpoint that answers\nwith a reset under its own key. The client ignores it and the\nconnection carries on once the route is restored.",
+          "timestamp": "2026-10-02T20:34:38-07:00",
+          "tree_id": "028e0c9e8d2583c94903866f5ac1e350f4f8656c",
+          "url": "https://github.com/gabloe/felix/commit/774110cfef38cf2d98bd92842040c93687c15178"
+        },
+        "date": 1790998859116,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 344757.17,
+            "range": "12045.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344757.17\nmean: 340717.27\nstdev: 12045.56\ncv: 3.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 344757.17,
+            "range": "12045.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344757.17\nmean: 340717.27\nstdev: 12045.56\ncv: 3.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81540.76,
+            "range": "641.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81540.76\nmean: 81496.72\nstdev: 641.71\ncv: 0.79%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 815407.56,
+            "range": "6417.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 815407.56\nmean: 814967.14\nstdev: 6417.13\ncv: 0.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
