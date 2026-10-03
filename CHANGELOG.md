@@ -96,6 +96,14 @@ for what the current release guarantees.
   generation at. The history campaign saw one value at two offsets and a
   subscriber told the first held no event. Only the generation right after
   the draining one now counts as a hand-back. (#971)
+- **Cluster discovery reaches brokers that advertise a DNS name.**
+  `ClusterClient` kept only advertised client addresses that parsed as IP
+  addresses, silently, so a cluster advertising names looked like its seeds
+  alone, and shard owners, cache owners, redirects and moved-shard hints given
+  by name fell back to the entry broker. It now resolves a name each time it
+  is handed one, logs one that does not resolve, and checks that broker's
+  certificate against the name. The broker refuses a `FELIX_CLIENT_ADVERTISE_ADDR`
+  that is not `host:port` at startup. (#982)
 - **A subscribe that reaches a broker just after it stopped serving the shard
   is refused instead of left waiting.** A broker ends a shard's readers before
   its routes catch up with the move or failover, so for that moment it still

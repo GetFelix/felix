@@ -20,6 +20,9 @@ pub(super) struct Nodes {
     server_name: String,
     config: ClientConfig,
     slots: Mutex<HashMap<SocketAddr, Arc<Slot>>>,
+    /// The name each broker that advertised one was resolved from, which is
+    /// what its certificate is checked against.
+    names: Mutex<HashMap<SocketAddr, String>>,
 }
 
 impl Nodes {
@@ -28,7 +31,50 @@ impl Nodes {
             server_name: server_name.to_string(),
             config,
             slots: Mutex::new(HashMap::new()),
+            names: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Where a broker's advertised `host:port` is reached: the address itself,
+    /// or what its name resolves to now. `None`, logged, for a name that does
+    /// not resolve.
+    ///
+    /// Looked up every time it is asked, since a broker's name outlives its
+    /// address: a rescheduled pod keeps its name and gets a new IP.
+    pub(super) async fn resolve(&self, advertised: &str) -> Option<SocketAddr> {
+        if let Ok(addr) = advertised.parse::<SocketAddr>() {
+            return Some(addr);
+        }
+        // IPv4 when the name has both: a name like `localhost` resolves to
+        // both families, and a broker is far more often listening on v4.
+        let resolved = match tokio::net::lookup_host(advertised).await {
+            Ok(addrs) => {
+                let addrs: Vec<SocketAddr> = addrs.collect();
+                addrs
+                    .iter()
+                    .find(|addr| addr.is_ipv4())
+                    .or(addrs.first())
+                    .copied()
+            }
+            Err(err) => {
+                tracing::warn!(advertised, error = %err, "a broker's advertised name did not resolve");
+                return None;
+            }
+        };
+        let Some(addr) = resolved else {
+            tracing::warn!(
+                advertised,
+                "a broker's advertised name resolved to no address"
+            );
+            return None;
+        };
+        if let Some((host, _)) = advertised.rsplit_once(':') {
+            self.names
+                .lock()
+                .expect("node names")
+                .insert(addr, host.to_string());
+        }
+        Some(addr)
     }
 
     /// Live connections to each broker a client is held for.
@@ -73,8 +119,17 @@ impl Nodes {
         {
             return Ok(Arc::clone(client));
         }
+        // A broker that advertised a name is checked against that name, as a
+        // client dialling the name directly would check it.
+        let server_name = self
+            .names
+            .lock()
+            .expect("node names")
+            .get(&addr)
+            .cloned()
+            .unwrap_or_else(|| self.server_name.clone());
         let client =
-            Arc::new(Client::connect_shared(addr, &self.server_name, self.config.clone()).await?);
+            Arc::new(Client::connect_shared(addr, &server_name, self.config.clone()).await?);
         *held = Some(Arc::clone(&client));
         Ok(client)
     }

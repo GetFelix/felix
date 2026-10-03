@@ -1986,7 +1986,7 @@ absent. They are listed in that script rather than here.
 | --- | --- | --- |
 | `FELIX_NODE_ID` | unset | This broker's identity in the cluster. Must be stable across restarts. |
 | `FELIX_NODE_ADVERTISE_ADDR` | unset | Address peers should reach this broker on. |
-| `FELIX_CLIENT_ADVERTISE_ADDR` | unset | Address *clients* should reach it on, when it differs from the peer address. |
+| `FELIX_CLIENT_ADVERTISE_ADDR` | unset | `host:port` *clients* should reach it on, when it differs from the peer address. A DNS name is fine: clients resolve it each time they connect, so it survives the broker moving to a new IP, and check the broker's certificate against the name. A value that is not `host:port` fails startup. |
 | `FELIX_NODE_ZONE` | unset | Failure domain this broker is in within its region, such as an availability zone or a rack, sent with its registration as the node's `zone`. Placement puts each shard's copies in different zones wherever a broker with room is in one the shard lacks, and moves and drains keep that spread. Unset (or blank) means no zone: the broker is treated as sharing a zone with no other. Takes effect when the broker next registers. |
 | `FELIX_KAFKA_LISTEN` | unset | `ip:port` the Kafka-protocol listener binds (Kafka consumers and producers). Unset turns the listener off. See [Kafka compatibility](/felix/features/kafka/). |
 | `FELIX_KAFKA_ADVERTISE_ADDR` | `FELIX_KAFKA_LISTEN` | `host:port` Kafka clients are told to connect to for this broker (in Metadata responses). A hostname is fine. Registered as the node's `kafka_addr`, and ignored while `FELIX_KAFKA_LISTEN` is unset. |
