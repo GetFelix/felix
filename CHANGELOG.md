@@ -104,6 +104,13 @@ for what the current release guarantees.
   is handed one, logs one that does not resolve, and checks that broker's
   certificate against the name. The broker refuses a `FELIX_CLIENT_ADVERTISE_ADDR`
   that is not `host:port` at startup. (#982)
+- **The npm and Python clients' cache, counter and stream-shard calls fail
+  over.** They called the broker the client entered by directly, so once it
+  died they kept going to it while other seeds were up. They now go through
+  `ClusterClient` like publishes do, which routes cache calls to the key's
+  owner and moves to another broker when the one in use is gone.
+  `ClusterClient::stream_shards` is new. The conformance catalogue gains
+  `fault.cache_through_a_reset_link`. (#979)
 - **A subscribe that reaches a broker just after it stopped serving the shard
   is refused instead of left waiting.** A broker ends a shard's readers before
   its routes catch up with the move or failover, so for that moment it still

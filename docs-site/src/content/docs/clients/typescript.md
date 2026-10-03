@@ -390,6 +390,12 @@ const current = await client.counterGet("t1", "default", "limits", "user:42:reqs
 the same as zero. A retry after a lost acknowledgement counts twice. Counters
 need a durable broker that advertises `FEATURE_COUNTERS`.
 
+Cache and counter calls go to the key's shard owner when the client knows it,
+like a publish. If the broker the client entered by goes away, the next call
+moves to another one: a read (a get) is asked again there, while a write that
+may have landed (a put, delete or add) returns its error with the client
+already moved, and is not sent twice. `streamShards` moves the same way.
+
 ## Cache watches
 
 Watches can resume by offset and report loss explicitly, which makes the cache

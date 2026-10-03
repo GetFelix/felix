@@ -49,8 +49,8 @@ pub struct Scenario {
     pub step: Option<FaultStep>,
 }
 
-/// A fault step: break the client's connection partway through a publish or a
-/// subscribe, and check what the client makes of it.
+/// A fault step: break the client's connection partway through a publish, a
+/// subscribe or a run of cache calls, and check what the client makes of it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FaultStep {
     /// What the client is doing when the fault lands.
@@ -72,6 +72,8 @@ pub struct FaultStep {
 pub enum Phase {
     Publish,
     Subscribe,
+    /// Cache puts and counter adds.
+    Cache,
 }
 
 /// A fault scenario as the fixture hands it to a suite: its id and its step.
