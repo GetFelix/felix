@@ -374,10 +374,9 @@ printing wrong numbers.
 
 ## Limits today
 
-- **Retention is broker-wide and off by default.** `FELIX_DURABLE_RETENTION_BYTES`
-  and `FELIX_DURABLE_RETENTION_SECONDS` bound each durable stream shard. A
-  stream's own retention policy is accepted and recorded, and nothing acts on
-  it.
+- **Retention is off by default.** A stream's own `retention` bounds its shard
+  logs, and a bound it leaves unset comes from `FELIX_DURABLE_RETENTION_BYTES`
+  or `FELIX_DURABLE_RETENTION_SECONDS`. A patch takes effect without a restart.
 - **No tiered storage.** `TieredStore` and its companions are declared traits
   with no implementation. There is no hot/cold split and no cold-tier read path;
   every read comes from local segments. Sealed segments are immutable and carry

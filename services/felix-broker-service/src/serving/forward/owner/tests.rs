@@ -193,6 +193,7 @@ async fn broker_with(consistency: ConsistencyLevel) -> (Arc<Broker>, TempDir) {
                 durable: true,
                 shards: 1,
                 consistency,
+                ..Default::default()
             },
         )
         .await
@@ -623,6 +624,7 @@ async fn a_forwarded_publish_to_a_stream_without_a_log_has_no_offsets() {
                 durable: false,
                 shards: 1,
                 consistency: ConsistencyLevel::Leader,
+                ..Default::default()
             },
         )
         .await

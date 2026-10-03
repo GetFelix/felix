@@ -115,6 +115,19 @@ impl Broker {
         }
         let key = StreamKey::new(tenant_id, namespace, stream);
 
+        // Before any shard opens, so each opens under its stream's bounds; on
+        // an update it also reaches the shards already open.
+        if metadata.durable
+            && let Some(storage) = &self.durable_storage
+        {
+            storage.set_stream_retention(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                metadata.retention,
+            )?;
+        }
+
         // Cursor sequence numbers and durable offsets share one identity. An
         // existing ephemeral stream may already have cursor history that was
         // never written to disk, so toggling durability in place would make

@@ -109,10 +109,37 @@ pub struct StreamPatchRequest {
     pub durable: Option<bool>,
 }
 
+/// How long, and how much of, a durable stream's log each broker keeps. A
+/// bound left unset is the broker's own (`FELIX_DURABLE_RETENTION_SECONDS`,
+/// `FELIX_DURABLE_RETENTION_BYTES`).
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct RetentionPolicy {
     pub max_age_seconds: Option<u64>,
     pub max_size_bytes: Option<u64>,
+}
+
+impl RetentionPolicy {
+    /// Zero would be a bound no log can meet, since the segment being written
+    /// is never deleted. Past `i64::MAX` the store cannot hold it.
+    pub fn validate(&self) -> Result<(), String> {
+        for (name, value) in [
+            ("max_age_seconds", self.max_age_seconds),
+            ("max_size_bytes", self.max_size_bytes),
+        ] {
+            match value {
+                Some(0) => {
+                    return Err(format!(
+                        "retention.{name} must be greater than zero; omit it for no bound"
+                    ));
+                }
+                Some(value) if value > i64::MAX as u64 => {
+                    return Err(format!("retention.{name} is too large"));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]

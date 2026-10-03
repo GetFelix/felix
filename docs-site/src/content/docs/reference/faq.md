@@ -102,9 +102,9 @@ which always waits (see [`ack_on_commit`](/felix/reference/configuration/#ack_on
 marked durable on a broker without a storage dir is rejected, not silently
 downgraded.
 
-Retention is available and off by default. Set
-`FELIX_DURABLE_RETENTION_BYTES` / `FELIX_DURABLE_RETENTION_SECONDS`, or a
-log grows until the disk ends. See
+Retention is available and off by default. Set a stream's `retention`, or
+`FELIX_DURABLE_RETENTION_BYTES` / `FELIX_DURABLE_RETENTION_SECONDS` for every
+stream that sets none, or a log grows until the disk ends. See
 [Durable Storage](/felix/architecture/durable-storage/).
 
 ## How does clustering work?

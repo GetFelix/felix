@@ -324,6 +324,24 @@ impl DiskLog {
         Arc::clone(&self.inner).sweep_retention().await
     }
 
+    /// Enforce `retention` from the next pass on, in place of the bounds the
+    /// log opened with. Starts the retention timer if it was not running,
+    /// which needs a Tokio runtime.
+    pub fn set_retention(&self, retention: crate::log::Retention) -> Result<()> {
+        self.inner.segments.read().check_open()?;
+        self.inner.config.check_retention(retention)?;
+        *self.inner.retention_bounds.lock() = retention;
+        if retention.is_set() {
+            self.inner.start_retention()?;
+        }
+        Ok(())
+    }
+
+    /// The bounds retention enforces now.
+    pub fn retention(&self) -> crate::log::Retention {
+        *self.inner.retention_bounds.lock()
+    }
+
     /// Seal the active segment and start a new one, returning the new
     /// segment's base. Everything below it is then in sealed segments, which
     /// is what lets compaction trim them whole.
@@ -690,6 +708,7 @@ impl DiskLog {
             durability: Durability::new(config.fsync_mode, durable_upto),
             syncer: Mutex::new(None),
             retention: Mutex::new(None),
+            retention_bounds: Mutex::new(config.retention()),
             epochs: Mutex::new(epochs),
             accepted_generation: AtomicU64::new(replica.accepted_generation),
             commit_offset: AtomicU64::new(replica.commit_offset),
@@ -747,19 +766,8 @@ impl DiskLog {
             *inner.syncer.lock() = Some(syncer);
         }
 
-        if config.retention_bytes.is_some() || config.retention_age.is_some() {
-            let weak = Arc::downgrade(&inner);
-            let task =
-                retention::RetentionTask::spawn(config.retention_check_interval, move || {
-                    let weak = weak.clone();
-                    async move {
-                        match weak.upgrade() {
-                            None => Ok(segments::RetentionOutcome::default()),
-                            Some(inner) => inner.sweep_retention().await,
-                        }
-                    }
-                })?;
-            *inner.retention.lock() = Some(task);
+        if config.retention().is_set() {
+            inner.start_retention()?;
         }
 
         Ok(Self { inner })
@@ -961,6 +969,9 @@ struct LogInner {
     /// `None` unless the fsync policy is `Periodic`. Taken on shutdown.
     syncer: Mutex<Option<PeriodicSyncer>>,
     retention: Mutex<Option<retention::RetentionTask>>,
+    /// The bounds retention enforces, which [`DiskLog::set_retention`] may
+    /// change after the log opens.
+    retention_bounds: Mutex<crate::log::Retention>,
     /// Where each leadership generation began, for repairing a divergence.
     ///
     /// Its own lock rather than living under `segments`: it is read and written
@@ -1064,6 +1075,27 @@ impl std::fmt::Debug for LogInner {
 
 /// Micros since the Unix epoch, matching `AppendRecord::timestamp_micros`.
 impl LogInner {
+    /// Run retention on its timer from now on, unless it already runs.
+    fn start_retention(self: &Arc<Self>) -> Result<()> {
+        let mut running = self.retention.lock();
+        if running.is_some() {
+            return Ok(());
+        }
+        let weak = Arc::downgrade(self);
+        let task =
+            retention::RetentionTask::spawn(self.config.retention_check_interval, move || {
+                let weak = weak.clone();
+                async move {
+                    match weak.upgrade() {
+                        None => Ok(segments::RetentionOutcome::default()),
+                        Some(inner) => inner.sweep_retention().await,
+                    }
+                }
+            })?;
+        *running = Some(task);
+        Ok(())
+    }
+
     /// Account for a batch just written at `first_offset`. Called holding the
     /// `segments` write lock the batch was written under.
     ///

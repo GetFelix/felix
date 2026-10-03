@@ -1751,7 +1751,8 @@ fully scanned at startup) at the cost of more files and more rollovers.
 
 **Description**: Delete the oldest sealed segments once a stream's log exceeds
 this size. Unset means the log grows without bound, which is the default and the
-pre-retention behaviour.
+pre-retention behaviour. A stream whose control-plane `retention` sets
+`max_size_bytes` uses that instead.
 
 **Type**: Positive integer (bytes)
 
@@ -1771,7 +1772,8 @@ subscriber, naming the oldest offset still available.
 
 **Description**: Delete sealed segments whose newest record is older than this.
 Combines with `FELIX_DURABLE_RETENTION_BYTES`. Either bound alone is enough to
-trigger a deletion.
+trigger a deletion. A stream whose control-plane `retention` sets
+`max_age_seconds` uses that instead.
 
 **Type**: Positive integer (seconds)
 

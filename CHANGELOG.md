@@ -70,6 +70,14 @@ for what the current release guarantees.
 
 ### Fixed
 
+- **A stream's retention from the control plane now bounds its logs.** It
+  was stored and never read: every durable stream got the broker-wide
+  `FELIX_DURABLE_RETENTION_BYTES` / `FELIX_DURABLE_RETENTION_SECONDS`. A
+  stream's `max_size_bytes` and `max_age_seconds` now bound its shard logs,
+  each falling back to the broker's setting when unset, and a patch reaches
+  open logs without a restart. The control plane refuses a zero bound.
+  `StreamMetadata` gains `retention`, and `DiskLog::set_retention` and
+  `DiskLogProvider::set_stream_retention` set bounds after a log opens. (#964)
 - **A subscribe that reaches a broker just after it stopped serving the shard
   is refused instead of left waiting.** A broker ends a shard's readers before
   its routes catch up with the move or failover, so for that moment it still

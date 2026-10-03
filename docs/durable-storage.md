@@ -821,6 +821,18 @@ resuming subscriber tell a real gap from an empty tail. A trim landing
 early. `earliest` means the oldest record still retained, so it keeps working on
 a trimmed stream instead of becoming an error.
 
+**Per stream.** A durable stream's `retention` in the control plane
+(`max_size_bytes`, `max_age_seconds`) bounds that stream's shard logs. A bound
+it leaves unset falls back, one at a time, to the broker's
+`FELIX_DURABLE_RETENTION_BYTES` and `FELIX_DURABLE_RETENTION_SECONDS`. The
+broker applies it when it registers the stream, before any shard opens, and
+again on every update, which reaches logs already open: `DiskLog::set_retention`
+swaps the bounds the next sweep uses and starts the timer if it was not
+running. The control plane refuses a zero bound, which no log could meet.
+Group cursor and dead-letter logs keep the broker's bounds.
+
+> `a_streams_retention_bounds_its_log_and_updates_in_place`
+
 An operator can force a pass with `StreamLog::enforce_retention_now` instead of
 waiting out the interval.
 
