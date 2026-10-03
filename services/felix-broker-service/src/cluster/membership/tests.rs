@@ -115,8 +115,6 @@ async fn serve(
 
 fn config() -> MembershipConfig {
     MembershipConfig {
-        refresh_token_file: None,
-        node_token_file: None,
         node_id: "broker-a".to_string(),
         advertise_addr: "10.0.0.4:7000".to_string(),
         client_advertise_addr: None,

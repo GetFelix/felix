@@ -170,10 +170,11 @@ The token exchange needs an identity provider that the tenant trusts
 [token exchange](/felix/features/security/#token-exchange-oidc--felix) cover
 the request bodies.
 
-The token expires like any Felix token. A broker without `FELIX_NODE_ID`, like
-this one, reads it once at startup, so a new token takes effect on the next
-restart. Brokers that join a cluster re-read `FELIX_NODE_TOKEN_FILE` every 30
-seconds and can also refresh their own token; see
+The token expires like any Felix token, after 15 minutes for an exchanged one.
+Every broker, this one included, re-reads `FELIX_NODE_TOKEN_FILE` every 30
+seconds, so whatever mints the credential can rewrite the file. Or give the
+broker a refresh token at `FELIX_NODE_REFRESH_TOKEN_FILE` (a writable path) and
+it renews its own token before it expires; see
 [Kubernetes](/felix/deployment/kubernetes/).
 
 To try Felix without any of this, `task cluster:up` starts a control plane and
