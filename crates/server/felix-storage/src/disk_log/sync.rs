@@ -18,7 +18,9 @@
 //! find their target already durable and return without flushing again. Under
 //! concurrency the device sees one flush per round trip rather than one per
 //! append, which is the difference between a few hundred and a few tens of
-//! thousands of durable appends per second on the same hardware.
+//! thousands of durable appends per second on the same hardware. The losers
+//! also watch the durable bound while they wait, so one flush wakes all of
+//! them together instead of handing the lock down the queue one by one.
 //!
 //! This is the same mechanism behind PostgreSQL's `commit_delay` group commit and
 //! the WAL group-commit path in MySQL and RocksDB. `felix_storage_sync_batch_appends`
@@ -161,9 +163,22 @@ impl Durability {
         Fut: Future<Output = Result<Offset>>,
     {
         for _ in 0..MAX_FLUSH_ATTEMPTS {
-            // Contend for the flusher role. Whoever wins flushes for everyone
-            // queued behind them.
-            let guard = self.flush_lock.lock().await;
+            // Contend for the flusher role, and stop contending once someone
+            // else's flush covers this target. Waiting only on the lock would
+            // wake the covered waiters one at a time, each through the lock in
+            // turn; the watch wakes them all at once.
+            let guard = tokio::select! {
+                biased;
+                covered = async {
+                    receiver.wait_for(|durable| *durable >= target).await.is_ok()
+                } => {
+                    if covered {
+                        return Ok(());
+                    }
+                    self.flush_lock.lock().await
+                }
+                guard = self.flush_lock.lock() => guard,
+            };
             if *receiver.borrow_and_update() >= target {
                 // Someone else's flush already covered us — the group-commit
                 // fast path, and by far the common case under load.
@@ -176,11 +191,15 @@ impl Durability {
             let fan_in = self.waiting.load(Ordering::Relaxed);
             self.flushes.fetch_add(1, Ordering::Relaxed);
             let outcome = flush().await;
+            // Published before the lock goes, so the next holder does not
+            // flush again for what this one already made durable.
+            if let Ok(durable_upto) = &outcome {
+                self.note_durable(*durable_upto);
+            }
             drop(guard);
 
             match outcome {
                 Ok(durable_upto) => {
-                    self.note_durable(durable_upto);
                     metrics::histogram!(metrics_names::SYNC_BATCH_APPENDS)
                         .record(fan_in.max(1) as f64);
                     if durable_upto >= target {
