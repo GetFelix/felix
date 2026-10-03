@@ -121,6 +121,11 @@ for what the current release guarantees.
   counted by `felix_storage_full_total`, and clients see `overloaded` (retry
   after) with nothing written. Breaking for code that matches either enum
   exhaustively. (#983)
+- **A cache watch that reaches a broker just after it stopped serving the
+  shard is refused instead of left waiting**, as subscribes already were. One
+  registered in that moment was never ended and looked like a quiet key. It
+  is now answered `shard_unavailable` (`moving`), and the client retries
+  where the shard is served. (#986)
 - **A subscribe that reaches a broker just after it stopped serving the shard
   is refused instead of left waiting.** A broker ends a shard's readers before
   its routes catch up with the move or failover, so for that moment it still
