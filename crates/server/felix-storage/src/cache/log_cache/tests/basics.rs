@@ -278,6 +278,7 @@ async fn a_forgotten_index_reads_the_log_as_it_now_is() {
         payload: other.encode(),
         timestamp_micros: 0,
         mark: Default::default(),
+        publisher: None,
     }])
     .await
     .expect("append");
