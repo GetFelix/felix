@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791137247841,
+  "lastUpdate": 1791146819822,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -23920,6 +23920,58 @@ window.BENCHMARK_DATA = {
             "range": "5123.97",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 793917.32\nmean: 795672.52\nstdev: 5123.97\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fe73b215c6bf7f0e67fe09bd188b52c5ee67ee63",
+          "message": "feat(replication): fence promoted cache shards on a majority (#933) (#1023)\n\n* feat(storage): forget a cache's index and a counter shard's sums on request (#933)\n\nReplication cuts records from a cache or counter log and appends others at\nthe same offsets. Both indexes only catch up from the tail, so they kept\npointing at the cut records. Broker::reset_log drops whatever was derived\nfrom a shard's log, by log kind.\n\n* feat(replication): fence and read a cache shard's counter log (#933)\n\nA new peer capability, CACHE_FENCE, says a replica answers Fence and\nReplicateFetch for the counter log. The pool never sends either to a peer\nthat did not offer it. A follower that drops a divergent suffix of a cache\nor counter log now resets the index built from it, as it already did for a\nstream's tail.\n\n* feat(replication): fence promoted cache shards and count their marks like streams (#933)\n\nA promoted cache shard fences its cache log and then its counter log on a\nmajority, taking the log furthest ahead by (last generation, length) for\neach, when every replica offers FENCE, TAIL_FETCH and CACHE_FENCE.\nOtherwise it opens on the lease as before. Cache and counter batches carry\ntheir generations to followers that fence caches.\n\nOnce the fleet finalized generation_start a cache leader counts only a\nmajority reaching its own generation, for the cache mark and the counter\nmark. A new fleet feature, fenced_caches, together with majority_ack lets\na Quorum cache acknowledge puts and counter adds on its followers' answers\nwithout the lease, and a promoted cache shard then never opens on the\nlease.\n\n* feat(replication): carry a generation-start mark on cache and counter batches (#933)\n\nThe cache and counter wire kinds have no mark section unless they carry a\ncommit offset or labels, so a generation-start record would arrive as a\ncache op the follower cannot read, under a checksum that refuses it. Such a\nbatch takes the committed layout with a commit offset of zero.\n\n* feat(broker): hold promoted cache shards for the fence and start their generations (#933)\n\nA promoted cache shard waits in Fencing like a stream shard. Once the fleet\nfinalized generation_start, its cache log and its counter log each get a\nrecorded term start and a generation-start record: at open for a shard\ntaken without a promotion, and when the fence opens it otherwise.\n\n* feat(controlplane): keep a Quorum cache's replica set on failover (#933)\n\nA promoted Quorum cache now fences a majority of its set before it serves,\nso placement treats it as it treats a Quorum stream: failover keeps the\nset with the dead leader in it, a move's destination is never promoted,\nand a seated copy must hold what the set held.\n\n* docs(formal): model a cache shard's counter log under the fence (#933)\n\nFelixShard.tla gains a counter log beside the shard's log (Counters),\nshipped, counted and fenced under the same promise, with the fence taking\nthe counter log furthest ahead (CounterCatchUp). FelixShardFencedCache\npasses; its twins lose a put without the fence and a counter update\nwithout the counter catch-up.\n\n* test(cluster): a Quorum cache keeps what it acknowledged across a fenced promotion (#933)\n\nA cluster test partitions a Quorum cache's leader from the control plane\npast its lease and checks the promoted leader holds every acknowledged put\nand counter add. The history campaign gains a case that faults whoever\nleads the cache, and the lease-free mode finalizes fenced_caches.\n\n* docs: cache shards fence on promotion, and the fenced_caches feature (#933)\n\n* test(storage,replication): give the cache fence tests their publisher fields (#933)",
+          "timestamp": "2026-10-04T13:41:15-07:00",
+          "tree_id": "8df8a39b6fe5760b556fcf5fd1c7fc26a2344221",
+          "url": "https://github.com/GetFelix/felix/commit/fe73b215c6bf7f0e67fe09bd188b52c5ee67ee63"
+        },
+        "date": 1791146818955,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 345399.43,
+            "range": "7409.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345399.43\nmean: 346407.28\nstdev: 7409.35\ncv: 2.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 345399.43,
+            "range": "7409.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345399.43\nmean: 346407.28\nstdev: 7409.35\ncv: 2.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80365.64,
+            "range": "679.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80365.64\nmean: 80762.87\nstdev: 679.05\ncv: 0.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 803656.43,
+            "range": "6790.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 803656.43\nmean: 807628.71\nstdev: 6790.44\ncv: 0.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
