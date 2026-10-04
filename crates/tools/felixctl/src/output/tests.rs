@@ -49,3 +49,20 @@ fn fields_line_up_keys() {
     lines.sort();
     assert_eq!(lines, ["shards  4", "stream  orders"]);
 }
+
+#[test]
+fn text_reaches_a_terminal_unchanged() {
+    assert!(matches!(
+        for_terminal("héllo\tworld".as_bytes()),
+        Cow::Borrowed(_)
+    ));
+}
+
+#[test]
+fn binary_is_escaped_for_a_terminal() {
+    let bytes = [b'A', 0x00, 0x1b, b'[', 0xff, b'z', 0xc2, 0x85];
+    assert_eq!(
+        String::from_utf8(for_terminal(&bytes).into_owned()).unwrap(),
+        "A\\x00\\x1b[\\xffz\\u{85}"
+    );
+}

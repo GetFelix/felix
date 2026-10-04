@@ -81,6 +81,9 @@ for what the current release guarantees.
   `delete_if`, `get_versioned`), and `CacheOp::Put` a `version` field. (#976)
 
 ### Fixed
+- `felixctl sub`, `cache get` and `cache watch` escape binary payloads on a
+  terminal (`\x00`, `\u{85}`) instead of writing raw bytes that garble it;
+  piped output is unchanged. `felixctl bench latency` payloads showed it.
 - A log-backed cache's expiry could delete a value a put had just refreshed,
   when the put was waiting on its fsync as the expiry was written. The expiry
   now waits for a write to the key in flight before it checks. (#976)
