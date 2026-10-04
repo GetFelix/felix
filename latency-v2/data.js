@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791067259299,
+  "lastUpdate": 1791075142528,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -29898,6 +29898,72 @@ window.BENCHMARK_DATA = {
             "range": "332.49",
             "unit": "us",
             "extra": "trials: 5\nmedian: 604.00\nmean: 827.40\nstdev: 332.49\ncv: 40.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8556d965d1570023e137cd2af9f231c41ddee9d7",
+          "message": "feat(subscribe): end a lagged durable subscription with where to resume (#1003)\n\n* feat(subscribe): end a lagged durable subscription with where to resume\n\nA durable-stream subscriber learned about dropped records only from the\noffset of a later event, so a drop of the newest records with nothing\npublished after them went unnoticed. The broker now ends the subscription\nat its first queue drop with subscription_lagged (FEATURE_SUBSCRIPTION_LAGGED)\nnaming the first dropped offset, and felix-client does the same for drops in\nits own queue, returning a SubscriptionLagged error. ClusterSubscription\nresubscribes after its last event and catches up from the log.\n\nSpec-Unaffected: changes only what ends a subscription's event stream on a queue drop; no lease, membership, placement or replication state is touched.\n\n* fix(client): resume a lagged shard after its last event\n\nShardedSubscription resumed a lagged shard at max(last + 1, resume_from).\nresume_from is where the broker's subscriber queue first dropped, but the\nconnection writer's queue for the subscription can drop a frame below it\nwithout reporting it, so those records were skipped. It now resumes after\nthe last event delivered, as ClusterSubscription does, and uses\nresume_from only when nothing was delivered.\n\nThe wire, client and protocol docs no longer say that resubscribing from\nresume_from neither repeats nor skips a record.\n\nTests: a lagged shard resumes after its last event (through the stub\nbroker), a lag is reported over a shard move, and drops a replay covered\ndo not end the subscription while a later one does.",
+          "timestamp": "2026-10-03T17:49:45-07:00",
+          "tree_id": "9da901b53e3126bf08570222605130c4b47060ee",
+          "url": "https://github.com/gabloe/felix/commit/8556d965d1570023e137cd2af9f231c41ddee9d7"
+        },
+        "date": 1791075139086,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 73,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 73.00\nmean: 72.60\nstdev: 0.55\ncv: 0.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 97,
+            "range": "33.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 97.00\nmean: 113.20\nstdev: 33.09\ncv: 29.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 207,
+            "range": "152.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 207.00\nmean: 239.20\nstdev: 152.47\ncv: 63.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 90,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 89.60\nstdev: 0.55\ncv: 0.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 227,
+            "range": "13.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 227.00\nmean: 224.00\nstdev: 13.82\ncv: 6.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 409,
+            "range": "185.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 409.00\nmean: 458.80\nstdev: 185.75\ncv: 40.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
