@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791075145438,
+  "lastUpdate": 1791080949510,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -23608,6 +23608,58 @@ window.BENCHMARK_DATA = {
             "range": "17680.07",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1579565.32\nmean: 1570421.07\nstdev: 17680.07\ncv: 1.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c5dcd0860f2e1c6f0c4a1aeedb5e4294b3e963b0",
+          "message": "fix: follow-ups from the post-merge audit (#1007)\n\n* fix(storage): discard a first segment only when it is blank\n\nA zeroed header in front of records, or one the durable mark says was\nsynced past, is damage to acknowledged data and stays fatal. Only a\nsegment 0 with no header, zeros after it and no mark past the header is\na creation that never finished.\n\n* fix(cache): recheck the fence before each expiry delete\n\nThe expiry pass admitted the fence once per shard and then wrote up to\n1024 deletes, a wider lease-lapse window than any client write. Each\ndelete now checks that the fence is still open at its generation and the\nlease holds, and the pass stops when either fails.\n\nThe docs said deletes follow within about a second. They follow in the\nleader's next pass, at most 1024 per shard per pass, so a mass expiry\nlags, and an expiry is permanent once written.\n\n* fix(wire): send a group record's skipped_before only when negotiated\n\nThe event batch's count is gated by frame flag 0x0800, but a group\nrecord's was sent to every client whenever it was non-zero. A new\nfeature bit, FEATURE_GROUP_SKIPPED, is offered by the Felix clients and\nadvertised by a broker with consumer groups. Any other client gets the\nrecord without the field, byte for byte the frame it always got.\n\n* docs: what a plain subscribe as latest means for refusals and resume\n\nA plain subscribe from an offset-reading client goes through\nsubscribe_from(Latest), so a Quorum shard that is settling or refusing\nreads answers it with a retryable not_ready or fenced. And a\nClusterSubscription that loses its connection before delivering anything\nresumes from the reported start offset, which is gap-free but can fail\nwith a too_old cursor.\n\n* docs(controlplane): RS256 and ES256 are both accepted by default\n\nThe OIDC module comments and the real-network perf plan still said ES256\nwas the only default and cited Marvin. Say what the default is and why\naccepting RSA is safe: the key type is bound to the alg, and HS* and none\nare refused.\n\n* chore: note why the audit fixes leave the TLA+ model alone\n\nSpec-Unaffected: the expiry pass now checks the same fence and lease a client write passes, before each delete, which the model already assumes of every write; the group change only hides a reported field from clients that did not negotiate it. Lease, mark, reports, promotion and handoff are unchanged.\n\n* fix(cluster): never give a broker's two listeners the same port\n\nThe harness picked the client and internal QUIC ports with separate\nephemeral binds, each closed before the next, so the OS could return the\nsame port twice. A broker restarted after a power cut then refused to\nstart because its internal and client binds shared a port. The internal\nport, and the Kafka port next to metrics, now skip ports already picked.",
+          "timestamp": "2026-10-03T19:26:22-07:00",
+          "tree_id": "0926c929013cda7e06255292e6ac6a82d37a3786",
+          "url": "https://github.com/gabloe/felix/commit/c5dcd0860f2e1c6f0c4a1aeedb5e4294b3e963b0"
+        },
+        "date": 1791080948913,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 667321.64,
+            "range": "62542.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 667321.64\nmean: 650241.43\nstdev: 62542.09\ncv: 9.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 667321.64,
+            "range": "62542.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 667321.64\nmean: 650241.43\nstdev: 62542.09\ncv: 9.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 163258.56,
+            "range": "5354.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 163258.56\nmean: 162076.24\nstdev: 5354.48\ncv: 3.30%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1632585.62,
+            "range": "53544.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1632585.62\nmean: 1620762.45\nstdev: 53544.83\ncv: 3.30%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
