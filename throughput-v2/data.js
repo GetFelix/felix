@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791153317755,
+  "lastUpdate": 1791157999145,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -24128,6 +24128,58 @@ window.BENCHMARK_DATA = {
             "range": "2131.84",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 782278.52\nmean: 783083.78\nstdev: 2131.84\ncv: 0.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0f364b4f3fb84471535c60bd4dcb221583e1460b",
+          "message": "fix(cluster): no dead-code warning on control_plane_clock in a release build (#1026)\n\nThe field is only read under debug_assertions or the fault-injection\nfeature, so a release build without the feature warned. Gate the field\nthe same way as its uses.",
+          "timestamp": "2026-10-04T16:49:02-07:00",
+          "tree_id": "d03095ba5199d520a3de75a5b863b371af6206b4",
+          "url": "https://github.com/GetFelix/felix/commit/0f364b4f3fb84471535c60bd4dcb221583e1460b"
+        },
+        "date": 1791157998547,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 439301.79,
+            "range": "9726.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 439301.79\nmean: 436458.71\nstdev: 9726.74\ncv: 2.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 439301.79,
+            "range": "9726.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 439301.79\nmean: 436458.71\nstdev: 9726.74\ncv: 2.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 98177.02,
+            "range": "792.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 98177.02\nmean: 98284.16\nstdev: 792.49\ncv: 0.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 981770.18,
+            "range": "7924.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 981770.18\nmean: 982841.61\nstdev: 7924.95\ncv: 0.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
