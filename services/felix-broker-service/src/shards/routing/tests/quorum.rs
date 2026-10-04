@@ -112,7 +112,7 @@ async fn leading(replicas: &[&str], successor: Option<&str>, generation: u64) ->
         .await
         .expect("handle");
     let outcome = broker
-        .publish_batch_with_outcome(&handle, &[bytes::Bytes::from_static(b"one")])
+        .publish_batch_with_outcome(&handle, &[bytes::Bytes::from_static(b"one")], None)
         .await
         .expect("publish");
     Leading {

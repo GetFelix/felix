@@ -23,6 +23,7 @@ fn batch(prefix: &str, count: usize) -> Vec<AppendRecord> {
             payload: Bytes::from(format!("{prefix}-{i:03}")),
             timestamp_micros: 1,
             mark: Default::default(),
+            publisher: None,
         })
         .collect()
 }

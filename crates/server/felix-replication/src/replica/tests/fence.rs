@@ -304,7 +304,10 @@ async fn only_the_leader_that_fenced_the_replica_reads_its_tail() {
         records.payloads,
         vec![Bytes::from_static(b"b"), Bytes::from_static(b"c")]
     );
-    assert_eq!(records.checksum, batch_checksum(&records.payloads, &[]));
+    assert_eq!(
+        records.checksum,
+        batch_checksum(&records.payloads, &[], &[])
+    );
 }
 
 /// Answers the fence and the fetch over the real transport.
@@ -344,7 +347,7 @@ async fn a_long_tail_is_fetched_over_the_transport() {
             }
         })
         .collect();
-    marked.checksum = batch_checksum(&marked.payloads, &marked.marks);
+    marked.checksum = batch_checksum(&marked.payloads, &marked.marks, &[]);
     let answer = handler.apply(marked, felix_broker::LogKind::Stream).await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),

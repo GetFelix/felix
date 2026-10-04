@@ -245,6 +245,7 @@ async fn the_fold_catches_up_with_records_appended_behind_it() {
         .encode(),
         timestamp_micros: 1,
         mark: Default::default(),
+        publisher: None,
     }])
     .await
     .expect("append behind the fold");
@@ -270,6 +271,7 @@ async fn the_fold_steps_over_a_generation_start_record() {
             payload: bytes::Bytes::copy_from_slice(&4u64.to_be_bytes()),
             timestamp_micros: 1,
             mark: crate::log::RecordMark::GenerationStart,
+            publisher: None,
         },
         crate::log::AppendRecord {
             payload: CounterOp::Delta {
@@ -279,6 +281,7 @@ async fn the_fold_steps_over_a_generation_start_record() {
             .encode(),
             timestamp_micros: 1,
             mark: Default::default(),
+            publisher: None,
         },
     ])
     .await

@@ -6,8 +6,16 @@ use super::*;
 /// checksum exists to catch.
 #[test]
 fn the_batch_checksum_separates_a_different_split_of_the_same_bytes() {
-    let one = batch_checksum(&[Bytes::from_static(b"ab"), Bytes::from_static(b"c")], &[]);
-    let other = batch_checksum(&[Bytes::from_static(b"a"), Bytes::from_static(b"bc")], &[]);
+    let one = batch_checksum(
+        &[Bytes::from_static(b"ab"), Bytes::from_static(b"c")],
+        &[],
+        &[],
+    );
+    let other = batch_checksum(
+        &[Bytes::from_static(b"a"), Bytes::from_static(b"bc")],
+        &[],
+        &[],
+    );
 
     assert_ne!(one, other);
 }
@@ -17,9 +25,15 @@ fn the_batch_checksum_is_stable_and_order_sensitive() {
     let batch = [Bytes::from_static(b"a"), Bytes::from_static(b"bb")];
     let reversed = [Bytes::from_static(b"bb"), Bytes::from_static(b"a")];
 
-    assert_eq!(batch_checksum(&batch, &[]), batch_checksum(&batch, &[]));
-    assert_ne!(batch_checksum(&batch, &[]), batch_checksum(&reversed, &[]));
-    assert_eq!(batch_checksum(&[], &[]), batch_checksum(&[], &[]));
+    assert_eq!(
+        batch_checksum(&batch, &[], &[]),
+        batch_checksum(&batch, &[], &[])
+    );
+    assert_ne!(
+        batch_checksum(&batch, &[], &[]),
+        batch_checksum(&reversed, &[], &[])
+    );
+    assert_eq!(batch_checksum(&[], &[], &[]), batch_checksum(&[], &[], &[]));
 }
 
 /// The cache variants share a body with the stream ones and must still be told
@@ -36,6 +50,7 @@ fn a_cache_replication_batch_is_not_a_stream_one() {
         marks: Vec::new(),
         commit_offset: None,
         generations: None,
+        publishers: Vec::new(),
     };
     let stream = InternalMessage::ReplicateRecords(body.clone());
     let cache = InternalMessage::ReplicateCacheRecords(body);
@@ -66,6 +81,7 @@ fn the_four_replication_kinds_are_distinguishable() {
         marks: Vec::new(),
         commit_offset: None,
         generations: None,
+        publishers: Vec::new(),
     };
     let encoded: Vec<_> = [
         InternalMessage::ReplicateRecords(body.clone()),
@@ -97,10 +113,13 @@ fn marks_are_covered_by_the_checksum_and_absent_marks_change_nothing() {
         len: 2,
     };
     let marked = [opens, ProducerMark::Continues];
-    assert_ne!(batch_checksum(&batch, &marked), batch_checksum(&batch, &[]));
     assert_ne!(
-        batch_checksum(&batch, &marked),
-        batch_checksum(&batch, &[opens, ProducerMark::None])
+        batch_checksum(&batch, &marked, &[]),
+        batch_checksum(&batch, &[], &[])
+    );
+    assert_ne!(
+        batch_checksum(&batch, &marked, &[]),
+        batch_checksum(&batch, &[opens, ProducerMark::None], &[])
     );
 }
 
@@ -129,6 +148,7 @@ fn a_commit_offset_travels_as_the_committed_kind_for_every_log() {
         marks: Vec::new(),
         commit_offset: Some(8),
         generations: None,
+        publishers: Vec::new(),
     };
     for message in [
         InternalMessage::ReplicateRecords(body.clone()),
@@ -168,6 +188,7 @@ fn generations_travel_as_the_labelled_kind_for_every_log() {
                 start_offset: 11,
             },
         ]),
+        publishers: Vec::new(),
     };
     let opens = ProducerMark::Opens {
         producer_id: 7,
@@ -207,6 +228,7 @@ fn an_absent_commit_offset_must_be_zero() {
         marks: Vec::new(),
         commit_offset: None,
         generations: Some(Vec::new()),
+        publishers: Vec::new(),
     });
     let encoded = message.encode().expect("encode");
     // The commit offset is the u64 just before the empty generations count.
@@ -266,16 +288,73 @@ fn a_generation_start_mark_round_trips_and_an_unknown_mark_is_refused() {
         marks: vec![ProducerMark::GenerationStart, ProducerMark::Commit],
         commit_offset: None,
         generations: None,
+        publishers: Vec::new(),
     };
     let message = InternalMessage::ReplicateMarkedRecords(batch);
     let bytes = message.encode().expect("encode");
     assert_eq!(InternalMessage::decode(bytes).expect("decode"), message);
 
     let mut body = bytes::BytesMut::new();
-    crate::internal::replicate::put_marks(&mut body, &[ProducerMark::GenerationStart]);
+    crate::internal::replicate::put_marks(&mut body, &[ProducerMark::GenerationStart], &[]);
     body[0] = 5;
     assert!(matches!(
         crate::internal::replicate::take_marks(&mut body.freeze(), 1),
         Err(Error::UnknownInternalProducerMark(5))
     ));
+}
+
+/// Publishers ride the marks section: a batch with any goes as a kind that
+/// has one, round-trips with them in place, and is checksummed with them. A
+/// batch without any is unchanged.
+#[test]
+fn publishers_travel_with_the_marks_and_are_checksummed() {
+    use super::super::ProducerMark;
+    let payloads = vec![
+        Bytes::from_static(b"a"),
+        Bytes::from_static(b"b"),
+        Bytes::from_static(b"c"),
+    ];
+    let publishers = vec![Some(Bytes::from_static(b"alice")), None, Some(Bytes::new())];
+    let opens = ProducerMark::Opens {
+        producer_id: 1,
+        sequence: 0,
+        len: 1,
+    };
+    for marks in [
+        Vec::new(),
+        vec![ProducerMark::None, opens, ProducerMark::None],
+    ] {
+        let records = ReplicateRecords {
+            correlation_id: 3,
+            shard: shard(),
+            first_offset: 10,
+            checksum: batch_checksum(&payloads, &marks, &publishers),
+            payloads: payloads.clone(),
+            marks: marks.clone(),
+            commit_offset: None,
+            generations: None,
+            publishers: publishers.clone(),
+        };
+        let message = if marks.is_empty() {
+            InternalMessage::ReplicateRecords(records)
+        } else {
+            InternalMessage::ReplicateMarkedRecords(records)
+        };
+        assert_eq!(message.kind(), Kind::ReplicateMarkedRecords);
+        let decoded = InternalMessage::decode(message.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, message);
+    }
+
+    assert_ne!(
+        batch_checksum(&payloads, &[], &publishers),
+        batch_checksum(&payloads, &[], &[])
+    );
+    assert_ne!(
+        batch_checksum(&payloads, &[], &publishers),
+        batch_checksum(
+            &payloads,
+            &[],
+            &[None, None, Some(Bytes::from_static(b"alice"))]
+        )
+    );
 }

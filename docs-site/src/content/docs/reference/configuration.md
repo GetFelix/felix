@@ -151,6 +151,21 @@ controlplane_sync_interval_ms: 2000
 
 ## Publishing Configuration
 
+### `record_publishers`
+
+**Description**: On a broker outside a cluster, store the principal that
+published each durable record. In a cluster, finalizing the
+`publisher_principal` fleet feature decides instead.
+
+**Type**: `bool`
+
+**Default**: `false`
+
+**Environment**: `FELIX_RECORD_PUBLISHERS` (`1`, `true`, `yes` = enabled)
+
+Writing one moves the stream's log to storage format v6, which an older broker
+cannot open.
+
 ### `ack_on_commit`
 
 **Description**: Send acknowledgements after message commit.

@@ -222,6 +222,7 @@ impl CacheShard {
                     payload,
                     timestamp_micros: now,
                     mark: Default::default(),
+                    publisher: None,
                 });
             }
             if records.is_empty() {

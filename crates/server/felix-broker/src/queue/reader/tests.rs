@@ -934,3 +934,35 @@ async fn the_skip_count_survives_into_the_next_poll() {
         vec![(1, 1)]
     );
 }
+
+/// A record's publisher is stored with it, so a group hands it out with the
+/// record, as a subscriber's replay does.
+#[tokio::test]
+async fn a_group_hands_out_each_records_publisher() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    publish(&fx.log, &["anonymous"]).await;
+    let alice = Bytes::from_static(b"alice");
+    let pending = fx
+        .log
+        .begin_append_marked_at(
+            1,
+            &[Bytes::from_static(b"from alice")],
+            &[],
+            &[Some(alice.clone())],
+        )
+        .await
+        .expect("append")
+        .expect("at the tail");
+    fx.log.commit(&pending).await.expect("commit");
+
+    let claimed = fx
+        .reader
+        .poll(&key(), &fx.log, 10, Instant::now())
+        .await
+        .expect("poll");
+
+    assert_eq!(payloads(&claimed), vec!["anonymous", "from alice"]);
+    assert_eq!(claimed[0].publisher, None);
+    assert_eq!(claimed[1].publisher, Some(alice));
+}

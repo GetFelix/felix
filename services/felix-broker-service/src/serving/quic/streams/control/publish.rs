@@ -82,7 +82,7 @@ pub(super) async fn publish(
         session
             .auth_ctx
             .as_ref()
-            .map_or_else(String::new, |ctx| ctx.token.clone()),
+            .map_or_else(Default::default, |ctx| ctx.publishing_as()),
     )
     .await?;
     Ok(Step::Next)
@@ -156,7 +156,7 @@ pub(super) async fn publish_batch(
         session
             .auth_ctx
             .as_ref()
-            .map_or_else(String::new, |ctx| ctx.token.clone()),
+            .map_or_else(Default::default, |ctx| ctx.publishing_as()),
         None,
     )
     .await?;
@@ -234,7 +234,7 @@ pub(super) async fn publish_idempotent(
         session
             .auth_ctx
             .as_ref()
-            .map_or_else(String::new, |ctx| ctx.token.clone()),
+            .map_or_else(Default::default, |ctx| ctx.publishing_as()),
         Some((producer_id, sequence, sequence_reuse(session.peer_features))),
     )
     .await?;

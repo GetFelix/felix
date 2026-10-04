@@ -179,6 +179,7 @@ async fn the_index_catches_up_with_records_appended_behind_it() {
         payload,
         timestamp_micros: 0,
         mark: Default::default(),
+        publisher: None,
     }])
     .await
     .expect("append");
@@ -221,11 +222,13 @@ async fn the_index_steps_over_a_generation_start_record() {
             payload: Bytes::copy_from_slice(&4u64.to_be_bytes()),
             timestamp_micros: 0,
             mark: crate::log::RecordMark::GenerationStart,
+            publisher: None,
         },
         AppendRecord {
             payload: shipped,
             timestamp_micros: 0,
             mark: Default::default(),
+            publisher: None,
         },
     ])
     .await

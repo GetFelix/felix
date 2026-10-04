@@ -254,6 +254,7 @@ impl LaneWork {
         let PublishJob {
             target,
             mut payloads,
+            publisher,
             response,
             acked_on_enqueue,
             admission_permit: _permit,
@@ -305,6 +306,7 @@ impl LaneWork {
                 &handle,
                 &shard,
                 &lane,
+                publisher.as_ref(),
                 &mut payloads,
                 &mut group,
                 &mut permits,
@@ -313,7 +315,10 @@ impl LaneWork {
         metrics::histogram!(PUBLISH_CLAIM_JOBS).record(group.members.len() as f64);
         // The only ordered part: offsets are consumed here, so the order
         // claims return in is the order records land on disk.
-        let claimed = self.broker.claim_publish(&handle, &payloads).await;
+        let claimed = self
+            .broker
+            .claim_publish(&handle, &payloads, publisher.as_ref())
+            .await;
         drop(lane);
         let claimed = match claimed {
             Ok(claimed) => claimed,
@@ -353,18 +358,23 @@ impl LaneWork {
     /// Move the publishes queued on `lane` behind the one being claimed into
     /// its claim, as many as fit. Each is fenced on its own; one the fence
     /// refuses is answered now and left out, as it would have been alone.
+    #[allow(clippy::too_many_arguments)]
     fn take_queued(
         &self,
         handle: &felix_broker::StreamHandle,
         shard: &Option<ShardKey>,
         lane: &LaneGuard,
+        publisher: Option<&Bytes>,
         payloads: &mut Vec<Bytes>,
         group: &mut ClaimGroup,
         permits: &mut Vec<super::AdmissionPermit>,
     ) {
         let mut bytes = payload_bytes(payloads);
+        // A claim records one publisher for all of it.
+        let records_publishers = self.broker.records_publishers();
         let taken = lane.take_more(CLAIM_MAX_JOBS - 1, |next, _| {
-            let joins = matches!(
+            let joins = (!records_publishers || next.publisher.as_ref() == publisher)
+                && matches!(
                 &next.target,
                 PublishTarget::Resolved { handle: next_handle, .. } if next_handle.id() == handle.id()
             ) && !next.payloads.is_empty()
@@ -437,7 +447,7 @@ impl LaneWork {
             Ok(fenced) => {
                 let published = self
                     .broker
-                    .publish_batch_with_outcome(handle, &job.payloads)
+                    .publish_batch_with_outcome(handle, &job.payloads, job.publisher.as_ref())
                     .await;
                 drop(fenced);
                 published.map_err(anyhow::Error::from)
@@ -511,7 +521,14 @@ impl LaneWork {
                 // group commit can take several of them at once.
                 let claimed = self
                     .broker
-                    .claim_batch_idempotent(handle, *producer_id, *sequence, &job.payloads, *reuse)
+                    .claim_batch_idempotent(
+                        handle,
+                        *producer_id,
+                        *sequence,
+                        &job.payloads,
+                        *reuse,
+                        job.publisher.as_ref(),
+                    )
                     .await;
                 drop(lane);
                 let published = match claimed {

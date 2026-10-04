@@ -62,6 +62,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     LEASE_FREE_READS,
     JUMP_HASH_ROUTING,
     ATOMIC_COMMIT,
+    PUBLISHER_PRINCIPAL,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -94,6 +95,12 @@ pub const LEASE_FREE_READS: FleetFeature = FleetFeature::new("lease_free_reads")
 /// mark an older build refuses, so it waits for the whole fleet. See
 /// `docs/atomic-commit.md`.
 pub const ATOMIC_COMMIT: FleetFeature = FleetFeature::new("atomic_commit");
+
+/// A durable stream stores the principal that published each record, and
+/// replication ships it. The record needs storage format v6 and a mark an
+/// older build refuses, so it waits for the whole fleet. See
+/// `docs/protocol.md` ("Publisher").
+pub const PUBLISHER_PRINCIPAL: FleetFeature = FleetFeature::new("publisher_principal");
 
 /// The most features one gate tracks. A report longer than this is cut, which
 /// only ever leaves features off.

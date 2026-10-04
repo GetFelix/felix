@@ -87,6 +87,7 @@ Field definitions:
   | `0x0400` | `BINARY_PUBLISH_ACK_DETAIL` | Modifier on `0x0200`: the code is followed by the error's `detail` (reason, suggested wait) |
   | `0x0800` | `EVENT_BATCH_SKIPPED` | Modifier on `0x0020`: the batch also carries a `skipped_before` count of offsets before it that hold no event |
   | `0x1000` | `BINARY_PUBLISH_ACK_OFFSET` | Modifier on `0x0010`: a successful ack ends with the offset of the batch's first record. Offered by a client, it also lets `publish_ok` carry `offset` |
+  | `0x2000` | `EVENT_BATCH_PUBLISHER` | Modifier on `0x0002` or `0x0004`: the batch carries the principal that published its events. See [Event batch publisher](#event-batch-publisher) |
 
   Because these bits change how the payload is parsed, a receiver MUST reject a
   frame carrying any bit it does not recognise rather than masking it off (see
@@ -339,7 +340,7 @@ hand-backs or lapsed claims free room.
 ```
 { "type": "group_records",
   "records": [{ "offset": <number>, "payload": "<base64>", "attempts": <number>,
-                "skipped_before": <number>? }],
+                "skipped_before": <number>?, "publisher": "<principal>"? }],
   "request_id": <number> }
 ```
 
@@ -356,6 +357,11 @@ does not cover is a record still to come. It is sent only to a client that
 offered `FEATURE_GROUP_SKIPPED` in `Auth`, and left out when it is `0`, so any
 other client gets the frame it always did. A broker that advertises the bit
 reports it, so for that client an absent field means `0`.
+
+`publisher` is the principal that published the record, when the broker
+stored one (see [Event batch publisher](#event-batch-publisher)). It is sent
+only to a client that offered `FEATURE_GROUP_PUBLISHER`, and left out when the
+record has none.
 
 ### GroupDeadLetters / GroupDiscard / GroupRedrive
 ```
@@ -1276,6 +1282,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x10_0000` | `FEATURE_GROUP_CONSUMER` | The broker records which member holds each claim when `group_poll` names a `consumer`, scoped to the principal, and on a connection's first `reclaim` hands that member's claims from older connections back to it first. See [GroupPoll](#grouppoll) |
 | `0x20_0000` | `FEATURE_SUBSCRIPTION_LAGGED` | The client reads `subscription_lagged`, and the broker ends a durable-stream subscription at its first queue drop with it |
 | `0x40_0000` | `FEATURE_GROUP_SKIPPED` | Offered by a client that reads `skipped_before` on a `GroupRecord`. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |
+| `0x80_0000` | `FEATURE_GROUP_PUBLISHER` | Offered by a client that reads `publisher` on a `GroupRecord`. Advertised by a broker with consumer groups. The field is sent only to a client that offered it. See [Event batch publisher](#event-batch-publisher) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -1612,6 +1619,55 @@ drop by them. A drop is still reported, only its size is off.
 A client that did not offer `0x0800` gets the frames it always got, and reads
 the gap at generation starts as a drop. That is a false drop signal, once per
 leader change or move, and only after `generation_start` is finalized.
+
+## Event batch publisher
+
+When `flags & 0x2000 != 0`, the batch names the principal that published its
+events: the `sub` of the token the broker accepted the write from. It follows
+the offset fields, or the subscription id when there are none, and precedes
+the count:
+
+```
+u64 base_offset          # with 0x0020
+u64 skipped_before       # with 0x0800
+u8  publisher_len
+u8[publisher_len] publisher
+u32 count
+...
+```
+
+One per batch: a publish batch comes from one connection, and a broker starts
+a new frame where the publisher changes, as it does where offsets break. The
+bit is independent of `0x0020`, so an in-memory stream's batch can carry a
+publisher and no offset. A client opts in by offering `0x2000` in
+`client_flags`; the broker sends the bit only to a client that offered it, and
+only on a batch that has a publisher, so every other batch is byte-identical to
+the frame without it. The JSON `event` and `event_batch` messages never carry
+one. Consumer groups report the same value as `publisher` on a `GroupRecord`,
+under `FEATURE_GROUP_PUBLISHER`.
+
+What it proves: that this broker, or the broker that owns the shard, accepted
+the write from a connection authenticated as that principal, and checked that
+principal's permission to publish to the stream. It does not say who produced
+the payload's contents, which a principal allowed to publish can set to
+anything, and it is only as trustworthy as the broker and the token issuer.
+A publish forwarded between brokers records the principal the owner verified
+from the forwarded credential, not one the forwarding broker supplies.
+
+Where the publisher comes from:
+
+- **In-memory streams** report the principal of the publishing connection.
+  Nothing is stored, so a replay from the ring reports what live delivery did.
+- **Durable streams** report only what was stored with the record, so live
+  delivery, a replay from any offset, a follower promoted to leader and a
+  consumer group all see the same value. The record stores the principal id,
+  at most 255 bytes, never the token. A subject longer than that is not
+  recorded. Storing it needs storage format v6 (see
+  [`storage-format.md`](storage-format.md)), which an older build refuses to
+  open, so it is off until enabled: in a cluster by finalizing the
+  `publisher_principal` fleet feature, and on a broker outside a cluster with
+  `FELIX_RECORD_PUBLISHERS=true`. Records written before then have no
+  publisher, and neither do records from a connection with no principal.
 
 ## ALPN
 

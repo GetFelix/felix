@@ -344,6 +344,7 @@ async fn catch_up<R: PeerRequester>(
             batch.checksum,
             &batch.payloads,
             &batch.marks,
+            &batch.publishers,
         )
         .await
         .map_err(|err| err.to_string())?;

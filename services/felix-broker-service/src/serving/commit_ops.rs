@@ -28,6 +28,7 @@ pub(crate) async fn commit(
     entity_key: &[u8],
     event: Bytes,
     changes: Vec<StateChange>,
+    publisher: Option<&Bytes>,
 ) -> Result<u64, ClientError> {
     // A replica that predates the commit record would refuse it and stop
     // replicating, so a cluster member waits for the whole fleet. A single
@@ -59,7 +60,7 @@ pub(crate) async fn commit(
     )
     .map_err(ClientError::from)?;
     let outcome = broker
-        .commit_to_handle(&handle, event, ops)
+        .commit_to_handle(&handle, event, ops, publisher)
         .await
         .map_err(|err| ClientError::from_broker(&err, "commit not served"))?;
     drop(guard);

@@ -11,6 +11,7 @@ mod placed_at_a_base_offset;
 mod power_loss;
 mod producers;
 mod provider;
+mod publisher;
 mod replica_state;
 mod restore;
 mod retention;
@@ -31,6 +32,7 @@ fn record(payload: &str) -> AppendRecord {
         payload: Bytes::copy_from_slice(payload.as_bytes()),
         timestamp_micros: 1_700_000_000,
         mark: Default::default(),
+        publisher: None,
     }
 }
 

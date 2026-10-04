@@ -75,12 +75,14 @@ fn message_cache_operations() {
                 payload: Bytes::from_static(b"one"),
                 attempts: 1,
                 skipped_before: 0,
+                publisher: None,
             },
             crate::GroupRecord {
                 offset: 9,
                 payload: Bytes::new(),
                 attempts: 3,
                 skipped_before: 1,
+                publisher: None,
             },
         ],
         request_id: 42,
@@ -401,6 +403,7 @@ fn a_group_record_with_nothing_skipped_omits_the_field() {
         payload: Bytes::from_static(b"one"),
         attempts: 1,
         skipped_before: 0,
+        publisher: None,
     };
     let json = serde_json::to_string(&record).expect("encode");
     assert!(!json.contains("skipped_before"), "{json}");

@@ -53,6 +53,10 @@ pub(super) async fn commit(
             &target.entity_key,
             event,
             changes,
+            session
+                .auth_ctx
+                .as_ref()
+                .and_then(|auth| auth.publisher.as_ref()),
         )
         .await
         {

@@ -1054,7 +1054,7 @@ async fn drain_resume(
             }
         }
     }
-    for (_, payload) in &resumed.backlog {
+    for felix_broker::RingRecord { payload, .. } in &resumed.backlog {
         seen.push(String::from_utf8(payload.to_vec()).expect("utf8"));
     }
     seen
@@ -1305,10 +1305,13 @@ async fn backlog_entries_carry_their_own_offsets() {
     // `backlog_start`. The ring is not guaranteed contiguous -- a publish that
     // consumed disk offsets and was cancelled before reaching the ring leaves a
     // hole -- and numbering by position mislabels everything after one.
-    let offsets: Vec<u64> = resumed.backlog.iter().map(|(offset, _)| *offset).collect();
+    let offsets: Vec<u64> = resumed.backlog.iter().map(|record| record.offset).collect();
     assert_eq!(offsets, vec![2, 3, 4, 5]);
     assert_eq!(resumed.backlog_start, 2);
-    for (offset, payload) in &resumed.backlog {
+    for felix_broker::RingRecord {
+        offset, payload, ..
+    } in &resumed.backlog
+    {
         let expected = format!("v{offset}");
         assert_eq!(String::from_utf8(payload.to_vec()).expect("utf8"), expected);
     }
@@ -1910,7 +1913,7 @@ async fn hydration_leaves_uncommitted_records_out_of_a_quorum_ring() {
     let past_commit: Vec<u64> = resumed
         .backlog
         .iter()
-        .map(|(offset, _)| *offset)
+        .map(|record| record.offset)
         .filter(|offset| *offset >= 2)
         .collect();
     assert!(

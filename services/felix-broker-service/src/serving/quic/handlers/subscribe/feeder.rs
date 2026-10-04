@@ -20,20 +20,21 @@ fn encode_batch(
     batch: &[Bytes],
     base_offset: Option<u64>,
     skipped_before: u64,
+    publisher: Option<&Bytes>,
 ) -> felix_wire::Result<Bytes> {
-    match (config.offsets_enabled, base_offset) {
-        (true, Some(base)) if config.skip_enabled => {
-            felix_wire::binary::encode_shared_event_batch_bytes_with_skip(
-                batch,
-                base,
-                skipped_before,
-            )
-        }
-        (true, Some(base)) => {
-            felix_wire::binary::encode_shared_event_batch_bytes_with_offset(batch, base)
-        }
-        _ => felix_wire::binary::encode_shared_event_batch_bytes(batch),
-    }
+    let base_offset = base_offset.filter(|_| config.offsets_enabled);
+    let meta = felix_wire::binary::EventBatchMeta {
+        base_offset,
+        skipped_before: if config.skip_enabled {
+            skipped_before
+        } else {
+            0
+        },
+        publisher: publisher
+            .filter(|_| config.publisher_enabled)
+            .map(Bytes::as_ref),
+    };
+    felix_wire::binary::encode_shared_event_batch_bytes_with_meta(batch, meta)
 }
 
 pub(super) async fn run_lane_feeder(
@@ -73,13 +74,7 @@ pub(super) async fn run_lane_feeder(
             let payload_bytes: usize = payloads.iter().map(Bytes::len).sum();
             if payloads.len() <= max_events && payload_bytes <= max_bytes {
                 let prefix_start = t_now_if(t_should_sample());
-                let frame = match if config.skip_enabled {
-                    envelope.shared_event_frame_with_skip()
-                } else if config.offsets_enabled {
-                    envelope.shared_event_frame_with_offsets()
-                } else {
-                    envelope.shared_event_frame()
-                } {
+                let frame = match envelope.shared_event_frame_as(config.shape()) {
                     Ok(frame) => frame,
                     Err(err) => {
                         tracing::warn!(
@@ -133,6 +128,7 @@ pub(super) async fn run_lane_feeder(
                     batch,
                     envelope.base_offset().map(|base| base + start as u64),
                     skipped,
+                    envelope.publisher(),
                 );
                 match encoded {
                     Ok(frame) => {
@@ -169,6 +165,8 @@ pub(super) async fn run_lane_feeder(
         // the run ends the batch exactly as a byte or count limit would.
         let batch_base = envelope.base_offset();
         let batch_skipped = envelope.skipped_before();
+        // One publisher describes the frame, so a different one ends it.
+        let batch_publisher = envelope.publisher().cloned();
         let mut expected_next = batch_base.map(|base| base + envelope.len() as u64);
         // Wait for more only while the previous batch found events already
         // queued behind its first, i.e. arrivals outpace this feeder. Otherwise a
@@ -207,6 +205,10 @@ pub(super) async fn run_lane_feeder(
                 pending = Some(envelope);
                 break;
             }
+            if config.publisher_enabled && envelope.publisher() != batch_publisher.as_ref() {
+                pending = Some(envelope);
+                break;
+            }
             let payload = envelope.payloads()[0].clone();
             if batch_bytes.saturating_add(payload.len()) > max_bytes {
                 pending = Some(envelope);
@@ -221,7 +223,13 @@ pub(super) async fn run_lane_feeder(
         let sample = t_should_sample();
         let enqueue_start = t_now_if(sample);
         let prefix_start = t_now_if(sample);
-        let encoded = encode_batch(&config, &batch, batch_base, batch_skipped);
+        let encoded = encode_batch(
+            &config,
+            &batch,
+            batch_base,
+            batch_skipped,
+            batch_publisher.as_ref(),
+        );
         let frame = match encoded {
             Ok(frame) => frame,
             Err(err) => {

@@ -75,6 +75,9 @@ impl BrokerConfig {
         if let Some(value) = override_cfg.ack_on_commit {
             config.ack_on_commit = value;
         }
+        if let Some(value) = override_cfg.record_publishers {
+            config.record_publishers = value;
+        }
         if let Some(value) = override_cfg.max_frame_bytes {
             config.max_frame_bytes = value;
         }
@@ -261,6 +264,7 @@ pub(super) struct BrokerConfigOverride {
     controlplane_url: Option<String>,
     controlplane_sync_interval_ms: Option<u64>,
     ack_on_commit: Option<bool>,
+    record_publishers: Option<bool>,
     max_frame_bytes: Option<usize>,
     preauth_max_frame_bytes: Option<usize>,
     preauth_max_streams_per_conn: Option<usize>,

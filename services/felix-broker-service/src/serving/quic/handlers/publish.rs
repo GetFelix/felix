@@ -245,6 +245,8 @@ pub(crate) type PublishResult = Result<Option<u64>>;
 pub(crate) struct PublishJob {
     pub(crate) target: PublishTarget,
     pub(crate) payloads: Vec<Bytes>,
+    /// The authenticated principal publishing it.
+    pub(crate) publisher: Option<Bytes>,
     pub(crate) response: Option<oneshot::Sender<PublishResult>>,
     /// The client was told this job succeeded when it was queued. If it then
     /// cannot be written, nobody hears, so it is counted instead.
@@ -255,6 +257,23 @@ pub(crate) struct PublishJob {
     /// The shard's write fence, entered at admission when the publish is
     /// acknowledged before it is written. See `enqueue_publish`.
     pub(crate) fenced: Option<crate::shards::lifecycle::fence::FenceGuard>,
+}
+
+/// Who is publishing: the token a forward carries for the owner to verify,
+/// and the principal a publish written here records.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PublishAs {
+    pub(crate) credential: String,
+    pub(crate) publisher: Option<Bytes>,
+}
+
+impl From<String> for PublishAs {
+    fn from(credential: String) -> Self {
+        Self {
+            credential,
+            publisher: None,
+        }
+    }
 }
 
 /// Count a publish that arrived on the JSON encoding.

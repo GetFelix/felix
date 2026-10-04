@@ -103,6 +103,10 @@ impl BrokerConfig {
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
             .unwrap_or(false);
+        let record_publishers = std::env::var("FELIX_RECORD_PUBLISHERS")
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
         let max_frame_bytes = std::env::var("FELIX_MAX_FRAME_BYTES")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
@@ -360,6 +364,7 @@ impl BrokerConfig {
             membership,
             peer_transport,
             ack_on_commit,
+            record_publishers,
             max_frame_bytes,
             preauth_max_frame_bytes,
             preauth_max_streams_per_conn,

@@ -389,11 +389,12 @@ mod durable {
             .iter()
             .map(|r| crate::replication::mark_to_wire(r.mark))
             .collect();
-        let checksum = felix_wire::internal::batch_checksum(&payloads, &marks);
-        let applied = crate::replication::apply(log(follower), from, checksum, &payloads, &marks)
-            .await
-            .expect("apply")
-            .expect("in order");
+        let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[]);
+        let applied =
+            crate::replication::apply(log(follower), from, checksum, &payloads, &marks, &[])
+                .await
+                .expect("apply")
+                .expect("in order");
         broker
             .adopt_replicated("t1", "default", "orders", 0, applied.durable_offset)
             .await

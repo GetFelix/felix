@@ -26,6 +26,7 @@ fn record(payload: &str) -> AppendRecord {
         payload: Bytes::copy_from_slice(payload.as_bytes()),
         timestamp_micros: 1,
         mark: Default::default(),
+        publisher: None,
     }
 }
 

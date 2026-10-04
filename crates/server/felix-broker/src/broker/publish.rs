@@ -73,7 +73,7 @@ impl Broker {
         payloads: &[Bytes],
     ) -> Result<usize> {
         Ok(self
-            .publish_batch_with_outcome(handle, payloads)
+            .publish_batch_with_outcome(handle, payloads, None)
             .await?
             .subscribers)
     }
@@ -91,8 +91,9 @@ impl Broker {
         &self,
         handle: &StreamHandle,
         payloads: &[Bytes],
+        publisher: Option<&Bytes>,
     ) -> Result<PublishOutcome> {
-        let claimed = self.claim_publish(handle, payloads).await?;
+        let claimed = self.claim_publish(handle, payloads, publisher).await?;
         self.complete_publish(claimed).await
     }
 
@@ -108,13 +109,19 @@ impl Broker {
     /// Offsets are consumed here, so the order calls return in *is* the order
     /// records land on disk. Complete every claim: dropping one releases its
     /// commit range, but the offsets it consumed stay consumed.
+    ///
+    /// `publisher` is the principal publishing the batch. Subscribers of an
+    /// in-memory stream are told it; a durable stream stores it with each
+    /// record only when [`Broker::records_publishers`] says so, and its
+    /// subscribers are told only what was stored.
     pub async fn claim_publish(
         &self,
         handle: &StreamHandle,
         payloads: &[Bytes],
+        publisher: Option<&Bytes>,
     ) -> Result<ClaimedPublish> {
         Ok(self
-            .claim(handle, payloads, Append::Plain)
+            .claim(handle, payloads, Append::Plain, publisher)
             .await?
             .expect("a plain append always claims"))
     }
@@ -126,15 +133,23 @@ impl Broker {
         handle: &StreamHandle,
         payloads: &[Bytes],
         append: Append<'_>,
+        publisher: Option<&Bytes>,
     ) -> Result<Option<ClaimedPublish>> {
         if !handle.state.active.load(Ordering::Acquire) {
             return Err(BrokerError::StreamHandleInactive(handle.id()));
         }
 
+        // What subscribers are told is what replay will find: on a durable
+        // stream, only a publisher the log stores.
+        let publisher = match handle.state.durable {
+            Some(_) => publisher.filter(|_| self.records_publishers()),
+            None => publisher,
+        };
         let sample = t_should_sample();
         let mut claimed = ClaimedPublish {
             handle: handle.clone(),
             payloads: payloads.to_vec(),
+            publisher: publisher.cloned(),
             commit: None,
             durable: None,
             sample,
@@ -155,16 +170,23 @@ impl Broker {
             // assigns the offsets, so a publish cancelled before this returns
             // still releases it.
             let order = &handle.state.commit_sequencer;
+            let publishers = match publisher {
+                Some(publisher) => vec![Some(publisher.clone()); payloads.len()],
+                None => Vec::new(),
+            };
             let (pending, turn) = match append {
-                Append::Plain => durable.begin_append(payloads, order).await?,
+                Append::Plain => durable.begin_append(payloads, &publishers, order).await?,
                 Append::Marked(marks) => {
-                    durable.begin_append_marked(payloads, marks, order).await?
+                    durable
+                        .begin_append_marked(payloads, marks, &publishers, order)
+                        .await?
                 }
                 Append::Commit(record) => {
                     durable
                         .begin_append_marked(
                             std::slice::from_ref(record),
                             &[RecordMark::Commit],
+                            &publishers,
                             order,
                         )
                         .await?
@@ -173,7 +195,7 @@ impl Broker {
                     producer_id,
                     sequence,
                 } => match durable
-                    .continue_batch(producer_id, sequence, payloads, order)
+                    .continue_batch(producer_id, sequence, payloads, &publishers, order)
                     .await?
                 {
                     Some(claimed) => claimed,
@@ -262,7 +284,7 @@ impl Broker {
         reuse: SequenceReuse,
     ) -> Result<IdempotentOutcome> {
         let claimed = self
-            .claim_batch_idempotent(handle, producer_id, sequence, payloads, reuse)
+            .claim_batch_idempotent(handle, producer_id, sequence, payloads, reuse, None)
             .await?;
         self.complete_idempotent(claimed).await
     }
@@ -281,10 +303,18 @@ impl Broker {
         sequence: u64,
         payloads: &[Bytes],
         reuse: SequenceReuse,
+        publisher: Option<&Bytes>,
     ) -> Result<IdempotentClaim> {
         let Some(log) = &handle.state.durable else {
             return self
-                .publish_idempotent_in_memory(handle, producer_id, sequence, payloads, reuse)
+                .publish_idempotent_in_memory(
+                    handle,
+                    producer_id,
+                    sequence,
+                    payloads,
+                    reuse,
+                    publisher,
+                )
                 .await
                 .map(IdempotentClaim::Done);
         };
@@ -314,7 +344,7 @@ impl Broker {
                     let marks: Vec<RecordMark> =
                         RecordMark::for_batch(producer_id, sequence, payloads.len()).collect();
                     let claimed = self
-                        .claim(handle, payloads, Append::Marked(&marks))
+                        .claim(handle, payloads, Append::Marked(&marks), publisher)
                         .await?
                         .expect("a marked append always claims");
                     return Ok(IdempotentClaim::Appended {
@@ -342,7 +372,7 @@ impl Broker {
                         sequence,
                     };
                     let Some(claimed) = self
-                        .claim(handle, &payloads[held as usize..], append)
+                        .claim(handle, &payloads[held as usize..], append, publisher)
                         .await?
                     else {
                         // Something landed after it since it was classified,
@@ -411,6 +441,7 @@ impl Broker {
         sequence: u64,
         payloads: &[Bytes],
         reuse: SequenceReuse,
+        publisher: Option<&Bytes>,
     ) -> Result<IdempotentOutcome> {
         let producers = &handle.state.producers;
         let turn = producers.turn(producer_id, sequence)?;
@@ -425,7 +456,9 @@ impl Broker {
             }
             Sequenced::Append => {
                 let digest = PayloadDigest::of(payloads);
-                let outcome = self.publish_batch_with_outcome(handle, payloads).await?;
+                let outcome = self
+                    .publish_batch_with_outcome(handle, payloads, publisher)
+                    .await?;
                 producers.remember(producer_id, sequence, outcome, digest);
                 Ok(IdempotentOutcome {
                     outcome,
@@ -495,6 +528,8 @@ pub enum IdempotentClaim {
 pub struct ClaimedPublish {
     handle: StreamHandle,
     payloads: Vec<Bytes>,
+    /// Who published the batch, as its subscribers are told.
+    publisher: Option<Bytes>,
     /// A commit's state updates; `payloads` is then its one event.
     commit: Option<Arc<[crate::commit::StateOp]>>,
     durable: Option<ClaimedDurable>,

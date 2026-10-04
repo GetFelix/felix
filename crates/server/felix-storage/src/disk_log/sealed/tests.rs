@@ -24,6 +24,7 @@ async fn fill(dir: &TempDir, records: usize) {
             payload: Bytes::from(format!("value-{i:03}")),
             timestamp_micros: 1,
             mark: Default::default(),
+            publisher: None,
         }])
         .await
         .expect("append");
@@ -123,6 +124,7 @@ async fn a_truncation_never_leaves_a_stale_index_for_a_reused_segment() {
             payload: Bytes::from(format!("again-{i:03}-with-a-longer-payload")),
             timestamp_micros: 1,
             mark: Default::default(),
+            publisher: None,
         }])
         .await
         .expect("append");

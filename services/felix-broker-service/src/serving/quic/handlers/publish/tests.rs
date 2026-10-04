@@ -98,6 +98,7 @@ fn make_job() -> PublishJob {
         acked_on_enqueue: false,
         admission_permit: None,
         fenced: None,
+        publisher: None,
     }
 }
 
@@ -106,6 +107,7 @@ fn make_auth_ctx(tenant_id: &str, perms: &[&str]) -> AuthContext {
     let matcher = PermissionMatcher::from_strings(&patterns).expect("parse perms");
     AuthContext {
         subject: "test-principal".to_string(),
+        publisher: Some(bytes::Bytes::from_static(b"test-principal")),
         tenant_id: tenant_id.to_string(),
         matcher,
         token: "test-token".to_string(),

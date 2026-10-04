@@ -8,6 +8,7 @@ fn commit(payload: &'static str) -> AppendRecord {
         payload: Bytes::from_static(payload.as_bytes()),
         timestamp_micros: 1,
         mark: RecordMark::Commit,
+        publisher: None,
     }
 }
 
@@ -23,6 +24,7 @@ async fn a_commit_is_never_written_into_a_v4_segment() {
         payload: Bytes::copy_from_slice(&3u64.to_be_bytes()),
         timestamp_micros: 1,
         mark: RecordMark::GenerationStart,
+        publisher: None,
     }])
     .await
     .expect("append");

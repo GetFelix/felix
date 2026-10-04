@@ -47,6 +47,7 @@ impl Broker {
         handle: &StreamHandle,
         event: Bytes,
         ops: Vec<StateOp>,
+        publisher: Option<&Bytes>,
     ) -> Result<PublishOutcome> {
         if handle.log().is_none() {
             return Err(BrokerError::CommitNeedsDurableStream);
@@ -58,7 +59,7 @@ impl Broker {
         let stored = record.encode();
         let events = [event];
         let mut claimed = self
-            .claim(handle, &events, Append::Commit(&stored))
+            .claim(handle, &events, Append::Commit(&stored), publisher)
             .await?
             .expect("a commit always claims");
         claimed.set_commit(Arc::from(record.ops));

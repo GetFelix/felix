@@ -59,6 +59,8 @@ pub(crate) struct EventFormat {
     pub(crate) offsets: bool,
     /// `FLAG_EVENT_BATCH_SKIPPED`, only ever with `offsets`.
     pub(crate) skips: bool,
+    /// `FLAG_EVENT_BATCH_PUBLISHER`.
+    pub(crate) publisher: bool,
 }
 
 /// Write a resumed subscription's stored history and ring backlog.
@@ -83,7 +85,7 @@ pub(super) async fn write_replay<S: EventSink>(
     shard: u32,
     subscription_id: u64,
     history: Option<felix_broker::HistoryRange>,
-    backlog: Vec<(u64, bytes::Bytes)>,
+    backlog: Vec<felix_broker::RingRecord>,
     backlog_start: u64,
     subscription: &mut felix_broker::Subscription,
     max_events: usize,
@@ -104,7 +106,7 @@ pub(super) async fn write_replay<S: EventSink>(
         // Where delivery begins: the history, else the backlog.
         next: match (&history, backlog.first()) {
             (Some(range), _) => range.from_offset,
-            (None, Some((offset, _))) => backlog_start.min(*offset),
+            (None, Some(record)) => backlog_start.min(record.offset),
             (None, None) => backlog_start,
         },
         skipped: 0,
@@ -115,7 +117,8 @@ pub(super) async fn write_replay<S: EventSink>(
     }
 
     let mut batch = ReplayBatch::new(max_events, max_bytes);
-    for (offset, payload) in backlog {
+    for record in backlog {
+        let offset = record.offset;
         // A hole in the ring is paged from disk like a hole in the queue
         // below. It is usually a generation-start record, which the read
         // turns into a skip for the record after it.
@@ -128,7 +131,8 @@ pub(super) async fn write_replay<S: EventSink>(
         if offset < replay.next {
             continue;
         }
-        if let Some(ready) = batch.push(offset, payload, replay.deliver(offset)) {
+        let publisher = replay.publisher(record.publisher);
+        if let Some(ready) = batch.push(offset, record.payload, replay.deliver(offset), publisher) {
             replay.write(&ready).await?;
         }
     }
@@ -164,6 +168,7 @@ pub(super) async fn write_replay<S: EventSink>(
                 }
             }
             let mut batch = ReplayBatch::new(max_events, max_bytes);
+            let publisher = replay.publisher(envelope.publisher().cloned());
             for (index, payload) in envelope.payloads().iter().enumerate() {
                 let offset = envelope
                     .base_offset()
@@ -172,7 +177,9 @@ pub(super) async fn write_replay<S: EventSink>(
                 if offset < replay.next {
                     continue;
                 }
-                if let Some(chunk) = batch.push(offset, payload.clone(), replay.deliver(offset)) {
+                let skipped = replay.deliver(offset);
+                if let Some(chunk) = batch.push(offset, payload.clone(), skipped, publisher.clone())
+                {
                     replay.write(&chunk).await?;
                 }
             }
@@ -206,6 +213,11 @@ struct Replay<'a, S> {
 }
 
 impl<S: EventSink> Replay<'_, S> {
+    /// The publisher to put on the wire: none unless the subscriber asked.
+    fn publisher(&self, publisher: Option<bytes::Bytes>) -> Option<bytes::Bytes> {
+        publisher.filter(|_| self.format.publisher)
+    }
+
     /// Account for delivering the record at `offset`, returning how many
     /// offsets immediately before it are known to hold no event.
     fn deliver(&mut self, offset: u64) -> u64 {
@@ -251,7 +263,8 @@ impl<S: EventSink> Replay<'_, S> {
                 self.skipped += record.offset - self.next;
                 self.next = record.offset;
                 let skipped = self.deliver(record.offset);
-                if let Some(ready) = batch.push(record.offset, record.payload, skipped) {
+                let publisher = self.publisher(record.publisher);
+                if let Some(ready) = batch.push(record.offset, record.payload, skipped, publisher) {
                     self.write(&ready).await?;
                 }
             }
@@ -280,11 +293,13 @@ impl<S: EventSink> Replay<'_, S> {
 /// * **The record count**, matching live delivery's batching.
 ///
 /// A record that follows skipped offsets starts a batch too, since the skip
-/// count describes the batch's first record.
+/// count describes the batch's first record, and so does one from a different
+/// publisher, since a frame names one.
 struct ReplayBatch {
     payloads: Vec<bytes::Bytes>,
     base_offset: u64,
     skipped_before: u64,
+    publisher: Option<bytes::Bytes>,
     next_offset: u64,
     bytes: usize,
     max_events: usize,
@@ -297,6 +312,7 @@ impl ReplayBatch {
             payloads: Vec::new(),
             base_offset: 0,
             skipped_before: 0,
+            publisher: None,
             next_offset: 0,
             bytes: 0,
             max_events: max_events.max(1),
@@ -310,10 +326,11 @@ impl ReplayBatch {
         offset: u64,
         payload: bytes::Bytes,
         skipped_before: u64,
+        publisher: Option<bytes::Bytes>,
     ) -> Option<ReadyBatch> {
         let len = payload.len();
-        let breaks_run =
-            !self.payloads.is_empty() && (offset != self.next_offset || skipped_before > 0);
+        let breaks_run = !self.payloads.is_empty()
+            && (offset != self.next_offset || skipped_before > 0 || publisher != self.publisher);
         let over_bytes = !self.payloads.is_empty() && self.bytes + len > self.max_bytes;
         let ready = if breaks_run || over_bytes {
             self.take()
@@ -323,6 +340,7 @@ impl ReplayBatch {
         if self.payloads.is_empty() {
             self.base_offset = offset;
             self.skipped_before = skipped_before;
+            self.publisher = publisher;
         }
         self.payloads.push(payload);
         self.next_offset = offset + 1;
@@ -343,6 +361,7 @@ impl ReplayBatch {
         Some(ReadyBatch {
             base_offset: self.base_offset,
             skipped_before: std::mem::take(&mut self.skipped_before),
+            publisher: self.publisher.take(),
             payloads: std::mem::take(&mut self.payloads),
         })
     }
@@ -354,6 +373,9 @@ pub(super) struct ReadyBatch {
     pub(super) base_offset: u64,
     /// Offsets just before `base_offset` that hold no event.
     pub(super) skipped_before: u64,
+    /// Who published every record in it, when the subscriber asked and the
+    /// log recorded one.
+    pub(super) publisher: Option<bytes::Bytes>,
     pub(super) payloads: Vec<bytes::Bytes>,
 }
 
@@ -377,22 +399,17 @@ pub(super) async fn write_replay_batch<S: EventSink>(
         return Ok(());
     }
     let payloads = batch.payloads.as_slice();
-    let frame = if format.skips {
-        felix_wire::binary::encode_event_batch_bytes_with_skip(
-            subscription_id,
-            payloads,
-            batch.base_offset,
-            batch.skipped_before,
-        )?
-    } else if format.offsets {
-        felix_wire::binary::encode_event_batch_bytes_with_offset(
-            subscription_id,
-            payloads,
-            batch.base_offset,
-        )?
-    } else {
-        felix_wire::binary::encode_event_batch_bytes(subscription_id, payloads)?
+    let meta = felix_wire::binary::EventBatchMeta {
+        base_offset: format.offsets.then_some(batch.base_offset),
+        skipped_before: if format.skips {
+            batch.skipped_before
+        } else {
+            0
+        },
+        publisher: batch.publisher.as_deref().filter(|_| format.publisher),
     };
+    let frame =
+        felix_wire::binary::encode_event_batch_bytes_with_meta(subscription_id, payloads, meta)?;
     EventSink::write_all(event_send, &frame).await?;
     event_send.delivered(payloads.len(), payloads.iter().map(bytes::Bytes::len).sum());
     Ok(())

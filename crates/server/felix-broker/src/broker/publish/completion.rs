@@ -39,6 +39,7 @@ const RELEASE_RECHECK: Duration = Duration::from_millis(250);
 pub(super) struct Completion {
     handle: StreamHandle,
     payloads: Vec<Bytes>,
+    publisher: Option<Bytes>,
     commit: Option<Arc<[StateOp]>>,
     /// Holds the commit turn until the batch is fanned out.
     durable: Option<ClaimedDurable>,
@@ -74,6 +75,7 @@ impl Completion {
         let ClaimedPublish {
             handle,
             payloads,
+            publisher,
             commit,
             durable,
             sample,
@@ -81,6 +83,7 @@ impl Completion {
         Self {
             handle,
             payloads,
+            publisher,
             commit,
             durable,
             sample,
@@ -97,6 +100,7 @@ impl Completion {
         Self {
             handle,
             payloads: batch.payloads,
+            publisher: batch.publisher,
             commit: batch.commit,
             durable: None,
             sample: false,
@@ -151,6 +155,7 @@ impl Completion {
         }
         let batch = HeldBatch {
             payloads: std::mem::take(&mut self.payloads),
+            publisher: self.publisher.take(),
             first_offset,
             commit: self.commit.take(),
         };
@@ -246,6 +251,7 @@ impl Completion {
                 turn,
                 self.log_capacity,
                 self.commit.as_deref(),
+                self.publisher.as_ref(),
             )
             .ok_or(BrokerError::PublishSuperseded {
                 first_offset: first_offset.unwrap_or_default(),
@@ -259,7 +265,12 @@ impl Completion {
             senders,
             // The offsets travel with the batch, so live delivery reports them
             // exactly as replay does.
-            envelope: DeliveryEnvelope::with_offsets(&self.payloads, first_offset, skipped_before),
+            envelope: DeliveryEnvelope::published(
+                &self.payloads,
+                first_offset,
+                skipped_before,
+                self.publisher.clone(),
+            ),
             first_offset,
             next: 0,
             sent: 0,

@@ -94,6 +94,7 @@ async fn run(scenario: Scenario) {
                     payload: Bytes::from(payload(scenario.seed, offset)),
                     timestamp_micros: 1_700_000_000 + offset,
                     mark: Default::default(),
+                    publisher: None,
                 })
                 .collect();
             let appended = log.append(&records).await.expect("append");
@@ -186,6 +187,7 @@ async fn verify(
         payload: Bytes::from_static(b"after the crash"),
         timestamp_micros: 1,
         mark: Default::default(),
+        publisher: None,
     };
     let appended = log
         .append(std::slice::from_ref(&more))
@@ -335,6 +337,7 @@ impl ParkedSeal {
             payload: Bytes::from(payload(self.scenario.seed, self.next)),
             timestamp_micros: 1_700_000_000 + self.next,
             mark: Default::default(),
+            publisher: None,
         };
         self.log.append(&[record]).await.expect("append");
         self.next += 1;

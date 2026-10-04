@@ -96,6 +96,7 @@ mod correlation {
                 marks: Vec::new(),
                 commit_offset: None,
                 generations: None,
+                publishers: Vec::new(),
             }),
             InternalMessage::ReplicateOk(ReplicateOk {
                 correlation_id: 7,
@@ -146,6 +147,7 @@ mod correlation {
                 marks: vec![felix_wire::internal::ProducerMark::Continues],
                 commit_offset: None,
                 generations: None,
+                publishers: Vec::new(),
             }),
         ]
     }

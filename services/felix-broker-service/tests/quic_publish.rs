@@ -1070,7 +1070,7 @@ async fn stored_orders(broker: &Broker) -> Result<Vec<Vec<u8>>> {
     Ok(resumed
         .backlog
         .into_iter()
-        .map(|(_, payload)| payload.to_vec())
+        .map(|record| record.payload.to_vec())
         .collect())
 }
 

@@ -488,6 +488,7 @@ impl ReplicaHandler {
                     batch.checksum,
                     &batch.payloads,
                     &batch.marks,
+                    &batch.publishers,
                 )
                 .await
             }
@@ -562,6 +563,7 @@ impl ReplicaHandler {
                             batch.checksum,
                             &batch.payloads,
                             &batch.marks,
+                            &batch.publishers,
                         )
                         .await;
                     }
@@ -914,6 +916,7 @@ impl ReplicaHandler {
         let first_offset = records
             .first()
             .map_or(request.from_offset, |record| record.offset);
+        let publishers = replication::publishers_to_wire(&records);
         let payloads: Vec<bytes::Bytes> =
             records.into_iter().map(|record| record.payload).collect();
         let end = first_offset + payloads.len() as u64;
@@ -921,13 +924,14 @@ impl ReplicaHandler {
             correlation_id,
             shard: request.shard,
             first_offset,
-            checksum: felix_wire::internal::batch_checksum(&payloads, &marks),
+            checksum: felix_wire::internal::batch_checksum(&payloads, &marks, &publishers),
             payloads,
             marks,
             commit_offset: None,
             generations: request
                 .labelled
                 .then(|| generations_over(&log.generations(), first_offset, end)),
+            publishers,
         };
         match log_kind {
             felix_broker::LogKind::Cache => InternalMessage::ReplicateCacheRecords(batch),

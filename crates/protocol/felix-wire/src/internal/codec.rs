@@ -137,10 +137,11 @@ impl InternalMessage {
                 if matches!(self, Self::ReplicateMarkedRecords(_))
                     || m.commit_offset.is_some()
                     || labelled.is_some()
+                    || !m.publishers.is_empty()
                 {
                     let mut marks = m.marks.clone();
                     marks.resize(m.payloads.len(), ProducerMark::None);
-                    put_marks(&mut body, &marks);
+                    put_marks(&mut body, &marks, &m.publishers);
                 } else {
                     debug_assert!(
                         m.marks.iter().all(|mark| *mark == ProducerMark::None),
@@ -453,11 +454,12 @@ impl InternalMessage {
                 }
                 let labelled = header.kind == Kind::ReplicateLabelledRecords;
                 let committed = header.kind == Kind::ReplicateCommittedRecords || labelled;
-                let mut marks = if header.kind == Kind::ReplicateMarkedRecords || committed {
-                    take_marks(&mut body, payloads.len())?
-                } else {
-                    Vec::new()
-                };
+                let (mut marks, publishers) =
+                    if header.kind == Kind::ReplicateMarkedRecords || committed {
+                        take_marks(&mut body, payloads.len())?
+                    } else {
+                        (Vec::new(), Vec::new())
+                    };
                 let (log, commit_offset) = if labelled {
                     let log = ReplicaLog::from_u8(take_u8(&mut body)?)?;
                     let present = take_u8(&mut body)?;
@@ -496,7 +498,9 @@ impl InternalMessage {
                 expect_empty(&body)?;
                 // An unmarked batch has no marks, as the leader built it; the
                 // checksum covers marks only when there are any.
-                if committed && marks.iter().all(|mark| *mark == ProducerMark::None) {
+                if (committed || !publishers.is_empty())
+                    && marks.iter().all(|mark| *mark == ProducerMark::None)
+                {
                     marks.clear();
                 }
 
@@ -513,6 +517,7 @@ impl InternalMessage {
                     checksum,
                     payloads,
                     marks,
+                    publishers,
                     commit_offset,
                     generations,
                 };
@@ -533,6 +538,12 @@ impl InternalMessage {
                     Kind::ReplicateGroupRecords => Self::ReplicateGroupRecords(message),
                     Kind::ReplicateDeadLetterRecords => Self::ReplicateDeadLetterRecords(message),
                     Kind::ReplicateCounterRecords => Self::ReplicateCounterRecords(message),
+                    // Sent as marked only to carry its publishers.
+                    Kind::ReplicateMarkedRecords
+                        if message.marks.is_empty() && !message.publishers.is_empty() =>
+                    {
+                        Self::ReplicateRecords(message)
+                    }
                     Kind::ReplicateMarkedRecords => Self::ReplicateMarkedRecords(message),
                     _ => Self::ReplicateRecords(message),
                 })

@@ -439,6 +439,18 @@ leader accepts a commit only once the fleet has finalized `atomic_commit`, and
 a peer that predates the byte refuses the batch rather than storing the
 commit as an ordinary event.
 
+A record's **publisher** travels in the marks section too. Bit `0x80` on a mark
+byte says the record's publisher follows the rest of its mark, as a `u8`
+length and that many bytes; the other bits are the mark as above. A batch with
+any publisher has the section even when no record is otherwise marked, so a
+plain batch carrying one goes as `ReplicateMarkedRecords`. The checksum covers
+the publishers with the marks, and a follower stores them as shipped, so a
+promoted replica reports what the leader did; a resend whose publisher differs
+from the stored one is a `LogConflict`. A leader writes publishers only once
+the fleet has finalized `publisher_principal`, and a peer that predates the
+bit refuses the batch (`UnknownInternalProducerMark`) rather than storing the
+records without them.
+
 **The commit offset** rides with the records too. Under `Quorum` the leader
 sends its quorum mark, one past the last record a majority holds and the
 control plane has been told about, as `ReplicateRecords.commit_offset`. A batch

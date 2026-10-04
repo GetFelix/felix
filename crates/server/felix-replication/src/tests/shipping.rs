@@ -342,7 +342,7 @@ async fn the_batch_carries_the_checksum_the_follower_will_verify() {
     .await;
 
     let batch = follower.sent.lock().expect("lock")[0].clone();
-    assert_eq!(batch.checksum, batch_checksum(&batch.payloads, &[]));
+    assert_eq!(batch.checksum, batch_checksum(&batch.payloads, &[], &[]));
     assert_eq!(
         batch.shard.generation, GENERATION,
         "the epoch was not carried"

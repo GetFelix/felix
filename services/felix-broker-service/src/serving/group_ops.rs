@@ -150,6 +150,9 @@ async fn poll_rechecking(
                     payload: claimed.payload,
                     attempts: claimed.attempts,
                     skipped_before: claimed.skipped_before,
+                    publisher: claimed
+                        .publisher
+                        .map(|publisher| String::from_utf8_lossy(&publisher).into_owned()),
                 })
                 .collect());
         }

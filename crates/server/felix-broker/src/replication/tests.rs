@@ -49,8 +49,8 @@ async fn ship(
     values: &[&str],
 ) -> std::result::Result<Applied, Divergence> {
     let payloads = batch(values);
-    let checksum = felix_wire::internal::batch_checksum(&payloads, &[]);
-    apply(log, first_offset, checksum, &payloads, &[])
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[]);
+    apply(log, first_offset, checksum, &payloads, &[], &[])
         .await
         .expect("apply")
 }
@@ -173,7 +173,7 @@ async fn a_batch_that_did_not_survive_the_trip_is_refused() {
     let (log, _dir) = follower().await;
     let payloads = batch(&["a", "b"]);
 
-    let divergence = apply(&log, 0, 0xdead_beef, &payloads, &[])
+    let divergence = apply(&log, 0, 0xdead_beef, &payloads, &[], &[])
         .await
         .expect("apply")
         .expect_err("should be corrupt");
@@ -191,8 +191,8 @@ async fn a_batch_that_did_not_survive_the_trip_is_refused() {
 /// to catch.
 #[test]
 fn the_checksum_separates_records_that_concatenate_alike() {
-    let one = felix_wire::internal::batch_checksum(&batch(&["ab", "c"]), &[]);
-    let other = felix_wire::internal::batch_checksum(&batch(&["a", "bc"]), &[]);
+    let one = felix_wire::internal::batch_checksum(&batch(&["ab", "c"]), &[], &[]);
+    let other = felix_wire::internal::batch_checksum(&batch(&["a", "bc"]), &[], &[]);
 
     assert_ne!(one, other);
 }
@@ -321,8 +321,8 @@ async fn marks_are_stored_as_shipped_and_a_different_mark_is_a_conflict() {
         len: 2,
     };
     let marks = [opens, ProducerMark::Continues];
-    let checksum = felix_wire::internal::batch_checksum(&payloads, &marks);
-    apply(&log, 0, checksum, &payloads, &marks)
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[]);
+    apply(&log, 0, checksum, &payloads, &marks, &[])
         .await
         .expect("apply")
         .expect("in order");
@@ -336,8 +336,8 @@ async fn marks_are_stored_as_shipped_and_a_different_mark_is_a_conflict() {
     );
 
     // The same bytes, unmarked, at the same offsets.
-    let checksum = felix_wire::internal::batch_checksum(&payloads, &[]);
-    let refused = apply(&log, 0, checksum, &payloads, &[])
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[]);
+    let refused = apply(&log, 0, checksum, &payloads, &[], &[])
         .await
         .expect("apply")
         .expect_err("a record with a different mark was taken as the same");
@@ -382,9 +382,52 @@ async fn an_append_at_a_stale_tail_writes_nothing() {
     let (log, _dir) = follower().await;
     ship(&log, 0, &["a"]).await.expect("first");
     let refused = log
-        .begin_append_marked_at(0, &batch(&["b"]), &[RecordMark::None])
+        .begin_append_marked_at(0, &batch(&["b"]), &[RecordMark::None], &[])
         .await
         .expect("append");
     assert!(refused.is_none());
     assert_eq!(stored(&log).await, vec!["a".to_string()]);
+}
+
+/// A follower stores each record's publisher as shipped, so a promoted
+/// replica reports what the leader did, and a resend whose publisher differs
+/// from the stored one is a different record.
+#[tokio::test]
+async fn publishers_are_stored_as_shipped_and_compared_on_a_resend() {
+    let (log, _dir) = follower().await;
+    let payloads = batch(&["a", "b"]);
+    let publishers = vec![Some(payload("alice")), None];
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &publishers);
+    apply(&log, 0, checksum, &payloads, &[], &publishers)
+        .await
+        .expect("apply")
+        .expect("stored");
+    let held = log.read_from(0, 1 << 20).await.expect("read");
+    assert_eq!(
+        held.iter()
+            .map(|record| record.publisher.clone())
+            .collect::<Vec<_>>(),
+        publishers
+    );
+    // The leader's records, shipped again: an overlap that agrees.
+    assert!(
+        apply(&log, 0, checksum, &payloads, &[], &publishers)
+            .await
+            .expect("apply")
+            .is_ok()
+    );
+
+    let other = vec![Some(payload("mallory")), None];
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &other);
+    let refused = apply(&log, 0, checksum, &payloads, &[], &other)
+        .await
+        .expect("apply");
+    assert!(matches!(
+        refused,
+        Err(Divergence::Conflict { offset: 0, .. })
+    ));
+    assert_eq!(
+        publishers_to_wire(&held),
+        vec![Some(payload("alice")), None]
+    );
 }

@@ -173,6 +173,17 @@ where
     );
 
     let (broker, durable_storage) = storage::open(&config)?;
+    // A record with its publisher is storage format v6, which an older build
+    // refuses to open, so a cluster waits for its fleet to finalize it and a
+    // lone broker for its operator to ask.
+    if config.membership.is_some() {
+        let fleet = Arc::clone(&fleet);
+        broker.record_publishers_when(move || {
+            fleet.supports(felix_common::fleet::PUBLISHER_PRINCIPAL)
+        });
+    } else if config.record_publishers {
+        broker.record_publishers_when(|| true);
+    }
     // Readers of a replicated `Quorum` stream see only what its quorum mark
     // has passed; see `replication::quorum::committed_bound`.
     if let Some(ingress) = &ingress_router {

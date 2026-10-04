@@ -25,7 +25,7 @@ pub use publish::{
 };
 pub use shard_logs::LogKind;
 pub use shards::StreamHandle;
-pub use subscribe::{Cursor, HistoryRange, JoinOffsets, ResumedSubscription};
+pub use subscribe::{Cursor, HistoryRange, JoinOffsets, ResumedSubscription, RingRecord};
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -141,6 +141,19 @@ pub struct Broker {
     /// Seeds producer ids; randomly keyed at construction.
     producer_ids: ahash::RandomState,
     producer_id_counter: std::sync::atomic::AtomicU64,
+    /// Whether a durable stream stores each record's publisher, once the
+    /// node says. Unset stores none.
+    record_publishers: std::sync::OnceLock<PublisherGate>,
+}
+
+/// Decides whether durable streams store publishers; see
+/// [`Broker::record_publishers_when`].
+struct PublisherGate(Arc<dyn Fn() -> bool + Send + Sync>);
+
+impl std::fmt::Debug for PublisherGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PublisherGate")
+    }
 }
 
 // `Broker` is `Send + Sync` from its fields alone: every field is an `RwLock`,
@@ -183,7 +196,23 @@ impl Broker {
             read_bounds: Arc::default(),
             producer_ids: ahash::RandomState::new(),
             producer_id_counter: std::sync::atomic::AtomicU64::new(0),
+            record_publishers: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Store each durable record's publisher whenever `gate` says so.
+    ///
+    /// Asked on every durable publish. A record with a publisher needs
+    /// storage format v6, which an older build refuses to open, so the node
+    /// turns this on only once that is acceptable: in a cluster when the
+    /// fleet has finalized `publisher_principal`. Only the first call counts.
+    pub fn record_publishers_when(&self, gate: impl Fn() -> bool + Send + Sync + 'static) {
+        let _ = self.record_publishers.set(PublisherGate(Arc::new(gate)));
+    }
+
+    /// Whether a durable publish now stores its publisher.
+    pub fn records_publishers(&self) -> bool {
+        self.record_publishers.get().is_some_and(|gate| (gate.0)())
     }
 
     /// Per-subscriber queue capacity. Zero is rejected.

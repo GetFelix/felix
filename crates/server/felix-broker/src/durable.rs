@@ -182,20 +182,24 @@ impl StreamLog {
     pub async fn begin_append(
         &self,
         payloads: &[Bytes],
+        publishers: &[Option<Bytes>],
         order: &Arc<CommitSequencer>,
     ) -> Result<(PendingAppend, CommitTurn<'static>)> {
-        self.begin_append_marked(payloads, &[], order).await
+        self.begin_append_marked(payloads, &[], publishers, order)
+            .await
     }
 
     /// [`StreamLog::begin_append`] with a producer mark per record, or none
-    /// when `marks` is empty.
+    /// when `marks` is empty. `publishers` is likewise one per record, or
+    /// empty when none is recorded.
     pub async fn begin_append_marked(
         &self,
         payloads: &[Bytes],
         marks: &[RecordMark],
+        publishers: &[Option<Bytes>],
         order: &Arc<CommitSequencer>,
     ) -> Result<(PendingAppend, CommitTurn<'static>)> {
-        let records = records(payloads, marks)?;
+        let records = records(payloads, marks, publishers)?;
         self.log
             .append_claimed(&records, order)
             .await
@@ -209,8 +213,9 @@ impl StreamLog {
         first_offset: Offset,
         payloads: &[Bytes],
         marks: &[RecordMark],
+        publishers: &[Option<Bytes>],
     ) -> Result<Option<PendingAppend>> {
-        let records = records(payloads, marks)?;
+        let records = records(payloads, marks, publishers)?;
         self.log
             .append_pending_at(first_offset, &records)
             .await
@@ -226,10 +231,11 @@ impl StreamLog {
         producer_id: u64,
         sequence: u64,
         payloads: &[Bytes],
+        publishers: &[Option<Bytes>],
         order: &Arc<CommitSequencer>,
     ) -> Result<Option<(PendingAppend, CommitTurn<'static>)>> {
         let marks = vec![RecordMark::Continues; payloads.len()];
-        let records = records(payloads, &marks)?;
+        let records = records(payloads, &marks, publishers)?;
         self.log
             .continue_claimed(producer_id, sequence, &records, order)
             .await
@@ -267,7 +273,7 @@ impl StreamLog {
     /// Returns only once the configured durability policy is satisfied: under
     /// `FsyncMode::OnCommit` the bytes are on the device before this resolves.
     pub async fn append(&self, payloads: &[Bytes]) -> Result<AppendResult> {
-        let records = records(payloads, &[])?;
+        let records = records(payloads, &[], &[])?;
         self.log.append(&records).await.map_err(BrokerError::from)
     }
 
@@ -349,6 +355,7 @@ impl StreamLog {
             payload: Bytes::copy_from_slice(&generation.to_be_bytes()),
             timestamp_micros: now_micros(),
             mark: RecordMark::GenerationStart,
+            publisher: None,
         };
         let appended = self
             .log
@@ -528,7 +535,11 @@ impl StreamLog {
 
 /// One timestamp for the batch: the records were published together, and
 /// reading the clock per record costs more than the precision is worth.
-fn records(payloads: &[Bytes], marks: &[RecordMark]) -> Result<Vec<AppendRecord>> {
+fn records(
+    payloads: &[Bytes],
+    marks: &[RecordMark],
+    publishers: &[Option<Bytes>],
+) -> Result<Vec<AppendRecord>> {
     if payloads.is_empty() {
         return Err(BrokerError::Storage(
             "cannot append an empty publish batch".to_string(),
@@ -542,10 +553,12 @@ fn records(payloads: &[Bytes], marks: &[RecordMark]) -> Result<Vec<AppendRecord>
     Ok(payloads
         .iter()
         .zip(marks)
-        .map(|(payload, mark)| AppendRecord {
+        .enumerate()
+        .map(|(index, (payload, mark))| AppendRecord {
             payload: payload.clone(),
             timestamp_micros,
             mark,
+            publisher: publishers.get(index).cloned().flatten(),
         })
         .collect())
 }

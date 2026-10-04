@@ -26,7 +26,7 @@ use crate::serving::quic::handlers::publish::route::{
     internal_ack, needs_quorum, publish_target, resolve_route, resolve_shard,
 };
 use crate::serving::quic::handlers::publish::{
-    PublishContext, PublishJob, StreamHandleCache, record_json_publish,
+    PublishAs, PublishContext, PublishJob, StreamHandleCache, record_json_publish,
 };
 use crate::serving::quic::telemetry::{
     count_publish, count_publish_accepted, t_consume_instant, t_counter, t_histogram, t_now_if,
@@ -56,10 +56,15 @@ pub(crate) async fn handle_publish_message(
     request_id: Option<u64>,
     ack: Option<felix_wire::AckMode>,
     sample: bool,
-    // The publisher's token, carried on a forward for the owner to verify.
-    credential: String,
+    // The publisher's token, carried on a forward for the owner to verify,
+    // and the principal recorded on what is written here.
+    publishing_as: impl Into<PublishAs>,
 ) -> Result<()> {
     record_json_publish("publish");
+    let PublishAs {
+        credential,
+        publisher,
+    } = publishing_as.into();
     #[cfg(feature = "telemetry")]
     {
         let counters = crate::serving::quic::telemetry::frame_counters();
@@ -243,6 +248,7 @@ pub(crate) async fn handle_publish_message(
             acked_on_enqueue: ack_mode != felix_wire::AckMode::None && !commit_ack,
             admission_permit: None,
             fenced: None,
+            publisher: publisher.clone(),
         },
         if ack_mode == felix_wire::AckMode::None {
             publish_ctx.overflow_policy()

@@ -359,6 +359,24 @@ events. With `FLAG_EVENT_BATCH_SKIPPED` as well, a batch also carries
 can be told apart from a record that was never an event. See
 [Event batch offsets](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#event-batch-offsets).
 
+#### Who published an event
+
+A subscriber that offers `FLAG_EVENT_BATCH_PUBLISHER` (`0x2000`) is told the
+principal that published each batch: the `sub` of the token the broker
+accepted the write from. A consumer that offers `FEATURE_GROUP_PUBLISHER` gets
+the same value as `publisher` on each group record. Nobody else's frames
+change.
+
+It proves that the broker accepted the write from a connection authenticated
+as that principal, with permission to publish to the stream. It does not say
+who wrote the payload's contents. An in-memory stream reports the publishing
+connection's principal. A durable stream reports what it stored with the
+record, so live delivery, replay from any offset, a promoted replica and a
+consumer group agree, and it stores one only once enabled: by finalizing the
+`publisher_principal` fleet feature in a cluster, or with
+`FELIX_RECORD_PUBLISHERS=true` on a single broker. See
+[Event batch publisher](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#event-batch-publisher).
+
 **Event stream lifecycle**:
 
 ```mermaid

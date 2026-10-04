@@ -365,6 +365,7 @@ impl CounterShard {
                 payload,
                 timestamp_micros: now_micros(),
                 mark: Default::default(),
+                publisher: None,
             }])
             .await?;
         state.index.log_bytes += bytes;

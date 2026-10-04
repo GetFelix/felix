@@ -110,7 +110,12 @@ impl Subscription {
             return Ok(None);
         };
         match queued {
-            QueuedEvent::Payload(payload, offset, skipped_before) => {
+            QueuedEvent::Payload {
+                payload,
+                offset,
+                skipped_before,
+                publisher,
+            } => {
                 record_e2e_latency(
                     &payload,
                     #[cfg(feature = "telemetry")]
@@ -123,6 +128,7 @@ impl Subscription {
                     payload,
                     offset,
                     skipped_before,
+                    publisher,
                 }))
             }
             QueuedEvent::Error(err) => Err(err),
@@ -186,6 +192,16 @@ pub struct Event {
     /// dropped, the next jump counts those offsets as dropped too: a drop is
     /// still reported, only its size is overstated.
     pub skipped_before: u64,
+    /// The principal that published this event: the subject of the token
+    /// the broker accepted the write from. `None` unless
+    /// [`crate::ClientConfig::publishers`] asked for it, and for an event
+    /// whose broker did not record one.
+    ///
+    /// It says the broker accepted the write from that principal, which is
+    /// as far as the broker can vouch. It says nothing about who wrote the
+    /// payload's contents, and a principal allowed to publish can publish
+    /// anything.
+    pub publisher: Option<Arc<str>>,
 }
 
 /// Where a subscription's shard went, sent by the broker as the last frame
@@ -207,9 +223,14 @@ pub struct ShardMoved {
 }
 
 enum QueuedEvent {
-    /// A payload, for a durable stream the log offset it sits at, and how
-    /// many offsets just before it hold no event.
-    Payload(Bytes, Option<u64>, u64),
+    /// A payload, for a durable stream the log offset it sits at, how many
+    /// offsets just before it hold no event, and who published it.
+    Payload {
+        payload: Bytes,
+        offset: Option<u64>,
+        skipped_before: u64,
+        publisher: Option<Arc<str>>,
+    },
     Error(anyhow::Error),
 }
 

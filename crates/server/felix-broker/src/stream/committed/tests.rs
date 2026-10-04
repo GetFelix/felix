@@ -82,7 +82,7 @@ async fn publish(broker: &Broker, stream: &str, payload: &'static [u8]) -> crate
         .await
         .expect("handle");
     broker
-        .publish_batch_with_outcome(&handle, &[Bytes::from_static(payload)])
+        .publish_batch_with_outcome(&handle, &[Bytes::from_static(payload)], None)
         .await
         .expect("publish")
 }
@@ -278,7 +278,7 @@ async fn a_resume_joins_at_the_mark_and_its_history_waits_for_it() {
             .await
             .expect("handle");
         broker
-            .publish_batch_with_outcome(&handle, &[Bytes::copy_from_slice(payload)])
+            .publish_batch_with_outcome(&handle, &[Bytes::copy_from_slice(payload)], None)
             .await
             .expect("publish");
     }

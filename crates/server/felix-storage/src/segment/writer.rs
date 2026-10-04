@@ -27,8 +27,8 @@ use crate::Result;
 use crate::io::{preallocate, sync_data, sync_dir};
 use crate::log::{AppendRecord, Offset, RecordMark, SegmentDescriptor, SegmentId};
 use crate::segment::format::{
-    BASELINE_VERSION, FORMAT_VERSION, MAX_PAYLOAD_BYTES, SEGMENT_HEADER_LEN, SegmentHeader,
-    encode_record,
+    BASELINE_VERSION, MAX_PAYLOAD_BYTES, MAX_PUBLISHER_BYTES, PUBLISHER_VERSION,
+    SEGMENT_HEADER_LEN, SegmentHeader, body_len, encode_record, record_len,
 };
 use crate::segment::index::{IndexWriter, SparseIndex, UnwrittenEntries};
 use crate::segment::{index_file_name, segment_file_name};
@@ -204,21 +204,28 @@ impl SegmentWriter {
         self.version >= 5
     }
 
+    /// Whether a record carrying its publisher may be appended here.
+    pub fn holds_publishers(&self) -> bool {
+        self.version >= PUBLISHER_VERSION
+    }
+
     /// The layout version in the segment header.
     pub fn version(&self) -> u16 {
         self.version
     }
 
     /// The version a segment following this one is written at so that it
-    /// holds `records`: never below this one's, v5 when `records` include a
-    /// commit record, v4 when they include a generation-start record, and
-    /// [`BASELINE_VERSION`] otherwise. A log moves up only when it has to, so
-    /// a build that predates a version reads it until then.
+    /// holds `records`: never below this one's, v6 when a record carries its
+    /// publisher, v5 when `records` include a commit record, v4 when they
+    /// include a generation-start record, and [`BASELINE_VERSION`] otherwise.
+    /// A log moves up only when it has to, so a build that predates a version
+    /// reads it until then.
     pub fn successor_version(&self, records: &[AppendRecord]) -> u16 {
         let needed = records
             .iter()
             .map(|record| match record.mark {
-                RecordMark::Commit => FORMAT_VERSION,
+                _ if record.publisher.is_some() => PUBLISHER_VERSION,
+                RecordMark::Commit => 5,
                 RecordMark::GenerationStart => 4,
                 _ => BASELINE_VERSION,
             })
@@ -229,11 +236,14 @@ impl SegmentWriter {
 
     /// Whether every record in `records` may be appended here.
     pub fn holds(&self, records: &[AppendRecord]) -> bool {
-        records.iter().all(|record| match record.mark {
-            RecordMark::None => true,
-            RecordMark::Opens(_) | RecordMark::Continues => self.holds_marks(),
-            RecordMark::GenerationStart => self.holds_generation_starts(),
-            RecordMark::Commit => self.holds_commits(),
+        records.iter().all(|record| {
+            let mark = match record.mark {
+                RecordMark::None => true,
+                RecordMark::Opens(_) | RecordMark::Continues => self.holds_marks(),
+                RecordMark::GenerationStart => self.holds_generation_starts(),
+                RecordMark::Commit => self.holds_commits(),
+            };
+            mark && (record.publisher.is_none() || self.holds_publishers())
         })
     }
 
@@ -289,7 +299,10 @@ impl SegmentWriter {
     /// across two segments.
     pub fn projected_size(&self, records: &[AppendRecord]) -> u64 {
         records.iter().fold(self.size_bytes, |acc, record| {
-            acc + crate::segment::format::record_len(record.payload.len(), &record.mark)
+            acc + record_len(
+                body_len(record.payload.len(), record.publisher.as_deref()),
+                &record.mark,
+            )
         })
     }
 
@@ -320,9 +333,15 @@ impl SegmentWriter {
         }
 
         for record in records {
-            if record.payload.len() > MAX_PAYLOAD_BYTES as usize {
+            let publisher = record.publisher.as_deref();
+            if body_len(record.payload.len(), publisher) > MAX_PAYLOAD_BYTES as usize {
                 return Err(StorageError::Unsupported(
                     "record payload exceeds the maximum supported size",
+                ));
+            }
+            if publisher.is_some_and(|publisher| publisher.len() > MAX_PUBLISHER_BYTES) {
+                return Err(StorageError::Unsupported(
+                    "record publisher exceeds the maximum supported size",
                 ));
             }
         }
@@ -344,6 +363,7 @@ impl SegmentWriter {
                 offset,
                 record.timestamp_micros,
                 &record.payload,
+                record.publisher.as_deref(),
                 &record.mark,
             );
             boundaries.push((offset, position, written));

@@ -156,6 +156,12 @@ pub struct GroupRecord {
     /// client gets the frame it always got.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub skipped_before: u64,
+    /// The principal that published the record, when the broker recorded
+    /// one. Sent only to a client that negotiated `FEATURE_GROUP_PUBLISHER`,
+    /// and left out when there is none, so any other client gets the frame
+    /// it always got.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
 }
 
 fn is_zero(value: &u64) -> bool {

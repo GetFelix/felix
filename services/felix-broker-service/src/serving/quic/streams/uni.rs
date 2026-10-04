@@ -160,7 +160,7 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
                     namespace,
                     stream,
                     payload,
-                    auth_ctx.token.clone(),
+                    auth_ctx.publishing_as(),
                 )
                 .await?;
                 if !handled {
@@ -200,7 +200,7 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
                     namespace,
                     stream,
                     payloads,
-                    auth_ctx.token.clone(),
+                    auth_ctx.publishing_as(),
                 )
                 .await?;
                 if !handled {

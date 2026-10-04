@@ -173,7 +173,7 @@ async fn ending_subscribers_drains_then_closes_each_one() {
     let (_first, mut first_rx) = state.register_subscriber();
     let (_second, mut second_rx) = state.register_subscriber();
     let (snapshot, _) = state
-        .append_batch_at(&[Bytes::from_static(b"queued")], None, None, 16, None)
+        .append_batch_at(&[Bytes::from_static(b"queued")], None, None, 16, None, None)
         .expect("no turn to supersede");
     for entry in snapshot.iter() {
         let envelope = crate::stream::delivery::DeliveryEnvelope::with_base_offset(

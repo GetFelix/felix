@@ -159,6 +159,7 @@ fn every_body_begins_with_its_correlation_id() {
             marks: Vec::new(),
             commit_offset: None,
             generations: None,
+            publishers: Vec::new(),
         }),
         InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: id,

@@ -775,3 +775,119 @@ async fn quic_subscribe_replays_a_long_history_without_loss() -> Result<()> {
     server_task.abort();
     Ok(())
 }
+
+/// A subscriber that asked is told who published each event, live and on a
+/// resume from disk; one that did not is told nothing, and its events are
+/// the ones it always got.
+#[tokio::test]
+#[serial]
+async fn quic_subscribe_reports_the_publisher_to_a_client_that_asked() -> Result<()> {
+    unsafe {
+        std::env::set_var("FELIX_ACK_ON_COMMIT", "false");
+    }
+    let dir = tempfile::tempdir()?;
+    let storage = felix_broker::DurableStorage::open(
+        dir.path(),
+        felix_storage::log::LogConfig {
+            fsync_mode: felix_storage::log::FsyncMode::None,
+            preallocate_segments: false,
+            ..Default::default()
+        },
+    )?;
+    let broker = Arc::new(
+        Broker::new(EphemeralCache::new().into())
+            .with_durable_storage(storage)
+            // Smaller than the record count, so the resume reads disk too.
+            .with_log_capacity(2)?,
+    );
+    broker.record_publishers_when(|| true);
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_stream(
+            "t1",
+            "default",
+            "inputs",
+            StreamMetadata {
+                durable: true,
+                shards: 1,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    let (server_config, cert) = build_server_config()?;
+    let server = Arc::new(QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?);
+    let addr = server.local_addr()?;
+    let config = felix_broker_service::config::BrokerConfig::from_env()?;
+    let auth = auth_fixture(
+        "t1",
+        vec![
+            "stream.publish:stream:t1/*/*".to_string(),
+            "stream.subscribe:stream:t1/*/*".to_string(),
+        ],
+    );
+    let server_task = tokio::spawn(felix_broker_service::serving::quic::serve(
+        Arc::clone(&server),
+        Arc::clone(&broker),
+        config,
+        Arc::clone(&auth.auth),
+    ));
+
+    let mut asking = build_client_config(cert.clone(), &auth)?;
+    asking.publishers = true;
+    let asking = Client::connect(addr, "localhost", asking).await?;
+    let plain = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let mut told = asking.subscribe("t1", "default", "inputs").await?;
+    let mut untold = plain.subscribe("t1", "default", "inputs").await?;
+
+    const TOTAL: usize = 5;
+    let publisher = plain.publisher().await?;
+    for i in 0..TOTAL {
+        publisher
+            .publish(
+                "t1",
+                "default",
+                "inputs",
+                format!("move-{i}").into_bytes(),
+                felix_wire::AckMode::PerMessage,
+            )
+            .await?;
+    }
+    for _ in 0..TOTAL {
+        let event = timeout(Duration::from_secs(5), told.next_event())
+            .await??
+            .expect("event");
+        assert_eq!(event.publisher.as_deref(), Some("p:test"));
+        let event = timeout(Duration::from_secs(5), untold.next_event())
+            .await??
+            .expect("event");
+        assert_eq!(event.publisher, None);
+    }
+
+    let mut resumed = asking
+        .subscribe_from(
+            "t1",
+            "default",
+            "inputs",
+            Some(felix_client::StartPosition::Offset(0)),
+        )
+        .await?;
+    for offset in 0..TOTAL as u64 {
+        let event = timeout(Duration::from_secs(5), resumed.next_event())
+            .await??
+            .expect("event");
+        assert_eq!(
+            (event.offset, event.publisher.as_deref()),
+            (Some(offset), Some("p:test"))
+        );
+    }
+
+    drop((told, untold, resumed));
+    server_task.abort();
+    Ok(())
+}

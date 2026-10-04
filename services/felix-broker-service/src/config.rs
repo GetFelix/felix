@@ -115,6 +115,10 @@ pub struct BrokerConfig {
     pub peer_transport: Option<felix_replication::peer::PeerTransportConfig>,
     /// If true, publish acks are sent after commit.
     pub ack_on_commit: bool,
+    /// Store the publishing principal with each durable record, on a broker
+    /// outside a cluster. In a cluster the fleet decides: see
+    /// `felix_common::fleet::PUBLISHER_PRINCIPAL`.
+    pub record_publishers: bool,
     /// Max frame size accepted on QUIC streams.
     pub max_frame_bytes: usize,
     /// Max frame size a stream may send before it has authenticated. Only an
@@ -389,6 +393,7 @@ impl Default for BrokerConfig {
             membership: None,
             peer_transport: None,
             ack_on_commit: false,
+            record_publishers: false,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             preauth_max_frame_bytes: DEFAULT_PREAUTH_MAX_FRAME_BYTES,
             preauth_max_streams_per_conn: DEFAULT_PREAUTH_MAX_STREAMS_PER_CONN,

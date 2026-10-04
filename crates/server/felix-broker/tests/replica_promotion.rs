@@ -126,7 +126,7 @@ async fn a_replicated_stream_replays_from_the_start() {
     let backlog: Vec<String> = resumed
         .backlog
         .iter()
-        .map(|(_, p)| String::from_utf8(p.to_vec()).expect("utf8"))
+        .map(|record| String::from_utf8(record.payload.to_vec()).expect("utf8"))
         .collect();
 
     let mut everything = from_disk;
@@ -161,12 +161,12 @@ async fn replay_everything(broker: &Broker) -> Vec<(u64, String)> {
             ));
         }
     }
-    everything.extend(
-        resumed
-            .backlog
-            .iter()
-            .map(|(offset, p)| (*offset, String::from_utf8(p.to_vec()).expect("utf8"))),
-    );
+    everything.extend(resumed.backlog.iter().map(|record| {
+        (
+            record.offset,
+            String::from_utf8(record.payload.to_vec()).expect("utf8"),
+        )
+    }));
     everything
 }
 
