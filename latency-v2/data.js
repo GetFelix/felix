@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791149086312,
+  "lastUpdate": 1791153028389,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -30492,6 +30492,72 @@ window.BENCHMARK_DATA = {
             "range": "253.82",
             "unit": "us",
             "extra": "trials: 5\nmedian: 497.00\nmean: 619.20\nstdev: 253.82\ncv: 40.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "93c3db007d7e84ed18cd8064227e41f99902ce92",
+          "message": "feat(cache): conditional puts and deletes, by negotiation (#976) (#1021)\n\ncache_put_if stores a value only if the key is absent or at a given\nversion, and cache_delete_if removes it only at a given version. Both\nanswer cache_condition_result with whether the write was made and the\nkey's version; a get's cache_value carries the version to a client that\noffered FEATURE_CACHE_CONDITIONAL, so other clients' frames are unchanged.\n\nA version is the offset of the put that wrote the value. Compaction\ncopies carry it in a version 2 cache record, so it survives compaction\nand replay. The condition is checked where the write is staged, after any\nwrite to the key that is staged but not yet applied has applied, so two\nracers cannot both find a key absent. The same wait fixes an expiry that\ncould delete a value a put had just refreshed.\n\nForwarded between brokers as a new internal kind an older owner refuses\nrather than serving as an unconditional put. felix-client and\nClusterClient gain cache_put_if, cache_delete_if and cache_get_versioned.\n\nSpec-Unaffected: a conditional write is checked by the shard's owner inside the write path a put already takes, behind the same fence and quorum wait; the lease, generation, replication, promotion and handoff are untouched.\n\nCloses #976.",
+          "timestamp": "2026-10-04T15:26:45-07:00",
+          "tree_id": "816337c0c4d1847a9bacc8c8902ac26a536288db",
+          "url": "https://github.com/GetFelix/felix/commit/93c3db007d7e84ed18cd8064227e41f99902ce92"
+        },
+        "date": 1791153025297,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 177,
+            "range": "4.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 176.20\nstdev: 4.15\ncv: 2.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 238,
+            "range": "7.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 238.00\nmean: 241.40\nstdev: 7.30\ncv: 3.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 301,
+            "range": "9.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 301.00\nmean: 299.40\nstdev: 9.76\ncv: 3.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 219,
+            "range": "6.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 221.00\nstdev: 6.89\ncv: 3.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 456,
+            "range": "346.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 456.00\nmean: 602.20\nstdev: 346.17\ncv: 57.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 629,
+            "range": "881.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 629.00\nmean: 1128.20\nstdev: 881.55\ncv: 78.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
