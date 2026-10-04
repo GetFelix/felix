@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791122912019,
+  "lastUpdate": 1791126700216,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -23764,6 +23764,58 @@ window.BENCHMARK_DATA = {
             "range": "6960.11",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 809605.89\nmean: 808901.99\nstdev: 6960.11\ncv: 0.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1c9c936d77e140df09512e1bccb8a36ed1b61711",
+          "message": "fix(release): put zig on PATH for the Node addon's glibc 2.28 build (#1014)",
+          "timestamp": "2026-10-04T08:06:29-07:00",
+          "tree_id": "c8929fc63d1b063c894973ac36db94e86ddab383",
+          "url": "https://github.com/GetFelix/felix/commit/1c9c936d77e140df09512e1bccb8a36ed1b61711"
+        },
+        "date": 1791126699546,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351990.37,
+            "range": "7200.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351990.37\nmean: 348736.55\nstdev: 7200.35\ncv: 2.06%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351990.37,
+            "range": "7200.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351990.37\nmean: 348736.55\nstdev: 7200.35\ncv: 2.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79238.97,
+            "range": "683.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79238.97\nmean: 79368.22\nstdev: 683.72\ncv: 0.86%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 792389.69,
+            "range": "6837.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 792389.69\nmean: 793682.19\nstdev: 6837.18\ncv: 0.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
