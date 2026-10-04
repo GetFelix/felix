@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791146816954,
+  "lastUpdate": 1791149086312,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -30426,6 +30426,72 @@ window.BENCHMARK_DATA = {
             "range": "67.01",
             "unit": "us",
             "extra": "trials: 5\nmedian: 579.00\nmean: 612.60\nstdev: 67.01\ncv: 10.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f6fc9c5b5999fafa99831c48eb8708e5784323a2",
+          "message": "feat(groups): create, move, describe and delete a consumer group (#973) (#1020)\n\ngroup_seek moves a group's cursor on one shard to earliest, latest or an\noffset; with if_new it creates the group there and leaves an existing one\nalone. group_describe reports the cursor, the committed tail, and what is in\nflight and owed. group_delete removes the cursor and dead letters. Behind a\nnew broker feature bit, FEATURE_GROUP_ADMIN.\n\nA seek replaces the group's tracker with one that inherits no claims, and\nretires the old one under the shard's cursor lock, so an ack from before the\nseek can neither move the new cursor nor finish a record the group now owes.\n\nfelix-client gets the per-shard calls on Client and ClusterClient, and\nClusterClient::group_*_stream to make them on every shard of a stream.\n\nSpec-Unaffected: seek and delete are group writes through the same fence entry and round confirmation that FelixShardSessions models for an ack; no new replication or lease step.",
+          "timestamp": "2026-10-04T14:09:34-07:00",
+          "tree_id": "922990cdb47adda780ee9d2705d2c3f54bc98f01",
+          "url": "https://github.com/GetFelix/felix/commit/f6fc9c5b5999fafa99831c48eb8708e5784323a2"
+        },
+        "date": 1791149081350,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 124,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 124.00\nmean: 124.40\nstdev: 1.67\ncv: 1.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 177,
+            "range": "72.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 211.00\nstdev: 72.76\ncv: 34.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 235,
+            "range": "2444.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 235.00\nmean: 1344.80\nstdev: 2444.98\ncv: 181.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 153.20\nstdev: 1.48\ncv: 0.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 323,
+            "range": "7.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 323.00\nmean: 324.40\nstdev: 7.06\ncv: 2.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 497,
+            "range": "253.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 497.00\nmean: 619.20\nstdev: 253.82\ncv: 40.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
