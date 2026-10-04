@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791146819822,
+  "lastUpdate": 1791149089152,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -23972,6 +23972,58 @@ window.BENCHMARK_DATA = {
             "range": "6790.44",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 803656.43\nmean: 807628.71\nstdev: 6790.44\ncv: 0.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f6fc9c5b5999fafa99831c48eb8708e5784323a2",
+          "message": "feat(groups): create, move, describe and delete a consumer group (#973) (#1020)\n\ngroup_seek moves a group's cursor on one shard to earliest, latest or an\noffset; with if_new it creates the group there and leaves an existing one\nalone. group_describe reports the cursor, the committed tail, and what is in\nflight and owed. group_delete removes the cursor and dead letters. Behind a\nnew broker feature bit, FEATURE_GROUP_ADMIN.\n\nA seek replaces the group's tracker with one that inherits no claims, and\nretires the old one under the shard's cursor lock, so an ack from before the\nseek can neither move the new cursor nor finish a record the group now owes.\n\nfelix-client gets the per-shard calls on Client and ClusterClient, and\nClusterClient::group_*_stream to make them on every shard of a stream.\n\nSpec-Unaffected: seek and delete are group writes through the same fence entry and round confirmation that FelixShardSessions models for an ack; no new replication or lease step.",
+          "timestamp": "2026-10-04T14:09:34-07:00",
+          "tree_id": "922990cdb47adda780ee9d2705d2c3f54bc98f01",
+          "url": "https://github.com/GetFelix/felix/commit/f6fc9c5b5999fafa99831c48eb8708e5784323a2"
+        },
+        "date": 1791149088288,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358812.76,
+            "range": "27567.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358812.76\nmean: 358801.00\nstdev: 27567.10\ncv: 7.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358812.76,
+            "range": "27567.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358812.76\nmean: 358801.00\nstdev: 27567.10\ncv: 7.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80264.85,
+            "range": "1107.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80264.85\nmean: 80887.82\nstdev: 1107.88\ncv: 1.37%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 802648.52,
+            "range": "11078.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 802648.52\nmean: 808878.26\nstdev: 11078.85\ncv: 1.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
