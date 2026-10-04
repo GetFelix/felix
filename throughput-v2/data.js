@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791153031411,
+  "lastUpdate": 1791153317755,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -24076,6 +24076,58 @@ window.BENCHMARK_DATA = {
             "range": "9287.03",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 801542.12\nmean: 802832.54\nstdev: 9287.03\ncv: 1.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "244b5ca6675a3638775f0f48d640ba1e7dc94042",
+          "message": "docs(semantics): Leader mode's single writer rests on the lease, and which faults break it (#1008) (#1024)",
+          "timestamp": "2026-10-04T15:27:21-07:00",
+          "tree_id": "3402565d0d9c3a2268fafb2f0b2b7faac9d68a6e",
+          "url": "https://github.com/GetFelix/felix/commit/244b5ca6675a3638775f0f48d640ba1e7dc94042"
+        },
+        "date": 1791153316991,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 339797.9,
+            "range": "17679.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 339797.90\nmean: 334356.75\nstdev: 17679.51\ncv: 5.29%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 339797.9,
+            "range": "17679.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 339797.90\nmean: 334356.75\nstdev: 17679.51\ncv: 5.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 78227.85,
+            "range": "213.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 78227.85\nmean: 78308.38\nstdev: 213.19\ncv: 0.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 782278.52,
+            "range": "2131.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 782278.52\nmean: 783083.78\nstdev: 2131.84\ncv: 0.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
