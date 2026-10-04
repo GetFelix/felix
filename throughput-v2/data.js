@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791067261907,
+  "lastUpdate": 1791075145438,
   "repoUrl": "https://github.com/gabloe/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -23556,6 +23556,58 @@ window.BENCHMARK_DATA = {
             "range": "6940.98",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 796093.74\nmean: 798321.52\nstdev: 6940.98\ncv: 0.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8556d965d1570023e137cd2af9f231c41ddee9d7",
+          "message": "feat(subscribe): end a lagged durable subscription with where to resume (#1003)\n\n* feat(subscribe): end a lagged durable subscription with where to resume\n\nA durable-stream subscriber learned about dropped records only from the\noffset of a later event, so a drop of the newest records with nothing\npublished after them went unnoticed. The broker now ends the subscription\nat its first queue drop with subscription_lagged (FEATURE_SUBSCRIPTION_LAGGED)\nnaming the first dropped offset, and felix-client does the same for drops in\nits own queue, returning a SubscriptionLagged error. ClusterSubscription\nresubscribes after its last event and catches up from the log.\n\nSpec-Unaffected: changes only what ends a subscription's event stream on a queue drop; no lease, membership, placement or replication state is touched.\n\n* fix(client): resume a lagged shard after its last event\n\nShardedSubscription resumed a lagged shard at max(last + 1, resume_from).\nresume_from is where the broker's subscriber queue first dropped, but the\nconnection writer's queue for the subscription can drop a frame below it\nwithout reporting it, so those records were skipped. It now resumes after\nthe last event delivered, as ClusterSubscription does, and uses\nresume_from only when nothing was delivered.\n\nThe wire, client and protocol docs no longer say that resubscribing from\nresume_from neither repeats nor skips a record.\n\nTests: a lagged shard resumes after its last event (through the stub\nbroker), a lag is reported over a shard move, and drops a replay covered\ndo not end the subscription while a later one does.",
+          "timestamp": "2026-10-03T17:49:45-07:00",
+          "tree_id": "9da901b53e3126bf08570222605130c4b47060ee",
+          "url": "https://github.com/gabloe/felix/commit/8556d965d1570023e137cd2af9f231c41ddee9d7"
+        },
+        "date": 1791075144427,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 627310.42,
+            "range": "39143.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 627310.42\nmean: 633153.26\nstdev: 39143.27\ncv: 6.18%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 627310.42,
+            "range": "39143.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 627310.42\nmean: 633153.26\nstdev: 39143.27\ncv: 6.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 157956.53,
+            "range": "1768.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 157956.53\nmean: 157042.11\nstdev: 1768.01\ncv: 1.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1579565.32,
+            "range": "17680.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1579565.32\nmean: 1570421.07\nstdev: 17680.07\ncv: 1.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
