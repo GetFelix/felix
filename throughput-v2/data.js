@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791127351852,
+  "lastUpdate": 1791137247841,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -23868,6 +23868,58 @@ window.BENCHMARK_DATA = {
             "range": "3896.41",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 847597.14\nmean: 846466.12\nstdev: 3896.41\ncv: 0.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "06ad57dcfde99e9e00add3e77a4f6d202acebfe4",
+          "message": "feat(wire,storage,broker): delivered events say who published them (#1010) (#1022)\n\nA subscriber that offers FLAG_EVENT_BATCH_PUBLISHER (0x2000) gets the\nprincipal the broker accepted each write from on every event batch, and a\ngroup consumer that offers FEATURE_GROUP_PUBLISHER (0x80_0000) gets it as\n`publisher` on each record. Batches without one, and every frame to a client\nthat did not ask, are byte-identical to before; ORIGINAL_V1_FLAGS is\nunchanged.\n\n- Storage: format v6. Bit 27 of a record's length word says the body ends\n  with the publisher and a one-byte length, so the step to the next record\n  still comes from the header and the checksum covers it. A log rolls onto v6\n  only for the first such record.\n- Replication: a publisher rides the marks section (bit 0x80 on a mark byte)\n  and is covered by the batch checksum; a follower stores it as shipped and a\n  resend with a different publisher is a conflict.\n- Broker: in-memory streams report the publishing connection's principal; a\n  durable stream reports only what it stored, so live delivery, replay, the\n  ring after a restart, promoted replicas and consumer groups agree. Storing\n  is gated by the publisher_principal fleet feature in a cluster and\n  FELIX_RECORD_PUBLISHERS on a single broker. A forwarded publish records the\n  principal the owner verified. The DeliveryEnvelope caches one encoding per\n  frame shape, publisher variants included.\n- Client: ClientConfig::publishers opts in; Event::publisher.\n\nSpec-Unaffected: the model covers offsets, generations and the quorum mark; a record's publisher travels and is stored with it like its payload and changes none of them.",
+          "timestamp": "2026-10-04T11:03:44-07:00",
+          "tree_id": "4c96ac1087fc75b0aea0493df6be6bf79d208c7b",
+          "url": "https://github.com/GetFelix/felix/commit/06ad57dcfde99e9e00add3e77a4f6d202acebfe4"
+        },
+        "date": 1791137247187,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 340259.72,
+            "range": "7315.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340259.72\nmean: 341860.84\nstdev: 7315.06\ncv: 2.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 340259.72,
+            "range": "7315.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340259.72\nmean: 341860.84\nstdev: 7315.06\ncv: 2.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79391.73,
+            "range": "512.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79391.73\nmean: 79567.25\nstdev: 512.39\ncv: 0.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 793917.32,
+            "range": "5123.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 793917.32\nmean: 795672.52\nstdev: 5123.97\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
