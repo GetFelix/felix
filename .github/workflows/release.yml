@@ -772,6 +772,10 @@ jobs:
         working-directory: crates/sdk/felix-typescript
         env:
           ZIG: ${{ contains(matrix.target, 'linux-gnu') && '--zig --zig-abi-suffix 2.28' || '' }}
+          # Names the toolchain so rustup does not also install the rustfmt and
+          # clippy that rust-toolchain.toml lists, which a build does not need
+          # and which failed with "detected conflict: 'bin/cargo-fmt'".
+          RUSTUP_TOOLCHAIN: "1.97.1"
         run: napi build --platform --release --target ${{ matrix.target }} $ZIG
 
       - name: The addon needs no glibc newer than 2.28
