@@ -360,6 +360,9 @@ has capacity for more work.
   waiting out the visibility timeout
 - `group_dead_letters(…)` / `group_discard(…, offset)` / `group_redrive(…, offset)`:
   list what the group gave up on, drop one, or put one back in play
+- `group_seek(…, start, if_new)` / `group_describe(…)` / `group_delete(…)`:
+  create a group at a chosen position or move it, read its cursor and what it
+  has in flight, or delete it
 
 They travel on the **control stream**, like publish and subscribe setup.
 

@@ -12,7 +12,7 @@ use std::sync::atomic::Ordering;
 
 use anyhow::{Context, Result};
 use bytes::BytesMut;
-use felix_wire::Message;
+use felix_wire::{Message, StartPosition};
 
 use super::Client;
 use crate::NotLeaderError;
@@ -31,6 +31,42 @@ pub struct GroupMember {
     /// it on the connection's first such poll and ignores it after, so it is
     /// safe to leave set.
     pub reclaim: bool,
+}
+
+/// Where [`Client::group_seek`] or [`Client::group_create`] left a group on
+/// one shard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupPosition {
+    /// The offset the group resumes from.
+    pub offset: u64,
+    /// False when [`Client::group_create`] found the group already there and
+    /// left it alone.
+    pub moved: bool,
+}
+
+/// Where a group stands on one shard. See [`Client::group_describe`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupInfo {
+    /// Everything below this is finished. `None` for a group with no cursor
+    /// on the shard, which starts at the beginning of the log when polled.
+    pub committed: Option<u64>,
+    /// The shard's committed tail.
+    pub tail: u64,
+    /// Records handed out and not yet settled. Held by the shard's leader in
+    /// memory, so it starts again from zero when the leader changes.
+    pub in_flight: u64,
+    /// Records owed again after a nack or a lapsed claim. Leader memory, like
+    /// `in_flight`.
+    pub owed: u64,
+    /// Records the group gave up on.
+    pub dead_letters: u64,
+}
+
+impl GroupInfo {
+    /// Records published to the shard that the group has not finished.
+    pub fn lag(&self) -> u64 {
+        self.tail.saturating_sub(self.committed.unwrap_or(0))
+    }
 }
 
 impl Client {
@@ -235,6 +271,154 @@ impl Client {
             .await
     }
 
+    /// Move a group's cursor on one shard to `start`, backwards or forwards.
+    ///
+    /// `Earliest` is the oldest record the shard still holds and `Latest` its
+    /// committed tail when the seek lands; an `Offset` outside those is
+    /// refused. Records the group had handed out are void: an ack for one
+    /// that the group now owes is refused as stale, and the record is
+    /// delivered again from the new position. Dead letters are kept.
+    /// Needs the `group.manage` permission.
+    pub async fn group_seek(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        start: StartPosition,
+    ) -> Result<GroupPosition> {
+        self.seek_group(tenant_id, namespace, stream, shard, group, start, false)
+            .await
+    }
+
+    /// Create a group on one shard at `start`, so its first poll begins
+    /// there rather than at the beginning of the log.
+    ///
+    /// A group that already exists here, with a cursor or with records handed
+    /// out, is left where it is, and [`GroupPosition::moved`] is false. Safe to
+    /// call on every start of a consumer. Needs the `group.manage` permission.
+    pub async fn group_create(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        start: StartPosition,
+    ) -> Result<GroupPosition> {
+        self.seek_group(tenant_id, namespace, stream, shard, group, start, true)
+            .await
+    }
+
+    /// Where a group stands on one shard.
+    pub async fn group_describe(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+    ) -> Result<GroupInfo> {
+        self.require_group_admin()?;
+        let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
+        let message = Message::GroupDescribe {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+            group: group.to_string(),
+            request_id,
+        };
+        match self.group_round_trip(message, request_id).await? {
+            Message::GroupInfo {
+                committed,
+                tail,
+                in_flight,
+                owed,
+                dead_letters,
+                ..
+            } => Ok(GroupInfo {
+                committed,
+                tail,
+                in_flight,
+                owed,
+                dead_letters,
+            }),
+            other => Err(anyhow::anyhow!(
+                "unexpected answer to a group describe: {other:?}"
+            )),
+        }
+    }
+
+    /// Delete a group on one shard: its cursor, its dead letters, and the
+    /// records it has handed out. Returns whether there was anything to
+    /// delete. A consumer that polls the group again starts it afresh.
+    /// Needs the `group.manage` permission.
+    pub async fn group_delete(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+    ) -> Result<bool> {
+        self.require_group_admin()?;
+        let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
+        let message = Message::GroupDelete {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+            group: group.to_string(),
+            request_id,
+        };
+        match self.group_round_trip(message, request_id).await? {
+            Message::GroupDeleted { existed, .. } => Ok(existed),
+            other => Err(anyhow::anyhow!(
+                "unexpected answer to a group delete: {other:?}"
+            )),
+        }
+    }
+
+    /// Whether the broker serves [`Client::group_seek`],
+    /// [`Client::group_create`], [`Client::group_describe`] and
+    /// [`Client::group_delete`].
+    pub fn supports_group_admin(&self) -> bool {
+        felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_GROUP_ADMIN)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn seek_group(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        start: StartPosition,
+        if_new: bool,
+    ) -> Result<GroupPosition> {
+        self.require_group_admin()?;
+        let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
+        let message = Message::GroupSeek {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+            group: group.to_string(),
+            start,
+            if_new,
+            request_id,
+        };
+        match self.group_round_trip(message, request_id).await? {
+            Message::GroupPosition { offset, moved, .. } => Ok(GroupPosition { offset, moved }),
+            other => Err(anyhow::anyhow!(
+                "unexpected answer to a group seek: {other:?}"
+            )),
+        }
+    }
+
     /// One group request on a stream of its own.
     ///
     /// Not the cache workers' streams: those are pipelined against a response
@@ -414,6 +598,15 @@ impl Client {
         }
         Err(anyhow::anyhow!("this broker does not serve dead letters",))
     }
+
+    fn require_group_admin(&self) -> Result<()> {
+        if self.supports_group_admin() {
+            return Ok(());
+        }
+        Err(anyhow::anyhow!(
+            "this broker cannot create, move, describe or delete a consumer group",
+        ))
+    }
 }
 
 /// The request id a group answer echoes, when it carries one.
@@ -421,6 +614,9 @@ fn group_response_id(message: &Message) -> Option<u64> {
     match message {
         Message::GroupRecords { request_id, .. }
         | Message::GroupDeadLetterList { request_id, .. }
+        | Message::GroupPosition { request_id, .. }
+        | Message::GroupInfo { request_id, .. }
+        | Message::GroupDeleted { request_id, .. }
         | Message::ProducerInitOk { request_id, .. }
         | Message::CommitOk { request_id, .. }
         | Message::StateValue { request_id, .. }

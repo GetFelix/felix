@@ -253,6 +253,53 @@ impl DeadLetters {
         Ok(removed.is_some())
     }
 
+    /// Drop every entry `group` has on this shard, dead or redriven, for a
+    /// group being deleted. Returns how many went. The records stay in the
+    /// stream's log.
+    pub async fn forget_group(&self, key: &GroupKey) -> Result<usize> {
+        let lock = self.lock_for(key);
+        let _guard = lock.lock().await;
+        let prefix = format!("{}\u{1f}", key.group);
+        let entries: Vec<String> = self
+            .entries
+            .live_entries_checked(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await
+            .map_err(BrokerError::from)?
+            .into_iter()
+            .filter(|entry| entry.key.starts_with(&prefix))
+            .map(|entry| entry.key)
+            .collect();
+        let mut removed = 0;
+        for entry in &entries {
+            self.entries
+                .delete_checked(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    entry,
+                )
+                .await
+                .map_err(BrokerError::from)?;
+            removed += 1;
+        }
+        if let Some(legacy) = self.legacy(key) {
+            let scope = legacy_scope(key);
+            for entry in legacy
+                .keys(&key.tenant_id, &key.namespace, &scope, key.shard)
+                .await
+                .map_err(BrokerError::from)?
+            {
+                let deleted = legacy
+                    .delete_checked(&key.tenant_id, &key.namespace, &scope, key.shard, &entry)
+                    .await
+                    .map_err(BrokerError::from)?;
+                removed += usize::from(deleted.is_some());
+            }
+        }
+        Ok(removed)
+    }
+
     /// The log a shard's dead letters are written to.
     ///
     /// For replication: the list of what a group gave up on has to reach a

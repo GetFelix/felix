@@ -414,3 +414,84 @@ fn a_group_record_with_nothing_skipped_omits_the_field() {
     let json = serde_json::to_string(&skipped).expect("encode");
     assert!(json.contains("\"skipped_before\":2"), "{json}");
 }
+
+#[test]
+fn group_admin_messages_round_trip() {
+    for message in [
+        Message::GroupSeek {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "jobs".to_string(),
+            shard: 2,
+            group: "g".to_string(),
+            start: crate::StartPosition::Offset(7),
+            if_new: true,
+            request_id: 1,
+        },
+        Message::GroupPosition {
+            offset: 7,
+            moved: true,
+            request_id: 1,
+        },
+        Message::GroupDescribe {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "jobs".to_string(),
+            shard: 2,
+            group: "g".to_string(),
+            request_id: 2,
+        },
+        Message::GroupInfo {
+            committed: Some(5),
+            tail: 9,
+            in_flight: 2,
+            owed: 1,
+            dead_letters: 0,
+            request_id: 2,
+        },
+        Message::GroupDelete {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "jobs".to_string(),
+            shard: 2,
+            group: "g".to_string(),
+            request_id: 3,
+        },
+        Message::GroupDeleted {
+            existed: false,
+            request_id: 3,
+        },
+    ] {
+        let decoded = Message::decode(message.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, message);
+    }
+}
+
+/// The optional fields stay off the wire at their defaults.
+#[test]
+fn group_admin_defaults_are_left_out() {
+    let seek = Message::GroupSeek {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "jobs".to_string(),
+        shard: 0,
+        group: "g".to_string(),
+        start: crate::StartPosition::Latest,
+        if_new: false,
+        request_id: 1,
+    };
+    let json = String::from_utf8(seek.encode().expect("encode").payload.to_vec()).expect("utf8");
+    assert!(!json.contains("if_new"), "{json}");
+    assert!(json.contains(r#""start":"latest""#), "{json}");
+
+    let info = Message::GroupInfo {
+        committed: None,
+        tail: 0,
+        in_flight: 0,
+        owed: 0,
+        dead_letters: 0,
+        request_id: 2,
+    };
+    let json = String::from_utf8(info.encode().expect("encode").payload.to_vec()).expect("utf8");
+    assert!(!json.contains("committed"), "{json}");
+}

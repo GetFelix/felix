@@ -18,5 +18,5 @@ mod tracker;
 
 pub use cursors::ConsumerGroups;
 pub use dead_letters::DeadLetters;
-pub use reader::{Claimed, GroupKey, GroupReader};
+pub use reader::{Claimed, GroupKey, GroupReader, GroupSnapshot, Seek};
 pub use tracker::GroupConsumer;

@@ -75,7 +75,9 @@ pub use commit::{CommitRecord, StateOp, client_record};
 pub use cache::{CacheChangeEvent, CacheWatchFilter, CacheWatchHub, CacheWatchSubscription};
 
 // Queues.
-pub use queue::{Claimed, ConsumerGroups, DeadLetters, GroupConsumer, GroupKey, GroupReader};
+pub use queue::{
+    Claimed, ConsumerGroups, DeadLetters, GroupConsumer, GroupKey, GroupReader, GroupSnapshot, Seek,
+};
 
 // Durability.
 pub use durable::{DurableStorage, StreamLog};

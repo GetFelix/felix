@@ -70,7 +70,7 @@ pub mod timings;
 
 pub use auth::{RefreshingToken, TokenFuture, TokenProvider};
 pub use cache::{CacheChange, CacheWatch, CacheWatchFilter, CacheWatchItem};
-pub use client::{Client, GroupMember};
+pub use client::{Client, GroupInfo, GroupMember, GroupPosition};
 pub use cluster::{
     ClusterCacheWatch, ClusterClient, ClusterSubscription, ReconnectPolicy, ShardEvent,
     ShardOffsets, ShardedCacheWatch, ShardedCacheWatchItem, ShardedGroup, ShardedGroupRecord,

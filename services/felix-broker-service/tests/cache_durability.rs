@@ -984,3 +984,95 @@ async fn an_ack_past_the_tail_is_refused() -> Result<()> {
     running.stop().await;
     Ok(())
 }
+
+/// **A group's lifecycle, end to end.** Created at the tail it skips what came
+/// before, a seek replays, describe reports where it stands, and a deleted
+/// group starts again from the beginning.
+#[tokio::test]
+async fn a_group_is_created_moved_described_and_deleted() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let running = start(dir.path()).await?;
+    let client = running.client().await?;
+    assert!(client.supports_group_admin());
+    let publisher = client.publisher().await?;
+    let publish = |payload: &'static [u8]| {
+        publisher.publish(
+            "t1",
+            "default",
+            QUEUE,
+            payload.to_vec(),
+            felix_wire::AckMode::PerMessage,
+        )
+    };
+    publish(b"before").await?;
+
+    let created = client
+        .group_create(
+            "t1",
+            "default",
+            QUEUE,
+            0,
+            "workers",
+            felix_wire::StartPosition::Latest,
+        )
+        .await?;
+    assert_eq!(
+        created,
+        felix_client::GroupPosition {
+            offset: 1,
+            moved: true
+        }
+    );
+    publish(b"after").await?;
+    let claimed = client
+        .group_poll("t1", "default", QUEUE, 0, "workers", 10)
+        .await?;
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].payload.as_ref(), b"after");
+
+    let info = client
+        .group_describe("t1", "default", QUEUE, 0, "workers")
+        .await?;
+    assert_eq!(info.committed, Some(1));
+    assert_eq!((info.tail, info.in_flight, info.lag()), (2, 1, 1));
+
+    // Created again on a restart of the consumer: left where it is.
+    let again = client
+        .group_create(
+            "t1",
+            "default",
+            QUEUE,
+            0,
+            "workers",
+            felix_wire::StartPosition::Earliest,
+        )
+        .await?;
+    assert!(!again.moved);
+
+    client
+        .group_seek(
+            "t1",
+            "default",
+            QUEUE,
+            0,
+            "workers",
+            felix_wire::StartPosition::Earliest,
+        )
+        .await?;
+    let replayed = client
+        .group_poll("t1", "default", QUEUE, 0, "workers", 10)
+        .await?;
+    assert_eq!(replayed.len(), 2, "a seek to the start did not replay");
+
+    assert!(
+        client
+            .group_delete("t1", "default", QUEUE, 0, "workers")
+            .await?
+    );
+    let info = client
+        .group_describe("t1", "default", QUEUE, 0, "workers")
+        .await?;
+    assert_eq!((info.committed, info.in_flight), (None, 0));
+    running.stop().await;
+    Ok(())
+}

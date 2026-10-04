@@ -709,6 +709,77 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 )
                 .await?
             }
+            Message::GroupSeek {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                group,
+                start,
+                if_new,
+                request_id,
+            } => {
+                group::group_admin(
+                    &cx,
+                    &mut session,
+                    group::GroupTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                        group,
+                    },
+                    group::GroupAdmin::Seek { start, if_new },
+                    request_id,
+                )
+                .await?
+            }
+            Message::GroupDescribe {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                group,
+                request_id,
+            } => {
+                group::group_admin(
+                    &cx,
+                    &mut session,
+                    group::GroupTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                        group,
+                    },
+                    group::GroupAdmin::Describe,
+                    request_id,
+                )
+                .await?
+            }
+            Message::GroupDelete {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                group,
+                request_id,
+            } => {
+                group::group_admin(
+                    &cx,
+                    &mut session,
+                    group::GroupTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                        group,
+                    },
+                    group::GroupAdmin::Delete,
+                    request_id,
+                )
+                .await?
+            }
             Message::CacheDelete {
                 tenant_id,
                 namespace,
@@ -778,6 +849,9 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             | Message::StateValue { .. }
             | Message::Unsupported { .. }
             | Message::GroupDeadLetterList { .. }
+            | Message::GroupPosition { .. }
+            | Message::GroupInfo { .. }
+            | Message::GroupDeleted { .. }
             | Message::CacheValue { .. }
             | Message::CacheOk { .. }
             | Message::CounterValue { .. }

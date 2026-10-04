@@ -96,6 +96,22 @@ impl GroupTracker {
         }
     }
 
+    /// A group just moved to `committed` by an operator. Every claim made
+    /// before the move is void, so unlike [`Self::new`] it inherits none: a
+    /// late settle from an old claim above `committed` is refused rather than
+    /// taken as finishing a record the group now owes.
+    pub(crate) fn moved_to(committed: u64, max_attempts: u32) -> Self {
+        let mut tracker = Self::new(committed, max_attempts);
+        tracker.inherited_below = Some(committed);
+        tracker
+    }
+
+    /// How many offsets are handed out and unsettled, and how many are owed
+    /// again after a nack or a lapsed claim.
+    pub(crate) fn outstanding(&self) -> (usize, usize) {
+        (self.in_flight.len(), self.redeliver.len())
+    }
+
     /// Bound how many offsets may be handed out and unsettled at once.
     pub(crate) fn set_max_in_flight(&mut self, max_in_flight: usize) {
         self.max_in_flight = max_in_flight.max(1);
@@ -132,7 +148,6 @@ impl GroupTracker {
     }
 
     /// Everything below this is finished.
-    #[cfg(test)]
     pub(crate) fn committed(&self) -> u64 {
         self.committed
     }

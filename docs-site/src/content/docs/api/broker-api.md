@@ -760,6 +760,34 @@ A dead letter is a pointer to the record, not a copy of it. The record is still 
 log at that offset, readable by an ordinary replay. `group_discard` drops it
 from the list; `group_redrive` puts it back in play.
 
+### Group Lifecycle
+
+```json
+{ "type": "group_seek", "...": "scope", "start": "latest", "if_new": true, "request_id": 6 }
+{ "type": "group_position", "offset": 118, "moved": true, "request_id": 6 }
+{ "type": "group_describe", "...": "scope", "request_id": 7 }
+{ "type": "group_info", "committed": 118, "tail": 130, "in_flight": 4, "owed": 1,
+  "dead_letters": 0, "request_id": 7 }
+{ "type": "group_delete", "...": "scope", "request_id": 8 }
+{ "type": "group_deleted", "existed": true, "request_id": 8 }
+```
+
+Sent only to a broker that advertised `FEATURE_GROUP_ADMIN`.
+
+`group_seek` moves a group's cursor on one shard to `earliest` (the oldest
+record held), `latest` (the committed tail) or `{"offset": n}` between the two;
+anything outside is `invalid_request`. With `if_new` it moves only a group that
+does not exist yet, which is how a group is created somewhere other than offset
+0. A seek voids the claims standing when it lands: an ack for a record the group
+now owes is answered `stale_claim`. Dead letters are kept.
+
+`group_info` leaves out `committed` for a group with no cursor. `in_flight` and
+`owed` are the leader's memory and start again from zero when the shard changes
+leader. `group_delete` removes the cursor and dead letters; the next poll
+starts the group afresh.
+
+Seek and delete need `group.manage`, describe needs `group.consume`.
+
 **Example**:
 
 ```rust

@@ -14,7 +14,7 @@ mod connect;
 mod discovery;
 mod groups;
 
-pub use groups::GroupMember;
+pub use groups::{GroupInfo, GroupMember, GroupPosition};
 mod publish;
 mod subscribe;
 

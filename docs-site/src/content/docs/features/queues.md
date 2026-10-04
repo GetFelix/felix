@@ -172,6 +172,51 @@ replicate beside the shard's records, so a promoted leader resumes where the
 group had got to, lists the records that were set aside, serves a redrive, and
 still owes any record an operator redrove before the failover.
 
+## Creating, moving and deleting a group
+
+A group comes into being on its first poll, at offset 0. To start it somewhere
+else, create it first:
+
+```rust
+use felix_wire::StartPosition;
+
+// Only new work: leave alone a group that already exists, so this is safe on
+// every start of the consumer.
+client
+    .group_create("t1", "default", "jobs", 0, "workers", StartPosition::Latest)
+    .await?;
+```
+
+`Earliest` is the oldest record the shard still holds, `Latest` its committed
+tail, and `StartPosition::Offset(n)` must lie between the two. `group_seek`
+takes the same argument and moves a group that already exists, backwards to
+replay or forwards to skip. `group_describe` says where a group stands, and
+`group_delete` removes its position and dead letters.
+
+```rust
+let info = client.group_describe("t1", "default", "jobs", 0, "workers").await?;
+println!("{} records behind, {} in flight", info.lag(), info.in_flight);
+```
+
+A seek voids every claim standing when it lands. An ack for a record the group
+now owes is refused as `stale_claim`, and the record is delivered again from
+the new position; an ack below the new position is a harmless duplicate.
+Dead letters are kept across a seek. The in-flight and owed counts are the
+leader's memory, so they start again from zero when the shard changes leader.
+
+These calls work on one shard. On `ClusterClient`, `group_create_stream`,
+`group_seek_stream`, `group_describe_stream` and `group_delete_stream` make one
+call per shard. `Latest` is then each shard's own tail at the moment its call
+lands, not one cut across the stream, and an offset is refused for a stream
+with more than one shard since offsets are per shard. Creating, moving and
+deleting need `group.manage`; describing needs `group.consume`. They need a
+broker that advertises `FEATURE_GROUP_ADMIN`.
+
+> `a_seek_backwards_replays_what_the_group_finished`,
+> `an_ack_for_a_claim_from_before_a_seek_is_refused`,
+> `an_ack_racing_a_seek_does_not_move_the_new_cursor`,
+> `a_group_is_created_moved_described_and_deleted`.
+
 ## What a queue does not promise
 
 **Order.** A shared cursor gives it up the moment two consumers hold adjacent

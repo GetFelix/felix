@@ -727,6 +727,159 @@ pub(super) async fn group_redrive(
     Ok(Step::Next)
 }
 
+/// One group on one shard, as the admin requests name it.
+pub(super) struct GroupTarget {
+    pub(super) tenant_id: String,
+    pub(super) namespace: String,
+    pub(super) stream: String,
+    pub(super) shard: u32,
+    pub(super) group: String,
+}
+
+/// What an admin request asks for.
+pub(super) enum GroupAdmin {
+    Seek {
+        start: felix_wire::StartPosition,
+        if_new: bool,
+    },
+    Describe,
+    Delete,
+}
+
+/// `group_seek`, `group_describe` and `group_delete`.
+pub(super) async fn group_admin(
+    cx: &Ctx<'_>,
+    session: &mut Session,
+    target: GroupTarget,
+    request: GroupAdmin,
+    request_id: u64,
+) -> Result<Step> {
+    let Ctx {
+        broker,
+        publish_ctx,
+        authz_ctx,
+        out_ack_tx,
+        out_ack_depth,
+        ack_throttle_tx,
+        ack_timeout_state,
+        cancel_tx,
+        ..
+    } = *cx;
+    let respond = crate::serving::quic::handlers::cache_watch::WatchResponder {
+        out_ack_tx,
+        out_ack_depth,
+        ack_throttle_tx,
+        ack_timeout_state,
+        cancel_tx,
+    };
+    let GroupTarget {
+        tenant_id,
+        namespace,
+        stream,
+        shard,
+        group,
+    } = target;
+    // Reading where a group stands is a consumer's business, like listing
+    // its dead letters; moving or deleting it is an operator's.
+    let action = match request {
+        GroupAdmin::Describe => Action::GroupConsume,
+        GroupAdmin::Seek { .. } | GroupAdmin::Delete => Action::GroupManage,
+    };
+    if !authorize_group(
+        session.auth_ctx.as_ref(),
+        &tenant_id,
+        action,
+        &namespace,
+        &stream,
+        &group,
+        authz_ctx,
+    )
+    .await?
+    {
+        return Ok(Step::Close(false));
+    }
+    let admitted = match group_admit(
+        publish_ctx,
+        session.peer_features,
+        &tenant_id,
+        &namespace,
+        &stream,
+        shard,
+    )
+    .await
+    {
+        Ok(admitted) => admitted,
+        Err(answer) => {
+            respond.send(answer).await?;
+            return Ok(Step::Next);
+        }
+    };
+    let answer = match request {
+        GroupAdmin::Seek { start, if_new } => crate::serving::group_ops::seek(
+            broker,
+            publish_ctx,
+            admitted,
+            &tenant_id,
+            &namespace,
+            &stream,
+            shard,
+            &group,
+            start,
+            if_new,
+        )
+        .await
+        .map(|seek| Message::GroupPosition {
+            offset: seek.offset,
+            moved: seek.moved,
+            request_id,
+        })
+        .map_err(|reason| reason.prefixed("group seek not served")),
+        GroupAdmin::Describe => {
+            // A read does not hold the fence.
+            drop(admitted);
+            crate::serving::group_ops::describe(
+                broker,
+                publish_ctx,
+                &tenant_id,
+                &namespace,
+                &stream,
+                shard,
+                &group,
+            )
+            .await
+            .map(|(snapshot, tail)| Message::GroupInfo {
+                committed: snapshot.committed,
+                tail,
+                in_flight: snapshot.in_flight,
+                owed: snapshot.owed,
+                dead_letters: snapshot.dead_letters,
+                request_id,
+            })
+            .map_err(|reason| reason.prefixed("group describe not served"))
+        }
+        GroupAdmin::Delete => crate::serving::group_ops::delete(
+            broker,
+            publish_ctx,
+            admitted,
+            &tenant_id,
+            &namespace,
+            &stream,
+            shard,
+            &group,
+        )
+        .await
+        .map(|existed| Message::GroupDeleted {
+            existed,
+            request_id,
+        })
+        .map_err(|reason| reason.prefixed("group delete not served")),
+    };
+    respond
+        .send(answer.unwrap_or_else(|reason| reason.into_message()))
+        .await?;
+    Ok(Step::Next)
+}
+
 /// Hold a group operation while its shard moves, then say where it goes:
 /// here, with its place in the shard's write fence, or to the owner a
 /// redirect names.

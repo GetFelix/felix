@@ -1083,6 +1083,31 @@ for offset in offsets {
 A dead letter is a **pointer, not a copy**: the record is still in the stream's
 log at that offset, readable by an ordinary replay.
 
+### Creating, moving and deleting a group
+
+A group starts at offset 0 on its first poll unless it was created first. These
+need `FEATURE_GROUP_ADMIN` (`Client::supports_group_admin`):
+
+```rust
+use felix_wire::StartPosition;
+
+// Left alone if the group already exists, so safe on every start.
+client.group_create("acme", "prod", "jobs", 0, "fulfilment", StartPosition::Latest).await?;
+
+// Replay everything the shard still holds.
+client.group_seek("acme", "prod", "jobs", 0, "fulfilment", StartPosition::Earliest).await?;
+
+let info = client.group_describe("acme", "prod", "jobs", 0, "fulfilment").await?;
+println!("committed {:?}, {} behind", info.committed, info.lag());
+
+let existed = client.group_delete("acme", "prod", "jobs", 0, "fulfilment").await?;
+```
+
+A seek voids the claims standing when it lands, so an ack for a record the
+group now owes fails with `stale_claim`. `ClusterClient` has the same calls per
+shard, and `group_create_stream`, `group_seek_stream`, `group_describe_stream`
+and `group_delete_stream` for every shard of a stream.
+
 ### What a group needs
 
 - **Durable storage on the broker.** A group's position lives in a log, so a

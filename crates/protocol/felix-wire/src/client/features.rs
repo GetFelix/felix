@@ -258,6 +258,15 @@ pub const FEATURE_GROUP_SKIPPED: u32 = 0x0040_0000;
 /// batch counterpart is the frame flag `FLAG_EVENT_BATCH_PUBLISHER`.
 pub const FEATURE_GROUP_PUBLISHER: u32 = 0x0080_0000;
 
+/// The broker serves `group_seek`, `group_describe` and `group_delete`:
+/// creating a group at a chosen position, moving it, reading where it stands,
+/// and deleting it.
+///
+/// Advertised by a *broker*, with `FEATURE_CONSUMER_GROUP`. A bit of its own
+/// for the reason the dead-letter bit is: a broker that predates these
+/// requests has no arm for them.
+pub const FEATURE_GROUP_ADMIN: u32 = 0x0100_0000;
+
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -282,7 +291,8 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_GROUP_CONSUMER
     | FEATURE_SUBSCRIPTION_LAGGED
     | FEATURE_GROUP_SKIPPED
-    | FEATURE_GROUP_PUBLISHER;
+    | FEATURE_GROUP_PUBLISHER
+    | FEATURE_GROUP_ADMIN;
 
 /// True if `features` advertises `feature`.
 pub fn supports_feature(features: u32, feature: u32) -> bool {

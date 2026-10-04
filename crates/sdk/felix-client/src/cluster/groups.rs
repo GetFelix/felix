@@ -13,8 +13,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use felix_wire::StartPosition;
+
 use super::{ClusterClient, MAX_REDIRECTS, ShardKey};
-use crate::client::Client;
+use crate::client::{Client, GroupInfo, GroupPosition};
 
 impl ClusterClient {
     /// [`Client::group_poll`], on whichever broker leads the shard.
@@ -205,6 +207,211 @@ impl ClusterClient {
             },
         )
         .await
+    }
+
+    /// [`Client::group_seek`], on whichever broker leads the shard.
+    pub async fn group_seek(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        start: StartPosition,
+    ) -> Result<GroupPosition> {
+        self.on_group_shard(
+            shard_key(tenant_id, namespace, stream, shard),
+            |client| async move {
+                client
+                    .group_seek(tenant_id, namespace, stream, shard, group, start)
+                    .await
+            },
+        )
+        .await
+    }
+
+    /// [`Client::group_create`], on whichever broker leads the shard.
+    pub async fn group_create(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        start: StartPosition,
+    ) -> Result<GroupPosition> {
+        self.on_group_shard(
+            shard_key(tenant_id, namespace, stream, shard),
+            |client| async move {
+                client
+                    .group_create(tenant_id, namespace, stream, shard, group, start)
+                    .await
+            },
+        )
+        .await
+    }
+
+    /// [`Client::group_describe`], on whichever broker leads the shard.
+    pub async fn group_describe(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+    ) -> Result<GroupInfo> {
+        self.on_group_shard(
+            shard_key(tenant_id, namespace, stream, shard),
+            |client| async move {
+                client
+                    .group_describe(tenant_id, namespace, stream, shard, group)
+                    .await
+            },
+        )
+        .await
+    }
+
+    /// [`Client::group_delete`], on whichever broker leads the shard.
+    pub async fn group_delete(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+    ) -> Result<bool> {
+        self.on_group_shard(
+            shard_key(tenant_id, namespace, stream, shard),
+            |client| async move {
+                client
+                    .group_delete(tenant_id, namespace, stream, shard, group)
+                    .await
+            },
+        )
+        .await
+    }
+
+    /// [`ClusterClient::group_seek`] on every shard of `stream`, in shard
+    /// order. Returns each shard's position, indexed by shard.
+    ///
+    /// One request per shard, not one cut across them: `Latest` is each
+    /// shard's tail when its own seek lands. An `Offset` is refused for a
+    /// stream with more than one shard, since offsets are per shard. A
+    /// failure partway leaves the earlier shards moved; the call is safe to
+    /// repeat.
+    pub async fn group_seek_stream(
+        self: &Arc<Self>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        group: &str,
+        start: StartPosition,
+    ) -> Result<Vec<GroupPosition>> {
+        let shards = self
+            .group_shards(tenant_id, namespace, stream, start)
+            .await?;
+        let mut positions = Vec::with_capacity(shards as usize);
+        for shard in 0..shards {
+            positions.push(
+                self.group_seek(tenant_id, namespace, stream, shard, group, start)
+                    .await
+                    .with_context(|| format!("seek {group} on shard {shard} of {stream}"))?,
+            );
+        }
+        Ok(positions)
+    }
+
+    /// [`ClusterClient::group_create`] on every shard of `stream`, as
+    /// [`ClusterClient::group_seek_stream`] does. A shard where the group
+    /// already exists is left alone.
+    pub async fn group_create_stream(
+        self: &Arc<Self>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        group: &str,
+        start: StartPosition,
+    ) -> Result<Vec<GroupPosition>> {
+        let shards = self
+            .group_shards(tenant_id, namespace, stream, start)
+            .await?;
+        let mut positions = Vec::with_capacity(shards as usize);
+        for shard in 0..shards {
+            positions.push(
+                self.group_create(tenant_id, namespace, stream, shard, group, start)
+                    .await
+                    .with_context(|| format!("create {group} on shard {shard} of {stream}"))?,
+            );
+        }
+        Ok(positions)
+    }
+
+    /// [`ClusterClient::group_describe`] for every shard of `stream`, indexed
+    /// by shard.
+    pub async fn group_describe_stream(
+        self: &Arc<Self>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        group: &str,
+    ) -> Result<Vec<GroupInfo>> {
+        let shards = self
+            .stream_shard_count(tenant_id, namespace, stream)
+            .await?;
+        let mut infos = Vec::with_capacity(shards as usize);
+        for shard in 0..shards {
+            infos.push(
+                self.group_describe(tenant_id, namespace, stream, shard, group)
+                    .await
+                    .with_context(|| format!("describe {group} on shard {shard} of {stream}"))?,
+            );
+        }
+        Ok(infos)
+    }
+
+    /// [`ClusterClient::group_delete`] on every shard of `stream`. Returns
+    /// whether any shard had anything to delete. Safe to repeat after a
+    /// failure partway.
+    pub async fn group_delete_stream(
+        self: &Arc<Self>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        group: &str,
+    ) -> Result<bool> {
+        let shards = self
+            .stream_shard_count(tenant_id, namespace, stream)
+            .await?;
+        let mut existed = false;
+        for shard in 0..shards {
+            existed |= self
+                .group_delete(tenant_id, namespace, stream, shard, group)
+                .await
+                .with_context(|| format!("delete {group} on shard {shard} of {stream}"))?;
+        }
+        Ok(existed)
+    }
+
+    /// The shards a stream-wide seek covers, refusing an offset that would
+    /// mean something different on each.
+    async fn group_shards(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        start: StartPosition,
+    ) -> Result<u32> {
+        let shards = self
+            .stream_shard_count(tenant_id, namespace, stream)
+            .await?;
+        if let StartPosition::Offset(offset) = start {
+            anyhow::ensure!(
+                shards == 1,
+                "{stream} has {shards} shards, and offset {offset} names a record on only one; \
+                 seek each shard with ClusterClient::group_seek instead"
+            );
+        }
+        Ok(shards)
     }
 
     /// Run `op` against the broker that leads the shard, following redirects.
