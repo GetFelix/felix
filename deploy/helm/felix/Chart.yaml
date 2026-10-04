@@ -12,7 +12,7 @@ version: 0.1.1
 # this; pin by digest in production.
 appVersion: "0.6.0-preview"
 kubeVersion: ">=1.25.0-0"
-home: https://getfelix.github.io/felix/
+home: https://docs.getfelix.dev
 sources:
   - https://github.com/GetFelix/felix
 keywords:

@@ -38,8 +38,8 @@ classifiers = [
 dynamic = ["version"]
 
 [project.urls]
-Homepage = "https://getfelix.github.io/felix/"
-Documentation = "https://getfelix.github.io/felix/clients/python/"
+Homepage = "https://docs.getfelix.dev"
+Documentation = "https://docs.getfelix.dev/clients/python/"
 Repository = "https://github.com/GetFelix/felix"
 Issues = "https://github.com/GetFelix/felix/issues"
 Changelog = "https://github.com/GetFelix/felix/blob/main/CHANGELOG.md"

@@ -6,8 +6,8 @@ What Felix promises about delivery, ordering, durability, and consistency, and w
 
 :::note[What is built and what is not]
 This page describes behaviour that exists and behaviour that is planned. Where
-they differ it says which. The [status table](/felix/getting-started/what-felix-is-for/)
-is the authority per capability, and [Projections](/felix/architecture/projections/)
+they differ it says which. The [status table](/getting-started/what-felix-is-for/)
+is the authority per capability, and [Projections](/architecture/projections/)
 carries the test behind each claim about a semantic.
 :::
 ## Pub/Sub Delivery Semantics
@@ -32,7 +32,7 @@ record also survives losing the broker that accepted it.
 
 **A consumer group is at-least-once, and redelivers.** A record handed to a
 consumer that does not answer is handed to another once the visibility timeout
-lapses. See [Projections](/felix/architecture/projections/).
+lapses. See [Projections](/architecture/projections/).
 
 At-most-once is appropriate for:
 - Real-time signals where latest value matters most
@@ -47,7 +47,7 @@ Messages can be lost when:
 - Subscriber disconnects without draining buffer
 - Broker restarts, for **ephemeral** streams. A stream registered with
   `durable: true` persists each record before acknowledging it, and replays it
-  after a restart; see [Durable Storage](/felix/architecture/durable-storage/).
+  after a restart; see [Durable Storage](/architecture/durable-storage/).
 :::
 **Example at-most-once workload**:
 
@@ -102,7 +102,7 @@ A durable stream is replicated to a set of brokers: one leader and its
 replicas. `consistency` on the stream decides **how many of them must hold a
 record before the publisher is told it is safe.**
 
-![The same publish under two consistency levels. Under Leader, the shard's leader writes the record durably and acknowledges immediately; the replicas receive their copies afterwards, and the acknowledgement did not wait for them. Under Quorum, the leader writes durably, ships the record to both replicas, and acknowledges only once a majority of the replica set holds it, so the acknowledgement arrives later. A bar beneath each row shows the time until the client is told, and the Quorum bar is more than twice as long.](/felix/diagrams/quorum-ack.svg)
+![The same publish under two consistency levels. Under Leader, the shard's leader writes the record durably and acknowledges immediately; the replicas receive their copies afterwards, and the acknowledgement did not wait for them. Under Quorum, the leader writes durably, ships the record to both replicas, and acknowledges only once a majority of the replica set holds it, so the acknowledgement arrives later. A bar beneath each row shows the time until the client is told, and the Quorum bar is more than twice as long.](/diagrams/quorum-ack.svg)
 
 **`Leader`** is the default. The leader writes the record to its own log,
 durably, and answers. Replication still happens; the acknowledgement simply
@@ -132,7 +132,7 @@ same log, with the same fsync policy. What changes is what the acknowledgement
 #### How `Quorum` is enforced
 
 The rule depends on which fleet features an operator has finalized (see
-[Upgrades](/felix/deployment/upgrades/) for the runbooks).
+[Upgrades](/deployment/upgrades/) for the runbooks).
 
 **By default**, the replication driver reports to the control plane which
 replicas hold each record, and the quorum mark that releases an acknowledgement
@@ -193,7 +193,7 @@ on); they differ in **when you learn there is a problem**:
 `Quorum` at publish time, while you still hold the record, or `Leader` at
 failover time, when the only copy is on a broker that is gone.
 
-[`task cluster:consistency`](/felix/demos/cluster-consistency/) runs
+[`task cluster:consistency`](/demos/cluster-consistency/) runs
 this: the same fault put to both, on a real three-node cluster.
 
 **What a reader sees of a `Quorum` stream.** A consumer group and a Kafka
@@ -542,7 +542,7 @@ sequenceDiagram
 **Behavior**: Last write wins, in the order the owner applies the writes,
 which the clients do not control. For a value many clients update, use a
 counter (`counter_add`), which the owner adds atomically. To react to changes,
-watch the key (`watch_cache`); see [Cache](/felix/features/cache/).
+watch the key (`watch_cache`); see [Cache](/features/cache/).
 
 ## Tenant and Namespace Model
 
@@ -646,7 +646,7 @@ In a clustered deployment:
   under `majority_ack` acknowledges on its followers' answers instead, and a
   `Quorum` cache read under `lease_free_reads` confirms with a round (see
   [How `Quorum` is enforced](#how-quorum-is-enforced))
-- **Metadata consistency**: strongly consistent, because it lives in one Postgres that every control-plane instance reads and writes, or in an embedded Raft group. A Raft member that comes back with a wiped volume withholds its vote until it has caught up, so it cannot help elect a leader missing an acknowledged write (see [Raft metadata](/felix/architecture/metadata-raft/))
+- **Metadata consistency**: strongly consistent, because it lives in one Postgres that every control-plane instance reads and writes, or in an embedded Raft group. A Raft member that comes back with a wiped volume withholds its vote until it has caught up, so it cannot help elect a leader missing an acknowledged write (see [Raft metadata](/architecture/metadata-raft/))
 - **Cross-shard ordering**: Not guaranteed. Ordering is per key, because a key
   always resolves to the same shard and a shard is one log on one leader
 - **Cache consistency**: One owner per key, with `Leader` or `Quorum`
@@ -716,7 +716,7 @@ and clients see less of it than of one:
 - **Nothing acknowledged is lost.** Group positions, dead letters, counters
   and idempotent producers' sequences move with the shard.
 
-See [Adding, draining and removing brokers](/felix/deployment/scaling/#what-clients-see).
+See [Adding, draining and removing brokers](/deployment/scaling/#what-clients-see).
 
 ### Slow Subscriber Behavior
 

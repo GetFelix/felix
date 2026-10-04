@@ -118,7 +118,7 @@ felixctl bench latency orders
 The benchmark prints the publish rate with the acknowledgement p50 and p99,
 then the delivered rate with the publish-to-delivery p50 and p99. Numbers from
 a laptop loopback run say little about a real deployment; see
-[Performance](/felix/features/performance/) for measured results.
+[Performance](/features/performance/) for measured results.
 
 ## Contexts
 
@@ -170,7 +170,7 @@ to every broker, which is what a broker with `FELIX_TLS_CLIENT_CA` and
 `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT` expects.
 
 The client's tuning variables (`FELIX_PUB_CONN_POOL`, `FELIX_CLIENT_CONFIG` and
-the rest in the [environment reference](/felix/reference/environment-variables/))
+the rest in the [environment reference](/reference/environment-variables/))
 apply to `felixctl` as to any client.
 
 ## Publishing
@@ -277,7 +277,7 @@ tenant, or `node.view` for nodes and shards.
 ## Benchmarks
 
 `felixctl bench` runs the scenarios of `felix-loadgen`, the instrument behind
-the [real-network performance runs](/felix/features/performance/), in process
+the [real-network performance runs](/features/performance/), in process
 against the current context, and prints the rate and the p50 and p99 latency.
 
 ```bash

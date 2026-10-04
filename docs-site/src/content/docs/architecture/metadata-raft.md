@@ -10,7 +10,7 @@ group. Metadata (tenants, streams, shard assignments, membership, auth
 configuration) becomes a Raft-replicated state machine, persisted as a log
 and snapshots on each instance's own volume. No external database is needed.
 Postgres remains a fully supported backend, and
-[Control-plane HA](/felix/deployment/control-plane-ha/) covers how to choose.
+[Control-plane HA](/deployment/control-plane-ha/) covers how to choose.
 
 The failure handling is covered by tests. Three instances under continuous
 broker traffic come through rolling restarts, a leader killed with SIGKILL, a
@@ -147,7 +147,7 @@ leader, a quorum has acknowledged it within the last 5s. That last check
 takes a partitioned, quorumless leader out of rotation before it serves
 stale reads, and a test covers it. `/v1/system/live` stays
 process-local, exactly as before: losing quorum is not fixed by a restart.
-The probe settings on [Control-plane HA](/felix/deployment/control-plane-ha/)
+The probe settings on [Control-plane HA](/deployment/control-plane-ha/)
 (intervals, thresholds) carry over unchanged.
 
 Consensus position ships as metrics: `felix_meta_raft_term`,
@@ -227,7 +227,7 @@ spec:
 
 The PVC is what makes a pod restart a rejoin; a member whose volume is lost
 rejoins empty and is rebuilt by snapshot install. The
-[Helm chart](/felix/deployment/kubernetes/) renders exactly this with
+[Helm chart](/deployment/kubernetes/) renders exactly this with
 `controlplane.storage.backend=raft`, deriving each member's id from its pod
 ordinal and the peers map from the replica count. It lets empty members
 start with `new` only until a post-install hook has seen the group form and

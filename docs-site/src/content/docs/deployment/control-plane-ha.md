@@ -7,7 +7,7 @@ This page covers the Postgres storage backend. With it, the control plane is
 stateless: all durable metadata (tenants, streams, membership, shard
 ownership, auth configuration) lives in one Postgres database, and any number
 of identical instances serve it. The alternative is
-[Metadata Raft](/felix/architecture/metadata-raft/), where the instances hold
+[Metadata Raft](/architecture/metadata-raft/), where the instances hold
 the metadata themselves and no database is needed.
 
 With Postgres, high availability has these parts:
@@ -122,7 +122,7 @@ still comes back inside its own bound instead of hanging.
 On SIGTERM an instance fails readiness first and keeps serving for
 `FELIX_SHUTDOWN_PREDRAIN_MS` so load balancers can act on it, then drains
 against `FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS`. The whole sequence is on
-[Graceful Shutdown](/felix/deployment/graceful-shutdown/).
+[Graceful Shutdown](/deployment/graceful-shutdown/).
 
 ## Sizing and connections
 
@@ -166,4 +166,4 @@ start.
 The full contract is in
 [`docs/ha-postgres.md`](https://github.com/GetFelix/felix/blob/main/docs/ha-postgres.md).
 If operating a Postgres is the part you would rather not,
-[Metadata Raft](/felix/architecture/metadata-raft/) is the alternative.
+[Metadata Raft](/architecture/metadata-raft/) is the alternative.

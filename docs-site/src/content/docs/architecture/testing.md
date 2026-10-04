@@ -3,7 +3,7 @@ title: "How Felix Is Tested"
 description: "The history checker, fault injection on a real cluster, and the TLA+ models behind the replication claims."
 ---
 
-The replication rows on [What Felix Is For](/felix/getting-started/what-felix-is-for/)
+The replication rows on [What Felix Is For](/getting-started/what-felix-is-for/)
 rest on three kinds of evidence. A history checker runs clients against a real
 three-broker cluster while it injects faults, then checks what the clients saw.
 The cluster harness runs those brokers and injects the faults, and individual
@@ -232,7 +232,7 @@ Detail, with every configuration and its state count:
 ## Elsewhere
 
 The decoders that parse input from outside the process are fuzzed; see
-[Fuzzing](/felix/development/fuzzing/). The wire-protocol conformance runner
+[Fuzzing](/development/fuzzing/). The wire-protocol conformance runner
 (`task conformance`) holds a catalogue of required scenarios, and CI checks the
 Python and TypeScript clients' results against it.
 

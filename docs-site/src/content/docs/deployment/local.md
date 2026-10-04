@@ -45,7 +45,7 @@ process gets free ports, so nothing collides with what you already run. It
 also writes a session file, `felix-cluster.json` in your system temp
 directory, with the tenant, namespace, client token and broker addresses.
 `subscribe`, `publish` and `owners` read that file to attach to the running
-cluster. The [Quickstart](/felix/getting-started/quickstart/) walks through
+cluster. The [Quickstart](/getting-started/quickstart/) walks through
 them.
 
 The tool runs the broker binary from `target/`, which is why the broker is
@@ -79,10 +79,10 @@ with. Without it the broker still starts, warns that
 `the control plane will refuse the metadata sync, so no tenant, namespace, stream or cache will be learned from it`,
 and serves no streams. The token comes out of the control plane's day-0
 bootstrap and a token exchange with your identity provider; the
-[Docker Compose page](/felix/deployment/docker-compose/#broker-credential)
+[Docker Compose page](/deployment/docker-compose/#broker-credential)
 shows the requests. A development stack with no identity provider can ask the
 bootstrap listener for a
-[development token](/felix/features/security/#development-tokens) instead;
+[development token](/features/security/#development-tokens) instead;
 `felix-cluster` mints its tokens itself.
 
 A started broker logs a `quic listener started` line with its address for
@@ -163,7 +163,7 @@ FELIX_BROKER_CONFIG=/tmp/felix-dev.yml cargo run --release -p felix-broker-servi
 An unknown key fails startup, and so does a `FELIX_BROKER_CONFIG` path that
 does not exist. Without the variable the broker reads
 `/usr/local/felix/config.yml` if it exists and carries on without it if not.
-The [configuration reference](/felix/reference/configuration/) lists every
+The [configuration reference](/reference/configuration/) lists every
 key.
 
 ### Latency and throughput settings
@@ -327,8 +327,8 @@ rustup update
 
 ## Next steps
 
-- **Learn the client API**: [Client SDK Guide](/felix/clients/rust/)
-- **Deploy with Docker**: [Docker Compose Setup](/felix/deployment/docker-compose/)
-- **Production deployment**: [Kubernetes Guide](/felix/deployment/kubernetes/)
-- **Tune performance**: [Performance Guide](/felix/features/performance/)
-- **Configure fully**: [Configuration Reference](/felix/reference/configuration/)
+- **Learn the client API**: [Client SDK Guide](/clients/rust/)
+- **Deploy with Docker**: [Docker Compose Setup](/deployment/docker-compose/)
+- **Production deployment**: [Kubernetes Guide](/deployment/kubernetes/)
+- **Tune performance**: [Performance Guide](/features/performance/)
+- **Configure fully**: [Configuration Reference](/reference/configuration/)

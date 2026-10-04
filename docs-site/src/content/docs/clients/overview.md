@@ -167,13 +167,13 @@ worth writing code for.
 
 | | | |
 | --- | --- | --- |
-| **[Rust](/felix/clients/rust/)** | `felix-client` on crates.io | The reference client, and the one the others are built from. |
-| **[Python](/felix/clients/python/)** | `felix-client` on PyPI | A PyO3 binding, with a synchronous and an asyncio surface over the same Rust client. |
-| **[TypeScript](/felix/clients/typescript/)** | `felix-client` on npm | A napi-rs addon. One asynchronous surface, because blocking Node's event loop is not something a library may do. |
+| **[Rust](/clients/rust/)** | `felix-client` on crates.io | The reference client, and the one the others are built from. |
+| **[Python](/clients/python/)** | `felix-client` on PyPI | A PyO3 binding, with a synchronous and an asyncio surface over the same Rust client. |
+| **[TypeScript](/clients/typescript/)** | `felix-client` on npm | A napi-rs addon. One asynchronous surface, because blocking Node's event loop is not something a library may do. |
 
 Python and TypeScript both pass every required scenario in the catalogue, and
 CI is gated on both. That includes the `commit.*` scenarios: all three clients
-offer [atomic commits](/felix/features/atomic-commits/) with the same typed
+offer [atomic commits](/features/atomic-commits/) with the same typed
 refusals. Each leaves a couple of optional scenarios unclaimed
 rather than passing over them in silence; their pages say which.
 
@@ -183,7 +183,7 @@ Go, then C#, in that order, because that is where Felix's intended workloads
 live. Each is gated on passing the conformance suite.
 
 If you want to write one sooner, the things you need are all public: the
-[wire protocol](/felix/architecture/wire-protocol/) if you are implementing
+[wire protocol](/architecture/wire-protocol/) if you are implementing
 natively, the conformance catalogue either way, and `crates/sdk/felix-python` or
 `crates/sdk/felix-typescript` as worked examples of the binding approach: a few
 hundred lines of Rust over a client that already works.

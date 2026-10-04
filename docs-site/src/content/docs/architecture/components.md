@@ -10,7 +10,7 @@ either. This page walks through each component and what it owns.
 
 Together they serve **streams, caches and queues**. These are three readings of
 one append-only log rather than three subsystems, as
-[Projections](/felix/architecture/projections/) explains.
+[Projections](/architecture/projections/) explains.
 
 ```mermaid
 graph TB
@@ -92,7 +92,7 @@ Every Felix message is wrapped in a fixed 12-byte header:
 - **Version**: Protocol version (currently 1)
 - **Flags**: Selects the payload layout: binary publish batch, binary event batch,
   acked publish, publish ack. See
-  [Wire Protocol](/felix/architecture/wire-protocol/) for the full table.
+  [Wire Protocol](/architecture/wire-protocol/) for the full table.
 - **Length**: Payload size in bytes (up to 4 GiB)
 
 ### Design Decisions
@@ -256,19 +256,19 @@ Each stream shard runs one publish at a time, so executors beyond the number of 
 This section is a conceptual overview. For an accurate, function-by-function
 walkthrough with file references, including exactly how admission,
 stream resolution, and fanout work, see
-[Internals: The Publish Path](/felix/development/internals-publish/).
+[Internals: The Publish Path](/development/internals-publish/).
 :::
 ### Subscription Management
 
 Each subscription's broker-core state is a channel slot in its stream's
 subscriber registry, plus a dedicated feeder task and QUIC event stream.
-See [Internals: Subscribe & Fanout](/felix/development/internals-subscribe/)
+See [Internals: Subscribe & Fanout](/development/internals-subscribe/)
 for the exact types (`SubscriptionReceiver`, `WriterLaneManager`,
 `run_lane_feeder`) and handshake sequence.
 
 **Isolation guarantees**:
 
-- Slow subscribers never block fast subscribers *by default* (`drop_new` queue policy; see [backpressure internals](/felix/development/internals-concurrency/) for the opt-in `block` mode and why it inverts this guarantee)
+- Slow subscribers never block fast subscribers *by default* (`drop_new` queue policy; see [backpressure internals](/development/internals-concurrency/) for the opt-in `block` mode and why it inverts this guarantee)
 - Per-subscription buffering with configurable depth (`subscriber_queue_capacity`)
 - Independent flow control per subscription stream
 - Dropped events are counted in `felix_subscribe_dropped_total`
@@ -309,7 +309,7 @@ sequenceDiagram
 - Under load (the previous batch found events queued), it also waits up to `event_batch_max_delay_us` (default: 250 µs) for more
 
 :::note[Want the real code path?]
-See [Internals: Subscribe & Fanout](/felix/development/internals-subscribe/)
+See [Internals: Subscribe & Fanout](/development/internals-subscribe/)
 for the exact mechanics of `DeliveryEnvelope`, `shared_event_frame()`,
 writer lanes, and the connection-writer pipelining that schedules the
 actual QUIC writes.
@@ -389,8 +389,8 @@ They travel on the **control stream**, like publish and subscribe setup.
   promoted replica resumes where the group had reached and still lists what the
   group gave up on
 
-See [Queues](/felix/features/queues/) for the API and
-[the demo](/felix/demos/queue-semantics/) for it running.
+See [Queues](/features/queues/) for the API and
+[the demo](/demos/queue-semantics/) for it running.
 
 ## felix-storage: Storage Abstraction
 
@@ -483,7 +483,7 @@ gives one order to every metadata write.
 - **Raft**: every instance holds the metadata. Writes are proposed to the Raft
   leader (a follower forwards them) and apply in log order on every member.
   Reads, including broker watches, are served from the member's local state.
-  See [Metadata Raft](/felix/architecture/metadata-raft/).
+  See [Metadata Raft](/architecture/metadata-raft/).
 
 Under Postgres:
 
@@ -631,7 +631,7 @@ Each component exposes its own configuration surface:
 | **felix-replication** | Peer transport, quorum publish timeout, replica rebuild concurrency and rate |
 | **Control Plane** | Storage backend (Postgres pool or Raft group), readiness probe timings, reconcile interval |
 
-See the [Performance Tuning](/felix/features/performance/) guide for detailed configuration examples.
+See the [Performance Tuning](/features/performance/) guide for detailed configuration examples.
 
 ## Design Principles
 

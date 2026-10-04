@@ -14,7 +14,7 @@ broker), which is the right setup for catching regressions in Felix's own
 code. For numbers taken on real hardware over a real network with a real IdP
 (1.63 GB/s aggregate ingest, ~181 µs acked-publish latency, and the finding
 that durability costs no throughput), see [Real-Network Performance
-(Azure)](/felix/features/real-network-performance/), which reads the loopback
+(Azure)](/features/real-network-performance/), which reads the loopback
 figures below as its baseline.
 :::
 
@@ -100,9 +100,9 @@ within noise.
 | 1 KiB | 131 / 176 / 251 µs | 247 / 351 / 417 µs |
 | 4 KiB | 136 / 176 / 216 µs | 269 / 399 / 483 µs |
 
-![Latency profile p50 by payload and publisher preset, fanout 1](/felix/charts/latency_demo/balanced/f1_b1_json_a8b3321b_p50.svg)
+![Latency profile p50 by payload and publisher preset, fanout 1](/charts/latency_demo/balanced/f1_b1_json_a8b3321b_p50.svg)
 
-![Latency profile p99 by payload and publisher preset, fanout 10](/felix/charts/latency_demo/balanced/f10_b1_json_a8b3321b_p99.svg)
+![Latency profile p99 by payload and publisher preset, fanout 10](/charts/latency_demo/balanced/f10_b1_json_a8b3321b_p99.svg)
 
 Fanout-10 tails improved sharply with the transport scheduling work: p99 went
 from ~1.05–1.13 ms to 278–399 µs, and p999 from 1.32–2.09 ms to 340–483 µs.
@@ -132,7 +132,7 @@ Spot-checked on Linux (4-CPU container, 1 KiB × batch 64 × fanout 1), the
 what macOS reaches with every fix applied. The dedicated I/O runtime pool is
 therefore enabled on macOS only; on Linux it measures slower (see
 `FELIX_IO_RUNTIME_THREADS` in the
-[environment variable reference](/felix/reference/environment-variables/)).
+[environment variable reference](/reference/environment-variables/)).
 Linux has since been measured on real hardware (Azure `D16ads_v5`, 8 physical
 EPYC cores, Ubuntu 24.04): **1.17 GB/s** at 4 KiB × batch 64 × fanout 1, about
 2.3× the macOS figure above at the same shape. That run also uncovered a
@@ -140,12 +140,12 @@ delivery-stalling defect in the loopback MTU guarantee on Linux, now fixed by
 capping the guaranteed size at 4 KiB off macOS. No Linux table is published
 here yet: those numbers came from direct harness invocations rather than a full
 `run_latency_matrix.py` session, so they lack the per-run provenance every row
-on this page carries. The [performance case study](/felix/features/performance-case-study/)
+on this page carries. The [performance case study](/features/performance-case-study/)
 has the measurements and their caveats.
 
 :::note[Why the spread column is tight]
 Trial-to-trial spread is this narrow because of the path-MTU fix in the
-[case study](/felix/features/performance-case-study/). Before it, a
+[case study](/features/performance-case-study/). Before it, a
 congestive loss burst during ramp-up could trip QUIC's MTU black-hole
 detector and pin a connection at a 1200-byte MTU for the rest of the run.
 That multiplied datagrams (and syscalls) by ~13× and made roughly one run in
@@ -157,15 +157,15 @@ spread across trials is what exposed the defect, where averaging would have
 hidden it.
 :::
 
-![Delivered payload MB/s by payload and publisher preset, fanout 1](/felix/charts/latency_demo/balanced/f1_b64_binary_a8b3321b_delivered_mb_per_s.svg)
+![Delivered payload MB/s by payload and publisher preset, fanout 1](/charts/latency_demo/balanced/f1_b64_binary_a8b3321b_delivered_mb_per_s.svg)
 
-![Delivered payload MB/s by payload and publisher preset, fanout 10](/felix/charts/latency_demo/balanced/f10_b64_binary_a8b3321b_delivered_mb_per_s.svg)
+![Delivered payload MB/s by payload and publisher preset, fanout 10](/charts/latency_demo/balanced/f10_b64_binary_a8b3321b_delivered_mb_per_s.svg)
 
 The charts come from the same post-fix matrix session as the latency charts
 above (3 trials per cell, fresh session, run-size floor past the QUIC send
 window). Publisher presets are within a few percent of each other at every
 payload. Connection count does not affect throughput, as the
-[QUIC transport page](/felix/features/quic-transport/) explains.
+[QUIC transport page](/features/quic-transport/) explains.
 
 ### Historical cross-platform comparison
 
@@ -232,7 +232,7 @@ the QUIC driver tasks, roughly one cross-thread wakeup chain per datagram.
 Isolating those drivers onto dedicated single-threaded runtimes (plus pump
 colocation and ACK-frequency tuning) raised sustained macOS loopback
 throughput ~7.5×. See
-[Concurrency internals](/felix/development/internals-concurrency/#the-quic-io-runtime)
+[Concurrency internals](/development/internals-concurrency/#the-quic-io-runtime)
 for how that placement works.
 
 ## The transport levers that matter
@@ -250,7 +250,7 @@ These settings came out of profiling the QUIC path and are wired into
 | `FELIX_IO_RUNTIME_THREADS` | CPU parallelism | Quinn's driver tasks run on a pool of dedicated single-threaded runtimes (one endpoint per runtime), isolated from application tasks. Driver re-poll latency is the transport's throughput ceiling, and this isolation is the single largest lever found (~7.5× sustained on macOS loopback). `0` restores the old shared-runtime behavior. In-process multi-endpoint setups prefer a small pool; `latency-demo` pins `2`. |
 | `FELIX_ACK_ELICITING_THRESHOLD` | 20 | ACK-frequency extension (quinn peers): ACK at most every N ack-eliciting packets instead of every other, with a 2 ms max ACK delay. Each reverse-path ACK costs a datagram plus its wakeup chain; ~+15% throughput measured. `FELIX_ACK_FREQ_DISABLE=1` restores stock quinn ACK behavior. |
 
-Broker-side levers (see [Configuration](/felix/reference/configuration/)):
+Broker-side levers (see [Configuration](/reference/configuration/)):
 `pub_inflight_bytes` (ingress byte budget), `pub_ingress_wait` (lossless
 backpressure vs. shed-on-overload), subscriber queue policies
 (`block` / `drop_new` / `drop_old`) and depths, and `core_shards`

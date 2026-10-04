@@ -3,7 +3,7 @@ title: "QUIC Transport"
 ---
 
 Felix clients speak QUIC to the broker. The optional
-[Kafka listener](/felix/features/kafka/) is TCP, and so is the control plane's
+[Kafka listener](/features/kafka/) is TCP, and so is the control plane's
 REST API. Every QUIC connection is encrypted (TLS 1.3 is
 part of the protocol, not a layer bolted on top), and many independent streams
 multiplex over one connection without blocking each other. This page explains
@@ -18,7 +18,7 @@ stream, so when a packet is lost, everything behind it waits, even bytes that
 belong to unrelated traffic and have already arrived. QUIC orders each stream
 independently: a lost packet stalls only the stream whose data it carried.
 
-![The same lost packet under TCP and under QUIC. Three logical streams share one connection and a packet belonging to stream 2 is lost. Under TCP all three streams stop being delivered until the retransmission arrives, because they share one ordered byte stream. Under QUIC only stream 2 stops, because each stream is ordered on its own.](/felix/diagrams/head-of-line.svg)
+![The same lost packet under TCP and under QUIC. Three logical streams share one connection and a packet belonging to stream 2 is lost. Under TCP all three streams stop being delivered until the retransmission arrives, because they share one ordered byte stream. Under QUIC only stream 2 stops, because each stream is ordered on its own.](/diagrams/head-of-line.svg)
 
 Nothing was lost for streams 1 and 3 in either case. Under TCP their bytes had
 already arrived and simply could not be handed over, because the transport has
@@ -70,7 +70,7 @@ sequenceDiagram
 
 ## Measured behavior
 
-All measured figures live on one page, [Benchmarks](/felix/features/benchmarks/),
+All measured figures live on one page, [Benchmarks](/features/benchmarks/),
 so they cannot drift page to page.
 
 :::caution[Connection count is not a throughput multiplier]
@@ -111,7 +111,7 @@ and keep latency predictable. They are set as client config fields or
 environment variables: `FELIX_EVENT_CONN_RECV_WINDOW`,
 `FELIX_EVENT_STREAM_RECV_WINDOW`, `FELIX_EVENT_SEND_WINDOW`, and the
 `FELIX_CACHE_*` equivalents. The full list, with defaults, is in the
-[environment variable reference](/felix/reference/environment-variables/).
+[environment variable reference](/reference/environment-variables/).
 
 The memory bound is roughly what you would expect: the sum of each
 connection's window plus each open stream's window. Size them against the
@@ -148,7 +148,7 @@ driver tasks execute on dedicated single-threaded I/O runtimes
 (`FELIX_IO_RUNTIME_THREADS`), isolated from application tasks, because their
 scheduler re-poll latency, not congestion control, was the measured
 throughput ceiling. See
-[Concurrency internals](/felix/development/internals-concurrency/#the-quic-io-runtime).
+[Concurrency internals](/development/internals-concurrency/#the-quic-io-runtime).
 
 ### Per-connection path stats
 

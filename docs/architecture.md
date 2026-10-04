@@ -155,7 +155,7 @@ Delivery guarantees:
 - All encryption uses modern, configurable cipher suites
 
 The rest of this section is the intended design, not what ships today. The
-[status table](https://getfelix.github.io/felix/getting-started/what-felix-is-for/)
+[status table](https://docs.getfelix.dev/getting-started/what-felix-is-for/)
 is per capability and is the page to trust when another disagrees.
 
 ### Data Encryption

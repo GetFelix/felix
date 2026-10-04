@@ -15,11 +15,11 @@ hero:
     file: ../../assets/logo.png
   actions:
     - text: Quickstart
-      link: /felix/getting-started/quickstart/
+      link: /getting-started/quickstart/
       icon: right-arrow
       variant: primary
     - text: Why Felix?
-      link: /felix/getting-started/why-felix/
+      link: /getting-started/why-felix/
       icon: open-book
       variant: secondary
     - text: GitHub
@@ -35,7 +35,7 @@ Felix is in **early active development** and has not been run in production by
 anyone. The design and implementation are still moving.
 
 Where these pages describe something that is not built, they say so. The
-[status table](/felix/getting-started/what-felix-is-for/) is the one place that
+[status table](/getting-started/what-felix-is-for/) is the one place that
 is kept current per capability, and it is the page to trust when another
 disagrees with it.
 </Aside>
@@ -46,7 +46,7 @@ transport layer.
 
 ## Design goals
 
-New here? [Why Felix?](/felix/getting-started/why-felix/) explains in
+New here? [Why Felix?](/getting-started/why-felix/) explains in
 plain terms why you might run one system instead of a log, a cache and a queue,
 and who should not use it. The cards below make the same case for readers who
 already know the area.
@@ -79,7 +79,7 @@ already know the area.
 <CardGrid>
   <LinkCard
     title="Kafka compatibility"
-    href="/felix/features/kafka/"
+    href="/features/kafka/"
     description="Point existing Kafka producers and partition-assigning consumers at a Felix broker. Topics are streams, partitions are shards, offsets are Felix's. No consumer groups or transactions."
   />
 </CardGrid>
@@ -93,12 +93,12 @@ they show as a test.
 <CardGrid>
   <LinkCard
     title="Slow-consumer isolation"
-    href="/felix/demos/slow-consumer-isolation/"
+    href="/demos/slow-consumer-isolation/"
     description="One consumer stalls. Under drop_new the healthy consumers never notice; under block it takes down the publisher. The same workload, twice."
   />
   <LinkCard
     title="Local state divergence"
-    href="/felix/demos/state-divergence/"
+    href="/demos/state-divergence/"
     description="The counterpart: what an at-most-once configuration costs a consumer that holds local state, and what lossless delivery costs in throughput."
   />
 </CardGrid>
@@ -109,7 +109,7 @@ Felix uses a framed protocol (`felix-wire`) over QUIC streams to unify event
 streaming and request/response caching, with explicit control over multiplexing,
 batching, and flow control.
 
-![One append-only log per shard, read three ways: as a stream by offset, as a cache through a key index, and as a queue through a cursor shared by a consumer group.](/felix/diagrams/one-log.svg)
+![One append-only log per shard, read three ways: as a stream by offset, as a cache through a key index, and as a queue through a cursor shared by a consumer group.](/diagrams/one-log.svg)
 
 Streams, caches and queues are three ways of reading the same bytes. They share one durability path, one recovery path, one placement
 rule and one replication path.
@@ -135,7 +135,7 @@ rule and one replication path.
   </Card>
   <Card title="Composed data flow" icon="right-arrow">
     Because every semantic is a reading of one log, they compose. Each flow below covers something applications usually build by hand:
-    1. **Watch a key or prefix** ([keyed watch](/felix/features/cache/#7-keyed-watch)): config push and cache invalidation. Every instance learns of a change the moment it lands, with an offset to resume from instead of a poll loop.
+    1. **Watch a key or prefix** ([keyed watch](/features/cache/#7-keyed-watch)): config push and cache invalidation. Every instance learns of a change the moment it lands, with an offset to resume from instead of a poll loop.
     2. **Current state first, then changes** (retained delivery): presence and state sync. Join a room, get the roster at once, and stay current; the confirmation marks the exact moment your state is complete.
     3. **Deltas folded into a durable sum** (counters): rate limits, usage metering and live tallies. Increment and learn where you stand in one round trip, with a sum that survives restart, compaction, and failover.
   </Card>
@@ -151,7 +151,7 @@ rule and one replication path.
 | **Batch processing** | Time- and count-bounded batching for throughput |
 | **TTL support** | Time-to-live on cache entries with lazy expiration |
 | **Work queues** | Consumer groups with acknowledgements, redelivery and dead letters |
-| **[Kafka compatibility](/felix/features/kafka/)** | Kafka producers, and consumers that assign their own partitions, work against durable streams |
+| **[Kafka compatibility](/features/kafka/)** | Kafka producers, and consumers that assign their own partitions, work against durable streams |
 | **Backpressure** | Explicit flow control at six checkpoints to prevent cascade failures |
 | **Metrics** | Prometheus-compatible metrics endpoint |
 | **Observability** | Structured logging with optional per-stage telemetry |
@@ -167,7 +167,7 @@ Felix is a good fit today for:
   is retried if nobody says it was handled
 - **Microservice communication** with unified stream, cache and queue semantics
 
-See [What Felix Is For](/felix/getting-started/what-felix-is-for/) for where
+See [What Felix Is For](/getting-started/what-felix-is-for/) for where
 Felix fits and where it does not.
 
 ## Current Status
@@ -181,7 +181,7 @@ Felix fits and where it does not.
       refused publish or lost record
     - A log-backed cache: routed to one owner, replicated, put/get/delete
     - Consumer groups: poll, acknowledge, redeliver, dead-letter, redrive
-    - [Kafka compatibility](/felix/features/kafka/): Kafka producers (idempotent
+    - [Kafka compatibility](/features/kafka/): Kafka producers (idempotent
       ones included) and partition-assigning consumers against durable
       streams; no Kafka consumer groups or transactions
     - A control plane over REST, holding metadata in Raft (no external
@@ -234,8 +234,8 @@ Felix fits and where it does not.
 
 </Steps>
 
-See the [Demos Overview](/felix/demos/overview/) or the
-[Quickstart Guide](/felix/getting-started/quickstart/) for the full set.
+See the [Demos Overview](/demos/overview/) or the
+[Quickstart Guide](/getting-started/quickstart/) for the full set.
 
 ## Community & Support
 
@@ -252,12 +252,12 @@ See the [Demos Overview](/felix/demos/overview/) or the
   />
   <LinkCard
     title="Contributing"
-    href="/felix/development/contributing/"
+    href="/development/contributing/"
     description="How to build, test, and land a change."
   />
   <LinkCard
     title="How Felix Works"
-    href="/felix/development/how-felix-works/"
+    href="/development/how-felix-works/"
     description="The end-to-end tour, from a publish call to a subscriber's socket."
   />
 </CardGrid>

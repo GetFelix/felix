@@ -44,7 +44,7 @@ by me" is enough.
 
 Reviewers hold changes to these rules. The full list is in CONTRIBUTING.md
 under "How the code is organized".
-[Project Structure](/felix/development/project-structure/) shows the layout
+[Project Structure](/development/project-structure/) shows the layout
 they produce.
 
 - Crates are grouped by role under `crates/` (`protocol`, `server`, `sdk`,
@@ -61,7 +61,7 @@ they produce.
 - Unit tests go in `<module>/tests.rs`, declared as `#[cfg(test)] mod tests;`
   at the bottom of the module. Integration tests go in the crate's `tests/`.
 - A decoder that reads bytes from outside the process gets a fuzz target. See
-  [Fuzzing](/felix/development/fuzzing/).
+  [Fuzzing](/development/fuzzing/).
 - Shared dependency versions go in `[workspace.dependencies]`. Members add
   features and never re-pin a version.
 
@@ -89,14 +89,14 @@ without the fix proves nothing.
 
 Changes to cluster behaviour need a cluster test, and changes to the modelled
 replication protocol need the TLA+ model to follow. See
-[How Felix Is Tested](/felix/architecture/testing/).
+[How Felix Is Tested](/architecture/testing/).
 
 ## Docs ship with the change
 
 `docs/` and this site make specific claims about what is implemented. If you
 ship a capability, update the pages that describe it in the same PR, including
 the status table in
-[What Felix Is For](/felix/getting-started/what-felix-is-for/). If you find a
+[What Felix Is For](/getting-started/what-felix-is-for/). If you find a
 claim the code cannot back, fix the claim. `task docs:evidence` checks that
 cited tests and `FELIX_*` variable names still exist.
 
@@ -109,7 +109,7 @@ task docs:evidence   # doc citations and env-var names
 task demo:check      # if you changed a public API the standalone demos use
 ```
 
-CI runs more than these; [Building & Testing](/felix/development/building/)
+CI runs more than these; [Building & Testing](/development/building/)
 lists every job. Keep PRs focused. A bug fix does not need an unrelated
 refactor riding along.
 

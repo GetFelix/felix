@@ -88,7 +88,7 @@ published to crates.io.
 - `felix-cluster`: a real multi-node cluster on one machine, with fault
   injection and the history checker. A library for tests and a CLI
   (`task cluster:up`). See
-  [How Felix Is Tested](/felix/architecture/testing/).
+  [How Felix Is Tested](/architecture/testing/).
 - `felix-conformance`: the client conformance catalogue and verifier.
 - `felix-loadgen`: the load generator for the real-network performance suite.
 
@@ -155,7 +155,7 @@ Run `task demo:check` after changing a public API they might use.
 - `deploy/helm/felix/`: the Helm chart, checked by `task chart:check`.
 - `.github/workflows/`: `ci`, `coverage`, `history`, `fuzz-nightly`, `soak`,
   `pages`, `release`, `cla`, `perf-pr`, `perf-publish` and
-  `perf-comprehensive`. [Building & Testing](/felix/development/building/#what-ci-runs)
+  `perf-comprehensive`. [Building & Testing](/development/building/#what-ci-runs)
   says what each runs.
 
 Licences differ by path.
@@ -167,7 +167,7 @@ lists the dependency licences allowed.
 
 These come from
 [CONTRIBUTING.md](https://github.com/GetFelix/felix/blob/main/CONTRIBUTING.md);
-[Contributing](/felix/development/contributing/) summarises them.
+[Contributing](/development/contributing/) summarises them.
 
 - A module `foo` is `foo.rs` with its children in `foo/`. There is no `mod.rs`,
   except `tests/common/mod.rs` for helpers shared between integration-test

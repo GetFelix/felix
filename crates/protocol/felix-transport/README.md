@@ -21,7 +21,7 @@ loopback MTU pin, which needs the headroom to absorb bursts.
 
 ## Documentation
 
-- [QUIC transport](https://getfelix.github.io/felix/features/quic-transport/)
-- [Environment variables](https://getfelix.github.io/felix/reference/environment-variables/)
+- [QUIC transport](https://docs.getfelix.dev/features/quic-transport/)
+- [Environment variables](https://docs.getfelix.dev/reference/environment-variables/)
 
 Apache-2.0.

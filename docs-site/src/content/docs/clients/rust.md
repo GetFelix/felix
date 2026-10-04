@@ -6,7 +6,7 @@ title: "Rust Client SDK"
 and the cluster client, over multiplexed QUIC connections. This page covers
 setup, configuration, and common patterns.
 
-The Python and TypeScript clients bind to it. See [Choosing a Client](/felix/clients/overview/) for those bindings
+The Python and TypeScript clients bind to it. See [Choosing a Client](/clients/overview/) for those bindings
 and for how a new language is gated on a conformance suite.
 
 ## Installation
@@ -922,7 +922,7 @@ advertising `FEATURE_CACHE_WATCH`, which only brokers with a log-backed cache se
 moved shard itself: `ShardMoved` arrives as a notice and the changes carry on
 from the new owner, none repeated or skipped. A prefix watch reads one shard; on a multi-shard cache use
 `ClusterClient::watch_cache_sharded` (see [Clusters](#clusters)).
-See [Cache Features](/felix/features/cache/#7-keyed-watch) for the full
+See [Cache Features](/features/cache/#7-keyed-watch) for the full
 contract.
 
 ### Retained Watch
@@ -1418,7 +1418,7 @@ Reuse one client (its pools are the expensive part), batch publishes when
 latency permits, pipeline cache requests, and keep the subscription loop
 non-blocking by spawning slow work instead of stalling the reader. Tune
 anything else from a measurement; see
-[Benchmarks](/felix/features/benchmarks/).
+[Benchmarks](/features/benchmarks/).
 
 ## API Reference Summary
 

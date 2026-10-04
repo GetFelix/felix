@@ -15,7 +15,7 @@ what they do not own, replicate what they lead, fail over to a caught-up
 replica, and move shards between brokers online. Durable storage, the
 log-backed cache, and consumer groups are wired into the running broker.
 
-The [status table](/felix/getting-started/what-felix-is-for/) is the page to
+The [status table](/getting-started/what-felix-is-for/) is the page to
 trust per capability. Tiered storage and load-aware placement are among what is
 not built.
 :::
@@ -1070,8 +1070,8 @@ than published pages.
 This guide follows one broker's data path. Replication (`felix-replication`),
 failover, shard moves, consumer groups and the control plane's placement are
 all in the running system and have their own pages under
-[Architecture](/felix/architecture/system-design/). The
-[status table](/felix/getting-started/what-felix-is-for/) says what is complete
+[Architecture](/architecture/system-design/). The
+[status table](/getting-started/what-felix-is-for/) says what is complete
 and what is partial.
 
 Two local gaps are worth knowing while reading the code:
@@ -1171,11 +1171,11 @@ Read in this order and follow each symbol with editor "go to definition":
 
 ## Related guides
 
-- [System Design](/felix/architecture/system-design/)
-- [Component Architecture](/felix/architecture/components/)
-- [Wire Protocol](/felix/architecture/wire-protocol/)
-- [Internals: The Publish Path](/felix/development/internals-publish/)
-- [Internals: Subscribe & Fanout](/felix/development/internals-subscribe/)
-- [Internals: Backpressure & Core Sharding](/felix/development/internals-concurrency/)
-- [Graceful Shutdown](/felix/deployment/graceful-shutdown/)
-- [Performance Tuning](/felix/features/performance/)
+- [System Design](/architecture/system-design/)
+- [Component Architecture](/architecture/components/)
+- [Wire Protocol](/architecture/wire-protocol/)
+- [Internals: The Publish Path](/development/internals-publish/)
+- [Internals: Subscribe & Fanout](/development/internals-subscribe/)
+- [Internals: Backpressure & Core Sharding](/development/internals-concurrency/)
+- [Graceful Shutdown](/deployment/graceful-shutdown/)
+- [Performance Tuning](/features/performance/)

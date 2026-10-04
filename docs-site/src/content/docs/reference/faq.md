@@ -3,7 +3,7 @@ title: "Frequently Asked Questions"
 ---
 
 Answers here are kept consistent with the
-[status table](/felix/getting-started/what-felix-is-for/), which is the page
+[status table](/getting-started/what-felix-is-for/), which is the page
 to trust when any two disagree.
 
 ## What is Felix?
@@ -12,7 +12,7 @@ A distributed data backend that serves streams (pub/sub), work queues
 (consumer groups), and a key-value cache, all as readings of one replicated
 append-only log, reached over QUIC. The design optimizes for predictable
 tail latency, high fanout, and strict slow-consumer isolation. The
-[overview](/felix/getting-started/overview/) is the ten-minute version.
+[overview](/getting-started/overview/) is the ten-minute version.
 
 ## Is Felix production-ready?
 
@@ -57,7 +57,7 @@ What does not work is anything built on consumer groups or transactions:
 Kafka Connect, Kafka Streams, ksqlDB, Debezium and MirrorMaker. Those are
 refused with an error that says why, rather than left hanging. Record keys and
 headers are not stored. The whole picture, with use cases and troubleshooting,
-is on [Kafka compatibility](/felix/features/kafka/).
+is on [Kafka compatibility](/features/kafka/).
 
 ## How is Felix different from Redis?
 
@@ -77,7 +77,7 @@ to misconfigure), handshakes are one round trip, and flow control exists per
 stream as well as per connection, which is where Felix's backpressure story
 starts. The trade-off is real but small: some networks block UDP, and
 TCP has better debugging tooling. Details in
-[QUIC Transport](/felix/features/quic-transport/).
+[QUIC Transport](/features/quic-transport/).
 
 ## How does Felix handle backpressure?
 
@@ -86,7 +86,7 @@ and per stream. The publish queue is bounded, and its overflow is a visible erro
 rather than unbounded buffering. Each subscription has a bounded queue whose
 overflow policy (drop-new by default) is the isolation mechanism: a slow
 subscriber loses its own events instead of slowing anyone else. See
-[Publish/Subscribe](/felix/features/pubsub/) for the full story and the
+[Publish/Subscribe](/features/pubsub/) for the full story and the
 policy trade-off.
 
 ## What is ephemeral vs durable storage?
@@ -98,14 +98,14 @@ writes every record to a segmented, CRC-checked, crash-safe log, and
 subscribers can replay from any retained offset. By default a publish to a
 `Leader` stream is acknowledged when it is queued, before the write. Set
 `FELIX_ACK_ON_COMMIT=true` to acknowledge after it, or use a `Quorum` stream,
-which always waits (see [`ack_on_commit`](/felix/reference/configuration/#ack_on_commit)). A stream
+which always waits (see [`ack_on_commit`](/reference/configuration/#ack_on_commit)). A stream
 marked durable on a broker without a storage dir is rejected, not silently
 downgraded.
 
 Retention is available and off by default. Set a stream's `retention`, or
 `FELIX_DURABLE_RETENTION_BYTES` / `FELIX_DURABLE_RETENTION_SECONDS` for every
 stream that sets none, or a log grows until the disk ends. See
-[Durable Storage](/felix/architecture/durable-storage/).
+[Durable Storage](/architecture/durable-storage/).
 
 ## How does clustering work?
 
@@ -122,7 +122,7 @@ A broker that joins takes shards from any broker leading more than its
 share, and a drained broker hands off everything it leads before it is
 removed. Both go through a staged handoff so a shard is never served by a
 broker that has not seen its log (see
-[Adding, draining and removing brokers](/felix/deployment/scaling/)).
+[Adding, draining and removing brokers](/deployment/scaling/)).
 
 Not built: follower reads (every read goes to the leader).
 
@@ -136,7 +136,7 @@ something the record carries.
 
 ## What latency should I expect?
 
-Measured numbers live in one place, [Benchmarks](/felix/features/benchmarks/),
+Measured numbers live in one place, [Benchmarks](/features/benchmarks/),
 with methodology. The shape of it: single-message publish-and-ack round
 trips are low hundreds of microseconds on loopback, cache operations
 similar, and batched throughput runs trade per-message latency for rate.
@@ -151,26 +151,26 @@ drains them. An idle subscriber's events are sent without waiting. For
 throughput, `FELIX_EVENT_BATCH_MAX_EVENTS` and its byte sibling. For memory,
 the flow-control windows (`FELIX_*_RECV_WINDOW`), since window × connections
 bounds in-flight data. The
-[environment variable reference](/felix/reference/environment-variables/)
+[environment variable reference](/reference/environment-variables/)
 has the full list with defaults. Change things off a measurement.
 
 ## Can I run Felix in Docker or Kubernetes?
 
-Yes to both. See [Docker Compose](/felix/deployment/docker-compose/) and
-[Kubernetes](/felix/deployment/kubernetes/). Each release publishes images to
+Yes to both. See [Docker Compose](/deployment/docker-compose/) and
+[Kubernetes](/deployment/kubernetes/). Each release publishes images to
 `ghcr.io/getfelix/felix-broker:<version>` and
 `ghcr.io/getfelix/felix-controlplane:<version>` (`ghcr.io/gabloe` for 0.6.0-preview and earlier). The Helm chart is not published,
 so install it from `deploy/helm/felix` in the repository. The
 broker ships what an orchestrator expects: `/live` and `/ready` that answer
 different questions, and a bounded drain on SIGTERM
-([graceful shutdown](/felix/deployment/graceful-shutdown/)).
+([graceful shutdown](/deployment/graceful-shutdown/)).
 
 ## How do I monitor Felix?
 
 Prometheus metrics on the metrics endpoint (`/metrics`), structured logs via
 `RUST_LOG`, and optional OTLP tracing. Which metrics answer which operational
 questions is the whole point of the
-[observability page](/felix/features/observability/).
+[observability page](/features/observability/).
 
 ## How is Felix secured?
 
@@ -179,7 +179,7 @@ issues tenant-scoped EdDSA tokens. The broker enforces RBAC, with delegation
 rules that prevent privilege escalation. Broker-to-broker traffic uses mTLS, bound to the
 node id, when certificates are configured. Not built: encryption at rest,
 end-to-end payload encryption, audit logging. The
-[security page](/felix/features/security/) states each plainly.
+[security page](/features/security/) states each plainly.
 
 ## Can I grant stream access by IdP group instead of per-user?
 
@@ -198,12 +198,12 @@ Rust client rather than reimplementations. Both pass every required scenario in
 the client conformance catalogue, and CI is gated on it. Go and C# are not
 started.
 The wire protocol is language-neutral and documented precisely for this
-reason (see [Wire Protocol](/felix/architecture/wire-protocol/)), and a
+reason (see [Wire Protocol](/architecture/wire-protocol/)), and a
 conformance runner exists to check an implementation against it.
 
 ## Why won't the broker start? / Why is latency high? / Connection issues?
 
-The [troubleshooting guide](/felix/reference/troubleshooting/) covers these
+The [troubleshooting guide](/reference/troubleshooting/) covers these
 with commands. The three most common answers: you're running a debug build
 (use `--release`), a firewall is dropping UDP on the broker port, or
 `FELIX_EVENT_BATCH_MAX_DELAY_US` is set high and your load keeps the
@@ -212,6 +212,6 @@ subscriber busy enough that batches wait for it.
 ## How do I contribute?
 
 Fork, branch, make the change with tests, run `task lint` and `task test`,
-open a PR. The [contributing guide](/felix/development/contributing/) has
-the details, and [How Felix Works](/felix/development/how-felix-works/) is
+open a PR. The [contributing guide](/development/contributing/) has
+the details, and [How Felix Works](/development/how-felix-works/) is
 the fastest way to build a mental model of the codebase.

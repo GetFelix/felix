@@ -7,7 +7,7 @@ description: "Installing and using the Felix Node.js client: promises, typed err
 Reconnection, redirect-following, retry classification and offset bookkeeping
 live in the crate and are shared, so Node gets the same failover behaviour as
 Rust. The name is identical on crates.io, PyPI and npm. See
-[Choosing a Client](/felix/clients/overview/) for why that choice was made.
+[Choosing a Client](/clients/overview/) for why that choice was made.
 
 ## Installing
 
@@ -599,7 +599,7 @@ unclaimed.
 ## Conformance
 
 TypeScript passes every required scenario in the
-[client conformance catalogue](/felix/clients/overview/#the-conformance-suite),
+[client conformance catalogue](/clients/overview/#the-conformance-suite),
 and CI and the release pipeline are both gated on it. The suite runs against a
 real three-node cluster: a redirect needs a broker that does not own the
 shard, and one scenario kills the broker its client is connected to.

@@ -18,7 +18,7 @@ installing needs no Rust toolchain. Linux (x86-64 and arm64), macOS (Intel and
 Apple silicon) and Windows x86-64 are covered; anything else builds from the
 sdist and does need one.
 
-Full documentation: https://getfelix.github.io/felix/clients/python/
+Full documentation: https://docs.getfelix.dev/clients/python/
 
 ## Two surfaces
 

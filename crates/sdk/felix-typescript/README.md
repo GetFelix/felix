@@ -21,7 +21,7 @@ Debian bookworm, RHEL 8 and Amazon Linux 2023), macOS (Intel and Apple silicon)
 and Windows x86-64 are covered. Alpine and other musl systems are not. Node 18
 or newer.
 
-Full documentation: https://getfelix.github.io/felix/clients/typescript/
+Full documentation: https://docs.getfelix.dev/clients/typescript/
 
 ## One surface, and it is asynchronous
 

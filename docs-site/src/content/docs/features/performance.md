@@ -64,7 +64,7 @@ flowchart LR
 :::note[These are trade-offs]
 None of these is "faster" in the abstract. Batching raises bytes per second and
 raises per-message latency at the same time, because a batched message waits for
-the batch. That is why the [benchmark harness](/felix/features/benchmarks/)
+the batch. That is why the [benchmark harness](/features/benchmarks/)
 reports batch-1 and batch-64 as separate profiles and never compares their
 latency percentiles to each other.
 :::
@@ -106,7 +106,7 @@ subscriber_lane_shard: auto
 publish_chunk_bytes: 16384
 ```
 
-**Expected performance**: see [Benchmarks](/felix/features/benchmarks/) for current, measured
+**Expected performance**: see [Benchmarks](/features/benchmarks/) for current, measured
 numbers across payload/fanout shapes. The harness runs against this profile. Numbers here are intentionally not duplicated to avoid
 drift; the benchmarks page is regenerated from `latency-demo` and is the
 source of truth.
@@ -158,7 +158,7 @@ subscriber_lane_shard: auto
 ```
 
 **Expected performance**: the latency-focused profile in
-[Benchmarks](/felix/features/benchmarks/) (batch = 1, per-message acked) measures this
+[Benchmarks](/features/benchmarks/) (batch = 1, per-message acked) measures this
 shape directly: sub-millisecond p999 at fanout 1-10 on the reference
 hardware there.
 
@@ -215,7 +215,7 @@ publish_chunk_bytes: 32768
 ```
 
 **Expected performance**: the throughput-focused profile in
-[Benchmarks](/felix/features/benchmarks/) (batch = 64, lossless, zero drops)
+[Benchmarks](/features/benchmarks/) (batch = 64, lossless, zero drops)
 measures this shape directly. Message rate falls and byte rate rises as
 payloads grow, so read the byte rate when comparing payload sizes.
 `core_shards` may help multi-stream workloads, but its published gains predate
@@ -227,7 +227,7 @@ instead of anything being dropped. Use it for pipelines that can't tolerate
 loss, and for benchmarking sustainable throughput.
 Production defaults favor shedding (`drop_new`) so overload stays
 visible and bounded. See
-[Benchmarks: Saturation behavior](/felix/features/benchmarks/#saturation-behavior).
+[Benchmarks: Saturation behavior](/features/benchmarks/#saturation-behavior).
 :::
 **Best for**:
 - High-throughput data pipelines
@@ -373,11 +373,11 @@ subscriber_lane_shard: auto  # auto | subscriber_id_hash | connection_id_hash | 
 :::note[What lanes parallelize changed]
 Event batches are now encoded once per publish and the encoded `Bytes`
 handle is shared across every subscriber of a stream (see
-[Wire Protocol: Shared Binary EventBatch](/felix/architecture/wire-protocol/#shared-binary-eventbatch-encoding)).
+[Wire Protocol: Shared Binary EventBatch](/architecture/wire-protocol/#shared-binary-eventbatch-encoding)).
 Lanes no longer parallelize *encoding* cost. They parallelize the QUIC
 *write* syscalls across subscribers. Older lane-count sweep numbers from
 before this change are not representative of current behavior and have
-been removed; see [Benchmarks](/felix/features/benchmarks/) for current measurements.
+been removed; see [Benchmarks](/features/benchmarks/) for current measurements.
 :::
 Start here:
 1. `subscriber_lane_shard: auto`
@@ -385,7 +385,7 @@ Start here:
 3. Increase to `8` only if throughput is still lane-bound
 4. Avoid assuming larger lane counts always help; watch p99/p999
 5. For multi-stream workloads, also evaluate `core_shards` (thread-per-core
-   stream ownership). See [Benchmarks](/felix/features/benchmarks/), which showed larger
+   stream ownership). See [Benchmarks](/features/benchmarks/), which showed larger
    gains there than lane count alone.
 
 ### Cache Parameters
@@ -420,7 +420,7 @@ Subscription event delivery uses binary `EventBatch` framing by default.
 
 ### Pub/Sub Latency and Throughput
 
-See **[Benchmarks](/felix/features/benchmarks/)** for current, methodology-documented
+See **[Benchmarks](/features/benchmarks/)** for current, methodology-documented
 results: latency and throughput profiles across payload sizes and fanout,
 the transport levers behind them (MTU/GSO, congestion window, socket
 buffers), the `core_shards` thread-per-core lever, and how to regenerate the
@@ -443,7 +443,7 @@ intentionally not duplicated here to avoid the two pages drifting apart.
 :::note
 These cache numbers predate the transport-layer tuning (MTU discovery,
 congestion window, socket buffers) documented in
-[Benchmarks](/felix/features/benchmarks/). The cache path uses the same QUIC
+[Benchmarks](/features/benchmarks/). The cache path uses the same QUIC
 transport and likely benefits similarly, but hasn't been re-measured
 since. Treat as directional until re-run with `cache-demo`.
 :::
@@ -492,7 +492,7 @@ Disable telemetry in production for maximum throughput. Enable only for profilin
 2. Check `event_batch_max_delay_us` - batches waiting too long under load?
 3. Check QUIC flow control - windows exhausted?
 4. Check subscriber processing time - bottleneck in application?
-5. Check path MTU discovery (`FELIX_MTU_UPPER_BOUND`) - see [Benchmarks](/felix/features/benchmarks/) for why this matters more than it looks.
+5. Check path MTU discovery (`FELIX_MTU_UPPER_BOUND`) - see [Benchmarks](/features/benchmarks/) for why this matters more than it looks.
 
 **Low throughput**:
 
@@ -514,7 +514,7 @@ Disable telemetry in production for maximum throughput. Enable only for profilin
 ### Sizing Guidelines
 
 :::note[These bands are illustrative, not measured]
-Single-broker measurements in [Benchmarks](/felix/features/benchmarks/)
+Single-broker measurements in [Benchmarks](/features/benchmarks/)
 comfortably exceed the "large deployment" band below on one dev machine. Use
 these YAML shapes as starting points for connection/queue sizing, not as a
 throughput ceiling; run your own workload through `latency-demo` before sizing

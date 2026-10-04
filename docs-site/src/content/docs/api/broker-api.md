@@ -5,7 +5,7 @@ title: "Broker API Reference"
 The broker's data-plane API: what each operation does on the wire, what it
 returns, and how it fails. Message shapes are shown as JSON control messages;
 the binary framing that carries the hot paths is in the
-[wire protocol](/felix/architecture/wire-protocol/).
+[wire protocol](/architecture/wire-protocol/).
 
 ## Connection Model
 
@@ -162,7 +162,7 @@ publisher
 ```
 
 Every message costs a frame of its own, so batch when throughput matters.
-Measured numbers are on the [Benchmarks](/felix/features/benchmarks/) page.
+Measured numbers are on the [Benchmarks](/features/benchmarks/) page.
 
 ### Batch Publish
 
@@ -211,7 +211,7 @@ publisher
 ```
 
 Larger batches raise throughput and add latency. See
-[Benchmarks](/felix/features/benchmarks/) for measured trade-offs.
+[Benchmarks](/features/benchmarks/) for measured trade-offs.
 
 ### Binary Batch Publish
 
@@ -526,7 +526,7 @@ client
 ```
 
 Measured latency and throughput are on the
-[Benchmarks](/felix/features/benchmarks/) page.
+[Benchmarks](/features/benchmarks/) page.
 
 ### Cache Get
 
@@ -636,7 +636,7 @@ cache_streams_per_conn: 4         # Streams per connection
 ```
 
 More streams allow more requests in flight. See
-[Benchmarks](/felix/features/benchmarks/) for measured numbers.
+[Benchmarks](/features/benchmarks/) for measured numbers.
 
 ### Cache Configuration
 
@@ -654,7 +654,7 @@ cache_send_window: 268435456         # 256 MiB send window
 The third way to read a stream. Where `subscribe` pushes every record to every
 subscriber, a **consumer group** hands each record to one consumer and takes it
 back if nobody says it was handled. See
-[Queues](/felix/features/queues/) for the semantics.
+[Queues](/features/queues/) for the semantics.
 
 Every request below goes **only to the broker that leads the shard**, and only
 to one that advertised `FEATURE_CONSUMER_GROUP`. A poll is refused rather than
@@ -869,7 +869,7 @@ specified in [`docs/protocol.md`](https://github.com/GetFelix/felix/blob/main/do
 Besides QUIC, each broker serves plain HTTP on its metrics listener
 (`FELIX_BROKER_METRICS_BIND`, `0.0.0.0:8080` by default): `/metrics`, `/live`,
 `/ready`, `/replication/halted` (see
-[Observability](/felix/features/observability/)) and the one below. The
+[Observability](/features/observability/)) and the one below. The
 listener has no authentication, so everything on it is read-only.
 
 ### Backup Offsets
@@ -915,7 +915,7 @@ again shortly. A broker with no cluster leads nothing and answers with empty
 lists.
 
 `felix-controlplane admin backup-point` is what reads this; see
-[Backup and restore](/felix/deployment/backup-and-restore/).
+[Backup and restore](/deployment/backup-and-restore/).
 
 ## Error Handling
 
@@ -1125,4 +1125,4 @@ cache_conn_recv_window: 134217728  # Smaller windows for lower memory
 Change these knobs based on measurements. High queue depth means too few workers; contention
 means too many; dropped events mean buffers too small for the workload's
 bursts; high memory means the opposite. Broker telemetry and client metrics
-(see [Observability](/felix/features/observability/)) tell you which.
+(see [Observability](/features/observability/)) tell you which.

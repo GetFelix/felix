@@ -104,7 +104,7 @@ Anything that breaks a property Felix claims to enforce:
 ### Out of scope
 
 - **Anything on the "not built" list** in
-  [docs-site: Security](https://getfelix.github.io/felix/features/security/).
+  [docs-site: Security](https://docs.getfelix.dev/features/security/).
   These are documented gaps: no encryption at rest (log
   segments are plaintext on disk), no end-to-end payload encryption, no peer
   authentication for a broker started with

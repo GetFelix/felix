@@ -3,8 +3,8 @@ import starlight from '@astrojs/starlight';
 import mermaid from 'astro-mermaid';
 
 export default defineConfig({
-  site: 'https://getfelix.github.io',
-  base: '/felix',
+  site: 'https://docs.getfelix.dev',
+  base: '/',
   integrations: [
     mermaid({ autoTheme: true, enableLog: false }),
     starlight({

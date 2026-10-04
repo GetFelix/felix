@@ -41,7 +41,7 @@ had been the byte-rate ceiling. That ceiling is macOS-specific. Linux's
 which is why the pool is off there.
 
 Runs that land far below the numbers in
-[Benchmarks](/felix/features/benchmarks/) used to be expected occasionally, and
+[Benchmarks](/features/benchmarks/) used to be expected occasionally, and
 are not any more: the ~30% "degraded mode" was a path-MTU black-hole collapse
 and is fixed. A slow run now means something is wrong, so investigate it
 rather than rerunning.

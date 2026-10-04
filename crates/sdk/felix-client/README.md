@@ -59,8 +59,8 @@ while let Some(event) = events.next_event().await? {
 
 ## Documentation
 
-- [Rust client guide](https://getfelix.github.io/felix/clients/rust/)
-- [Delivery semantics](https://getfelix.github.io/felix/architecture/semantics/) —
+- [Rust client guide](https://docs.getfelix.dev/clients/rust/)
+- [Delivery semantics](https://docs.getfelix.dev/architecture/semantics/) —
   what is guaranteed, and what is not
 
 Apache-2.0.

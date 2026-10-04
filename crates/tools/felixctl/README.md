@@ -40,7 +40,7 @@ and examples.
 Connection settings come from a named context in `felixctl/config.toml` under
 the platform config directory, overridden by `FELIX_*` variables, overridden
 by flags. The full guide is the
-[felixctl page](https://getfelix.github.io/felix/getting-started/felixctl/) of the
+[felixctl page](https://docs.getfelix.dev/getting-started/felixctl/) of the
 documentation.
 
 ## How it is built

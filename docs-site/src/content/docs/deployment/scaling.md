@@ -9,7 +9,7 @@ chart-specific commands.
 ## What moves a shard
 
 Three things, and an operator (see
-[Moving shards by hand](/felix/deployment/moving-shards/)):
+[Moving shards by hand](/deployment/moving-shards/)):
 
 - **A broker over its share.** Placement counts the shards each live broker
   leads. A broker leading more than `ceil(shards / live brokers)` hands shards,
@@ -26,7 +26,7 @@ Three things, and an operator (see
   minutes by default) is replaced by a copy on a live broker. A set that a
   failover left smaller than the replication factor, because too few brokers
   were live, is topped up once a broker is free. Leadership does not move.
-  See [Restoring the replication factor](/felix/deployment/moving-shards/#restoring-the-replication-factor).
+  See [Restoring the replication factor](/deployment/moving-shards/#restoring-the-replication-factor).
 - **A follower sharing a zone.** When brokers register zones
   (`FELIX_NODE_ZONE`), a follower in the same zone as another copy of its
   shard is replaced by one in a zone the shard lacks, once a broker there has
@@ -37,7 +37,7 @@ rebalance only where it loses none, and the copies kept at the cut-over are
 the ones in zones the shard would otherwise lose. With no zones registered
 none of this changes anything. An operator's move is never refused on zone
 grounds; it reports the zones before and after instead (see
-[Moving shards](/felix/deployment/moving-shards/)).
+[Moving shards](/deployment/moving-shards/)).
 
 A shard is never simply reassigned while its leader is alive, because a
 broker that has not seen the log would serve it empty. It is **moved**:
@@ -50,7 +50,7 @@ broker that has not seen the log would serve it empty. It is **moved**:
    last records, and reports that its log has stopped growing.
 3. **Cut over.** The destination is named leader at a new generation and
    opens the shard. Once `generation_start` is finalized (see
-   [Upgrades](/felix/deployment/upgrades/)), it first appends a
+   [Upgrades](/deployment/upgrades/)), it first appends a
    generation-start record, and its quorum mark counts nothing it inherited
    until that record is on a majority. A cancelled move hands the shard back
    the same way. A broker given a shard back at any later generation, after
@@ -116,7 +116,7 @@ curl -s -H "Authorization: Bearer $OPERATOR_TOKEN" \
 A broker also drains itself when it is told to stop: on SIGTERM it asks for
 this drain and keeps serving until it leads nothing, for up to
 `FELIX_SHUTDOWN_HANDOFF_TIMEOUT_MS` (see
-[Handing shards off](/felix/deployment/graceful-shutdown/#handing-shards-off)).
+[Handing shards off](/deployment/graceful-shutdown/#handing-shards-off)).
 That is what makes a rolling restart a series of moves. Whatever it still
 leads when that runs out fails over to caught-up replicas, and a shard with
 no replica waits for the broker to come back.

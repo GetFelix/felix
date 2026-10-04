@@ -1186,7 +1186,7 @@ Every case is counted in `felix_tenant_publish_throttled_total{tenant,action}`.
 
 ## QUIC Transport Tuning
 
-Process-wide levers read by every Felix QUIC endpoint (broker, client, demos). See [Benchmarks](/felix/features/benchmarks/) for measured impact.
+Process-wide levers read by every Felix QUIC endpoint (broker, client, demos). See [Benchmarks](/features/benchmarks/) for measured impact.
 
 ### `FELIX_MTU_UPPER_BOUND`
 
@@ -1209,7 +1209,7 @@ export FELIX_MTU_UPPER_BOUND="16384"  # macOS, or any path with no GSO
 
 **Description**: Starting datagram size before path-MTU discovery completes. The RFC-safe default works everywhere. Raising it on known-good paths (jumbo-frame LAN) skips the discovery ramp. Connections to a loopback peer automatically start at the loopback MTU and guarantee it, which makes the path immune to spurious black-hole collapse (see `FELIX_MTU_BLACK_HOLE_COOLDOWN_MS`) and, because the guarantee also freezes the discovery bound, removes probe traffic entirely.
 
-The guaranteed size is 16,336 bytes on macOS and 4,096 elsewhere (both capped by `FELIX_MTU_UPPER_BOUND`). The cap is lower off macOS because Linux UDP GSO packs a whole `sendmsg` batch into a single IP datagram, so `MTU × segments` must stay under 65,535. Quinn batches up to 10, putting the real ceiling at 6,553 bytes. Above it the kernel rejects every batch and delivery stalls outright, measured as a total stall at both 8,192 and 16,336. macOS has no GSO (one syscall per datagram) and no such limit. 4,096 also measured fastest on Linux. See the [performance case study](/felix/features/performance-case-study/).
+The guaranteed size is 16,336 bytes on macOS and 4,096 elsewhere (both capped by `FELIX_MTU_UPPER_BOUND`). The cap is lower off macOS because Linux UDP GSO packs a whole `sendmsg` batch into a single IP datagram, so `MTU × segments` must stay under 65,535. Quinn batches up to 10, putting the real ceiling at 6,553 bytes. Above it the kernel rejects every batch and delivery stalls outright, measured as a total stall at both 8,192 and 16,336. macOS has no GSO (one syscall per datagram) and no such limit. 4,096 also measured fastest on Linux. See the [performance case study](/features/performance-case-study/).
 
 The loopback path also requires the socket's granted UDP buffers to reach ~1 MiB. That threshold is a proxy for "this host has been tuned", not a burst-headroom calculation. Hosts where Linux silently clamps `SO_RCVBUF` to a stock `net.core.rmem_max` (~208 KB) keep the RFC-safe default. Raise `rmem_max`/`wmem_max` to enable it. Setting `FELIX_INITIAL_MTU` explicitly disables the loopback special case and applies to every path.
 
@@ -1434,7 +1434,7 @@ export FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS="5000"   # Fast rollouts, short-lived req
 
 **Note**: Keep this below the platform's kill deadline (Kubernetes'
 `terminationGracePeriodSeconds`, default `30`) so the drain finishes and logs its
-outcome before SIGKILL. See [Graceful Shutdown](/felix/deployment/graceful-shutdown/).
+outcome before SIGKILL. See [Graceful Shutdown](/deployment/graceful-shutdown/).
 
 ### `FELIX_SHUTDOWN_PREDRAIN_MS`
 
@@ -1492,7 +1492,7 @@ export FELIX_SHUTDOWN_HANDOFF_TIMEOUT_MS="0"       # Fail over instead, e.g. a s
 **Note**: Spent before `FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS`, and inside the platform's
 kill deadline, so `terminationGracePeriodSeconds` must cover both. Moves are paced by
 `FELIX_SHARD_MOVES_MAX_CONCURRENT` and `FELIX_SHARD_MOVES_MAX_PER_NODE` like any
-other. See [Graceful Shutdown](/felix/deployment/graceful-shutdown/#handing-shards-off).
+other. See [Graceful Shutdown](/deployment/graceful-shutdown/#handing-shards-off).
 
 ### `FELIX_INTERNAL_MAX_INBOUND_CONNECTIONS`
 
@@ -1678,7 +1678,7 @@ broker is in-memory only, and any stream the control plane marks `durable: true`
 is **rejected at registration** rather than silently downgraded to a guarantee
 the broker cannot keep.
 
-See [Durable Storage](/felix/architecture/durable-storage/) for what each policy
+See [Durable Storage](/architecture/durable-storage/) for what each policy
 guarantees and what it costs.
 
 ### `FELIX_DURABLE_STORAGE_DIR`
@@ -1919,9 +1919,9 @@ caught, just when it is read rather than at boot.
 
 ## Next Steps
 
-- **Full configuration details**: [Configuration Reference](/felix/reference/configuration/)
-- **Troubleshooting**: [Troubleshooting Guide](/felix/reference/troubleshooting/)
-- **Performance tuning**: [Performance Guide](/felix/features/performance/)
+- **Full configuration details**: [Configuration Reference](/reference/configuration/)
+- **Troubleshooting**: [Troubleshooting Guide](/reference/troubleshooting/)
+- **Performance tuning**: [Performance Guide](/features/performance/)
 
 ## Reference: every remaining variable
 
@@ -1956,7 +1956,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS` | `false` | Also link each IdP group under its bare name (`group:{name}`) as well as its issuer-scoped one (`group:{issuer}#{name}`), while groupings are migrated. It lets any IdP the tenant trusts claim any bare group name, so turn it off afterwards. |
 | `FELIX_EXCHANGE_TOKEN_TTL_SECONDS` | `900` | Lifetime of a Felix access token minted by the token exchange. The default is short to limit blast radius if a token leaks. Prefer refresh over raising it: a long-running process should refresh rather than hold one long-lived bearer token. |
 | `FELIX_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Lifetime of a refresh token (30 days). This is how a long-running process stays authenticated without standing IdP credentials. Refresh tokens are single-use and rotate on every refresh, so this bounds a stolen and never used token. One that is used produces a replay, which revokes its whole chain immediately. |
-| `FELIX_RAFT_NODE_ID` | unset | This instance's id in the metadata Raft group (see [Metadata Raft](/felix/architecture/metadata-raft/)). `FELIX_RAFT_NODE_ID`, `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_PEERS` together select the raft backend, or startup fails on a partial set. |
+| `FELIX_RAFT_NODE_ID` | unset | This instance's id in the metadata Raft group (see [Metadata Raft](/architecture/metadata-raft/)). `FELIX_RAFT_NODE_ID`, `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_PEERS` together select the raft backend, or startup fails on a partial set. |
 | `FELIX_RAFT_DATA_DIR` | unset | Where the Raft log, vote, and snapshots live. Must survive restarts: it is what makes a restart a rejoin rather than a fresh member. |
 | `FELIX_RAFT_PEERS` | unset | The initial group as `id=host:port,...` of every member's Raft peer listener (`FELIX_RAFT_BIND_ADDR`). Identical on every member. |
 | `FELIX_RAFT_BIND_ADDR` | unset | Required under raft. Where this member serves the Raft RPCs. A listener of its own, never the API port: the `propose` route can replace the whole metadata store. Keep it reachable from the other members only. |
@@ -1996,7 +1996,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_NODE_ADVERTISE_ADDR` | unset | Address peers should reach this broker on. |
 | `FELIX_CLIENT_ADVERTISE_ADDR` | unset | `host:port` *clients* should reach it on, when it differs from the peer address. A DNS name is fine: clients resolve it each time they connect, so it survives the broker moving to a new IP, and check the broker's certificate against the name. A value that is not `host:port` fails startup. |
 | `FELIX_NODE_ZONE` | unset | Failure domain this broker is in within its region, such as an availability zone or a rack, sent with its registration as the node's `zone`. Placement puts each shard's copies in different zones wherever a broker with room is in one the shard lacks, and moves and drains keep that spread. Unset (or blank) means no zone: the broker is treated as sharing a zone with no other. Takes effect when the broker next registers. |
-| `FELIX_KAFKA_LISTEN` | unset | `ip:port` the Kafka-protocol listener binds (Kafka consumers and producers). Unset turns the listener off. See [Kafka compatibility](/felix/features/kafka/). |
+| `FELIX_KAFKA_LISTEN` | unset | `ip:port` the Kafka-protocol listener binds (Kafka consumers and producers). Unset turns the listener off. See [Kafka compatibility](/features/kafka/). |
 | `FELIX_KAFKA_ADVERTISE_ADDR` | `FELIX_KAFKA_LISTEN` | `host:port` Kafka clients are told to connect to for this broker (in Metadata responses). A hostname is fine. Registered as the node's `kafka_addr`, and ignored while `FELIX_KAFKA_LISTEN` is unset. |
 | `FELIX_KAFKA_TLS` | `true` | Serve TLS on the Kafka listener with the broker's client certificate, so clients connect with `SASL_SSL`. `false` means `SASL_PLAINTEXT`: tokens cross the network in clear text. |
 | `FELIX_KAFKA_ANONYMOUS_TENANT` | unset | Development switch: a Kafka connection that does not authenticate reads and writes every stream of this tenant. Leave unset in production. |
@@ -2084,7 +2084,7 @@ absent. They are listed in that script rather than here.
 
 `felixctl` reads these to override the current context. A flag overrides the
 variable, and the variable overrides the context. See
-[felixctl](/felix/getting-started/felixctl/).
+[felixctl](/getting-started/felixctl/).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

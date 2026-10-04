@@ -21,6 +21,6 @@ peer exchange byte-identical frames.
 
 ## Documentation
 
-- [Wire protocol reference](https://getfelix.github.io/felix/architecture/wire-protocol/)
+- [Wire protocol reference](https://docs.getfelix.dev/architecture/wire-protocol/)
 
 Apache-2.0.

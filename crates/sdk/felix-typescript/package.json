@@ -14,7 +14,7 @@
   ],
   "license": "Apache-2.0",
   "author": "Gabriel Loewen",
-  "homepage": "https://getfelix.github.io/felix/clients/typescript/",
+  "homepage": "https://docs.getfelix.dev/clients/typescript/",
   "repository": {
     "type": "git",
     "url": "https://github.com/GetFelix/felix.git",

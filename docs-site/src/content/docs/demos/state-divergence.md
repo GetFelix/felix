@@ -12,7 +12,7 @@ on an ephemeral stream that drops on overflow. One consumer stalls briefly,
 recovers, and everything goes quiet. It is still holding wrong values for most
 of the keyspace, permanently, with nothing in the API that would tell it so.
 
-Run it alongside [Slow-consumer Isolation](/felix/demos/slow-consumer-isolation/). That one
+Run it alongside [Slow-consumer Isolation](/demos/slow-consumer-isolation/). That one
 shows Felix's shipped strength; this one shows what that strength costs.
 
 ## Why this exists
@@ -24,7 +24,7 @@ is **permanently wrong**, with no signal that would let it recover on its own.
 Felix has ways out of this, and the demo uses none of them on purpose. A durable
 stream gives every event an offset, so a consumer sees a drop as a jump and can
 resubscribe from the last offset it handled
-([resumable subscriptions](/felix/getting-started/what-felix-is-for/) are
+([resumable subscriptions](/getting-started/what-felix-is-for/) are
 shipped). A retained `cache_watch` on a log-backed cache starts from current
 values, resumes by offset, and is ended with the offset to re-watch from when it
 falls behind. The status table marks distributed live-state synchronisation as
@@ -133,7 +133,7 @@ wrong about.
 Configuring every checkpoint to block does eliminate divergence, and it is a
 legitimate deployment choice. But it converges only by letting the slowest consumer
 throttle the publisher and therefore every other consumer. That is exactly the
-trade-off [Slow-consumer Isolation](/felix/demos/slow-consumer-isolation/) measures. Neither
+trade-off [Slow-consumer Isolation](/demos/slow-consumer-isolation/) measures. Neither
 column is free.
 
 The way out is not blocking but a stream a consumer can resume. Publish the

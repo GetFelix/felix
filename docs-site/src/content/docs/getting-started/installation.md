@@ -155,7 +155,7 @@ holding the cluster. press Ctrl-C to tear it down.
 ```
 
 Every address is chosen free at startup, so nothing collides with what you are
-already running. The [Quickstart](/felix/getting-started/quickstart/) goes on to
+already running. The [Quickstart](/getting-started/quickstart/) goes on to
 publish and subscribe against it; running brokers yourself is covered there too.
 
 ### Run a Demo
@@ -181,7 +181,7 @@ cargo run --manifest-path demos/cross_tenant_isolation/Cargo.toml
 
 The cross-tenant isolation demo needs Postgres (`task pg:up`).
 
-See the [Demos Overview](/felix/demos/overview/) for details and expected output.
+See the [Demos Overview](/demos/overview/) for details and expected output.
 
 ## Optional Tools
 
@@ -287,21 +287,21 @@ docker run -p 5000-5003:5000-5003/udp -p 8080:8080 \
 ```
 
 The broker binds up to four client ports from `5000`, depending on its cores
-(see [`FELIX_QUIC_LISTENERS`](/felix/reference/environment-variables/#felix_quic_listeners)),
+(see [`FELIX_QUIC_LISTENERS`](/reference/environment-variables/#felix_quic_listeners)),
 and tells clients to use all of them, so publish the whole range.
 
 A broker authenticates every client against its tenant's signing keys, which it
 fetches from the control plane, and it reads its streams from there with a
 node credential. Without `FELIX_CONTROLPLANE_URL` it logs `broker started` and
 exits on the next line. Without the credential it runs but serves no streams.
-[Docker Compose](/felix/deployment/docker-compose/) wires the pair together; for
+[Docker Compose](/deployment/docker-compose/) wires the pair together; for
 a local cluster with nothing to configure, `felix-cluster up` is quicker (see
-the [Quickstart](/felix/getting-started/quickstart/)).
+the [Quickstart](/getting-started/quickstart/)).
 
 Each release publishes the full version (`0.6.0-preview`). A release without a
 pre-release suffix also publishes the minor series (`0.6`) and `latest`. Use a
 full version tag in anything you keep; the other two move. Images are
-signed by digest. See [Kubernetes](/felix/deployment/kubernetes/) for the
+signed by digest. See [Kubernetes](/deployment/kubernetes/) for the
 `cosign verify` invocation.
 
 To build one instead, for a change you have not released:
@@ -327,7 +327,7 @@ docker run -p 8443:8443 \
   ghcr.io/gabloe/felix-controlplane:0.6.0-preview
 ```
 
-See [Docker Compose Guide](/felix/deployment/docker-compose/) for orchestrated deployments.
+See [Docker Compose Guide](/deployment/docker-compose/) for orchestrated deployments.
 
 ## Troubleshooting
 
@@ -360,6 +360,6 @@ cargo build --release -j 2
 
 ## Next Steps
 
-- [Quickstart Guide](/felix/getting-started/quickstart/) - Run your first Felix deployment
-- [Building & Testing](/felix/development/building/) - Development workflow
-- [Configuration](/felix/reference/configuration/) - Customize Felix behavior
+- [Quickstart Guide](/getting-started/quickstart/) - Run your first Felix deployment
+- [Building & Testing](/development/building/) - Development workflow
+- [Configuration](/reference/configuration/) - Customize Felix behavior

@@ -157,7 +157,7 @@ before.
   change.
 - **Subscribers see a gap.** The record takes an offset that no reader
   delivers. A client that negotiated `FLAG_EVENT_BATCH_SKIPPED` (`0x0800`, see
-  [capability negotiation](/felix/architecture/wire-protocol/#capability-negotiation))
+  [capability negotiation](/architecture/wire-protocol/#capability-negotiation))
   is told about it as `skipped_before` on the next batch. An older client that
   treats every offset jump as a drop reports a drop of one at each leadership
   change.
@@ -306,9 +306,9 @@ finalize it. See the runbook above.
 ## What this does not cover
 
 Topology, install steps and replacing a persistent volume are on
-[Kubernetes Deployment](/felix/deployment/kubernetes/). Adding, draining and
+[Kubernetes Deployment](/deployment/kubernetes/). Adding, draining and
 removing a broker have their own page:
-[Adding, draining and removing brokers](/felix/deployment/scaling/).
+[Adding, draining and removing brokers](/deployment/scaling/).
 
 The two observable checks available during any upgrade:
 
@@ -320,7 +320,7 @@ curl -s http://broker:8080/replication/halted | jq
 felix-broker --print-config
 ```
 
-See [Observability](/felix/features/observability/) for what to watch while a
+See [Observability](/features/observability/) for what to watch while a
 rollout is in progress.
 
 ### A note on credentialed forwards

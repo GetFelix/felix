@@ -5,7 +5,7 @@ title: "Internals: The Publish Path"
 This page traces a publish function by function, from `Publisher::publish()`
 to the message landing in every subscriber's queue. It is for contributors who
 change or debug this path. The API reference is the
-[Client SDK](/felix/clients/rust/).
+[Client SDK](/clients/rust/).
 
 Code references are `path/to/file.rs:function_name`. Use your editor's "go to
 definition" from there.
@@ -61,7 +61,7 @@ pub async fn publish(
    Otherwise the acked publish falls back to `publish_batch_json`. If
    you want JSON instead (debugging, a client that hasn't implemented the binary
    decoder), call `publish_json`/`publish_batch_json` explicitly. See
-   [Wire Protocol](/felix/architecture/wire-protocol/#binary-publish-batch-encoding).
+   [Wire Protocol](/architecture/wire-protocol/#binary-publish-batch-encoding).
 
    Both encodings converge on the same handler: the binary path decodes the frame
    and then calls `handle_publish_batch_message` with `AckEncoding::Binary`, so
@@ -80,7 +80,7 @@ pub async fn publish(
    `OwnedSemaphorePermit` returned here is attached to the `PublishRequest`
    and travels with it. It is released only when the worker finishes processing,
    not when it's merely queued. See
-   [Internals: Backpressure](/felix/development/internals-concurrency/) for why that timing
+   [Internals: Backpressure](/development/internals-concurrency/) for why that timing
    matters.
 
 4. **Enqueue.** The encoded `PublishRequest` (carrying the permit) goes onto
@@ -145,7 +145,7 @@ do not mean more concurrent callers contending on shared stream state.
    ```
 
    Unacked publishes use `Drop` (or `Backpressure` if `pub_ingress_wait` is
-   set, see [Internals: Backpressure](/felix/development/internals-concurrency/)).
+   set, see [Internals: Backpressure](/development/internals-concurrency/)).
    An acked publish that finds no room is answered with a retryable
    `overloaded` (`detail.reason = "publish_queue_full"`, a short
    `retry_after_ms`, and nothing queued), and every refusal or shed is counted
@@ -167,7 +167,7 @@ do not mean more concurrent callers contending on shared stream state.
    tenant is refused while a quiet one still gets in. With `core_shards`
    enabled there is one such queue per shard, with its executors on that
    shard's core, and a stream's lane lives on the shard that owns it. See
-   [Internals: Backpressure & Core Sharding](/felix/development/internals-concurrency/#core-sharding).
+   [Internals: Backpressure & Core Sharding](/development/internals-concurrency/#core-sharding).
 
 4. **What a job does on its lane** (`handlers/publish/worker.rs:LaneWork`).
    An executor holds a lane only for the part that has to be ordered, and
@@ -303,7 +303,7 @@ claim_publish                      │   complete_publish                       
    re-encode. The send is gated by `SubQueuePolicy` (`Block`, `DropNew`,
    `DropOld`, where `DropOld` behaves as `DropNew`). This is the first of two
    backpressure checkpoints on the subscribe side. See
-   [Internals: Backpressure](/felix/development/internals-concurrency/#the-full-backpressure-chain)
+   [Internals: Backpressure](/development/internals-concurrency/#the-full-backpressure-chain)
    for the second.
 
 The commit turn is held until fanout finishes, so delivery order matches log
@@ -334,7 +334,7 @@ Publishing one message to a stream with 3 active subscribers, unacked,
 6. Each subscriber's feeder task independently calls
    `envelope.shared_event_frame()`. The *first* one to call it pays the
    encode cost and caches the result in the envelope, and the other two get the
-   cached `Bytes` for free. See [Internals: Subscribe & Fanout](/felix/development/internals-subscribe/).
+   cached `Bytes` for free. See [Internals: Subscribe & Fanout](/development/internals-subscribe/).
 
 ## If you want to change...
 
@@ -350,6 +350,6 @@ Publishing one message to a stream with 3 active subscribers, unacked,
 | Add a new client publish worker sharding strategy | `PublishSharding` in `crates/sdk/felix-client/src/publish/routing.rs` |
 | Change broker publish scheduling (lanes, tenant fairness, queue bounds) | `PublishScheduler` in `handlers/publish/scheduler.rs`, `FairQueue` in `scheduler/fair_queue.rs`; what each job does on its lane in `handlers/publish/worker.rs` |
 
-Next: [Internals: Subscribe & Fanout](/felix/development/internals-subscribe/) picks up where
+Next: [Internals: Subscribe & Fanout](/development/internals-subscribe/) picks up where
 this page leaves off: what happens to the `DeliveryEnvelope` after it lands
 in a subscriber's queue.

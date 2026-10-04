@@ -9,7 +9,7 @@ its own offsets works; anything built on `group.id` and `subscribe()` does not,
 and neither does a producer with `transactional.id`.
 
 The user-facing guide, with quick start, use cases and troubleshooting, is
-[Kafka compatibility](https://getfelix.github.io/felix/features/kafka/).
+[Kafka compatibility](https://docs.getfelix.dev/features/kafka/).
 This page is the reference: what is implemented, how Felix maps onto Kafka's
 model, and why it stops where it does.
 
@@ -267,7 +267,7 @@ Each either adopted Kafka's coordinator wholesale or spent most of its effort
 rebuilding it, and none got the ecosystem without it.
 
 In Felix, sharing work between consumers is a Felix consumer group
-([Queues and consumer groups](https://getfelix.github.io/felix/features/queues/)),
+([Queues and consumer groups](https://docs.getfelix.dev/features/queues/)),
 used through a Felix client. Reading with a checkpoint is a resumable
 subscription: every delivered event carries its offset, and a subscribe can
 start from one.
@@ -440,7 +440,7 @@ clients to trust; librdkafka 2.0 and later verify hostnames and need
 `ssl.endpoint.identification.algorithm=none` with that one.
 
 The metrics are listed on the
-[observability page](https://getfelix.github.io/felix/features/observability/):
+[observability page](https://docs.getfelix.dev/features/observability/):
 `felix_kafka_connections`, `felix_kafka_connections_total`,
 `felix_kafka_requests_total{api,error}`, `felix_kafka_refused_total{reason}`,
 `felix_kafka_fetch_records_total`, `felix_kafka_fetch_bytes_total`,

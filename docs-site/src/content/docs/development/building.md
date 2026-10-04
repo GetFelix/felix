@@ -14,7 +14,7 @@ tasks, so a green local run of the ones below predicts a green CI run.
 - **Docker**, optional. `task test` uses it to start Postgres for the control
   plane's Postgres tests and skips them without it.
 - For the extras only: nightly Rust and `cargo-fuzz` for
-  [fuzzing](/felix/development/fuzzing/), Java or Docker for `task tla:check`,
+  [fuzzing](/development/fuzzing/), Java or Docker for `task tla:check`,
   Node for the docs site, and `helm` with PyYAML for `task chart:check`.
 
 ## Building
@@ -63,7 +63,7 @@ To point the Postgres tests at a database of your own, set
 interrupted run leaves test containers behind, `task pg:sweep` removes them.
 
 Cluster and distributed tests are covered in
-[How Felix Is Tested](/felix/architecture/testing/).
+[How Felix Is Tested](/architecture/testing/).
 
 ## Two traps
 

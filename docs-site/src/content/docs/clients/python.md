@@ -7,7 +7,7 @@ description: "Installing and using the Felix Python client: both surfaces, strea
 redirect-following, retry classification and offset bookkeeping live in
 `felix-client` and are shared, so Python gets the same failover behaviour as
 Rust. See
-[Choosing a Client](/felix/clients/overview/) for why that choice was made and
+[Choosing a Client](/clients/overview/) for why that choice was made and
 what the conformance suite does about it.
 
 ## Installing
@@ -547,7 +547,7 @@ unclaimed.
 ## Conformance
 
 Python passes every required scenario in the
-[client conformance catalogue](/felix/clients/overview/#the-conformance-suite),
+[client conformance catalogue](/clients/overview/#the-conformance-suite),
 and CI is gated on it. The suite runs against a real three-node cluster rather
 than a mock, because what it checks (reconnection, redirect-following, offset
 accounting) only exists in a cluster.
