@@ -22,6 +22,9 @@ source of truth for all client implementations.
 - A client MAY also open a unidirectional stream for publish-only traffic. It
   must begin with `auth`, may carry only publishes, and the broker never replies
   on it; anything else closes the stream.
+- Browsers cannot open QUIC connections to the broker. They reach it through a
+  WebSocket gateway such as [felix-gateway](https://github.com/GetFelix/felix-gateway), which
+  holds the Felix connection and a token narrowed to what the browser may use.
 
 Before authentication. Every client stream starts with an `auth`, and until that
 succeeds the broker limits what the stream may cost it:
