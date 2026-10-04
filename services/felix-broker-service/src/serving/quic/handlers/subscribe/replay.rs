@@ -181,6 +181,8 @@ pub(super) async fn write_replay<S: EventSink>(
             }
         }
     }
+    // Drops the catch-up filled from disk are not a lag.
+    subscription.covered_below(replay.next);
     Ok(())
 }
 

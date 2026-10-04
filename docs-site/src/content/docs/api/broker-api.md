@@ -858,6 +858,7 @@ specified in [`docs/protocol.md`](https://github.com/gabloe/felix/blob/main/docs
 | `auth` / `auth_ok` | The first round trip on every control stream. The client offers `client_flags` and features, and the broker answers with `server_flags`, `server_features` and, when granted, a `publish_window`. |
 | `subscribe_cursor_error` | A subscribe asked for an offset the broker cannot serve: `too_old` (retention removed it) or `in_future`. |
 | `shard_moved` | The last frame on a subscription's or cache watch's event stream when its shard moved, with where to resume. Sent only with `FEATURE_SHARD_MOVED`. |
+| `subscription_lagged` | The last frame on a durable-stream subscription whose queue on the broker dropped records, with the offset to resume from. Sent only with `FEATURE_SUBSCRIPTION_LAGGED`. |
 | `cache_watch` | Watch a cache key or prefix: current values, then every change. |
 | `counter_add` / `counter_get` | Add to and read a cache's counters. |
 | `producer_init` / `publish_idempotent` | Take a producer id and publish numbered batches that land once when re-sent. |

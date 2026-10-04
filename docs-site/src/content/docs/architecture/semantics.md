@@ -21,7 +21,8 @@ A stream's guarantee follows from how it is registered.
 - Messages are delivered to subscribers zero or one time
 - No retries or redelivery
 - No acknowledgements from subscribers
-- Slow subscribers may drop messages without notification
+- Slow subscribers may drop messages without notification. A durable stream's
+  subscription is told: it ends at the first drop with the offset to resume from
 
 **A durable stream is at-least-once.** Every record is written to disk before
 the publish is acknowledged, and a subscriber replays from any retained offset,
@@ -301,7 +302,8 @@ Each subscription has its own bounded queue and its own QUIC stream.
 - Each subscriber has `subscriber_queue_capacity` buffer slots (default: 512)
 - When buffer fills, new events are **dropped for that subscriber only**
 - Other subscribers continue receiving events normally
-- A drop is not announced. For a durable stream a subscriber can *detect* one, because delivered records carry log offsets and a jump between consecutive offsets is a drop. The exception is a promoted leader's generation-start record, which takes an offset and is never delivered; the event after it reports it in `skipped_before`, so the jump is not mistaken for a drop.
+- On a durable stream a drop ends the subscription. The broker delivers what was queued before it, then sends `subscription_lagged` with the first dropped offset, without waiting for another publish; felix-client returns it from `next_event` as a `SubscriptionLagged` error, and does the same for drops in its own queue. A client that did not offer `FEATURE_SUBSCRIPTION_LAGGED` keeps its subscription and can still *detect* a drop, because delivered records carry log offsets and a jump between consecutive offsets is a drop. The exception is a promoted leader's generation-start record, which takes an offset and is never delivered; the event after it reports it in `skipped_before`, so the jump is not mistaken for a drop.
+- An in-memory stream's drops are not announced: it has no offsets to resume from.
 
 **Configuration**:
 
@@ -732,9 +734,10 @@ room in its queue, so a slow reader slows the replay instead.
 
 **Detection, today**: the broker counts drops per subscriber queue
 (`felix_sub_queue_dropped_total`) and logs when a subscriber falls behind.
-On a durable stream the subscriber itself can detect loss from an offset gap
-and resume. There is no per-subscription lag API and no automatic disconnect
-of chronically slow subscribers.
+On a durable stream the subscription ends at its first drop with
+`subscription_lagged`, and the subscriber resumes from the offset it names;
+`ClusterSubscription` does that itself, catching up from the log. An
+in-memory stream's subscriber is not told and is not disconnected.
 
 ## Testing Semantics
 

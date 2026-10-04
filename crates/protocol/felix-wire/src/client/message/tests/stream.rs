@@ -141,3 +141,19 @@ fn shard_moved_round_trips_and_omits_absent_hints() {
     );
     assert_eq!(Message::decode(frame).expect("decode"), bare);
 }
+
+/// `subscription_lagged` is a plain JSON frame naming where to resume.
+#[test]
+fn subscription_lagged_round_trips() {
+    let lagged = Message::SubscriptionLagged {
+        subscription_id: 7,
+        resume_from: 1234,
+    };
+    let frame = lagged.encode().expect("encode");
+    assert_eq!(frame.header.flags, 0, "a JSON frame carries no flag bits");
+    assert_eq!(
+        std::str::from_utf8(&frame.payload).expect("utf8"),
+        r#"{"type":"subscription_lagged","subscription_id":7,"resume_from":1234}"#
+    );
+    assert_eq!(Message::decode(frame).expect("decode"), lagged);
+}

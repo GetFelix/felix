@@ -789,6 +789,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             | Message::Subscribed { .. }
             | Message::EventStreamHello { .. }
             | Message::ShardMoved { .. }
+            | Message::SubscriptionLagged { .. }
             | Message::PublishOk { .. }
             | Message::PublishError { .. }
             | Message::PublishRefused { .. }

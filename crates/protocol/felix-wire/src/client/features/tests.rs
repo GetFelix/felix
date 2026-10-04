@@ -299,6 +299,10 @@ fn every_feature_bit_is_distinct_and_known() {
         ("FEATURE_ACK_ON_COMMIT", crate::FEATURE_ACK_ON_COMMIT),
         ("FEATURE_GROUP_CONSUMER", crate::FEATURE_GROUP_CONSUMER),
         ("FEATURE_SHARD_OWNERS", crate::FEATURE_SHARD_OWNERS),
+        (
+            "FEATURE_SUBSCRIPTION_LAGGED",
+            crate::FEATURE_SUBSCRIPTION_LAGGED,
+        ),
         ("FEATURE_GROUP_SKIPPED", crate::FEATURE_GROUP_SKIPPED),
     ];
     let mut seen = 0u32;
