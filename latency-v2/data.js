@@ -1,6 +1,6 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791080947109,
-  "repoUrl": "https://github.com/gabloe/felix",
+  "lastUpdate": 1791089865795,
+  "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
       {
@@ -30030,6 +30030,72 @@ window.BENCHMARK_DATA = {
             "range": "991.46",
             "unit": "us",
             "extra": "trials: 5\nmedian: 332.00\nmean: 910.80\nstdev: 991.46\ncv: 108.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bf83b4f1dbde7b09aad114c9373176b77edd4d13",
+          "message": "chore: move references to the GetFelix organization (#1011)\n\n* chore: move references to the GetFelix organization\n\nLinks, crate and package metadata, the docs site, the Helm chart and image names move from gabloe to GetFelix, getfelix.github.io/felix and ghcr.io/getfelix. The release workflow lowercases the registry owner, because GHCR rejects ghcr.io/GetFelix/... names. Docs that pin 0.6.0-preview keep ghcr.io/gabloe, where that release is published, and the image checks accept either owner until the next release moves the pins.\n\n* docs: serve the docs site at docs.getfelix.dev\n\nThe site moves to a custom domain at its root, so the Astro base becomes / and internal links drop the /felix prefix. docs-site/public/CNAME names the domain.",
+          "timestamp": "2026-10-03T21:53:39-07:00",
+          "tree_id": "1a3ceafe5ccce6da98cdd75c313d7f457788db4d",
+          "url": "https://github.com/GetFelix/felix/commit/bf83b4f1dbde7b09aad114c9373176b77edd4d13"
+        },
+        "date": 1791089862959,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 179,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 178.60\nstdev: 0.89\ncv: 0.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 241,
+            "range": "4.16",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 241.00\nmean: 241.40\nstdev: 4.16\ncv: 1.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 312,
+            "range": "13.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 312.00\nmean: 311.40\nstdev: 13.54\ncv: 4.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 214,
+            "range": "5.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 214.00\nmean: 215.20\nstdev: 5.17\ncv: 2.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 430,
+            "range": "168.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 430.00\nmean: 513.80\nstdev: 168.67\ncv: 32.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 936,
+            "range": "723.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 936.00\nmean: 1172.20\nstdev: 723.37\ncv: 61.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
