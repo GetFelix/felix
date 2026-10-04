@@ -1,6 +1,6 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791080949510,
-  "repoUrl": "https://github.com/gabloe/felix",
+  "lastUpdate": 1791089868752,
+  "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
       {
@@ -23660,6 +23660,58 @@ window.BENCHMARK_DATA = {
             "range": "53544.83",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1632585.62\nmean: 1620762.45\nstdev: 53544.83\ncv: 3.30%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bf83b4f1dbde7b09aad114c9373176b77edd4d13",
+          "message": "chore: move references to the GetFelix organization (#1011)\n\n* chore: move references to the GetFelix organization\n\nLinks, crate and package metadata, the docs site, the Helm chart and image names move from gabloe to GetFelix, getfelix.github.io/felix and ghcr.io/getfelix. The release workflow lowercases the registry owner, because GHCR rejects ghcr.io/GetFelix/... names. Docs that pin 0.6.0-preview keep ghcr.io/gabloe, where that release is published, and the image checks accept either owner until the next release moves the pins.\n\n* docs: serve the docs site at docs.getfelix.dev\n\nThe site moves to a custom domain at its root, so the Astro base becomes / and internal links drop the /felix prefix. docs-site/public/CNAME names the domain.",
+          "timestamp": "2026-10-03T21:53:39-07:00",
+          "tree_id": "1a3ceafe5ccce6da98cdd75c313d7f457788db4d",
+          "url": "https://github.com/GetFelix/felix/commit/bf83b4f1dbde7b09aad114c9373176b77edd4d13"
+        },
+        "date": 1791089868233,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 342884.29,
+            "range": "6047.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342884.29\nmean: 344618.51\nstdev: 6047.88\ncv: 1.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 342884.29,
+            "range": "6047.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342884.29\nmean: 344618.51\nstdev: 6047.88\ncv: 1.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82657.52,
+            "range": "374.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82657.52\nmean: 82678.40\nstdev: 374.04\ncv: 0.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 826575.24,
+            "range": "3740.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 826575.24\nmean: 826783.99\nstdev: 3740.43\ncv: 0.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
