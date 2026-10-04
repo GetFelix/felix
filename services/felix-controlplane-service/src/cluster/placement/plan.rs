@@ -604,8 +604,9 @@ struct Placeable<'a> {
     durable: bool,
     /// The home region, for a stream that has one.
     region: Option<&'a String>,
-    /// A durable `Quorum` stream: a promoted leader fences a majority of the
-    /// replica set before it serves, so failover keeps the set.
+    /// A durable `Quorum` stream or a `Quorum` cache: a promoted leader
+    /// fences a majority of the replica set before it serves, so failover
+    /// keeps the set.
     fenced: bool,
 }
 
@@ -635,8 +636,9 @@ impl<'a> Placeable<'a> {
             // A cache is durable wherever the broker is; assume it is.
             durable: true,
             region: None,
-            // Never fenced: its successor is only as good as its report.
-            fenced: false,
+            // A promoted `Quorum` cache fences its cache and counter logs on a
+            // majority of the set before it serves, as a `Quorum` stream does.
+            fenced: matches!(cache.consistency, ConsistencyLevel::Quorum),
         }
     }
 
