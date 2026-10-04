@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "felix-client"
-version = "0.6.0-preview"
+version = "0.6.0-preview.2"
 dependencies = [
  "ahash",
  "anyhow",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "felix-transport"
-version = "0.6.0-preview"
+version = "0.6.0-preview.2"
 dependencies = [
  "anyhow",
  "libc",
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "felix-typescript"
-version = "0.6.0-preview"
+version = "0.6.0-preview.2"
 dependencies = [
  "anyhow",
  "bytes",
@@ -281,7 +281,7 @@ dependencies = [
 
 [[package]]
 name = "felix-wire"
-version = "0.6.0-preview"
+version = "0.6.0-preview.2"
 dependencies = [
  "base64",
  "bytes",

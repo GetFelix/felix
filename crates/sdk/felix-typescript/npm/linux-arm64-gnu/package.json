@@ -1,6 +1,6 @@
 {
   "name": "felix-client-linux-arm64-gnu",
-  "version": "0.6.0-preview",
+  "version": "0.6.0-preview.2",
   "description": "The linux-arm64-gnu binary for felix-client. Installed automatically; do not depend on it directly.",
   "main": "felix.linux-arm64-gnu.node",
   "files": [

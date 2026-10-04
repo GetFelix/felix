@@ -23,8 +23,8 @@ bytes = { workspace = true }
 clap = { workspace = true, features = ["string"] }
 clap_complete = { workspace = true }
 clap_mangen = { workspace = true }
-felix-client = { path = "../../sdk/felix-client", version = "0.6.0-preview" }
-felix-loadgen = { path = "../../testing/felix-loadgen", version = "0.6.0-preview" }
+felix-client = { path = "../../sdk/felix-client", version = "0.6.0-preview.2" }
+felix-loadgen = { path = "../../testing/felix-loadgen", version = "0.6.0-preview.2" }
 quinn = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

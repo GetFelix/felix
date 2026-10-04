@@ -20,7 +20,7 @@ use serde_yaml_ng::Value;
 /// The only two images a release publishes.
 const PUBLISHED_IMAGES: &[&str] = &["felix-broker", "felix-controlplane"];
 
-/// Where releases publish. 0.6.0-preview and earlier went out under gabloe,
+/// Where releases publish. Releases before 0.6.0-preview.2 went out under gabloe,
 /// and the docs still pin it there.
 const IMAGE_OWNERS: &[&str] = &["ghcr.io/getfelix/", "ghcr.io/gabloe/"];
 

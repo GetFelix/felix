@@ -1,6 +1,6 @@
 {
   "name": "felix-client-darwin-x64",
-  "version": "0.6.0-preview",
+  "version": "0.6.0-preview.2",
   "description": "The darwin-x64 binary for felix-client. Installed automatically; do not depend on it directly.",
   "main": "felix.darwin-x64.node",
   "files": [
