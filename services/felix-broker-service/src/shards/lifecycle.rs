@@ -177,8 +177,9 @@ impl ShardLifecycle {
         }
     }
 
-    /// Hold a promoted stream shard in `Fencing` until [`Self::fenced`]. For a
-    /// broker whose replication driver fences promotions.
+    /// Hold a promoted shard, stream or cache, in `Fencing` until
+    /// [`Self::fenced`]. For a broker whose replication driver fences
+    /// promotions.
     pub fn fence_promotions(&mut self) {
         self.fence_promotions = true;
     }
@@ -558,7 +559,6 @@ impl ShardLifecycle {
         let fence = self.fence_promotions
             && new_term
             && !draining
-            && key.kind == ShardKind::Stream
             && !self.incoming.contains_key(key)
             && !handed_back;
         if fence {
@@ -1002,7 +1002,7 @@ impl DurableShardStore {
         }
     }
 
-    /// Write a generation-start record whenever a stream leadership begins
+    /// Write a generation-start record whenever a leadership begins
     /// here, once the fleet has finalized `generation_start`.
     pub fn with_generation_starts(mut self, starts: GenerationStarts) -> Self {
         self.generation_starts = Some(starts);
@@ -1025,9 +1025,10 @@ impl DurableShardStore {
     /// divergence at its tail cannot be told apart from one reaching further
     /// back and the replica halts instead of dropping the suffix (#863).
     ///
-    /// Caches never write a generation-start record, since their quorum mark
-    /// does not count from one, so a failure to record the start is logged
-    /// rather than fatal, as it is for a stream before `generation_start`.
+    /// Once the fleet finalized `generation_start` each log also gets its
+    /// generation-start record, as a stream's does, since the cache and
+    /// counter marks then count only past it. A promotion's are written when
+    /// its fence opens the shard.
     async fn open_cache(
         &self,
         key: &ShardKey,
@@ -1038,6 +1039,10 @@ impl DurableShardStore {
         let Some(broker) = self.generation_starts.as_ref().map(|starts| &starts.broker) else {
             return Ok(());
         };
+        let starts = self
+            .generation_starts
+            .as_ref()
+            .filter(|starts| starts.enabled());
         for kind in [
             felix_broker::LogKind::Cache,
             felix_broker::LogKind::Counters,
@@ -1053,9 +1058,12 @@ impl DurableShardStore {
                 continue;
             };
             if begins_here {
-                record_term_start(&log, key, generation, false).await?;
+                record_term_start(&log, key, generation, starts.is_some()).await?;
             }
             accept_led_generation(&log, generation).await?;
+            if begins_here && let Some(starts) = starts {
+                start_generation(&starts.broker, &log, key, generation).await?;
+            }
         }
         Ok(())
     }
@@ -1391,7 +1399,8 @@ async fn accept_led_generation(
 ///
 /// It goes at the generation's recorded start, before any client write, so
 /// the quorum mark can cover records this leader inherited once a majority
-/// holds it. See `docs/replication-design.md`.
+/// holds it. See `docs/replication-design.md`. For a cache shard `log` is its
+/// cache log or its counter log, each with a mark of its own.
 pub async fn write_generation_start(
     broker: &felix_broker::Broker,
     log: &felix_broker::StreamLog,
@@ -1402,13 +1411,15 @@ pub async fn write_generation_start(
     // no offsets, nothing ships, and no `Quorum` write waits on a mark. So
     // there is no inherited record for a start record to cover, and the
     // broker has no log to append one to.
-    let durable = broker
-        .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-        .await
-        .map_err(|err| anyhow::anyhow!("resolve the stream: {err}"))?
-        .is_durable();
-    if !durable {
-        return Ok(());
+    if key.kind == ShardKind::Stream {
+        let durable = broker
+            .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await
+            .map_err(|err| anyhow::anyhow!("resolve the stream: {err}"))?
+            .is_durable();
+        if !durable {
+            return Ok(());
+        }
     }
     if felix_replication::quorum::generation_start(log, generation)
         .await
@@ -1434,18 +1445,25 @@ pub async fn write_generation_start(
         // generation's, and the mark would count them as if they were.
         _ => anyhow::bail!("generation {generation} does not begin at the tail {tail}"),
     }
-    // Through the broker, so the stream's commit order and its subscribers
-    // move past the record's offset too.
-    broker
-        .append_generation_start(
-            &key.tenant_id,
-            &key.namespace,
-            &key.stream,
-            key.shard,
-            generation,
-        )
-        .await
-        .map_err(|err| anyhow::anyhow!("append the generation-start record: {err}"))?;
+    match key.kind {
+        // Through the broker, so the stream's commit order and its
+        // subscribers move past the record's offset too.
+        ShardKind::Stream => broker
+            .append_generation_start(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                generation,
+            )
+            .await
+            .map(drop),
+        // Straight to the log. Nothing writes to the shard before it serves,
+        // and a cache's index and a counter shard's sums catch up with
+        // records that arrive underneath them, skipping this one.
+        ShardKind::Cache => log.append_generation_start(generation).await.map(drop),
+    }
+    .map_err(|err| anyhow::anyhow!("append the generation-start record: {err}"))?;
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 //! Opening a promoted shard once replication has fenced its replicas.
 //!
-//! The lifecycle holds a promoted stream shard in `Fencing`; replication runs
+//! The lifecycle holds a promoted shard in `Fencing`; replication runs
 //! the fence and calls [`LifecycleGate::open`] when a majority has taken it,
 //! or when some replica does not offer it and the shard opens on the lease.
 //! See `felix_replication::promotion`.
@@ -59,31 +59,53 @@ impl felix_replication::promotion::PromotionGate for LifecycleGate {
         // stays closed without it: the next pass fences again and retries,
         // rather than serving on a mark that would never cover what this
         // leader inherited.
-        match self
-            .storage
-            .open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-        {
-            Ok(log) => {
-                if let Err(err) = record_term_start(&log, key, generation, start_record).await {
+        let logs = match key.kind {
+            crate::shards::ShardKind::Stream => match self.storage.open_stream(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+            ) {
+                Ok(log) => vec![log],
+                Err(err) => {
                     tracing::warn!(stream = %key.stream, shard = key.shard, error = %err,
-                        "could not record where this leadership begins; not serving yet");
-                    return false;
+                        "could not open the shard's log to record where this leadership begins");
+                    if start_record {
+                        return false;
+                    }
+                    Vec::new()
                 }
-                if start_record
-                    && let Err(err) =
-                        write_generation_start(&self.broker, &log, key, generation).await
-                {
-                    tracing::warn!(stream = %key.stream, shard = key.shard, error = %err,
-                        "could not write the generation-start record; not serving yet");
-                    return false;
+            },
+            // Its cache log and its counter log, each with a mark of its own.
+            crate::shards::ShardKind::Cache => {
+                let mut logs = Vec::new();
+                for kind in [
+                    felix_broker::LogKind::Cache,
+                    felix_broker::LogKind::Counters,
+                ] {
+                    if let Some(log) = self
+                        .broker
+                        .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+                        .await
+                    {
+                        logs.push(log);
+                    }
                 }
+                logs
             }
-            Err(err) => {
+        };
+        for log in &logs {
+            if let Err(err) = record_term_start(log, key, generation, start_record).await {
                 tracing::warn!(stream = %key.stream, shard = key.shard, error = %err,
-                    "could not open the shard's log to record where this leadership begins");
-                if start_record {
-                    return false;
-                }
+                    "could not record where this leadership begins; not serving yet");
+                return false;
+            }
+            if start_record
+                && let Err(err) = write_generation_start(&self.broker, log, key, generation).await
+            {
+                tracing::warn!(stream = %key.stream, shard = key.shard, error = %err,
+                    "could not write the generation-start record; not serving yet");
+                return false;
             }
         }
         if lifecycle.fenced(key, generation) {
