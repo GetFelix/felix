@@ -89,3 +89,52 @@ mod errors {
         assert!(error.to_string().contains("broker-b"), "{error}");
     }
 }
+
+/// **A cache shard's counter log is fenced and read only on a peer that said
+/// it answers for it.** A build with the fence but not the counter fence
+/// refuses `Counters` as malformed; the promotion must see that as a peer
+/// lacking the capability, before anything is sent.
+#[test]
+fn a_counter_fence_needs_the_cache_fence() {
+    use felix_wire::internal::{Fence, ReplicateFetch, ShardRef};
+    let shard = ShardRef {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "sessions".to_string(),
+        shard: 0,
+        generation: 5,
+    };
+    let fence = |log| {
+        InternalMessage::Fence(Fence {
+            correlation_id: 0,
+            shard: shard.clone(),
+            log,
+        })
+    };
+    let fetch = |log| {
+        InternalMessage::ReplicateFetch(ReplicateFetch {
+            correlation_id: 0,
+            shard: shard.clone(),
+            log,
+            from_offset: 0,
+            max_bytes: 1024,
+            labelled: false,
+        })
+    };
+    assert_eq!(
+        required_capability(&fence(ReplicaLog::Cache)),
+        Some(PeerCapabilities::FENCE)
+    );
+    assert_eq!(
+        required_capability(&fence(ReplicaLog::Counters)),
+        Some(PeerCapabilities::FENCE.union(PeerCapabilities::CACHE_FENCE))
+    );
+    assert_eq!(
+        required_capability(&fetch(ReplicaLog::Cache)),
+        Some(PeerCapabilities::TAIL_FETCH)
+    );
+    assert_eq!(
+        required_capability(&fetch(ReplicaLog::Counters)),
+        Some(PeerCapabilities::TAIL_FETCH.union(PeerCapabilities::CACHE_FENCE))
+    );
+}

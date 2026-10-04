@@ -43,7 +43,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use felix_transport::QuicClient;
-use felix_wire::internal::{InternalMessage, PeerCapabilities};
+use felix_wire::internal::{InternalMessage, PeerCapabilities, ReplicaLog};
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -531,7 +531,13 @@ impl PeerRequester for PeerPool {
 /// The capability a peer must have said it has before `message` goes to it.
 fn required_capability(message: &InternalMessage) -> Option<PeerCapabilities> {
     match message {
+        InternalMessage::Fence(fence) if fence.log == ReplicaLog::Counters => {
+            Some(PeerCapabilities::FENCE.union(PeerCapabilities::CACHE_FENCE))
+        }
         InternalMessage::Fence(_) => Some(PeerCapabilities::FENCE),
+        InternalMessage::ReplicateFetch(fetch) if fetch.log == ReplicaLog::Counters => {
+            Some(PeerCapabilities::TAIL_FETCH.union(PeerCapabilities::CACHE_FENCE))
+        }
         InternalMessage::ReplicateFetch(_) => Some(PeerCapabilities::TAIL_FETCH),
         _ => None,
     }

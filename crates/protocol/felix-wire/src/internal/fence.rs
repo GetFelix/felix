@@ -36,6 +36,11 @@ impl PeerCapabilities {
     ///
     /// [`ForwardPublishOk::offsets`]: super::ForwardPublishOk::offsets
     pub const FORWARD_OFFSETS: Self = Self(1 << 3);
+    /// Answers [`Fence`] and [`ReplicateFetch`] for a cache shard's counter
+    /// log ([`ReplicaLog::Counters`]), and reads cache and counter batches
+    /// labelled with their generations. A promoted cache shard is fenced only
+    /// when every replica offers it.
+    pub const CACHE_FENCE: Self = Self(1 << 4);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
@@ -61,9 +66,11 @@ impl PeerCapabilities {
 /// The replica persists the generation before it answers, so the promise
 /// survives a restart. `log` names the shard's own log, `Stream` or `Cache`;
 /// the cursor, dead-letter and counter logs belong to the shard and are
-/// fenced with it.
+/// fenced with it. A promoted cache leader also fences `Counters`, to learn
+/// where each replica's counter log ends.
 ///
-/// Sent only to a peer that advertised [`PeerCapabilities::FENCE`].
+/// Sent only to a peer that advertised [`PeerCapabilities::FENCE`], and for
+/// `Counters` only to one that advertised [`PeerCapabilities::CACHE_FENCE`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fence {
     pub correlation_id: u64,
@@ -93,7 +100,8 @@ pub struct FenceOk {
 /// `max_bytes` of them, and none past the replica's end. Only a leader at the
 /// generation the replica last accepted is answered: a fenced replica's log
 /// is not for an older leader to read. Sent only to a peer that advertised
-/// [`PeerCapabilities::TAIL_FETCH`].
+/// [`PeerCapabilities::TAIL_FETCH`], and for `Counters` only to one that
+/// advertised [`PeerCapabilities::CACHE_FENCE`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicateFetch {
     pub correlation_id: u64,
