@@ -93,6 +93,7 @@ async fn stage_without_committing(
         key: key.to_string(),
         value: Bytes::copy_from_slice(value),
         expires_at_millis: 0,
+        version: None,
     };
     let pending = state
         .log

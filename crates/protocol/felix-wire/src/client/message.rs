@@ -8,8 +8,8 @@ mod base64_serde;
 mod fields;
 
 pub use fields::{
-    AckMode, BrokerEndpoint, CursorErrorReason, GroupRecord, PublishRefusalReason, ShardKind,
-    ShardOwner, StartPosition, StateChange,
+    AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, GroupRecord, PublishRefusalReason,
+    ShardKind, ShardOwner, StartPosition, StateChange,
 };
 
 use bytes::Bytes;
@@ -556,9 +556,53 @@ pub enum Message {
         value: Option<Bytes>,
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u64>,
+        /// The value's version, for a conditional write to compare against.
+        /// Only on a get's answer to a client that offered
+        /// `FEATURE_CACHE_CONDITIONAL`, and only on a hit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
     },
     /// Cache write response with request id.
     CacheOk { request_id: u64 },
+    /// Store a value only if the key's current entry meets `condition`;
+    /// answered with `CacheConditionResult`.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_CACHE_CONDITIONAL`. The
+    /// check and the write are atomic on the key's owner.
+    CachePutIf {
+        tenant_id: String,
+        namespace: String,
+        cache: String,
+        key: String,
+        #[serde(with = "crate::client::message::base64_serde::base64_bytes_bytes")]
+        value: Bytes,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl_ms: Option<u64>,
+        condition: CacheCondition,
+        request_id: u64,
+    },
+    /// Remove a key only if its current version is `version`; answered with
+    /// `CacheConditionResult`. Sent only to a broker that advertised
+    /// `FEATURE_CACHE_CONDITIONAL`.
+    CacheDeleteIf {
+        tenant_id: String,
+        namespace: String,
+        cache: String,
+        key: String,
+        version: u64,
+        request_id: u64,
+    },
+    /// The answer to `CachePutIf` or `CacheDeleteIf`.
+    ///
+    /// `applied` says whether the write was made. After an applied put,
+    /// `version` is the version it wrote; otherwise it is the key's current
+    /// version, absent when the key has no live entry.
+    CacheConditionResult {
+        applied: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+        request_id: u64,
+    },
     /// Watch a cache key or key prefix for changes; answered with
     /// `CacheWatchStarted` and a uni event stream carrying `CacheEvent`s.
     ///

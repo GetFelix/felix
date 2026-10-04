@@ -1076,3 +1076,65 @@ async fn a_group_is_created_moved_described_and_deleted() -> Result<()> {
     running.stop().await;
     Ok(())
 }
+
+/// **A lease taken with a conditional put holds across a restart.** The client
+/// reads a version, swaps on it, and the version it was given is still the
+/// one the broker compares against after the log is replayed.
+#[tokio::test]
+async fn a_conditional_put_and_its_version_survive_a_restart() -> Result<()> {
+    use felix_client::CacheCondition;
+
+    let dir = tempfile::tempdir()?;
+    let running = start(dir.path()).await?;
+    let client = running.client().await?;
+    let taken = client
+        .cache_put_if(
+            "t1",
+            "default",
+            CACHE,
+            "lease:7",
+            b"worker-1".to_vec().into(),
+            None,
+            CacheCondition::Absent,
+        )
+        .await?;
+    assert!(taken.applied);
+    let version = taken.version.expect("an applied put has a version");
+
+    let contended = client
+        .cache_put_if(
+            "t1",
+            "default",
+            CACHE,
+            "lease:7",
+            b"worker-2".to_vec().into(),
+            None,
+            CacheCondition::Absent,
+        )
+        .await?;
+    assert!(!contended.applied, "a second taker won the same lease");
+    assert_eq!(contended.version, Some(version));
+    drop(client);
+    running.stop().await;
+
+    let restarted = start(dir.path()).await?;
+    let client = restarted.client().await?;
+    let found = client
+        .cache_get_versioned("t1", "default", CACHE, "lease:7")
+        .await?
+        .expect("the lease is still held");
+    assert_eq!(found.value.as_ref(), b"worker-1");
+    assert_eq!(found.version, version);
+
+    let released = client
+        .cache_delete_if("t1", "default", CACHE, "lease:7", version)
+        .await?;
+    assert!(released.applied);
+    assert_eq!(
+        client.cache_get("t1", "default", CACHE, "lease:7").await?,
+        None
+    );
+    drop(client);
+    restarted.stop().await;
+    Ok(())
+}

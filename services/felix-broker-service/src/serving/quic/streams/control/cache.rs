@@ -245,7 +245,11 @@ pub(super) async fn cache_get(
         return Ok(Step::Next);
     }
     let lookup_start = t_now_if(sample);
-    let read = crate::serving::cache_routing::apply_cache_op(
+    // Only a client that offered the bit is sent a version, so any other
+    // client's answer is byte-identical to what it always was.
+    let versioned =
+        felix_wire::supports_feature(session.peer_features, felix_wire::FEATURE_CACHE_CONDITIONAL);
+    let read = crate::serving::cache_routing::apply_cache_request(
         broker,
         (publish_ctx.marks.as_deref(), publish_ctx.quorum_timeout),
         publish_ctx.ingress.as_deref(),
@@ -258,15 +262,22 @@ pub(super) async fn cache_get(
         &namespace,
         &cache,
         &key,
-        crate::serving::forward::CacheRequest::Get,
+        if versioned {
+            crate::serving::forward::CacheRequest::GetVersioned
+        } else {
+            crate::serving::forward::CacheRequest::Get
+        },
     )
     .await;
     if let Some(start) = lookup_start {
         let lookup_ns = start.elapsed().as_nanos() as u64;
         timings::record_cache_lookup_ns(lookup_ns);
     }
-    let value = match read {
-        Ok(value) => value,
+    let (value, version) = match read {
+        Ok(answer) => (
+            answer.value,
+            answer.outcome.and_then(|outcome| outcome.version),
+        ),
         Err(reason) => {
             // A read this broker cannot route is an error, never an
             // empty answer: reporting a miss would let a client
@@ -309,6 +320,7 @@ pub(super) async fn cache_get(
                 key,
                 value,
                 request_id,
+                version,
             }),
         )
         .await,
@@ -449,6 +461,7 @@ pub(super) async fn cache_delete(
                 key,
                 value,
                 request_id,
+                version: None,
             }),
         )
         .await,
@@ -460,6 +473,114 @@ pub(super) async fn cache_delete(
     if request_id.is_none() {
         return Ok(Step::Close(true));
     }
+    Ok(Step::Next)
+}
+
+/// A conditional put or delete, as the control stream carries it.
+pub(super) struct ConditionalRequest {
+    pub(super) tenant_id: String,
+    pub(super) namespace: String,
+    pub(super) cache: String,
+    pub(super) key: String,
+    pub(super) request_id: u64,
+    pub(super) request: crate::serving::forward::CacheRequest,
+}
+
+/// `cache_put_if` and `cache_delete_if`: both are writes, authorized as one,
+/// and both answer with `cache_condition_result`.
+pub(super) async fn cache_conditional(
+    cx: &Ctx<'_>,
+    session: &mut Session,
+    request: ConditionalRequest,
+) -> Result<Step> {
+    let Ctx {
+        broker,
+        publish_ctx,
+        authz_ctx,
+        out_ack_tx,
+        out_ack_depth,
+        ack_throttle_tx,
+        ack_timeout_state,
+        cancel_tx,
+        ..
+    } = *cx;
+    let ConditionalRequest {
+        tenant_id,
+        namespace,
+        cache,
+        key,
+        request_id,
+        request,
+    } = request;
+    if !authorize_cache(
+        session.auth_ctx.as_ref(),
+        &tenant_id,
+        Action::CacheWrite,
+        &namespace,
+        &cache,
+        authz_ctx,
+    )
+    .await?
+    {
+        return Ok(Step::Close(false));
+    }
+    let answer = if !broker.cache_exists(&tenant_id, &namespace, &cache).await {
+        ClientError::not_found(format!(
+            "cache scope not found: {tenant_id}/{namespace}/{cache}"
+        ))
+        .into_message()
+    } else {
+        let what = match request {
+            crate::serving::forward::CacheRequest::DeleteIf { .. } => "cache delete_if",
+            _ => "cache put_if",
+        };
+        let applied = crate::serving::cache_routing::apply_cache_request(
+            broker,
+            (publish_ctx.marks.as_deref(), publish_ctx.quorum_timeout),
+            publish_ctx.ingress.as_deref(),
+            publish_ctx.peers.as_deref(),
+            session
+                .auth_ctx
+                .as_ref()
+                .map_or("", |ctx| ctx.token.as_str()),
+            &tenant_id,
+            &namespace,
+            &cache,
+            &key,
+            request,
+        )
+        .await;
+        match applied {
+            Ok(crate::serving::cache_routing::CacheAnswer {
+                outcome: Some(outcome),
+                ..
+            }) => Message::CacheConditionResult {
+                applied: outcome.applied,
+                version: outcome.version,
+                request_id,
+            },
+            Ok(_) => {
+                ClientError::internal(format!("{what} answered without an outcome")).into_message()
+            }
+            Err(reason) => ClientError::from_anyhow(&reason)
+                .prefixed(&format!("{what} not served"))
+                .into_message(),
+        }
+    };
+    handle_ack_enqueue_result(
+        send_outgoing_critical(
+            out_ack_tx,
+            out_ack_depth,
+            "felix_broker_out_ack_depth",
+            ack_throttle_tx,
+            Outgoing::CacheMessage(answer),
+        )
+        .await,
+        ack_timeout_state,
+        ack_throttle_tx,
+        cancel_tx,
+    )
+    .await?;
     Ok(Step::Next)
 }
 

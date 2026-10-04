@@ -7,6 +7,7 @@ mod basics;
 mod closing;
 mod compaction;
 mod concurrency;
+mod conditional;
 mod expiry;
 mod legacy_swap;
 mod observer;

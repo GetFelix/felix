@@ -184,7 +184,7 @@ async fn a_refreshed_entry_is_not_expired() {
         .unwrap();
 
     let deleted = cache
-        .delete_entry(T, NS, C, 0, "k", Some(found_due_at))
+        .delete_entry(T, NS, C, 0, "k", DeleteWhen::Expired(found_due_at))
         .await
         .unwrap();
     assert!(!deleted.written);

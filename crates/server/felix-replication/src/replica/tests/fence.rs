@@ -439,6 +439,7 @@ fn cache_put(key: &str, value: &str) -> String {
         key: key.to_string(),
         value: Bytes::copy_from_slice(value.as_bytes()),
         expires_at_millis: 0,
+        version: None,
     };
     String::from_utf8(op.encode().to_vec()).expect("an ascii put encodes as utf8")
 }

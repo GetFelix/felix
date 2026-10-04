@@ -28,8 +28,9 @@ use felix_authz::{
 use felix_broker::Broker;
 use felix_router::{Resolution, ShardRouter};
 use felix_wire::internal::{
-    CacheOpKind, ErrorCode, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardPublish,
-    ForwardPublishError, ForwardPublishOk, InternalMessage, NotLeader,
+    CacheOpKind, ErrorCode, ForwardCacheCondition, ForwardCacheError, ForwardCacheOk,
+    ForwardCacheOp, ForwardCacheOutcome, ForwardPublish, ForwardPublishError, ForwardPublishOk,
+    InternalMessage, NotLeader,
 };
 
 use crate::serving::auth::BrokerAuth;
@@ -272,8 +273,8 @@ impl ForwardingHandler {
         } else {
             None
         };
-        let value = match op.op {
-            CacheOpKind::Put => {
+        let answered = match (op.op, op.condition) {
+            (CacheOpKind::Put, None) => {
                 let ttl = (op.ttl_ms > 0).then(|| std::time::Duration::from_millis(op.ttl_ms));
                 cache
                     .put(
@@ -286,39 +287,102 @@ impl ForwardingHandler {
                         ttl,
                     )
                     .await
-                    .map(|()| None)
+                    .map(|()| (None, None))
             }
-            CacheOpKind::Get => {
+            (CacheOpKind::Get, None) => cache
+                .get(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    &op.key,
+                )
+                .await
+                .map(|value| (value, None)),
+            (CacheOpKind::Delete, None) => cache
+                .delete(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    &op.key,
+                )
+                .await
+                .map(|value| (value, None)),
+            (
+                CacheOpKind::Put,
+                Some(
+                    condition @ (ForwardCacheCondition::Absent | ForwardCacheCondition::Version(_)),
+                ),
+            ) => {
+                let ttl = (op.ttl_ms > 0).then(|| std::time::Duration::from_millis(op.ttl_ms));
+                let condition = match condition {
+                    ForwardCacheCondition::Version(version) => {
+                        felix_storage::CacheCondition::Version(version)
+                    }
+                    _ => felix_storage::CacheCondition::Absent,
+                };
                 cache
-                    .get(
+                    .put_if(
                         &key.tenant_id,
                         &key.namespace,
                         &key.stream,
                         key.shard,
                         &op.key,
+                        op.value,
+                        ttl,
+                        condition,
                     )
                     .await
+                    .map(|written| (None, Some(outcome(written))))
             }
-            CacheOpKind::Delete => {
-                cache
-                    .delete(
-                        &key.tenant_id,
-                        &key.namespace,
-                        &key.stream,
-                        key.shard,
-                        &op.key,
+            (CacheOpKind::Delete, Some(ForwardCacheCondition::Version(version))) => cache
+                .delete_if(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    &op.key,
+                    version,
+                )
+                .await
+                .map(|written| (None, Some(outcome(written)))),
+            (CacheOpKind::Get, Some(ForwardCacheCondition::Unconditional)) => cache
+                .get_versioned(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    &op.key,
+                )
+                .await
+                .map(|found| {
+                    let version = found.as_ref().map(|found| found.version);
+                    (
+                        found.map(|found| found.value),
+                        Some(ForwardCacheOutcome {
+                            applied: true,
+                            version,
+                        }),
                     )
-                    .await
-            }
-            CacheOpKind::CounterAdd | CacheOpKind::CounterGet => {
+                }),
+            (CacheOpKind::CounterAdd | CacheOpKind::CounterGet, None) => {
                 return self.apply_counter_op(op, &key).await;
+            }
+            (kind, Some(condition)) => {
+                metrics::record_served(metrics::OUTCOME_ERROR);
+                return InternalMessage::ForwardCacheError(ForwardCacheError {
+                    correlation_id,
+                    code: ErrorCode::Malformed,
+                    detail: format!("{kind:?} cannot carry {condition:?}"),
+                });
             }
         };
         drop(fenced);
         // Refused by the store: never answered as a success, or the quorum
         // wait would pass on the old tail and ack a put no read can see.
-        let value = match value {
-            Ok(value) => value,
+        let (value, outcome) = match answered {
+            Ok(answered) => answered,
             Err(err) => {
                 metrics::record_served(metrics::OUTCOME_ERROR);
                 return InternalMessage::ForwardCacheError(ForwardCacheError {
@@ -367,6 +431,7 @@ impl ForwardingHandler {
         InternalMessage::ForwardCacheOk(ForwardCacheOk {
             correlation_id,
             value,
+            outcome,
         })
     }
 
@@ -604,6 +669,7 @@ impl ForwardingHandler {
                 InternalMessage::ForwardCacheOk(ForwardCacheOk {
                     correlation_id,
                     value: sum.map(felix_storage::counter_log::encode_sum),
+                    outcome: None,
                 })
             }
             Err((code, detail)) => InternalMessage::ForwardCacheError(ForwardCacheError {
@@ -696,6 +762,13 @@ fn error(correlation_id: u64, code: ErrorCode, detail: String) -> InternalMessag
         code,
         detail,
     })
+}
+
+fn outcome(written: felix_storage::ConditionalWrite) -> ForwardCacheOutcome {
+    ForwardCacheOutcome {
+        applied: written.applied,
+        version: written.version,
+    }
 }
 
 #[cfg(test)]

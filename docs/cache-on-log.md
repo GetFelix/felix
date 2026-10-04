@@ -69,12 +69,19 @@ this is a durable format and a reader years from now has only these bytes.
 - `key_len` bounds the key so the value needs no length of its own. It is
   simply the rest of the record, which the segment framing already delimits.
 
+A put written by compaction is version `2`: the same fields, with a `u64`
+entry version between `key_len` and the key. Every other record is version
+`1`, so a client's write is byte-for-byte what it always was. See
+[conditional writes](#conditional-writes) for why the copy carries it.
+
 An unknown version is refused rather than guessed at, for the same reason an
-unknown frame flag is: a misread record is worse than an unreadable one.
+unknown frame flag is: a misread record is worse than an unreadable one. That
+cuts both ways: a broker that predates version `2` refuses a log compaction has
+copied into, so a node cannot be downgraded past this once it has compacted.
 
 ## The index is derived, never trusted
 
-`key -> (offset, expires_at)`, held in memory and rebuilt by replaying the log
+`key -> (offset, version, expires_at)`, held in memory and rebuilt by replaying the log
 when the cache is opened. This is the same rule the segment indexes follow, and
 for the same reason: anything that can be recomputed from the log must be,
 because then it can never be stale in a way that matters.
@@ -93,9 +100,9 @@ entry is reported as absent the moment it lapses. Separately, the shard's
 leader writes a delete for each entry whose TTL has passed
 (`LogCache::expire_due`), through the same fence a client's write takes and
 replicated like one. That delete is what tells a watch the entry is gone, and
-lets compaction drop it. It is staged under the lock a put stages under and
-checks the expiry again there, so a put that refreshed the key after it was
-found due keeps its value. An in-memory cache still expires lazily only.
+lets compaction drop it. It checks the expiry again where it is staged, after
+any write to the key that is staged but not yet applied has applied, so a put
+that refreshed the key after it was found due keeps its value. An in-memory cache still expires lazily only.
 
 The leader's expiry pass runs once a second and writes at most 1024 deletes per
 shard per pass, so under a mass expiry the deletes lag the TTLs by as many
@@ -114,7 +121,7 @@ Compaction copies the live set (the newest surviving record for each key that
 is neither deleted nor expired) forward to the tail, then deletes the sealed
 segments that held only superseded records. **Records are never rewritten**,
 which is the invariant everything in the storage layer rests on: a copy is a new
-put of the same value, and whole segments are dropped from the head, the way
+put of the same value, carrying the original's version, and whole segments are dropped from the head, the way
 retention drops them.
 
 It runs when the log has grown past a multiple of its live bytes, so the cost is
@@ -181,6 +188,42 @@ rather than returning an error.
 The feature is advertised by a standalone broker as well as a clustered one.
 Only the cluster-shaped features, topology and redirect, depend on there being
 a cluster to describe.
+
+## Conditional writes
+
+`cache_put_if` writes only if the key is absent or at a given version, and
+`cache_delete_if` deletes only at a given version. Together they are what a
+lease, an idempotency key, or a read-modify-write needs: take the key if
+nobody has it, renew or edit it only if it is still the value you read, and
+release it only if it is still yours.
+
+**A version is the offset of the put that wrote the value.** It is unique in
+the shard and only grows, so a key deleted and written again never gets a
+version it had before, and seeing the same version twice means nothing was
+written in between. Offsets alone would not survive compaction, which copies a
+live value to a new offset, so a copy carries the original version in its
+record (version `2` above) and replay keeps it. A record of version `1` is its
+own offset's version. The in-memory cache keeps one counter for the whole
+store instead.
+
+**The check and the write are one step.** The condition is checked where the
+write is staged, under the shard lock that claims its offset. That alone is not
+enough: the index only learns of a write after its fsync, so a put staged and
+waiting on durability is invisible to it, and two `absent` puts racing on one
+key could both find it absent. So a conditional write first waits until no
+write to its key is staged and unapplied, then checks the index and stages
+under the same lock hold. A write staged after that check lands after it in
+the log, and replay applies them in that order.
+
+An expired entry counts as absent. A refusal reports the key's current version,
+so a caller can retry against it without a read. The answer waits on the same
+durability and, for a quorum cache, the same replication as a plain write,
+applied or not: the version a refusal reports must be one a failover keeps.
+
+It is negotiated (`FEATURE_CACHE_CONDITIONAL`). A forwarded conditional write
+travels as its own internal kind, which an owner that predates it refuses
+rather than serving as an unconditional put; see
+[internal-protocol.md](internal-protocol.md#forwarded-cache-operation).
 
 ## Watch
 

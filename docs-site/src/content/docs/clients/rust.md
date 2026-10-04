@@ -900,6 +900,38 @@ Needs a broker advertising `FEATURE_CACHE_DELETE`. The client returns an error
 rather than probing, because a broker that does not advertise
 `FEATURE_UNSUPPORTED` ends its control loop on an unrecognised message type.
 
+### Conditional writes
+
+```rust
+use felix_client::CacheCondition;
+
+// Read, change, and write back only if nobody wrote in between.
+loop {
+    let Some(current) = client
+        .cache_get_versioned("acme", "prod", "config", "endpoints")
+        .await?
+    else {
+        break;
+    };
+    let edited = edit(&current.value);
+    let result = client
+        .cache_put_if("acme", "prod", "config", "endpoints", edited, None,
+            CacheCondition::Version(current.version))
+        .await?;
+    if result.applied {
+        break;
+    }
+}
+```
+
+`CacheCondition::Absent` writes only if the key has no live entry, which is
+how to take a lease or claim an idempotency key. `cache_delete_if` removes a
+key only at a given version. A refusal is `applied: false` with the key's
+current version, not an error. Needs a broker advertising
+`FEATURE_CACHE_CONDITIONAL`; `ClusterClient` has the same three calls and never
+resends a conditional write after a lost answer. See
+[Conditional writes](/features/cache/#9-conditional-writes).
+
 ### Watch
 
 Subscribe to changes for one key or key prefix. Each change carries its
@@ -1485,6 +1517,7 @@ anything else from a measurement; see
 | Idempotent publish | `idempotent_producer()` | Safe resend after `OutcomeUnknown` |
 | Subscribe | `subscribe()` | Event consumption |
 | Cache put / get / delete | `cache_put()`, `cache_get()`, `cache_delete()` | Key-value with TTL |
+| Conditional cache writes | `cache_put_if()`, `cache_delete_if()`, `cache_get_versioned()` | Leases, idempotency keys, compare-and-set |
 | Cache watch | `watch_cache()`, `watch_cache_retained()` | Follow changes to a key or prefix |
 | Counters | `counter_add()`, `counter_get()` | Durable counters |
 | Consumer groups | `group_poll()`, `group_ack()`, `group_nack()` | Work queues |

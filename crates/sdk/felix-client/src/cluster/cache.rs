@@ -15,7 +15,9 @@ use anyhow::Result;
 use bytes::Bytes;
 
 use super::{Attempt, ClusterClient, Next, StreamKey, next_step, wants_reconnect};
+use crate::cache::{CacheConditionResult, VersionedValue};
 use crate::client::Client;
+use felix_wire::CacheCondition;
 
 impl ClusterClient {
     /// Store `value` under `key`, expiring after `ttl_ms` when one is given.
@@ -89,6 +91,85 @@ impl ClusterClient {
             key,
             false,
             |client| async move { client.cache_delete(tenant_id, namespace, cache, key).await },
+        )
+        .await
+    }
+
+    /// The value under `key` with its version. See
+    /// [`Client::cache_get_versioned`]. Routed and retried like
+    /// [`Self::cache_get`].
+    pub async fn cache_get_versioned(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        key: &str,
+    ) -> Result<Option<VersionedValue>> {
+        self.cache_request(
+            tenant_id,
+            namespace,
+            cache,
+            key,
+            true,
+            |client| async move {
+                client
+                    .cache_get_versioned(tenant_id, namespace, cache, key)
+                    .await
+            },
+        )
+        .await
+    }
+
+    /// Store `value` only if the key's entry meets `condition`. See
+    /// [`Client::cache_put_if`].
+    ///
+    /// Routed and retried like [`Self::cache_put`]: never sent twice by this
+    /// call, since a retry of a put that applied would be refused by the
+    /// version it wrote.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn cache_put_if(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        key: &str,
+        value: Bytes,
+        ttl_ms: Option<u64>,
+        condition: CacheCondition,
+    ) -> Result<CacheConditionResult> {
+        self.cache_request(tenant_id, namespace, cache, key, false, |client| {
+            let value = value.clone();
+            async move {
+                client
+                    .cache_put_if(tenant_id, namespace, cache, key, value, ttl_ms, condition)
+                    .await
+            }
+        })
+        .await
+    }
+
+    /// Remove `key` only if its version is `version`. See
+    /// [`Client::cache_delete_if`]. Routed and retried like
+    /// [`Self::cache_put_if`].
+    pub async fn cache_delete_if(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        key: &str,
+        version: u64,
+    ) -> Result<CacheConditionResult> {
+        self.cache_request(
+            tenant_id,
+            namespace,
+            cache,
+            key,
+            false,
+            |client| async move {
+                client
+                    .cache_delete_if(tenant_id, namespace, cache, key, version)
+                    .await
+            },
         )
         .await
     }

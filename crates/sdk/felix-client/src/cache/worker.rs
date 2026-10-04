@@ -15,6 +15,7 @@ use quinn::{RecvStream, SendStream};
 use tokio::sync::{mpsc, oneshot};
 use tracing::debug;
 
+use super::{CacheConditionResult, VersionedValue};
 use crate::frame_io::{read_frame_cache_timed_into_with_limit, write_frame_parts};
 #[cfg(feature = "telemetry")]
 use crate::timings;
@@ -45,6 +46,18 @@ pub(crate) enum CacheRequest {
         request_id: u64,
         message: Message,
         response: oneshot::Sender<Result<Option<i64>>>,
+    },
+    /// A get that wants the value's version too.
+    Versioned {
+        request_id: u64,
+        message: Message,
+        response: oneshot::Sender<Result<Option<VersionedValue>>>,
+    },
+    /// A conditional put or delete, answered with `CacheConditionResult`.
+    Conditional {
+        request_id: u64,
+        message: Message,
+        response: oneshot::Sender<Result<CacheConditionResult>>,
     },
 }
 
@@ -157,8 +170,64 @@ async fn handle_cache_request(
             )
             .await;
             match result {
-                Ok(value) => {
+                Ok((value, _)) => {
                     let _ = response.send(Ok(value));
+                    Ok(())
+                }
+                Err(err) => {
+                    let _ = response.send(Err(err));
+                    Err(anyhow::anyhow!("cache stream failed"))
+                }
+            }
+        }
+        CacheRequest::Versioned {
+            request_id,
+            message,
+            response,
+        } => {
+            let result = cache_round_trip(
+                send,
+                recv,
+                message,
+                sample,
+                request_id,
+                frame_scratch,
+                max_frame_bytes,
+            )
+            .await;
+            let failed = result.is_err();
+            let _ = response.send(result.and_then(|(value, version)| match (value, version) {
+                (Some(value), Some(version)) => Ok(Some(VersionedValue { value, version })),
+                (None, _) => Ok(None),
+                // A broker reaching an owner that predates versions answers
+                // the read without one.
+                (Some(_), None) => Err(anyhow::anyhow!(
+                    "the broker answered without a version: the key's owner does not keep them"
+                )),
+            }));
+            if failed {
+                return Err(anyhow::anyhow!("cache stream failed"));
+            }
+            Ok(())
+        }
+        CacheRequest::Conditional {
+            request_id,
+            message,
+            response,
+        } => {
+            match conditional_round_trip(
+                send,
+                recv,
+                message,
+                sample,
+                request_id,
+                frame_scratch,
+                max_frame_bytes,
+            )
+            .await
+            {
+                Ok(answer) => {
+                    let _ = response.send(Ok(answer));
                     Ok(())
                 }
                 Err(err) => {
@@ -204,7 +273,7 @@ async fn cache_round_trip(
     request_id: u64,
     frame_scratch: &mut BytesMut,
     max_frame_bytes: usize,
-) -> Result<Option<Bytes>> {
+) -> Result<(Option<Bytes>, Option<u64>)> {
     // Encode -> write -> read -> decode in one stream round trip.
     let encode_start = crate::telemetry::t_now_if(sample);
     #[cfg(not(feature = "telemetry"))]
@@ -247,7 +316,7 @@ async fn cache_round_trip(
             if resp_id != request_id {
                 return Err(anyhow::anyhow!("cache put request id mismatch"));
             }
-            Ok(None)
+            Ok((None, None))
         }
         Message::Ok => Err(anyhow::anyhow!(
             "cache response missing request id (protocol violation)"
@@ -255,6 +324,7 @@ async fn cache_round_trip(
         Message::CacheValue {
             value,
             request_id: resp_id,
+            version,
             ..
         } => {
             if let Some(resp_id) = resp_id
@@ -262,7 +332,7 @@ async fn cache_round_trip(
             {
                 return Err(anyhow::anyhow!("cache get request id mismatch"));
             }
-            Ok(value)
+            Ok((value, version))
         }
         Message::Error {
             message,
@@ -322,5 +392,51 @@ async fn counter_round_trip(
             detail,
         )),
         other => Err(anyhow::anyhow!("counter response unexpected: {other:?}")),
+    }
+}
+
+/// The conditional-write exchange: a `CacheConditionResult` answer.
+async fn conditional_round_trip(
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    message: Message,
+    sample: bool,
+    request_id: u64,
+    frame_scratch: &mut BytesMut,
+    max_frame_bytes: usize,
+) -> Result<CacheConditionResult> {
+    let frame = message.encode().context("encode message")?;
+    write_frame_parts(send, &frame).await?;
+    let frame =
+        match read_frame_cache_timed_into_with_limit(recv, sample, frame_scratch, max_frame_bytes)
+            .await?
+        {
+            Some(frame) => frame,
+            None => return Err(anyhow::anyhow!("cache response closed")),
+        };
+    match Message::decode(frame).context("decode message")? {
+        Message::CacheConditionResult {
+            applied,
+            version,
+            request_id: resp_id,
+        } => {
+            if resp_id != request_id {
+                return Err(anyhow::anyhow!("cache condition request id mismatch"));
+            }
+            Ok(CacheConditionResult { applied, version })
+        }
+        Message::Error {
+            message,
+            code,
+            retry,
+            detail,
+        } => Err(crate::error::refused(
+            "cache error",
+            message,
+            code,
+            retry,
+            detail,
+        )),
+        other => Err(anyhow::anyhow!("cache response unexpected: {other:?}")),
     }
 }

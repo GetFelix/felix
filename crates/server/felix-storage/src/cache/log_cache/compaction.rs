@@ -3,8 +3,8 @@
 //! A log that only ever grows makes "the cache is a log" a slow leak. A pass
 //! seals the active segment, which fixes a cut: every record below it is in a
 //! sealed segment. It then copies each live record below the cut to the tail
-//! as an ordinary put, through the same staging and commit order as a write,
-//! and finally deletes the sealed segments below the cut.
+//! as a put that keeps its version, through the same staging and commit order
+//! as a write, and finally deletes the sealed segments below the cut.
 //!
 //! Nothing is edited in place, and a crash at any point leaves a log whose
 //! replay is the same cache: a copy restates a value the log already holds,
@@ -215,6 +215,7 @@ impl CacheShard {
                     key,
                     value,
                     expires_at_millis: entry.expires_at_millis,
+                    version: Some(entry.version),
                 };
                 let payload = op.encode();
                 ops.push((op, payload.len() as u64));

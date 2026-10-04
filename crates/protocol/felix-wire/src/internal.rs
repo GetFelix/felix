@@ -23,8 +23,8 @@ mod replicate;
 pub use error_code::ErrorCode;
 pub use fence::{Fence, FenceOk, PeerCapabilities, ReplicateFetch};
 pub use forward::{
-    AckMode, CacheOpKind, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardPublish,
-    ForwardPublishError, ForwardPublishOk, NotLeader,
+    AckMode, CacheOpKind, ForwardCacheCondition, ForwardCacheError, ForwardCacheOk, ForwardCacheOp,
+    ForwardCacheOutcome, ForwardPublish, ForwardPublishError, ForwardPublishOk, NotLeader,
 };
 pub use handshake::{Hello, HelloOk};
 pub use header::{

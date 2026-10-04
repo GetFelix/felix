@@ -69,7 +69,9 @@ mod tls;
 pub mod timings;
 
 pub use auth::{RefreshingToken, TokenFuture, TokenProvider};
-pub use cache::{CacheChange, CacheWatch, CacheWatchFilter, CacheWatchItem};
+pub use cache::{
+    CacheChange, CacheConditionResult, CacheWatch, CacheWatchFilter, CacheWatchItem, VersionedValue,
+};
 pub use client::{Client, GroupInfo, GroupMember, GroupPosition};
 pub use cluster::{
     ClusterCacheWatch, ClusterClient, ClusterSubscription, ReconnectPolicy, ShardEvent,
@@ -93,6 +95,6 @@ pub use tls::{
 
 pub use felix_wire::routing::ShardRouting;
 pub use felix_wire::{
-    AckMode, BrokerEndpoint, CursorErrorReason, ErrorCode, ErrorDetail, PublishRefusalReason,
-    RetryClass, ShardKind, ShardOwner, StartPosition,
+    AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, ErrorCode, ErrorDetail,
+    PublishRefusalReason, RetryClass, ShardKind, ShardOwner, StartPosition,
 };

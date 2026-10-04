@@ -181,3 +181,16 @@ pub enum StateChange {
         key: String,
     },
 }
+
+/// What a `cache_put_if` requires of the key's current entry.
+///
+/// JSON is `"absent"` or `{"version": n}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheCondition {
+    /// The key has no live entry: never written, deleted, or expired.
+    Absent,
+    /// The key's live entry has exactly this version, as a `cache_value` or a
+    /// `cache_condition_result` reported it.
+    Version(u64),
+}

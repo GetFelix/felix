@@ -173,6 +173,7 @@ async fn the_index_catches_up_with_records_appended_behind_it() {
         key: "shipped".to_string(),
         value: Bytes::from_static(b"2"),
         expires_at_millis: 0,
+        version: None,
     }
     .encode();
     log.append(&[AppendRecord {
@@ -215,6 +216,7 @@ async fn the_index_steps_over_a_generation_start_record() {
         key: "shipped".to_string(),
         value: Bytes::from_static(b"2"),
         expires_at_millis: 0,
+        version: None,
     }
     .encode();
     log.append(&[
@@ -273,6 +275,7 @@ async fn a_forgotten_index_reads_the_log_as_it_now_is() {
         key: "other".to_string(),
         value: Bytes::from_static(b"x"),
         expires_at_millis: 0,
+        version: None,
     };
     log.append(&[AppendRecord {
         payload: other.encode(),

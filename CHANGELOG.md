@@ -54,6 +54,17 @@ for what the current release guarantees.
   the lease. Upgrade the control plane before finalizing it. Model-checked in
   `FelixShardFencedCache.cfg`. (#933)
 
+- Conditional cache writes. `cache_put_if` stores a value only if the key is
+  absent or at a given version, and `cache_delete_if` removes it only at a
+  given version; both answer `cache_condition_result` with whether the write
+  was made and the key's version. A get's `cache_value` carries the version
+  for a client that offered the bit. The condition check and the write are
+  atomic per key, including against a write to the key still waiting on its
+  fsync. Negotiated as `FEATURE_CACHE_CONDITIONAL` (`0x200_0000`); forwarded
+  between brokers as a new internal kind that an older owner refuses rather
+  than applying unconditionally. felix-client and `ClusterClient` gain
+  `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
+
 ### Changed
 - Breaking, Rust API: `Broker::claim_publish`, `publish_batch_with_outcome`,
   `claim_batch_idempotent` and `commit_to_handle` take the publisher;
@@ -61,6 +72,18 @@ for what the current release guarantees.
   `LogRecord` have a `publisher` field; `StreamLog`'s append methods and
   `replication::apply` take per-record publishers; `ReplicateRecords` has
   `publishers` and `batch_checksum` covers them.
+- A compacted cache log can no longer be read by an older broker. Compaction
+  now writes each copied value as a version 2 cache record, which carries the
+  value's original version; a broker from before this change refuses those
+  records as corruption, so a node cannot be downgraded once it has compacted
+  a cache. Records a client writes are unchanged. (#976)
+- `felix_storage::StorageApi` has three new required methods (`put_if`,
+  `delete_if`, `get_versioned`), and `CacheOp::Put` a `version` field. (#976)
+
+### Fixed
+- A log-backed cache's expiry could delete a value a put had just refreshed,
+  when the put was waiting on its fsync as the expiry was written. The expiry
+  now waits for a write to the key in flight before it checks. (#976)
 
 ### Fixed
 - A cache follower that dropped a divergent suffix of its cache log, or of its

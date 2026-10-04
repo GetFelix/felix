@@ -388,7 +388,55 @@ increments are not exactly-once. An application that cannot tolerate a
 double-count keeps its own idempotency key.
 :::
 
-### 9. Choosing a feature
+### 9. Conditional writes
+
+`cache_put_if` stores a value only if the key is absent or still at the version
+you read, and `cache_delete_if` removes it only at that version. The check and
+the write are one step on the key's owner, so two clients racing for the same
+key cannot both win.
+
+```rust
+use felix_client::CacheCondition;
+
+// Take a lease if nobody holds it.
+let taken = client
+    .cache_put_if("acme", "prod", "leases", "endpoint-7", me.clone(), Some(30_000),
+        CacheCondition::Absent)
+    .await?;
+if !taken.applied {
+    return Ok(()); // someone else holds it; taken.version is theirs
+}
+let mut version = taken.version.expect("an applied put has a version");
+
+// Renew it only if it is still ours.
+let renewed = client
+    .cache_put_if("acme", "prod", "leases", "endpoint-7", me.clone(), Some(30_000),
+        CacheCondition::Version(version))
+    .await?;
+if renewed.applied {
+    version = renewed.version.expect("an applied put has a version");
+}
+
+// Release it only if nobody took it over.
+client.cache_delete_if("acme", "prod", "leases", "endpoint-7", version).await?;
+```
+
+For a read-modify-write, `cache_get_versioned` returns the value with its
+version; write the new value with `CacheCondition::Version` and read again if
+it was refused.
+
+A refusal is an answer, not an error: `applied` is false and `version` is the
+key's current version (`None` when it has none). An expired entry counts as
+absent. A key's version is the log offset of the put that wrote it. It only
+grows and is never reused, and it survives compaction and restarts. The
+answer waits on the same durability and replication as a plain put. Negotiated
+as `FEATURE_CACHE_CONDITIONAL`; both cache backends support it.
+
+A conditional write is never resent by the client after a lost answer: if the
+first one applied, the retry would be refused by the version it wrote. Read
+the key to find out which happened.
+
+### 10. Choosing a feature
 
 Watches, retained delivery and counters all read the same log, so they can be
 combined. This table maps common applications to the feature that fits:
@@ -400,8 +448,9 @@ combined. This table maps common applications to the feature that fits:
 | A read-heavy dashboard over changing state | **Retained watch**, materialized locally | Current values first, then only the changes. No re-fetch loop, and a lag is reported instead of shown as stale data |
 | Rate limiting, quotas, usage metering | **Counter** per principal | Increment-and-read in one round trip against the shard's owner, durable across restart and failover, with no racy get-modify-put |
 | Live tallies (votes, likes, inventory deltas) | **Counter**, read by pollers or fronted by a put | Deltas fold server-side; publish the folded sum into a watched cache key when watchers need push instead of poll |
+| Leases, idempotency keys, config edits | **Conditional writes** | Put-if-absent claims a key once; put-if-version edits only what you read, so concurrent writers cannot overwrite each other |
 
-### 10. Eviction (in-memory only: best-effort)
+### 11. Eviction (in-memory only: best-effort)
 
 The in-memory backend evicts opportunistically under memory pressure. There is no
 guaranteed LRU or LFU, so don't rely on a specific eviction order. The
@@ -519,6 +568,47 @@ async fn cache_delete(
 - `Ok(Some(value))`: The key was there; this is what was removed
 - `Ok(None)`: The key was not there (this is not an error)
 - `Err(e)`: Operation failed, or the broker predates `FEATURE_CACHE_DELETE`
+
+### cache_put_if / cache_delete_if / cache_get_versioned
+
+Conditional writes; see [Conditional writes](#9-conditional-writes).
+
+**Signatures**:
+
+```rust
+async fn cache_put_if(
+    &self,
+    tenant_id: &str,
+    namespace: &str,
+    cache: &str,
+    key: &str,
+    value: Bytes,
+    ttl_ms: Option<u64>,
+    condition: CacheCondition,  // Absent or Version(u64)
+) -> Result<CacheConditionResult>
+
+async fn cache_delete_if(
+    &self,
+    tenant_id: &str,
+    namespace: &str,
+    cache: &str,
+    key: &str,
+    version: u64,
+) -> Result<CacheConditionResult>
+
+async fn cache_get_versioned(
+    &self,
+    tenant_id: &str,
+    namespace: &str,
+    cache: &str,
+    key: &str,
+) -> Result<Option<VersionedValue>>  // value and version
+```
+
+**Returns**: `CacheConditionResult { applied, version }`. Applied, `version` is
+the one the put wrote; refused, it is the key's current version, or `None` when
+the key has none. `Err(e)` when the operation failed, or the broker predates
+`FEATURE_CACHE_CONDITIONAL`.
 
 ### watch_cache
 
@@ -742,28 +832,11 @@ cache_send_window: 268435456         # send window
 
 ### Current limitations
 
-1. **No compare-and-swap**: the one atomic update is a counter's `counter_add`
-2. **No multi-key operations**: no transactions
-3. **Best-effort eviction** in the in-memory backend: no guaranteed LRU or LFU. The log-backed cache does not evict at all; it compacts.
-4. **A prefix watch reads one shard**: keys sharing a prefix hash to different shards, so `Client` needs one `watch_cache_shard` per shard. `ClusterClient::watch_cache_sharded` opens and merges them for you, as `subscribe_sharded` does for streams
+1. **No multi-key operations**: no transactions. A conditional write checks one key
+2. **Best-effort eviction** in the in-memory backend: no guaranteed LRU or LFU. The log-backed cache does not evict at all; it compacts.
+3. **A prefix watch reads one shard**: keys sharing a prefix hash to different shards, so `Client` needs one `watch_cache_shard` per shard. `ClusterClient::watch_cache_sharded` opens and merges them for you, as `subscribe_sharded` does for streams
 
 ### Planned Features
-
-**Atomic operations**:
-
-```rust
-// Compare-and-swap
-client.cache_cas(
-    "locks",
-    "resource-a",
-    expected_value,
-    new_value
-).await?;
-```
-
-Compare-and-swap is not built. Atomic increment is [counters](#8-counters),
-a fold over the log rather than an operation on a cache value, which is why it
-survives failover.
 
 **Multi-key operations**:
 

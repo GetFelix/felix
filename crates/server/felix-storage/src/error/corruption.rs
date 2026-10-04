@@ -228,7 +228,7 @@ impl fmt::Display for CorruptionKind {
             ),
             CorruptionKind::CacheRecordVersion { found, expected } => write!(
                 f,
-                "cache record version {found} is not readable by this build (expects {expected})"
+                "cache record version {found} is not readable by this build (reads up to {expected})"
             ),
             CorruptionKind::CacheRecordOp { found } => {
                 write!(f, "unknown cache record op {found}")

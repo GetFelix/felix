@@ -137,6 +137,7 @@ fn every_message() -> Vec<InternalMessage> {
             value: Bytes::from_static(b"payload"),
             ttl_ms: 30_000,
             credential: String::new(),
+            condition: None,
         }),
         InternalMessage::ForwardCacheOp(ForwardCacheOp {
             correlation_id: 42,
@@ -146,6 +147,7 @@ fn every_message() -> Vec<InternalMessage> {
             value: Bytes::from_static(b"payload"),
             ttl_ms: 30_000,
             credential: "eyJ.token.sig".to_string(),
+            condition: None,
         }),
         InternalMessage::ForwardCacheOp(ForwardCacheOp {
             correlation_id: 42,
@@ -155,14 +157,17 @@ fn every_message() -> Vec<InternalMessage> {
             value: Bytes::new(),
             ttl_ms: 0,
             credential: String::new(),
+            condition: None,
         }),
         InternalMessage::ForwardCacheOk(ForwardCacheOk {
             correlation_id: 42,
             value: Some(Bytes::from_static(b"payload")),
+            outcome: None,
         }),
         InternalMessage::ForwardCacheOk(ForwardCacheOk {
             correlation_id: 42,
             value: None,
+            outcome: None,
         }),
         InternalMessage::ForwardCacheError(ForwardCacheError {
             correlation_id: 42,

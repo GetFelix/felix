@@ -593,6 +593,7 @@ async fn write_replayed_changes(
                     key,
                     value,
                     expires_at_millis,
+                    ..
                 } => Message::CacheEvent {
                     key,
                     value: Some(value),

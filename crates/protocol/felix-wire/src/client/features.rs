@@ -267,6 +267,17 @@ pub const FEATURE_GROUP_PUBLISHER: u32 = 0x0080_0000;
 /// requests has no arm for them.
 pub const FEATURE_GROUP_ADMIN: u32 = 0x0100_0000;
 
+/// The broker answers `cache_put_if` and `cache_delete_if`, and puts a
+/// `version` on a `cache_value` answering a get.
+///
+/// Advertised by a *broker*: these are requests, and an older broker has no
+/// arm for them. A conditional put is a new message rather than a field on
+/// `cache_put` because an older broker ignores unknown fields, and would make
+/// the write unconditionally and report success. Offered by a *client* too:
+/// the version rides `cache_value` only for a client that offered the bit, so
+/// any other client's gets are byte-identical to what they were.
+pub const FEATURE_CACHE_CONDITIONAL: u32 = 0x0200_0000;
+
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -292,7 +303,8 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_SUBSCRIPTION_LAGGED
     | FEATURE_GROUP_SKIPPED
     | FEATURE_GROUP_PUBLISHER
-    | FEATURE_GROUP_ADMIN;
+    | FEATURE_GROUP_ADMIN
+    | FEATURE_CACHE_CONDITIONAL;
 
 /// True if `features` advertises `feature`.
 pub fn supports_feature(features: u32, feature: u32) -> bool {

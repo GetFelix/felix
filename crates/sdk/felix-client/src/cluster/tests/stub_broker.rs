@@ -289,6 +289,7 @@ async fn serve_stream(
                         key,
                         value: Some(bytes::Bytes::from_static(b"stub")),
                         request_id,
+                        version: None,
                     },
                 };
                 write_message(&mut send, answer).await?;
