@@ -675,6 +675,12 @@ In a clustered deployment:
 - Its lease lapses after the control plane's expiry window. From then on it
   refuses writes to `Leader` streams and caches, and ends their readers, since
   another broker may lead those shards by now
+- A `Leader` shard's single writer rests on that lease. A deposed leader
+  suspended past the lease margins, or one whose monotonic clock runs slow
+  against the control plane's, can acknowledge a write its successor never
+  sees. A clock step cannot, since neither side reads a wall clock. A
+  `Quorum` stream with `majority_ack`, or cache with `fenced_caches` as well,
+  acknowledges only what a majority holds, so it is not exposed
 - With `majority_ack` finalized, a replicated `Quorum` stream keeps taking
   writes, acknowledged by its followers. With `lease_free_reads` as well, its
   subscribers, cache watches and consumer groups keep going: they end only

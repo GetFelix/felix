@@ -22,9 +22,18 @@ async fn start(quorum_timeout: Duration) -> Cluster {
 
 /// `nodes` brokers and an RF 3 `Quorum` stream, both features finalized.
 async fn start_nodes(nodes: usize, quorum_timeout: Duration) -> Cluster {
+    start_with(
+        nodes,
+        vec![StreamSpec::quorum(STREAM, 1, 3)],
+        quorum_timeout,
+    )
+    .await
+}
+
+async fn start_with(nodes: usize, streams: Vec<StreamSpec>, quorum_timeout: Duration) -> Cluster {
     let cluster = Cluster::start(ClusterConfig {
         nodes,
-        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
+        streams,
         proxy_links: true,
         broker_env: vec![(
             "FELIX_PUBLISH_QUORUM_TIMEOUT_MS".to_string(),
@@ -159,6 +168,60 @@ async fn acknowledgements_continue_while_the_control_plane_is_partitioned() {
             "{owner} lost {record}, which was acknowledged: it holds {held:?}"
         );
     }
+    cluster.shutdown().await;
+}
+
+/// **A `Leader` stream stays on the lease after the finalize.** Its writes are
+/// acknowledged by the leader alone, so no follower answer can stand in for
+/// the lease: with the control plane gone, the `Quorum` stream beside it keeps
+/// acknowledging and the `Leader` stream refuses, for the lease. See
+/// "`Leader` mode rests on the lease" in `docs/semantics.md`.
+#[serial]
+#[tokio::test]
+async fn a_leader_stream_refuses_writes_on_a_lapsed_lease_after_the_finalize() {
+    const LEADER_STREAM: &str = "audit";
+    let cluster = start_with(
+        3,
+        vec![
+            StreamSpec::quorum(STREAM, 1, 3),
+            StreamSpec::replicated(LEADER_STREAM, 1, 3),
+        ],
+        Duration::from_secs(10),
+    )
+    .await;
+    let quorum_leader = cluster.owner(STREAM).await.expect("owner");
+    let leader = cluster.owner(LEADER_STREAM).await.expect("owner");
+    cluster
+        .publish_via(&leader, LEADER_STREAM, b"before".to_vec())
+        .await
+        .expect("publish with the control plane reachable");
+
+    // Every broker is cut off, so both leaders' leases lapse.
+    partition_control_plane(&cluster, &leader).await;
+    felix_cluster::wait::until(Duration::from_secs(20), "the lease to lapse", || async {
+        cluster
+            .metric(&quorum_leader, LEASE_HELD)
+            .await
+            .ok()
+            .flatten()
+            == Some(0.0)
+    })
+    .await
+    .expect("the Quorum leader's lease lapses too");
+
+    cluster
+        .publish_via(&quorum_leader, STREAM, b"quorum".to_vec())
+        .await
+        .expect("the Quorum stream acknowledges on its followers without the lease");
+    let refused = cluster
+        .publish_via(&leader, LEADER_STREAM, b"leader".to_vec())
+        .await
+        .expect_err("a Leader stream acknowledged a write on a lapsed lease");
+    let why = format!("{refused:#}");
+    assert!(
+        why.contains("lease"),
+        "refused, but not for the lease: {why}"
+    );
     cluster.shutdown().await;
 }
 
