@@ -11,12 +11,12 @@ client does nothing special: it connects to a broker and publishes.
   controls
   preload="metadata"
   playsInline
-  poster="/felix/video/cluster-cross-broker-demo.jpg"
+  poster="/video/cluster-cross-broker-demo.jpg"
   style={{ width: '100%', height: 'auto', borderRadius: '6px' }}
 >
-  <source src="/felix/video/cluster-cross-broker-demo.mp4" type="video/mp4" />
+  <source src="/video/cluster-cross-broker-demo.mp4" type="video/mp4" />
   Your browser cannot play this video.{' '}
-  <a href="/felix/video/cluster-cross-broker-demo.mp4">Download it instead</a>.
+  <a href="/video/cluster-cross-broker-demo.mp4">Download it instead</a>.
 </video>
 
 <p><small>45 seconds, no audio. Everything happens in the terminals.</small></p>
@@ -61,6 +61,6 @@ Both start a real cluster and tear it down afterwards. The owning broker is
 chosen by hashing the shard key against the node ids, so it differs between
 runs. The video happens to show `broker-2`.
 
-See [the cluster harness](https://github.com/gabloe/felix/blob/main/docs/cluster-harness.md)
+See [the cluster harness](https://github.com/GetFelix/felix/blob/main/docs/cluster-harness.md)
 for what it does and does not exercise. In particular, the brokers are real
 processes while the control plane runs in the harness itself.

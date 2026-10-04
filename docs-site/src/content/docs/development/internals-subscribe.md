@@ -2,7 +2,7 @@
 title: "Internals: Subscribe & Fanout"
 ---
 
-This page picks up where [Internals: The Publish Path](/felix/development/internals-publish/)
+This page picks up where [Internals: The Publish Path](/development/internals-publish/)
 leaves off: a `DeliveryEnvelope` has just been cloned into a subscriber's
 `mpsc` channel. It traces what happens from there to bytes on the wire, plus
 the subscribe handshake that set that channel up and the resume path that
@@ -36,7 +36,7 @@ need a single owner to write them).
    `StreamState::register_subscriber()`, which allocates a slot in a `Slab`,
    creates the `mpsc::channel::<DeliveryEnvelope>(subscriber_queue_capacity)`,
    and rebuilds the lock-free `subscribers_snapshot` (see
-   [Internals: The Publish Path](/felix/development/internals-publish/#broker-core-claim-then-complete)
+   [Internals: The Publish Path](/development/internals-publish/#broker-core-claim-then-complete)
    for why that snapshot exists). With a `start`, it calls
    `Broker::subscribe_from` instead; see [Resuming from an offset](#resuming-from-an-offset).
 3. Broker opens a new unidirectional stream (`connection.open_uni()`) and
@@ -44,7 +44,7 @@ need a single owner to write them).
    This is the only frame that carries the subscription id. Event frames after
    it do not need it, because the client already knows which stream is bound
    to which subscription. That is what makes the shared frame below possible;
-   see [Wire Protocol: Shared Binary EventBatch](/felix/architecture/wire-protocol/#shared-binary-eventbatch-encoding).
+   see [Wire Protocol: Shared Binary EventBatch](/architecture/wire-protocol/#shared-binary-eventbatch-encoding).
 4. Broker replies `Message::Subscribed` on the control stream. It goes out
    before any history, because the client does not read the event stream
    until it has seen `Subscribed`. A history larger than the QUIC stream's
@@ -62,7 +62,7 @@ need a single owner to write them).
    subscription's life. If `core_shards` is enabled, this task is spawned on
    the shard owning the stream (resolved via `resolve_stream_handle` +
    `shards.handle_for(handle.id())`), not on the default runtime. See
-   [Internals: Backpressure & Core Sharding](/felix/development/internals-concurrency/#core-sharding).
+   [Internals: Backpressure & Core Sharding](/development/internals-concurrency/#core-sharding).
 
 ## Resuming from an offset
 
@@ -177,7 +177,7 @@ result in a `Mutex<Option<Bytes>>` inside the envelope. Every other subscriber
 calling it on the same envelope gets a `Bytes::clone`, a refcount bump rather
 than a copy. Since publish fanout hands the same `DeliveryEnvelope` to every
 subscriber
-(see [Internals: The Publish Path](/felix/development/internals-publish/#broker-core-claim-then-complete)),
+(see [Internals: The Publish Path](/development/internals-publish/#broker-core-claim-then-complete)),
 one publish batch is encoded once regardless of fanout.
 
 Coalescing here is governed by `EventWriterConfig`: `max_events`,
@@ -284,7 +284,7 @@ waiting for the others in flight. A slow subscriber's write can still be in
 flight while the rest move ahead. This matters most when many subscribers
 share one connection (`sub_conns` small relative to fanout in the benchmark
 harness, or `subscriber_single_writer_per_conn: true` in production). See
-[Benchmarks](/felix/features/benchmarks/) for the measured effect.
+[Benchmarks](/features/benchmarks/) for the measured effect.
 
 ## Worked example
 
@@ -314,12 +314,12 @@ lands as one `DeliveryEnvelope`:
 |---|---|
 | Change event batching/coalescing thresholds | `EventWriterConfig` construction in `handle_subscribe_message`; the coalescing loop in `run_lane_feeder` |
 | Change lane assignment policy | `SubscriberLaneShard` in `services/felix-broker-service/src/config.rs`; `WriterLaneManager::select_lane` in `subscribe/lane.rs` |
-| Change subscriber backpressure policy | `SubQueuePolicy`, at two separate checkpoints: `subscriber_queue_policy` (broker core, the fanout in `crates/server/felix-broker/src/broker/publish/completion.rs`) and `subscriber_lane_queue_policy` (lane ingress, `WriterLaneManager::enqueue`/`enqueue_connection`). See [Internals: Backpressure](/felix/development/internals-concurrency/) |
+| Change subscriber backpressure policy | `SubQueuePolicy`, at two separate checkpoints: `subscriber_queue_policy` (broker core, the fanout in `crates/server/felix-broker/src/broker/publish/completion.rs`) and `subscriber_lane_queue_policy` (lane ingress, `WriterLaneManager::enqueue`/`enqueue_connection`). See [Internals: Backpressure](/development/internals-concurrency/) |
 | Change write scheduling/fairness across subscribers on one connection | `run_connection_writer`'s `in_flight`/`FuturesUnordered` loop, `subscribe/writer.rs` |
-| Change the wire format for event delivery | `encode_shared_event_batch_bytes`/`decode_shared_event_batch`, `crates/protocol/felix-wire/src/client/binary/event_batch.rs`; update [Wire Protocol](/felix/architecture/wire-protocol/) too |
+| Change the wire format for event delivery | `encode_shared_event_batch_bytes`/`decode_shared_event_batch`, `crates/protocol/felix-wire/src/client/binary/event_batch.rs`; update [Wire Protocol](/architecture/wire-protocol/) too |
 | Change how a resume replays history or reports offsets | `Broker::subscribe_from` and `read_committed` in `crates/server/felix-broker/src/broker/subscribe.rs`; `write_replay` in `subscribe/replay.rs`; the `Subscribed` reply in `handle_subscribe_message` |
 | Add a new lane→connection routing mode | `WriterLaneManager::ensure_connection_writer`/`enqueue_connection`, `subscribe/lane.rs` |
 
-Next: [Internals: Backpressure & Core Sharding](/felix/development/internals-concurrency/)
+Next: [Internals: Backpressure & Core Sharding](/development/internals-concurrency/)
 ties the publish-side and subscribe-side admission/queue layers together
 into the full picture, and covers the `core_shards` thread-per-core design.

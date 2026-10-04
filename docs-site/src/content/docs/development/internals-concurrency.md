@@ -4,12 +4,12 @@ title: "Internals: Backpressure & Core Sharding"
 
 Felix has six distinct places where a message can be slowed down, queued, or
 shed, spread across the publish and subscribe paths covered in
-[Internals: The Publish Path](/felix/development/internals-publish/) and
-[Internals: Subscribe & Fanout](/felix/development/internals-subscribe/). This page is the
+[Internals: The Publish Path](/development/internals-publish/) and
+[Internals: Subscribe & Fanout](/development/internals-subscribe/). This page is the
 map of all six in one place: what each one guards against, what happens
 when it's full, and how they compose into the "throughput plateaus, latency
 stays bounded, overload becomes visible" curve the
-[Benchmarks](/felix/features/benchmarks/) page measures.
+[Benchmarks](/features/benchmarks/) page measures.
 
 It also covers `core_shards`, the thread-per-core mode that changes *where*
 (which OS thread/core) this pipeline runs, without changing any of the
@@ -29,9 +29,9 @@ In publish → delivery order:
 | 6 | Connection writer, per subscriber | frames queued for one subscription's QUIC stream | `subscriber_lane_queue_policy`: same three | `subscriber_lane_queue_depth` = 64, `drop_new` |
 
 Checkpoints 1-2 are client-side (see
-[Internals: The Publish Path](/felix/development/internals-publish/#client-side-publisherpublish)),
+[Internals: The Publish Path](/development/internals-publish/#client-side-publisherpublish)),
 3-4 are broker ingest, 5-6 are broker egress (see
-[Internals: Subscribe & Fanout](/felix/development/internals-subscribe/)). Below that, QUIC's
+[Internals: Subscribe & Fanout](/development/internals-subscribe/)). Below that, QUIC's
 own flow control is the final backpressure layer. A subscriber that isn't
 reading eventually blocks the connection writer's `send.write_all()`, which
 is why checkpoints 5-6 exist at all: without them, one slow subscriber's
@@ -102,7 +102,7 @@ is the counter that tells you which it is.
 Production defaults are `drop_new` at both checkpoints: overload becomes a
 counted, bounded-latency event (`felix_subscribe_dropped_total`,
 `felix_sub_queue_dropped_total`) instead of an ever-growing backlog with
-unbounded tail latency. The [Benchmarks](/felix/features/benchmarks/) harness
+unbounded tail latency. The [Benchmarks](/features/benchmarks/) harness
 flips both to `Block` (plus `pub_ingress_wait: true` upstream, so the
 publisher itself slows down rather than getting shed at checkpoint 4) to
 measure *lossless sustainable throughput*. That is a different mode from the
@@ -164,7 +164,7 @@ dequeue/encode execute on one core. QUIC I/O stays off the shards on purpose:
 quinn does packetization and TLS in its own driver
 tasks regardless of who calls it, and those have their own placement story
 (next section). See
-[Benchmarks: Core Sharding](/felix/features/benchmarks/) for measured impact
+[Benchmarks: Core Sharding](/features/benchmarks/) for measured impact
 (it scales with stream count, and single-stream workloads are neutral-to-positive
 by design, since a single stream only ever has one owning shard either way).
 

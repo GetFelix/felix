@@ -33,7 +33,7 @@ brokers keep running, are cut back to the point on restore.
 when it is queued unless the broker runs with `FELIX_ACK_ON_COMMIT=true`, so
 with that off, a record acknowledged just before the barrier may not yet be in
 any log. See
-[delivery semantics](https://github.com/gabloe/felix/blob/main/docs/semantics.md).
+[delivery semantics](https://github.com/GetFelix/felix/blob/main/docs/semantics.md).
 
 ## What it does not guarantee
 
@@ -80,7 +80,7 @@ any log. See
    ```
 
    Each broker's offsets come from `GET /backup/offsets` on its metrics
-   listener (see [Broker API](/felix/api/broker-api/#backup-offsets)), at
+   listener (see [Broker API](/api/broker-api/#backup-offsets)), at
    `http://<the host of its client address>:8080`. `--metrics-port` changes the
    port for every broker, and `--broker broker-1=http://10.0.4.7:9090` names
    one broker's URL outright. `--out` names the manifest file.
@@ -99,7 +99,7 @@ any log. See
 
    The shard directory is named after the tenant, namespace, name and shard
    (`t1_ns_orders_0-<hash>`; see
-   [the storage format](https://github.com/gabloe/felix/blob/main/docs/storage-format.md#directory-layout)).
+   [the storage format](https://github.com/GetFelix/felix/blob/main/docs/storage-format.md#directory-layout)).
    Within each directory copy the small files first (`durable.mark`,
    `replica`, `epochs`, `producers`), then the `.log` segments oldest first,
    then the `.index` files. That order keeps every file from claiming more
@@ -115,10 +115,10 @@ any log. See
 4. **Back up the control plane's metadata** from a state taken at or after the
    point, so every stream and assignment the point names exists in it. Over
    Postgres that is the platform's backup of the whole database (see
-   [Control-plane HA](/felix/deployment/control-plane-ha/)); under the Raft
+   [Control-plane HA](/deployment/control-plane-ha/)); under the Raft
    backend, a storage-layer snapshot of the members' volumes (see
-   [Metadata Raft](/felix/architecture/metadata-raft/) and the Kubernetes
-   [Backups](/felix/deployment/kubernetes/#backups) notes). The manifest's
+   [Metadata Raft](/architecture/metadata-raft/) and the Kubernetes
+   [Backups](/deployment/kubernetes/#backups) notes). The manifest's
    `metadata_version` is the assignment change sequence the point was read
    against.
 
@@ -155,8 +155,8 @@ any log. See
 
 ## See also
 
-- [Durable storage](https://github.com/gabloe/felix/blob/main/docs/durable-storage.md#restoring-to-a-backup-point)
+- [Durable storage](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md#restoring-to-a-backup-point)
   for why a live copy is safe to take and what `restore_to` does to a log.
-- [Moving shards by hand](/felix/deployment/moving-shards/) for
+- [Moving shards by hand](/deployment/moving-shards/) for
   `felix-controlplane admin pause`, which keeps placement quiet while a point
   is taken.

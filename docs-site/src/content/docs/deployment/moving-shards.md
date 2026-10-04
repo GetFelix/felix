@@ -4,14 +4,14 @@ title: "Moving shards by hand"
 
 Placement moves shards on its own: off a draining broker, and from a broker
 leading more than its share to one leading less (see
-[Adding, draining and removing brokers](/felix/deployment/scaling/)). This
+[Adding, draining and removing brokers](/deployment/scaling/)). This
 page is for when you want to steer that: see what is moving and what would
 move next, move a shard yourself, cancel a move, stop placement starting any,
 or give up a shard whose log is out of reach.
 
 Every command below is `felix-controlplane admin`, a client of the control
 plane's HTTP API, so the same things can be done with `curl` against the
-endpoints in the [control-plane API](/felix/api/control-plane-api/#shard-moves-and-placement).
+endpoints in the [control-plane API](/api/control-plane-api/#shard-moves-and-placement).
 
 ```bash
 export FELIX_CONTROLPLANE_URL=http://felix-controlplane:8443
@@ -177,7 +177,7 @@ still move shards by hand.
 Pausing is how to hold the cluster still: during an incident, while moving a
 few shards by hand, while taking a backup point
 (`felix-controlplane admin backup-point`, see
-[Backup and restore](/felix/deployment/backup-and-restore/)), or before
+[Backup and restore](/deployment/backup-and-restore/)), or before
 draining a broker you want to empty in a particular order. A drained broker keeps its shards while placement is
 paused, so resume before relying on a drain.
 

@@ -10,7 +10,7 @@ and errors are quoted as the broker prints them.
 Run `felix-broker --print-config` with the same environment and config file.
 It loads the configuration exactly as startup does and exits without binding
 anything, so most of the refusals below show up there first. See
-[Seeing what is in effect](/felix/reference/environment-variables/#seeing-what-is-in-effect).
+[Seeing what is in effect](/reference/environment-variables/#seeing-what-is-in-effect).
 
 ### No control-plane URL
 
@@ -34,7 +34,7 @@ FELIX_NODE_ID is set but no node credential was provided; set FELIX_NODE_TOKEN o
 
 A cluster member presents a credential on every call to the control plane.
 See `FELIX_NODE_TOKEN` and `FELIX_NODE_REFRESH_TOKEN_FILE` in the
-[environment reference](/felix/reference/environment-variables/#node-identity-and-membership).
+[environment reference](/reference/environment-variables/#node-identity-and-membership).
 A broker without `FELIX_NODE_ID` starts without one, but warns:
 
 ```
@@ -69,8 +69,8 @@ anywhere else is fatal, and the error names the shard, segment and position:
 refusing to start beats silently losing acknowledged records. A segment
 written by a newer build is refused the same way, which is why a storage format
 upgrade does not roll back. See
-[Durable Storage](/felix/architecture/durable-storage/) and
-[Upgrades](/felix/deployment/upgrades/#storage-format-the-one-that-does-not-roll-back).
+[Durable Storage](/architecture/durable-storage/) and
+[Upgrades](/deployment/upgrades/#storage-format-the-one-that-does-not-roll-back).
 
 ### The disk is full
 
@@ -97,7 +97,7 @@ nothing about it.
 A handshake that times out on some networks and not others is often path MTU.
 On Linux, keep `FELIX_MTU_UPPER_BOUND` at or below 6,553. Above it, the kernel
 rejects UDP GSO batches and delivery stalls for good (see
-[`FELIX_MTU_UPPER_BOUND`](/felix/reference/environment-variables/#felix_mtu_upper_bound)).
+[`FELIX_MTU_UPPER_BOUND`](/reference/environment-variables/#felix_mtu_upper_bound)).
 
 ## Cluster problems
 
@@ -173,7 +173,7 @@ The error's `detail.reason` says why:
 A durable shard whose only copy of the log is on a broker that is down stays
 unassigned until that broker returns. `felix-controlplane admin abandon` gives
 up its log and places it afresh, which loses data. See
-[Moving shards by hand](/felix/deployment/moving-shards/#abandoning-a-shards-log).
+[Moving shards by hand](/deployment/moving-shards/#abandoning-a-shards-log).
 
 ## Publishes are refused or slow
 
@@ -202,7 +202,7 @@ brokers.
 
 The default overflow policy is `drop_new`: a slow subscriber loses its own
 events instead of slowing anyone else. Durable streams deliver log offsets, so
-a jump in offsets is a drop. See [Publish/Subscribe](/felix/features/pubsub/).
+a jump in offsets is a drop. See [Publish/Subscribe](/features/pubsub/).
 
 ## Memory
 
@@ -224,8 +224,8 @@ of unread data per connection, 16 MiB by default.
 
 ### Image and version
 
-Images are `ghcr.io/gabloe/felix-broker:<version>` and
-`ghcr.io/gabloe/felix-controlplane:<version>`. The binary has no `--version`
+Images are `ghcr.io/getfelix/felix-broker:<version>` and
+`ghcr.io/getfelix/felix-controlplane:<version>` (`ghcr.io/gabloe` for 0.6.0-preview and earlier). The binary has no `--version`
 flag; the image tag is the version.
 
 ### Health check failing
@@ -292,6 +292,6 @@ cargo run --release -p felix-broker-service --features demo --bin latency-demo -
 
 ## Reporting an issue
 
-Open an issue at [github.com/gabloe/felix/issues](https://github.com/gabloe/felix/issues)
+Open an issue at [github.com/GetFelix/felix/issues](https://github.com/GetFelix/felix/issues)
 with the image tag or commit, the output of `felix-broker --print-config` (the
 credential is redacted), the full error and the steps to reproduce it.

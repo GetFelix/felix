@@ -2,7 +2,7 @@
 title: "Configuration Reference"
 ---
 
-Every key the broker's YAML config file accepts. Each has an environment variable, listed with it. Settings that exist only as environment variables are in the [Environment Variables](/felix/reference/environment-variables/) reference. The broker refuses a file with a key it does not know.
+Every key the broker's YAML config file accepts. Each has an environment variable, listed with it. Settings that exist only as environment variables are in the [Environment Variables](/reference/environment-variables/) reference. The broker refuses a file with a key it does not know.
 
 ## Configuration Methods
 
@@ -865,7 +865,7 @@ subsystem.
 **Environment**: `FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS`
 
 Keep `terminationGracePeriodSeconds` above this plus the predrain and handoff
-times. See [Graceful Shutdown](/felix/deployment/graceful-shutdown/).
+times. See [Graceful Shutdown](/deployment/graceful-shutdown/).
 
 ### `shutdown_predrain_ms`
 
@@ -891,7 +891,7 @@ Shards still led when it expires fail over.
 
 **Environment**: `FELIX_SHUTDOWN_HANDOFF_TIMEOUT_MS`
 
-See [Handing shards off](/felix/deployment/graceful-shutdown/#handing-shards-off).
+See [Handing shards off](/deployment/graceful-shutdown/#handing-shards-off).
 
 ## Client-Side Configuration
 
@@ -949,7 +949,7 @@ FELIX_BROKER_CONFIG=/path/to/config.yml felix-broker --print-config
 ```
 
 The combinations refused at startup are listed under
-[Settings that are wrong together](/felix/reference/environment-variables/#settings-that-are-wrong-together).
+[Settings that are wrong together](/reference/environment-variables/#settings-that-are-wrong-together).
 
 ## Performance Profiles
 
@@ -1049,6 +1049,6 @@ subscriber_lane_shard: auto
 
 ## Next Steps
 
-- **Environment variables reference**: [Environment Variables](/felix/reference/environment-variables/)
-- **Troubleshooting issues**: [Troubleshooting Guide](/felix/reference/troubleshooting/)
-- **Performance tuning**: [Performance Guide](/felix/features/performance/)
+- **Environment variables reference**: [Environment Variables](/reference/environment-variables/)
+- **Troubleshooting issues**: [Troubleshooting Guide](/reference/troubleshooting/)
+- **Performance tuning**: [Performance Guide](/features/performance/)

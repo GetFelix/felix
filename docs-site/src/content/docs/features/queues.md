@@ -9,10 +9,10 @@ the records between them: one consumer holds a record at a time, and the record
 is not finished until someone says so.
 
 It is the same log underneath (see
-[Projections](/felix/architecture/projections/)), read through a cursor the
+[Projections](/architecture/projections/)), read through a cursor the
 group shares instead of a cursor per subscriber.
 
-![A consumer group reading a shard's log. Records are claimed by consumers A and B and acknowledged one by one, and the group's cursor advances behind them. When offset 4 is acknowledged while offset 3 is still in flight, the cursor stops at 3 rather than skipping it; once offset 3's claim lapses, it is redelivered, and settling it lets the cursor jump past both.](/felix/diagrams/consumer-group.svg)
+![A consumer group reading a shard's log. Records are claimed by consumers A and B and acknowledged one by one, and the group's cursor advances behind them. When offset 4 is acknowledged while offset 3 is still in flight, the cursor stops at 3 rather than skipping it; once offset 3's claim lapses, it is redelivered, and settling it lets the cursor jump past both.](/diagrams/consumer-group.svg)
 
 In the middle of the diagram, offset 4 is acknowledged while offset 3 is still
 held, and the cursor stops at 3 anyway. It only advances over a contiguous run
@@ -142,7 +142,7 @@ Redrive and discard change what every consumer of the group sees, so they need
 handing back and listing dead letters need `group.consume`, which
 `stream.subscribe` also grants. Either can be granted on one group
 (`group:{tenant}/{namespace}/{stream}/{group}`) to keep a principal to the
-groups it runs. See [Security](/felix/features/security/).
+groups it runs. See [Security](/features/security/).
 
 > `a_record_is_given_up_on_after_the_attempt_bound`,
 > `a_redriven_record_is_handed_out_again`,

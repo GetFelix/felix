@@ -80,7 +80,7 @@ assertion, and the demo exits non-zero if one breaks.
   multi-shard stream means polling each shard's group separately.
 - **One broker.** A group's position and its dead-letter list replicate with the
   shard and survive a failover (see
-  [Queues and Consumer Groups](/felix/features/queues/#what-a-queue-does-not-promise)),
+  [Queues and Consumer Groups](/features/queues/#what-a-queue-does-not-promise)),
   but this demo runs a single in-process broker and does not show it.
 - **No competing brokers.** Only the shard's leader serves its group. That is
   what stops two brokers handing out the same record, and it is why a poll is
@@ -88,6 +88,6 @@ assertion, and the demo exits non-zero if one breaks.
 
 ## See also
 
-- [Queues and Consumer Groups](/felix/features/queues/): the API and the rules
-- [Projections](/felix/architecture/projections/): how a cursor is a log
-- [Semantics](/felix/architecture/semantics/): where at-least-once sits
+- [Queues and Consumer Groups](/features/queues/): the API and the rules
+- [Projections](/architecture/projections/): how a cursor is a log
+- [Semantics](/architecture/semantics/): where at-least-once sits

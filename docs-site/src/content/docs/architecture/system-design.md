@@ -14,7 +14,7 @@ Internally, Felix is built around a single append-only log abstraction. Differen
 - **Caches:** read the log through an index of key to latest offset, rebuilt from the log itself
 - **Queues:** read the log through a cursor shared by a consumer group, with acknowledgements and bounded redelivery
 
-All three are built. What each one stores, keeps in memory, and rebuilds from the log, along with the test behind each claim, is in [Projections](/felix/architecture/projections/). Trust that page where this one is vaguer.
+All three are built. What each one stores, keeps in memory, and rebuilds from the log, along with the test behind each claim, is in [Projections](/architecture/projections/). Trust that page where this one is vaguer.
 
 This reduces operational complexity and consistency bugs compared to running Kafka, Redis, and a queueing system side-by-side. It is also the project's central bet, so the claims are tied to tests: `scripts/check_doc_evidence.py` fails the docs build if a cited test no longer exists.
 
@@ -33,17 +33,17 @@ Felix assumes Kubernetes for process lifecycle, identity (ServiceAccounts), netw
 
 ## System Architecture
 
-![Clients connect to any broker over QUIC. Brokers are peers that forward requests for shards they do not own and replicate the ones they lead. A control plane places shards by rendezvous hashing, and brokers watch its assignment feed. Inside a shard, one append-only log is read as a stream by offset and as a cache through a key index.](/felix/diagrams/architecture.svg)
+![Clients connect to any broker over QUIC. Brokers are peers that forward requests for shards they do not own and replicate the ones they lead. A control plane places shards by rendezvous hashing, and brokers watch its assignment feed. Inside a shard, one append-only log is read as a stream by offset and as a cache through a key index.](/diagrams/architecture.svg)
 
 Three things carry most of the design.
 
 **Any broker accepts any request.** A client connects to whichever broker it can reach and asks it for the topology. If that broker does not lead the shard the request belongs to, it forwards the request to the broker that does and relays the answer. The client never has to find the right broker first, and talks to only one broker per request.
 
-**Ownership comes from the control plane, and only from there.** Every shard of every stream and cache has exactly one leader, chosen by rendezvous hashing over the live nodes, and its followers are spread across the zones brokers register (`FELIX_NODE_ZONE`) wherever a broker in a missing zone has room. Brokers watch the assignment feed (a snapshot, then a change stream) and never negotiate ownership among themselves. When a shard has to move, because its broker is draining or leads more than its share, the control plane stages the destination as a replica, fences the leader once the copy is level, and only then names the destination, so a shard is never served by a broker that has not seen its log (see [Adding, draining and removing brokers](/felix/deployment/scaling/)).
+**Ownership comes from the control plane, and only from there.** Every shard of every stream and cache has exactly one leader, chosen by rendezvous hashing over the live nodes, and its followers are spread across the zones brokers register (`FELIX_NODE_ZONE`) wherever a broker in a missing zone has room. Brokers watch the assignment feed (a snapshot, then a change stream) and never negotiate ownership among themselves. When a shard has to move, because its broker is draining or leads more than its share, the control plane stages the destination as a replica, fences the leader once the copy is level, and only then names the destination, so a shard is never served by a broker that has not seen its log (see [Adding, draining and removing brokers](/deployment/scaling/)).
 
-**No consensus protocol runs between brokers.** Placement is deterministic over the rows it reads, and control-plane instances do not coordinate a shared snapshot: every assignment write is conditional on the generation and placement token it was planned from, so a write planned from stale reads is refused. Durability across a leader change comes from log shipping, leader leases, and the fence a promoted stream leader takes on a majority of its replicas before it serves. Per-shard Raft was considered and rejected, for reasons set out in [`docs/replication-design.md`](https://github.com/gabloe/felix/blob/main/docs/replication-design.md).
+**No consensus protocol runs between brokers.** Placement is deterministic over the rows it reads, and control-plane instances do not coordinate a shared snapshot: every assignment write is conditional on the generation and placement token it was planned from, so a write planned from stale reads is refused. Durability across a leader change comes from log shipping, leader leases, and the fence a promoted stream leader takes on a majority of its replicas before it serves. Per-shard Raft was considered and rejected, for reasons set out in [`docs/replication-design.md`](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md).
 
-That rejection is specific to *replicating records*. Making the control plane's own metadata highly available is a separate problem, and Raft is the answer there: the instances embed a Raft group and hold the metadata themselves, with no external database. See [Metadata Raft](/felix/architecture/metadata-raft/); Postgres remains fully supported for deployments that prefer it.
+That rejection is specific to *replicating records*. Making the control plane's own metadata highly available is a separate problem, and Raft is the answer there: the instances embed a Raft group and hold the metadata themselves, with no external database. See [Metadata Raft](/architecture/metadata-raft/); Postgres remains fully supported for deployments that prefer it.
 
 The control plane is off the data path for reads, subscribes, and `Leader` publishes: brokers read it in the background and serve from what they already hold.
 
@@ -63,7 +63,7 @@ door onto the same shards: a Kafka produce goes through
 the broker's own publish path on the shard's leader, and a fetch reads the
 shard's log by offset. Unlike QUIC requests, Kafka requests are never
 forwarded; Kafka clients find a partition's leader through Metadata and go to
-it themselves. See [Kafka compatibility](/felix/features/kafka/).
+it themselves. See [Kafka compatibility](/features/kafka/).
 
 
 ## Data Flow Patterns
@@ -207,11 +207,11 @@ answered by a typed error rather than a silent restart at the tail. Unset,
 nothing deletes segments and a log grows without bound.
 
 Not yet implemented: **snapshots**, and **tiered storage**
-([#172](https://github.com/gabloe/felix/issues/172)). Compaction exists, but for
+([#172](https://github.com/GetFelix/felix/issues/172)). Compaction exists, but for
 the cache rather than for streams: a cache log reclaims superseded and expired
 records, and a stream log never rewrites a record at all.
 
-See [Durable Storage](/felix/architecture/durable-storage/).
+See [Durable Storage](/architecture/durable-storage/).
 
 **Use cases:**
 
@@ -246,7 +246,7 @@ A leader serves only while it holds a lease on the shards it leads, so a broker
 that has been superseded stops acknowledging rather than discovering the fact
 later.
 
-![A lease on one time axis. Broker A may accept writes only until its lease expiry minus epsilon, by its own monotonic clock. The control plane may not grant the next generation to another broker until the expiry plus a margin. The gap between them is a safety interval in which no broker is leader. Below, a write admitted while the lease was valid is delayed past expiry, and the commit-time re-check refuses it.](/felix/diagrams/leader-lease.svg)
+![A lease on one time axis. Broker A may accept writes only until its lease expiry minus epsilon, by its own monotonic clock. The control plane may not grant the next generation to another broker until the expiry plus a margin. The gap between them is a safety interval in which no broker is leader. Below, a write admitted while the lease was valid is delayed past expiry, and the commit-time re-check refuses it.](/diagrams/leader-lease.svg)
 
 The leader stops **ε early** by its own clock; the control plane waits out a
 **margin** on top of the full lease before handing the shard to anyone else. The
@@ -287,7 +287,7 @@ started with `FELIX_QUORUM_READS=lease` keeps its reads on the lease.
 - **At-least-once:** a consumer group, which redelivers until acknowledged and
   then dead-letters; or a durable stream replayed from a checkpointed offset
 - **Exactly-once:** not implemented, and not planned. See
-  [Semantics](/felix/architecture/semantics/)
+  [Semantics](/architecture/semantics/)
 
 ## Multi-Region Architecture (Planned)
 
@@ -345,7 +345,7 @@ regulatory or compliance purposes until it ships.
 - **Network:** Higher bandwidth for fanout
 - **Measured:** hundreds of thousands to millions of msg/s on a single node,
   depending on payload size and fanout. See
-  [Benchmarks](/felix/features/benchmarks/) for measured figures
+  [Benchmarks](/features/benchmarks/) for measured figures
 
 ### Horizontal Scaling (Multi-Node)
 
@@ -363,7 +363,7 @@ about the loopback than about Felix.
 
 ## Next Steps
 
-- [Components Deep Dive](/felix/architecture/components/) - Detailed component architecture
-- [Wire Protocol](/felix/architecture/wire-protocol/) - Protocol specification
-- [Semantics](/felix/architecture/semantics/) - Delivery and consistency guarantees
-- [Performance Tuning](/felix/features/performance/) - Optimize for your workload
+- [Components Deep Dive](/architecture/components/) - Detailed component architecture
+- [Wire Protocol](/architecture/wire-protocol/) - Protocol specification
+- [Semantics](/architecture/semantics/) - Delivery and consistency guarantees
+- [Performance Tuning](/features/performance/) - Optimize for your workload

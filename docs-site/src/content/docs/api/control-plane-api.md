@@ -215,7 +215,7 @@ nothing and answers whether it would be accepted:
 Finalizing is one-way: after it, a broker that registers without the feature
 is refused with 409 naming it. `felix-controlplane admin features` and
 `admin features finalize <feature> [--dry-run]` drive the same routes. See
-[Upgrades and compatibility](/felix/deployment/upgrades/).
+[Upgrades and compatibility](/deployment/upgrades/).
 
 `cluster:*` sits outside the tenant hierarchy and no tenant scope contains it,
 so a tenant admin cannot grant themselves cluster access. The tenant comes from
@@ -240,7 +240,7 @@ heartbeat is older than the expiry timeout plus the regrant margin.
 `DELETE /v1/nodes/{node_id}` removes a broker's record. It needs `node.manage`
 on `cluster:*`, and is refused (409) while the broker is `live` or `draining`
 or while any shard names it as leader or replica. See
-[Adding, draining and removing brokers](/felix/deployment/scaling/).
+[Adding, draining and removing brokers](/deployment/scaling/).
 
 The registration, heartbeat, drain, deregister and patch endpoints require
 `node.manage` over the node being changed. A broker's credential is scoped to
@@ -252,7 +252,7 @@ cover.
 ### Shard moves and placement
 
 What an operator uses to steer shard moves; the walk-through is
-[Moving shards by hand](/felix/deployment/moving-shards/), and
+[Moving shards by hand](/deployment/moving-shards/), and
 `felix-controlplane admin` is a command-line client of these endpoints. Reads
 take `node.view:cluster:*`; the rest take `node.manage:cluster:*`.
 
@@ -287,7 +287,7 @@ shard may use reports a zone, the response also carries `zones_before` and
 `zones_after`: the zones the shard's live copies span now and are expected to
 span once the move cuts over, counting a broker without a zone as one of its
 own. A move that narrows the spread is started anyway and logged as a
-warning; see [Zones](https://github.com/gabloe/felix/blob/main/docs/control-plane.md#zones).
+warning; see [Zones](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#zones).
 
 A start is refused where placement would not make the move: 404
 `unknown_shard` or `unknown_node`, or 409 `destination_not_live`,
@@ -392,7 +392,7 @@ does: a policy granting the cluster actions to a role, and an exchange.
 
 ### Internal Bootstrap API (Day-0)
 
-Used once per tenant to seed auth before any admin tokens exist. Disabled by default and bound to a separate internal address when enabled; the listener can additionally require mTLS (see [Security](/felix/features/security/#bootstrap-mode-day-0)).
+Used once per tenant to seed auth before any admin tokens exist. Disabled by default and bound to a separate internal address when enabled; the listener can additionally require mTLS (see [Security](/features/security/#bootstrap-mode-day-0)).
 
 ```http
 POST /internal/bootstrap/tenants/{tenant_id}/initialize
@@ -478,7 +478,7 @@ The control plane keeps its metadata in one of three backends, chosen with
   through the Raft leader, and a follower forwards the writes it receives. The
   group survives losing a minority of its members without losing an
   acknowledged write, and there is no external database. See
-  [Metadata Raft](/felix/architecture/metadata-raft/).
+  [Metadata Raft](/architecture/metadata-raft/).
 
 ```mermaid
 graph TB
@@ -556,4 +556,4 @@ the broker nodes so data-plane load can't starve consensus. On Postgres, run
 two or more instances and make the database itself highly available. The
 workload is metadata only and light. Disruption budgets, failover drills and
 the Postgres-to-Raft migration are in
-[Control-plane HA](/felix/deployment/control-plane-ha/).
+[Control-plane HA](/deployment/control-plane-ha/).

@@ -3,7 +3,7 @@ title: "How Felix Is Tested"
 description: "The history checker, fault injection on a real cluster, and the TLA+ models behind the replication claims."
 ---
 
-The replication rows on [What Felix Is For](/felix/getting-started/what-felix-is-for/)
+The replication rows on [What Felix Is For](/getting-started/what-felix-is-for/)
 rest on three kinds of evidence. A history checker runs clients against a real
 three-broker cluster while it injects faults, then checks what the clients saw.
 The cluster harness runs those brokers and injects the faults, and individual
@@ -126,7 +126,7 @@ interleaving, so a failing seed makes the failure likely to recur, not certain.
 Run it a few times.
 
 Detail, including how to read a violation and how to add a fault:
-[`docs/history-checker.md`](https://github.com/gabloe/felix/blob/main/docs/history-checker.md).
+[`docs/history-checker.md`](https://github.com/GetFelix/felix/blob/main/docs/history-checker.md).
 
 ## The cluster harness
 
@@ -190,7 +190,7 @@ The same crate holds a conformance suite that runs one set of assertions
 against a single broker and a three-node cluster: a client must not be able to
 tell how many brokers there are or which one it reached.
 
-Detail: [`docs/cluster-harness.md`](https://github.com/gabloe/felix/blob/main/docs/cluster-harness.md).
+Detail: [`docs/cluster-harness.md`](https://github.com/GetFelix/felix/blob/main/docs/cluster-harness.md).
 
 ## TLA+ models
 
@@ -227,12 +227,12 @@ description saying why not. `task tla:pairing` runs that check locally, and
 every test the spec cites still exists.
 
 Detail, with every configuration and its state count:
-[`docs/formal/README.md`](https://github.com/gabloe/felix/blob/main/docs/formal/README.md).
+[`docs/formal/README.md`](https://github.com/GetFelix/felix/blob/main/docs/formal/README.md).
 
 ## Elsewhere
 
 The decoders that parse input from outside the process are fuzzed; see
-[Fuzzing](/felix/development/fuzzing/). The wire-protocol conformance runner
+[Fuzzing](/development/fuzzing/). The wire-protocol conformance runner
 (`task conformance`) holds a catalogue of required scenarios, and CI checks the
 Python and TypeScript clients' results against it.
 
@@ -240,4 +240,4 @@ The storage power-loss suite rebuilds the directory a reboot could find after
 each flush and checks that recovery keeps every acknowledged record. Pull
 requests run eight workload seeds per scenario plus pinned ones that once caught
 a bug the eight missed; `power-loss-nightly.yml` runs 110 per scenario from a
-random base. See [Durable storage](https://github.com/gabloe/felix/blob/main/docs/durable-storage.md).
+random base. See [Durable storage](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md).

@@ -16,7 +16,7 @@ otherwise. Encryption at rest and audit logging are **not** built.
 :::note[Security Maturity]
 Felix is in early development and has not been through an external security
 review. This page states plainly which protections exist and which are
-planned; the [status table](/felix/getting-started/what-felix-is-for/) is
+planned; the [status table](/getting-started/what-felix-is-for/) is
 kept current per capability.
 :::
 
@@ -81,7 +81,7 @@ naming convention.
 
 A tenant's publish rate can be capped per broker, in bytes and in messages per
 second (`FELIX_TENANT_PUBLISH_*` in the
-[environment reference](/felix/reference/environment-variables/#connection-limits-and-tenant-quotas)),
+[environment reference](/reference/environment-variables/#connection-limits-and-tenant-quotas)),
 and one source address can hold at most `FELIX_MAX_CONNECTIONS_PER_IP` client
 connections. Quotas on subscriptions, cache use and storage are not built, and
 publish quotas live in each broker's environment rather than the control
@@ -169,7 +169,7 @@ one winner and `409 already_initialized` for everyone else, and a failure
 part-way leaves the tenant retryable rather than half-initialized. The token
 itself is a static shared secret, valid while bootstrap is enabled. The full
 threat model, replay rules, rotation procedure, and recovery steps are in
-[`docs/security/bootstrap.md`](https://github.com/gabloe/felix/blob/main/docs/security/bootstrap.md).
+[`docs/security/bootstrap.md`](https://github.com/GetFelix/felix/blob/main/docs/security/bootstrap.md).
 
 #### Development tokens
 
@@ -446,5 +446,5 @@ sequenceDiagram
 ## Reporting a vulnerability
 
 Open a report through
-[GitHub Security Advisories](https://github.com/gabloe/felix/security/advisories)
+[GitHub Security Advisories](https://github.com/GetFelix/felix/security/advisories)
 rather than a public issue.

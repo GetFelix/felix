@@ -7,7 +7,7 @@ description: "Installing and using the Felix Python client: both surfaces, strea
 redirect-following, retry classification and offset bookkeeping live in
 `felix-client` and are shared, so Python gets the same failover behaviour as
 Rust. See
-[Choosing a Client](/felix/clients/overview/) for why that choice was made and
+[Choosing a Client](/clients/overview/) for why that choice was made and
 what the conformance suite does about it.
 
 ## Installing
@@ -253,7 +253,7 @@ except felix.NotFoundError:
 
 Every exception carries three attributes from the broker:
 
-- `code`: the broker's [error code](https://github.com/gabloe/felix/blob/main/docs/protocol.md#error-codes),
+- `code`: the broker's [error code](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#error-codes),
   such as `"shard_unavailable"` or `"quorum_timeout"`.
 - `retry`: what you may do about it: `"retry"`, `"retry_after"`,
   `"redirect"`, `"outcome_unknown"` or `"fatal"`.
@@ -479,7 +479,7 @@ commit's state is the stream shard's own, read with `state_get`), or a retry.
 State is rebuilt from the retained log, so keep an entity stream's retention
 long enough. The stream must be durable, and in a cluster the operator must
 finalize the `atomic_commit` fleet feature first. The full semantics are in
-[`docs/atomic-commit.md`](https://github.com/gabloe/felix/blob/main/docs/atomic-commit.md).
+[`docs/atomic-commit.md`](https://github.com/GetFelix/felix/blob/main/docs/atomic-commit.md).
 
 ## Multi-shard streams
 
@@ -547,7 +547,7 @@ unclaimed.
 ## Conformance
 
 Python passes every required scenario in the
-[client conformance catalogue](/felix/clients/overview/#the-conformance-suite),
+[client conformance catalogue](/clients/overview/#the-conformance-suite),
 and CI is gated on it. The suite runs against a real three-node cluster rather
 than a mock, because what it checks (reconnection, redirect-following, offset
 accounting) only exists in a cluster.

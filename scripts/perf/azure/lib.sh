@@ -110,7 +110,7 @@ resolve_ref() {
   else
     # A peeled tag (^{}) names the commit; the bare tag line names the tag
     # object, which is not what a build should record.
-    sha="$(git ls-remote https://github.com/gabloe/felix "${ref}" "${ref}^{}" 2>/dev/null | awk -v r="${ref}" '
+    sha="$(git ls-remote https://github.com/GetFelix/felix "${ref}" "${ref}^{}" 2>/dev/null | awk -v r="${ref}" '
       $2 == "refs/tags/" r "^{}" { p = $1 } $2 == "refs/tags/" r { t = $1 } $2 == "refs/heads/" r { h = $1 }
       END { print (p != "" ? p : (h != "" ? h : t)) }')"
     if [ -z "${sha}" ] && [[ "${ref}" =~ ^[0-9a-f]{7,39}$ ]]; then

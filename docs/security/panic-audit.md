@@ -1,9 +1,9 @@
 # Panic and abort audit: broker data path
 
-Audit record for [#140](https://github.com/gabloe/felix/issues/140), covering the
+Audit record for [#140](https://github.com/GetFelix/felix/issues/140), covering the
 `unsafe impl Send` question and the `unwrap()`/`expect()` triage. The sustained-load
 and resource-leak portions of that issue are **not** covered here; they were split
-into [#154](https://github.com/gabloe/felix/issues/154).
+into [#154](https://github.com/GetFelix/felix/issues/154).
 
 ## Scope and environment
 
@@ -106,6 +106,6 @@ path involved no `unwrap` at all. Counting `unwrap` would not have found it.
   target for 30 s on every PR as a regression gate, and `fuzz-nightly.yml` runs each for
   25 minutes a night from a corpus that carries over between runs.
 - Sustained-load, connection-churn, and resource-leak evidence is not covered by this
-  document; it is tracked in [#154](https://github.com/gabloe/felix/issues/154). Until
+  document; it is tracked in [#154](https://github.com/GetFelix/felix/issues/154). Until
   that lands, M0's "no known concurrency or leak issues" criterion rests on this static
   audit alone.

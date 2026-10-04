@@ -7,7 +7,7 @@ This page covers the Postgres storage backend. With it, the control plane is
 stateless: all durable metadata (tenants, streams, membership, shard
 ownership, auth configuration) lives in one Postgres database, and any number
 of identical instances serve it. The alternative is
-[Metadata Raft](/felix/architecture/metadata-raft/), where the instances hold
+[Metadata Raft](/architecture/metadata-raft/), where the instances hold
 the metadata themselves and no database is needed.
 
 With Postgres, high availability has these parts:
@@ -23,7 +23,7 @@ With Postgres, high availability has these parts:
   carry on but nothing new is placed on the timer. Every placement write is
   also fenced by a token in the same row, so the move limits hold across
   instances even while two of them think they are placing
-  ([control-plane.md](https://github.com/gabloe/felix/blob/main/docs/control-plane.md)).
+  ([control-plane.md](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md)).
   `felix_placement_lease_held` summed across instances is 1.
 - **The database.** Postgres availability is an operational input Felix
   consumes, not something Felix implements. If Postgres is down, every
@@ -122,7 +122,7 @@ still comes back inside its own bound instead of hanging.
 On SIGTERM an instance fails readiness first and keeps serving for
 `FELIX_SHUTDOWN_PREDRAIN_MS` so load balancers can act on it, then drains
 against `FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS`. The whole sequence is on
-[Graceful Shutdown](/felix/deployment/graceful-shutdown/).
+[Graceful Shutdown](/deployment/graceful-shutdown/).
 
 ## Sizing and connections
 
@@ -164,6 +164,6 @@ start.
 | Schema migrations and cross-version readiness | Felix |
 
 The full contract is in
-[`docs/ha-postgres.md`](https://github.com/gabloe/felix/blob/main/docs/ha-postgres.md).
+[`docs/ha-postgres.md`](https://github.com/GetFelix/felix/blob/main/docs/ha-postgres.md).
 If operating a Postgres is the part you would rather not,
-[Metadata Raft](/felix/architecture/metadata-raft/) is the alternative.
+[Metadata Raft](/architecture/metadata-raft/) is the alternative.

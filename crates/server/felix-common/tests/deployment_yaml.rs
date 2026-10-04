@@ -18,10 +18,11 @@ use serde::Deserialize;
 use serde_yaml_ng::Value;
 
 /// The only two images a release publishes.
-const PUBLISHED_IMAGES: &[&str] = &[
-    "ghcr.io/gabloe/felix-broker",
-    "ghcr.io/gabloe/felix-controlplane",
-];
+const PUBLISHED_IMAGES: &[&str] = &["felix-broker", "felix-controlplane"];
+
+/// Where releases publish. 0.6.0-preview and earlier went out under gabloe,
+/// and the docs still pin it there.
+const IMAGE_OWNERS: &[&str] = &["ghcr.io/getfelix/", "ghcr.io/gabloe/"];
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
@@ -290,10 +291,10 @@ fn felix_images_in_the_docs_are_the_published_ones() {
                 let Some(image) = value.as_str() else {
                     return;
                 };
-                if !image.starts_with("ghcr.io/gabloe/") {
+                let Some(rest) = IMAGE_OWNERS.iter().find_map(|o| image.strip_prefix(o)) else {
                     return;
-                }
-                let name = image.split([':', '@']).next().unwrap_or(image);
+                };
+                let name = rest.split([':', '@']).next().unwrap_or(rest);
                 if !PUBLISHED_IMAGES.contains(&name) {
                     failures.push(format!("{}: {image} is not a published image", block.at()));
                 }

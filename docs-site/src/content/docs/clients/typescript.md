@@ -7,7 +7,7 @@ description: "Installing and using the Felix Node.js client: promises, typed err
 Reconnection, redirect-following, retry classification and offset bookkeeping
 live in the crate and are shared, so Node gets the same failover behaviour as
 Rust. The name is identical on crates.io, PyPI and npm. See
-[Choosing a Client](/felix/clients/overview/) for why that choice was made.
+[Choosing a Client](/clients/overview/) for why that choice was made.
 
 ## Installing
 
@@ -295,7 +295,7 @@ try {
 
 Every error carries what the broker said about it:
 
-- `code`: the broker's [error code](https://github.com/gabloe/felix/blob/main/docs/protocol.md#error-codes),
+- `code`: the broker's [error code](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#error-codes),
   such as `"shard_unavailable"` or `"quorum_timeout"`.
 - `retry`: what you may do about it: `"retry"`, `"retry_after"`,
   `"redirect"`, `"outcome_unknown"` or `"fatal"`.
@@ -520,7 +520,7 @@ commit's state is the stream shard's own, read with `stateGet`), or a retry.
 State is rebuilt from the retained log, so keep an entity stream's retention
 long enough. The stream must be durable, and in a cluster the operator must
 finalize the `atomic_commit` fleet feature first. The full semantics are in
-[`docs/atomic-commit.md`](https://github.com/gabloe/felix/blob/main/docs/atomic-commit.md).
+[`docs/atomic-commit.md`](https://github.com/GetFelix/felix/blob/main/docs/atomic-commit.md).
 
 ## Multi-shard streams
 
@@ -599,7 +599,7 @@ unclaimed.
 ## Conformance
 
 TypeScript passes every required scenario in the
-[client conformance catalogue](/felix/clients/overview/#the-conformance-suite),
+[client conformance catalogue](/clients/overview/#the-conformance-suite),
 and CI and the release pipeline are both gated on it. The suite runs against a
 real three-node cluster: a redirect needs a broker that does not own the
 shard, and one scenario kills the broker its client is connected to.

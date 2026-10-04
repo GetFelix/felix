@@ -1,6 +1,6 @@
 # Soak and resource-leak report: broker
 
-Evidence record for [#154](https://github.com/gabloe/felix/issues/154), the
+Evidence record for [#154](https://github.com/GetFelix/felix/issues/154), the
 sustained-load half of the M0 concurrency and resource-leak exit criterion. The
 static audit half is recorded separately in [panic-audit.md](panic-audit.md).
 

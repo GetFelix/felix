@@ -85,4 +85,4 @@ its partial-commit rule fails the run if a reader ever sees the event without
 the state or the state without the event.
 
 The full semantics, the wire messages and the record format are in
-[`docs/atomic-commit.md`](https://github.com/gabloe/felix/blob/main/docs/atomic-commit.md).
+[`docs/atomic-commit.md`](https://github.com/GetFelix/felix/blob/main/docs/atomic-commit.md).

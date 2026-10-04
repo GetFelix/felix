@@ -14,14 +14,14 @@
   ],
   "license": "Apache-2.0",
   "author": "Gabriel Loewen",
-  "homepage": "https://gabloe.github.io/felix/clients/typescript/",
+  "homepage": "https://docs.getfelix.dev/clients/typescript/",
   "repository": {
     "type": "git",
-    "url": "https://github.com/gabloe/felix.git",
+    "url": "https://github.com/GetFelix/felix.git",
     "directory": "crates/sdk/felix-typescript"
   },
   "bugs": {
-    "url": "https://github.com/gabloe/felix/issues"
+    "url": "https://github.com/GetFelix/felix/issues"
   },
   "main": "index.js",
   "types": "index.d.ts",

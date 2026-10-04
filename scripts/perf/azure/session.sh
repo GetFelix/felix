@@ -61,7 +61,7 @@ if [ -n "${broker_specs}" ]; then
   release_url=""
   release_desc="source: ${broker_specs}${fp_specs:+ (+fp: ${fp_specs})}"
 else
-  release_url="${RELEASE_URL:-https://github.com/gabloe/felix/releases/download/${RELEASE_TAG}/felix-${RELEASE_TAG}-linux-x86_64.tar.gz}"
+  release_url="${RELEASE_URL:-https://github.com/GetFelix/felix/releases/download/${RELEASE_TAG}/felix-${RELEASE_TAG}-linux-x86_64.tar.gz}"
   release_desc="${release_url}"
 fi
 bootstrap_token="$(openssl rand -hex 24)"

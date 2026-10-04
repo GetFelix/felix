@@ -1,6 +1,6 @@
 # felix-client
 
-The Rust client for [Felix](https://github.com/gabloe/felix): a QUIC pub/sub
+The Rust client for [Felix](https://github.com/GetFelix/felix): a QUIC pub/sub
 broker with durable streams, consumer groups, and a log-backed cache.
 
 The Python and Node packages carry the same name on PyPI and npm, and both are
@@ -59,8 +59,8 @@ while let Some(event) = events.next_event().await? {
 
 ## Documentation
 
-- [Rust client guide](https://gabloe.github.io/felix/clients/rust/)
-- [Delivery semantics](https://gabloe.github.io/felix/architecture/semantics/) —
+- [Rust client guide](https://docs.getfelix.dev/clients/rust/)
+- [Delivery semantics](https://docs.getfelix.dev/architecture/semantics/) —
   what is guaranteed, and what is not
 
 Apache-2.0.

@@ -257,7 +257,7 @@ generation check in the forwarding protocol does not cover this: a stale ex-owne
 never forwards, so nothing compares generations. A publish acknowledged in that
 window is durably written to a broker nobody reads it from, so this is write loss
 rather than a delay. It is tracked in
-[#239](https://github.com/gabloe/felix/issues/239), and closed by the leases in
+[#239](https://github.com/GetFelix/felix/issues/239), and closed by the leases in
 [the replication design](replication-design.md): a broker without a valid lease
 refuses, rather than racing its watch. What holds today is convergence within the
 sync interval. See

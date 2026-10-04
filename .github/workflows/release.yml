@@ -318,6 +318,10 @@ jobs:
             arch: arm64
             runner: ubuntu-24.04-arm
     steps:
+      # GHCR names must be lowercase and the owner is GetFelix.
+      - name: Registry owner
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
       - name: Checkout release tag
         uses: actions/checkout@v7
         with:
@@ -339,7 +343,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image.name }}
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image.name }}
           tags: |
             type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
             type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }}
@@ -354,7 +358,7 @@ jobs:
           platforms: ${{ matrix.platform.name }}
           # Untagged: a tag here would point at one platform until the merge
           # job moved it, and a pull in that window gets the wrong image.
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image.name }},push-by-digest=true,name-canonical=true,push=${{ env.PUSH == 'true' }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image.name }},push-by-digest=true,name-canonical=true,push=${{ env.PUSH == 'true' }}
           labels: ${{ steps.meta.outputs.labels }}
           # Provenance and SBOM travel with the image rather than beside it, so
           # a puller can ask what is in it without trusting a separate file.
@@ -404,6 +408,10 @@ jobs:
       matrix:
         image: [felix-broker, felix-controlplane, felixctl]
     steps:
+      # GHCR names must be lowercase and the owner is GetFelix.
+      - name: Registry owner
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
       - name: Download the platform digests
         uses: actions/download-artifact@v8
         with:
@@ -427,7 +435,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
           # `latest` only on a tag with no pre-release suffix, so a v0.4.0-preview
           # never becomes what `docker pull` gives someone by default.
           tags: |
@@ -438,7 +446,7 @@ jobs:
       - name: Create the manifest list
         id: merge
         env:
-          IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
         working-directory: ${{ runner.temp }}/digests
         run: |
           count=$(ls | wc -l)
@@ -457,7 +465,7 @@ jobs:
       - name: Sign the image
         env:
           DIGEST: ${{ steps.merge.outputs.digest }}
-          IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
         run: |
           # Signed by digest, never by tag: a tag can be moved to point at
           # something else, and a signature over a tag would follow it.

@@ -17,9 +17,9 @@ Felix stores everything in **an append-only log, split into shards**. A shard is
 owned by one broker and replicated to others. Streams, caches and queues are
 three ways of *reading* that log, not three subsystems.
 
-![One append-only log per shard, read three ways: as a stream by offset, as a cache through a key index, and as a queue through a cursor shared by a consumer group.](/felix/diagrams/one-log.svg)
+![One append-only log per shard, read three ways: as a stream by offset, as a cache through a key index, and as a queue through a cursor shared by a consumer group.](/diagrams/one-log.svg)
 
-[Projections](/felix/architecture/projections/) animates that same picture,
+[Projections](/architecture/projections/) animates that same picture,
 with the three readings advancing over one log at once, and cites the test
 behind each claim.
 
@@ -28,12 +28,12 @@ recovery path, one placement rule and one replication path, and each semantic is
 a small amount of code on top. When you are deciding where a change belongs, the
 question is usually "is this about the log, or about one way of reading it?"
 
-[Projections](/felix/architecture/projections/) is the reference for what each
+[Projections](/architecture/projections/) is the reference for what each
 reading stores and rebuilds, with the test behind every claim.
 
 ## The three processes
 
-![Clients connect to any broker over QUIC. Brokers are peers that forward requests for shards they do not own and replicate the ones they lead. A control plane places shards by rendezvous hashing, and brokers watch its assignment feed. Inside a shard, one append-only log is read as a stream by offset and as a cache through a key index.](/felix/diagrams/architecture.svg)
+![Clients connect to any broker over QUIC. Brokers are peers that forward requests for shards they do not own and replicate the ones they lead. A control plane places shards by rendezvous hashing, and brokers watch its assignment feed. Inside a shard, one append-only log is read as a stream by offset and as a cache through a key index.](/diagrams/architecture.svg)
 
 **The client** (`crates/sdk/felix-client`) is a library. It holds pools of QUIC
 connections, encodes frames, and knows how to follow a redirect. It never
@@ -57,7 +57,7 @@ in the background and answer from a routing snapshot they already hold.
 ### 1. The client encodes a frame
 
 `Client::publisher()` gives a handle; `publish()` takes a tenant, namespace,
-stream, payload and an [`AckMode`](/felix/architecture/wire-protocol/).
+stream, payload and an [`AckMode`](/architecture/wire-protocol/).
 
 The frame is `felix-wire`'s: a header with **flags** that select the payload
 layout, then the body. Flags are not a version number. An unknown flag bit is
@@ -136,8 +136,8 @@ rather than a write-ahead log. It depends on four properties:
 - **Group commit** is the biggest throughput lever under `FsyncMode::OnCommit`:
   one blocking flush serves many waiters.
 
-> [Durable Storage](/felix/architecture/durable-storage/) and
-> [the segment format](/felix/architecture/storage-format/).
+> [Durable Storage](/architecture/durable-storage/) and
+> [the segment format](/architecture/storage-format/).
 
 ### 6. Replication ships it, if the stream asked
 
@@ -194,20 +194,20 @@ If you find yourself reordering one of these, it is almost certainly a bug.
 ## Reading order
 
 1. **This page**, for the shape.
-2. [What Felix Is For](/felix/getting-started/what-felix-is-for/), for the
+2. [What Felix Is For](/getting-started/what-felix-is-for/), for the
    status table. It is kept current per capability and is the page to trust when
    another disagrees.
-3. [Projections](/felix/architecture/projections/): the three readings, with
+3. [Projections](/architecture/projections/): the three readings, with
    the test behind each claim.
-4. [Delivery Semantics](/felix/architecture/semantics/): what is guaranteed,
+4. [Delivery Semantics](/architecture/semantics/): what is guaranteed,
    and what is not.
-5. [Wire Protocol](/felix/architecture/wire-protocol/), then
+5. [Wire Protocol](/architecture/wire-protocol/), then
    `docs/internal-protocol.md` for the broker-to-broker one.
-6. [Durable Storage](/felix/architecture/durable-storage/) and
-   [the segment format](/felix/architecture/storage-format/).
+6. [Durable Storage](/architecture/durable-storage/) and
+   [the segment format](/architecture/storage-format/).
 7. `docs/replication-design.md`, which explains the reasoning as well as the
    mechanism.
-8. [How Felix Works](/felix/development/how-felix-works/): function-by-function
+8. [How Felix Works](/development/how-felix-works/): function-by-function
    internals, once the shape above is familiar.
 
 ## Where the code is
@@ -224,7 +224,7 @@ If you find yourself reordering one of these, it is almost certainly a bug.
 | `felix-replication` | Shipping a shard's log from leader to followers, the peer transport, and when a `Quorum` write is on a majority |
 | `services/felix-broker-service` | The broker binary: QUIC handlers, routing, wiring replication into the node |
 | `services/felix-controlplane-service` | Metadata, placement, and the REST API |
-| `felix-cluster` | A local multi-broker cluster, for integration and failure tests. It injects process, link, clock and fsync faults ([the fault API](https://github.com/gabloe/felix/blob/main/docs/cluster-harness.md#the-fault-api)) and checks histories under them ([the history checker](https://github.com/gabloe/felix/blob/main/docs/history-checker.md)) |
+| `felix-cluster` | A local multi-broker cluster, for integration and failure tests. It injects process, link, clock and fsync faults ([the fault API](https://github.com/GetFelix/felix/blob/main/docs/cluster-harness.md#the-fault-api)) and checks histories under them ([the history checker](https://github.com/GetFelix/felix/blob/main/docs/history-checker.md)) |
 
 ## Before you change something
 

@@ -26,7 +26,7 @@ serviceAccount:
 controlplane:
   enabled: true
   image:
-    repository: gabloe/felix-controlplane
+    repository: getfelix/felix-controlplane
     # Defaults to the chart's appVersion.
     tag: ""
     # Pin by digest in production: images are signed by digest, and a tag can
@@ -178,7 +178,7 @@ controlplane:
 broker:
   enabled: true
   image:
-    repository: gabloe/felix-broker
+    repository: getfelix/felix-broker
     tag: ""
     digest: ""
   # Brokers. Each is a StatefulSet member with a stable name that is its node

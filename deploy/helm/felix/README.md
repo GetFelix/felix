@@ -34,7 +34,7 @@ helm install felix deploy/helm/felix -n felix --create-namespace \
 Brokers start disabled because a broker refuses to start without a credential,
 and the credential comes out of the control plane's day-0 bootstrap. The full
 sequence, including minting it, is on the
-[Kubernetes deployment page](https://gabloe.github.io/felix/deployment/kubernetes/).
+[Kubernetes deployment page](https://docs.getfelix.dev/deployment/kubernetes/).
 Once the credential is in a Secret:
 
 ```bash
@@ -122,7 +122,7 @@ these refusals still refuses.
 - Kubernetes 1.25 or later, Helm 3.8 or later.
 - A StorageClass for the broker volumes, and for Raft members.
 - For the Postgres backend: a database with one writable endpoint and
-  synchronous replication, as [Control-plane HA](https://gabloe.github.io/felix/deployment/control-plane-ha/)
+  synchronous replication, as [Control-plane HA](https://docs.getfelix.dev/deployment/control-plane-ha/)
   sets out. The chart does not deploy one.
 - For peer mTLS: cert-manager, cert-manager-csi-driver, and an Issuer or
   ClusterIssuer for the peer CA.

@@ -29,7 +29,7 @@ JetStream and RabbitMQ have routing and delivery features built over a decade of
 people needing them. The rest of this section is about the cost of running all
 three together, not about any one of them being bad.
 
-![The usual arrangement: one application wired to three separate systems: an event log such as Kafka or Redpanda, a cache such as Redis, and a work queue such as NATS JetStream or RabbitMQ. Each carries its own replication, its own logins and permissions, and its own behaviour when it fails. A write travels from the application into the event log and is recorded as order 42 paid, and the same fact then has to be sent separately to the cache by the application's own glue code. A second write records order 42 as refunded in the log, but the matching write to the cache fails partway across, and the two systems are left disagreeing with nothing but the application able to notice. The closing frame counts what is being operated: three replication models, three security models, three failure models, and the glue code holding them together.](/felix/diagrams/three-stack.svg)
+![The usual arrangement: one application wired to three separate systems: an event log such as Kafka or Redpanda, a cache such as Redis, and a work queue such as NATS JetStream or RabbitMQ. Each carries its own replication, its own logins and permissions, and its own behaviour when it fails. A write travels from the application into the event log and is recorded as order 42 paid, and the same fact then has to be sent separately to the cache by the application's own glue code. A second write records order 42 as refunded in the log, but the matching write to the cache fails partway across, and the two systems are left disagreeing with nothing but the application able to notice. The closing frame counts what is being operated: three replication models, three security models, three failure models, and the glue code holding them together.](/diagrams/three-stack.svg)
 
 You have three deployments to install, upgrade and patch. Each has its own
 security model, so an identity has to be granted access three times in three
@@ -51,12 +51,12 @@ only ever land at the end, and nothing already written is ever changed.
 
 Stream, cache and queue are three ways of **reading** that log.
 
-![The same application against one Felix cluster. Where the previous picture had three separate systems, there is now one box holding a single append-only log. A write travels once from the service into that log and is recorded as order 42 paid. Three readings then appear beside the same log: a stream that hands every record to everyone watching, a cache that answers with the newest value for a key, and a queue that hands records to one worker at a time until the work is finished. A second write records order 42 as refunded, and all three readings move to it together, because there is one copy of the fact and no second place to send it to. The closing frame counts what is being operated: one replication model, one security model, one failure model, and no glue code, with a note that a deployment is brokers plus a control plane, which is two kinds of process rather than one.](/felix/diagrams/one-plane.svg)
+![The same application against one Felix cluster. Where the previous picture had three separate systems, there is now one box holding a single append-only log. A write travels once from the service into that log and is recorded as order 42 paid. Three readings then appear beside the same log: a stream that hands every record to everyone watching, a cache that answers with the newest value for a key, and a queue that hands records to one worker at a time until the work is finished. A second write records order 42 as refunded, and all three readings move to it together, because there is one copy of the fact and no second place to send it to. The closing frame counts what is being operated: one replication model, one security model, one failure model, and no glue code, with a note that a deployment is brokers plus a control plane, which is two kinds of process rather than one.](/diagrams/one-plane.svg)
 
 The write happens once. There is no second system to copy it into, so there is no
 pair of systems that can disagree, and no glue whose job was to stop them.
 
-That single write is an [atomic commit](/felix/features/atomic-commits/): one
+That single write is an [atomic commit](/features/atomic-commits/): one
 call carries the event and the state that goes with it, and Felix stores them
 as one record. Subscribers see the event, a consumer group gets it as work, and
 a state read returns the new value, all at the same offset. A reader never sees
@@ -91,7 +91,7 @@ record without checking. And a group of workers
 reads one shard: if you split a stream across several, each shard gets its own
 group, and dividing the work between them is yours to arrange.
 
-![A plain-language walkthrough of one log serving three jobs. Five records are written one after another, each landing at the end of the line and never changing afterwards. Three markers then read the same records in different ways: the stream marker walks forward across every record and ends at the newest one, the queue marker follows the same path but falls behind and stops partway because it only moves when a worker says it has finished a record, and the cache is three markers, one per key, each jumping to the newest record carrying its own key. Nothing is copied anywhere; the three markers are simply three ways of pointing at the same five records.](/felix/diagrams/why-log.svg)
+![A plain-language walkthrough of one log serving three jobs. Five records are written one after another, each landing at the end of the line and never changing afterwards. Three markers then read the same records in different ways: the stream marker walks forward across every record and ends at the newest one, the queue marker follows the same path but falls behind and stops partway because it only moves when a worker says it has finished a record, and the cache is three markers, one per key, each jumping to the newest record carrying its own key. Nothing is copied anywhere; the three markers are simply three ways of pointing at the same five records.](/diagrams/why-log.svg)
 
 Nothing is copied into a second store, and no reading can disturb another. A
 worker finishing a job cannot move
@@ -99,7 +99,7 @@ a subscriber's position, and overwriting a key adds a record rather than
 destroying one.
 
 The precise version of this, with the test behind each claim, is
-[Projections](/felix/architecture/projections/).
+[Projections](/architecture/projections/).
 
 ## What that gets you
 
@@ -132,7 +132,7 @@ from it, so `kcat` and librdkafka programs can be pointed at Felix one at a
 time while the rest of a system moves over. (The Java client is not tested yet.) What it does not speak is
 anything built on consumer groups or transactions; that limit is spelled out
 under [When not to use Felix](#when-not-to-use-felix), and the details are in
-[Kafka compatibility](/felix/features/kafka/).
+[Kafka compatibility](/features/kafka/).
 
 ## When not to use Felix
 
@@ -151,7 +151,7 @@ under [When not to use Felix](#when-not-to-use-felix), and the details are in
   have and owning its behaviour across Kafka versions. Instead, Felix answers a group
   consumer with an error that says so, rather than leave it hanging in "waiting for group rebalance". The details, including what other
   Kafka-compatible systems had to build, are in
-  [`docs/kafka-compatibility.md`](https://github.com/gabloe/felix/blob/main/docs/kafka-compatibility.md).
+  [`docs/kafka-compatibility.md`](https://github.com/GetFelix/felix/blob/main/docs/kafka-compatibility.md).
 - **You need AMQP.** Exchanges, bindings, topic routing, per-message TTL, priority
   queues: Felix has none of the RabbitMQ model. A queue in Felix is a
   group of workers reading one shard, and nothing more.
@@ -191,11 +191,11 @@ What does not exist yet:
 - Clients beyond Rust, Python and TypeScript.
 
 For the detail on each capability (shipped, partial, or only intended), read
-[What Felix Is For](/felix/getting-started/what-felix-is-for/). It is kept current
+[What Felix Is For](/getting-started/what-felix-is-for/). It is kept current
 per capability and it is the page to trust when another disagrees with it.
 
 ## Next
 
-- [What Felix Is For](/felix/getting-started/what-felix-is-for/): the status table and where Felix fits
-- [Quickstart](/felix/getting-started/quickstart/): run a broker and publish something
-- [Projections](/felix/architecture/projections/): the precise version of how one log is read three ways
+- [What Felix Is For](/getting-started/what-felix-is-for/): the status table and where Felix fits
+- [Quickstart](/getting-started/quickstart/): run a broker and publish something
+- [Projections](/architecture/projections/): the precise version of how one log is read three ways

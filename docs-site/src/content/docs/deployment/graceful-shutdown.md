@@ -64,7 +64,7 @@ A broker that simply stopped would leave every shard it leads to fail over:
 publishes to those shards are refused until the control plane notices and
 promotes a follower, and a shard with no follower waits for the broker to come
 back. So a clustered broker first gives its shards away, the same way
-[draining a broker](/felix/deployment/scaling/#draining-a-broker) does:
+[draining a broker](/deployment/scaling/#draining-a-broker) does:
 
 1. With readiness already off, it asks the control plane to drain it
    (`POST /v1/nodes/{id}/drain`, with its own credential). Placement stops
@@ -114,7 +114,7 @@ and closes its peer connections. If a shard's followers stay out of reach, it
 logs `stopping while a shard led here is on no follower in full` at WARN.
 
 Moves run under the same limits as any other
-(see [Tuning](/felix/deployment/scaling/#tuning)). With the default
+(see [Tuning](/deployment/scaling/#tuning)). With the default
 `FELIX_SHARD_MOVES_MAX_CONCURRENT=1` they go one at a time. A move whose
 destination is already a caught-up follower copies nothing, only fences and
 cuts over, so replicated shards go quickly. Watch
@@ -238,7 +238,7 @@ The Helm chart derives it from all three (`broker.shutdown.handoffTimeoutMs`).
 
 ## What is not covered yet
 
-Tracked under [#139](https://github.com/gabloe/felix/issues/139):
+Tracked under [#139](https://github.com/GetFelix/felix/issues/139):
 
 - Cancellation is coordinated at the connection boundary. The drain waits for
   each connection task to finish, and then for the publish scheduler to empty its

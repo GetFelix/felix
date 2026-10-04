@@ -1008,4 +1008,4 @@ rather than reworking the log:
 The open questions tiering still has to answer (when a segment becomes cold, how
 much local cache to keep, and what a cold read costs in tail latency) are design
 work, not refactoring. Tracked as
-[#172](https://github.com/gabloe/felix/issues/172).
+[#172](https://github.com/GetFelix/felix/issues/172).

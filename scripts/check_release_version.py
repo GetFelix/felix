@@ -51,9 +51,10 @@ def read(path: str, kind: str) -> str | None:
     return match.group(1) if match else None
 
 
-#: Where the docs pin a released image, as `ghcr.io/gabloe/<image>:<version>`.
+#: Where the docs pin a released image, as `ghcr.io/getfelix/<image>:<version>`
+#: (or `ghcr.io/gabloe/...` for 0.6.0-preview and earlier).
 DOC_ROOTS = ["docs", "docs-site/src/content/docs", "crates/tools/felixctl/README.md"]
-IMAGE_PIN = re.compile(r"ghcr\.io/gabloe/felix[a-z-]*:(\d[0-9A-Za-z.+-]*)")
+IMAGE_PIN = re.compile(r"ghcr\.io/(?:getfelix|gabloe)/felix[a-z-]*:(\d[0-9A-Za-z.+-]*)")
 
 
 def stale_doc_pins(expected: str) -> list[str]:

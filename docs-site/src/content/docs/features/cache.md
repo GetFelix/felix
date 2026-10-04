@@ -61,7 +61,7 @@ Felix cache is optimized for microsecond-level latency:
 | get (miss) | - | 165 µs | 340 µs | 179k ops/sec |
 
 Methodology and current figures live in
-[Benchmarks](/felix/features/benchmarks/). Compared to a plain-TCP cache,
+[Benchmarks](/features/benchmarks/). Compared to a plain-TCP cache,
 Felix pays some latency for always-on TLS and QUIC framing; what it buys is
 multiplexing, per-stream flow control, and one system instead of two.
 
@@ -184,7 +184,7 @@ Without pooling (single stream):
 With pooling, requests spread across streams with independent flow control,
 so concurrency scales until the transport or broker saturates. It is not a fixed
 multiplier. Measure your own workload's shape; the concurrency sweep in
-[Benchmarks](/felix/features/benchmarks/) is the reference point.
+[Benchmarks](/features/benchmarks/) is the reference point.
 
 ### 6. Consistency Levels
 
@@ -208,7 +208,7 @@ assert_eq!(
 ```
 
 A cache declares `Leader` (the default) or `Quorum` when it is created, as a
-stream does ([Control plane API](/felix/api/control-plane-api/)). The level
+stream does ([Control plane API](/api/control-plane-api/)). The level
 covers puts, deletes and counter adds.
 
 - **`Leader`**: the owner applies the change and answers. Replicas catch up
@@ -231,8 +231,8 @@ which makes the read linearizable without clocks. `FELIX_QUORUM_READS=lease`
 keeps a broker's reads on the lease. Writes use the lease in every mode.
 Watches on a replicated `Quorum` cache stop needing it once `lease_free_reads`
 is finalized: a watch sees only committed changes, and ends when its broker
-learns it was replaced or has heard from no majority for a lease duration. [Upgrades](/felix/deployment/upgrades/) has the finalize runbook, and
-[Delivery Semantics](/felix/architecture/semantics/#consistency-model) the full
+learns it was replaced or has heard from no majority for a lease duration. [Upgrades](/deployment/upgrades/) has the finalize runbook, and
+[Delivery Semantics](/architecture/semantics/#consistency-model) the full
 contract.
 
 ### 7. Keyed Watch
@@ -273,7 +273,7 @@ while let Some(item) = watch.recv().await {
 A prefix watch works the same way. `CacheWatchFilter::Prefix("user:".into())`
 sees every key under `user:`, and an empty prefix is every key in the shard.
 
-![An animated walkthrough of a keyed cache watch. Writes for several keys are applied to one cache shard's log in order, each taking the next offset. A watch on the prefix user: receives a copy of each matching change the moment it is applied (puts with their values, a delete as a tombstone), while writes to other keys pass it by. The delivered copies keep their log offsets, so the watch's offsets are sparse by construction, which is why a gap between them is not a drop signal and falling behind is reported explicitly instead.](/felix/diagrams/cache-watch.svg)
+![An animated walkthrough of a keyed cache watch. Writes for several keys are applied to one cache shard's log in order, each taking the next offset. A watch on the prefix user: receives a copy of each matching change the moment it is applied (puts with their values, a delete as a tombstone), while writes to other keys pass it by. The delivered copies keep their log offsets, so the watch's offsets are sparse by construction, which is why a gap between them is not a drop signal and falling behind is reported explicitly instead.](/diagrams/cache-watch.svg)
 
 **Resume by offset.** Pass `Some(offset)` to resume at the first change not yet
 seen; the broker replays `[offset, tail)` from the cache's log before live
@@ -351,7 +351,7 @@ The features are negotiated (`FEATURE_CACHE_WATCH`, with retained delivery as
 its own `FEATURE_CACHE_WATCH_RETAINED` bit) and advertised only by brokers
 whose cache is log-backed: an in-memory cache has no offsets to anchor resume,
 duplicate detection, or the lag signal to. See the
-[wire protocol](/felix/architecture/wire-protocol/) for the message shapes.
+[wire protocol](/architecture/wire-protocol/) for the message shapes.
 
 ### 8. Counters
 

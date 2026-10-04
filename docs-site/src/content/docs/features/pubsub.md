@@ -45,7 +45,7 @@ graph LR
 A publish is encoded **once** and the encoded frame is shared by every
 subscriber, so adding subscribers adds delivery work but not re-encoding
 work. Latency at fanout 1 and 10 is measured on
-[Benchmarks](/felix/features/benchmarks/), with the methodology. Fanout above
+[Benchmarks](/features/benchmarks/), with the methodology. Fanout above
 10 has not been benchmarked, so treat behaviour at hundreds or thousands of
 subscribers as unmeasured.
 
@@ -72,7 +72,7 @@ publisher
 Batching amortizes per-request overhead (framing, syscalls, one ack for the
 whole batch), and it is the single biggest throughput lever on the publish
 path. Measured batch throughput is in
-[Benchmarks](/felix/features/benchmarks/). A batched run measures a
+[Benchmarks](/features/benchmarks/). A batched run measures a
 throughput profile, not request latency.
 
 ### Acked publishes are pipelined
@@ -126,7 +126,7 @@ to different streams may be observed in either order.
 On a multi-shard stream, ordering is per routing key. A stream maps a key to a
 shard by `hash(key) % shards`, or, for streams created with jump-hash routing,
 by jump consistent hashing of the same hash; an unkeyed publish goes to shard
-0. See the [wire protocol](/felix/architecture/wire-protocol/) page.
+0. See the [wire protocol](/architecture/wire-protocol/) page.
 
 ## Isolation and backpressure
 
@@ -144,7 +144,7 @@ at each level:
   subscription can have pending. What happens when it fills is set by the
   overflow policy:
 
-![One slow subscriber and two fast ones, under each overflow policy. Under DropNew, the default, the slow subscriber's bounded queue fills and further records are dropped for that subscriber alone while the publisher and the fast subscribers run at full rate. Under Block nothing is dropped, and the publisher and both fast subscribers are pulled down to the slow subscriber's speed.](/felix/diagrams/slow-consumer.svg)
+![One slow subscriber and two fast ones, under each overflow policy. Under DropNew, the default, the slow subscriber's bounded queue fills and further records are dropped for that subscriber alone while the publisher and the fast subscribers run at full rate. Under Block nothing is dropped, and the publisher and both fast subscribers are pulled down to the slow subscriber's speed.](/diagrams/slow-consumer.svg)
 
 Under the default a publisher never waits on a subscriber. That is why one
 stalled consumer cannot degrade the rest, and also why a subscriber can
@@ -171,7 +171,7 @@ ephemeral stream there is nothing to resume from.
 
 If you need redelivery rather than detection, use a **consumer group**: it
 acknowledges each record and hands back anything unanswered once the visibility
-timeout lapses. See [Projections](/felix/architecture/projections/).
+timeout lapses. See [Projections](/architecture/projections/).
 :::
 
 ## Delivery semantics
@@ -218,7 +218,7 @@ for record in records {
 `record.attempts` carries how many times this record has been delivered, so a
 consumer can treat a retry differently from a first attempt.
 
-See [Queues](/felix/features/queues/) for dead letters, redrive, and the
+See [Queues](/features/queues/) for dead letters, redrive, and the
 ordering rules that make the cursor safe.
 
 ### Exactly-once delivery is not offered
@@ -232,7 +232,7 @@ carries.
 ## Tuning
 
 Start with the defaults and change things only off a measurement. The
-defaults are what [Benchmarks](/felix/features/benchmarks/) measures. The
+defaults are what [Benchmarks](/features/benchmarks/) measures. The
 knobs pull in two directions:
 
 Toward latency, use smaller batches, shorter delays and shallower queues:
@@ -286,4 +286,4 @@ system that ships one.
 A durable stream can also be written and read with Kafka clients: producers,
 and consumers that assign their own partitions. That makes it possible to put
 Felix behind services that already speak Kafka; see
-[Kafka compatibility](/felix/features/kafka/).
+[Kafka compatibility](/features/kafka/).

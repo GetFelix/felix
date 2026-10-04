@@ -76,7 +76,7 @@ Demo complete.
   the restarted subscriber resumes from new events only. That is a property of
   *this* demo's streams, which are not durable. A durable stream can be resumed
   from a checkpointed offset instead. See
-  [durable storage](/felix/architecture/durable-storage/).
+  [durable storage](/architecture/durable-storage/).
 
 ## How to extend
 

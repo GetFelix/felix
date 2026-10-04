@@ -12,7 +12,7 @@ set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/nats-lib.sh"
 
 ref="${1:-${NATS_LAT_REF:-$(git -C "${nats_dir}" rev-parse --abbrev-ref HEAD)}}"
-sha="$(git ls-remote https://github.com/gabloe/felix "refs/heads/${ref}" "${ref}" | awk 'NR==1{print $1}')"
+sha="$(git ls-remote https://github.com/GetFelix/felix "refs/heads/${ref}" "${ref}" | awk 'NR==1{print $1}')"
 [ -n "${sha}" ] || sha="${ref}"
 lg="${LOADGEN_VMS[0]}"
 log "building nats-latency ${ref} (${sha}) on ${lg}"

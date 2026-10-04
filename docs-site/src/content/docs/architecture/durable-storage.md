@@ -142,7 +142,7 @@ graph TB
 
 ### Appending, and reading back
 
-![The active segment and the index derived from it. Records are appended one after another with ascending offsets; index entries are emitted only for the first record and thereafter every four kibibytes, so the index is sparse. A read for an offset binary-searches the index for the greatest entry at or below it, seeks to that byte position, and scans forward over real records until it reaches the one it wants.](/felix/diagrams/log-append.svg)
+![The active segment and the index derived from it. Records are appended one after another with ascending offsets; index entries are emitted only for the first record and thereafter every four kibibytes, so the index is sparse. A read for an offset binary-searches the index for the greatest entry at or below it, seeks to that byte position, and scans forward over real records until it reaches the one it wants.](/diagrams/log-append.svg)
 
 Each record carries its own length, logical offset, timestamp and a CRC-32 over
 its header and payload. The length comes first and is covered by the checksum, so
@@ -160,7 +160,7 @@ missing, short, or stale index costs a rebuild rather than a wrong answer. It is
 also why a freshly written index can safely skip its fsync.
 
 A new replication leader also writes a generation-start record into the log
-(see the [format specification](/felix/architecture/storage-format/)). It takes
+(see the [format specification](/architecture/storage-format/)). It takes
 an offset like any other record. `read_range` returns it, but only replication
 reads the log that way (`StreamLog::read_log_from`), because it ships and
 compares the log exactly as stored. Subscribers and every other reader go
@@ -169,7 +169,7 @@ of one offset where each one sits.
 
 ### Sealing, rolling, and retention
 
-![A shard's log over time. The active segment fills until it reaches the segment size limit, then is sealed: data and index synced, the preallocated tail trimmed away, and a new active segment opened at the next offset. Later the retention timer deletes the oldest sealed segment whole, base_offset advances to the start of the next surviving segment, and a read below that offset is answered with a Trimmed error naming the oldest surviving offset.](/felix/diagrams/log-lifecycle.svg)
+![A shard's log over time. The active segment fills until it reaches the segment size limit, then is sealed: data and index synced, the preallocated tail trimmed away, and a new active segment opened at the next offset. Later the retention timer deletes the oldest sealed segment whole, base_offset advances to the start of the next surviving segment, and a read below that offset is answered with a Trimmed error naming the oldest surviving offset.](/diagrams/log-lifecycle.svg)
 
 A shard's log is one **active** segment plus any number of **sealed** ones.
 Rollover is decided *before* a write, from the projected size, so one append is
@@ -202,7 +202,7 @@ shard directory is restored from `<shard>.retired`, and leftover siblings are
 deleted.
 
 The full byte layout, versioning rules, and corruption verdicts are in the
-[Durable Segment Format specification](/felix/architecture/storage-format/).
+[Durable Segment Format specification](/architecture/storage-format/).
 
 ## Resuming a subscription
 
@@ -214,7 +214,7 @@ carries its offset, so the client has something to checkpoint.
 The hard part is joining history to live delivery without losing a record in
 between, and the ordering that does it is not the obvious one.
 
-![Two orderings for joining stored history to live delivery. Reading history first and registering the live subscription afterwards leaves a window with no subscriber in it, so a publish landing there is never delivered. Registering first, clamped to the oldest offset the replay ring holds, captures that publish; the older range is only then read from disk, and it is closed because nothing can grow it.](/felix/diagrams/subscribe-join.svg)
+![Two orderings for joining stored history to live delivery. Reading history first and registering the live subscription afterwards leaves a window with no subscriber in it, so a publish landing there is never delivered. Registering first, clamped to the oldest offset the replay ring holds, captures that publish; the older range is only then read from disk, and it is closed because nothing can grow it.](/diagrams/subscribe-join.svg)
 
 Registering first pins the live edge. Everything below it is a closed range that
 nothing can grow, so the disk read that follows cannot race a publish. Do it
@@ -302,7 +302,7 @@ Throughput still scales with concurrency because of group commit. An
 it. 253 → 14,387 records/second from concurrency 1 → 64 is a 57× gain from the
 same code path, and batching on top reaches 185,905.
 
-![Group commit: four concurrent appends queue in the page cache, a single fsync runs, and all four are acknowledged together](/felix/diagrams/group-commit.svg)
+![Group commit: four concurrent appends queue in the page cache, a single fsync runs, and all four are acknowledged together](/diagrams/group-commit.svg)
 
 The lock protocol behind that picture (who flushes, and what the others find
 when they wake):
@@ -333,7 +333,7 @@ wakes them all together rather than one after another through the lock.
 
 The full matrix, the regression budget, and the reasoning behind each
 optimisation are in
-[the performance document](https://github.com/gabloe/felix/blob/main/docs/storage-performance.md).
+[the performance document](https://github.com/GetFelix/felix/blob/main/docs/storage-performance.md).
 
 ## Configuration
 

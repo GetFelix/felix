@@ -91,12 +91,12 @@ trap 'rm -rf "$work"' EXIT
 # most minimal containers have curl and no gh, and the release is public, so
 # there is nothing to authenticate to.
 if command -v gh >/dev/null 2>&1; then
-  gh release download "$tag" --repo gabloe/felix --pattern '*.node' --dir "$work"
+  gh release download "$tag" --repo GetFelix/felix --pattern '*.node' --dir "$work"
 else
   echo "  no gh; downloading over https"
   for dir in "$pkg"/npm/*/; do
     node_file="felix.$(basename "$dir").node"
-    url="https://github.com/gabloe/felix/releases/download/${tag}/${node_file}"
+    url="https://github.com/GetFelix/felix/releases/download/${tag}/${node_file}"
     if ! curl -fsSL --max-time 300 -o "$work/$node_file" "$url"; then
       echo "error: could not download $node_file from $tag" >&2
       exit 1
@@ -163,7 +163,7 @@ cat <<DONE
 
 All six are on npm. Two things to do now, once:
 
-  1. Configure a trusted publisher on each package -- repository gabloe/felix,
+  1. Configure a trusted publisher on each package -- repository GetFelix/felix,
      workflow release.yml, environment npm.
   2. Delete the NPM_TOKEN secret. Nothing reads it once npm_stage is off.
 

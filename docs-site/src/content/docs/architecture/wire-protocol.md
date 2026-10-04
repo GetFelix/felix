@@ -145,7 +145,7 @@ Each control message is a JSON object tagged by `type`, carried in a frame with
 left out, in which case it means what it meant before the field existed. This
 page covers the messages most clients need. The full set, including consumer
 groups, idempotent producers and shard queries, is in
-[`docs/protocol.md`](https://github.com/gabloe/felix/blob/main/docs/protocol.md).
+[`docs/protocol.md`](https://github.com/GetFelix/felix/blob/main/docs/protocol.md).
 
 ### Client → Server Messages
 
@@ -586,7 +586,7 @@ client that offered `FEATURE_ERROR_CODES`, and `detail` may be absent even then.
 it does not know. `retry` says what the client may do next: send again, wait
 first, go to another broker, send again only if the request is idempotent, or
 give up. What each code means is in
-[Error codes](https://github.com/gabloe/felix/blob/main/docs/protocol.md#error-codes).
+[Error codes](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#error-codes).
 
 ## Binary Publish Batch Encoding
 
@@ -824,7 +824,7 @@ advertised its bit.
 | `0x40_0000` | `FEATURE_GROUP_SKIPPED` | Offered by a client that reads `skipped_before` on a group record. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |
 
 The full list, with what each depends on, is in
-[`docs/protocol.md`](https://github.com/gabloe/felix/blob/main/docs/protocol.md).
+[`docs/protocol.md`](https://github.com/GetFelix/felix/blob/main/docs/protocol.md).
 
 ### Pipelined publishes
 
@@ -852,7 +852,7 @@ The order matters to an idempotent producer with several batches in flight:
 when one fails, every batch behind it on the stream is answered after it, so the
 producer sees the failure before any answer that depends on it. The details are
 in
-[Pipelined publishes](https://github.com/gabloe/felix/blob/main/docs/protocol.md#pipelined-publishes).
+[Pipelined publishes](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#pipelined-publishes).
 
 ## Shared Binary EventBatch Encoding
 

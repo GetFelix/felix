@@ -10,7 +10,7 @@ group. Metadata (tenants, streams, shard assignments, membership, auth
 configuration) becomes a Raft-replicated state machine, persisted as a log
 and snapshots on each instance's own volume. No external database is needed.
 Postgres remains a fully supported backend, and
-[Control-plane HA](/felix/deployment/control-plane-ha/) covers how to choose.
+[Control-plane HA](/deployment/control-plane-ha/) covers how to choose.
 
 The failure handling is covered by tests. Three instances under continuous
 broker traffic come through rolling restarts, a leader killed with SIGKILL, a
@@ -20,7 +20,7 @@ present on every member afterwards**. The faults injected are the ones a single
 machine can produce; multi-machine fault injection is not covered. The design
 record, with the alternatives considered and the problems found while building
 it, is
-[`docs/metadata-raft-design.md`](https://github.com/gabloe/felix/blob/main/docs/metadata-raft-design.md).
+[`docs/metadata-raft-design.md`](https://github.com/GetFelix/felix/blob/main/docs/metadata-raft-design.md).
 
 ```mermaid
 flowchart LR
@@ -57,7 +57,7 @@ flowchart LR
   same safety margin before granting again. Data-plane fencing is
   unchanged: it still rests on the assignment generation.
 - **Raft is fine here even though stream replication rejected it.** The
-  [replication design](https://github.com/gabloe/felix/blob/main/docs/replication-design.md)
+  [replication design](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md)
   rejected Raft for stream payloads because Raft truncates divergent log
   suffixes and the segment store never rewrites. The metadata Raft log is a
   separate, kilobyte-scale log that never touches `felix-storage`, so the
@@ -122,7 +122,7 @@ new ones only answer authenticated ones on the peer port. Restart every
 member together (set `FELIX_RAFT_CLUSTER_ID` to any stable name; existing
 data dirs adopt it). Metadata writes pause for the restart; brokers keep
 serving. A release that adds a Raft command has its own rule, in
-[the design doc](https://github.com/gabloe/felix/blob/main/docs/metadata-raft-design.md#upgrading). Writes reaching
+[the design doc](https://github.com/GetFelix/felix/blob/main/docs/metadata-raft-design.md#upgrading). Writes reaching
 a follower forward to the leader invisibly; the expiry sweep and shard
 placement run only on the leader, confirmed by a linearizable check each
 tick. A proposal that cannot commit (no leader, quorum lost) fails after a
@@ -147,7 +147,7 @@ leader, a quorum has acknowledged it within the last 5s. That last check
 takes a partitioned, quorumless leader out of rotation before it serves
 stale reads, and a test covers it. `/v1/system/live` stays
 process-local, exactly as before: losing quorum is not fixed by a restart.
-The probe settings on [Control-plane HA](/felix/deployment/control-plane-ha/)
+The probe settings on [Control-plane HA](/deployment/control-plane-ha/)
 (intervals, thresholds) carry over unchanged.
 
 Consensus position ships as metrics: `felix_meta_raft_term`,
@@ -227,7 +227,7 @@ spec:
 
 The PVC is what makes a pod restart a rejoin; a member whose volume is lost
 rejoins empty and is rebuilt by snapshot install. The
-[Helm chart](/felix/deployment/kubernetes/) renders exactly this with
+[Helm chart](/deployment/kubernetes/) renders exactly this with
 `controlplane.storage.backend=raft`, deriving each member's id from its pod
 ordinal and the peers map from the replica count. It lets empty members
 start with `new` only until a post-install hook has seen the group form and
@@ -314,4 +314,4 @@ buys nothing safety uses. And SWIM's constant-load advantage pays off at
 hundreds of nodes rather than tens. The full decision, including the asymmetric
 reachability gap that peer-reachability reports would cover more cheaply and
 the triggers for reopening, is in
-[`docs/control-plane.md`](https://github.com/gabloe/felix/blob/main/docs/control-plane.md#why-liveness-stays-centralized-swim-considered).
+[`docs/control-plane.md`](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#why-liveness-stays-centralized-swim-considered).

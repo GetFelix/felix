@@ -142,7 +142,7 @@ subscriber's writer, before the network. The first `FELIX_TENANT_METRICS_MAX`
 tenants (100 by default) keep their own label for the life of the process;
 the rest share `_overflow`, so a non-zero overflow counter means the busiest
 tenant may be hiding there. Quotas are set with the `FELIX_TENANT_PUBLISH_*`
-variables in the [environment reference](/felix/reference/environment-variables/#connection-limits-and-tenant-quotas).
+variables in the [environment reference](/reference/environment-variables/#connection-limits-and-tenant-quotas).
 
 **Is durability the bottleneck?** Compare append time against sync time, and
 watch the group-commit fan-in:
@@ -185,7 +185,7 @@ felix_broker_credential_rotations_total     # by outcome: ok, rejected; a token 
 ```
 
 **Are Kafka clients being served?** Only when the Kafka listener is on
-(`FELIX_KAFKA_LISTEN`; see [Kafka compatibility](/felix/features/kafka/)):
+(`FELIX_KAFKA_LISTEN`; see [Kafka compatibility](/features/kafka/)):
 
 ```prometheus
 felix_kafka_connections                     # gauge: Kafka connections open now
@@ -246,7 +246,7 @@ seated. Alert when either stays above zero for longer than the restore delay
 plus the time a shard takes to copy. `felix-controlplane admin replication`
 (or `GET /v1/placement/replication`) lists which shards, which members are
 unavailable, and where a copy is going. See
-[Restoring the replication factor](/felix/deployment/moving-shards/#restoring-the-replication-factor).
+[Restoring the replication factor](/deployment/moving-shards/#restoring-the-replication-factor).
 
 A halted replica (below) does not count as a copy: it is in no quorum.
 `felix_shard_replicas_halted` counts them, and the replication listing names
@@ -298,7 +298,7 @@ A healthy broker answers `[]`, not 404.
 
 The same listener answers `GET /backup/offsets`: the committed offset of every
 log of every shard the broker leads, which is what a backup point records (see
-[Backup and restore](/felix/deployment/backup-and-restore/)).
+[Backup and restore](/deployment/backup-and-restore/)).
 
 ### Bootstrap attempts
 
@@ -362,7 +362,7 @@ touches nothing outside the process. A liveness probe drives restarts, and
 restarting every instance because a dependency is down turns one outage into
 a restart loop. `/ready` says "send this instance traffic," and goes false
 first thing during shutdown so load balancers steer away before anything
-stops working. See [Graceful shutdown](/felix/deployment/graceful-shutdown/).
+stops working. See [Graceful shutdown](/deployment/graceful-shutdown/).
 
 ## Distributed tracing
 
@@ -374,7 +374,7 @@ export nothing. An unreachable collector does not stop a broker from serving:
 failed exports are logged by the exporter and the spans are dropped.
 
 **Configuration** is by environment variable. Felix does take a YAML config file
-(`FELIX_BROKER_CONFIG`, see [Configuration](/felix/reference/configuration/)),
+(`FELIX_BROKER_CONFIG`, see [Configuration](/reference/configuration/)),
 but it has no tracing keys. The exporter speaks OTLP over gRPC (tonic) and is
 configured entirely through the standard OTel variables:
 

@@ -153,7 +153,7 @@ for what the current release guarantees.
   `DiskLogProvider::set_stream_retention` set bounds after a log opens. (#964)
 - The Docker Compose, installation and Kubernetes pages pull the
   `0.6.0-preview` images instead of `0.5.0`, and a release tag now fails
-  `check_release_version.py` while any doc pins a `ghcr.io/gabloe/felix*`
+  `check_release_version.py` while any doc pins a `ghcr.io/getfelix/felix*`
   image at another version. (#957)
 - `felixctl` saves its config through a temporary file that is synced and
   renamed into place, and makes it owner-only even when it already existed
@@ -3081,13 +3081,13 @@ isolation, ephemeral cache, tenant/namespace/stream registries, RBAC and Felix
 token authorization, a control plane with a Postgres-backed store, a Rust client
 SDK, and a protocol conformance runner.
 
-[Unreleased]: https://github.com/gabloe/felix/compare/v0.6.0-preview...HEAD
-[0.6.0-preview]: https://github.com/gabloe/felix/compare/v0.5.0...v0.6.0-preview
-[0.5.0]: https://github.com/gabloe/felix/compare/v0.4.1...v0.5.0
-[0.4.1]: https://github.com/gabloe/felix/compare/v0.4.0...v0.4.1
-[0.4.0]: https://github.com/gabloe/felix/compare/v0.3.1...v0.4.0
-[0.3.1]: https://github.com/gabloe/felix/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/gabloe/felix/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/gabloe/felix/compare/v0.1.1...v0.2.0
-[0.1.1]: https://github.com/gabloe/felix/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/gabloe/felix/releases/tag/v0.1.0
+[Unreleased]: https://github.com/GetFelix/felix/compare/v0.6.0-preview...HEAD
+[0.6.0-preview]: https://github.com/GetFelix/felix/compare/v0.5.0...v0.6.0-preview
+[0.5.0]: https://github.com/GetFelix/felix/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/GetFelix/felix/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/GetFelix/felix/compare/v0.3.1...v0.4.0
+[0.3.1]: https://github.com/GetFelix/felix/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/GetFelix/felix/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/GetFelix/felix/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/GetFelix/felix/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/GetFelix/felix/releases/tag/v0.1.0
