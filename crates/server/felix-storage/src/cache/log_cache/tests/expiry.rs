@@ -131,7 +131,10 @@ async fn an_expired_entry_is_deleted_and_the_observer_is_told() {
         .unwrap();
     tokio::time::sleep(Duration::from_millis(20)).await;
 
-    assert_eq!(cache.expire_due(T, NS, C, 0, 100).await.unwrap(), 1);
+    assert_eq!(
+        cache.expire_due(T, NS, C, 0, 100, &|| true).await.unwrap(),
+        1
+    );
     let changes = observer.changes.lock().clone();
     let last = changes.last().expect("a change");
     assert_eq!((last.key.as_str(), last.value.as_ref()), ("gone", None));
@@ -140,7 +143,10 @@ async fn an_expired_entry_is_deleted_and_the_observer_is_told() {
         vec!["kept".to_string()]
     );
     // Nothing more is due.
-    assert_eq!(cache.expire_due(T, NS, C, 0, 100).await.unwrap(), 0);
+    assert_eq!(
+        cache.expire_due(T, NS, C, 0, 100, &|| true).await.unwrap(),
+        0
+    );
 }
 
 /// A key refreshed after its old TTL passed keeps its new value: the delete
@@ -186,4 +192,24 @@ async fn a_refreshed_entry_is_not_expired() {
         cache.get(T, NS, C, 0, "k").await.unwrap().as_deref(),
         Some(&b"new"[..])
     );
+}
+
+/// The pass stops as soon as its caller says the shard is no longer its to
+/// write, even with more keys due.
+#[tokio::test]
+async fn an_expiry_pass_stops_when_told_to() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = cache(dir.path()).await;
+    let short = Some(Duration::from_millis(1));
+    for key in ["a", "b", "c"] {
+        cache
+            .put(T, NS, C, 0, key, Bytes::from_static(b"v"), short)
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let asked = std::sync::atomic::AtomicUsize::new(0);
+    let once = || asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+    assert_eq!(cache.expire_due(T, NS, C, 0, 100, &once).await.unwrap(), 1);
 }

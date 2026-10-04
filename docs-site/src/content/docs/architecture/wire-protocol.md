@@ -552,7 +552,12 @@ Success answers. Each names the request it answers where there is one.
 `subscribed` confirms a subscription, and its id matches the
 `event_stream_hello` on the event stream. `start_offset` and `live_offset` are
 sent on a durable stream to a client that negotiated event offsets, whose
-subscribe with no `start` is treated as `latest`. `publish_ok` answers an acked publish and `cache_ok` a
+subscribe with no `start` is treated as `latest`. Like an explicit `latest`, it
+can then be refused on a `Quorum` shard that is still settling (`not_ready`) or
+refuses reads (`fenced`), both retryable. A `ClusterSubscription` that loses
+its connection resumes an idle plain subscription from that `start_offset`, so
+without a gap, and can fail with a `too_old` cursor if retention passed it in
+the meantime. `publish_ok` answers an acked publish and `cache_ok` a
 cache write that carried a `request_id`. Plain `ok` answers `auth` from a client
 that offered no flags, and a cache write without a `request_id`.
 
@@ -816,6 +821,7 @@ advertised its bit.
 | `0x8_0000` | `FEATURE_ACK_ON_COMMIT` | Offered by a client that wants its acked publishes answered after the write, with their offsets, on this connection only. Advertised by a broker that honours it |
 | `0x10_0000` | `FEATURE_GROUP_CONSUMER` | A `group_poll` may name its `consumer` (per principal, up to 128 bytes); with `reclaim`, a connection's first such poll reserves the claims that member holds from older connections and takes them back ahead of anything else |
 | `0x20_0000` | `FEATURE_SUBSCRIPTION_LAGGED` | The client reads `subscription_lagged`, which ends a durable-stream subscription at its first queue drop |
+| `0x40_0000` | `FEATURE_GROUP_SKIPPED` | Offered by a client that reads `skipped_before` on a group record. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |
 
 The full list, with what each depends on, is in
 [`docs/protocol.md`](https://github.com/gabloe/felix/blob/main/docs/protocol.md).

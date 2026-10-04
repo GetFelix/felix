@@ -35,6 +35,9 @@ for what the current release guarantees.
   settled without delivery (generation-start records, records retention
   removed first): `skipped_before` on `GroupRecord`, in the wire's
   `group_records`, and in the Python and Node clients (`skippedBefore`).
+  Negotiated as `FEATURE_GROUP_SKIPPED` (`0x40_0000`), which the Felix
+  clients offer: a client that did not offer it, or a record with nothing
+  skipped, gets the frame without the field. (#963)
   Left out when zero, so older clients get the same frames. (#963)
 - A consumer-group member can name itself and take back what a previous
   process under its name held: `group_poll` accepts `consumer` and `reclaim`
@@ -103,7 +106,12 @@ for what the current release guarantees.
   offsets, is now `latest`: on a durable stream its `subscribed` carries
   `start_offset` and `live_offset`, so the client knows where live delivery
   began. Before, only an explicit `latest` reported them. Clients without
-  offsets get the frame they always did. (#961)
+  offsets get the frame they always did. Like an explicit `latest`, such a
+  subscribe can now be refused with a retryable `not_ready` or `fenced` on a
+  `Quorum` shard that is settling or refusing reads. And a
+  `ClusterSubscription` that loses its connection before delivering anything
+  now resumes from that exact offset rather than the new tail: no gap, but it
+  can fail with "cursor too old" if retention passed it meanwhile. (#961)
 - A cache entry whose TTL passes is now a change a watch receives. The
   shard's leader writes a delete for it within about a second, through the
   write fence and replicated like any write, so a watcher no longer has to

@@ -303,6 +303,7 @@ fn every_feature_bit_is_distinct_and_known() {
             "FEATURE_SUBSCRIPTION_LAGGED",
             crate::FEATURE_SUBSCRIPTION_LAGGED,
         ),
+        ("FEATURE_GROUP_SKIPPED", crate::FEATURE_GROUP_SKIPPED),
     ];
     let mut seen = 0u32;
     for (name, bit) in bits {

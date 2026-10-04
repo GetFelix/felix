@@ -87,7 +87,7 @@ pub(super) fn recover_shard(dir: &Path, label: &str, config: &LogConfig) -> Resu
     // break in the offset chain. See `discard_abandoned_preparations`.
     let abandoned = discard_blank_interior(dir, label, config, mark, &mut ids)?
         + discard_abandoned_preparations(dir, label, config, mark, &mut ids)?;
-    discard_blank_first(dir, label, &mut ids)?;
+    discard_blank_first(dir, label, mark, &mut ids)?;
     let recovered = match ids.split_last() {
         None => Recovered {
             sealed: Vec::new(),
@@ -157,7 +157,7 @@ pub(super) fn place_empty_shard(
 ) -> Result<bool> {
     create_dir_all_durable(dir)?;
     let mut ids = discover_segment_ids(dir)?;
-    discard_blank_first(dir, label, &mut ids)?;
+    discard_blank_first(dir, label, durable_mark::load(dir), &mut ids)?;
     if !ids.is_empty() {
         return Ok(false);
     }
@@ -483,13 +483,25 @@ fn repair_unsealed_retired(
     Ok(true)
 }
 
-/// Remove a log's first segment when it is the only one and has no header.
+/// Remove a log's first segment when it is the only one and is blank.
 ///
 /// Its creation failed, on a full disk say, or a crash came before the
 /// header. It never held a record, so the log starts again as if new. Only
 /// segment 0 qualifies: any later one follows records that were somewhere.
-fn discard_blank_first(dir: &Path, label: &str, ids: &mut Vec<SegmentId>) -> Result<()> {
-    if ids.as_slice() != [0] || !header_never_written(&dir.join(segment_file_name(0)))? {
+///
+/// Blank means no header, nothing but zeros after it, and no durable mark
+/// past the header. A zeroed header in front of records, or one the mark
+/// says was synced beyond, is damage to acknowledged data and stays fatal.
+fn discard_blank_first(
+    dir: &Path,
+    label: &str,
+    mark: Option<DurableMark>,
+    ids: &mut Vec<SegmentId>,
+) -> Result<()> {
+    if ids.as_slice() != [0]
+        || DurableMark::synced_through(mark, 0) > SEGMENT_HEADER_LEN
+        || !segment_is_blank(&dir.join(segment_file_name(0)))?
+    {
         return Ok(());
     }
     tracing::warn!(
@@ -529,6 +541,29 @@ fn header_never_written(path: &Path) -> Result<bool> {
     let mut header = [0u8; SEGMENT_HEADER_LEN as usize];
     let read = crate::io::read_at(&file, &mut header, 0)?;
     Ok(read == header.len() && header.iter().all(|byte| *byte == 0))
+}
+
+/// Every byte of the file is zero, or it is shorter than a header.
+fn segment_is_blank(path: &Path) -> Result<bool> {
+    if !header_never_written(path)? {
+        return Ok(false);
+    }
+    let file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut offset = SEGMENT_HEADER_LEN;
+    while offset < len {
+        let want = buf.len().min((len - offset) as usize);
+        let read = crate::io::read_at(&file, &mut buf[..want], offset)?;
+        if read == 0 {
+            break;
+        }
+        if buf[..read].iter().any(|byte| *byte != 0) {
+            return Ok(false);
+        }
+        offset += read as u64;
+    }
+    Ok(true)
 }
 
 fn recover_existing(

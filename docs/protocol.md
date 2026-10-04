@@ -214,6 +214,19 @@ that negotiated `FLAG_EVENT_BATCH_OFFSETS`, and from such a client a subscribe
 with no `start` is `latest`, so it reports them too. To any other client the
 frame is unchanged.
 
+Because it is `latest`, such a plain subscribe can be refused the way an
+explicit `latest` is. On a `Quorum` shard whose readable bound is still
+settling after a promotion it is `shard_unavailable` with reason `not_ready`,
+and on one that refuses reads it is `fenced`; both are retryable. A client
+that sent no offsets flag still takes the tail-only path and is never refused
+this way.
+
+A `ClusterSubscription` that loses its connection resubscribes from an exact
+offset: the one after the last event it delivered, or, if it delivered
+nothing yet, the `start_offset` this frame reported. So an idle plain
+subscription resumes without a gap too. It can then fail with a cursor error
+(`too_old`) if retention removed that offset while it was disconnected.
+
 ### Event (server -> client)
 ```
 { "type": "event", "tenant_id": "<string>", "namespace": "<string>", "stream": "<string>", "payload": "<base64>", "offset": <number|absent> }
@@ -336,8 +349,10 @@ one.
 settled without delivering: generation-start records, which are not a client's,
 and records retention removed before the group reached them. A gap in the
 offsets a consumer receives that this count covers will never fill, and one it
-does not cover is a record still to come. Absent means `0`, and the broker
-leaves it out when it is `0`, so an older client gets the frame it always did.
+does not cover is a record still to come. It is sent only to a client that
+offered `FEATURE_GROUP_SKIPPED` in `Auth`, and left out when it is `0`, so any
+other client gets the frame it always did. A broker that advertises the bit
+reports it, so for that client an absent field means `0`.
 
 ### GroupDeadLetters / GroupDiscard / GroupRedrive
 ```
@@ -689,8 +704,11 @@ field of `detail` is optional. See [Error codes](#error-codes).
   resume whose history compaction collapsed is answered with `resnapshot: true`
   and current values; a watch that falls behind is ended with
   `cache_watch_lagged` naming the offset to re-watch from. TTL expiry is a
-  change: the shard's leader writes a delete for an entry within about a second
-  of its TTL passing, and watchers receive it as a delete.
+  change: the shard's leader writes a delete for an entry after its TTL passes,
+  and watchers receive it as a delete. The leader's expiry pass runs once a
+  second and writes at most 1024 deletes per shard per pass, so under a mass
+  expiry the deletes lag. An expiry is permanent once written, even if the
+  leader's clock had jumped forward.
 - A `retained` CacheWatch delivers current state first: each matching key's
   current value at the offset of the write that produced it, then live changes
   from `resume_offset`, so a client joins and immediately holds the state
@@ -1254,6 +1272,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x8_0000` | `FEATURE_ACK_ON_COMMIT` | Offered by a client that wants this connection's acked publishes answered after the write, with their offsets, as `FELIX_ACK_ON_COMMIT=true` does for every client. Advertised by a broker that honours it. A client offers it only when asked to (`ClientConfig::ack_on_commit`) |
 | `0x10_0000` | `FEATURE_GROUP_CONSUMER` | The broker records which member holds each claim when `group_poll` names a `consumer`, scoped to the principal, and on a connection's first `reclaim` hands that member's claims from older connections back to it first. See [GroupPoll](#grouppoll) |
 | `0x20_0000` | `FEATURE_SUBSCRIPTION_LAGGED` | The client reads `subscription_lagged`, and the broker ends a durable-stream subscription at its first queue drop with it |
+| `0x40_0000` | `FEATURE_GROUP_SKIPPED` | Offered by a client that reads `skipped_before` on a `GroupRecord`. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:

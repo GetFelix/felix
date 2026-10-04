@@ -142,6 +142,7 @@ pub(super) async fn authenticate(
                                     felix_wire::FEATURE_CONSUMER_GROUP
                                         | felix_wire::FEATURE_GROUP_CONSUMER
                                         | felix_wire::FEATURE_GROUP_DEAD_LETTERS
+                                        | felix_wire::FEATURE_GROUP_SKIPPED
                                 }
                                 None => 0,
                             }

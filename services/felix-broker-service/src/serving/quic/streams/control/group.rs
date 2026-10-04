@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use felix_authz::Action;
-use felix_wire::Message;
+use felix_wire::{GroupRecord, Message};
 
 use super::authz::authorize_group;
 use super::{Ctx, Session, Step};
@@ -138,7 +138,7 @@ pub(super) async fn group_poll(
     )
     .await;
     let records = match polled {
-        Ok(records) => records,
+        Ok(records) => for_peer(records, session.peer_features),
         Err(reason) => {
             // Refused rather than answered with an empty batch: a
             // consumer told "nothing available" would poll for ever
@@ -766,3 +766,17 @@ async fn group_admit(
         _ => Ok(None),
     }
 }
+
+/// Clear what `peer_features` did not negotiate, so the field is left out of
+/// the frame for a client that cannot read it.
+fn for_peer(mut records: Vec<GroupRecord>, peer_features: u32) -> Vec<GroupRecord> {
+    if !felix_wire::supports_feature(peer_features, felix_wire::FEATURE_GROUP_SKIPPED) {
+        for record in &mut records {
+            record.skipped_before = 0;
+        }
+    }
+    records
+}
+
+#[cfg(test)]
+mod tests;

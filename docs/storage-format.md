@@ -292,7 +292,8 @@ because only there can a record have been mid-write when the process died:
 - A `RecordTooLarge` failure is opt-in for the same reason: the writer rejects
   oversized records, so a verified header carrying an impossible length is damage
   the checksums did not catch.
-- Segment-header damage is never repairable.
+- Segment-header damage is never repairable, with one exception below: a
+  blank first segment.
 - **A zero-filled tail is always repairable**, whatever the failure kind and
   without `repair_checksum_tail`. After a power loss (not a process crash) the
   file size can reach disk while the data blocks it covers do not, and those
@@ -334,6 +335,13 @@ because only there can a record have been mid-write when the process died:
   it, but only when the segments either side of it still meet exactly. A
   segment that held records and lost its bytes leaves an offset gap, which
   stays fatal.
+- **A blank first segment.** When segment 0 is the log's only segment, its
+  header is missing or all zeros, every byte after the header is zero, and the
+  durable mark vouches for nothing past the header, its creation failed (on a
+  full disk, say) before it could hold a record. Recovery deletes it and the
+  log starts again empty, or at its placed base. A zeroed header with any
+  non-zero byte after it, or with a mark past the header, is damage to
+  acknowledged records and stays fatal.
 
 The dividing line is whether the length is trustworthy. When it is, recovery can
 prove the write was unfinished; when it is not, recovery refuses to choose

@@ -339,8 +339,11 @@ whose newest write races past the join arrives as the first live change
 instead of in the state, folding to the same result.
 
 TTL expiry is delivered as a delete. Reads treat an entry as absent the moment
-its TTL passes, and within about a second the shard's leader writes a delete
-for it, which every watch of that key receives. A watcher that mirrors the
+its TTL passes, and the shard's leader writes a delete for it in its expiry
+pass, which every watch of that key receives. The pass runs once a second and
+writes at most 1024 deletes per shard, so under a mass expiry the deletes lag.
+An expiry is permanent once written: a leader whose clock jumps forward deletes
+entries early, for good. A watcher that mirrors the
 cache needs no timers of its own. Every put still carries its
 `expires_at_millis`.
 

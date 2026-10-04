@@ -11,6 +11,9 @@ use std::time::Duration;
 use felix_broker::Broker;
 use tokio_util::sync::CancellationToken;
 
+use felix_storage::StorageApi;
+
+use crate::shards::lifecycle::fence::{FenceGuard, ShardFence};
 use crate::shards::routing::{Dispatch, IngressRouter};
 use crate::shards::{ShardKey, ShardKind};
 
@@ -55,31 +58,53 @@ pub(super) async fn expire_once(broker: &Broker, ingress: Option<&IngressRouter>
         let Dispatch::Local { generation } = crate::shards::routing::dispatch(ingress, &key) else {
             continue;
         };
-        let _fenced = match ingress {
+        let fenced = match ingress {
             Some(ingress) => match ingress.fence().admit(&key, generation) {
-                Ok(guard) => Some(guard),
+                Ok(guard) => Some((ingress.fence().as_ref(), guard)),
                 Err(_) => continue,
             },
             None => None,
         };
-        if let Err(err) = cache
-            .expire_due(
-                &key.tenant_id,
-                &key.namespace,
-                &key.stream,
-                shard,
-                PER_SHARD,
-            )
-            .await
-        {
-            tracing::warn!(
-                cache = %key.stream,
-                shard,
-                error = %err,
-                "could not write the deletes for expired cache entries",
-            );
-        }
+        let still_leading = || {
+            fenced
+                .as_ref()
+                .is_none_or(|(fence, guard)| still_leads(fence, guard))
+        };
+        expire_shard(cache, &key, &still_leading).await;
     }
+}
+
+/// Write one shard's due deletes while `still_leading` holds.
+async fn expire_shard(
+    cache: &(dyn StorageApi + Send),
+    key: &ShardKey,
+    still_leading: &(dyn Fn() -> bool + Send + Sync),
+) {
+    if let Err(err) = cache
+        .expire_due(
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+            key.shard,
+            PER_SHARD,
+            still_leading,
+        )
+        .await
+    {
+        tracing::warn!(
+            cache = %key.stream,
+            shard = key.shard,
+            error = %err,
+            "could not write the deletes for expired cache entries",
+        );
+    }
+}
+
+/// Checked before each delete, not once per pass: a pass can write up to
+/// [`PER_SHARD`] records, and each must be one a client write would still be
+/// let through for. A closed fence or a lapsed lease ends the pass.
+fn still_leads(fence: &ShardFence, guard: &FenceGuard) -> bool {
+    guard.still_open() && fence.recheck(guard).is_ok()
 }
 
 #[cfg(test)]

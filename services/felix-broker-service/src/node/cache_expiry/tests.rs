@@ -71,3 +71,51 @@ async fn a_fenced_shard_is_left_to_its_new_leader() {
         .expect("tail");
     assert_eq!(after, before);
 }
+
+/// **A fence that closes mid-pass stops the pass.** The guard is admitted
+/// once per shard, so without a check before each delete a deposed leader
+/// could go on writing up to a full pass of them.
+#[tokio::test]
+async fn a_fence_that_closes_mid_pass_stops_the_deletes() {
+    let fixture = Leader::start().await;
+    let cache = fixture.broker.cache();
+    for key in ["a", "b", "c"] {
+        cache
+            .put(
+                TENANT,
+                NAMESPACE,
+                CACHE,
+                0,
+                key,
+                Bytes::from_static(b"here"),
+                Some(Duration::from_millis(1)),
+            )
+            .await
+            .expect("put");
+    }
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let log = cache
+        .shard_log(TENANT, NAMESPACE, CACHE, 0)
+        .await
+        .expect("log");
+    let before = felix_storage::log::AppendOnlyLog::tail_offset(&log)
+        .await
+        .expect("tail");
+
+    let key = leader::cache_key();
+    let fence = fixture.ingress.fence();
+    let guard = fence.admit(&key, leader::GENERATION).expect("admit");
+    let asked = std::sync::atomic::AtomicUsize::new(0);
+    let closing_after_one = || {
+        if asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            fence.close(&key);
+        }
+        still_leads(fence, &guard)
+    };
+    expire_shard(cache, &key, &closing_after_one).await;
+
+    let after = felix_storage::log::AppendOnlyLog::tail_offset(&log)
+        .await
+        .expect("tail");
+    assert_eq!(after, before + 1, "only the delete before the close");
+}

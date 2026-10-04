@@ -130,8 +130,10 @@ is real, and watch/retained delivery lag to a remote subscriber.
 ## The IdP is real: Microsoft Entra ID
 
 The control plane's token exchange verifies IdP tokens against a configured
-allowlist: ES256 by default, **optional RS*/PS*** (`auth/exchange.rs`), which
-is exactly what Entra ID issues. The Azure subscription's tenant provides it
+allowlist: RS256 and ES256 by default, other RS*/PS* when configured
+(`auth/exchange.rs`). RS256 is what Entra ID issues. Accepting it is safe
+because the key's type must match the token's `alg`, and HS* and `none` are
+always refused. The Azure subscription's tenant provides it
 for free: an app registration, client-credentials flow, and the exchange
 endpoint turns Entra's RS256 access token into a Felix EdDSA token, which is
 what brokers verify per request.
@@ -144,7 +146,7 @@ Measured, not just wired:
   Felix tokens minted through this flow and refreshed at realistic intervals,
   so verification sits on the hot path exactly as deployed.
 - Fallback if the Entra tenant fights back: a Keycloak container on the
-  control-plane VM speaks ES256, the default allowlist. The scripts take the
+  control-plane VM speaks ES256, which the default allowlist also accepts. The scripts take the
   issuer/JWKS as parameters either way.
 
 ## Workload matrix
