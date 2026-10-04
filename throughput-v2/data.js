@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791126700216,
+  "lastUpdate": 1791127351852,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -23816,6 +23816,58 @@ window.BENCHMARK_DATA = {
             "range": "6837.18",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 792389.69\nmean: 793682.19\nstdev: 6837.18\ncv: 0.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8ad7e7f89b0befaf1828fd130574c4d235a04c5b",
+          "message": "fix(release): build the Node addon without rust-toolchain.toml's components (#1015)",
+          "timestamp": "2026-10-04T08:17:50-07:00",
+          "tree_id": "e07858b78880b5e52dd90761b8ee29c89ec307df",
+          "url": "https://github.com/GetFelix/felix/commit/8ad7e7f89b0befaf1828fd130574c4d235a04c5b"
+        },
+        "date": 1791127350755,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 364781.25,
+            "range": "10092.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364781.25\nmean: 366876.03\nstdev: 10092.24\ncv: 2.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 364781.25,
+            "range": "10092.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364781.25\nmean: 366876.03\nstdev: 10092.24\ncv: 2.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 84759.71,
+            "range": "389.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 84759.71\nmean: 84646.61\nstdev: 389.64\ncv: 0.46%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 847597.14,
+            "range": "3896.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 847597.14\nmean: 846466.12\nstdev: 3896.41\ncv: 0.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
