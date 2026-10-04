@@ -606,6 +606,32 @@ Stated because a guarantee without its failure model is a slogan.
   A broker suspended *between* the commit-time lease check and its write
   reaching disk is a residual window bounded by the margin. The margin is a
   choice rather than a proof, and it is the one clock-shaped assumption left.
+- **`Leader` mode rests on the lease; `Quorum` does not.** A `Leader` write is
+  acknowledged by the leader alone, so nothing but the lease stops a deposed
+  leader from acknowledging one. A promoted leader fences its replicas (when
+  every replica supports the fence), so the old leader's records never reach
+  the new log, but a write it acknowledged
+  after the new leader took over is lost. That happens only if one of these
+  outlasts the slack between the broker giving up its lease and the control
+  plane handing the shard on (a quarter of the lease on the broker, plus
+  `FELIX_NODE_REGRANT_MARGIN_MS` on the control plane):
+
+  - the broker is suspended between its last lease check and the
+    acknowledgement;
+  - the broker's monotonic clock runs slow against the control plane's;
+  - the control plane counts a silent broker's time from a clock that runs
+    fast.
+
+  A clock step does none of these, since neither side reads a wall clock for
+  the lease. With `majority_ack` finalized, a `Quorum` stream acknowledges
+  only what a majority holds at its generation, and so does a `Quorum` cache
+  once `fenced_caches` is finalized too, so none of the three can lose an
+  acknowledged write there. Choose `Quorum` where that matters;
+  `Leader` trades it for latency. Closing the gap for `Leader` would take a
+  majority round on every write, which is what `Quorum` is.
+
+  > `a_leader_stream_refuses_writes_on_a_lapsed_lease_after_the_finalize`,
+  > `a_resumed_leader_does_not_acknowledge_writes_the_cluster_loses`.
 - **Idempotent producers, not exactly-once delivery.** A producer that takes an
   id from the broker and numbers its batches can re-send a batch whose
   acknowledgement never arrived and have it land once: the shard's leader

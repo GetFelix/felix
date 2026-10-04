@@ -91,6 +91,14 @@ for what the current release guarantees.
   records, so after a promotion a key could read the value of whatever record
   replaced its offset. Both are now rebuilt from the log as it is. (#933)
 
+### Documentation
+- `Leader` mode's single writer is stated as resting on the lease: which
+  faults let a deposed `Leader` leader acknowledge a write its successor never
+  sees (a pause past the lease margins, a broker clock running slow against
+  the control plane's), and that a clock step and `Quorum` with
+  `majority_ack` are not exposed. A cluster test pins that a `Leader` stream
+  refuses writes on a lapsed lease after `majority_ack` is finalized. (#1008)
+
 ## [0.6.0-preview.2] - 2026-10-04
 
 The second preview of 0.6.0, and the first release from the GetFelix
