@@ -151,9 +151,9 @@ fn reported_features() -> std::collections::BTreeSet<String> {
             .map(str::to_string)
             .collect();
     }
-    // Acknowledging by the followers, and reading without the lease, are safe
-    // only if every broker fences what it is promoted to, and this one would
-    // not.
+    // Acknowledging by the followers, reading without the lease, and fencing
+    // caches are safe only if every broker fences what it is promoted to, and
+    // this one would not.
     let fences = !matches!(
         std::env::var("FELIX_INTERNAL_FENCE")
             .ok()
@@ -167,7 +167,9 @@ fn reported_features() -> std::collections::BTreeSet<String> {
             fences
                 || !matches!(
                     **feature,
-                    felix_common::fleet::MAJORITY_ACK | felix_common::fleet::LEASE_FREE_READS
+                    felix_common::fleet::MAJORITY_ACK
+                        | felix_common::fleet::LEASE_FREE_READS
+                        | felix_common::fleet::FENCED_CACHES
                 )
         })
         .map(|feature| feature.name().to_string())

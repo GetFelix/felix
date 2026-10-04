@@ -516,3 +516,198 @@ async fn a_fenced_leader_does_not_count_its_own_copy() {
     );
     shutdown.cancel();
 }
+
+/// Stores every cache and counter batch on `broker-b`; `broker-c` is
+/// unreachable.
+struct CacheOnlyB;
+
+impl PeerRequester for CacheOnlyB {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let (InternalMessage::ReplicateCacheRecords(batch)
+        | InternalMessage::ReplicateCounterRecords(batch)) = message
+        else {
+            panic!("the driver sent {:?} for a cache shard", message.kind());
+        };
+        if node_id != "broker-b" {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "partitioned".to_string(),
+            });
+        }
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: batch.first_offset + batch.payloads.len() as u64,
+        }))
+    }
+}
+
+/// A `Quorum` cache led here at `generation` since offset zero, with two
+/// records in its cache log and three in its counter log.
+async fn quorum_cache_leader(generation: u64) -> (Arc<Broker>, TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    let broker = Arc::new(
+        Broker::new(Box::new(
+            felix_storage::LogCache::open(dir.path().join("caches"), config.clone())
+                .expect("cache"),
+        ))
+        // Replication runs only on a broker with durable storage.
+        .with_durable_storage(
+            DurableStorage::open(dir.path().join("streams"), config.clone()).expect("storage"),
+        )
+        .with_counters(Arc::new(
+            felix_storage::CounterStore::open(dir.path().join("counters"), config)
+                .expect("counters"),
+        )),
+    );
+    broker.register_tenant(TENANT).await.expect("tenant");
+    broker
+        .register_namespace(TENANT, NAMESPACE)
+        .await
+        .expect("namespace");
+    broker
+        .register_cache(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            felix_broker::CacheMetadata {
+                consistency: felix_broker::ConsistencyLevel::Quorum,
+            },
+        )
+        .await
+        .expect("cache");
+    for (kind, count) in [
+        (felix_broker::LogKind::Cache, 2),
+        (felix_broker::LogKind::Counters, 3),
+    ] {
+        let log = broker
+            .shard_log(kind, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log");
+        log.record_generation(generation, 0).expect("generation");
+        let payloads: Vec<Bytes> = (0..count).map(|i| Bytes::from(format!("r{i}"))).collect();
+        log.append(&payloads).await.expect("append");
+    }
+    (broker, dir)
+}
+
+/// Marks as a fleet that finalized `generation_start` and `majority_ack`,
+/// and `fenced_caches` when `caches` says so.
+fn fleet_marks(caches: bool) -> QuorumMarks {
+    use felix_common::fleet::{FENCED_CACHES, FleetGate, GENERATION_START, MAJORITY_ACK};
+    let mut names = vec![GENERATION_START.name(), MAJORITY_ACK.name()];
+    if caches {
+        names.push(FENCED_CACHES.name());
+    }
+    let fleet = FleetGate::new(names.clone());
+    fleet.observe(names);
+    QuorumMarks::with_fleet(Arc::new(fleet))
+}
+
+/// **A `Quorum` cache's mark and its counter mark move on a majority's
+/// answers once the fleet fences caches**, whether or not the control plane
+/// heard the report. Without `fenced_caches` the same pass withholds both,
+/// as it did before: an older broker could still be promoted unfenced.
+#[tokio::test]
+async fn a_fenced_caches_fleet_acknowledges_cache_writes_by_the_followers() {
+    let (reporter, shutdown) = unreachable_reporter();
+    let cache = ShardKey {
+        kind: felix_router::ShardKind::Cache,
+        ..key()
+    };
+    let watched = watch_key(&cache);
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    ));
+    let nodes = nodes();
+    router.publish(
+        RoutingTable::build(
+            [(
+                cache,
+                LOCAL.to_string(),
+                vec!["broker-b".to_string(), "broker-c".to_string()],
+                4,
+            )],
+            &nodes,
+        ),
+        &nodes,
+    );
+
+    let (broker, _dir) = quorum_cache_leader(4).await;
+    let marks = fleet_marks(true);
+    pass_with_reporter(&CacheOnlyB, &broker, &router, &marks, &reporter).await;
+    assert_eq!(marks.offset(&watched, 4), Some(2));
+    assert!(marks.decided_by_followers(&watched, 4));
+    assert_eq!(marks.counters().offset(&watched, 4), Some(3));
+    assert!(marks.counters().decided_by_followers(&watched, 4));
+
+    let (broker, _dir) = quorum_cache_leader(4).await;
+    let marks = fleet_marks(false);
+    pass_with_reporter(&CacheOnlyB, &broker, &router, &marks, &reporter).await;
+    assert_eq!(marks.offset(&watched, 4), None);
+    assert_eq!(marks.counters().offset(&watched, 4), None);
+
+    shutdown.cancel();
+}
+
+/// **A cache leader counts only past where its generation begins**, as a
+/// stream leader does, once the fleet finalized `generation_start`: a
+/// majority holding only what it inherited moves neither mark.
+#[tokio::test]
+async fn a_cache_leader_counts_only_its_own_generation() {
+    let (reporter, shutdown) = unreachable_reporter();
+    let cache = ShardKey {
+        kind: felix_router::ShardKind::Cache,
+        ..key()
+    };
+    let watched = watch_key(&cache);
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    ));
+    let nodes = nodes();
+    router.publish(
+        RoutingTable::build(
+            [(
+                cache,
+                LOCAL.to_string(),
+                vec!["broker-b".to_string(), "broker-c".to_string()],
+                5,
+            )],
+            &nodes,
+        ),
+        &nodes,
+    );
+    // Led at 4; generation 5 begins at each log's tail, with nothing of its
+    // own yet.
+    let (broker, _dir) = quorum_cache_leader(4).await;
+    for kind in [
+        felix_broker::LogKind::Cache,
+        felix_broker::LogKind::Counters,
+    ] {
+        let log = broker
+            .shard_log(kind, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log");
+        let tail = log.tail_offset().await.expect("tail");
+        log.record_generation(5, tail).expect("generation");
+    }
+    let marks = fleet_marks(true);
+    pass_with_reporter(&CacheOnlyB, &broker, &router, &marks, &reporter).await;
+    assert_eq!(marks.offset(&watched, 5).unwrap_or(0), 0);
+    assert_eq!(marks.counters().offset(&watched, 5).unwrap_or(0), 0);
+
+    shutdown.cancel();
+}

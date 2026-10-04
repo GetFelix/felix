@@ -138,6 +138,15 @@ impl QuorumMarks {
                 .is_some_and(|fleet| fleet.supports(felix_common::fleet::MAJORITY_ACK))
     }
 
+    /// [`Self::acks_by_followers`] for a `Quorum` cache shard and its counter
+    /// log: once the fleet also finalized `fenced_caches`, which says every
+    /// broker fences a promoted cache shard's logs before it serves. Until
+    /// then an older broker could be promoted without that fence, and only
+    /// the old leader's lease keeps it from acknowledging alongside.
+    pub(crate) fn caches_ack_by_followers(&self) -> bool {
+        self.acks_by_followers() && self.fleet_supports(felix_common::fleet::FENCED_CACHES)
+    }
+
     /// Whether `key`'s mark at `generation` was decided by its followers, so
     /// an acknowledgement released on it needs no lease.
     pub(crate) fn decided_by_followers(&self, key: &ShardKey, generation: u64) -> bool {
@@ -229,6 +238,12 @@ impl MarkTable {
         self.publish_marked(key, generation, offset, false);
     }
 
+    /// [`Self::publish`], for a mark the followers decided. From here on the
+    /// shard's mark at `generation` releases writes without the lease.
+    pub(crate) fn publish_by_followers(&self, key: &ShardKey, generation: u64, offset: u64) {
+        self.publish_marked(key, generation, offset, true);
+    }
+
     /// [`Self::publish`], marking the shard as decided by its followers first
     /// when `by_followers`, so a waiter the new offset wakes already sees it.
     fn publish_marked(&self, key: &ShardKey, generation: u64, offset: u64, by_followers: bool) {
@@ -262,7 +277,8 @@ impl MarkTable {
         }
     }
 
-    fn decided_by_followers(&self, key: &ShardKey, generation: u64) -> bool {
+    /// Whether `key`'s mark at `generation` was decided by its followers.
+    pub(crate) fn decided_by_followers(&self, key: &ShardKey, generation: u64) -> bool {
         self.shards
             .lock()
             .get(key)
@@ -610,11 +626,24 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
     if !ingress.replicated(shard) {
         return unreplicated(marks, ingress, access);
     }
+    let waited_at = std::sync::atomic::AtomicU64::new(0);
+    let leading = || {
+        let generation = ingress.generation(shard);
+        waited_at.store(generation.unwrap_or(0), Ordering::Relaxed);
+        generation
+    };
     match marks
-        .wait_while_leading(shard, || ingress.generation(shard), tail, timeout)
+        .wait_while_leading(shard, leading, tail, timeout)
         .await
     {
         QuorumWait::Reached if access == Access::Read => confirm_read(shard, marks, ingress).await,
+        // As for a stream: a mark the followers decided holds without the
+        // lease, since every newer leader fences a majority first.
+        QuorumWait::Reached
+            if marks.decided_by_followers(shard, waited_at.load(Ordering::Relaxed)) =>
+        {
+            Ok(())
+        }
         QuorumWait::Reached => release(ingress, what),
         QuorumWait::TimedOut => {
             crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
@@ -727,12 +756,25 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
     // The counter log ships on a replication pass; start one now rather than
     // wait out the tick.
     broker.appended().notify_one();
+    let waited_at = std::sync::atomic::AtomicU64::new(0);
+    let leading = || {
+        let generation = ingress.generation(shard);
+        waited_at.store(generation.unwrap_or(0), Ordering::Relaxed);
+        generation
+    };
     match marks
         .counters()
-        .wait_while_leading(shard, || ingress.generation(shard), end, timeout)
+        .wait_while_leading(shard, leading, end, timeout)
         .await
     {
         QuorumWait::Reached if access == Access::Read => confirm_read(shard, marks, ingress).await,
+        QuorumWait::Reached
+            if marks
+                .counters()
+                .decided_by_followers(shard, waited_at.load(Ordering::Relaxed)) =>
+        {
+            Ok(())
+        }
         QuorumWait::Reached => release(ingress, what),
         QuorumWait::TimedOut => {
             crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);

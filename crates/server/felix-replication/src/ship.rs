@@ -174,13 +174,14 @@ pub async fn ship_once_with<R: PeerRequester>(
         // A follower that refused the committed kind is sent what it reads.
         commit_offset: commit_offset.filter(|_| !cursor.legacy_frames),
         // Without them the follower labels the records with this leader's
-        // generation, including any this leader inherited. Only a stream
-        // log's labels are compared by a fence, so the other logs go without.
+        // generation, including any this leader inherited. A fence compares
+        // the labels of a stream log, and of a cache shard's cache and
+        // counter logs; the group logs go without.
         generations: (!cursor.legacy_frames
-            && log_kind == felix_broker::LogKind::Stream
             && requester
                 .recorded_capabilities(&cursor.node_id)
-                .is_some_and(|offered| offered.contains(PeerCapabilities::GENERATION_LABELS)))
+                .zip(labels_needed(log_kind))
+                .is_some_and(|(offered, needed)| offered.contains(needed)))
         .then(|| crate::replica::generations_over(&log.generations(), first_offset, batch_end)),
         publishers,
     };
@@ -354,6 +355,18 @@ fn without_commit(request: InternalMessage) -> InternalMessage {
     }
 }
 
+/// What a follower must have offered for `log_kind`'s batches to carry their
+/// generations; `None` for a group log, which no fence compares.
+fn labels_needed(log_kind: felix_broker::LogKind) -> Option<PeerCapabilities> {
+    match log_kind {
+        felix_broker::LogKind::Stream => Some(PeerCapabilities::GENERATION_LABELS),
+        felix_broker::LogKind::Cache | felix_broker::LogKind::Counters => {
+            Some(PeerCapabilities::GENERATION_LABELS.union(PeerCapabilities::CACHE_FENCE))
+        }
+        felix_broker::LogKind::GroupCursors | felix_broker::LogKind::GroupDeadLetters => None,
+    }
+}
+
 pub(super) fn replica_log(log_kind: felix_broker::LogKind) -> ReplicaLog {
     match log_kind {
         felix_broker::LogKind::Stream => ReplicaLog::Stream,
@@ -371,3 +384,6 @@ pub(super) fn unreachable_outcome(err: &PeerError) -> &'static str {
         _ => metrics::OUTCOME_UNREACHABLE,
     }
 }
+
+#[cfg(test)]
+mod tests;
