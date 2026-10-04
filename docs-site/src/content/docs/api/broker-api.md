@@ -622,6 +622,44 @@ match client.cache_delete("acme", "prod", "sessions", session_id).await? {
 }
 ```
 
+### Cache Conditional Writes
+
+```json
+{
+  "type": "cache_put_if",
+  "request_id": 7,
+  "tenant_id": "acme",
+  "namespace": "prod",
+  "cache": "leases",
+  "key": "endpoint-7",
+  "value": "base64-encoded-bytes",
+  "ttl_ms": 30000,
+  "condition": "absent"
+}
+```
+
+`condition` is `"absent"` (no live entry) or `{"version": 41}` (the live entry
+is at that version). `cache_delete_if` names the key and a `version` instead of
+a value and condition. Both are answered with:
+
+```json
+{ "type": "cache_condition_result", "applied": false, "version": 41, "request_id": 7 }
+```
+
+Applied, `version` is the version the put wrote. Refused, it is the key's
+current version, left out when the key has none. The check and the write are
+atomic on the key's owner. A `cache_value` answering a get carries the value's
+`version` too, for a client that offered the bit. Sent only to a broker that
+advertised `FEATURE_CACHE_CONDITIONAL`.
+
+```rust
+use felix_client::CacheCondition;
+
+let taken = client
+    .cache_put_if("acme", "prod", "leases", "endpoint-7", me, Some(30_000), CacheCondition::Absent)
+    .await?;
+```
+
 ### Cache Request Pipelining
 
 Cache streams support pipelining multiple requests:

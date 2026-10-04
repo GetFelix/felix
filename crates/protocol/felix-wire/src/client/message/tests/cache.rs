@@ -181,6 +181,7 @@ fn message_cache_operations() {
         key: "key1".to_string(),
         value: Some(Bytes::from_static(b"value1")),
         request_id: Some(42),
+        version: None,
     };
     let frame = message.encode().expect("encode");
     let decoded = Message::decode(frame).expect("decode");
@@ -194,6 +195,7 @@ fn message_cache_operations() {
         key: "key1".to_string(),
         value: None,
         request_id: Some(42),
+        version: None,
     };
     let frame = message.encode().expect("encode");
     let decoded = Message::decode(frame).expect("decode");
@@ -494,4 +496,98 @@ fn group_admin_defaults_are_left_out() {
     };
     let json = String::from_utf8(info.encode().expect("encode").payload.to_vec()).expect("utf8");
     assert!(!json.contains("committed"), "{json}");
+}
+
+#[test]
+fn conditional_cache_messages_round_trip() {
+    let messages = [
+        Message::CachePutIf {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            cache: "leases".to_string(),
+            key: "endpoint-7".to_string(),
+            value: Bytes::from_static(b"worker-2"),
+            ttl_ms: Some(30_000),
+            condition: crate::CacheCondition::Absent,
+            request_id: 1,
+        },
+        Message::CachePutIf {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            cache: "leases".to_string(),
+            key: "endpoint-7".to_string(),
+            value: Bytes::from_static(b"worker-2"),
+            ttl_ms: None,
+            condition: crate::CacheCondition::Version(41),
+            request_id: 2,
+        },
+        Message::CacheDeleteIf {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            cache: "leases".to_string(),
+            key: "endpoint-7".to_string(),
+            version: 41,
+            request_id: 3,
+        },
+        Message::CacheConditionResult {
+            applied: false,
+            version: Some(41),
+            request_id: 4,
+        },
+        Message::CacheConditionResult {
+            applied: false,
+            version: None,
+            request_id: 5,
+        },
+    ];
+    for message in messages {
+        let decoded = Message::decode(message.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, message);
+    }
+}
+
+/// The condition's JSON is what docs/protocol.md shows.
+#[test]
+fn a_condition_is_absent_or_a_version() {
+    assert_eq!(
+        serde_json::to_string(&crate::CacheCondition::Absent).unwrap(),
+        "\"absent\""
+    );
+    assert_eq!(
+        serde_json::to_string(&crate::CacheCondition::Version(9)).unwrap(),
+        "{\"version\":9}"
+    );
+}
+
+/// A get answered to a client that did not offer the bit carries no version,
+/// so its frame is byte-identical to the one an older broker sends.
+#[test]
+fn a_cache_value_without_a_version_omits_the_field() {
+    let plain = Message::CacheValue {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        cache: "c".to_string(),
+        key: "k".to_string(),
+        value: Some(Bytes::from_static(b"v")),
+        request_id: Some(1),
+        version: None,
+    };
+    let json = serde_json::to_string(&plain).expect("encode");
+    assert!(!json.contains("version"), "{json}");
+
+    // And a frame from an older broker, which has no field, still decodes.
+    let decoded: Message = serde_json::from_str(&json).expect("decode");
+    assert_eq!(decoded, plain);
+
+    let versioned = Message::CacheValue {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        cache: "c".to_string(),
+        key: "k".to_string(),
+        value: Some(Bytes::from_static(b"v")),
+        request_id: Some(1),
+        version: Some(12),
+    };
+    let json = serde_json::to_string(&versioned).expect("encode");
+    assert!(json.contains("\"version\":12"), "{json}");
 }

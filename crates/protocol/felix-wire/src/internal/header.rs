@@ -138,6 +138,12 @@ pub enum Kind {
     ReplicateLabelledRecords = 32,
     /// `ReplicateFetch`, answered with `ReplicateLabelledRecords`.
     ReplicateLabelledFetch = 33,
+    /// `ForwardCacheOp` with a condition, answered with
+    /// `ConditionalForwardCacheOk`. A separate kind so an older owner refuses
+    /// it instead of making the write unconditionally.
+    ConditionalForwardCacheOp = 34,
+    /// `ForwardCacheOk` with whether the write was made and a version.
+    ConditionalForwardCacheOk = 35,
 }
 
 impl Kind {
@@ -178,6 +184,8 @@ impl Kind {
             31 => Ok(Kind::ReplicateFetch),
             32 => Ok(Kind::ReplicateLabelledRecords),
             33 => Ok(Kind::ReplicateLabelledFetch),
+            34 => Ok(Kind::ConditionalForwardCacheOp),
+            35 => Ok(Kind::ConditionalForwardCacheOk),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

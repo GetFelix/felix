@@ -59,7 +59,8 @@ mod task;
 pub mod tiered;
 
 pub use cache::{
-    CacheChange, CacheObserver, CacheSnapshotEntry, EphemeralCache, LogCache, StorageApi,
+    CacheChange, CacheCondition, CacheObserver, CacheSnapshotEntry, ConditionalWrite,
+    EphemeralCache, LogCache, StorageApi, VersionedValue,
 };
 pub use commit_order::{CommitSequencer, CommitTurn, Superseded};
 pub use counter_log::CounterStore;

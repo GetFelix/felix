@@ -59,6 +59,48 @@ pub trait StorageApi: Debug + Send + Sync {
         key: &str,
     ) -> Result<Option<Bytes>>;
 
+    /// Store `value` only if the key's current entry meets `condition`.
+    ///
+    /// The check and the write are atomic per key: no other write to the key
+    /// can land between them. An expired entry counts as absent. Applied, the
+    /// answer carries the version this put wrote; refused, the key's current
+    /// version, or `None` when it has none. Durable as [`Self::put`] is.
+    async fn put_if(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+        value: Bytes,
+        ttl: Option<Duration>,
+        condition: CacheCondition,
+    ) -> Result<ConditionalWrite>;
+
+    /// Remove the key only if its current version is `version`, atomically as
+    /// [`Self::put_if`] checks. Refused, the answer carries the current
+    /// version; applied, `None`.
+    async fn delete_if(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+        version: u64,
+    ) -> Result<ConditionalWrite>;
+
+    /// The key's current value and version, for a caller about to make a
+    /// conditional write. Misses and failures as [`Self::get`].
+    async fn get_versioned(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+    ) -> Result<Option<VersionedValue>>;
+
     /// Remove the key, returning the value it had. Fails as [`Self::put`] does.
     async fn delete(
         &self,
@@ -226,4 +268,33 @@ pub struct CacheSnapshotEntry {
     pub offset: u64,
     /// Absolute Unix milliseconds; zero means it never expires.
     pub expires_at_millis: u64,
+}
+
+/// What a conditional write requires of the key's current entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheCondition {
+    /// The key has no live entry: never written, deleted, or expired.
+    Absent,
+    /// The key's live entry has exactly this version.
+    Version(u64),
+}
+
+/// The answer to a conditional write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConditionalWrite {
+    /// The condition held and the write was made.
+    pub applied: bool,
+    /// After an applied put, the version it wrote. Otherwise the key's
+    /// current version, `None` when it has no live entry.
+    pub version: Option<u64>,
+}
+
+/// A value and the version a conditional write would compare against.
+///
+/// A version only grows for a key and is never reused, so seeing the same one
+/// twice means nothing was written in between.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionedValue {
+    pub value: Bytes,
+    pub version: u64,
 }

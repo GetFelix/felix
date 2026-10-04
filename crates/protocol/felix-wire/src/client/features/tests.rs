@@ -319,6 +319,10 @@ fn every_feature_bit_is_distinct_and_known() {
         ("FEATURE_GROUP_SKIPPED", crate::FEATURE_GROUP_SKIPPED),
         ("FEATURE_GROUP_PUBLISHER", crate::FEATURE_GROUP_PUBLISHER),
         ("FEATURE_GROUP_ADMIN", crate::FEATURE_GROUP_ADMIN),
+        (
+            "FEATURE_CACHE_CONDITIONAL",
+            crate::FEATURE_CACHE_CONDITIONAL,
+        ),
     ];
     let mut seen = 0u32;
     for (name, bit) in bits {

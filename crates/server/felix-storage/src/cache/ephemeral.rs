@@ -1,6 +1,7 @@
 //! The in-memory cache a broker uses when it has no durable storage.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -8,7 +9,7 @@ use bytes::Bytes;
 use tokio::sync::RwLock;
 
 use crate::Result;
-use crate::cache::StorageApi;
+use crate::cache::{CacheCondition, ConditionalWrite, StorageApi, VersionedValue};
 
 /// Simple in-memory cache with optional TTL expiry.
 ///
@@ -35,6 +36,9 @@ pub struct EphemeralCache {
     inner: RwLock<HashMap<CacheKey, CacheEntry>>,
     // Optional size cap to enable future eviction policies.
     max_entries: Option<usize>,
+    /// Source of entry versions. One counter for the whole store, so a key
+    /// deleted and written again never gets a version it had before.
+    next_version: AtomicU64,
 }
 
 impl EphemeralCache {
@@ -47,8 +51,47 @@ impl EphemeralCache {
         Self {
             inner: RwLock::new(HashMap::new()),
             max_entries: Some(max_entries),
+            next_version: AtomicU64::new(0),
         }
     }
+}
+
+impl EphemeralCache {
+    /// Store an entry under a fresh version, returning the version.
+    fn insert(
+        &self,
+        map: &mut HashMap<CacheKey, CacheEntry>,
+        key: CacheKey,
+        value: Bytes,
+        ttl: Option<Duration>,
+    ) -> u64 {
+        // Compute expiry once so reads only compare Instants.
+        let expires_at = ttl.map(|ttl| Instant::now() + ttl);
+        let version = self.next_version.fetch_add(1, Ordering::Relaxed);
+        map.insert(
+            key,
+            CacheEntry {
+                value,
+                expires_at,
+                version,
+            },
+        );
+        if let Some(max_entries) = self.max_entries
+            && map.len() > max_entries
+        {
+            // Placeholder eviction: remove an arbitrary key until capped.
+            if let Some(key) = map.keys().next().cloned() {
+                map.remove(&key);
+            }
+        }
+        version
+    }
+}
+
+/// The entry under `key`, unless it has expired.
+fn live<'a>(map: &'a HashMap<CacheKey, CacheEntry>, key: &CacheKey) -> Option<&'a CacheEntry> {
+    map.get(key)
+        .filter(|entry| entry.expires_at.is_none_or(|at| Instant::now() < at))
 }
 
 impl Default for EphemeralCache {
@@ -56,6 +99,7 @@ impl Default for EphemeralCache {
         Self {
             inner: RwLock::new(HashMap::new()),
             max_entries: None,
+            next_version: AtomicU64::new(0),
         }
     }
 }
@@ -82,21 +126,90 @@ impl StorageApi for EphemeralCache {
         value: Bytes,
         ttl: Option<Duration>,
     ) -> Result<()> {
-        // Compute expiry once so reads only compare Instants.
-        let expires_at = ttl.map(|ttl| Instant::now() + ttl);
-        let entry = CacheEntry { value, expires_at };
-        let mut guard: tokio::sync::RwLockWriteGuard<'_, HashMap<CacheKey, CacheEntry>> =
-            self.inner.write().await;
-        guard.insert(CacheKey::new(tenant_id, namespace, cache, key), entry);
-        if let Some(max_entries) = self.max_entries
-            && guard.len() > max_entries
-        {
-            // Placeholder eviction: remove an arbitrary key until capped.
-            if let Some(key) = guard.keys().next().cloned() {
-                guard.remove(&key);
-            }
-        }
+        let mut guard = self.inner.write().await;
+        self.insert(
+            &mut guard,
+            CacheKey::new(tenant_id, namespace, cache, key),
+            value,
+            ttl,
+        );
         Ok(())
+    }
+
+    async fn put_if(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        _shard: u32,
+        key: &str,
+        value: Bytes,
+        ttl: Option<Duration>,
+        condition: CacheCondition,
+    ) -> Result<ConditionalWrite> {
+        // Checked and written under one write lock, which is the atomicity.
+        let mut guard = self.inner.write().await;
+        let key = CacheKey::new(tenant_id, namespace, cache, key);
+        let current = live(&guard, &key).map(|entry| entry.version);
+        let holds = match condition {
+            CacheCondition::Absent => current.is_none(),
+            CacheCondition::Version(version) => current == Some(version),
+        };
+        if !holds {
+            return Ok(ConditionalWrite {
+                applied: false,
+                version: current,
+            });
+        }
+        let version = self.insert(&mut guard, key, value, ttl);
+        Ok(ConditionalWrite {
+            applied: true,
+            version: Some(version),
+        })
+    }
+
+    async fn delete_if(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        _shard: u32,
+        key: &str,
+        version: u64,
+    ) -> Result<ConditionalWrite> {
+        let mut guard = self.inner.write().await;
+        let key = CacheKey::new(tenant_id, namespace, cache, key);
+        let current = live(&guard, &key).map(|entry| entry.version);
+        if current != Some(version) {
+            return Ok(ConditionalWrite {
+                applied: false,
+                version: current,
+            });
+        }
+        guard.remove(&key);
+        Ok(ConditionalWrite {
+            applied: true,
+            version: None,
+        })
+    }
+
+    async fn get_versioned(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        _shard: u32,
+        key: &str,
+    ) -> Result<Option<VersionedValue>> {
+        let guard = self.inner.read().await;
+        Ok(
+            live(&guard, &CacheKey::new(tenant_id, namespace, cache, key)).map(|entry| {
+                VersionedValue {
+                    value: entry.value.clone(),
+                    version: entry.version,
+                }
+            }),
+        )
     }
 
     async fn get(
@@ -194,6 +307,7 @@ struct CacheEntry {
     // Stored value plus optional expiration.
     value: Bytes,
     expires_at: Option<Instant>,
+    version: u64,
 }
 
 #[cfg(test)]

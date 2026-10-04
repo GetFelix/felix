@@ -46,7 +46,8 @@ fn parse_cache_get_response_variants() {
             cache: "primary".into(),
             key: "k".into(),
             value: Some(value.clone()),
-            request_id: None
+            request_id: None,
+            version: None,
         }))
         .expect("ok"),
         Some(value)

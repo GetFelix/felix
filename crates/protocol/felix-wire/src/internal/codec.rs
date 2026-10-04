@@ -6,10 +6,10 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use super::replicate::GenerationStart;
 use super::replicate::{ProducerMark, put_marks, take_marks};
 use super::{
-    AckMode, CacheOpKind, ErrorCode, Fence, FenceOk, ForwardCacheError, ForwardCacheOk,
-    ForwardCacheOp, ForwardPublish, ForwardPublishError, ForwardPublishOk, Hello, HelloOk,
-    InternalHeader, InternalMessage, Kind, MAX_BATCH_PAYLOADS, MAX_BODY_BYTES,
-    MAX_CREDENTIAL_BYTES, MAX_IDENT_BYTES, NotLeader, PeerCapabilities, ReplicaLog,
+    AckMode, CacheOpKind, ErrorCode, Fence, FenceOk, ForwardCacheCondition, ForwardCacheError,
+    ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome, ForwardPublish, ForwardPublishError,
+    ForwardPublishOk, Hello, HelloOk, InternalHeader, InternalMessage, Kind, MAX_BATCH_PAYLOADS,
+    MAX_BODY_BYTES, MAX_CREDENTIAL_BYTES, MAX_IDENT_BYTES, NotLeader, PeerCapabilities, ReplicaLog,
     ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
     ReplicateRecords, ShardRef,
 };
@@ -219,12 +219,42 @@ impl InternalMessage {
                 body.put_u64(m.ttl_ms);
                 body.put_u32(u32::try_from(m.value.len()).map_err(|_| Error::FrameTooLarge)?);
                 body.extend_from_slice(&m.value);
-                if !m.credential.is_empty() {
-                    put_credential(&mut body, &m.credential)?;
+                match m.condition {
+                    // The conditional kind always has a credential slot; an
+                    // empty one is what a broker without auth forwards.
+                    Some(condition) => {
+                        if m.credential.is_empty() {
+                            body.put_u32(0);
+                        } else {
+                            put_credential(&mut body, &m.credential)?;
+                        }
+                        match condition {
+                            ForwardCacheCondition::Unconditional => body.put_u8(0),
+                            ForwardCacheCondition::Absent => body.put_u8(1),
+                            ForwardCacheCondition::Version(version) => {
+                                body.put_u8(2);
+                                body.put_u64(version);
+                            }
+                        }
+                    }
+                    None if !m.credential.is_empty() => {
+                        put_credential(&mut body, &m.credential)?;
+                    }
+                    None => {}
                 }
             }
             Self::ForwardCacheOk(m) => {
                 body.put_u64(m.correlation_id);
+                if let Some(outcome) = m.outcome {
+                    body.put_u8(u8::from(outcome.applied));
+                    match outcome.version {
+                        Some(version) => {
+                            body.put_u8(1);
+                            body.put_u64(version);
+                        }
+                        None => body.put_u8(0),
+                    }
+                }
                 // A presence byte rather than a zero length, so an empty stored
                 // value stays distinguishable from a miss.
                 match &m.value {
@@ -609,7 +639,9 @@ impl InternalMessage {
                 expect_empty(&body)?;
                 Ok(Self::ReplicateRebuild(message))
             }
-            kind @ (Kind::ForwardCacheOp | Kind::AuthorizedForwardCacheOp) => {
+            kind @ (Kind::ForwardCacheOp
+            | Kind::AuthorizedForwardCacheOp
+            | Kind::ConditionalForwardCacheOp) => {
                 let correlation_id = take_u64(&mut body)?;
                 let shard = ShardRef {
                     tenant_id: take_str(&mut body)?,
@@ -626,10 +658,19 @@ impl InternalMessage {
                     return Err(Error::Incomplete);
                 }
                 let value = body.split_to(len);
-                let credential = if kind == Kind::AuthorizedForwardCacheOp {
-                    take_credential(&mut body)?
-                } else {
-                    String::new()
+                let (credential, condition) = match kind {
+                    Kind::AuthorizedForwardCacheOp => (take_credential(&mut body)?, None),
+                    Kind::ConditionalForwardCacheOp => {
+                        let credential = take_optional_credential(&mut body)?;
+                        let condition = match take_u8(&mut body)? {
+                            0 => ForwardCacheCondition::Unconditional,
+                            1 => ForwardCacheCondition::Absent,
+                            2 => ForwardCacheCondition::Version(take_u64(&mut body)?),
+                            _ => return Err(Error::Incomplete),
+                        };
+                        (credential, Some(condition))
+                    }
+                    _ => (String::new(), None),
                 };
                 expect_empty(&body)?;
                 Ok(Self::ForwardCacheOp(ForwardCacheOp {
@@ -640,10 +681,26 @@ impl InternalMessage {
                     value,
                     ttl_ms,
                     credential,
+                    condition,
                 }))
             }
-            Kind::ForwardCacheOk => {
+            kind @ (Kind::ForwardCacheOk | Kind::ConditionalForwardCacheOk) => {
                 let correlation_id = take_u64(&mut body)?;
+                let outcome = if kind == Kind::ConditionalForwardCacheOk {
+                    let applied = match take_u8(&mut body)? {
+                        0 => false,
+                        1 => true,
+                        _ => return Err(Error::Incomplete),
+                    };
+                    let version = match take_u8(&mut body)? {
+                        0 => None,
+                        1 => Some(take_u64(&mut body)?),
+                        _ => return Err(Error::Incomplete),
+                    };
+                    Some(ForwardCacheOutcome { applied, version })
+                } else {
+                    None
+                };
                 let value = match take_u8(&mut body)? {
                     0 => None,
                     1 => {
@@ -661,6 +718,7 @@ impl InternalMessage {
                 Ok(Self::ForwardCacheOk(ForwardCacheOk {
                     correlation_id,
                     value,
+                    outcome,
                 }))
             }
             Kind::ForwardCacheError => {
@@ -701,6 +759,16 @@ fn take_credential(buf: &mut Bytes) -> Result<String> {
     // decoding it as the legacy kind would let a peer choose the weaker check
     // by sending the stronger kind.
     if len == 0 || len > MAX_CREDENTIAL_BYTES || len > buf.remaining() {
+        return Err(Error::Incomplete);
+    }
+    let bytes = buf.split_to(len);
+    String::from_utf8(bytes.to_vec()).map_err(|_| Error::Incomplete)
+}
+
+/// A credential that may be absent, written as a zero length.
+fn take_optional_credential(buf: &mut Bytes) -> Result<String> {
+    let len = take_u32(buf)? as usize;
+    if len > MAX_CREDENTIAL_BYTES || len > buf.remaining() {
         return Err(Error::Incomplete);
     }
     let bytes = buf.split_to(len);

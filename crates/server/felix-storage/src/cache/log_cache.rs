@@ -27,7 +27,10 @@ use tokio::sync::Mutex;
 
 use self::shard::{CacheShard, Index, ShardState, now_millis};
 use self::write::{FinishOnDrop, Observer, StagedWrite};
-use crate::cache::{CacheChange, CacheObserver, CacheSnapshotEntry, StorageApi};
+use crate::cache::{
+    CacheChange, CacheCondition, CacheObserver, CacheSnapshotEntry, ConditionalWrite, StorageApi,
+    VersionedValue,
+};
 use crate::commit_order::CommitSequencer;
 use crate::compaction::Compactor;
 use crate::disk_log::{DiskLog, layout};
@@ -89,6 +92,50 @@ impl LogCache {
         value: Bytes,
         ttl: Option<std::time::Duration>,
     ) -> Result<()> {
+        self.put_entry(tenant_id, namespace, cache, shard, key, value, ttl, None)
+            .await
+            .map(|_| ())
+    }
+
+    /// The write behind [`StorageApi::put_if`]: [`LogCache::put_checked`],
+    /// with the condition checked where the offset is claimed.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn put_if_checked(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+        value: Bytes,
+        ttl: Option<std::time::Duration>,
+        condition: CacheCondition,
+    ) -> Result<ConditionalWrite> {
+        self.put_entry(
+            tenant_id,
+            namespace,
+            cache,
+            shard,
+            key,
+            value,
+            ttl,
+            Some(condition),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn put_entry(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+        value: Bytes,
+        ttl: Option<std::time::Duration>,
+        condition: Option<CacheCondition>,
+    ) -> Result<ConditionalWrite> {
         let shard_index = shard;
         let shard = self.shard(tenant_id, namespace, cache, shard_index)?;
         let expires_at_millis = ttl.map_or(0, |ttl| now_millis() + ttl.as_millis() as u64);
@@ -96,6 +143,7 @@ impl LogCache {
             key: key.to_string(),
             value: value.clone(),
             expires_at_millis,
+            version: None,
         };
 
         let observer = Arc::clone(&self.observer);
@@ -113,11 +161,27 @@ impl LogCache {
         // it is written, and the guard built from it is what applies it and
         // tells the watchers. A caller cancelled in between would leave the
         // put in the log and nowhere else.
-        let mut staged = crate::task::run_to_end({
+        let staged = crate::task::run_to_end({
             let shard = Arc::clone(&shard);
             async move {
-                let mut state = shard.state.lock().await;
-                shard.ensure_index(&mut state).await?;
+                let mut state = match condition {
+                    Some(_) => shard.lock_settled(&change.key).await?,
+                    None => {
+                        let mut state = shard.state.lock().await;
+                        shard.ensure_index(&mut state).await?;
+                        state
+                    }
+                };
+                if let Some(condition) = condition {
+                    let current = live_version(&state, &change.key);
+                    let holds = match condition {
+                        CacheCondition::Absent => current.is_none(),
+                        CacheCondition::Version(version) => current == Some(version),
+                    };
+                    if !holds {
+                        return Ok(Err(current));
+                    }
+                }
                 let payload = op.encode();
                 let bytes = payload.len() as u64;
                 // Claimed by the log the moment the offsets are consumed, so a
@@ -136,7 +200,7 @@ impl LogCache {
                     .await?;
                 state.sequenced_through = Some(pending.last_offset() + 1);
                 let in_flight = shard.key_in_flight(&change.key);
-                Ok(FinishOnDrop::new(StagedWrite {
+                Ok(Ok(FinishOnDrop::new(StagedWrite {
                     shard: Arc::clone(&shard),
                     log: state.log.clone(),
                     change: CacheChange {
@@ -149,16 +213,29 @@ impl LogCache {
                     bytes,
                     observer,
                     _in_flight: in_flight,
-                }))
+                })))
             }
         })
         .await?;
+        let mut staged = match staged {
+            Ok(staged) => staged,
+            Err(current) => {
+                return Ok(ConditionalWrite {
+                    applied: false,
+                    version: current,
+                });
+            }
+        };
 
         staged.commit().await?;
         let mut state = shard.state.lock().await;
+        let version = staged.offset();
         staged.apply(&mut state);
         shard.maybe_compact(&state.index);
-        Ok(())
+        Ok(ConditionalWrite {
+            applied: true,
+            version: Some(version),
+        })
     }
 
     /// The read behind [`StorageApi::get`].
@@ -184,6 +261,59 @@ impl LogCache {
         shard.read_value(&state, entry).await
     }
 
+    /// The read behind [`StorageApi::get_versioned`].
+    pub async fn get_versioned_checked(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+    ) -> Result<Option<VersionedValue>> {
+        let shard = self.shard(tenant_id, namespace, cache, shard)?;
+        let mut state = shard.state.lock().await;
+        shard.ensure_index(&mut state).await?;
+        let Some(entry) = state.index.entries.get(key).copied() else {
+            return Ok(None);
+        };
+        if entry.is_expired(now_millis()) {
+            return Ok(None);
+        }
+        Ok(shard
+            .read_value(&state, entry)
+            .await?
+            .map(|value| VersionedValue {
+                value,
+                version: entry.version,
+            }))
+    }
+
+    /// The delete behind [`StorageApi::delete_if`].
+    pub async fn delete_if_checked(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+        version: u64,
+    ) -> Result<ConditionalWrite> {
+        let deleted = self
+            .delete_entry(
+                tenant_id,
+                namespace,
+                cache,
+                shard,
+                key,
+                DeleteWhen::Version(version),
+            )
+            .await?;
+        Ok(ConditionalWrite {
+            applied: deleted.written,
+            version: deleted.current,
+        })
+    }
+
     /// The delete behind [`StorageApi::delete`].
     ///
     /// Same two-half shape as [`LogCache::put_checked`]. The previous value is
@@ -197,7 +327,7 @@ impl LogCache {
         shard: u32,
         key: &str,
     ) -> Result<Option<Bytes>> {
-        self.delete_entry(tenant_id, namespace, cache, shard, key, None)
+        self.delete_entry(tenant_id, namespace, cache, shard, key, DeleteWhen::Always)
             .await
             .map(|deleted| deleted.previous)
     }
@@ -239,7 +369,14 @@ impl LogCache {
                 break;
             }
             let deleted = self
-                .delete_entry(tenant_id, namespace, cache, shard, &key, Some(now))
+                .delete_entry(
+                    tenant_id,
+                    namespace,
+                    cache,
+                    shard,
+                    &key,
+                    DeleteWhen::Expired(now),
+                )
                 .await?;
             written += usize::from(deleted.written);
         }
@@ -256,7 +393,7 @@ impl LogCache {
     }
 
     /// Stage and apply a delete of `key`, or nothing when the key is absent
-    /// or, with `expired_at`, not expired at that time.
+    /// or `when` does not hold.
     async fn delete_entry(
         &self,
         tenant_id: &str,
@@ -264,7 +401,7 @@ impl LogCache {
         cache: &str,
         shard: u32,
         key: &str,
-        expired_at: Option<u64>,
+        when: DeleteWhen,
     ) -> Result<Deleted> {
         let shard_index = shard;
         let shard = self.shard(tenant_id, namespace, cache, shard_index)?;
@@ -287,18 +424,35 @@ impl LogCache {
         let staged = crate::task::run_to_end({
             let shard = Arc::clone(&shard);
             async move {
-                let mut state = shard.state.lock().await;
-                shard.ensure_index(&mut state).await?;
-                let Some(entry) = state.index.entries.get(&change.key).copied() else {
-                    return Ok(None);
+                // An expiry is conditional too: a put staged but not yet
+                // applied may have refreshed the key, and a delete staged
+                // behind it would erase that.
+                let mut state = match when {
+                    DeleteWhen::Always => {
+                        let mut state = shard.state.lock().await;
+                        shard.ensure_index(&mut state).await?;
+                        state
+                    }
+                    DeleteWhen::Expired(_) | DeleteWhen::Version(_) => {
+                        shard.lock_settled(&change.key).await?
+                    }
                 };
-                if expired_at.is_some_and(|now| !entry.is_expired(now)) {
-                    return Ok(None);
+                let Some(entry) = state.index.entries.get(&change.key).copied() else {
+                    return Ok(Err(None));
+                };
+                let live = !entry.is_expired(now_millis());
+                let holds = match when {
+                    DeleteWhen::Always => true,
+                    DeleteWhen::Expired(now) => entry.is_expired(now),
+                    DeleteWhen::Version(version) => live && entry.version == version,
+                };
+                if !holds {
+                    return Ok(Err(live.then_some(entry.version)));
                 }
-                let previous = if entry.is_expired(now_millis()) {
-                    None
-                } else {
+                let previous = if live {
                     shard.read_value(&state, entry).await?
+                } else {
+                    None
                 };
                 let payload = op.encode();
                 let bytes = payload.len() as u64;
@@ -330,12 +484,19 @@ impl LogCache {
                     observer,
                     _in_flight: in_flight,
                 });
-                Ok(Some((previous, staged)))
+                Ok(Ok((previous, staged)))
             }
         })
         .await?;
-        let Some((previous, mut staged)) = staged else {
-            return Ok(Deleted::default());
+        let (previous, mut staged) = match staged {
+            Ok(staged) => staged,
+            Err(current) => {
+                return Ok(Deleted {
+                    written: false,
+                    previous: None,
+                    current,
+                });
+            }
         };
 
         staged.commit().await?;
@@ -344,6 +505,7 @@ impl LogCache {
         Ok(Deleted {
             written: true,
             previous,
+            current: None,
         })
     }
 
@@ -563,6 +725,7 @@ impl LogCache {
                     compactor: Arc::clone(&self.compactor),
                     compacting: Default::default(),
                     keys_in_flight: Default::default(),
+                    key_settled: Default::default(),
                     state: Mutex::new(ShardState {
                         log,
                         index: Index::default(),
@@ -605,6 +768,48 @@ impl StorageApi for LogCache {
         key: &str,
     ) -> Result<Option<Bytes>> {
         self.get_checked(tenant_id, namespace, cache, shard, key)
+            .await
+    }
+
+    async fn put_if(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+        value: Bytes,
+        ttl: Option<std::time::Duration>,
+        condition: CacheCondition,
+    ) -> Result<ConditionalWrite> {
+        self.put_if_checked(
+            tenant_id, namespace, cache, shard, key, value, ttl, condition,
+        )
+        .await
+    }
+
+    async fn delete_if(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+        version: u64,
+    ) -> Result<ConditionalWrite> {
+        self.delete_if_checked(tenant_id, namespace, cache, shard, key, version)
+            .await
+    }
+
+    async fn get_versioned(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        key: &str,
+    ) -> Result<Option<VersionedValue>> {
+        self.get_versioned_checked(tenant_id, namespace, cache, shard, key)
             .await
     }
 
@@ -760,12 +965,33 @@ impl StorageApi for LogCache {
 /// because each one is a separate log in a separate directory.
 type CacheId = (String, String, String, u32);
 
+/// When [`LogCache::delete_entry`] writes its delete.
+#[derive(Clone, Copy)]
+enum DeleteWhen {
+    Always,
+    /// The entry had expired by this Unix millisecond.
+    Expired(u64),
+    /// The entry is live at this version.
+    Version(u64),
+}
+
 /// What [`LogCache::delete_entry`] did.
-#[derive(Default)]
 struct Deleted {
     written: bool,
     /// The value the key held, if it was live.
     previous: Option<Bytes>,
+    /// The live entry's version when nothing was written.
+    current: Option<u64>,
+}
+
+/// The version of `key`'s live entry, if it has one.
+fn live_version(state: &ShardState, key: &str) -> Option<u64> {
+    state
+        .index
+        .entries
+        .get(key)
+        .filter(|entry| !entry.is_expired(now_millis()))
+        .map(|entry| entry.version)
 }
 
 #[cfg(test)]

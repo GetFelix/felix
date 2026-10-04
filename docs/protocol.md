@@ -461,6 +461,61 @@ Answered with `cache_value` carrying the value that was removed, or a null value
 if the key was not there, so a caller can tell a delete that did something from
 one that did not.
 
+### CachePutIf
+```
+{ "type": "cache_put_if", "tenant_id": "<string>", "namespace": "<string>",
+  "cache": "<string>", "key": "<string>", "value": "<base64>",
+  "ttl_ms": <u64|absent>, "condition": "absent" | { "version": <u64> },
+  "request_id": <u64> }
+```
+
+Sent only to a broker that advertised `FEATURE_CACHE_CONDITIONAL`. Stores the
+value only if the key's current entry meets `condition`: `"absent"` means the
+key has no live entry (never written, deleted, or expired), and `{"version": n}`
+means its live entry has version `n`. Answered with `cache_condition_result`.
+
+The check and the write are one step on the key's owner: no other write to the
+key lands between them. A write already accepted for the key but not yet
+durable is waited for before the condition is checked, so two racing
+`"absent"` puts cannot both apply. The answer waits on the same durability and
+quorum as a plain `cache_put`, applied or not.
+
+A key's version is the log offset of the put that wrote its value. It is
+unique within the shard, only grows, and is kept when compaction moves the
+value, so the same version read twice means nothing was written in between.
+It says nothing about order across shards.
+
+This is a new request rather than a field on `cache_put` because a broker that
+predates it ignores unknown fields, and would make the write unconditionally
+and report success.
+
+### CacheDeleteIf
+```
+{ "type": "cache_delete_if", "tenant_id": "<string>", "namespace": "<string>",
+  "cache": "<string>", "key": "<string>", "version": <u64>, "request_id": <u64> }
+```
+
+Sent only to a broker that advertised `FEATURE_CACHE_CONDITIONAL`. Removes the
+key only if its live entry has `version`, checked as `cache_put_if` checks.
+Answered with `cache_condition_result`. This is how a lease holder releases a
+lease without removing one someone else has since taken.
+
+### CacheConditionResult (server -> client)
+```
+{ "type": "cache_condition_result", "applied": <bool>,
+  "version": <u64|absent>, "request_id": <u64> }
+```
+
+`applied` says whether the write was made; a refusal is an answer, not an
+error. After an applied `cache_put_if`, `version` is the version it wrote.
+Otherwise it is the key's current version, and absent when the key has no live
+entry (including after an applied `cache_delete_if`).
+
+A broker that cannot route the request answers `error` as for any cache
+request. A conditional write is never retried for the client after an
+indeterminate forward: a retry of a put that applied would be refused by the
+version it wrote.
+
 ### CacheWatch
 ```
 { "type": "cache_watch", "tenant_id": "<string>", "namespace": "<string>",
@@ -721,8 +776,15 @@ Absent fields are left out rather than sent as `null`.
 
 ### CacheValue (server -> client)
 ```
-{ "type": "cache_value", "key": "<string>", "value": "<base64|null>" }
+{ "type": "cache_value", "key": "<string>", "value": "<base64|null>",
+  "version": <u64|absent> }
 ```
+
+`version` is the value's version, for a `cache_put_if` or `cache_delete_if` to
+compare against. It is sent only on a get's answer, only on a hit, and only to
+a client that offered `FEATURE_CACHE_CONDITIONAL`, so any other client's frame
+is byte-identical to the one it always got. A broker forwarding the get to an
+owner that predates versions answers without one.
 
 ### Ok
 ```
@@ -760,6 +822,9 @@ field of `detail` is optional. See [Error codes](#error-codes).
 - CacheDelete returns `cache_value` carrying whatever was removed, and `null`
   when the key was not there. Removing a key that does not exist is an answer,
   not an error.
+- CachePutIf and CacheDeleteIf return `cache_condition_result`: whether the
+  write was made, and the version that answers it. The condition check and the
+  write are atomic per key.
 - CacheWatch delivers each applied write for its key or prefix (a put with its
   value, a delete as a change with none) in the cache shard's write order,
   each carrying its log offset. Resume by offset replays `[from_offset, tail)`
@@ -1339,6 +1404,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x40_0000` | `FEATURE_GROUP_SKIPPED` | Offered by a client that reads `skipped_before` on a `GroupRecord`. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |
 | `0x80_0000` | `FEATURE_GROUP_PUBLISHER` | Offered by a client that reads `publisher` on a `GroupRecord`. Advertised by a broker with consumer groups. The field is sent only to a client that offered it. See [Event batch publisher](#event-batch-publisher) |
 | `0x100_0000` | `FEATURE_GROUP_ADMIN` | The broker serves `group_seek`, `group_describe` and `group_delete`. See [GroupSeek](#groupseek--groupdescribe--groupdelete) |
+| `0x200_0000` | `FEATURE_CACHE_CONDITIONAL` | The broker accepts `cache_put_if` and `cache_delete_if`. Offered by a client that reads `version` on a `cache_value`; the field is sent only to a client that offered it. See [CachePutIf](#cacheputif) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:

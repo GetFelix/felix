@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use parking_lot::Mutex as SyncMutex;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard, Notify};
 
 use super::CacheOp;
 use crate::commit_order::CommitSequencer;
@@ -36,6 +36,9 @@ pub(super) struct CacheShard {
     /// Keys with a write staged but not yet applied, and how many. Compaction
     /// must not copy these forward; see `compaction::copy_forward`.
     pub(super) keys_in_flight: SyncMutex<HashMap<String, usize>>,
+    /// Woken whenever a key leaves `keys_in_flight`, for a conditional write
+    /// waiting to read the key's settled state.
+    pub(super) key_settled: Notify,
     /// Guards the log handle and the index. A write holds it twice, briefly —
     /// once to stage (claim an offset, no fsync) and once to apply — never
     /// across the fsync, which is what lets concurrent writers share one
@@ -141,12 +144,14 @@ impl CacheShard {
                     CacheOp::Put {
                         key,
                         expires_at_millis,
+                        version,
                         ..
                     } => {
                         if let Some(previous) = index.entries.insert(
                             key,
                             Entry {
                                 offset: record.offset,
+                                version: version.unwrap_or(record.offset),
                                 expires_at_millis,
                                 bytes,
                             },
@@ -190,10 +195,12 @@ impl CacheShard {
             CacheOp::Put {
                 key,
                 expires_at_millis,
+                version,
                 ..
             } => {
                 let entry = Entry {
                     offset,
+                    version: version.unwrap_or(offset),
                     expires_at_millis: *expires_at_millis,
                     bytes,
                 };
@@ -249,6 +256,30 @@ impl CacheShard {
         }
     }
 
+    /// The state lock, taken once no write to `key` is staged but unapplied,
+    /// with the index caught up.
+    ///
+    /// The index lags a staged write until its fsync, so a condition checked
+    /// against it while one is in flight could pass for two racers. Writers
+    /// register in `keys_in_flight` under this same lock, so a key absent
+    /// there means the index entry is the latest word on it.
+    pub(super) async fn lock_settled(&self, key: &str) -> Result<MutexGuard<'_, ShardState>> {
+        loop {
+            let settled = self.key_settled.notified();
+            tokio::pin!(settled);
+            // Registered before the check, so a write settling in between
+            // still wakes this one.
+            settled.as_mut().enable();
+            let mut state = self.state.lock().await;
+            self.ensure_index(&mut state).await?;
+            if !self.keys_in_flight.lock().contains_key(key) {
+                return Ok(state);
+            }
+            drop(state);
+            settled.await;
+        }
+    }
+
     /// Mark `key` as having a write in flight until the guard drops.
     pub(super) fn key_in_flight(self: &Arc<Self>, key: &str) -> KeyInFlight {
         *self
@@ -276,6 +307,8 @@ impl Drop for KeyInFlight {
             *count -= 1;
             if *count == 0 {
                 keys.remove(&self.key);
+                drop(keys);
+                self.shard.key_settled.notify_waiters();
             }
         }
     }
@@ -324,6 +357,9 @@ pub(super) struct Index {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Entry {
     pub(super) offset: Offset,
+    /// What a conditional write compares against: the offset of the put that
+    /// wrote this value, kept unchanged when compaction moves it.
+    pub(super) version: u64,
     /// Absolute Unix milliseconds; zero means it never expires.
     pub(super) expires_at_millis: u64,
     /// What this record costs on disk, for deciding when to compact.

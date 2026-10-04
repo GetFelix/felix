@@ -145,7 +145,8 @@ requester. Every response echoes it.
 **Every request has exactly one terminal response.** `ForwardPublish` is answered
 by exactly one of `ForwardPublishOk`, `ForwardPublishError`, or `NotLeader`;
 `ForwardCacheOp` by exactly one of `ForwardCacheOk`, `ForwardCacheError`, or
-`NotLeader`. A requester that never receives one, because the connection
+`NotLeader`; `ConditionalForwardCacheOp` the same way, with
+`ConditionalForwardCacheOk` for its success. A requester that never receives one, because the connection
 dropped, treats the request as failed, so nothing is silently abandoned as
 pending.
 
@@ -325,6 +326,25 @@ A `Get` and a `Delete` are safe to re-send after an indeterminate answer,
 because both land on the same state twice. A `Put` is not: re-sending one with a
 TTL restarts its clock. So a lost answer to a write is reported as
 indeterminate rather than retried, and the caller decides.
+
+A conditional put or delete, or a get that wants the value's version, travels
+as `ConditionalForwardCacheOp` (34): the `AuthorizedForwardCacheOp` body with
+a credential that may be empty (a zero length), then a condition byte:
+
+```text
+u8  condition   0 none (a versioned Get), 1 absent, 2 version
+u64 version     only after a 2
+```
+
+The owner checks the condition and writes in one step, and answers with
+`ConditionalForwardCacheOk` (35): the correlation id, a `u8` applied flag, a
+`u8` presence byte and `u64` version, then the `ForwardCacheOk` value. A
+separate kind, because an owner that predates it must refuse the request
+rather than read it as an unconditional `Put`. On that `UnsupportedKind` the
+forwarder refuses a conditional write, and sends a versioned `Get` again as a
+plain one, which answers without a version. A conditional write is not
+re-sent after an indeterminate answer either: one that applied would be
+refused by the version it wrote.
 
 ### Handshake
 

@@ -813,3 +813,136 @@ async fn control_loop_group_poll_with_an_oversized_consumer_is_refused() -> Resu
     }
     Ok(())
 }
+
+/// A conditional put applies once, a get reports the version only to a
+/// client that offered the bit, and a delete names the version it removes.
+#[tokio::test]
+async fn control_loop_serves_conditional_cache_writes() -> Result<()> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_cache(
+            "t1",
+            "default",
+            "leases",
+            felix_broker::CacheMetadata::default(),
+        )
+        .await?;
+    let auth = auth_fixture("t1", default_perms());
+    let put_if = |request_id| {
+        Ok(Some(frame_from_message(Message::CachePutIf {
+            tenant_id: "t1".to_string(),
+            namespace: "default".to_string(),
+            cache: "leases".to_string(),
+            key: "endpoint-7".to_string(),
+            value: Bytes::from_static(b"worker-1"),
+            ttl_ms: None,
+            condition: felix_wire::CacheCondition::Absent,
+            request_id,
+        })))
+    };
+    let delete_if = |version, request_id| {
+        Ok(Some(frame_from_message(Message::CacheDeleteIf {
+            tenant_id: "t1".to_string(),
+            namespace: "default".to_string(),
+            cache: "leases".to_string(),
+            key: "endpoint-7".to_string(),
+            version,
+            request_id,
+        })))
+    };
+    let get = Ok(Some(frame_from_message(Message::CacheGet {
+        tenant_id: "t1".to_string(),
+        namespace: "default".to_string(),
+        cache: "leases".to_string(),
+        key: "endpoint-7".to_string(),
+        request_id: Some(3),
+    })));
+    let frames = vec![
+        Ok(Some(frame_from_message(Message::Auth {
+            tenant_id: auth.tenant_id.clone(),
+            token: auth.token.clone(),
+            client_flags: Some(0),
+            client_features: Some(felix_wire::FEATURE_CACHE_CONDITIONAL),
+        }))),
+        put_if(1),
+        put_if(2),
+        get,
+        delete_if(99, 4),
+        delete_if(0, 5),
+        Ok(None),
+    ];
+    let (result, messages) = run_control_loop_with_frames(
+        Arc::clone(&broker),
+        Arc::clone(&auth.auth),
+        frames,
+        BrokerConfig::default(),
+    )
+    .await?;
+    assert!(result);
+    let answers: Vec<&Message> = messages
+        .iter()
+        .filter_map(|message| match message {
+            Outgoing::CacheMessage(message) => Some(message),
+            _ => None,
+        })
+        .collect();
+    let result = |applied, version, request_id| Message::CacheConditionResult {
+        applied,
+        version,
+        request_id,
+    };
+    assert_eq!(answers[0], &result(true, Some(0), 1));
+    assert_eq!(answers[1], &result(false, Some(0), 2));
+    assert!(matches!(
+        answers[2],
+        Message::CacheValue {
+            version: Some(0),
+            ..
+        }
+    ));
+    assert_eq!(answers[3], &result(false, Some(0), 4));
+    assert_eq!(answers[4], &result(true, None, 5));
+
+    // A client that did not offer the bit gets the answer it always got.
+    broker
+        .cache()
+        .put(
+            "t1",
+            "default",
+            "leases",
+            0,
+            "endpoint-7",
+            Bytes::from_static(b"v"),
+            None,
+        )
+        .await?;
+    let frames = vec![
+        Ok(Some(frame_from_message(auth_message(&auth)))),
+        Ok(Some(frame_from_message(Message::CacheGet {
+            tenant_id: "t1".to_string(),
+            namespace: "default".to_string(),
+            cache: "leases".to_string(),
+            key: "endpoint-7".to_string(),
+            request_id: Some(6),
+        }))),
+        Ok(None),
+    ];
+    let (_, messages) = run_control_loop_with_frames(
+        broker,
+        Arc::clone(&auth.auth),
+        frames,
+        BrokerConfig::default(),
+    )
+    .await?;
+    assert!(messages.iter().any(|message| matches!(
+        message,
+        Outgoing::CacheMessage(Message::CacheValue {
+            value: Some(_),
+            version: None,
+            ..
+        })
+    )));
+    Ok(())
+}

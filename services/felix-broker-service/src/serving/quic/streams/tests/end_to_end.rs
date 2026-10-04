@@ -96,6 +96,7 @@ async fn cache_put_get_round_trip() -> Result<()> {
             key: "demo-key".to_string(),
             value: Some(Bytes::from_static(b"cached")),
             request_id: None,
+            version: None,
         })
     );
 

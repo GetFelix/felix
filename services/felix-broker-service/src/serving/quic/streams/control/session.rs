@@ -169,6 +169,9 @@ pub(super) async fn authenticate(
                             // leader, which every broker is for
                             // the shards it leads.
                             | felix_wire::FEATURE_IDEMPOTENT_PRODUCER
+                            // Both cache stores keep versions, so every
+                            // broker can answer a conditional write.
+                            | felix_wire::FEATURE_CACHE_CONDITIONAL
                             // Codes are sent only to a client that offered
                             // the bit; advertising it tells that client an
                             // error without one is not a gap in this broker.

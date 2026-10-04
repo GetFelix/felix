@@ -780,6 +780,64 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 )
                 .await?
             }
+            Message::CachePutIf {
+                tenant_id,
+                namespace,
+                cache,
+                key,
+                value,
+                ttl_ms,
+                condition,
+                request_id,
+            } => {
+                cache::cache_conditional(
+                    &cx,
+                    &mut session,
+                    cache::ConditionalRequest {
+                        tenant_id,
+                        namespace,
+                        cache,
+                        key,
+                        request_id,
+                        request: crate::serving::forward::CacheRequest::PutIf {
+                            value,
+                            // Zero is "no expiry" on the forward, as for a put.
+                            ttl_ms: ttl_ms.unwrap_or(0),
+                            condition: match condition {
+                                felix_wire::CacheCondition::Absent => {
+                                    felix_storage::CacheCondition::Absent
+                                }
+                                felix_wire::CacheCondition::Version(version) => {
+                                    felix_storage::CacheCondition::Version(version)
+                                }
+                            },
+                        },
+                    },
+                )
+                .await?
+            }
+            Message::CacheDeleteIf {
+                tenant_id,
+                namespace,
+                cache,
+                key,
+                version,
+                request_id,
+            } => {
+                cache::cache_conditional(
+                    &cx,
+                    &mut session,
+                    cache::ConditionalRequest {
+                        tenant_id,
+                        namespace,
+                        cache,
+                        key,
+                        request_id,
+                        request: crate::serving::forward::CacheRequest::DeleteIf { version },
+                    },
+                )
+                .await?
+            }
             Message::CacheDelete {
                 tenant_id,
                 namespace,
@@ -854,6 +912,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             | Message::GroupDeleted { .. }
             | Message::CacheValue { .. }
             | Message::CacheOk { .. }
+            | Message::CacheConditionResult { .. }
             | Message::CounterValue { .. }
             | Message::CacheWatchStarted { .. }
             | Message::CacheEvent { .. }

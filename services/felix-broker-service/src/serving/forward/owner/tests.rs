@@ -296,6 +296,7 @@ fn forwarded_cache_op(op: CacheOpKind, credential: String) -> ForwardCacheOp {
         value: Bytes::from_static(b"v"),
         ttl_ms: 0,
         credential,
+        condition: None,
     }
 }
 
@@ -681,6 +682,7 @@ mod fence {
             value,
             ttl_ms: 0,
             credential: credential.to_string(),
+            condition: None,
         }
     }
 
@@ -905,5 +907,51 @@ mod fence {
             .await
             .expect("read");
         assert_eq!(counted, None, "the held add was applied on the old owner");
+    }
+}
+
+/// A forwarded conditional put is checked on the owner and answered with
+/// whether it applied and the version, as a local one is.
+#[tokio::test]
+async fn a_forwarded_conditional_put_answers_with_its_outcome() {
+    use felix_wire::internal::{ForwardCacheCondition, ForwardCacheOutcome};
+
+    let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
+    broker
+        .register_cache(
+            TENANT,
+            NAMESPACE,
+            CACHE,
+            felix_broker::CacheMetadata::default(),
+        )
+        .await
+        .expect("cache");
+    let credentials = Credentials::new();
+    let handler = handler_with(
+        broker,
+        None,
+        Duration::from_secs(1),
+        Arc::clone(&credentials.auth),
+    );
+    let writer = credentials.token(&[&format!("cache.write:cache:{TENANT}/{NAMESPACE}/{CACHE}")]);
+    let put_if = || ForwardCacheOp {
+        condition: Some(ForwardCacheCondition::Absent),
+        ..forwarded_cache_op(CacheOpKind::Put, writer.clone())
+    };
+
+    let first = match handler.apply_cache_op(put_if()).await {
+        InternalMessage::ForwardCacheOk(ok) => ok.outcome.expect("an outcome"),
+        other => panic!("not served: {other:?}"),
+    };
+    assert!(first.applied);
+    match handler.apply_cache_op(put_if()).await {
+        InternalMessage::ForwardCacheOk(ok) => assert_eq!(
+            ok.outcome,
+            Some(ForwardCacheOutcome {
+                applied: false,
+                version: first.version,
+            })
+        ),
+        other => panic!("not served: {other:?}"),
     }
 }
