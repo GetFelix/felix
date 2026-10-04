@@ -78,6 +78,7 @@ async fn publish_through_workers(publishers: usize) -> (u64, u64) {
                         acked_on_enqueue: false,
                         admission_permit: None,
                         fenced: None,
+                        publisher: None,
                     })
                     .await;
                 answer.await.expect("answer").expect("publish");

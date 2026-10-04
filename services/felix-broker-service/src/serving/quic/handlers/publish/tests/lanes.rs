@@ -68,6 +68,7 @@ async fn a_stalled_forward_does_not_hold_up_another_shard() {
         acked_on_enqueue: false,
         admission_permit: None,
         fenced: None,
+        publisher: None,
     };
     assert!(
         enqueue_tenant_publish(&ctx, "t2", forward, EnqueuePolicy::Wait, None)
@@ -90,6 +91,7 @@ async fn a_stalled_forward_does_not_hold_up_another_shard() {
         acked_on_enqueue: false,
         admission_permit: None,
         fenced: None,
+        publisher: None,
     };
     assert!(
         enqueue_tenant_publish(&ctx, "t1", local, EnqueuePolicy::Wait, None)

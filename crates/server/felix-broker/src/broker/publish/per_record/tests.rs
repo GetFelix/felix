@@ -84,8 +84,8 @@ async fn ship(
         .iter()
         .map(|r| crate::replication::mark_to_wire(r.mark))
         .collect();
-    let checksum = felix_wire::internal::batch_checksum(&payloads, &marks);
-    let applied = crate::replication::apply(log(follower), from, checksum, &payloads, &marks)
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[]);
+    let applied = crate::replication::apply(log(follower), from, checksum, &payloads, &marks, &[])
         .await
         .expect("apply")
         .expect("in order");

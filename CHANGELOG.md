@@ -11,6 +11,28 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Added
+- Delivered events can say who published them (#1010). A subscriber that
+  offers `FLAG_EVENT_BATCH_PUBLISHER` (`0x2000`) gets the principal (the
+  token's `sub`) on each event batch, and a group consumer that offers
+  `FEATURE_GROUP_PUBLISHER` (`0x80_0000`) gets it as `publisher` on each
+  record. Nobody else's frames change. In felix-client, set
+  `ClientConfig::publishers` and read `Event::publisher`. A durable stream
+  stores the principal with each record (storage format v6, a byte-length
+  trailer on the body), and replication ships it, so replay, promoted replicas
+  and consumer groups report the same value. Storing it is off until enabled:
+  finalize the `publisher_principal` fleet feature in a cluster, or set
+  `FELIX_RECORD_PUBLISHERS=true` on a single broker. Either is one-way for the
+  data directory, since an older broker cannot open a v6 segment.
+
+### Changed
+- Breaking, Rust API: `Broker::claim_publish`, `publish_batch_with_outcome`,
+  `claim_batch_idempotent` and `commit_to_handle` take the publisher;
+  `ResumedSubscription::backlog` is a `Vec<RingRecord>`; `AppendRecord` and
+  `LogRecord` have a `publisher` field; `StreamLog`'s append methods and
+  `replication::apply` take per-record publishers; `ReplicateRecords` has
+  `publishers` and `batch_checksum` covers them.
+
 ## [0.6.0-preview.2] - 2026-10-04
 
 The second preview of 0.6.0, and the first release from the GetFelix

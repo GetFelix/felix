@@ -33,7 +33,7 @@ fn segment_header_is_a_stable_golden_vector() {
 #[test]
 fn record_is_a_stable_golden_vector() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 7, 9, b"hi", &Default::default());
+    encode_record(&mut buf, 7, 9, b"hi", None, &Default::default());
     assert_eq!(
         buf,
         vec![
@@ -50,7 +50,7 @@ fn record_is_a_stable_golden_vector() {
 #[test]
 fn record_round_trips_every_field() {
     let mut buf = Vec::new();
-    let written = encode_record(&mut buf, 9, 1234, b"payload", &Default::default());
+    let written = encode_record(&mut buf, 9, 1234, b"payload", None, &Default::default());
     let (decoded, consumed) = decode_record(&buf).expect("decode");
     assert_eq!(written, consumed);
     assert_eq!(consumed, buf.len() as u64);
@@ -63,7 +63,7 @@ fn record_round_trips_every_field() {
 #[test]
 fn zero_length_payload_round_trips() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 0, 0, b"", &Default::default());
+    encode_record(&mut buf, 0, 0, b"", None, &Default::default());
     let (decoded, consumed) = decode_record(&buf).expect("decode");
     assert_eq!(consumed, RECORD_HEADER_LEN);
     assert!(decoded.payload.is_empty());
@@ -72,8 +72,8 @@ fn zero_length_payload_round_trips() {
 #[test]
 fn records_decode_back_to_back() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 0, 1, b"a", &Default::default());
-    encode_record(&mut buf, 1, 2, b"bb", &Default::default());
+    encode_record(&mut buf, 0, 1, b"a", None, &Default::default());
+    encode_record(&mut buf, 1, 2, b"bb", None, &Default::default());
     let (first, consumed) = decode_record(&buf).expect("first");
     assert_eq!(first.header.offset, 0);
     let (second, _) = decode_record(&buf[consumed as usize..]).expect("second");
@@ -84,7 +84,7 @@ fn records_decode_back_to_back() {
 #[test]
 fn truncation_at_every_boundary_reports_truncated() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 3, 4, b"abcd", &Default::default());
+    encode_record(&mut buf, 3, 4, b"abcd", None, &Default::default());
     for cut in 0..buf.len() {
         let err = decode_record(&buf[..cut]).expect_err("short buffer");
         assert!(err.is_truncation(), "cut {cut} gave {err}");
@@ -95,7 +95,7 @@ fn truncation_at_every_boundary_reports_truncated() {
 #[test]
 fn payload_corruption_fails_the_checksum() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 0, 0, b"payload", &Default::default());
+    encode_record(&mut buf, 0, 0, b"payload", None, &Default::default());
     let last = buf.len() - 1;
     buf[last] ^= 0xFF;
     let err = decode_record(&buf).expect_err("corrupt payload");
@@ -106,7 +106,7 @@ fn payload_corruption_fails_the_checksum() {
 #[test]
 fn header_corruption_fails_the_header_checksum() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 0, 0, b"payload", &Default::default());
+    encode_record(&mut buf, 0, 0, b"payload", None, &Default::default());
     // Flip a bit in the timestamp. The header checksum covers it, so this
     // is caught without reading the payload at all.
     buf[12] ^= 0x01;
@@ -120,7 +120,7 @@ fn header_corruption_fails_the_header_checksum() {
 #[test]
 fn a_corrupt_length_is_caught_by_the_header_checksum() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 4, 5, b"payload", &Default::default());
+    encode_record(&mut buf, 4, 5, b"payload", None, &Default::default());
     // Damage only the length field. Before the header checksum this was
     // indistinguishable from an unfinished write: the claimed extent ran
     // past the data, so recovery truncated an acknowledged record. Now the
@@ -138,7 +138,7 @@ fn oversized_length_is_rejected_before_allocating() {
     // A header whose length is impossible but whose checksum is valid: the
     // shape that would reach an allocation if the bound were not checked.
     // The largest length the flag bits leave room for.
-    let impossible = (1u32 << 28) - 1;
+    let impossible = (1u32 << 27) - 1;
     let mut buf = vec![0u8; RECORD_HEADER_LEN as usize];
     buf[0..4].copy_from_slice(&impossible.to_be_bytes());
     let header_crc = crc32(&[&buf[0..20]]);
@@ -173,7 +173,7 @@ fn a_garbage_header_is_rejected_before_its_length_is_believed() {
 fn max_size_payload_round_trips() {
     let payload = vec![0xA5u8; MAX_PAYLOAD_BYTES as usize];
     let mut buf = Vec::new();
-    encode_record(&mut buf, 0, 0, &payload, &Default::default());
+    encode_record(&mut buf, 0, 0, &payload, None, &Default::default());
     let (decoded, _) = decode_record(&buf).expect("decode");
     assert_eq!(decoded.header.payload_len, MAX_PAYLOAD_BYTES);
     assert_eq!(decoded.payload.len(), payload.len());
@@ -182,7 +182,7 @@ fn max_size_payload_round_trips() {
 #[test]
 fn a_header_alone_locates_the_next_record() {
     let mut buf = Vec::new();
-    let written = encode_record(&mut buf, 0, 0, b"some payload", &Default::default());
+    let written = encode_record(&mut buf, 0, 0, b"some payload", None, &Default::default());
     // Only the header bytes are available, yet the next position is known
     // without ever touching the payload.
     let header = RecordHeader::decode(&buf[..RECORD_HEADER_LEN as usize]).expect("header");
@@ -284,9 +284,9 @@ fn a_producer_mark_round_trips_and_is_covered_by_the_checksum() {
         len: 2,
     });
     let mut buf = Vec::new();
-    let first = encode_record(&mut buf, 10, 1, b"a", &opens);
+    let first = encode_record(&mut buf, 10, 1, b"a", None, &opens);
     assert_eq!(first, RECORD_HEADER_LEN + PRODUCER_TAG_LEN + 1);
-    encode_record(&mut buf, 11, 1, b"b", &RecordMark::Continues);
+    encode_record(&mut buf, 11, 1, b"b", None, &RecordMark::Continues);
 
     let (decoded, consumed) = decode_record(&buf).expect("first");
     assert_eq!(
@@ -322,6 +322,7 @@ fn a_generation_start_round_trips_and_is_one_kind_only() {
         4,
         1,
         &7u64.to_be_bytes(),
+        None,
         &RecordMark::GenerationStart,
     );
     assert_eq!(len, RECORD_HEADER_LEN + 8);
@@ -333,7 +334,7 @@ fn a_generation_start_round_trips_and_is_one_kind_only() {
 
     // Two kinds at once is not a record this build wrote.
     let mut both = Vec::new();
-    encode_record(&mut both, 4, 1, b"x", &RecordMark::Continues);
+    encode_record(&mut both, 4, 1, b"x", None, &RecordMark::Continues);
     both[0] |= 0x20;
     let crc = crc32(&[&both[0..20]]);
     both[20..24].copy_from_slice(&crc.to_be_bytes());
@@ -346,7 +347,7 @@ fn a_generation_start_round_trips_and_is_one_kind_only() {
 #[test]
 fn a_commit_record_round_trips_and_is_one_kind_only() {
     let mut buf = Vec::new();
-    let len = encode_record(&mut buf, 9, 1, b"commit", &RecordMark::Commit);
+    let len = encode_record(&mut buf, 9, 1, b"commit", None, &RecordMark::Commit);
     assert_eq!(len, RECORD_HEADER_LEN + 6);
     let (decoded, consumed) = decode_record(&buf).expect("decode");
     assert_eq!(
@@ -381,4 +382,85 @@ fn only_a_v4_segment_holds_generation_starts() {
     let decoded = SegmentHeader::decode(&header.encode()).expect("v3 decodes");
     assert!(decoded.holds_marks());
     assert!(!decoded.holds_generation_starts());
+}
+
+/// The publisher rides at the end of the body, under the record checksum, and
+/// combines with any kind.
+#[test]
+fn a_record_carries_its_publisher_with_any_mark() {
+    let opens = RecordMark::Opens(ProducerBatch {
+        producer_id: 1,
+        sequence: 2,
+        len: 1,
+    });
+    for mark in [RecordMark::None, opens, RecordMark::Commit] {
+        let mut buf = Vec::new();
+        let len = encode_record(&mut buf, 3, 4, b"event", Some(b"alice"), &mark);
+        assert_eq!(len, record_len(body_len(5, Some(b"alice")), &mark));
+        let (decoded, consumed) = decode_record(&buf).expect("decode");
+        assert_eq!(consumed, len);
+        assert_eq!(decoded.payload.as_ref(), b"event");
+        assert_eq!(decoded.publisher.as_deref(), Some(&b"alice"[..]));
+        assert_eq!(decoded.mark, mark);
+    }
+
+    // An empty publisher is still a publisher: one length byte.
+    let mut buf = Vec::new();
+    let len = encode_record(&mut buf, 0, 0, b"x", Some(b""), &RecordMark::None);
+    assert_eq!(len, RECORD_HEADER_LEN + 2);
+    let (decoded, _) = decode_record(&buf).expect("decode");
+    assert_eq!(decoded.publisher.as_deref(), Some(&b""[..]));
+}
+
+/// A record without a publisher is byte for byte what v5 wrote.
+#[test]
+fn a_record_without_a_publisher_is_unchanged() {
+    let mut buf = Vec::new();
+    encode_record(&mut buf, 7, 9, b"hi", None, &RecordMark::None);
+    assert_eq!(buf[0..4], [0x00, 0x00, 0x00, 0x02]);
+    let (decoded, _) = decode_record(&buf).expect("decode");
+    assert_eq!(decoded.publisher, None);
+}
+
+/// A length byte claiming more than the body holds is corruption, never a
+/// short publisher.
+#[test]
+fn a_publisher_longer_than_its_body_is_refused() {
+    let mut buf = Vec::new();
+    encode_record(&mut buf, 0, 0, b"", Some(b"ab"), &RecordMark::None);
+    let last = buf.len() - 1;
+    buf[last] = 9;
+    let crc = crc32(&[&buf[0..24], &buf[RECORD_HEADER_LEN as usize..]]);
+    buf[24..28].copy_from_slice(&crc.to_be_bytes());
+    assert!(matches!(
+        decode_record(&buf).expect_err("misfit").kind,
+        CorruptionKind::RecordPublisher { body_len: 3 }
+    ));
+}
+
+#[test]
+fn only_a_v6_segment_holds_publishers() {
+    assert!(SegmentHeader::at_version(5, 6, 6).holds_publishers());
+    assert!(!SegmentHeader::at_version(5, 6, 5).holds_publishers());
+    assert!(SegmentHeader::decode(&SegmentHeader::at_version(5, 6, 6).encode()).is_ok());
+}
+
+/// Pinned bytes for a record with a publisher. A change here is a format
+/// change: see docs/storage-format.md, "Golden vectors".
+#[test]
+fn a_record_with_a_publisher_is_a_stable_golden_vector() {
+    let mut buf = Vec::new();
+    encode_record(&mut buf, 7, 9, b"hi", Some(b"al"), &RecordMark::None);
+    assert_eq!(
+        buf,
+        [
+            0x08, 0x00, 0x00, 0x05, // body length 5, bit 27
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, // offset
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09, // timestamp
+            0x7B, 0x1D, 0x74, 0xDE, // header crc32
+            0x51, 0x5E, 0x81, 0x63, // checksum
+            0x68, 0x69, // payload "hi"
+            0x61, 0x6C, 0x02, // publisher "al", its length
+        ]
+    );
 }

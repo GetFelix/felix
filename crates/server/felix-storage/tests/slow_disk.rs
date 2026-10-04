@@ -37,6 +37,7 @@ fn batch() -> Vec<AppendRecord> {
         payload: vec![b'x'; 128].into(),
         timestamp_micros: 0,
         mark: Default::default(),
+        publisher: None,
     }]
 }
 

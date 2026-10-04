@@ -14,7 +14,7 @@ mod state;
 mod subscription;
 
 pub use committed::{ReadBound, ReadBounds};
-pub use delivery::{DeliveryEnvelope, SubQueuePolicy};
+pub use delivery::{DeliveryEnvelope, FrameShape, SubQueuePolicy};
 pub use subscription::{Subscription, SubscriptionGuard, SubscriptionReceiver};
 
 pub(crate) use committed::{HeldBatch, Pass, ReadSource};

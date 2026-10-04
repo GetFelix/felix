@@ -25,6 +25,7 @@ fn record() -> AppendRecord {
         payload: Bytes::from_static(b"value"),
         timestamp_micros: 1,
         mark: Default::default(),
+        publisher: None,
     }
 }
 

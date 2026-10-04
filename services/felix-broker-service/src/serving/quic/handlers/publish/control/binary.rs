@@ -140,6 +140,7 @@ pub(crate) async fn handle_binary_publish_batch_control(
                 acked_on_enqueue: false,
                 admission_permit: None,
                 fenced: None,
+                publisher: auth_ctx.publisher.clone(),
             },
             publish_ctx.overflow_policy(),
             Some(cancel_tx.subscribe()),
@@ -316,7 +317,7 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
             ack
         }),
         sample,
-        auth_ctx.token.clone(),
+        auth_ctx.publishing_as(),
         producer.map(|producer| {
             (
                 producer.producer_id,

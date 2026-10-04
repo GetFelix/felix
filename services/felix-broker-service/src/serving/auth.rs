@@ -117,6 +117,7 @@ impl BrokerAuth {
             tenant_id: tenant_id.to_string(),
             matcher,
             token: token.to_string(),
+            publisher: publisher_of(&claims.sub),
             subject: claims.sub,
         })
     }
@@ -132,6 +133,33 @@ pub struct AuthContext {
     pub token: String,
     /// The principal the token was issued to (`sub`).
     pub subject: String,
+    /// `subject` as it is recorded on what this connection publishes. `None`
+    /// when it is too long to record.
+    pub publisher: Option<bytes::Bytes>,
+}
+
+impl AuthContext {
+    /// This connection as a publisher.
+    pub(crate) fn publishing_as(&self) -> crate::serving::quic::handlers::publish::PublishAs {
+        crate::serving::quic::handlers::publish::PublishAs {
+            credential: self.token.clone(),
+            publisher: self.publisher.clone(),
+        }
+    }
+}
+
+/// A subject as a record's publisher: what is recorded is a principal id,
+/// bounded, never the token. A longer subject is not recorded rather than
+/// cut, since a shortened one could name a different principal.
+fn publisher_of(subject: &str) -> Option<bytes::Bytes> {
+    if subject.len() > felix_wire::binary::MAX_PUBLISHER_BYTES {
+        tracing::warn!(
+            len = subject.len(),
+            "token subject too long to record as a publisher"
+        );
+        return None;
+    }
+    Some(bytes::Bytes::copy_from_slice(subject.as_bytes()))
 }
 
 /// How long one JWKS request may take, connect included.

@@ -152,6 +152,7 @@ async fn generation_start(broker: &Broker) -> u64 {
 const SKIPS: EventFormat = EventFormat {
     offsets: true,
     skips: true,
+    publisher: false,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -197,7 +198,14 @@ async fn replay_as(
         0,
         SUBSCRIPTION,
         history,
-        backlog,
+        backlog
+            .into_iter()
+            .map(|(offset, payload)| felix_broker::RingRecord {
+                offset,
+                payload,
+                publisher: None,
+            })
+            .collect(),
         backlog_start,
         subscription,
         max_events,
@@ -406,7 +414,11 @@ async fn a_backlog_across_a_generation_start_reports_the_skip() {
         &mut sink,
         &broker,
         None,
-        resumed.backlog,
+        resumed
+            .backlog
+            .into_iter()
+            .map(|record| (record.offset, record.payload))
+            .collect(),
         resumed.backlog_start,
         &mut subscription,
         64,
@@ -446,6 +458,7 @@ async fn a_client_without_the_skip_bit_gets_offsets_only() {
         EventFormat {
             offsets: true,
             skips: false,
+            publisher: false,
         },
     )
     .await
@@ -737,10 +750,10 @@ mod batching {
     #[test]
     fn a_break_in_the_offsets_closes_the_batch() {
         let mut batch = ReplayBatch::new(64, 1024);
-        assert!(batch.push(0, payload("a"), 0).is_none());
-        assert!(batch.push(1, payload("b"), 0).is_none());
+        assert!(batch.push(0, payload("a"), 0, None).is_none());
+        assert!(batch.push(1, payload("b"), 0, None).is_none());
 
-        let closed = batch.push(9, payload("c"), 0).expect("the run broke");
+        let closed = batch.push(9, payload("c"), 0, None).expect("the run broke");
 
         assert_eq!(closed.offsets(), vec![0, 1]);
         assert_eq!(batch.take().expect("the new run").offsets(), vec![9]);
@@ -749,10 +762,10 @@ mod batching {
     #[test]
     fn the_byte_limit_closes_a_batch() {
         let mut batch = ReplayBatch::new(64, 4);
-        assert!(batch.push(0, payload("aaa"), 0).is_none());
+        assert!(batch.push(0, payload("aaa"), 0, None).is_none());
 
         let closed = batch
-            .push(1, payload("bbb"), 0)
+            .push(1, payload("bbb"), 0, None)
             .expect("over the byte limit");
 
         assert_eq!(closed.payloads.len(), 1);
@@ -763,7 +776,11 @@ mod batching {
     #[test]
     fn a_record_larger_than_the_limit_is_still_delivered() {
         let mut batch = ReplayBatch::new(64, 1);
-        assert!(batch.push(0, payload("a much larger payload"), 0).is_none());
+        assert!(
+            batch
+                .push(0, payload("a much larger payload"), 0, None)
+                .is_none()
+        );
         assert_eq!(batch.take().expect("the record").payloads.len(), 1);
     }
 

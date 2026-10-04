@@ -39,6 +39,7 @@ async fn build_publish_context_clamps_executor_and_queue_minimums() -> Result<()
             acked_on_enqueue: false,
             admission_permit: None,
             fenced: None,
+            publisher: None,
         })
         .await;
     response_rx.await.expect("worker response")?;
@@ -67,6 +68,7 @@ async fn build_publish_context_worker_returns_publish_error() -> Result<()> {
             acked_on_enqueue: false,
             admission_permit: None,
             fenced: None,
+            publisher: None,
         })
         .await;
     let err = response_rx
@@ -92,6 +94,7 @@ fn named_job(stream: &str, response: Option<oneshot::Sender<Result<Option<u64>>>
         response,
         admission_permit: None,
         fenced: None,
+        publisher: None,
     }
 }
 
@@ -258,6 +261,7 @@ async fn the_tracker_waits_for_queued_publishes_and_their_completions() -> Resul
                 acked_on_enqueue: true,
                 admission_permit: None,
                 fenced: None,
+                publisher: None,
             })
             .await;
     }
@@ -369,6 +373,7 @@ mod fence {
                 acked_on_enqueue: false,
                 admission_permit: None,
                 fenced: None,
+                publisher: None,
             })
             .await;
         let answer = response_rx.await.expect("worker response");
@@ -445,6 +450,7 @@ mod fence {
                 acked_on_enqueue: false,
                 admission_permit: None,
                 fenced: None,
+                publisher: None,
             })
             .await;
         response_rx
@@ -518,6 +524,7 @@ mod lane_claim {
             acked_on_enqueue: false,
             admission_permit: None,
             fenced: None,
+            publisher: None,
         };
         (job, response_rx)
     }

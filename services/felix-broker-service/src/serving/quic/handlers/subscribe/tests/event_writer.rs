@@ -20,6 +20,7 @@ async fn run_event_writer_single_closes_on_channel_close() -> Result<()> {
         flush_max_items: 64,
         flush_max_delay: Duration::from_micros(200),
         max_bytes_per_write: 256 * 1024,
+        publisher_enabled: false,
     };
 
     let (server_task, connection) = spawn_event_writer(rx, config).await?;
@@ -62,6 +63,7 @@ async fn run_event_writer_single_binary_uses_batch_encoding() -> Result<()> {
         flush_max_items: 64,
         flush_max_delay: Duration::from_micros(200),
         max_bytes_per_write: 256 * 1024,
+        publisher_enabled: false,
     };
 
     let (server_task, connection) = spawn_event_writer(rx, config).await?;
@@ -104,6 +106,7 @@ async fn run_event_writer_batches_with_pending_payload() -> Result<()> {
         flush_max_items: 64,
         flush_max_delay: Duration::from_micros(200),
         max_bytes_per_write: 256 * 1024,
+        publisher_enabled: false,
     };
 
     let (server_task, connection) = spawn_event_writer(rx, config).await?;
@@ -158,6 +161,7 @@ async fn run_event_writer_flushes_by_count_and_deadline() -> Result<()> {
         flush_max_items: 64,
         flush_max_delay: Duration::from_micros(200),
         max_bytes_per_write: 256 * 1024,
+        publisher_enabled: false,
     };
     let (server_task, connection) = spawn_event_writer(rx, config).await?;
     tx.send(make_payload(b"a")).await?;
@@ -210,6 +214,7 @@ async fn run_event_writer_flushes_on_channel_close() -> Result<()> {
         flush_max_items: 64,
         flush_max_delay: Duration::from_micros(200),
         max_bytes_per_write: 256 * 1024,
+        publisher_enabled: false,
     };
 
     let (server_task, connection) = spawn_event_writer(rx, config).await?;
@@ -237,6 +242,7 @@ async fn run_event_writer_single_event_mode_writes_multiple_frames() -> Result<(
         flush_max_items: 64,
         flush_max_delay: Duration::from_micros(200),
         max_bytes_per_write: 256 * 1024,
+        publisher_enabled: false,
     };
 
     let (server_task, connection) = spawn_event_writer(rx, config).await?;

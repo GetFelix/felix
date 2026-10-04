@@ -253,7 +253,7 @@ async fn run_subscription_dispatch_task(
         #[cfg(feature = "telemetry")]
         let decode_start = crate::telemetry::t_now_if(sample);
 
-        let (payloads, base_offset, skipped_before) =
+        let (payloads, base_offset, skipped_before, publisher) =
             if queued_frame.frame.header.flags & felix_wire::FLAG_BINARY_EVENT_BATCH_SHARED != 0 {
                 match felix_wire::binary::decode_shared_event_batch(&queued_frame.frame)
                     .context("decode shared binary event batch")
@@ -268,7 +268,12 @@ async fn run_subscription_dispatch_task(
                                 .sub_items_in_ok
                                 .fetch_add(batch.payloads.len() as u64, Ordering::Relaxed);
                         }
-                        (batch.payloads, batch.base_offset, batch.skipped_before)
+                        (
+                            batch.payloads,
+                            batch.base_offset,
+                            batch.skipped_before,
+                            publisher_of(batch.publisher),
+                        )
                     }
                     Err(err) => {
                         #[cfg(feature = "telemetry")]
@@ -320,7 +325,12 @@ async fn run_subscription_dispatch_task(
                                 .sub_items_in_ok
                                 .fetch_add(batch.payloads.len() as u64, Ordering::Relaxed);
                         }
-                        (batch.payloads, batch.base_offset, batch.skipped_before)
+                        (
+                            batch.payloads,
+                            batch.base_offset,
+                            batch.skipped_before,
+                            publisher_of(batch.publisher),
+                        )
                     }
                     Err(err) => {
                         #[cfg(feature = "telemetry")]
@@ -375,7 +385,7 @@ async fn run_subscription_dispatch_task(
                             counters.sub_batches_in_ok.fetch_add(1, Ordering::Relaxed);
                             counters.sub_items_in_ok.fetch_add(1, Ordering::Relaxed);
                         }
-                        (vec![Bytes::from(payload)], offset, 0)
+                        (vec![Bytes::from(payload)], offset, 0, None)
                     }
                     Message::EventBatch {
                         payloads,
@@ -394,6 +404,7 @@ async fn run_subscription_dispatch_task(
                             payloads.into_iter().map(Bytes::from).collect(),
                             base_offset,
                             0,
+                            None,
                         )
                     }
                     Message::ShardMoved {
@@ -455,7 +466,12 @@ async fn run_subscription_dispatch_task(
                 &event_tx,
                 // The skip describes the offsets before the batch, so only its
                 // first event carries it.
-                QueuedEvent::Payload(payload, offset, if index == 0 { skipped_before } else { 0 }),
+                QueuedEvent::Payload {
+                    payload,
+                    offset,
+                    skipped_before: if index == 0 { skipped_before } else { 0 },
+                    publisher: publisher.clone(),
+                },
                 policy,
                 queue_capacity,
             )
@@ -532,4 +548,10 @@ async fn enqueue_event(
         "felix_client_sub_dispatch_drop_old_emulated_total",
     )
     .await
+}
+
+/// A batch's publisher, shared by each of its events. Principals are UTF-8;
+/// anything else is shown lossily rather than dropped.
+fn publisher_of(publisher: Option<Bytes>) -> Option<Arc<str>> {
+    publisher.map(|publisher| Arc::from(String::from_utf8_lossy(&publisher)))
 }

@@ -52,6 +52,7 @@ fn local_job(
         acked_on_enqueue: false,
         admission_permit: None,
         fenced: None,
+        publisher: None,
     }
 }
 
@@ -67,6 +68,7 @@ fn named_job(tenant: &str) -> PublishJob {
         acked_on_enqueue: false,
         admission_permit: None,
         fenced: None,
+        publisher: None,
     }
 }
 

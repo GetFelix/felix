@@ -273,11 +273,7 @@ impl SubscriptionReceiver {
             return None;
         }
         self.skip_below = None;
-        let drop = (skip - base) as usize;
-        Some(DeliveryEnvelope::with_base_offset(
-            &envelope.payloads()[drop..],
-            Some(skip),
-        ))
+        Some(envelope.skip_records((skip - base) as usize))
     }
 }
 

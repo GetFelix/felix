@@ -106,7 +106,9 @@ impl ForwardingHandler {
             &Namespace::new(&key.namespace),
             &StreamName::new(&key.stream),
         );
-        if let Err(detail) = self
+        // The publisher recorded here is the one this broker verified, not
+        // anything the forwarding broker says.
+        let publisher = match self
             .authorize(
                 &publish.credential,
                 &key.tenant_id,
@@ -115,9 +117,12 @@ impl ForwardingHandler {
             )
             .await
         {
-            metrics::record_served(metrics::OUTCOME_UNAUTHORIZED);
-            return error(correlation_id, ErrorCode::Unauthorized, detail);
-        }
+            Ok(publisher) => publisher,
+            Err(detail) => {
+                metrics::record_served(metrics::OUTCOME_UNAUTHORIZED);
+                return error(correlation_id, ErrorCode::Unauthorized, detail);
+            }
+        };
 
         let handle = match self
             .broker
@@ -142,7 +147,7 @@ impl ForwardingHandler {
         };
         let published = self
             .broker
-            .publish_batch_with_outcome(&handle, &publish.payloads)
+            .publish_batch_with_outcome(&handle, &publish.payloads, publisher.as_ref())
             .await;
         drop(fenced);
         match published {
@@ -214,6 +219,7 @@ impl ForwardingHandler {
         if let Err(detail) = self
             .authorize(&op.credential, &key.tenant_id, action, &resource)
             .await
+            .map(drop)
         {
             metrics::record_served(metrics::OUTCOME_UNAUTHORIZED);
             return InternalMessage::ForwardCacheError(ForwardCacheError {
@@ -376,7 +382,7 @@ impl ForwardingHandler {
         tenant_id: &str,
         action: Action,
         resource: &str,
-    ) -> Result<(), String> {
+    ) -> Result<Option<bytes::Bytes>, String> {
         if credential.is_empty() {
             return Err(
                 "forwarded with no credential: the forwarding broker predates credentialed \
@@ -394,7 +400,7 @@ impl ForwardingHandler {
                 "the publisher's credential does not allow {action:?} on {resource}"
             ));
         }
-        Ok(())
+        Ok(ctx.publisher)
     }
 
     /// Every check a forwarded request must pass before it touches storage.
@@ -653,6 +659,7 @@ impl PeerRequestHandler for ForwardingHandler {
 /// a refusal in different shapes: a requester matches on the message kind to
 /// decide what happened, so a cache operation refused with a publish's error
 /// type reads to it as a protocol violation rather than a refusal.
+#[allow(clippy::large_enum_variant)] // Returned once and consumed at once.
 enum Denial {
     /// Already complete. `NotLeader` is a routing answer and is the same
     /// message whichever path asked.

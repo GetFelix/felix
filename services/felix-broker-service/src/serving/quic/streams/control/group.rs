@@ -775,6 +775,11 @@ fn for_peer(mut records: Vec<GroupRecord>, peer_features: u32) -> Vec<GroupRecor
             record.skipped_before = 0;
         }
     }
+    if !felix_wire::supports_feature(peer_features, felix_wire::FEATURE_GROUP_PUBLISHER) {
+        for record in &mut records {
+            record.publisher = None;
+        }
+    }
     records
 }
 

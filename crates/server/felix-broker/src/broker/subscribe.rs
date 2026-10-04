@@ -433,7 +433,7 @@ pub struct ResumedSubscription {
     /// holes -- a publish that took disk offsets and was cancelled before
     /// reaching the ring leaves one. A caller that numbered these sequentially
     /// from `backlog_start` would mislabel everything after a hole.
-    pub backlog: Vec<(u64, Bytes)>,
+    pub backlog: Vec<RingRecord>,
     /// Offset of the first backlog entry, and of the live edge when the backlog
     /// is empty.
     pub backlog_start: u64,
@@ -442,6 +442,15 @@ pub struct ResumedSubscription {
     /// compare these against.
     pub join: Option<JoinOffsets>,
     pub subscription: Subscription,
+}
+
+/// A record held in the replay ring.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RingRecord {
+    pub offset: u64,
+    pub payload: Bytes,
+    /// The principal that published it, when one was recorded.
+    pub publisher: Option<Bytes>,
 }
 
 /// The disk-backed range a resumed subscription must replay before its backlog.

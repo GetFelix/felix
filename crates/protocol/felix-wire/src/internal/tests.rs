@@ -178,6 +178,7 @@ fn every_message() -> Vec<InternalMessage> {
             marks: Vec::new(),
             commit_offset: None,
             generations: None,
+            publishers: Vec::new(),
         }),
         InternalMessage::ReplicateCacheBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -193,6 +194,7 @@ fn every_message() -> Vec<InternalMessage> {
             marks: Vec::new(),
             commit_offset: None,
             generations: None,
+            publishers: Vec::new(),
         }),
         InternalMessage::ReplicateGroupBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -208,6 +210,7 @@ fn every_message() -> Vec<InternalMessage> {
             marks: Vec::new(),
             commit_offset: None,
             generations: None,
+            publishers: Vec::new(),
         }),
         InternalMessage::ReplicateDeadLetterBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -223,6 +226,7 @@ fn every_message() -> Vec<InternalMessage> {
             marks: Vec::new(),
             commit_offset: None,
             generations: None,
+            publishers: Vec::new(),
         }),
         InternalMessage::ReplicateCounterBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -250,6 +254,7 @@ fn every_message() -> Vec<InternalMessage> {
             ],
             commit_offset: None,
             generations: None,
+            publishers: Vec::new(),
         }),
         InternalMessage::ReplicateRecords(ReplicateRecords {
             correlation_id: 42,
@@ -260,6 +265,7 @@ fn every_message() -> Vec<InternalMessage> {
             marks: Vec::new(),
             commit_offset: Some(90),
             generations: None,
+            publishers: Vec::new(),
         }),
         InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
             correlation_id: 42,
@@ -274,6 +280,7 @@ fn every_message() -> Vec<InternalMessage> {
             }],
             commit_offset: Some(100),
             generations: None,
+            publishers: Vec::new(),
         }),
         InternalMessage::ReplicateCacheRecords(ReplicateRecords {
             correlation_id: 42,
@@ -284,6 +291,7 @@ fn every_message() -> Vec<InternalMessage> {
             marks: Vec::new(),
             commit_offset: Some(0),
             generations: None,
+            publishers: Vec::new(),
         }),
     ]
 }
@@ -299,5 +307,6 @@ fn replicate() -> InternalMessage {
         marks: Vec::new(),
         commit_offset: None,
         generations: None,
+        publishers: Vec::new(),
     })
 }

@@ -210,6 +210,7 @@ mod through_the_log {
                 payload: Bytes::from((*value).to_string()),
                 timestamp_micros: 0,
                 mark: Default::default(),
+                publisher: None,
             }])
             .await
             .expect("append");

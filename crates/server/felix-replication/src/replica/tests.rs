@@ -103,11 +103,12 @@ fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecord
             generation,
         },
         first_offset,
-        checksum: batch_checksum(&payloads, &[]),
+        checksum: batch_checksum(&payloads, &[], &[]),
         payloads,
         marks: Vec::new(),
         commit_offset: None,
         generations: None,
+        publishers: Vec::new(),
     }
 }
 
@@ -761,7 +762,12 @@ mod divergence {
                 }
             }
         }
-        served.extend(resumed.backlog.iter().cloned());
+        served.extend(
+            resumed
+                .backlog
+                .iter()
+                .map(|record| (record.offset, record.payload.clone())),
+        );
         let served: Vec<(u64, String)> = served
             .into_iter()
             .map(|(offset, payload)| (offset, String::from_utf8(payload.to_vec()).expect("utf8")))

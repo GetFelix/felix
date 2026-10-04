@@ -9,6 +9,7 @@ fn record(payload: &str) -> AppendRecord {
         payload: Bytes::copy_from_slice(payload.as_bytes()),
         timestamp_micros: 42,
         mark: Default::default(),
+        publisher: None,
     }
 }
 
@@ -119,6 +120,7 @@ fn an_oversized_payload_is_rejected_without_writing() {
         payload: Bytes::from(vec![0u8; MAX_PAYLOAD_BYTES as usize + 1]),
         timestamp_micros: 0,
         mark: Default::default(),
+        publisher: None,
     };
     assert!(matches!(
         writer.append(&[huge]).expect_err("oversized"),
@@ -138,6 +140,7 @@ fn a_rejected_batch_leaves_no_partial_records() {
             payload: Bytes::from(vec![0u8; MAX_PAYLOAD_BYTES as usize + 1]),
             timestamp_micros: 0,
             mark: Default::default(),
+            publisher: None,
         },
     ];
     assert!(writer.append(&batch).is_err());

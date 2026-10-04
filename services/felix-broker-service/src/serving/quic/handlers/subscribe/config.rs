@@ -46,6 +46,9 @@ pub(crate) struct EventWriterConfig {
     /// `offsets_enabled`.
     pub(super) skip_enabled: bool,
 
+    /// Whether this subscriber negotiated `FLAG_EVENT_BATCH_PUBLISHER`.
+    pub(super) publisher_enabled: bool,
+
     /// Whether this subscriber offered `FEATURE_SHARD_MOVED`, and so gets a
     /// `shard_moved` frame when its shard moves away.
     pub(super) shard_moved_enabled: bool,
@@ -58,4 +61,15 @@ pub(crate) struct EventWriterConfig {
 
     /// Upper bound for coalesced bytes in one write.
     pub(super) max_bytes_per_write: usize,
+}
+
+impl EventWriterConfig {
+    /// The event frame this subscriber negotiated.
+    pub(super) fn shape(&self) -> felix_broker::FrameShape {
+        felix_broker::FrameShape {
+            offsets: self.offsets_enabled,
+            skips: self.skip_enabled,
+            publisher: self.publisher_enabled,
+        }
+    }
 }

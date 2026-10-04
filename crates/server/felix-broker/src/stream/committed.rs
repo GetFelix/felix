@@ -212,6 +212,7 @@ pub(crate) struct ReadSource {
 #[derive(Debug)]
 pub(crate) struct HeldBatch {
     pub(crate) payloads: Vec<Bytes>,
+    pub(crate) publisher: Option<Bytes>,
     pub(crate) first_offset: u64,
     /// A commit's state updates, applied when the event is released.
     pub(crate) commit: Option<std::sync::Arc<[crate::commit::StateOp]>>,

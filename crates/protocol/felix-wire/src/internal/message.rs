@@ -69,6 +69,9 @@ fn records_kind(records: &ReplicateRecords, own: Kind) -> Kind {
         Kind::ReplicateLabelledRecords
     } else if records.commit_offset.is_some() {
         Kind::ReplicateCommittedRecords
+    } else if own == Kind::ReplicateRecords && !records.publishers.is_empty() {
+        // Publishers ride the marks section, which the plain kind lacks.
+        Kind::ReplicateMarkedRecords
     } else {
         own
     }

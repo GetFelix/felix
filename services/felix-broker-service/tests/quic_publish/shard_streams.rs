@@ -160,7 +160,7 @@ async fn a_stalled_shard_does_not_hold_up_another_shard_of_the_stream() -> Resul
         .resolve_stream_handle("t1", "default", "orders", 1)
         .await?;
     let held = broker
-        .claim_publish(&handle, &[bytes::Bytes::from_static(b"held")])
+        .claim_publish(&handle, &[bytes::Bytes::from_static(b"held")], None)
         .await?;
     let stalled = tokio::spawn(publish(stalled_key));
     tokio::time::sleep(Duration::from_millis(200)).await;

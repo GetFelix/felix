@@ -229,3 +229,84 @@ fn a_skip_count_without_offsets_is_rejected() {
         Err(Error::UnknownFlags(_))
     ));
 }
+
+#[test]
+fn a_publisher_rides_either_batch_with_or_without_offsets() {
+    let payloads = vec![Bytes::from_static(b"a"), Bytes::from_static(b"b")];
+    for base_offset in [None, Some(10)] {
+        let meta = binary::EventBatchMeta {
+            base_offset,
+            skipped_before: 2,
+            publisher: Some(b"alice"),
+        };
+        let frame =
+            Frame::decode(binary::encode_event_batch_bytes_with_meta(7, &payloads, meta).unwrap())
+                .unwrap();
+        assert_ne!(frame.header.flags & crate::FLAG_EVENT_BATCH_PUBLISHER, 0);
+        let batch = binary::decode_event_batch(&frame).expect("decode");
+        assert_eq!(batch.subscription_id, 7);
+        assert_eq!(batch.base_offset, base_offset);
+        assert_eq!(batch.skipped_before, base_offset.map_or(0, |_| 2));
+        assert_eq!(batch.publisher.as_deref(), Some(&b"alice"[..]));
+        assert_eq!(batch.payloads, payloads);
+
+        let frame = Frame::decode(
+            binary::encode_shared_event_batch_bytes_with_meta(&payloads, meta).unwrap(),
+        )
+        .unwrap();
+        let batch = binary::decode_shared_event_batch(&frame).expect("decode");
+        assert_eq!(batch.base_offset, base_offset);
+        assert_eq!(batch.publisher.as_deref(), Some(&b"alice"[..]));
+        assert_eq!(batch.payloads, payloads);
+        assert_eq!(binary::peek_event_batch_base_offset(&frame), base_offset);
+    }
+}
+
+/// A batch with no publisher is byte for byte the frame a client that never
+/// negotiated the bit gets.
+#[test]
+fn no_publisher_is_the_frame_without_the_bit() {
+    let payloads = vec![Bytes::from_static(b"a")];
+    let none = binary::EventBatchMeta::default();
+    assert_eq!(
+        binary::encode_event_batch_bytes_with_meta(3, &payloads, none).unwrap(),
+        binary::encode_event_batch_bytes(3, &payloads).unwrap()
+    );
+    assert_eq!(
+        binary::encode_shared_event_batch_bytes_with_meta(&payloads, none).unwrap(),
+        binary::encode_shared_event_batch_bytes(&payloads).unwrap()
+    );
+    let offsets = binary::EventBatchMeta {
+        base_offset: Some(4),
+        ..none
+    };
+    assert_eq!(
+        binary::encode_shared_event_batch_bytes_with_meta(&payloads, offsets).unwrap(),
+        binary::encode_shared_event_batch_bytes_with_offset(&payloads, 4).unwrap()
+    );
+}
+
+#[test]
+fn a_publisher_past_its_length_is_incomplete() {
+    // Flags say a publisher follows; its length claims more than remains.
+    let frame = Frame::new(
+        FLAG_BINARY_EVENT_BATCH_SHARED | crate::FLAG_EVENT_BATCH_PUBLISHER,
+        Bytes::from_static(&[9, b'a', 0, 0, 0, 0]),
+    )
+    .expect("frame");
+    assert!(matches!(
+        binary::decode_shared_event_batch(&frame),
+        Err(Error::Incomplete)
+    ));
+    let long = vec![b'p'; binary::MAX_PUBLISHER_BYTES + 1];
+    assert!(
+        binary::encode_shared_event_batch_bytes_with_meta(
+            &[],
+            binary::EventBatchMeta {
+                publisher: Some(&long),
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+}

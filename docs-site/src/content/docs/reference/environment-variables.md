@@ -322,6 +322,28 @@ changing it for everyone: `ClientConfig::ack_on_commit` in felix-client offers
 `FEATURE_ACK_ON_COMMIT`, and its acknowledged publishes are then answered after
 the write, with their offsets.
 
+### `FELIX_RECORD_PUBLISHERS`
+
+**Description**: On a broker outside a cluster, store the principal that
+published each record of a durable stream, so subscribers and consumer groups
+that ask can be told it. In a cluster this has no effect: finalizing the
+`publisher_principal` fleet feature turns it on instead.
+
+**Type**: Boolean
+
+**Default**: `false`
+
+**Accepted values**: `1`, `true`, `yes` = enabled
+
+**Example**:
+```bash
+export FELIX_RECORD_PUBLISHERS="true"
+```
+
+A record with its publisher is storage format v6, which an older broker
+refuses to open, so turning this on is a one-way step for the data directory.
+Each record grows by the principal's length plus one byte.
+
 ### `FELIX_MAX_FRAME_BYTES`
 
 **Description**: Maximum frame size accepted on QUIC streams.

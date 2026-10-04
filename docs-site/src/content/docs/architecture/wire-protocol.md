@@ -119,7 +119,8 @@ Bit field for optional features:
 | 10  | 0x0400 | A failed ack's code is followed by its `detail`: reason and suggested wait (modifier on bit 9) |
 | 11  | 0x0800 | Event batch also carries `skipped_before`: offsets just before it that hold no event (modifier on bit 5) |
 | 12  | 0x1000 | A successful ack ends with the offset of the batch's first record; offered by a client, it also adds `offset` to `publish_ok` (modifier on bit 4) |
-| 13-15| -     | Reserved (must be 0) |
+| 13  | 0x2000 | Event batch carries the principal that published its events (modifier on bits 1/2) |
+| 14-15| -     | Reserved (must be 0) |
 
 Receivers must **reject** a frame carrying a flag bit they do not recognise, rather
 than ignoring the bit. These bits select how the payload is parsed, so ignoring an
@@ -822,6 +823,7 @@ advertised its bit.
 | `0x10_0000` | `FEATURE_GROUP_CONSUMER` | A `group_poll` may name its `consumer` (per principal, up to 128 bytes); with `reclaim`, a connection's first such poll reserves the claims that member holds from older connections and takes them back ahead of anything else |
 | `0x20_0000` | `FEATURE_SUBSCRIPTION_LAGGED` | The client reads `subscription_lagged`, which ends a durable-stream subscription at its first queue drop |
 | `0x40_0000` | `FEATURE_GROUP_SKIPPED` | Offered by a client that reads `skipped_before` on a group record. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |
+| `0x80_0000` | `FEATURE_GROUP_PUBLISHER` | Offered by a client that reads `publisher` on a group record. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |
 
 The full list, with what each depends on, is in
 [`docs/protocol.md`](https://github.com/GetFelix/felix/blob/main/docs/protocol.md).
@@ -898,6 +900,21 @@ repeated count times:
 
 Payload `i` is at `base_offset + i`. Every other batch omits `skipped_before`,
 and a frame with `0x0800` but not `0x0020` is rejected.
+
+With `0x2000` (`FLAG_EVENT_BATCH_PUBLISHER`), the principal that published the
+batch follows the offset fields, as a `u8` length and its bytes, before
+`count`. It does not need `0x0020`: an in-memory stream's batch has a
+publisher and no offset. The broker starts a new batch where the publisher
+changes, and sets the bit only on a batch that has one:
+
+```
+u64 base_offset       # 0x0020
+u64 skipped_before    # 0x0800
+u8  publisher_len     # 0x2000
+u8[publisher_len] publisher
+u32 count
+...
+```
 
 **Why no subscription id in the frame**: the subscription is already bound to
 its uni-directional event stream by the `EventStreamHello` frame sent when

@@ -31,6 +31,11 @@ pub struct ReplicateRecords {
     /// stream shard's records carry marks, and a batch with any travels as
     /// `ReplicateMarkedRecords`.
     pub marks: Vec<ProducerMark>,
+    /// The principal that published each record, or empty when no record in
+    /// the batch carries one. They travel in the marks section, so a batch
+    /// with any goes as a kind that has one. Sent only once the fleet
+    /// finalized `publisher_principal`: an older peer refuses the batch.
+    pub publishers: Vec<Option<Bytes>>,
     /// One past the last record the leader knows is committed, when it knows.
     ///
     /// A follower holding the leader's records below it must never discard
@@ -194,55 +199,90 @@ impl ReplicaLog {
 /// is exactly the divergence this is here to catch.
 ///
 /// Marks are covered after the payloads, and only when present, so an
-/// unmarked batch checksums exactly as it always has.
-pub fn batch_checksum(payloads: &[Bytes], marks: &[ProducerMark]) -> u64 {
+/// unmarked batch checksums exactly as it always has. Publishers are covered
+/// with the marks, as they travel.
+pub fn batch_checksum(
+    payloads: &[Bytes],
+    marks: &[ProducerMark],
+    publishers: &[Option<Bytes>],
+) -> u64 {
     let mut hasher = crc32fast::Hasher::new();
     for payload in payloads {
         hasher.update(&(payload.len() as u32).to_be_bytes());
         hasher.update(payload);
     }
-    if !marks.is_empty() {
+    if !marks.is_empty() || !publishers.is_empty() {
+        let mut marks = marks.to_vec();
+        marks.resize(marks.len().max(publishers.len()), ProducerMark::None);
         let mut encoded = bytes::BytesMut::new();
-        put_marks(&mut encoded, marks);
+        put_marks(&mut encoded, &marks, publishers);
         hasher.update(&encoded);
     }
     u64::from(hasher.finalize())
 }
 
+/// Set on a mark byte when the record's publisher follows the mark: a `u8`
+/// length, then the principal.
+const MARK_PUBLISHER: u8 = 0x80;
+
 /// Marks as they travel: one byte per record (0 none, 1 opens, 2 continues,
-/// 3 generation start), an opening record's byte followed by its producer id,
-/// sequence and length.
-pub(super) fn put_marks(out: &mut bytes::BytesMut, marks: &[ProducerMark]) {
+/// 3 generation start, 4 commit), an opening record's byte followed by its
+/// producer id, sequence and length. A record with a publisher has
+/// [`MARK_PUBLISHER`] set and its publisher after the rest of the mark.
+/// `publishers` is one per mark, or empty.
+pub(super) fn put_marks(
+    out: &mut bytes::BytesMut,
+    marks: &[ProducerMark],
+    publishers: &[Option<Bytes>],
+) {
     use bytes::BufMut;
-    for mark in marks {
+    for (index, mark) in marks.iter().enumerate() {
+        let publisher = publishers.get(index).and_then(Option::as_ref);
+        let flag = if publisher.is_some() {
+            MARK_PUBLISHER
+        } else {
+            0
+        };
         match mark {
-            ProducerMark::None => out.put_u8(0),
+            ProducerMark::None => out.put_u8(flag),
             ProducerMark::Opens {
                 producer_id,
                 sequence,
                 len,
             } => {
-                out.put_u8(1);
+                out.put_u8(1 | flag);
                 out.put_u64(*producer_id);
                 out.put_u64(*sequence);
                 out.put_u32(*len);
             }
-            ProducerMark::Continues => out.put_u8(2),
-            ProducerMark::GenerationStart => out.put_u8(3),
-            ProducerMark::Commit => out.put_u8(4),
+            ProducerMark::Continues => out.put_u8(2 | flag),
+            ProducerMark::GenerationStart => out.put_u8(3 | flag),
+            ProducerMark::Commit => out.put_u8(4 | flag),
+        }
+        if let Some(publisher) = publisher {
+            // A storage limit too, so a longer one never reaches here.
+            let len = publisher.len().min(usize::from(u8::MAX));
+            out.put_u8(len as u8);
+            out.extend_from_slice(&publisher[..len]);
         }
     }
 }
 
-/// Read `count` marks written by [`put_marks`].
-pub(super) fn take_marks(body: &mut Bytes, count: usize) -> Result<Vec<ProducerMark>> {
+/// Read `count` marks written by [`put_marks`], and the publishers, empty
+/// when no record had one.
+pub(super) fn take_marks(
+    body: &mut Bytes,
+    count: usize,
+) -> Result<(Vec<ProducerMark>, Vec<Option<Bytes>>)> {
     use bytes::Buf;
     let mut marks = Vec::with_capacity(count.min(body.remaining()));
-    for _ in 0..count {
+    let mut publishers = Vec::new();
+    for index in 0..count {
         if !body.has_remaining() {
             return Err(Error::Incomplete);
         }
-        let mark = match body.get_u8() {
+        let byte = body.get_u8();
+        let mark = match byte & !MARK_PUBLISHER {
             0 => ProducerMark::None,
             1 => {
                 if body.remaining() < 20 {
@@ -257,9 +297,23 @@ pub(super) fn take_marks(body: &mut Bytes, count: usize) -> Result<Vec<ProducerM
             2 => ProducerMark::Continues,
             3 => ProducerMark::GenerationStart,
             4 => ProducerMark::Commit,
-            other => return Err(Error::UnknownInternalProducerMark(other)),
+            _ => return Err(Error::UnknownInternalProducerMark(byte)),
         };
         marks.push(mark);
+        if byte & MARK_PUBLISHER != 0 {
+            if !body.has_remaining() {
+                return Err(Error::Incomplete);
+            }
+            let len = usize::from(body.get_u8());
+            if body.remaining() < len {
+                return Err(Error::Incomplete);
+            }
+            publishers.resize(index, None);
+            publishers.push(Some(body.split_to(len)));
+        }
     }
-    Ok(marks)
+    if !publishers.is_empty() {
+        publishers.resize(count, None);
+    }
+    Ok((marks, publishers))
 }

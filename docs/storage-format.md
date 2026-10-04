@@ -1,4 +1,4 @@
-# Felix Durable Segment Format (v5)
+# Felix Durable Segment Format (v6)
 
 This document defines the on-disk representation of a durable Felix stream. It is
 the source of truth for anyone reading, writing, repairing, or replicating
@@ -95,7 +95,7 @@ file:
 | Offset | Size | Field | Value |
 | --- | --- | --- | --- |
 | 0 | 4 | `magic` | `0x464C5347` (`"FLSG"`) |
-| 4 | 2 | `version` | `3` when written, `4` for a segment that holds a generation-start record, or `5` for one that holds a commit record; `2` is still read |
+| 4 | 2 | `version` | `3` when written, `4` for a segment that holds a generation-start record, `5` for one that holds a commit record, or `6` for one that holds a record with its publisher; `2` is still read |
 | 6 | 2 | `flags` | `0`; any other value is rejected |
 | 8 | 8 | `base_offset` | logical offset of this segment's first record |
 | 16 | 8 | `created_at_micros` | wall clock at creation, informational |
@@ -113,13 +113,13 @@ segment, so damage here is never a torn write. It is always an error.
 
 | Offset | Size | Field | Notes |
 | --- | --- | --- | --- |
-| 0 | 4 | `payload_len` | low 29 bits: ≤ `MAX_PAYLOAD_BYTES` (64 MiB); top three bits: the record's kind, below |
+| 0 | 4 | `payload_len` | the body's length, ≤ `MAX_PAYLOAD_BYTES` (64 MiB); bits 28 to 31: the record's kind, bit 27: the body ends with a publisher. Both below |
 | 4 | 8 | `offset` | logical offset; ascends by exactly 1 within a segment |
 | 12 | 8 | `timestamp_micros` | publish time |
 | 20 | 4 | `header_crc` | CRC-32 over bytes `0..20` |
-| 24 | 4 | `checksum` | CRC-32 over bytes `0..24`, **followed by** the tag and the payload |
+| 24 | 4 | `checksum` | CRC-32 over bytes `0..24`, **followed by** the tag and the body |
 | 28 | 20 | `tag` | only when bit 31 is set: `producer_id u64`, `sequence u64`, `len u32` |
-| 28 or 48 | n | `payload` | opaque bytes |
+| 28 or 48 | n | body | the payload, opaque bytes; with bit 27, followed by the publisher and its `u8` length |
 
 The diagram shows a record without a tag, which is every record not written by
 an idempotent producer.
@@ -212,6 +212,32 @@ one of bits 28 to 31 is set. Only a v5 segment may hold the record, for the
 same reason only a v4 one may hold a generation-start record, and a segment
 is written at v5 only to hold one. The record is written only once the fleet
 has finalized `atomic_commit`, so until then no log leaves v4.
+
+### Publishers
+
+**Bit 27** of `payload_len` says the record carries the principal that
+published it. It is not a kind: it combines with any of bits 28 to 31. The
+publisher sits at the end of the body, after the payload, followed by one byte
+giving its length:
+
+```text
+u8[n]  payload
+u8[m]  publisher        # m <= 255
+u8     m
+```
+
+`payload_len` counts all of it, so the step to the next record is still read
+from the header alone, and the checksum covers the publisher with the payload.
+A length byte that claims more than the body holds is `RecordPublisher`
+corruption: the checksum held, so the record was written that way. The payload
+digest a producer batch is checked against covers the payload only.
+
+Bodies are capped at 2^26 bytes, so the length never reaches bit 27. Only a
+v6 segment may hold such a record, for the reason only a v5 one may hold a
+commit: a v5 build reading bit 27 would see a length past the limit. A segment
+is written at v6 only to hold one, and the broker writes one only once it is
+enabled (the `publisher_principal` fleet feature in a cluster,
+`FELIX_RECORD_PUBLISHERS` on a single broker). Until then no log leaves v5.
 
 ## Index file
 
@@ -375,6 +401,14 @@ encode_record(offset = 7, timestamp = 9, payload = "hi"):
   C6 54 DE 27
   24 02 15 2C
   68 69
+
+encode_record(offset = 7, timestamp = 9, payload = "hi", publisher = "al"):
+  08 00 00 05
+  00 00 00 00 00 00 00 07
+  00 00 00 00 00 00 00 09
+  7B 1D 74 DE
+  51 5E 81 63
+  68 69  61 6C  02
 ```
 
 ## Version history
@@ -385,6 +419,8 @@ encode_record(offset = 7, timestamp = 9, payload = "hi"):
 | 2 | Added `header_crc` to the record header (24 → 28 bytes), making a corrupted length field detectable without reading the payload. |
 | 3 | Producer marks: two flag bits in `payload_len` and an optional 20-byte tag. A v2 segment is read unchanged; an unmarked record is byte for byte a v2 record. |
 | 4 | Generation-start records: a third flag bit in `payload_len`. Written only to hold that record, once `generation_start` is finalized; v2 and v3 segments are read unchanged. |
+| 5 | Commit records: a fourth flag bit. Written only to hold one, once `atomic_commit` is finalized. |
+| 6 | Publishers: bit 27 and a trailer on the body. Written only to hold a record with one, once publishers are enabled; every older segment is read unchanged, and a record without a publisher is byte for byte a v5 record. |
 
 A v1 segment is rejected on open with `CorruptionKind::SegmentVersion`, naming
 the version found. v1 was only ever written by unreleased builds, so the
@@ -409,6 +445,7 @@ would misparse every field after the length.
 | Limit | Value | Why |
 | --- | --- | --- |
 | `MAX_PAYLOAD_BYTES` | 64 MiB | Bounds the allocation a corrupt length field can request |
+| `MAX_PUBLISHER_BYTES` | 255 | The publisher's length is one byte; it is a principal id, never a token |
 | Max records per segment | `u64` offsets, so effectively unbounded | Rollover is driven by size, not count |
 | Oversized records | A record larger than `segment_size_bytes` is written to an otherwise-empty segment of its own | Splitting a record across segments would break the "offsets are contiguous within a segment" invariant that recovery depends on |
 

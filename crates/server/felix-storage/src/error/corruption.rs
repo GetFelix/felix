@@ -131,6 +131,11 @@ pub enum CorruptionKind {
     RecordFlags {
         found: u32,
     },
+    /// A record whose publisher length runs past the start of its body. The
+    /// checksum held, so the record was written this way.
+    RecordPublisher {
+        body_len: u32,
+    },
     /// Offsets must ascend by exactly one across a segment; a gap means a record
     /// was lost or the file was spliced.
     OffsetOutOfOrder {
@@ -200,6 +205,9 @@ impl fmt::Display for CorruptionKind {
             ),
             CorruptionKind::RecordFlags { found } => {
                 write!(f, "impossible record flags {found:#010x}")
+            }
+            CorruptionKind::RecordPublisher { body_len } => {
+                write!(f, "record publisher does not fit its {body_len}-byte body")
             }
             CorruptionKind::RecordHeaderChecksum { expected, found } => write!(
                 f,

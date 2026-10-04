@@ -12,6 +12,7 @@ use crate::stream::SubQueuePolicy;
 use crate::{Broker, StreamMetadata};
 
 mod idempotent;
+mod publisher;
 
 #[tokio::test]
 async fn publish_delivers_to_subscriber() {

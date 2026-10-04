@@ -563,8 +563,38 @@ pub struct Event {
     /// Offsets just before `offset` that hold no event. Non-zero only on the
     /// first event after a leader change.
     pub skipped_before: u64,
+    /// Who published it, when `ClientConfig::publishers` asked and the broker
+    /// recorded one.
+    pub publisher: Option<Arc<str>>,
 }
 ```
+
+### Who published an event
+
+Set `publishers: true` in the `ClientConfig` and each event says who published
+it: `event.publisher` is the subject of the token the broker accepted the
+write from. Group records carry the same value as `publisher`. Off by default,
+since it adds the principal to every batch.
+
+```rust
+let mut config = ClientConfig::from_env_or_yaml(quinn, None)?;
+config.publishers = true;
+let client = Client::connect(addr, "localhost", config).await?;
+let mut inputs = client.subscribe("arena", "match-7", "inputs").await?;
+while let Some(event) = inputs.next_event().await? {
+    let Some(player) = event.publisher.as_deref() else {
+        continue; // written before the broker recorded publishers
+    };
+    apply_input(player, &event.payload);
+}
+```
+
+That is the broker vouching that the write came from that principal; it says
+nothing about the payload's contents. An in-memory stream always reports it. A
+durable stream reports it only for records written once the broker stores
+publishers (the `publisher_principal` fleet feature, or
+`FELIX_RECORD_PUBLISHERS=true` on a single broker), and then on replay and to
+consumer groups as well.
 
 ### Offsets are how you notice a drop
 

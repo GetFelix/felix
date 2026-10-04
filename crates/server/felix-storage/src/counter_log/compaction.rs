@@ -109,6 +109,7 @@ impl CounterShard {
                         payload: op.encode(),
                         timestamp_micros: now,
                         mark: Default::default(),
+                        publisher: None,
                     })
                     .collect();
                 let bytes: u64 = records.iter().map(|r| r.payload.len() as u64).sum();

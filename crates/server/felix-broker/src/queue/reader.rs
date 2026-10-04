@@ -269,6 +269,7 @@ impl GroupReader {
                             payload: record.payload,
                             attempts,
                             skipped_before,
+                            publisher: record.publisher,
                         })
                     }
                     // The offset is below the tail and yet holds nothing. Give
@@ -611,6 +612,8 @@ pub struct Claimed {
     /// before the group reached them. A gap with this count is not a record
     /// still to come.
     pub skipped_before: u64,
+    /// The principal that published the record, when the log stored one.
+    pub publisher: Option<bytes::Bytes>,
 }
 
 #[cfg(test)]

@@ -232,6 +232,25 @@ by the same round before it is acknowledged.
   the lease after the finalize, the faster path that is only as safe as the
   clocks and the lease margins.
 
+#### `publisher_principal`
+
+Once finalized, a durable stream stores the principal that published each
+record, and subscribers and consumer groups that ask are told it (see
+[Who published an event](../../api/broker-api/#who-published-an-event)).
+
+- **It is the one-way step.** A record with its publisher is storage format
+  v6, which an older broker refuses to open, and the feature is what lets a
+  broker write one. Take a backup first.
+- **Replication carries it.** A follower that predates the feature refuses a
+  batch with publishers, which is why it waits for the whole fleet.
+- **Cost.** Each record grows by its publisher's length plus one byte: about
+  65 bytes for a 64-character principal id. A record from a connection with no
+  principal grows by nothing.
+- **A single broker** has no fleet; `FELIX_RECORD_PUBLISHERS=true` turns it on
+  there, with the same one-way step.
+- **What clients see.** Nothing unless they ask. A client that asked gets the
+  publisher on records written after the finalize, and none on older ones.
+
 A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature
 can be finalized, only once every control-plane member is at metadata
@@ -262,10 +281,16 @@ Two things soften it, and neither is a rollback path:
 **So before an upgrade that changes `FORMAT_VERSION`: take a backup, and treat
 the rollout as one-way.**
 
-The current build reads format 4 but writes 3, which the previous release
-reads, so upgrading to it is still reversible. It writes a v4 segment only
-for a generation-start record, and only once `generation_start` is finalized
-(see [`generation_start`](#generation_start) above), so that finalize is the one-way step.
+The current build reads format 6 but writes 3, which the previous release
+reads, so upgrading to it is still reversible. It moves a log to a newer
+version only to hold a record that needs it, and writes each such record only
+once something enables it: a v4 segment for a generation-start record, once
+`generation_start` is finalized (see [`generation_start`](#generation_start)
+above); v5 for an atomic commit, once `atomic_commit` is; and v6 for a record
+with its publisher, once `publisher_principal` is, or on a single broker with
+`FELIX_RECORD_PUBLISHERS=true` (see
+[`publisher_principal`](#publisher_principal)). Each of those is the one-way
+step.
 
 ## Upgrade order
 

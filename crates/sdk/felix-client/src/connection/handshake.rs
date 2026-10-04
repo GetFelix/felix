@@ -19,6 +19,8 @@ pub(crate) struct Credentials {
     tokens: Arc<dyn TokenProvider>,
     /// The feature bits offered in `Auth`.
     features: u32,
+    /// The frame-flag bits offered in `Auth`.
+    flags: u16,
 }
 
 impl Credentials {
@@ -26,8 +28,23 @@ impl Credentials {
         Self {
             tenant_id,
             tokens,
-            features: felix_wire::KNOWN_FEATURES & !felix_wire::FEATURE_ACK_ON_COMMIT,
+            // Each costs something on every exchange it changes, so it is
+            // offered only when the application asks.
+            features: felix_wire::KNOWN_FEATURES
+                & !felix_wire::FEATURE_ACK_ON_COMMIT
+                & !felix_wire::FEATURE_GROUP_PUBLISHER,
+            flags: felix_wire::KNOWN_FLAGS & !felix_wire::FLAG_EVENT_BATCH_PUBLISHER,
         }
+    }
+
+    /// Also ask to be told who published each event. See
+    /// [`felix_wire::FLAG_EVENT_BATCH_PUBLISHER`].
+    pub(crate) fn with_publishers(mut self, publishers: bool) -> Self {
+        if publishers {
+            self.features |= felix_wire::FEATURE_GROUP_PUBLISHER;
+            self.flags |= felix_wire::FLAG_EVENT_BATCH_PUBLISHER;
+        }
+        self
     }
 
     /// Also ask for acknowledgements after the write. See
@@ -65,6 +82,7 @@ impl Credentials {
                 &mut recv,
                 &self.tenant_id,
                 &token,
+                self.flags,
                 self.features,
                 max_frame_bytes,
             )
@@ -151,6 +169,7 @@ async fn authenticate_stream(
     recv: &mut RecvStream,
     tenant_id: &str,
     token: &str,
+    flags: u16,
     features: u32,
     max_frame_bytes: usize,
 ) -> Result<Negotiated> {
@@ -159,7 +178,7 @@ async fn authenticate_stream(
         Message::Auth {
             tenant_id: tenant_id.to_string(),
             token: token.to_string(),
-            client_flags: Some(felix_wire::KNOWN_FLAGS),
+            client_flags: Some(flags),
             client_features: Some(features),
         },
     )

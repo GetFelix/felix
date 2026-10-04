@@ -136,6 +136,15 @@ pub const FLAG_EVENT_BATCH_SKIPPED: u16 = 0x0800;
 /// Only sent to a client that advertised it in `Auth.client_flags`.
 pub const FLAG_BINARY_PUBLISH_ACK_OFFSET: u16 = 0x1000;
 
+/// Modifier on either event-batch flag: the principal that published the
+/// batch's events follows the offset fields, as a `u8` length and its bytes.
+///
+/// One per batch: a broker splits batches where the publisher changes. Set
+/// only when the events have a recorded publisher, so a batch without one is
+/// byte-identical to the frame without this bit. Only sent to a client that
+/// advertised it in `Auth.client_flags`.
+pub const FLAG_EVENT_BATCH_PUBLISHER: u16 = 0x2000;
+
 /// Every flag bit this version understands.
 ///
 /// Frames carrying bits outside this mask are rejected rather than parsed with
@@ -158,7 +167,8 @@ pub const KNOWN_FLAGS: u16 = FLAG_BINARY_PUBLISH_BATCH
     | FLAG_BINARY_PUBLISH_ACK_CODE
     | FLAG_BINARY_PUBLISH_ACK_DETAIL
     | FLAG_EVENT_BATCH_SKIPPED
-    | FLAG_BINARY_PUBLISH_ACK_OFFSET;
+    | FLAG_BINARY_PUBLISH_ACK_OFFSET
+    | FLAG_EVENT_BATCH_PUBLISHER;
 
 /// The flag bits that existed before capability negotiation.
 ///

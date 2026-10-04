@@ -22,6 +22,7 @@ fn aged_record(payload: &str, timestamp_micros: u64) -> AppendRecord {
         payload: Bytes::copy_from_slice(payload.as_bytes()),
         timestamp_micros,
         mark: Default::default(),
+        publisher: None,
     }
 }
 

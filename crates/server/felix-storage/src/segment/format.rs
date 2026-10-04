@@ -40,7 +40,16 @@ pub const INDEX_MAGIC: u32 = 0x464C_5349;
 ///
 /// v5 adds the commit record (bit 28), for the same reason and under the same
 /// rule: a segment is written at v5 only to hold one.
-pub const FORMAT_VERSION: u16 = 5;
+///
+/// v6 lets a record carry its publisher (bit 27), again written only to hold
+/// one.
+pub const FORMAT_VERSION: u16 = 6;
+
+/// The first version whose records may carry a publisher.
+pub const PUBLISHER_VERSION: u16 = 6;
+
+/// The longest publisher a record carries. Its length is stored in one byte.
+pub const MAX_PUBLISHER_BYTES: usize = u8::MAX as usize;
 
 /// The version a new segment and every index is written at.
 ///
@@ -125,6 +134,11 @@ impl SegmentHeader {
         self.version >= 5
     }
 
+    /// Whether a record carrying its publisher may be written to this segment.
+    pub fn holds_publishers(&self) -> bool {
+        self.version >= PUBLISHER_VERSION
+    }
+
     pub fn encode(&self) -> [u8; SEGMENT_HEADER_LEN as usize] {
         let mut buf = [0u8; SEGMENT_HEADER_LEN as usize];
         buf[0..4].copy_from_slice(&SEGMENT_MAGIC.to_be_bytes());
@@ -186,17 +200,22 @@ impl SegmentHeader {
 /// 24   4  checksum           u32  crc32 over bytes 0..24, the tag, and the payload
 /// 28  20  producer tag            only when the record opens a producer batch:
 ///                                 producer_id u64, sequence u64, len u32
-///     n   payload
+///     n   body: the payload, then with bit 27 the publisher and its u8 length
 /// ```
 ///
 /// Bit 31 of `len_and_flags` says the record opens an idempotent producer's
 /// batch and the tag follows; bit 30 says it continues the batch the record
 /// before it belongs to. Bit 29 marks a generation-start record and
-/// bit 28 a commit record (see `RecordMark::Commit`). Payloads are capped well below 2^28, so the length
-/// never reaches them. The length word is covered by the header checksum, so
-/// a reader can walk to the next record from the header alone.
+/// bit 28 a commit record (see `RecordMark::Commit`). Bit 27 is not a kind:
+/// it says the body ends with the principal that published the record,
+/// followed by that principal's length in one byte. Bodies are capped at
+/// 2^26 bytes, so the length never reaches the flag bits. The length word is
+/// covered by the header checksum, so a reader can walk to the next record
+/// from the header alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordHeader {
+    /// The body's length: the payload, plus the publisher and its length byte
+    /// when [`Self::has_publisher`].
     pub payload_len: u32,
     pub offset: Offset,
     pub timestamp_micros: u64,
@@ -213,17 +232,27 @@ pub struct RecordHeader {
     pub generation_start: bool,
     /// The record is an atomic commit.
     pub commit: bool,
+    /// The body ends with the record's publisher.
+    pub has_publisher: bool,
 }
 
 const FLAG_OPENS_BATCH: u32 = 1 << 31;
 const FLAG_CONTINUES_BATCH: u32 = 1 << 30;
 const FLAG_GENERATION_START: u32 = 1 << 29;
 const FLAG_COMMIT: u32 = 1 << 28;
-const FLAG_MASK: u32 =
+const KIND_MASK: u32 =
     FLAG_OPENS_BATCH | FLAG_CONTINUES_BATCH | FLAG_GENERATION_START | FLAG_COMMIT;
+const FLAG_PUBLISHER: u32 = 1 << 27;
+const FLAG_MASK: u32 = KIND_MASK | FLAG_PUBLISHER;
 
-/// Bytes a record with this payload and mark takes on disk.
-pub fn record_len(payload_len: usize, mark: &RecordMark) -> u64 {
+/// Bytes a record body takes: the payload, and the publisher with its length
+/// byte when there is one.
+pub fn body_len(payload_len: usize, publisher: Option<&[u8]>) -> usize {
+    payload_len + publisher.map_or(0, |publisher| publisher.len() + 1)
+}
+
+/// Bytes a record with this body and mark takes on disk. See [`body_len`].
+pub fn record_len(body_len: usize, mark: &RecordMark) -> u64 {
     let tag = match mark {
         RecordMark::Opens(_) => PRODUCER_TAG_LEN,
         RecordMark::None
@@ -231,7 +260,7 @@ pub fn record_len(payload_len: usize, mark: &RecordMark) -> u64 {
         | RecordMark::GenerationStart
         | RecordMark::Commit => 0,
     };
-    RECORD_HEADER_LEN + tag + payload_len as u64
+    RECORD_HEADER_LEN + tag + body_len as u64
 }
 
 impl RecordHeader {
@@ -267,7 +296,7 @@ impl RecordHeader {
             }));
         }
         let len_and_flags = read_u32(buf, 0);
-        let flags = len_and_flags & FLAG_MASK;
+        let flags = len_and_flags & KIND_MASK;
         // At most one bit: a record is one kind.
         if flags.count_ones() > 1 {
             return Err(Corruption::new(CorruptionKind::RecordFlags {
@@ -291,6 +320,7 @@ impl RecordHeader {
             continues_batch: flags == FLAG_CONTINUES_BATCH,
             generation_start: flags == FLAG_GENERATION_START,
             commit: flags == FLAG_COMMIT,
+            has_publisher: len_and_flags & FLAG_PUBLISHER != 0,
         })
     }
 }
@@ -298,24 +328,33 @@ impl RecordHeader {
 /// Serialize one record into `out`, returning the bytes appended.
 ///
 /// Callers batch many of these into a single buffer so that one `write_all`
-/// covers a whole append.
+/// covers a whole append. A `publisher` is at most [`MAX_PUBLISHER_BYTES`].
 pub fn encode_record(
     out: &mut Vec<u8>,
     offset: Offset,
     timestamp_micros: u64,
     payload: &[u8],
+    publisher: Option<&[u8]>,
     mark: &RecordMark,
 ) -> u64 {
-    debug_assert!(payload.len() <= MAX_PAYLOAD_BYTES as usize);
+    let body_len = body_len(payload.len(), publisher);
+    debug_assert!(body_len <= MAX_PAYLOAD_BYTES as usize);
+    debug_assert!(publisher.is_none_or(|publisher| publisher.len() <= MAX_PUBLISHER_BYTES));
     let start = out.len();
-    let flags = match mark {
+    let kind = match mark {
         RecordMark::None => 0,
         RecordMark::Opens(_) => FLAG_OPENS_BATCH,
         RecordMark::Continues => FLAG_CONTINUES_BATCH,
         RecordMark::GenerationStart => FLAG_GENERATION_START,
         RecordMark::Commit => FLAG_COMMIT,
     };
-    out.extend_from_slice(&(payload.len() as u32 | flags).to_be_bytes());
+    let flags = kind
+        | if publisher.is_some() {
+            FLAG_PUBLISHER
+        } else {
+            0
+        };
+    out.extend_from_slice(&(body_len as u32 | flags).to_be_bytes());
     out.extend_from_slice(&offset.to_be_bytes());
     out.extend_from_slice(&timestamp_micros.to_be_bytes());
     // Header checksum first, so a reader can trust `payload_len` without having
@@ -335,10 +374,22 @@ pub fn encode_record(
         | RecordMark::GenerationStart
         | RecordMark::Commit => &[],
     };
-    let checksum = crc32(&[&out[start..start + 24], tag, payload]);
+    let (publisher, publisher_len): (&[u8], &[u8]) = match publisher {
+        Some(publisher) => (publisher, &[publisher.len() as u8][..]),
+        None => (&[], &[]),
+    };
+    let checksum = crc32(&[
+        &out[start..start + 24],
+        tag,
+        payload,
+        publisher,
+        publisher_len,
+    ]);
     out.extend_from_slice(&checksum.to_be_bytes());
     out.extend_from_slice(tag);
     out.extend_from_slice(payload);
+    out.extend_from_slice(publisher);
+    out.extend_from_slice(publisher_len);
     (out.len() - start) as u64
 }
 
@@ -347,6 +398,8 @@ pub fn encode_record(
 pub struct DecodedRecord {
     pub header: RecordHeader,
     pub payload: Bytes,
+    /// The principal that published the record, when it was stored with one.
+    pub publisher: Option<Bytes>,
     pub mark: RecordMark,
 }
 
@@ -363,14 +416,32 @@ pub fn decode_record(buf: &[u8]) -> DecodeResult<(DecodedRecord, u64)> {
     }
     let payload_start = header.payload_start();
     let tag = &buf[RECORD_HEADER_LEN as usize..payload_start];
-    let payload = &buf[payload_start..total as usize];
-    let found = crc32(&[&buf[0..24], tag, payload]);
+    let body = &buf[payload_start..total as usize];
+    let found = crc32(&[&buf[0..24], tag, body]);
     if found != header.checksum {
         return Err(Corruption::new(CorruptionKind::RecordChecksum {
             expected: header.checksum,
             found,
         }));
     }
+    let (payload, publisher) = if header.has_publisher {
+        // The checksum held, so a length that does not fit is not a torn
+        // write: the record was written wrong.
+        let misfit = || {
+            Corruption::new(CorruptionKind::RecordPublisher {
+                body_len: header.payload_len,
+            })
+        };
+        let (&len, rest) = body.split_last().ok_or_else(misfit)?;
+        let split = rest
+            .len()
+            .checked_sub(usize::from(len))
+            .ok_or_else(misfit)?;
+        let (payload, publisher) = rest.split_at(split);
+        (payload, Some(Bytes::copy_from_slice(publisher)))
+    } else {
+        (body, None)
+    };
     let mark = if header.opens_batch {
         RecordMark::Opens(ProducerBatch {
             producer_id: read_u64(tag, 0),
@@ -390,6 +461,7 @@ pub fn decode_record(buf: &[u8]) -> DecodeResult<(DecodedRecord, u64)> {
         DecodedRecord {
             header,
             payload: Bytes::copy_from_slice(payload),
+            publisher,
             mark,
         },
         total,

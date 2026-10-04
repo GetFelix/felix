@@ -108,6 +108,11 @@ pub struct ClientConfig {
     /// [`crate::Client::supports_ack_on_commit`] says whether a broker
     /// honours it.
     pub ack_on_commit: bool,
+    /// Ask brokers to say who published each event: [`crate::Event::publisher`]
+    /// and the `publisher` of a consumer-group record. Off by default, since
+    /// it adds the principal to every event batch. A broker tells a client
+    /// that asked only what it recorded.
+    pub publishers: bool,
 }
 
 impl ClientConfig {
@@ -145,6 +150,7 @@ impl ClientConfig {
             event_router_max_pending: DEFAULT_EVENT_ROUTER_MAX_PENDING,
             client_sub_queue_capacity: DEFAULT_CLIENT_SUB_QUEUE_CAPACITY,
             ack_on_commit: false,
+            publishers: false,
             client_sub_queue_policy: ClientSubQueuePolicy::DropNew,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             bench_embed_ts: false,

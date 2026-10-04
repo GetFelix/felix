@@ -159,6 +159,7 @@ pub async fn ship_once_with<R: PeerRequester>(
     } else {
         Vec::new()
     };
+    let publishers = felix_broker::replication::publishers_to_wire(&records);
     let payloads: Vec<Bytes> = records.into_iter().map(|record| record.payload).collect();
     let batch_end = first_offset + payloads.len() as u64;
     let batch_bytes: usize = payloads.iter().map(Bytes::len).sum();
@@ -167,7 +168,7 @@ pub async fn ship_once_with<R: PeerRequester>(
         correlation_id: 0,
         shard: shard.clone(),
         first_offset,
-        checksum: batch_checksum(&payloads, &marks),
+        checksum: batch_checksum(&payloads, &marks, &publishers),
         payloads,
         marks,
         // A follower that refused the committed kind is sent what it reads.
@@ -181,6 +182,7 @@ pub async fn ship_once_with<R: PeerRequester>(
                 .recorded_capabilities(&cursor.node_id)
                 .is_some_and(|offered| offered.contains(PeerCapabilities::GENERATION_LABELS)))
         .then(|| crate::replica::generations_over(&log.generations(), first_offset, batch_end)),
+        publishers,
     };
     // Which log this is belongs in the message kind, not in the shard
     // reference: the bodies are identical, and a follower that guessed wrong

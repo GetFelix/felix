@@ -49,12 +49,14 @@ async fn verify_accepts_a_generation_start_record() {
             payload: Bytes::from(payload::payload_for(offset, 32)),
             timestamp_micros: 0,
             mark: Default::default(),
+            publisher: None,
         };
         log.append(&[record(0)]).await.expect("append");
         log.append(&[AppendRecord {
             payload: Bytes::copy_from_slice(&3u64.to_be_bytes()),
             timestamp_micros: 0,
             mark: felix_storage::log::RecordMark::GenerationStart,
+            publisher: None,
         }])
         .await
         .expect("marker");

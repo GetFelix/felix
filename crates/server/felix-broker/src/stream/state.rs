@@ -17,6 +17,7 @@ use super::delivery::{QueuedDelivery, SubQueuePolicy};
 use super::producers::ProducerTable;
 use super::subscription::SubscriptionReceiver;
 use crate::ConsistencyLevel;
+use crate::broker::RingRecord;
 use crate::commit::{StateEntry, StateOp, StateView};
 use crate::durable::StreamLog;
 use crate::handoff::{ShardHandoff, ShardMoved};
@@ -209,9 +210,11 @@ impl StreamState {
             if record.offset >= next_seq {
                 continue;
             }
+            let record = crate::commit::client_record(record);
             state.log.push_back(LogEntry {
                 seq: record.offset,
-                payload: crate::commit::client_record(record).payload,
+                payload: record.payload,
+                publisher: record.publisher,
             });
         }
         let overflow = state.log.len().saturating_sub(capacity);
@@ -322,6 +325,7 @@ impl StreamState {
         turn: Option<&CommitTurn<'_>>,
         log_capacity: usize,
         commit: Option<&[StateOp]>,
+        publisher: Option<&Bytes>,
     ) -> Option<(Arc<Vec<SubscriberEntry>>, u64)> {
         if payloads.is_empty() {
             return Some((self.subscribers_snapshot.load_full(), 0));
@@ -356,6 +360,7 @@ impl StreamState {
             state.log.push_back(LogEntry {
                 seq,
                 payload: payload.clone(),
+                publisher: publisher.cloned(),
             });
             seq = seq.checked_add(1).expect("log sequence overflow");
         }
@@ -439,7 +444,7 @@ impl StreamState {
     /// exercise the ring without a log behind it.
     #[cfg(test)]
     pub(crate) fn append_batch(&self, payloads: &[Bytes], log_capacity: usize) {
-        self.append_batch_at(payloads, None, None, log_capacity, None);
+        self.append_batch_at(payloads, None, None, log_capacity, None, None);
     }
 
     pub(crate) fn register_subscriber(&self) -> (u64, SubscriptionReceiver) {
@@ -518,7 +523,7 @@ impl StreamState {
     pub(crate) fn register_clamped(
         &self,
         from_seq: u64,
-    ) -> (Vec<(u64, Bytes)>, u64, u64, SubscriptionReceiver) {
+    ) -> (Vec<RingRecord>, u64, u64, SubscriptionReceiver) {
         let state = self.log_state.lock();
         let oldest = state
             .log
@@ -531,16 +536,20 @@ impl StreamState {
         // before reaching the ring leaves a hole. Returning bare payloads made
         // the caller assume `start, start+1, start+2, ...`, which both mislabels
         // every offset after a hole and hides the missing record entirely.
-        let backlog: Vec<(u64, Bytes)> = state
+        let backlog: Vec<RingRecord> = state
             .log
             .iter()
             .filter(|entry| entry.seq >= start)
-            .map(|entry| (entry.seq, entry.payload.clone()))
+            .map(|entry| RingRecord {
+                offset: entry.seq,
+                payload: entry.payload.clone(),
+                publisher: entry.publisher.clone(),
+            })
             .collect();
         // Where the backlog *actually* begins, which is not `start` when the
         // first surviving entry sits above it.
         let backlog_start = match backlog.first() {
-            Some((seq, _)) => *seq,
+            Some(record) => record.offset,
             // An empty ring means the live edge is `next_seq`, and that is where
             // the backlog would have started had there been one.
             None => state.next_seq.max(start),
@@ -685,6 +694,7 @@ pub(crate) struct LogState {
 pub(crate) struct LogEntry {
     pub(crate) seq: u64,
     pub(crate) payload: Bytes,
+    pub(crate) publisher: Option<Bytes>,
 }
 
 #[cfg(test)]
