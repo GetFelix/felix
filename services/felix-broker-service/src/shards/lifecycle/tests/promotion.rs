@@ -325,3 +325,213 @@ fn a_promotion_that_skips_generations_after_a_drain_is_fenced() {
         Action::Open { fence: true, .. }
     ));
 }
+
+fn cache_key() -> ShardKey {
+    ShardKey {
+        kind: crate::shards::ShardKind::Cache,
+        ..key(0)
+    }
+}
+
+/// **A promoted cache shard waits for the fence too**, as a stream shard
+/// does: its old leader may still hold acknowledged puts and counter adds
+/// that the fence's catch-up takes.
+#[test]
+fn a_promoted_cache_shard_waits_in_fencing() {
+    let mut own = fencing_lifecycle();
+    let assigned = ShardAssignment {
+        key: cache_key(),
+        ..assigned_to("broker-a", 3)
+    };
+
+    assert!(matches!(
+        own.observe(&cache_key(), Some(&assigned)),
+        Action::Open { fence: true, .. }
+    ));
+    assert_eq!(own.opened(&cache_key(), 3), Opened::Fencing);
+    assert!(own.fence().admit(&cache_key(), 3).is_err());
+    assert!(own.fenced(&cache_key(), 3));
+    assert!(own.fence().admit(&cache_key(), 3).is_ok());
+}
+
+/// Opening a promoted cache shard through the real gate.
+mod cache_generation_start {
+    use super::*;
+    use felix_replication::promotion::PromotionGate;
+    use felix_storage::log::{FsyncMode, LogConfig};
+
+    /// A broker with a log-backed cache and counters, holding one put and
+    /// one counter add from before this broker's generation.
+    async fn inheriting() -> (
+        std::sync::Arc<felix_broker::Broker>,
+        std::sync::Arc<felix_storage::CounterStore>,
+        felix_broker::DurableStorage,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = LogConfig {
+            fsync_mode: FsyncMode::None,
+            preallocate_segments: false,
+            ..LogConfig::default()
+        };
+        let storage =
+            felix_broker::DurableStorage::open(dir.path().join("streams"), config.clone())
+                .expect("storage");
+        let counters = std::sync::Arc::new(
+            felix_storage::CounterStore::open(dir.path().join("counters"), config.clone())
+                .expect("counters"),
+        );
+        let broker = std::sync::Arc::new(
+            felix_broker::Broker::new(Box::new(
+                felix_storage::LogCache::open(dir.path().join("caches"), config).expect("cache"),
+            ))
+            .with_durable_storage(storage.clone())
+            .with_counters(std::sync::Arc::clone(&counters)),
+        );
+        // What the leader inherited, before its own generation.
+        broker
+            .cache()
+            .put(
+                "t1",
+                "ns",
+                "orders",
+                0,
+                "k",
+                bytes::Bytes::from_static(b"v"),
+                None,
+            )
+            .await
+            .expect("put");
+        counters
+            .add("t1", "ns", "orders", 0, "hits", 2)
+            .await
+            .expect("add");
+        (broker, counters, storage, dir)
+    }
+
+    fn finalized() -> std::sync::Arc<felix_common::fleet::FleetGate> {
+        let finalized = [felix_common::fleet::GENERATION_START.name()];
+        let fleet = felix_common::fleet::FleetGate::new(finalized);
+        fleet.observe(finalized);
+        std::sync::Arc::new(fleet)
+    }
+
+    /// **A cache shard taken without a promotion writes both records at
+    /// open**, as a stream does.
+    #[tokio::test]
+    async fn an_unfenced_open_writes_both_records() {
+        let (broker, _counters, storage, _dir) = inheriting().await;
+        let store = DurableShardStore::new(std::sync::Arc::new(storage)).with_generation_starts(
+            crate::shards::lifecycle::GenerationStarts {
+                broker: std::sync::Arc::clone(&broker),
+                fleet: finalized(),
+            },
+        );
+
+        store.open(&cache_key(), 3, true).await.expect("open");
+
+        for kind in [
+            felix_broker::LogKind::Cache,
+            felix_broker::LogKind::Counters,
+        ] {
+            let log = broker
+                .shard_log(kind, "t1", "ns", "orders", 0)
+                .await
+                .expect("log");
+            assert_eq!(
+                felix_replication::quorum::generation_start(&log, 3).await,
+                Some(1),
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// **A promoted cache shard writes a generation-start record to its
+    /// cache log and its counter log before it serves**, once the fleet
+    /// finalized `generation_start`: both marks count only past it, and
+    /// neither could otherwise cover what the leader inherited. The record
+    /// is never read back as a value or a sum.
+    #[tokio::test]
+    async fn both_logs_get_their_record_before_the_shard_serves() {
+        let (broker, counters, storage, _dir) = inheriting().await;
+        let key = cache_key();
+        let mut own = fencing_lifecycle();
+        own.observe(
+            &key,
+            Some(&ShardAssignment {
+                key: key.clone(),
+                ..assigned_to("broker-a", 3)
+            }),
+        );
+        assert_eq!(own.opened(&key, 3), Opened::Fencing);
+        let router = std::sync::Arc::new(felix_router::ShardRouter::new(
+            "broker-a",
+            "us-west-2",
+            felix_router::RegionRouter::new("us-west-2".to_string()),
+        ));
+        let ingress = std::sync::Arc::new(crate::shards::routing::IngressRouter::new(
+            router,
+            std::sync::Arc::clone(own.fence()),
+        ));
+        let own = std::sync::Arc::new(tokio::sync::Mutex::new(own));
+        let gate = crate::shards::lifecycle::promotion::LifecycleGate::new(
+            std::sync::Arc::clone(&own),
+            ingress,
+            std::sync::Arc::new(storage),
+            std::sync::Arc::clone(&broker),
+            finalized(),
+        );
+
+        assert!(gate.open(&key, 3).await, "the shard stayed closed");
+        assert_eq!(own.lock().await.phase(&key), Phase::Active);
+        for kind in [
+            felix_broker::LogKind::Cache,
+            felix_broker::LogKind::Counters,
+        ] {
+            let log = broker
+                .shard_log(kind, "t1", "ns", "orders", 0)
+                .await
+                .expect("log");
+            assert_eq!(
+                felix_replication::quorum::generation_start(&log, 3).await,
+                Some(1),
+                "{kind:?}"
+            );
+        }
+        assert_eq!(
+            broker
+                .cache()
+                .get("t1", "ns", "orders", 0, "k")
+                .await
+                .expect("get")
+                .as_deref(),
+            Some(&b"v"[..])
+        );
+        assert_eq!(
+            counters
+                .get("t1", "ns", "orders", 0, "hits")
+                .await
+                .expect("get"),
+            Some(2)
+        );
+        // Writes after the record land and read back.
+        broker
+            .cache()
+            .put(
+                "t1",
+                "ns",
+                "orders",
+                0,
+                "k",
+                bytes::Bytes::from_static(b"w"),
+                None,
+            )
+            .await
+            .expect("put after the record");
+        let (sum, offset) = counters
+            .add("t1", "ns", "orders", 0, "hits", 1)
+            .await
+            .expect("add after the record");
+        assert_eq!((sum, offset), (3, 2));
+    }
+}

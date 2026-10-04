@@ -152,7 +152,8 @@ later. Once the fleet has finalized `majority_ack`, a `Quorum` shard acknowledge
 when a majority answers that it holds the write at the leader's generation, and
 neither the lease nor the control-plane report is on the write's path. A
 superseded leader cannot collect that majority, because its successor fenced the
-followers first. `Leader` streams and caches keep the lease.
+followers first. With `fenced_caches` finalized too, `Quorum` caches do the same.
+`Leader` streams and caches keep the lease.
 
 On failover, only a replica that **actually holds the log** is promoted. A shard
 whose leader is gone and whose replicas are behind is left unavailable rather

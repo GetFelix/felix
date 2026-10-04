@@ -301,6 +301,17 @@ forward to the log's tail whenever it is behind, rather than building once and
 trusting itself; without that, a promoted follower answers misses for values it
 is holding on disk.
 
+**A promotion fences both logs.** A promoted cache leader fences a majority of
+the replica set on the cache log and then on the counter log, takes the
+furthest ahead of each, and writes a generation-start record on each before it
+serves, as a stream leader does with its one log. Dropping records from a log,
+whether a follower drops a divergent suffix or a promoted leader takes a longer
+log in place of its own, also drops the cache's index or the counter sums,
+which are rebuilt from the log as it now is; an index still pointing at a
+dropped offset would read whatever record replaced it. With `fenced_caches`
+finalized a `Quorum` cache acknowledges on its followers' answers without the
+lease. See [replication-design.md](replication-design.md#fencing-a-promotion).
+
 ## What this does not do yet
 
 **Warming on takeover.** A stream's log is opened while the shard is being

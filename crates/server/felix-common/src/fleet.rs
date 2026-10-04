@@ -63,6 +63,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     JUMP_HASH_ROUTING,
     ATOMIC_COMMIT,
     PUBLISHER_PRINCIPAL,
+    FENCED_CACHES,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -89,6 +90,17 @@ pub const MAJORITY_ACK: FleetFeature = FleetFeature::new("majority_ack");
 /// alongside [`MAJORITY_ACK`] and [`GENERATION_START`]. See
 /// `docs/replication-design.md` ("Reads without the lease").
 pub const LEASE_FREE_READS: FleetFeature = FleetFeature::new("lease_free_reads");
+
+/// [`MAJORITY_ACK`] for `Quorum` caches: a write or counter add is
+/// acknowledged once a majority of the cache shard's replicas has answered
+/// that it holds it at the leader's generation, and a promoted cache shard
+/// never opens on the lease. Safe only when every broker fences a promoted
+/// cache shard's cache and counter logs before it serves, which a build
+/// without this feature does not, so a broker running with
+/// `FELIX_INTERNAL_FENCE=false` does not report it. Takes effect alongside
+/// [`MAJORITY_ACK`] and [`GENERATION_START`]. See
+/// `docs/replication-design.md` ("Acknowledging by the followers").
+pub const FENCED_CACHES: FleetFeature = FleetFeature::new("fenced_caches");
 
 /// A stream shard accepts atomic commits: an event and state updates written
 /// as one commit record. The record needs storage format v5 and a replication

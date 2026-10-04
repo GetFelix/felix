@@ -87,7 +87,7 @@ ConfirmRead(b, f) ==
     /\ rvotes' = [rvotes EXCEPT ![b] = @ \cup {f}]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
-                    handoffVars, fencing, answered, confirmed, heard >>
+                    handoffVars, fencing, answered, confirmed, heard, counterVars >>
     /\ UNCHANGED << reading, rgen, rseen, rval, reads, staleRead >>
 
 Confirmed(b) ==

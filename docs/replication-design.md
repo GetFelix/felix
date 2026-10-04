@@ -308,11 +308,19 @@ When the fence applies:
   drained a shard and is given it back at any later generation is promoted
   and fenced: the move may have finished and its destination led in between
   (`a_promotion_after_a_finished_move_away_is_fenced`).
-- Only for stream shards. A cache shard's log opens lazily and is compacted
-  underneath, and keeps the lease.
+- For stream shards and cache shards. A cache shard fences its cache log, which
+  holds the shard's one promise per replica, then its counter log, and takes
+  the furthest ahead of each by the same order
+  (`the_counter_log_furthest_ahead_is_taken_too`). A follower refuses an older
+  leader on both logs once it took the cache log's fence
+  (`a_counter_fence_older_than_the_cache_fence_is_refused`). Taking another
+  log drops the cache's index or the counter sums above the cut, so the
+  shard serves what its log now holds (`a_superseded_put_is_gone_from_the_index`).
+  A cache kept in memory has no log to fence and opens on the lease.
 - Only when every replica in the new set offers both `FENCE` and
-  `TAIL_FETCH`, as its latest handshake with this broker in either direction
-  says, and this broker offers them too. Otherwise the shard opens at once
+  `TAIL_FETCH`, and for a cache shard `CACHE_FENCE` too, as its latest
+  handshake with this broker in either direction says, and this broker offers
+  them too. Otherwise the shard opens at once
   on the lease, exactly as before (`a_mixed_fleet_fails_over_on_the_lease`),
   and a peer that did not offer them is never sent either message.
   `felix_broker_promotions_opened_total{path}` says which path each promotion
@@ -397,9 +405,11 @@ counts from the generation's recorded start, and every record past that start
 is the generation's own, so there is nothing inherited to cover. This is also
 how a shard whose generation began before the fleet finalized
 `generation_start` keeps serving: it has records at that generation and no
-start record, and it gets its first one at its next leadership change. A cache shard writes none and counts as before: its
-log is compacted and never fenced, so it never takes a longer log on
-promotion, which is what makes an inherited record unsafe to count.
+start record, and it gets its first one at its next leadership change. A cache
+shard writes one on its cache log and one on its counter log, at the same
+points, since its fence can take a longer log on either; each mark counts only
+past its own log's record (`a_cache_leader_counts_only_its_own_generation`).
+Cache replay, watches and counter sums skip the record.
 
 An in-memory stream writes none either. Its publishes never reach the shard's
 log: they take no offsets, nothing ships, the fence has nothing to take, and a
@@ -421,7 +431,8 @@ record rolls a log onto a v4 segment, which an older build refuses to open.
 ### Acknowledging by the followers
 
 With `majority_ack` finalized, a `Quorum` stream shard acknowledges a write
-once a majority of its replica set, the leader included, has answered that it
+(and with `fenced_caches` too, a replicated `Quorum` cache a put, delete or
+counter add) once a majority of its replica set, the leader included, has answered that it
 holds the write at the leader's generation. That is `AckByFollowers` in
 `docs/formal/FelixShard.tla`, `HeldAtGen` and `quorum::held_at_generation` in
 code. The report and the lease leave the write's path:
@@ -444,7 +455,7 @@ code. The report and the lease leave the write's path:
   re-reading it. Consumer-group state on the same shard is acknowledged on the
   leader alone and still needs the lease.
 - **No promotion on the lease alone.** A promoted leader never opens a stream
-  shard on the lease: a replica that does not offer the fence, or cannot be
+  shard, or under `fenced_caches` a cache shard, on the lease: a replica that does not offer the fence, or cannot be
   asked, is one that has not answered, and the shard waits for a majority that
   has. An old leader no longer stops at its lease, so a new one must fence.
 
@@ -464,8 +475,10 @@ What still needs the lease, and why:
 
 - **`Leader` streams.** They acknowledge on the leader's own commit, which no
   follower sees, so only the lease keeps a deposed leader from acknowledging.
-- **Caches and their counters.** A cache shard is never fenced on promotion,
-  so its successor is only as good as the report it was chosen from.
+- **Caches and their counters, until the fleet finalizes `fenced_caches`.**
+  Before that an older broker may be promoted to a cache shard without
+  fencing it, so a deposed cache leader has to stop at its lease. A `Leader`
+  cache, and a cache kept in memory, stay on the lease regardless.
 - **Reads, until the fleet finalizes `lease_free_reads`.** Then a `Quorum`
   cache read confirms leadership by a round instead; see below.
 - **A fleet that has not finalized `majority_ack`,** or has not finalized
@@ -478,6 +491,17 @@ finalized the control plane refuses such a broker, which is what lets an old
 leader stop honouring its lease: every broker that could be promoted fences.
 Nothing on the wire changes; the followers' answers are the `ReplicateOk`
 they already send. The runbook is on the upgrades page in the docs site.
+
+**Across versions: the `fenced_caches` fleet feature.** The same rule for
+cache shards. A broker reports it when it fences (`FELIX_INTERNAL_FENCE` not
+`false`) and its build fences cache shards, which no earlier build does; it
+takes effect alongside `majority_ack` and `generation_start`
+(`cache_follower_acks_need_fenced_caches_too`). Until then a cache shard is
+fenced on promotion whenever every replica offers `CACHE_FENCE`, and falls
+back to the lease otherwise, but its writes are still acknowledged on the
+report and the lease. `FelixShardFencedCache.cfg` checks the cache log and
+the counter log together; `FelixShardFencedCacheNoCounterCatchUp.cfg` loses
+a counter update when the fence takes only the cache log.
 
 The cost is that a leader cut off from the control plane keeps taking writes
 until its successor's fence reaches its followers. Those writes then time out
@@ -506,8 +530,8 @@ owner) answers it read-index style, with one round and no clock:
    counter log) has accepted no newer generation, as `held_at_generation` does.
 
 Why it is enough: any write a newer leader acknowledges is held by a majority
-that accepted its generation. For a stream shard the promotion fence gets there
-before the leader serves. A cache shard is not fenced on promotion, but a
+that accepted its generation. The promotion fence gets there before the leader
+serves. Where a cache shard opened on the lease in a mixed fleet, a
 replica persists a newer leader's generation before it stores anything that
 leader sends (`accept_sender` in `replica.rs`), so every replica holding the
 successor's write has accepted its generation all the same. Every majority the
@@ -941,13 +965,15 @@ two records) behind its own (generation 2, one record), so x2 is never taken
 (`FelixShardFollowerLabels.cfg`, and
 `a_follower_keeps_the_generation_a_record_was_written_at`).
 
-So a stream shard's batch carries the labels; the shard's other logs are not
-compared by a fence, so their batches carry only the sender's generation.
+So a stream shard's batch carries the labels, and so do a cache shard's cache
+and counter batches to a follower that offers `CACHE_FENCE`, since its fence
+compares those logs the same way. The shard's other logs are not compared by a
+fence, so their batches carry only the sender's generation.
 
 **Every leader records where its generation began.** A stream leader does it
 when its shard opens or its fence completes. A cache leader records it on the
-cache log and the counter log when the shard opens, and accepts the generation
-on both, since caches are never fenced. Without that record, a cache leader
+cache log and the counter log when the shard opens or its fence completes, and
+accepts the generation on both. Without that record, a cache leader
 that died holding a record no majority had came back as a follower with no
 history at all. Its divergence at that record then looked like one that could
 reach anywhere, so it halted instead of dropping the record, and it refused the
@@ -1127,7 +1153,8 @@ reports before C answers and names C, B dies, and C is promoted without the
 record. So wherever promotion trusts the report, the bound is never below
 where the leader's generation begins in its own log, or its whole log if no
 start was recorded. A cache's counter log gets the same floor. A stream shard
-that acknowledges by its followers skips it, because its promoted leader
+that acknowledges by its followers skips it, and so does a cache shard under
+`fenced_caches`, for both its logs, because its promoted leader
 fences a majority and takes the furthest log before it serves.
 
 The cost is availability. Right after a failover no follower is named until
@@ -1336,14 +1363,14 @@ multi-instance work and not before.
 | Situation | Behaviour |
 | --- | --- |
 | Leader fails | Lease lapses; a caught-up replica is promoted at `G+1` after the safety interval. Unavailable for at most `L + margin + promotion`. |
-| Leader of a `Quorum` stream fails | The promoted replica keeps the previous replica set, the dead leader in it, so its fence needs a majority of the set that acknowledged. A spare broker with an empty log cannot make up that majority, and with a majority of the set down the new leader waits rather than opening alone. The dead leader rejoins as a follower, or a drain replaces it. `Leader` streams and caches get a fresh follower in its place. |
+| Leader of a `Quorum` stream or cache fails | The promoted replica keeps the previous replica set, the dead leader in it, so its fence needs a majority of the set that acknowledged. A spare broker with an empty log cannot make up that majority, and with a majority of the set down the new leader waits rather than opening alone. The dead leader rejoins as a follower, or a drain replaces it. `Leader` streams and caches get a fresh follower in its place. |
 | A follower of a `Quorum` stream is replaced | The newcomer joins beside the follower leaving and counts toward the quorum. The one leaving goes only once a report at the joining generation shows the newcomer holding what a majority of the set holds, so a leader that dies right after still has a record acknowledged before the join on the next leader's fence. Until then the shard waits with four copies, and the replacement times out like a move. |
 | A follower is lost | Once its broker has been down or gone for `FELIX_SHARD_RESTORE_AFTER_MS`, placement copies the shard to a live broker outside the set and seats that copy by the replacement rule above, dropping the lost one. A set a failover left short of the factor is topped up the same way as soon as a live broker is free. `felix_shards_under_replicated` counts the shards short of their factor meanwhile, and `GET /v1/placement/replication` lists them. |
 | Leader fails before its first replica report | No report names a caught-up replica, so none is promoted. The shard is unavailable until that broker returns, or until an operator abandons the log. |
 | New leader, no client write since | Its log ends in its generation-start record, which never reaches a subscriber. A subscription's `live_offset` stops short of it, so a reader catching up to `live_offset` finishes instead of waiting for the next write. |
-| Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. With `majority_ack` finalized, a `Quorum` stream keeps taking and acknowledging writes its followers hold until a promoted successor's fence reaches them; with `lease_free_reads` too, `Quorum` cache reads its replicas confirm keep being served, and other reads stop with the lease. |
+| Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. With `majority_ack` finalized, a `Quorum` stream keeps taking and acknowledging writes its followers hold until a promoted successor's fence reaches them, and so does a `Quorum` cache with `fenced_caches` too; with `lease_free_reads` too, `Quorum` cache reads its replicas confirm keep being served, and other reads stop with the lease. |
 | Leader partitioned from followers | `Quorum` writes fail, correctly: the majority is unreachable. `Leader` writes succeed and accumulate loss-window exposure, which the lag metric shows. |
-| Control plane unavailable | No new leases are granted. Existing leases run to expiry (5 to 11 s with the defaults), then shards go unavailable. Deliberate: granting without a functioning authority is how split-brain happens. When it comes back, brokers renew within about 3 s. The expiry sweep waits one expiry window after a restart, a Raft leader change, or regaining its store, so the outage does not mark the fleet down. With `majority_ack` finalized, `Quorum` streams go on acknowledging writes a majority of their replicas holds, since nothing on that path asks the control plane; `Leader` streams and caches stop as described, and reads too unless `lease_free_reads` is finalized, when `Quorum` cache reads go on as long as a majority of the shard's replicas answers. |
+| Control plane unavailable | No new leases are granted. Existing leases run to expiry (5 to 11 s with the defaults), then shards go unavailable. Deliberate: granting without a functioning authority is how split-brain happens. When it comes back, brokers renew within about 3 s. The expiry sweep waits one expiry window after a restart, a Raft leader change, or regaining its store, so the outage does not mark the fleet down. With `majority_ack` finalized, `Quorum` streams go on acknowledging writes a majority of their replicas holds, since nothing on that path asks the control plane, and with `fenced_caches` so do `Quorum` caches; `Leader` streams and caches stop as described, and reads too unless `lease_free_reads` is finalized, when `Quorum` cache reads go on as long as a majority of the shard's replicas answers. |
 | Broker suspended past expiry | Refused at the durable-append check on waking. |
 | Stale broker after reassignment | Its lease has expired, so it refuses. This is what closes #239 by construction rather than by racing a watch. |
 

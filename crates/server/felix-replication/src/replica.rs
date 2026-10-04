@@ -139,8 +139,7 @@ impl ReplicaHandler {
             return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
         }
         // The in-memory tail was built from the records that just went.
-        self.reset_stream_tail(&key, log_kind, request.base_offset)
-            .await;
+        self.reset_tail(&key, log_kind, request.base_offset).await;
         tracing::warn!(
             stream = %key.stream,
             shard = key.shard,
@@ -212,7 +211,7 @@ impl ReplicaHandler {
                 metrics::record_replicated(metrics::OUTCOME_ERROR);
                 return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
             }
-            self.reset_stream_tail(key, log_kind, keep).await;
+            self.reset_tail(key, log_kind, keep).await;
         }
         tracing::warn!(
             stream = %key.stream,
@@ -245,25 +244,34 @@ impl ReplicaHandler {
             .copied()
     }
 
-    /// A stream's replay ring and next offset describe the records a rebuild
-    /// or truncation just dropped, so they are reset to where the log ends now.
-    async fn reset_stream_tail(
+    /// What the broker derived from a log's records -- a stream's replay ring
+    /// and next offset, a cache's index, a counter shard's sums -- describes
+    /// the records a rebuild or truncation just dropped, so it is reset to
+    /// where the log ends now.
+    async fn reset_tail(
         &self,
         key: &felix_router::ShardKey,
         log_kind: felix_broker::LogKind,
         tail: u64,
     ) {
-        if log_kind == felix_broker::LogKind::Stream
-            && let Err(err) = self
-                .broker
-                .reset_replicated(&key.tenant_id, &key.namespace, &key.stream, key.shard, tail)
-                .await
+        if let Err(err) = self
+            .broker
+            .reset_log(
+                log_kind,
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                tail,
+            )
+            .await
         {
             tracing::warn!(
                 stream = %key.stream,
                 shard = key.shard,
+                log = ?log_kind,
                 error = %err,
-                "dropped records from the log but could not reset the stream's tail",
+                "dropped records from the log but could not reset what was read from them",
             );
         }
     }
@@ -333,8 +341,7 @@ impl ReplicaHandler {
                 metrics::record_replicated(metrics::OUTCOME_ERROR);
                 return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
             }
-            self.reset_stream_tail(&key, log_kind, request.base_offset)
-                .await;
+            self.reset_tail(&key, log_kind, request.base_offset).await;
             (base, tail) = (request.base_offset, request.base_offset);
         }
 
@@ -552,11 +559,11 @@ impl ReplicaHandler {
                              generation and resumed replication",
                         );
                         metrics::record_replicated(metrics::OUTCOME_TRUNCATED);
-                        // The replay ring and next offset still describe the
-                        // dropped records, and the apply below only moves them
-                        // forward, so a tail that ends lower than before would
-                        // leave them for readers if this broker is promoted.
-                        self.reset_stream_tail(&key, log_kind, diverged_at).await;
+                        // What was read from the dropped records (a stream's
+                        // replay ring, a cache's index) still describes them,
+                        // and the apply below only moves it forward, so it
+                        // would be left for readers if this broker is promoted.
+                        self.reset_tail(&key, log_kind, diverged_at).await;
                         outcome = replication::apply(
                             &log,
                             batch.first_offset,
@@ -716,13 +723,16 @@ impl ReplicaHandler {
     ///
     /// The generation is written to the shard's own log, stream or cache.
     /// Its cursor, dead-letter and counter logs check that one as well as
-    /// their own, so the fence covers them without a request each.
+    /// their own, so the fence covers them without a request each. A
+    /// promoted cache leader fences the counter log as well, after the cache
+    /// log, for where it ends: the answer is the counter log's.
     pub async fn fence(&self, request: Fence) -> InternalMessage {
         let correlation_id = request.correlation_id;
         let generation = request.shard.generation;
         let log_kind = match request.log {
             ReplicaLog::Stream => felix_broker::LogKind::Stream,
             ReplicaLog::Cache => felix_broker::LogKind::Cache,
+            ReplicaLog::Counters => felix_broker::LogKind::Counters,
             other => {
                 metrics::record_replicated(metrics::OUTCOME_REFUSED);
                 return refused(
@@ -766,6 +776,12 @@ impl ReplicaHandler {
                 "this broker has no log for that shard".to_string(),
             );
         };
+        if let Some(refusal) = self
+            .check_shard_fence(correlation_id, &key, log_kind, generation)
+            .await
+        {
+            return refusal;
+        }
         // A cache's counter log takes its leader's generation on its own, so
         // a newer leader that has only written counters has reached this
         // replica there and nowhere else. Refused, or an older leader's read
@@ -842,6 +858,7 @@ impl ReplicaHandler {
         let log_kind = match request.log {
             ReplicaLog::Stream => felix_broker::LogKind::Stream,
             ReplicaLog::Cache => felix_broker::LogKind::Cache,
+            ReplicaLog::Counters => felix_broker::LogKind::Counters,
             other => {
                 return refused(
                     correlation_id,
@@ -878,6 +895,12 @@ impl ReplicaHandler {
                 "this broker has no log for that shard".to_string(),
             );
         };
+        if let Some(refusal) = self
+            .check_shard_fence(correlation_id, &key, log_kind, generation)
+            .await
+        {
+            return refusal;
+        }
         let accepted = log.accepted_generation();
         if accepted != generation {
             let code = if accepted > generation {
@@ -920,7 +943,7 @@ impl ReplicaHandler {
         let payloads: Vec<bytes::Bytes> =
             records.into_iter().map(|record| record.payload).collect();
         let end = first_offset + payloads.len() as u64;
-        let batch = ReplicateRecords {
+        let mut batch = ReplicateRecords {
             correlation_id,
             shard: request.shard,
             first_offset,
@@ -933,8 +956,10 @@ impl ReplicaHandler {
                 .then(|| generations_over(&log.generations(), first_offset, end)),
             publishers,
         };
+        crate::ship::carry_marks(&mut batch, log_kind, false);
         match log_kind {
             felix_broker::LogKind::Cache => InternalMessage::ReplicateCacheRecords(batch),
+            felix_broker::LogKind::Counters => InternalMessage::ReplicateCounterRecords(batch),
             _ if !batch.marks.is_empty() => InternalMessage::ReplicateMarkedRecords(batch),
             _ => InternalMessage::ReplicateRecords(batch),
         }

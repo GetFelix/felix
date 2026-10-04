@@ -163,6 +163,15 @@
 (* lacks a record the first leader acknowledged (AckedSurvive).            *)
 (* `ReportFloor` names a follower only once it holds everything the leader *)
 (* inherited, which is a bound on what any earlier leader acknowledged.    *)
+(*                                                                         *)
+(* `Counters` makes the shard a cache shard: `log` is the cache log, and a *)
+(* second log, `clog`, holds the counter updates. It ships, is counted and *)
+(* acknowledged like the cache log, under one promise per replica: the     *)
+(* fence a replica took on the cache log refuses an older leader on both.  *)
+(* A promoted leader also fences the counter log on a majority and takes   *)
+(* the counter log furthest ahead. `CounterCatchUp = FALSE` skips taking   *)
+(* it, and TLC finds a counter update acknowledged by the old leader and   *)
+(* missing from the new one (CountersHeldByLeader).                        *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -206,7 +215,9 @@ CONSTANTS
     ReportFromAnswers, \* whether the report counts a follower by its answers, or by its log
     ReportFloor,    \* whether the report never names a follower short of the leader's inherited log
     Grow,           \* whether placement may add a spare to the set with nobody leaving
-    PromoteDestination \* whether a failover may name a move's destination leader
+    PromoteDestination, \* whether a failover may name a move's destination leader
+    Counters,       \* whether the shard is a cache shard with a counter log beside its log
+    CounterCatchUp  \* whether the fence takes the counter log furthest ahead too
 
 ASSUME Promotion \in {"leader-report", "log-order", "any"}
 ASSUME ReportBeforeAck \in BOOLEAN
@@ -232,6 +243,11 @@ ASSUME ReplaceOnPromote => Spares /= {} /\ MaxMoves = 0
 \* No lease anywhere on a `Quorum` write's path: not at admission (see
 \* Serving), not at the commit, not at the acknowledgement.
 ASSUME AckByFollowers => Quorum /\ ~CheckAtCommit /\ ~AckChecksLease
+\* Cache shards are checked with follower acks and failover alone, the only
+\* way the broker acknowledges a cache write without the lease.
+ASSUME Counters \in BOOLEAN /\ CounterCatchUp \in BOOLEAN
+ASSUME Counters => /\ AckByFollowers /\ ~LabelOnReceipt /\ ~Resends
+                   /\ ~Handoff /\ ~Cancel /\ ~StageMove /\ MaxMoves = 0 /\ Spares = {}
 ASSUME Eps < L /\ Margin >= 0
 
 VARIABLES
@@ -270,12 +286,21 @@ VARIABLES
     mine,       \* the replica set each broker was given when it was named leader
     joining,    \* a spare being copied in beside a leaving follower: {} or {j}
     leaving,    \* the follower it replaces: {} or {o}
-    joinedAt    \* how much of the leader's log a majority of the set held when it joined
+    joinedAt,   \* how much of the leader's log a majority of the set held when it joined
+    clog,       \* each broker's counter log, under `Counters`
+    chwm,       \* each broker's counter mark, as leader
+    cconfirmed, \* per leader, how far each follower answered that it holds the counter log
+    canswered,  \* who has answered each broker's counter fence
+    cacked      \* counter updates acknowledged to a client
+
+\* The counter log's state, which only a cache shard's actions change.
+counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
            draining, successor, stopped, moves, ver, cpView, staged, heard,
-           promised, fencing, answered, confirmed, out, mine, joining, leaving, joinedAt >>
+           promised, fencing, answered, confirmed, out, mine, joining, leaving, joinedAt,
+           counterVars >>
 
 \* Placement's state, which only the control plane's decisions change.
 handoffVars == << draining, successor, stopped, moves, ver, cpView, staged, out, mine,
@@ -362,6 +387,18 @@ LastGen(b) == IF Len(log[b]) = 0 THEN 0 ELSE log[b][Len(log[b])].lg
 \* once it holds the drained leader's whole log.
 Incoming(f) == f \in staged \/ (draining /\ successor = f)
 
+\* The counter log's start record, written beside the cache log's.
+COpened(b, g) == IF StartRecord THEN Append(clog[b], Start(g)) ELSE clog[b]
+
+CLastGen(b) == IF Len(clog[b]) = 0 THEN 0 ELSE clog[b][Len(clog[b])].lg
+
+CounterInit ==
+    /\ clog = [b \in Brokers |-> <<>>]
+    /\ chwm = [b \in Brokers |-> 0]
+    /\ cconfirmed = [b \in Brokers |-> [f \in Brokers |-> 0]]
+    /\ canswered = [b \in Brokers |-> {}]
+    /\ cacked = {}
+
 -----------------------------------------------------------------------------
 
 Init ==
@@ -401,6 +438,7 @@ Init ==
     /\ joining = {}
     /\ leaving = {}
     /\ joinedAt = 0
+    /\ CounterInit
 
 -----------------------------------------------------------------------------
 (* Time. Real time ticks, and with it each broker's clock moves by zero,   *)
@@ -883,8 +921,12 @@ Promote(v, f, views) ==
     \* A fenced leader may still take another log; it writes its start record
     \* when it opens.
     /\ log' = IF FenceOnPromote /\ ~Incoming(f) THEN log ELSE [log EXCEPT ![f] = Opened(f, gen + 1)]
+    \* The counter log likewise; a cache shard is never a move's destination.
+    /\ clog' = IF Counters /\ ~FenceOnPromote THEN [clog EXCEPT ![f] = COpened(f, gen + 1)] ELSE clog
+    /\ cconfirmed' = [cconfirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
+    /\ canswered' = [canswered EXCEPT ![f] = {}]
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
-                    staleCommit, successor, moves >>
+                    staleCommit, successor, moves, chwm, cacked >>
 
 -----------------------------------------------------------------------------
 (* The promotion fence, under `FenceOnPromote`. The promoted leader asks    *)
@@ -925,12 +967,95 @@ AnswerFence(b, f) ==
 OpenForWrites(b) ==
     /\ fencing[b]
     /\ LeaderMajority(b, answered[b] \cup {b})
+    /\ Counters => LeaderMajority(b, canswered[b] \cup {b})
     /\ fencing' = [fencing EXCEPT ![b] = FALSE]
     /\ log' = [log EXCEPT ![b] = Opened(b, bgen[b])]
+    /\ clog' = IF Counters THEN [clog EXCEPT ![b] = COpened(b, bgen[b])] ELSE clog
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, hwm, halted, queued, pending, acked, writes, staleCommit,
                     promised, answered, confirmed >>
-    /\ UNCHANGED handoffVars
+    /\ UNCHANGED << handoffVars, chwm, cconfirmed, canswered, cacked >>
+
+-----------------------------------------------------------------------------
+(* The counter log of a cache shard, under `Counters`. A counter update is   *)
+(* admitted and committed in one step: the gaps the cache log's write path  *)
+(* has are covered there. The promise is shared with the cache log, so a    *)
+(* follower that took a newer fence on either refuses the older leader on   *)
+(* both: `accept_sender` and `ReplicaHandler::fence` in replica.rs.         *)
+
+CommitCounter(b) ==
+    /\ Counters
+    /\ Serving(b)
+    /\ writes < MaxWrites
+    /\ writes' = writes + 1
+    /\ clog' = [clog EXCEPT ![b] = Append(@, Record(bgen[b], writes + 1))]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, staleCommit >>
+    /\ UNCHANGED << handoffVars, fenceVars, chwm, cconfirmed, canswered, cacked >>
+
+\* As `Ship`, on the counter log. A follower drops a divergent suffix only
+\* for a newer generation than its last counter record's.
+ShipCounter(b, f) ==
+    /\ Counters
+    /\ bgen[b] > 0 /\ f /= b
+    /\ f \in Members(b)
+    /\ bgen[f] = 0
+    /\ bgen[b] >= CLastGen(f)
+    /\ ~fencing[b]
+    /\ promised[f] <= bgen[b]
+    /\ promised' = [promised EXCEPT ![f] = bgen[b]]
+    /\ LET i == Diverge(clog[b], clog[f]) IN
+       /\ i <= Len(clog[b])
+       /\ \/ /\ i > Len(clog[f])
+             /\ clog' = [clog EXCEPT ![f] = Append(@, clog[b][i])]
+             /\ cconfirmed' = [cconfirmed EXCEPT ![b][f] = i]
+          \/ /\ i <= Len(clog[f])
+             /\ bgen[b] > CLastGen(f)
+             /\ clog' = [clog EXCEPT ![f] = SubSeq(@, 1, i - 1)]
+             /\ cconfirmed' = [cconfirmed EXCEPT ![b][f] = i - 1]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fencing, answered, confirmed, chwm, canswered, cacked >>
+
+\* As `HeldAtGen`, on the counter log: the counter mark counts only past a
+\* record of the leader's own generation (`quorum::counted_offset`).
+CHeldAtGen(b, i) ==
+    /\ StartRecord => clog[b][i].g = bgen[b]
+    /\ LeaderMajority(b, { m \in Brokers \ {b} : cconfirmed[b][m] >= i }
+                         \cup (IF promised[b] = bgen[b] THEN {b} ELSE {}))
+
+AckCounters(b) ==
+    /\ Counters
+    /\ bgen[b] > 0
+    /\ \E i \in (chwm[b] + 1)..Len(clog[b]) :
+        /\ CHeldAtGen(b, i)
+        /\ cacked' = cacked \cup ({ clog[b][j].id : j \in 1..i } \ {StartId})
+        /\ chwm' = [chwm EXCEPT ![b] = i]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fenceVars, clog, cconfirmed, canswered >>
+
+CAhead(f, b) ==
+    \/ CLastGen(f) > CLastGen(b)
+    \/ CLastGen(f) = CLastGen(b) /\ Len(clog[f]) > Len(clog[b])
+
+\* The counter log's fence, at the generation the cache log's fence asked
+\* for: a replica that already took it there answers again, one that took a
+\* newer one refuses. With `CounterCatchUp` the leader takes the counter log
+\* of an answer ahead of its own, as `fence_shard` does for every log the
+\* shard has (promotion.rs).
+AnswerCounterFence(b, f) ==
+    /\ Counters
+    /\ fencing[b] /\ bgen[b] > 0 /\ f /= b
+    /\ f \in Members(b)
+    /\ f \notin canswered[b]
+    /\ promised[f] <= bgen[b]
+    /\ promised' = [promised EXCEPT ![f] = bgen[b]]
+    /\ canswered' = [canswered EXCEPT ![b] = @ \cup {f}]
+    /\ clog' = IF CounterCatchUp /\ CAhead(f, b) THEN [clog EXCEPT ![b] = clog[f]] ELSE clog
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fencing, answered, confirmed, chwm, cconfirmed, cacked >>
 
 -----------------------------------------------------------------------------
 (* Planned handoff. The control plane fences the leader so the shard can    *)
@@ -1139,34 +1264,41 @@ Seat(v, j, views) ==
 \* A placement write, from a read taken in the same step or from one a
 \* planner has held since.
 Decide(v, f, views) ==
-    \/ Promote(v, f, views) \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
-    \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
+    \/ Promote(v, f, views)
+    \/ /\ \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
+          \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
+       /\ UNCHANGED counterVars
 
 -----------------------------------------------------------------------------
 
 \* Only a report's delivery changes what a broker has heard.
+\* The counter log changes only in the actions that name it.
 Step ==
-    \/ Tick
+    \/ Tick /\ UNCHANGED counterVars
     \/ \E b \in Brokers :
-        \/ SendHeartbeat(b)
-        \/ AcceptHeartbeat(b)
-        \/ LoseHeartbeat(b)
-        \/ StepDown(b)
-        \/ Admit(b)
-        \/ Resend(b)
-        \/ Claim(b)
-        \/ Commit(b)
-        \/ AckQuorum(b)
-        \/ Report(b)
-        \/ ObserveFence(b)
+        \/ /\ \/ SendHeartbeat(b)
+              \/ AcceptHeartbeat(b)
+              \/ LoseHeartbeat(b)
+              \/ StepDown(b)
+              \/ Admit(b)
+              \/ Resend(b)
+              \/ Claim(b)
+              \/ Commit(b)
+              \/ AckQuorum(b)
+              \/ Report(b)
+              \/ ObserveFence(b)
+              \/ \E f \in Brokers : Ship(b, f) \/ LearnHwm(b, f) \/ AnswerFence(b, f)
+           /\ UNCHANGED counterVars
         \/ OpenForWrites(b)
         \/ Decide(Now, b, cpView)
         \/ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
-        \/ \E f \in Brokers : Ship(b, f) \/ LearnHwm(b, f) \/ AnswerFence(b, f)
-    \/ LoseReport
-    \/ \E p \in Planners : Snapshot(p)
+        \/ CommitCounter(b)
+        \/ AckCounters(b)
+        \/ \E f \in Brokers : ShipCounter(b, f) \/ AnswerCounterFence(b, f)
+    \/ LoseReport /\ UNCHANGED counterVars
+    \/ \E p \in Planners : Snapshot(p) /\ UNCHANGED counterVars
 
-Next == (Step /\ UNCHANGED heard) \/ DeliverReport
+Next == (Step /\ UNCHANGED heard) \/ (DeliverReport /\ UNCHANGED counterVars)
 
 Spec == Init /\ [][Next]_vars
 
@@ -1251,6 +1383,17 @@ StagedCopyNeverDelaysAck ==
             \A i \in (hwm[b] + 1)..Len(log[b]) :
                 AckReadyOver(b, i, ReplicaSet) => AckReadyOver(b, i, QuorumSet)
 
+\* Under `Counters`, the leader at the current generation holds every
+\* acknowledged counter update once it may serve, as AckedHeldByLeader.
+CountersHeldByLeader ==
+    \A b \in Brokers : (bgen[b] = gen /\ ~fencing[b]) =>
+        \A id \in cacked : \E i \in 1..Len(clog[b]) : clog[b][i].id = id
+
+\* Every acknowledged counter update is on a majority of the replicas.
+CountersOnMajority ==
+    \A id \in cacked :
+        MajorityOf({ b \in Brokers : \E i \in 1..Len(clog[b]) : clog[b][i].id = id }, Brokers)
+
 TypeOK ==
     /\ now \in 0..MaxTime
     /\ gen \in Nat
@@ -1272,5 +1415,9 @@ TypeOK ==
     /\ mine \in [Brokers -> SUBSET Brokers]
     /\ joining \subseteq Brokers /\ leaving \subseteq Brokers
     /\ joinedAt \in Nat
+    /\ chwm \in [Brokers -> Nat]
+    /\ cconfirmed \in [Brokers -> [Brokers -> Nat]]
+    /\ canswered \in [Brokers -> SUBSET Brokers]
+    /\ cacked \subseteq 1..MaxWrites
 
 =============================================================================

@@ -246,3 +246,63 @@ async fn the_index_steps_over_a_generation_start_record() {
         Some(Bytes::from_static(b"1")),
     );
 }
+
+/// **Records cut from the log and written again leave no trace in the
+/// index once it is forgotten.** Replication cuts a superseded suffix and
+/// appends the winning log's records at the same offsets; an index caught up
+/// from the tail would still point `k` at an offset that now holds another
+/// key's put.
+#[tokio::test]
+async fn a_forgotten_index_reads_the_log_as_it_now_is() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = cache(dir.path()).await;
+    for value in [&b"v1"[..], &b"v2"[..]] {
+        cache
+            .put(T, NS, C, 0, "k", Bytes::copy_from_slice(value), None)
+            .await
+            .expect("put");
+    }
+    assert_eq!(
+        cache.get(T, NS, C, 0, "k").await.expect("get").as_deref(),
+        Some(&b"v2"[..])
+    );
+
+    let log = cache.shard_log(T, NS, C, 0).await.expect("log");
+    log.truncate(1).await.expect("truncate");
+    let other = CacheOp::Put {
+        key: "other".to_string(),
+        value: Bytes::from_static(b"x"),
+        expires_at_millis: 0,
+    };
+    log.append(&[AppendRecord {
+        payload: other.encode(),
+        timestamp_micros: 0,
+        mark: Default::default(),
+        publisher: None,
+    }])
+    .await
+    .expect("append");
+    cache.forget_index(T, NS, C, 0).await.expect("forget");
+
+    assert_eq!(
+        cache.get(T, NS, C, 0, "k").await.expect("get").as_deref(),
+        Some(&b"v1"[..])
+    );
+    assert_eq!(
+        cache
+            .get(T, NS, C, 0, "other")
+            .await
+            .expect("get")
+            .as_deref(),
+        Some(&b"x"[..])
+    );
+    // The commit order restarted at the tail, so a write still lands.
+    cache
+        .put(T, NS, C, 0, "k", Bytes::from_static(b"v3"), None)
+        .await
+        .expect("put after the reset");
+    assert_eq!(
+        cache.get(T, NS, C, 0, "k").await.expect("get").as_deref(),
+        Some(&b"v3"[..])
+    );
+}

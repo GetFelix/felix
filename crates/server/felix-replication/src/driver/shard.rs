@@ -235,16 +235,16 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         entry.base = compare_from(&log.generations(), route.generation);
     }
     reconcile_followers(&mut entry, route);
-    // Once the fleet finalized `generation_start`, a stream leader counts only
-    // a majority that reaches a record of its own generation. Counting the
-    // records it inherited is Raft's Figure 8. A cache shard is never fenced
-    // and so never takes a longer log on promotion, which is what makes an
-    // inherited record unsafe to count; see `docs/replication-design.md`.
+    // Once the fleet finalized `generation_start`, a leader counts only a
+    // majority that reaches a record of its own generation. Counting the
+    // records it inherited is Raft's Figure 8: a later fence can take a log
+    // that replaces them; see `docs/replication-design.md`.
     // Where this leader's generation begins: everything below it was
     // inherited. `u64::MAX` when no start was recorded, which reads as the
     // whole log.
     let inherited = own_start(&log, route.generation, &mut entry.own_start);
-    let own_start = (key.kind == felix_router::ShardKind::Stream && marks.own_generation_only())
+    let own_start = marks
+        .own_generation_only()
         .then(|| own_start(&log, route.generation, &mut entry.own_start));
     let counted = |majority: u64| crate::quorum::counted_offset(majority, own_start);
 
@@ -296,13 +296,17 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let acks_at_quorum = !route.draining && quorum_shard;
     let mark_key = watch_key(key);
     let mark_key = &mark_key;
-    // A `Quorum` stream shard in a fleet that finalized `majority_ack` is
-    // acknowledged on what its followers answered at this generation, with
-    // the report and the lease off the write's path. Every other shard keeps
-    // both. A cache shard is never fenced on promotion, so its successor is
-    // only as good as the report it was chosen from.
-    let by_followers =
-        quorum_shard && key.kind == felix_router::ShardKind::Stream && marks.acks_by_followers();
+    // A `Quorum` shard in a fleet that finalized `majority_ack` (and, for a
+    // cache, `fenced_caches`) is acknowledged on what its followers answered
+    // at this generation, with the report and the lease off the write's path.
+    // Every other shard keeps both: until every broker fences what it is
+    // promoted to, a successor is only as good as the report it was chosen
+    // from.
+    let by_followers = quorum_shard
+        && match key.kind {
+            felix_router::ShardKind::Stream => marks.acks_by_followers(),
+            felix_router::ShardKind::Cache => marks.caches_ack_by_followers(),
+        };
     if by_followers {
         fence.serve_without_lease(mark_key, route.generation);
     }
@@ -357,10 +361,12 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             marks,
             key,
             route,
+            &log,
             &mut aux,
             learner.as_deref(),
             rebuilds,
             busy,
+            by_followers,
         )
         .await
     } else {
@@ -780,6 +786,9 @@ pub(super) struct CounterLevel {
     acknowledged: u64,
     /// Followers holding the counter log up to `acknowledged`.
     level: Vec<String>,
+    /// The followers decided the mark, as for the cache log: it moves without
+    /// waiting on the report.
+    by_followers: bool,
 }
 
 impl CounterLevel {
@@ -792,16 +801,24 @@ impl CounterLevel {
     }
 
     /// Release counter adds up to the level, now that a report naming only
-    /// followers that hold them has landed.
+    /// followers that hold them has landed, or at once when the followers
+    /// decided it.
     fn publish(&self, marks: &QuorumMarks, key: &ShardKey, generation: u64) {
-        marks
-            .counters()
-            .publish(&watch_key(key), generation, self.acknowledged);
+        let table = marks.counters();
+        if self.by_followers {
+            table.publish_by_followers(&watch_key(key), generation, self.acknowledged);
+        } else {
+            table.publish(&watch_key(key), generation, self.acknowledged);
+        }
     }
 }
 
 /// Ship a cache shard's counter log and measure it, for [`CounterLevel`].
 /// `None` when the shard has no counter log here.
+///
+/// Counted under the shard's own rules: only past where this leader's
+/// generation begins once the fleet finalized `generation_start`, and on the
+/// followers' answers at this generation with `by_followers`.
 #[allow(clippy::too_many_arguments)]
 async fn counter_level<R: PeerRequester>(
     requester: &R,
@@ -809,10 +826,12 @@ async fn counter_level<R: PeerRequester>(
     marks: &QuorumMarks,
     key: &ShardKey,
     route: &Route,
+    cache_log: &felix_broker::StreamLog,
     aux: &mut AuxCursors,
     learner: Option<&str>,
     rebuilds: &Rebuilds,
     busy: &HashSet<String>,
+    by_followers: bool,
 ) -> Option<CounterLevel> {
     let log = broker
         .shard_log(
@@ -844,24 +863,49 @@ async fn counter_level<R: PeerRequester>(
     )
     .await;
     let tail = log.tail_offset().await.ok()?;
+    let held = if by_followers {
+        // Read after the tail. A newer leader fences the cache log before the
+        // counter log, and once either has answered it, what this broker
+        // writes next is in no fence answer.
+        let current = cache_log.accepted_generation() <= route.generation
+            && log.accepted_generation() <= route.generation;
+        crate::quorum::held_at_generation(tail, current, &aux.counters.followers, learner)
+    } else {
+        quorum_offset_without(tail, &aux.counters.followers, learner)
+    };
+    let start = log
+        .generations()
+        .iter()
+        .rev()
+        .find(|epoch| epoch.generation == route.generation)
+        .map(|epoch| epoch.start_offset);
+    let held = crate::quorum::counted_offset(
+        held,
+        marks
+            .own_generation_only()
+            .then_some(start.unwrap_or(u64::MAX)),
+    );
     // Never below a mark already published: those updates were acknowledged.
-    let acknowledged = quorum_offset_without(tail, &aux.counters.followers, learner).max(
+    let acknowledged = held.max(
         marks
             .counters()
             .offset(&watch_key(key), route.generation)
             .unwrap_or(0),
     );
     // Named only once it holds the updates this leader inherited, as for the
-    // shard's own log; with no recorded start, all of them.
-    let inherited = log
-        .generations()
-        .iter()
-        .rev()
-        .find(|epoch| epoch.generation == route.generation)
-        .map_or(tail, |epoch| epoch.start_offset.min(tail));
+    // shard's own log, while promotion trusts the report; with no recorded
+    // start, all of them. Acknowledging by the followers, the promoted leader
+    // fences a majority and takes the furthest counter log instead.
+    let inherited = start.map_or(tail, |start| start.min(tail));
+    let floor = if by_followers {
+        acknowledged
+    } else {
+        acknowledged.max(inherited)
+    };
     Some(CounterLevel {
         acknowledged,
-        level: caught_up(acknowledged.max(inherited), &aux.counters.followers),
+        level: caught_up(floor, &aux.counters.followers),
+        by_followers,
     })
 }
 

@@ -104,10 +104,18 @@ never have dialled the one that shipped to it.
 | `1 << 1` | `TAIL_FETCH` | answers `ReplicateFetch` from the leader that fenced it |
 | `1 << 2` | `GENERATION_LABELS` | reads `ReplicateLabelledRecords`, and answers `ReplicateLabelledFetch` |
 | `1 << 3` | `FORWARD_OFFSETS` | answers `ForwardPublishOk` with the offsets the batch landed at, and with the empty range `1..=0` for a stream with no log |
+| `1 << 4` | `CACHE_FENCE` | answers `Fence` and `ReplicateFetch` for a cache shard's counter log (`log` = `Counters`) as well as its cache log, refusing a counter fence older than the generation its cache log accepted, and reads cache and counter batches labelled with their generations |
 
-`FELIX_INTERNAL_FENCE=false` turns the first two bits off: the broker refuses
-`Fence` and `ReplicateFetch` as unknown kinds, as an older build would. It
-still offers `GENERATION_LABELS` and `FORWARD_OFFSETS`, which are not the fence's.
+`FELIX_INTERNAL_FENCE=false` turns `FENCE`, `TAIL_FETCH` and `CACHE_FENCE` off:
+the broker refuses `Fence` and `ReplicateFetch` as unknown kinds, as an older
+build would. It still offers `GENERATION_LABELS` and `FORWARD_OFFSETS`, which
+are not the fence's.
+
+A promoted cache shard is fenced only when every replica offered `FENCE`,
+`TAIL_FETCH` and `CACHE_FENCE`; otherwise it opens on the lease, until the
+fleet finalizes `fenced_caches` and it waits for a majority that answers
+instead. A leader sends cache and counter batches with their generation labels
+only to a follower that offered both `GENERATION_LABELS` and `CACHE_FENCE`.
 
 ### Versioning
 
@@ -556,6 +564,11 @@ batch that would otherwise have been told where to resume all get
 `FencedEpoch`. The shard's cursor, dead-letter and counter logs check the
 shard's own log as well as theirs, so the fence covers them without a request
 each.
+
+A promoted cache leader then sends `Fence` again with `log` = `Counters`, at
+the same generation, to a replica that offered `CACHE_FENCE`, to learn where
+that replica's counter log ends. The replica takes it at the generation its
+cache log accepted or a newer one, and refuses an older one with `FencedEpoch`.
 
 The answer, `FenceOk` (kind 30), says where the replica's copy stands: one past
 its last record, its commit offset, and the generation its last record was

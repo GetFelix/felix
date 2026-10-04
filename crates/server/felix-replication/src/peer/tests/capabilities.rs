@@ -150,7 +150,8 @@ async fn two_current_brokers_learn_each_others_capabilities() {
     let offered = PeerCapabilities::FENCE
         .union(PeerCapabilities::TAIL_FETCH)
         .union(PeerCapabilities::GENERATION_LABELS)
-        .union(PeerCapabilities::FORWARD_OFFSETS);
+        .union(PeerCapabilities::FORWARD_OFFSETS)
+        .union(PeerCapabilities::CACHE_FENCE);
     assert_eq!(theirs, offered);
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
     assert_eq!(noted.get("broker-a"), Some(offered));

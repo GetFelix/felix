@@ -152,6 +152,9 @@ expectations=(
   "FelixShardFencedAckStagedMoveShort pass"
   "FelixShardFencedAckMoveCancelShort pass"
   "FelixShardFencedAckMoveDestination violates AckedHeldByLeader"
+  "FelixShardFencedCache pass"
+  "FelixShardFencedCacheUnfenced violates AckedHeldByLeader"
+  "FelixShardFencedCacheNoCounterCatchUp violates CountersHeldByLeader"
 )
 
 shard_index=0
@@ -187,6 +190,7 @@ weights=(
   "FelixShardSessionsGroupRound 14"
   "FelixShardReadsRound 11"
   "FelixShardFencedAck 6"
+  "FelixShardFencedCache 10"
   "FelixShardCancel 5"
   "FelixShardCancelResend 5"
   "FelixShardFigure8FollowerAcks 5"

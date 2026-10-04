@@ -18,9 +18,10 @@
 //! group acks -- so checking the lease here, against the clock, is what makes
 //! a lapsed lease refuse all of them rather than whichever paths remembered to
 //! ask. See "Leases" in `docs/replication-design.md`. The exception is a
-//! `Quorum` stream shard whose acknowledgements its followers decide: its
-//! writes get in without the lease. Its group state does too once the fleet
-//! reads by round, confirmed by a round instead ([`ShardFence::sessions_lease_free`]).
+//! `Quorum` shard whose acknowledgements its followers decide: its writes,
+//! a cache's puts and counter adds included, get in without the lease. Its
+//! group state does too once the fleet reads by round, confirmed by a round
+//! instead ([`ShardFence::sessions_lease_free`]).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst};

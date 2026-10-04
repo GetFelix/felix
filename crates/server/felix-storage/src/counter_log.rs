@@ -180,6 +180,21 @@ impl CounterStore {
             .await
     }
 
+    /// Drop one shard's sums, so the next touch folds its log again. For
+    /// replication after it cut records from the log, which folding on from
+    /// the tail would never notice.
+    pub async fn forget_index(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        scope: &str,
+        shard: u32,
+    ) -> Result<()> {
+        let shard = self.shard(tenant_id, namespace, scope, shard)?;
+        shard.state.lock().await.index = Index::default();
+        Ok(())
+    }
+
     /// Flush every open shard. Call once during graceful shutdown. Compaction
     /// passes stop at their next step first.
     pub async fn shutdown(&self) -> Result<()> {

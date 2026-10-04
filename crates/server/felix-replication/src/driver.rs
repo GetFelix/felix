@@ -394,16 +394,13 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
         }
     }
 
-    // Once the followers decide acknowledgements, a shard never opens on the
-    // lease alone: the old leader no longer stops writing when its lease does.
-    let lease_fallback = !marks.acks_by_followers();
     let fencing = open_promoted(
         requester,
         broker,
         router.local_node_id(),
         gate,
         promoted,
-        lease_fallback,
+        marks,
     )
     .await;
 
@@ -488,8 +485,14 @@ async fn fence_one<R: PeerRequester>(
     local_node_id: &str,
     key: ShardKey,
     route: felix_router::Route,
-    lease_fallback: bool,
+    marks: &QuorumMarks,
 ) -> (ShardKey, u64, Outcome) {
+    // Once the followers decide acknowledgements, a shard never opens on the
+    // lease alone: the old leader no longer stops writing when its lease does.
+    let lease_fallback = !match key.kind {
+        felix_router::ShardKind::Stream => marks.acks_by_followers(),
+        felix_router::ShardKind::Cache => marks.caches_ack_by_followers(),
+    };
     let outcome = promotion::fence_shard(
         requester,
         broker,
@@ -510,15 +513,16 @@ async fn open_promoted<R: PeerRequester>(
     local_node_id: &str,
     gate: &dyn PromotionGate,
     promoted: Vec<(ShardKey, felix_router::Route)>,
-    lease_fallback: bool,
+    marks: &QuorumMarks,
 ) -> bool {
-    let outcomes: Vec<(ShardKey, u64, Outcome)> =
-        futures::stream::iter(promoted.into_iter().map(|(key, route)| {
-            fence_one(requester, broker, local_node_id, key, route, lease_fallback)
-        }))
-        .buffer_unordered(SHARD_CONCURRENCY)
-        .collect()
-        .await;
+    let outcomes: Vec<(ShardKey, u64, Outcome)> = futures::stream::iter(
+        promoted
+            .into_iter()
+            .map(|(key, route)| fence_one(requester, broker, local_node_id, key, route, marks)),
+    )
+    .buffer_unordered(SHARD_CONCURRENCY)
+    .collect()
+    .await;
     let mut pending = false;
     for (key, generation, outcome) in outcomes {
         pending |= !open_fenced(gate, &key, generation, outcome).await;

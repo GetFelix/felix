@@ -135,7 +135,9 @@ with, and nothing about them moves.
 
 Once finalized, a leader writes a generation-start record whenever it starts
 leading a stream shard (a promotion, either end of a move, a cancelled move
-handing the shard back), and its quorum mark counts only past that record.
+handing the shard back), and its quorum mark counts only past that record. A
+cache leader writes one on the shard's cache log and one on its counter log,
+and each mark counts only past its own log's record.
 That closes a way a promotion could lose an acknowledged record (Raft's
 Figure 8; see the replication design notes). Until it is finalized, brokers
 count as before and keep that exposure. In-memory streams never write the
@@ -170,7 +172,8 @@ it holds it at the leader's generation. Neither the control plane's replica
 report nor the leader's lease is on the write's path any more, so a leader
 that loses the control plane keeps acknowledging what its followers hold, and
 a promoted leader always fences a majority before it serves. `Leader`
-streams, caches and reads keep the lease.
+streams and reads keep the lease, and so do caches until `fenced_caches` is
+finalized.
 
 - **Finalize `generation_start` first, or in the same change window.**
   `majority_ack` has no effect until both are finalized.
@@ -250,6 +253,39 @@ record, and subscribers and consumer groups that ask are told it (see
   there, with the same one-way step.
 - **What clients see.** Nothing unless they ask. A client that asked gets the
   publisher on records written after the finalize, and none on older ones.
+
+#### `fenced_caches`
+
+`majority_ack` for caches. Once finalized, together with `majority_ack` and
+`generation_start`, a replicated `Quorum` cache acknowledges a put, delete or
+counter add as soon as a majority of its replicas has answered that it holds
+it at the leader's generation, without the report or the lease. A promoted
+cache shard never opens on the lease: it fences a majority on its cache log
+and its counter log, and takes the furthest ahead of each, before it serves.
+
+Before the finalize, a broker of this build already fences a promoted cache
+shard whenever every replica offers the `CACHE_FENCE` capability, and opens
+it on the lease otherwise, but cache writes are still acknowledged on the
+report and the lease. A broker of an older build can be promoted to a cache
+shard without fencing it, which is why the lease stays until every broker
+fences caches.
+
+- **Finalize `generation_start` and `majority_ack` first, or in the same
+  change window.** `fenced_caches` has no effect until all three are
+  finalized.
+- **Upgrade every control-plane instance first.** An older control plane
+  rebuilds a failed-over `Quorum` cache's replica set instead of keeping it,
+  so the promoted leader's fence could open without a write the old set
+  acknowledged, as for `majority_ack` and streams.
+- **Every broker must fence on promotion.** A broker running with
+  `FELIX_INTERNAL_FENCE=false` does not report `fenced_caches`, so the dry run
+  names it and the finalize is refused until it runs with the fence.
+- **Nothing changes on the wire or on disk.** A cache shard's logs already
+  get their generation-start records once `generation_start` is finalized.
+- **What clients see.** A cache write to a leader that has been replaced but
+  has not heard yet times out as "unknown" rather than being refused for a
+  lapsed lease, as a `Quorum` publish does under `majority_ack`. A promoted
+  cache shard waits for a majority of its replicas rather than opening alone.
 
 A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature

@@ -264,12 +264,14 @@ the request arrived may have expired by the time the bytes reach the disk. On fa
 shard whose leader is gone and whose replicas are behind is left unavailable
 rather than reopened empty, because a silently empty shard *is* the data loss.
 Once the fleet has finalized `generation_start`, every new leader of a durable
-stream shard, promoted or moved in, writes a generation-start record before it
+stream shard or a cache shard, promoted or moved in, writes a generation-start record before it
 serves and counts a majority toward its quorum mark only from there, so it never acknowledges an
 inherited record that a later promotion could replace (Raft's Figure 8). Once
 it has also finalized `majority_ack`, a `Quorum` stream's writes need no lease
 at all: admission, commit and acknowledgement go by the followers' answers,
-and only `Leader` streams, caches and reads still stop when the lease lapses.
+and with `fenced_caches` too so do a `Quorum` cache's puts and counter adds,
+whose promoted shards fence their cache and counter logs before they serve.
+Only `Leader` streams and caches, and reads, still stop when the lease lapses.
 With `lease_free_reads` finalized as well, `Quorum` cache reads confirm
 leadership read-index style instead: one round of fences at the leader's own
 generation, answered by a majority after the read took its value. Readers of a

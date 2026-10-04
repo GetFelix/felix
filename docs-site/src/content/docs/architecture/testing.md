@@ -100,8 +100,8 @@ stuck in.
 
 `FELIX_HISTORY_MODE` picks the replication path. In `lease` mode the campaign
 tests the report and lease path every stream uses by default. In `lease-free`
-mode it finalizes `generation_start`, `majority_ack` and `lease_free_reads`
-after start-up and fails at once if any broker does not turn them on. The
+mode it finalizes `generation_start`, `majority_ack`, `lease_free_reads` and
+`fenced_caches` after start-up and fails at once if any broker does not turn them on. The
 nightly run and the per-PR main campaign use `lease-free`; the per-PR
 every-family campaign uses `lease`, so each pull request covers both.
 

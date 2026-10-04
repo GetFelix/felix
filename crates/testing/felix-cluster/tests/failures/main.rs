@@ -9,6 +9,7 @@
 mod clocks;
 mod failover;
 mod faults;
+mod fenced_caches;
 mod fencing;
 mod fsync;
 mod halted;
