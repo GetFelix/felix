@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791149089152,
+  "lastUpdate": 1791153031411,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -24024,6 +24024,58 @@ window.BENCHMARK_DATA = {
             "range": "11078.85",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 802648.52\nmean: 808878.26\nstdev: 11078.85\ncv: 1.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "93c3db007d7e84ed18cd8064227e41f99902ce92",
+          "message": "feat(cache): conditional puts and deletes, by negotiation (#976) (#1021)\n\ncache_put_if stores a value only if the key is absent or at a given\nversion, and cache_delete_if removes it only at a given version. Both\nanswer cache_condition_result with whether the write was made and the\nkey's version; a get's cache_value carries the version to a client that\noffered FEATURE_CACHE_CONDITIONAL, so other clients' frames are unchanged.\n\nA version is the offset of the put that wrote the value. Compaction\ncopies carry it in a version 2 cache record, so it survives compaction\nand replay. The condition is checked where the write is staged, after any\nwrite to the key that is staged but not yet applied has applied, so two\nracers cannot both find a key absent. The same wait fixes an expiry that\ncould delete a value a put had just refreshed.\n\nForwarded between brokers as a new internal kind an older owner refuses\nrather than serving as an unconditional put. felix-client and\nClusterClient gain cache_put_if, cache_delete_if and cache_get_versioned.\n\nSpec-Unaffected: a conditional write is checked by the shard's owner inside the write path a put already takes, behind the same fence and quorum wait; the lease, generation, replication, promotion and handoff are untouched.\n\nCloses #976.",
+          "timestamp": "2026-10-04T15:26:45-07:00",
+          "tree_id": "816337c0c4d1847a9bacc8c8902ac26a536288db",
+          "url": "https://github.com/GetFelix/felix/commit/93c3db007d7e84ed18cd8064227e41f99902ce92"
+        },
+        "date": 1791153030830,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 346328.04,
+            "range": "11378.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346328.04\nmean: 346026.45\nstdev: 11378.03\ncv: 3.29%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 346328.04,
+            "range": "11378.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346328.04\nmean: 346026.45\nstdev: 11378.03\ncv: 3.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80154.21,
+            "range": "928.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80154.21\nmean: 80283.25\nstdev: 928.70\ncv: 1.16%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 801542.12,
+            "range": "9287.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 801542.12\nmean: 802832.54\nstdev: 9287.03\ncv: 1.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
