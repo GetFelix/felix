@@ -224,8 +224,8 @@ of unread data per connection, 16 MiB by default.
 
 ### Image and version
 
-Images are `ghcr.io/gabloe/felix-broker:<version>` and
-`ghcr.io/gabloe/felix-controlplane:<version>`. The binary has no `--version`
+Images are `ghcr.io/getfelix/felix-broker:<version>` and
+`ghcr.io/getfelix/felix-controlplane:<version>` (`ghcr.io/gabloe` for 0.6.0-preview and earlier). The binary has no `--version`
 flag; the image tag is the version.
 
 ### Health check failing
@@ -292,6 +292,6 @@ cargo run --release -p felix-broker-service --features demo --bin latency-demo -
 
 ## Reporting an issue
 
-Open an issue at [github.com/gabloe/felix/issues](https://github.com/gabloe/felix/issues)
+Open an issue at [github.com/GetFelix/felix/issues](https://github.com/GetFelix/felix/issues)
 with the image tag or commit, the output of `felix-broker --print-config` (the
 credential is redacted), the full error and the steps to reproduce it.

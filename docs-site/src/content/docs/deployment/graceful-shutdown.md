@@ -238,7 +238,7 @@ The Helm chart derives it from all three (`broker.shutdown.handoffTimeoutMs`).
 
 ## What is not covered yet
 
-Tracked under [#139](https://github.com/gabloe/felix/issues/139):
+Tracked under [#139](https://github.com/GetFelix/felix/issues/139):
 
 - Cancellation is coordinated at the connection boundary. The drain waits for
   each connection task to finish, and then for the publish scheduler to empty its

@@ -19,7 +19,7 @@ Connect, Kafka Streams, ksqlDB, Debezium and MirrorMaker.
 
 The reference for the protocol side, including every error code and why groups
 and transactions are refused, is
-[`docs/kafka-compatibility.md`](https://github.com/gabloe/felix/blob/main/docs/kafka-compatibility.md).
+[`docs/kafka-compatibility.md`](https://github.com/GetFelix/felix/blob/main/docs/kafka-compatibility.md).
 
 ## What works
 

@@ -133,7 +133,7 @@ below; the rest run on GitHub-hosted `ubuntu-latest`. Its jobs:
 | `fuzz` | `task fuzz` with `FUZZ_SECONDS=30` |
 
 `task deny` runs `cargo-deny check` against
-[deny.toml](https://github.com/gabloe/felix/blob/main/deny.toml), then checks
+[deny.toml](https://github.com/GetFelix/felix/blob/main/deny.toml), then checks
 the upstream versions of the crates under `vendor/` for advisories.
 
 Other workflows:
@@ -185,7 +185,7 @@ with the token, which needs the `publish-new` scope for that name. After that
 release you can, optionally:
 
 1. On crates.io, add a trusted publisher to each new crate: repository
-   `gabloe/felix`, workflow `release.yml`, environment `crates-io`.
+   `GetFelix/felix`, workflow `release.yml`, environment `crates-io`.
 2. Once every crate has one, run `gh secret delete CARGO_REGISTRY_TOKEN` and
    revoke the token. Later releases then publish with no stored credential.
 

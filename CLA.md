@@ -2,7 +2,7 @@
 
 By signing this CLA (via the CLA Assistant bot on your first pull request),
 you agree to the following, for all past and future contributions you make
-to the `gabloe/felix` repository:
+to the `GetFelix/felix` repository:
 
 1. Your contributions are your original work, or you otherwise have the
    right to submit them under these terms.

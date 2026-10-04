@@ -151,7 +151,7 @@ under [When not to use Felix](#when-not-to-use-felix), and the details are in
   have and owning its behaviour across Kafka versions. Instead, Felix answers a group
   consumer with an error that says so, rather than leave it hanging in "waiting for group rebalance". The details, including what other
   Kafka-compatible systems had to build, are in
-  [`docs/kafka-compatibility.md`](https://github.com/gabloe/felix/blob/main/docs/kafka-compatibility.md).
+  [`docs/kafka-compatibility.md`](https://github.com/GetFelix/felix/blob/main/docs/kafka-compatibility.md).
 - **You need AMQP.** Exchanges, bindings, topic routing, per-message TTL, priority
   queues: Felix has none of the RabbitMQ model. A queue in Felix is a
   group of workers reading one shard, and nothing more.

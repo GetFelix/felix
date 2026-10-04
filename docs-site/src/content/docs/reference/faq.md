@@ -158,8 +158,8 @@ has the full list with defaults. Change things off a measurement.
 
 Yes to both. See [Docker Compose](/felix/deployment/docker-compose/) and
 [Kubernetes](/felix/deployment/kubernetes/). Each release publishes images to
-`ghcr.io/gabloe/felix-broker:<version>` and
-`ghcr.io/gabloe/felix-controlplane:<version>`. The Helm chart is not published,
+`ghcr.io/getfelix/felix-broker:<version>` and
+`ghcr.io/getfelix/felix-controlplane:<version>` (`ghcr.io/gabloe` for 0.6.0-preview and earlier). The Helm chart is not published,
 so install it from `deploy/helm/felix` in the repository. The
 broker ships what an orchestrator expects: `/live` and `/ready` that answer
 different questions, and a bounded drain on SIGTERM

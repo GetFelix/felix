@@ -295,7 +295,7 @@ try {
 
 Every error carries what the broker said about it:
 
-- `code`: the broker's [error code](https://github.com/gabloe/felix/blob/main/docs/protocol.md#error-codes),
+- `code`: the broker's [error code](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#error-codes),
   such as `"shard_unavailable"` or `"quorum_timeout"`.
 - `retry`: what you may do about it: `"retry"`, `"retry_after"`,
   `"redirect"`, `"outcome_unknown"` or `"fatal"`.
@@ -520,7 +520,7 @@ commit's state is the stream shard's own, read with `stateGet`), or a retry.
 State is rebuilt from the retained log, so keep an entity stream's retention
 long enough. The stream must be durable, and in a cluster the operator must
 finalize the `atomic_commit` fleet feature first. The full semantics are in
-[`docs/atomic-commit.md`](https://github.com/gabloe/felix/blob/main/docs/atomic-commit.md).
+[`docs/atomic-commit.md`](https://github.com/GetFelix/felix/blob/main/docs/atomic-commit.md).
 
 ## Multi-shard streams
 

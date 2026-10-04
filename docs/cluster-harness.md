@@ -498,7 +498,7 @@ applied.
 ## Watching it
 
 A recording of the three-pane demo is on the docs site:
-[Demo: Cross-broker Publishing](https://gabloe.github.io/felix/demos/cross-broker-cluster/).
+[Demo: Cross-broker Publishing](https://getfelix.github.io/felix/demos/cross-broker-cluster/).
 Embedded as video rather than an animated GIF, because the same 45 seconds of terminal
 output would be tens of megabytes as a GIF, and could not be paused on the line
 that matters.

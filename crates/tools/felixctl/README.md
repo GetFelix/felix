@@ -1,6 +1,6 @@
 # felixctl
 
-The command-line tool for [Felix](https://github.com/gabloe/felix). It
+The command-line tool for [Felix](https://github.com/GetFelix/felix). It
 publishes to and reads from streams, reads, writes and watches cache keys,
 shows which broker owns each shard, lists what the control plane knows, and
 runs load tests.
@@ -20,12 +20,14 @@ felixctl bench latency orders
 
 Each release also attaches prebuilt archives for Linux, macOS and Windows,
 with shell completions and man pages, to its
-[GitHub release](https://github.com/gabloe/felix/releases), and publishes a
+[GitHub release](https://github.com/GetFelix/felix/releases), and publishes a
 container image:
 
 ```bash
 docker run --rm ghcr.io/gabloe/felixctl:0.6.0-preview --help
 ```
+
+0.6.0-preview and earlier releases are under `ghcr.io/gabloe`, the project's previous owner; later releases publish under `ghcr.io/getfelix`.
 
 From a checkout, `cargo install --path crates/tools/felixctl`.
 
@@ -38,7 +40,7 @@ and examples.
 Connection settings come from a named context in `felixctl/config.toml` under
 the platform config directory, overridden by `FELIX_*` variables, overridden
 by flags. The full guide is the
-[felixctl page](https://gabloe.github.io/felix/getting-started/felixctl/) of the
+[felixctl page](https://getfelix.github.io/felix/getting-started/felixctl/) of the
 documentation.
 
 ## How it is built

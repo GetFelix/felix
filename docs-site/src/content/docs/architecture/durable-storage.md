@@ -333,7 +333,7 @@ wakes them all together rather than one after another through the lock.
 
 The full matrix, the regression budget, and the reasoning behind each
 optimisation are in
-[the performance document](https://github.com/gabloe/felix/blob/main/docs/storage-performance.md).
+[the performance document](https://github.com/GetFelix/felix/blob/main/docs/storage-performance.md).
 
 ## Configuration
 

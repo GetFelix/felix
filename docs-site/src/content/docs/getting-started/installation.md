@@ -42,7 +42,7 @@ cargo 1.97.1 (or later)
 ## Clone the Repository
 
 ```bash
-git clone https://github.com/gabloe/felix.git
+git clone https://github.com/GetFelix/felix.git
 cd felix
 ```
 
@@ -276,7 +276,7 @@ Native Windows support is not currently tested.
 
 ## Docker (Alternative)
 
-Released images are on GHCR and pull without credentials:
+Released images are on GHCR and pull without credentials. 0.6.0-preview and earlier releases are under `ghcr.io/gabloe`, the project's previous owner; later releases publish under `ghcr.io/getfelix`.
 
 ```bash
 docker run -p 5000-5003:5000-5003/udp -p 8080:8080 \

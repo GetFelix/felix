@@ -16,7 +16,7 @@ demos.
 ## Build
 
 ```bash
-git clone https://github.com/gabloe/felix.git
+git clone https://github.com/GetFelix/felix.git
 cd felix
 cargo build --workspace --release
 ```

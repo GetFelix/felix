@@ -20,7 +20,7 @@ present on every member afterwards**. The faults injected are the ones a single
 machine can produce; multi-machine fault injection is not covered. The design
 record, with the alternatives considered and the problems found while building
 it, is
-[`docs/metadata-raft-design.md`](https://github.com/gabloe/felix/blob/main/docs/metadata-raft-design.md).
+[`docs/metadata-raft-design.md`](https://github.com/GetFelix/felix/blob/main/docs/metadata-raft-design.md).
 
 ```mermaid
 flowchart LR
@@ -57,7 +57,7 @@ flowchart LR
   same safety margin before granting again. Data-plane fencing is
   unchanged: it still rests on the assignment generation.
 - **Raft is fine here even though stream replication rejected it.** The
-  [replication design](https://github.com/gabloe/felix/blob/main/docs/replication-design.md)
+  [replication design](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md)
   rejected Raft for stream payloads because Raft truncates divergent log
   suffixes and the segment store never rewrites. The metadata Raft log is a
   separate, kilobyte-scale log that never touches `felix-storage`, so the
@@ -122,7 +122,7 @@ new ones only answer authenticated ones on the peer port. Restart every
 member together (set `FELIX_RAFT_CLUSTER_ID` to any stable name; existing
 data dirs adopt it). Metadata writes pause for the restart; brokers keep
 serving. A release that adds a Raft command has its own rule, in
-[the design doc](https://github.com/gabloe/felix/blob/main/docs/metadata-raft-design.md#upgrading). Writes reaching
+[the design doc](https://github.com/GetFelix/felix/blob/main/docs/metadata-raft-design.md#upgrading). Writes reaching
 a follower forward to the leader invisibly; the expiry sweep and shard
 placement run only on the leader, confirmed by a linearizable check each
 tick. A proposal that cannot commit (no leader, quorum lost) fails after a
@@ -314,4 +314,4 @@ buys nothing safety uses. And SWIM's constant-load advantage pays off at
 hundreds of nodes rather than tens. The full decision, including the asymmetric
 reachability gap that peer-reachability reports would cover more cheaply and
 the triggers for reopening, is in
-[`docs/control-plane.md`](https://github.com/gabloe/felix/blob/main/docs/control-plane.md#why-liveness-stays-centralized-swim-considered).
+[`docs/control-plane.md`](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#why-liveness-stays-centralized-swim-considered).

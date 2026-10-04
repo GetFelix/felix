@@ -8,7 +8,7 @@ reporting it.
 ## Reporting a vulnerability
 
 **Report privately through
-[GitHub Security Advisories](https://github.com/gabloe/felix/security/advisories/new).**
+[GitHub Security Advisories](https://github.com/GetFelix/felix/security/advisories/new).**
 
 Do not open a public issue, pull request, or discussion for a suspected
 vulnerability, and please don't push a public fix branch before the advisory is
@@ -104,7 +104,7 @@ Anything that breaks a property Felix claims to enforce:
 ### Out of scope
 
 - **Anything on the "not built" list** in
-  [docs-site: Security](https://gabloe.github.io/felix/features/security/).
+  [docs-site: Security](https://getfelix.github.io/felix/features/security/).
   These are documented gaps: no encryption at rest (log
   segments are plaintext on disk), no end-to-end payload encryption, no peer
   authentication for a broker started with
@@ -206,6 +206,6 @@ Until the gaps above close, these are the deployment-side controls that matter m
 ## Non-security bugs
 
 Correctness bugs, crashes that need no hostile input, and feature requests go to
-the [issue tracker](https://github.com/gabloe/felix/issues) as normal. If you're
+the [issue tracker](https://github.com/GetFelix/felix/issues) as normal. If you're
 unsure which a finding is, report it privately. We'd rather triage it down than
 have it filed in public.

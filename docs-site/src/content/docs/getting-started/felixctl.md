@@ -26,7 +26,7 @@ A preview has to be named with `--version`, because cargo skips pre-releases
 otherwise.
 
 As a prebuilt binary from the
-[GitHub release](https://github.com/gabloe/felix/releases), for Linux
+[GitHub release](https://github.com/GetFelix/felix/releases), for Linux
 (x86_64, aarch64), macOS (Apple Silicon, Intel) and Windows (x86_64). Each
 archive is `felixctl-<tag>-<target>.tar.gz` (`.zip` on Windows) with a
 `.sha256` beside it, and holds shell completions in `completions/` and man
@@ -34,7 +34,7 @@ pages in `man/`:
 
 ```bash
 tag=v0.6.0-preview target=aarch64-apple-darwin
-base=https://github.com/gabloe/felix/releases/download/$tag
+base=https://github.com/GetFelix/felix/releases/download/$tag
 curl -fsSLO "$base/felixctl-$tag-$target.tar.gz"
 curl -fsSLO "$base/felixctl-$tag-$target.tar.gz.sha256"
 shasum -a 256 -c "felixctl-$tag-$target.tar.gz.sha256"
@@ -49,6 +49,8 @@ docker run --rm --user "$(id -u):$(id -g)" \
   -v "$HOME/.config/felixctl:/home/felix/.config/felixctl" \
   ghcr.io/gabloe/felixctl:0.6.0-preview stream ls
 ```
+
+0.6.0-preview and earlier releases are under `ghcr.io/gabloe`, the project's previous owner; later releases publish under `ghcr.io/getfelix`.
 
 A preview tag is never `latest`.
 
@@ -324,4 +326,4 @@ felixctl man --out-dir ~/.local/share/man/man1
 Control-plane writes (creating streams and caches, moving shards, draining and
 deregistering brokers, RBAC), consumer groups, counters and state reads are
 planned. Release binaries and packages are not published yet. See
-[issue #872](https://github.com/gabloe/felix/issues/872).
+[issue #872](https://github.com/GetFelix/felix/issues/872).

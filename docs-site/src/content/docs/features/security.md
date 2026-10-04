@@ -169,7 +169,7 @@ one winner and `409 already_initialized` for everyone else, and a failure
 part-way leaves the tenant retryable rather than half-initialized. The token
 itself is a static shared secret, valid while bootstrap is enabled. The full
 threat model, replay rules, rotation procedure, and recovery steps are in
-[`docs/security/bootstrap.md`](https://github.com/gabloe/felix/blob/main/docs/security/bootstrap.md).
+[`docs/security/bootstrap.md`](https://github.com/GetFelix/felix/blob/main/docs/security/bootstrap.md).
 
 #### Development tokens
 
@@ -446,5 +446,5 @@ sequenceDiagram
 ## Reporting a vulnerability
 
 Open a report through
-[GitHub Security Advisories](https://github.com/gabloe/felix/security/advisories)
+[GitHub Security Advisories](https://github.com/GetFelix/felix/security/advisories)
 rather than a public issue.

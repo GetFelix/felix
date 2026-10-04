@@ -41,7 +41,7 @@ Three things carry most of the design.
 
 **Ownership comes from the control plane, and only from there.** Every shard of every stream and cache has exactly one leader, chosen by rendezvous hashing over the live nodes, and its followers are spread across the zones brokers register (`FELIX_NODE_ZONE`) wherever a broker in a missing zone has room. Brokers watch the assignment feed (a snapshot, then a change stream) and never negotiate ownership among themselves. When a shard has to move, because its broker is draining or leads more than its share, the control plane stages the destination as a replica, fences the leader once the copy is level, and only then names the destination, so a shard is never served by a broker that has not seen its log (see [Adding, draining and removing brokers](/felix/deployment/scaling/)).
 
-**No consensus protocol runs between brokers.** Placement is deterministic over the rows it reads, and control-plane instances do not coordinate a shared snapshot: every assignment write is conditional on the generation and placement token it was planned from, so a write planned from stale reads is refused. Durability across a leader change comes from log shipping, leader leases, and the fence a promoted stream leader takes on a majority of its replicas before it serves. Per-shard Raft was considered and rejected, for reasons set out in [`docs/replication-design.md`](https://github.com/gabloe/felix/blob/main/docs/replication-design.md).
+**No consensus protocol runs between brokers.** Placement is deterministic over the rows it reads, and control-plane instances do not coordinate a shared snapshot: every assignment write is conditional on the generation and placement token it was planned from, so a write planned from stale reads is refused. Durability across a leader change comes from log shipping, leader leases, and the fence a promoted stream leader takes on a majority of its replicas before it serves. Per-shard Raft was considered and rejected, for reasons set out in [`docs/replication-design.md`](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md).
 
 That rejection is specific to *replicating records*. Making the control plane's own metadata highly available is a separate problem, and Raft is the answer there: the instances embed a Raft group and hold the metadata themselves, with no external database. See [Metadata Raft](/felix/architecture/metadata-raft/); Postgres remains fully supported for deployments that prefer it.
 
@@ -207,7 +207,7 @@ answered by a typed error rather than a silent restart at the tail. Unset,
 nothing deletes segments and a log grows without bound.
 
 Not yet implemented: **snapshots**, and **tiered storage**
-([#172](https://github.com/gabloe/felix/issues/172)). Compaction exists, but for
+([#172](https://github.com/GetFelix/felix/issues/172)). Compaction exists, but for
 the cache rather than for streams: a cache log reclaims superseded and expired
 records, and a stream log never rewrites a record at all.
 

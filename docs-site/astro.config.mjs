@@ -3,7 +3,7 @@ import starlight from '@astrojs/starlight';
 import mermaid from 'astro-mermaid';
 
 export default defineConfig({
-  site: 'https://gabloe.github.io',
+  site: 'https://getfelix.github.io',
   base: '/felix',
   integrations: [
     mermaid({ autoTheme: true, enableLog: false }),
@@ -42,11 +42,11 @@ export default defineConfig({
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/gabloe/felix',
+          href: 'https://github.com/GetFelix/felix',
         },
       ],
       editLink: {
-        baseUrl: 'https://github.com/gabloe/felix/edit/main/docs-site/',
+        baseUrl: 'https://github.com/GetFelix/felix/edit/main/docs-site/',
       },
       lastUpdated: true,
       sidebar: [

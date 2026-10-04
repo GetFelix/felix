@@ -12,9 +12,9 @@ version: 0.1.1
 # this; pin by digest in production.
 appVersion: "0.6.0-preview"
 kubeVersion: ">=1.25.0-0"
-home: https://gabloe.github.io/felix/
+home: https://getfelix.github.io/felix/
 sources:
-  - https://github.com/gabloe/felix
+  - https://github.com/GetFelix/felix
 keywords:
   - felix
   - streaming

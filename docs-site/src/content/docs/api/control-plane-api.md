@@ -287,7 +287,7 @@ shard may use reports a zone, the response also carries `zones_before` and
 `zones_after`: the zones the shard's live copies span now and are expected to
 span once the move cuts over, counting a broker without a zone as one of its
 own. A move that narrows the spread is started anyway and logged as a
-warning; see [Zones](https://github.com/gabloe/felix/blob/main/docs/control-plane.md#zones).
+warning; see [Zones](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#zones).
 
 A start is refused where placement would not make the move: 404
 `unknown_shard` or `unknown_node`, or 409 `destination_not_live`,

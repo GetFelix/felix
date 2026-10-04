@@ -77,8 +77,8 @@ version = "0.6.0-preview"
 # table; `task publish:check` fails CI if a crate drifts from it.
 license = "AGPL-3.0-only"
 rust-version = "1.97"
-repository = "https://github.com/gabloe/felix"
-homepage = "https://github.com/gabloe/felix"
+repository = "https://github.com/GetFelix/felix"
+homepage = "https://github.com/GetFelix/felix"
 readme = "README.md"
 
 [workspace.lints.rust]

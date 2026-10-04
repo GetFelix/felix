@@ -38,11 +38,11 @@ classifiers = [
 dynamic = ["version"]
 
 [project.urls]
-Homepage = "https://gabloe.github.io/felix/"
-Documentation = "https://gabloe.github.io/felix/clients/python/"
-Repository = "https://github.com/gabloe/felix"
-Issues = "https://github.com/gabloe/felix/issues"
-Changelog = "https://github.com/gabloe/felix/blob/main/CHANGELOG.md"
+Homepage = "https://getfelix.github.io/felix/"
+Documentation = "https://getfelix.github.io/felix/clients/python/"
+Repository = "https://github.com/GetFelix/felix"
+Issues = "https://github.com/GetFelix/felix/issues"
+Changelog = "https://github.com/GetFelix/felix/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 test = ["pytest>=8"]

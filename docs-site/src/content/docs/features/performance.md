@@ -640,7 +640,7 @@ QUIC benefits from:
   group commit amortises across concurrent publishers; under `periodic` the
   flush is off the append path entirely. Measured figures and a regression
   budget are in
-  [storage-performance.md](https://github.com/gabloe/felix/blob/main/docs/storage-performance.md).
+  [storage-performance.md](https://github.com/GetFelix/felix/blob/main/docs/storage-performance.md).
 
 ## Summary
 

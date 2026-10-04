@@ -1,20 +1,20 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/gabloe/felix/main/docs/assets/logo.PNG" alt="Felix logo" width="360" />
+  <img src="https://raw.githubusercontent.com/GetFelix/felix/main/docs/assets/logo.PNG" alt="Felix logo" width="360" />
 </p>
 <p align="center">
-  <a href="https://github.com/gabloe/felix/actions/workflows/ci.yml">
-    <img src="https://github.com/gabloe/felix/actions/workflows/ci.yml/badge.svg?branch=main&event=push" alt="CI status" />
+  <a href="https://github.com/GetFelix/felix/actions/workflows/ci.yml">
+    <img src="https://github.com/GetFelix/felix/actions/workflows/ci.yml/badge.svg?branch=main&event=push" alt="CI status" />
   </a>
-  <a href="https://github.com/gabloe/felix/actions/workflows/coverage.yml">
-    <img src="https://raw.githubusercontent.com/gabloe/felix/badges/coverage.svg" alt="Coverage" />
+  <a href="https://github.com/GetFelix/felix/actions/workflows/coverage.yml">
+    <img src="https://raw.githubusercontent.com/GetFelix/felix/badges/coverage.svg" alt="Coverage" />
   </a>
-  <a href="https://github.com/gabloe/felix/blob/main/LICENSING.md">
+  <a href="https://github.com/GetFelix/felix/blob/main/LICENSING.md">
     <img src="https://img.shields.io/badge/license-AGPL--3.0%20%2B%20Apache--2.0-blue.svg" alt="License: AGPL-3.0 + Apache-2.0 (split, see LICENSING.md)" />
   </a>
   <a href="https://www.rust-lang.org/">
     <img src="https://img.shields.io/badge/rust-1.97.1-blue" alt="Rust 1.97.1" />
   </a>
-  <a href="https://gabloe.github.io/felix">
+  <a href="https://getfelix.github.io/felix">
     <img src="https://img.shields.io/badge/Documentation-8A2BE2" alt="Documentation" />
   </a>
 </p>
@@ -66,10 +66,10 @@ ingest, and an opt-in thread-per-core mode (`core_shards`) for stream
 ownership. Measured without loss and with TLS 1.3 always on, it reaches sub-millisecond
 p999 latency at low fanout, millions of deliveries/sec for small payloads,
 and multi-hundred-MB/s sustained for KB-sized payloads at fanout 10. See
-[Benchmarks](https://gabloe.github.io/felix/features/benchmarks/) for
+[Benchmarks](https://getfelix.github.io/felix/features/benchmarks/) for
 current numbers and methodology, and
-[Environment Variables](https://gabloe.github.io/felix/reference/environment-variables/) /
-[Configuration](https://gabloe.github.io/felix/reference/configuration/) for
+[Environment Variables](https://getfelix.github.io/felix/reference/environment-variables/) /
+[Configuration](https://getfelix.github.io/felix/reference/configuration/) for
 the full set of tuning knobs (transport, queue depths/policies, batching,
 admission control, core sharding).
 
@@ -105,7 +105,7 @@ the test behind every claim, [`docs/projections.md`](docs/projections.md).
 
 ## Docs
 
-The documentation site at https://gabloe.github.io/felix covers the architecture,
+The documentation site at https://getfelix.github.io/felix covers the architecture,
 wire protocol, configuration and environment-variable reference, and benchmarks.
 For contributors it also walks through the internals of the publish path, the
 subscribe/fanout path and the backpressure/concurrency model function by function.
@@ -157,7 +157,7 @@ early to keep p99/p999 predictable.
   consumers that assign their own partitions work against durable streams.
   Consumer groups and transactions are refused with an error that says why, so
   Connect, Streams and ksqlDB do not work. See
-  [Kafka compatibility](https://gabloe.github.io/felix/features/kafka/)
+  [Kafka compatibility](https://getfelix.github.io/felix/features/kafka/)
 - Mutually authenticated broker-to-broker QUIC, with each certificate's name
   checked against the node id in both directions
   (`FELIX_INTERNAL_TLS_CERT` / `_KEY` / `_CA`). A cluster member refuses to
@@ -179,7 +179,7 @@ early to keep p99/p999 predictable.
   crates.io, PyPI and npm). The next language has to pass the conformance
   catalogue first
 
-The [status table](https://gabloe.github.io/felix/getting-started/what-felix-is-for/)
+The [status table](https://getfelix.github.io/felix/getting-started/what-felix-is-for/)
 is kept current per capability. Trust it when another page disagrees.
 
 ---

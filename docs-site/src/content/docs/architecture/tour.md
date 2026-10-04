@@ -224,7 +224,7 @@ If you find yourself reordering one of these, it is almost certainly a bug.
 | `felix-replication` | Shipping a shard's log from leader to followers, the peer transport, and when a `Quorum` write is on a majority |
 | `services/felix-broker-service` | The broker binary: QUIC handlers, routing, wiring replication into the node |
 | `services/felix-controlplane-service` | Metadata, placement, and the REST API |
-| `felix-cluster` | A local multi-broker cluster, for integration and failure tests. It injects process, link, clock and fsync faults ([the fault API](https://github.com/gabloe/felix/blob/main/docs/cluster-harness.md#the-fault-api)) and checks histories under them ([the history checker](https://github.com/gabloe/felix/blob/main/docs/history-checker.md)) |
+| `felix-cluster` | A local multi-broker cluster, for integration and failure tests. It injects process, link, clock and fsync faults ([the fault API](https://github.com/GetFelix/felix/blob/main/docs/cluster-harness.md#the-fault-api)) and checks histories under them ([the history checker](https://github.com/GetFelix/felix/blob/main/docs/history-checker.md)) |
 
 ## Before you change something
 

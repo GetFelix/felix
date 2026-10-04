@@ -126,7 +126,7 @@ interleaving, so a failing seed makes the failure likely to recur, not certain.
 Run it a few times.
 
 Detail, including how to read a violation and how to add a fault:
-[`docs/history-checker.md`](https://github.com/gabloe/felix/blob/main/docs/history-checker.md).
+[`docs/history-checker.md`](https://github.com/GetFelix/felix/blob/main/docs/history-checker.md).
 
 ## The cluster harness
 
@@ -190,7 +190,7 @@ The same crate holds a conformance suite that runs one set of assertions
 against a single broker and a three-node cluster: a client must not be able to
 tell how many brokers there are or which one it reached.
 
-Detail: [`docs/cluster-harness.md`](https://github.com/gabloe/felix/blob/main/docs/cluster-harness.md).
+Detail: [`docs/cluster-harness.md`](https://github.com/GetFelix/felix/blob/main/docs/cluster-harness.md).
 
 ## TLA+ models
 
@@ -227,7 +227,7 @@ description saying why not. `task tla:pairing` runs that check locally, and
 every test the spec cites still exists.
 
 Detail, with every configuration and its state count:
-[`docs/formal/README.md`](https://github.com/gabloe/felix/blob/main/docs/formal/README.md).
+[`docs/formal/README.md`](https://github.com/GetFelix/felix/blob/main/docs/formal/README.md).
 
 ## Elsewhere
 
@@ -240,4 +240,4 @@ The storage power-loss suite rebuilds the directory a reboot could find after
 each flush and checks that recovery keeps every acknowledged record. Pull
 requests run eight workload seeds per scenario plus pinned ones that once caught
 a bug the eight missed; `power-loss-nightly.yml` runs 110 per scenario from a
-random base. See [Durable storage](https://github.com/gabloe/felix/blob/main/docs/durable-storage.md).
+random base. See [Durable storage](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md).

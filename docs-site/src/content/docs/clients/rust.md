@@ -387,7 +387,7 @@ can write it twice; `Retry`, `RetryAfter` and `Redirect` mean nothing was
 applied. A broker that predates error codes returns the same failures as plain
 errors with the same text, so treat a missing `BrokerError` as "no code", not as
 success. The codes and their classes are listed under
-[Error codes](https://github.com/gabloe/felix/blob/main/docs/protocol.md#error-codes).
+[Error codes](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#error-codes).
 
 `ClusterClient` already acts on the class before an error reaches you:
 
@@ -407,7 +407,7 @@ success. The codes and their classes are listed under
 
 A broker without error codes gets the old handling: only a credential failure
 is final, and everything else is retried. The full table is under "Retries" in
-[the multi-node client guide](https://github.com/gabloe/felix/blob/main/docs/multi-node-client.md#retries).
+[the multi-node client guide](https://github.com/GetFelix/felix/blob/main/docs/multi-node-client.md#retries).
 
 `SubscribeCursorError` carries more than the other clients get:
 
@@ -694,7 +694,7 @@ if let Some(moved) = subscription.shard_moved() {
 }
 ```
 
-See [Multi-node client](https://github.com/gabloe/felix/blob/main/docs/multi-node-client.md#when-a-shard-moves).
+See [Multi-node client](https://github.com/GetFelix/felix/blob/main/docs/multi-node-client.md#when-a-shard-moves).
 
 ### When a subscription falls behind
 
@@ -1105,7 +1105,7 @@ assert!(matches!(
 `CommitError::EventCount` refuses a commit without exactly one event, and
 `CommitError::Unsupported` a broker that did not advertise
 `FEATURE_ATOMIC_COMMIT`. What atomic does and does not cover is in
-[`docs/atomic-commit.md`](https://github.com/gabloe/felix/blob/main/docs/atomic-commit.md).
+[`docs/atomic-commit.md`](https://github.com/GetFelix/felix/blob/main/docs/atomic-commit.md).
 
 ## Clusters
 
@@ -1158,7 +1158,7 @@ backoff; the call fails only if some shard is still refused after the last attem
 **Ordering is per shard only.** Merging cannot restore an order that never
 existed. Resumption is a vector: `positions()` returns one offset per
 shard, and `resubscribe_sharded` takes it back. See
-[Multi-node client](https://github.com/gabloe/felix/blob/main/docs/multi-node-client.md)
+[Multi-node client](https://github.com/GetFelix/felix/blob/main/docs/multi-node-client.md)
 for the full contract.
 
 `Client::shard_owners(tenant, namespace, name, ShardKind::Stream)` (or

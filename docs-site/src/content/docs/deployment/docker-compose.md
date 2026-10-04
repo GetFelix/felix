@@ -12,6 +12,8 @@ docker pull ghcr.io/gabloe/felix-broker:0.6.0-preview
 docker pull ghcr.io/gabloe/felix-controlplane:0.6.0-preview
 ```
 
+0.6.0-preview and earlier releases are under `ghcr.io/gabloe`, the project's previous owner; later releases publish under `ghcr.io/getfelix`.
+
 Each release publishes the full version (`0.6.0-preview`). A release without a
 pre-release suffix also publishes its minor series (`0.6`) and `latest`. Use a
 full version tag in anything you deploy, because the other two move. A client
@@ -79,6 +81,7 @@ services:
       retries: 5
 
   felix-controlplane:
+    # 0.6.0-preview is published under gabloe; later releases are under getfelix.
     image: ghcr.io/gabloe/felix-controlplane:0.6.0-preview
     environment:
       - FELIX_CONTROLPLANE_POSTGRES_URL=postgres://felix:felix@postgres:5432/felix
@@ -96,6 +99,7 @@ services:
         condition: service_healthy
 
   felix-broker:
+    # 0.6.0-preview is published under gabloe; later releases are under getfelix.
     image: ghcr.io/gabloe/felix-broker:0.6.0-preview
     environment:
       - FELIX_CONTROLPLANE_URL=http://felix-controlplane:8443

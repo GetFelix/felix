@@ -76,7 +76,7 @@ The JSON `publish` and `publish_batch` messages below are the compatibility
 path. Current clients publish with binary frames and fall back to JSON only
 against a broker that did not advertise the frame they need. The binary forms
 also carry a routing key, a request id for acks, and an idempotent producer's
-sequence. See [Binary PublishBatch](https://github.com/gabloe/felix/blob/main/docs/protocol.md#binary-publishbatch)
+sequence. See [Binary PublishBatch](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#binary-publishbatch)
 and the keyed, acked and idempotent variants after it in `docs/protocol.md`.
 
 ### Single Message Publish
@@ -357,7 +357,7 @@ negotiated, each batch starts with a `base_offset`, and event `i` sits at
 events. With `FLAG_EVENT_BATCH_SKIPPED` as well, a batch also carries
 `skipped_before`, the count of offsets before it that hold no event, so a gap
 can be told apart from a record that was never an event. See
-[Event batch offsets](https://github.com/gabloe/felix/blob/main/docs/protocol.md#event-batch-offsets).
+[Event batch offsets](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#event-batch-offsets).
 
 **Event stream lifecycle**:
 
@@ -851,7 +851,7 @@ subscription per shard, and follows each shard's own redirect.
 ## Other Messages
 
 The control stream carries more than this page walks through. Each is
-specified in [`docs/protocol.md`](https://github.com/gabloe/felix/blob/main/docs/protocol.md):
+specified in [`docs/protocol.md`](https://github.com/GetFelix/felix/blob/main/docs/protocol.md):
 
 | Message | What it does |
 | --- | --- |

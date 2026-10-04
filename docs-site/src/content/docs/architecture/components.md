@@ -456,7 +456,7 @@ that lost records or was rebuilt names the offset it wants and the leader
 resumes there. For a `Quorum` stream it also decides when a write is on a
 majority. It does not depend on the broker service: the service passes in its
 serving state, write fence and node credential through small traits. The design is in
-[`docs/replication-design.md`](https://github.com/gabloe/felix/blob/main/docs/replication-design.md).
+[`docs/replication-design.md`](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md).
 
 ## Control Plane: Metadata Management
 

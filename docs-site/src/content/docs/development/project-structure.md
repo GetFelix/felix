@@ -4,7 +4,7 @@ description: "Where things live in the Felix repository, and the rules that shap
 ---
 
 The workspace members are listed in the root
-[Cargo.toml](https://github.com/gabloe/felix/blob/main/Cargo.toml), which is
+[Cargo.toml](https://github.com/GetFelix/felix/blob/main/Cargo.toml), which is
 the authority when this page and the tree disagree. Each group directory under
 `crates/` and `services/` has a README saying what it holds.
 
@@ -51,7 +51,7 @@ published to crates.io.
 
 - `felix-wire`: the frame codec. The frame header and flags, the `Message`
   enum, the binary batch formats and the broker-to-broker messages. No I/O.
-  [docs/protocol.md](https://github.com/gabloe/felix/blob/main/docs/protocol.md)
+  [docs/protocol.md](https://github.com/GetFelix/felix/blob/main/docs/protocol.md)
   is its specification.
 - `felix-transport`: the QUIC layer. Endpoints, connection and stream lifetime,
   and transport tuning shared by client and broker.
@@ -113,9 +113,9 @@ A segment store, not a WAL. The crate docs in `src/lib.rs` are the map:
 - `commit_order.rs`: the `CommitSequencer` that orders publishes per log.
 - `fault.rs`: the test-only fsync fault seam.
 
-[docs/durable-storage.md](https://github.com/gabloe/felix/blob/main/docs/durable-storage.md)
+[docs/durable-storage.md](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md)
 and
-[docs/storage-format.md](https://github.com/gabloe/felix/blob/main/docs/storage-format.md)
+[docs/storage-format.md](https://github.com/GetFelix/felix/blob/main/docs/storage-format.md)
 describe the design.
 
 ## Services
@@ -159,14 +159,14 @@ Run `task demo:check` after changing a public API they might use.
   says what each runs.
 
 Licences differ by path.
-[LICENSING.md](https://github.com/gabloe/felix/blob/main/LICENSING.md) has the
-table, and [deny.toml](https://github.com/gabloe/felix/blob/main/deny.toml)
+[LICENSING.md](https://github.com/GetFelix/felix/blob/main/LICENSING.md) has the
+table, and [deny.toml](https://github.com/GetFelix/felix/blob/main/deny.toml)
 lists the dependency licences allowed.
 
 ## Layout rules
 
 These come from
-[CONTRIBUTING.md](https://github.com/gabloe/felix/blob/main/CONTRIBUTING.md);
+[CONTRIBUTING.md](https://github.com/GetFelix/felix/blob/main/CONTRIBUTING.md);
 [Contributing](/felix/development/contributing/) summarises them.
 
 - A module `foo` is `foo.rs` with its children in `foo/`. There is no `mod.rs`,

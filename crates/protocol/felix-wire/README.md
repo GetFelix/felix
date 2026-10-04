@@ -1,6 +1,6 @@
 # felix-wire
 
-The [Felix](https://github.com/gabloe/felix) wire protocol: frame layout, codec,
+The [Felix](https://github.com/GetFelix/felix) wire protocol: frame layout, codec,
 and the test vectors both ends are checked against.
 
 Useful on its own if you are writing a Felix client in Rust, or reading frames
@@ -21,6 +21,6 @@ peer exchange byte-identical frames.
 
 ## Documentation
 
-- [Wire protocol reference](https://gabloe.github.io/felix/architecture/wire-protocol/)
+- [Wire protocol reference](https://getfelix.github.io/felix/architecture/wire-protocol/)
 
 Apache-2.0.

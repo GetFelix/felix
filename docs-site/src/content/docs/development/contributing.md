@@ -4,7 +4,7 @@ description: "Licensing, sign-off, and the rules a pull request to Felix is revi
 ---
 
 This page summarises
-[CONTRIBUTING.md](https://github.com/gabloe/felix/blob/main/CONTRIBUTING.md),
+[CONTRIBUTING.md](https://github.com/GetFelix/felix/blob/main/CONTRIBUTING.md),
 which is the canonical text. Read it before your first pull request.
 
 ## Licensing
@@ -12,7 +12,7 @@ which is the canonical text. Read it before your first pull request.
 Felix is split-licensed. The wire protocol, transport, client SDKs and
 `felix-common` are Apache-2.0. The broker, the server libraries, the control
 plane and the test tooling are AGPL-3.0-only.
-[LICENSING.md](https://github.com/gabloe/felix/blob/main/LICENSING.md) has the
+[LICENSING.md](https://github.com/GetFelix/felix/blob/main/LICENSING.md) has the
 table of which path is under which licence. `task publish:check` fails CI if a
 crate's manifest drifts from that table, or if an Apache-2.0 crate depends on
 an AGPL one. Know which side your change lands on before you start.
@@ -30,7 +30,7 @@ Every contribution needs both:
 
 2. **A CLA grant, once.** On your first pull request the CLA Assistant bot
    (`.github/workflows/cla.yml`) asks you to reply with a fixed phrase. The
-   text is in [CLA.md](https://github.com/gabloe/felix/blob/main/CLA.md). You
+   text is in [CLA.md](https://github.com/GetFelix/felix/blob/main/CLA.md). You
    keep your copyright.
 
 ## AI-assisted changes

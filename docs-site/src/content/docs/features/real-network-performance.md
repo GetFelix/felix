@@ -589,9 +589,9 @@ One warning before you change settings: `FELIX_IO_RUNTIME_THREADS=2` measured
 drivers helps on macOS and hurts on Linux, which is why Linux defaults it off.
 
 Method, the hypotheses that were tested and discarded, and the flamegraph are
-in [`docs/perf-investigation-sharding-ceiling.md`](https://github.com/gabloe/felix/blob/main/docs/perf-investigation-sharding-ceiling.md).
+in [`docs/perf-investigation-sharding-ceiling.md`](https://github.com/GetFelix/felix/blob/main/docs/perf-investigation-sharding-ceiling.md).
 The raw session output is under
-[`scripts/perf/azure/sessions/`](https://github.com/gabloe/felix/tree/main/scripts/perf/azure/sessions).
+[`scripts/perf/azure/sessions/`](https://github.com/GetFelix/felix/tree/main/scripts/perf/azure/sessions).
 
 ## What we found and fixed
 

@@ -1,7 +1,7 @@
 # Self-hosted CI runners in Azure
 
 Four persistent Ubuntu 24.04 VMs (`Standard_D8as_v5`, 8 vCPU, 256 GB Premium SSD)
-registered to `gabloe/felix` with the label `felix-azure`:
+registered to `GetFelix/felix` with the label `felix-azure`:
 
 | VMs | Resource group | Region |
 |---|---|---|
@@ -46,7 +46,7 @@ eastus2: runners there would leave the perf cells no room.
   can reach port 22.
 - **No standing credentials on the VMs.** No managed identity and no PAT.
   `register` fetches a one-hour registration token per VM with
-  `gh api -X POST repos/gabloe/felix/actions/runners/registration-token` and
+  `gh api -X POST repos/GetFelix/felix/actions/runners/registration-token` and
   hands it over run-command. The runner then holds only its own runner
   credential.
 - **No pull requests.** The repo is public, and a persistent runner that ran

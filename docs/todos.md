@@ -7,9 +7,9 @@ storage layer.
 
 It is **not** the place to look for current status. Two places are:
 
-- The [status table](https://gabloe.github.io/felix/getting-started/what-felix-is-for/),
+- The [status table](https://getfelix.github.io/felix/getting-started/what-felix-is-for/),
   kept current per capability, and the authority when anything disagrees with it.
-- [GitHub issues and milestones](https://github.com/gabloe/felix/issues) for what
+- [GitHub issues and milestones](https://github.com/GetFelix/felix/issues) for what
   is being worked on.
 
 ## What the MVP Achieved
@@ -82,7 +82,7 @@ cache, and consumer groups all landed afterwards.
 - [X] Cache `put/get` available over QUIC
 - [X] Latency target: p999 <= 1 ms for small payloads on localhost baseline,
       met with margin: 214–251 µs at fanout 1 and 340–483 µs at fanout 10. See
-      [Benchmarks](https://gabloe.github.io/felix/features/benchmarks/).
+      [Benchmarks](https://getfelix.github.io/felix/features/benchmarks/).
 - [X] Basic metrics exist and show throughput/latency
 - [X] Unit tests cover wire encode/decode and broker fanout behavior
 
@@ -119,10 +119,10 @@ cache, and consumer groups all landed afterwards.
       advances, and offsets below it report `Trimmed` / `CursorTooOld`. Off by
       default. See [Durable Storage](durable-storage.md#retention).
 - [ ] Define requirements for tiered storage (hot/cold path, LCU?), tracked as
-      [#172](https://github.com/gabloe/felix/issues/172)
+      [#172](https://github.com/GetFelix/felix/issues/172)
 - [ ] Implement tiered storage primitives. `TieredStore` and friends are declared
       in `crates/server/felix-storage/src/tiered.rs` and nothing implements them; see
-      [#172](https://github.com/gabloe/felix/issues/172) for what M1's sealed
+      [#172](https://github.com/GetFelix/felix/issues/172) for what M1's sealed
       segments already set up for it.
 
 ### Durable storage sketch

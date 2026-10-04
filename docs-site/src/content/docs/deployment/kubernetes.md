@@ -4,7 +4,7 @@ description: "Install the control plane and a broker cluster with the Helm chart
 ---
 
 Felix ships a Helm chart, at
-[`deploy/helm/felix`](https://github.com/gabloe/felix/tree/main/deploy/helm/felix),
+[`deploy/helm/felix`](https://github.com/GetFelix/felix/tree/main/deploy/helm/felix),
 that renders the control plane and a broker cluster with the shape the design
 assumes: StatefulSets for stable broker identity, a volume per broker, the
 probes and drain behaviour the binaries already ship, and the budgets and
@@ -13,9 +13,11 @@ Every environment variable it wires is real and in the
 [environment reference](/felix/reference/environment-variables/). The chart
 invents none.
 
-The chart names `ghcr.io/gabloe/felix-broker` and
-`ghcr.io/gabloe/felix-controlplane`, which releases publish and which pull
-without credentials. The image tag defaults to the chart's `appVersion`.
+The chart names `ghcr.io/getfelix/felix-broker` and
+`ghcr.io/getfelix/felix-controlplane`, which releases publish and which pull
+without credentials. 0.6.0-preview and earlier releases are under
+`ghcr.io/gabloe`, the project's previous owner, and so are their charts' image
+names and signatures. The image tag defaults to the chart's `appVersion`.
 
 On `main` that is the next version, which is published only once it is
 released, so a default install from `main` can ask for an image that does not
@@ -369,7 +371,7 @@ helm upgrade felix deploy/helm/felix -n felix --reuse-values \
 
 Renewals are picked up from disk without a restart. Whichever mode, the
 internal port is never on a routable Service, and the NetworkPolicy admits it
-from broker pods only. [`docs/threat-model-internal.md`](https://github.com/gabloe/felix/blob/main/docs/threat-model-internal.md)
+from broker pods only. [`docs/threat-model-internal.md`](https://github.com/GetFelix/felix/blob/main/docs/threat-model-internal.md)
 sets out what is and is not defended in each mode.
 
 ## Operations

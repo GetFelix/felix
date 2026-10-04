@@ -23,7 +23,7 @@ With Postgres, high availability has these parts:
   carry on but nothing new is placed on the timer. Every placement write is
   also fenced by a token in the same row, so the move limits hold across
   instances even while two of them think they are placing
-  ([control-plane.md](https://github.com/gabloe/felix/blob/main/docs/control-plane.md)).
+  ([control-plane.md](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md)).
   `felix_placement_lease_held` summed across instances is 1.
 - **The database.** Postgres availability is an operational input Felix
   consumes, not something Felix implements. If Postgres is down, every
@@ -164,6 +164,6 @@ start.
 | Schema migrations and cross-version readiness | Felix |
 
 The full contract is in
-[`docs/ha-postgres.md`](https://github.com/gabloe/felix/blob/main/docs/ha-postgres.md).
+[`docs/ha-postgres.md`](https://github.com/GetFelix/felix/blob/main/docs/ha-postgres.md).
 If operating a Postgres is the part you would rather not,
 [Metadata Raft](/felix/architecture/metadata-raft/) is the alternative.
