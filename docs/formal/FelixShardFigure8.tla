@@ -53,6 +53,7 @@ SeededInit ==
     /\ joining = {}
     /\ leaving = {}
     /\ joinedAt = 0
+    /\ CounterInit
 \* The same history one leadership further, with no start records in it: the
 \* fleet finalized `generation_start` only after c's promotion. c was
 \* promoted at 3, fenced a and took x, acknowledged nothing, and is now
@@ -97,6 +98,7 @@ SeededCutOverInit ==
     /\ joining = {}
     /\ leaving = {}
     /\ joinedAt = 0
+    /\ CounterInit
 \* The code moves no mark while it fences: nothing ships until it opens.
 NoAckWhileFencing == \A m \in Brokers : fencing[m] => hwm'[m] = hwm[m]
 SeededSpec == SeededInit /\ [][Next /\ NoAckWhileFencing]_vars
