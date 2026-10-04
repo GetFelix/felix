@@ -157,8 +157,8 @@ happen without anyone stepping them.
 
 `FELIX_HISTORY_MODE` picks which replication path the brokers take.
 `Campaign::start` starts the cluster and, in `lease-free` mode, finalizes the
-`generation_start`, `majority_ack` and `lease_free_reads` fleet features, then
-waits until every broker reports all three on
+`generation_start`, `majority_ack`, `lease_free_reads` and `fenced_caches`
+fleet features, then waits until every broker reports all four on
 (`felix_broker_fleet_feature_enabled`). A broker that does not turn them on
 fails the run before any fault, so a lease-free run cannot quietly test the
 lease. The features are described in
@@ -169,7 +169,7 @@ the clients commit.
 | Mode | Stream writes are acknowledged | Cache reads confirm leadership |
 | --- | --- | --- |
 | `lease` | Once the control plane stored a majority report, with the lease re-checked | With the lease |
-| `lease-free` | Once a majority answers at the leader's generation | With a majority round after taking the value |
+| `lease-free` | Once a majority answers at the leader's generation, cache puts too | With a majority round after taking the value |
 
 Unset, the main campaign runs `lease-free` and the every-family campaign runs
 `lease`, so every PR exercises both paths. Set, it applies to both.
@@ -445,6 +445,10 @@ faults a failing run printed, implement `Nemesis`.
 > 60-second lease-free campaign that alternates the two leaves a valid
 > history, and injects and heals at least one `ControlPlaneCrash` and, on
 > Linux, one `PowerLoss`.
+> `quorum_cache_writes_survive_a_promotion_in_a_campaign`: a 60-second
+> lease-free campaign that pauses, kills or partitions whichever broker leads
+> the cache, in turn, leaves a valid history, and the cache changes leader at
+> least once, so its puts are written across a fenced promotion.
 > `a_power_loss_needs_on_commit_flushes_and_the_model` and
 > `a_control_plane_crash_interrupts_a_move_a_drain_or_a_failover`: a power
 > loss runs only with on-commit flushes, and a control plane crash lands

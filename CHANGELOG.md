@@ -25,6 +25,23 @@ for what the current release guarantees.
   `FELIX_RECORD_PUBLISHERS=true` on a single broker. Either is one-way for the
   data directory, since an older broker cannot open a v6 segment.
 
+- Cache shards are fenced on promotion like stream shards. A promoted cache
+  leader fences a majority of the replica set on the cache log, then on the
+  counter log, takes the furthest ahead of each by (last generation, length),
+  and writes a generation-start record on each before it serves; with
+  `generation_start` finalized, the cache and counter marks count only past
+  their own log's record. A new internal capability, `CACHE_FENCE` (`1 << 4`),
+  says a peer answers `Fence` and `ReplicateFetch` for the counter log and
+  reads labelled cache and counter batches; a cache shard is fenced only when
+  every replica offers it, and opens on the lease otherwise. A failover of a
+  `Quorum` cache keeps its replica set, the dead leader in it, as a `Quorum`
+  stream's does. The new `fenced_caches` fleet feature, finalized with
+  `majority_ack` and `generation_start`, has replicated `Quorum` caches
+  acknowledge puts, deletes and counter adds on their followers' answers
+  without the report or the lease, and never open a promoted cache shard on
+  the lease. Upgrade the control plane before finalizing it. Model-checked in
+  `FelixShardFencedCache.cfg`. (#933)
+
 ### Changed
 - Breaking, Rust API: `Broker::claim_publish`, `publish_batch_with_outcome`,
   `claim_batch_idempotent` and `commit_to_handle` take the publisher;
@@ -32,6 +49,12 @@ for what the current release guarantees.
   `LogRecord` have a `publisher` field; `StreamLog`'s append methods and
   `replication::apply` take per-record publishers; `ReplicateRecords` has
   `publishers` and `batch_checksum` covers them.
+
+### Fixed
+- A cache follower that dropped a divergent suffix of its cache log, or of its
+  counter log, kept the in-memory index or counter sums built from the dropped
+  records, so after a promotion a key could read the value of whatever record
+  replaced its offset. Both are now rebuilt from the log as it is. (#933)
 
 ## [0.6.0-preview.2] - 2026-10-04
 
