@@ -86,6 +86,13 @@ impl Subscription {
         drained
     }
 
+    /// Forget queue drops below `offset`: the caller filled them from the
+    /// log, so they no longer end the subscription (see
+    /// [`SubscriptionReceiver::end_on_lag`]).
+    pub fn covered_below(&self, offset: u64) {
+        self.receiver.lag.covered_below(offset);
+    }
+
     /// Split into the batch receiver and the guard that keeps the
     /// subscriber registered.
     ///
@@ -129,6 +136,9 @@ impl Subscription {
 pub struct SubscriptionReceiver {
     pub(crate) receiver: mpsc::Receiver<QueuedDelivery>,
     moved: Arc<OnceLock<ShardMoved>>,
+    lag: Arc<Lag>,
+    /// Set by [`Self::end_on_lag`].
+    end_on_lag: bool,
     /// [`Subscription::skip_below`], carried over by
     /// [`Subscription::into_parts`]. `None` while the receiver is still inside
     /// a `Subscription`, which filters per record instead.
@@ -139,12 +149,36 @@ impl SubscriptionReceiver {
     pub(crate) fn new(
         receiver: mpsc::Receiver<QueuedDelivery>,
         moved: Arc<OnceLock<ShardMoved>>,
+        lag: Arc<Lag>,
     ) -> Self {
         Self {
             receiver,
             moved,
+            lag,
+            end_on_lag: false,
             skip_below: None,
         }
+    }
+
+    /// Where to resume once this subscriber's queue has dropped a batch of a
+    /// durable stream: the first dropped offset not covered by
+    /// [`Subscription::covered_below`]. Every batch queued before that drop
+    /// is below it.
+    pub fn lagged(&self) -> Option<u64> {
+        self.lag.first_dropped()
+    }
+
+    /// End the subscription at its first queue drop: [`Self::recv`] yields
+    /// the batches queued before it and then `None`, even while nothing more
+    /// is published, and [`Self::lagged`] says where to resume. Nothing at or
+    /// above that offset is yielded.
+    pub fn end_on_lag(&mut self) {
+        self.end_on_lag = true;
+    }
+
+    /// Where to resume, when [`Self::end_on_lag`] ended the subscription.
+    pub fn lag_ended(&self) -> Option<u64> {
+        self.end_on_lag.then(|| self.lagged()).flatten()
     }
 
     /// Why the subscription ended, when it ended because its shard moved.
@@ -161,7 +195,11 @@ impl SubscriptionReceiver {
     /// skipped rather than reported as the end.
     pub async fn recv(&mut self) -> Option<DeliveryEnvelope> {
         loop {
-            let envelope = self.receiver.recv().await?.into_envelope();
+            let envelope = if self.end_on_lag {
+                self.recv_before_lag().await?
+            } else {
+                self.receiver.recv().await?.into_envelope()
+            };
             if let Some(envelope) = self.admit(envelope) {
                 return Some(envelope);
             }
@@ -172,10 +210,51 @@ impl SubscriptionReceiver {
     pub fn try_recv(&mut self) -> std::result::Result<DeliveryEnvelope, mpsc::error::TryRecvError> {
         loop {
             let envelope = self.receiver.try_recv()?.into_envelope();
+            if self.past_lag(&envelope) {
+                return Err(mpsc::error::TryRecvError::Disconnected);
+            }
             if let Some(envelope) = self.admit(envelope) {
                 return Ok(envelope);
             }
         }
+    }
+
+    /// Like `recv`, but `None` once the queue has dropped a batch and what
+    /// was queued before the drop is gone. Waking on the drop is what lets a
+    /// subscription end when nothing is published after it.
+    async fn recv_before_lag(&mut self) -> Option<DeliveryEnvelope> {
+        loop {
+            let lag = Arc::clone(&self.lag);
+            let dropped = lag.notify.notified();
+            tokio::pin!(dropped);
+            // Registered before the check, so a drop in between still wakes.
+            dropped.as_mut().enable();
+            let envelope = if lag.first_dropped().is_some() {
+                self.receiver.try_recv().ok()?.into_envelope()
+            } else {
+                tokio::select! {
+                    biased;
+                    queued = self.receiver.recv() => queued?.into_envelope(),
+                    () = &mut dropped => continue,
+                }
+            };
+            return (!self.past_lag(&envelope)).then_some(envelope);
+        }
+    }
+
+    /// Whether `envelope` is at or past the first drop, when the
+    /// subscription ends there. The queue may have had room again for later
+    /// batches; delivering them would leave a hole below them.
+    fn past_lag(&mut self, envelope: &DeliveryEnvelope) -> bool {
+        let past = self.end_on_lag
+            && self
+                .lag
+                .first_dropped()
+                .is_some_and(|first| envelope.base_offset().is_none_or(|base| base >= first));
+        if past {
+            self.receiver.close();
+        }
+        past
     }
 
     /// Drop what lies below the resume point: the whole batch, or the prefix
@@ -225,3 +304,57 @@ impl Drop for SubscriptionGuard {
 
 #[cfg(test)]
 mod tests;
+
+/// Where a subscriber's queue dropped batches, as far as resuming needs.
+#[derive(Debug, Default)]
+pub(crate) struct Lag {
+    drops: std::sync::Mutex<Drops>,
+    notify: tokio::sync::Notify,
+}
+
+#[derive(Debug, Default)]
+struct Drops {
+    /// Drops below this were filled in some other way.
+    floor: u64,
+    first: Option<u64>,
+    latest: Option<u64>,
+}
+
+impl Drops {
+    /// Offsets reach the queue in order, so the first drop at or above the
+    /// floor is `first` when that is above it. When it is not, but a later
+    /// drop is, the floor itself is a safe place to resume.
+    fn resume_from(&self) -> Option<u64> {
+        match (self.first, self.latest) {
+            (Some(first), _) if first >= self.floor => Some(first),
+            (_, Some(latest)) if latest >= self.floor => Some(self.floor),
+            _ => None,
+        }
+    }
+}
+
+impl Lag {
+    /// Record a dropped batch starting at `offset`.
+    pub(crate) fn dropped(&self, offset: u64) {
+        let mut drops = self.drops.lock().unwrap_or_else(|e| e.into_inner());
+        let before = drops.resume_from();
+        drops.first.get_or_insert(offset);
+        drops.latest = Some(offset);
+        if before.is_none() && drops.resume_from().is_some() {
+            self.notify.notify_waiters();
+        }
+    }
+
+    /// Forget drops below `offset`, which were made up for elsewhere.
+    pub(crate) fn covered_below(&self, offset: u64) {
+        let mut drops = self.drops.lock().unwrap_or_else(|e| e.into_inner());
+        drops.floor = drops.floor.max(offset);
+    }
+
+    pub(crate) fn first_dropped(&self) -> Option<u64> {
+        self.drops
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .resume_from()
+    }
+}

@@ -473,6 +473,33 @@ The watch fell behind; the broker ends the stream after this.
 - Everything already queued was delivered first
 - Re-watching with `from_offset = resume_from` is gapless
 
+#### SubscriptionLagged
+
+The last frame on the event stream of a durable-stream subscription whose
+queue on the broker dropped records; the broker ends the stream after it.
+
+```json
+{
+  "type": "subscription_lagged",
+  "subscription_id": "number",
+  "resume_from": "number"
+}
+```
+
+**Semantics**:
+- Sent only to a client that offered `FEATURE_SUBSCRIPTION_LAGGED` and
+  negotiated event offsets. Any other client keeps the subscription and sees a
+  drop only as a jump in offsets on a later event
+- `resume_from` is the first offset the subscriber's queue dropped (or where a
+  resumed subscription's catch-up ended, if the drops before it were filled
+  from disk). Nothing at or above it was sent. A frame below it can still have
+  been dropped by the connection writer's queue for the subscription, which is
+  not reported, so a client resumes after the last event it received, and from
+  `resume_from` only when it received none
+- Sent once the events queued before the drop are written, without waiting for
+  another publish
+- Sent instead of `shard_moved` when both apply
+
 #### ShardMoved
 
 The last frame on the event stream of a subscription or cache watch whose shard
@@ -788,6 +815,7 @@ advertised its bit.
 | `0x4_0000` | `FEATURE_SHARD_OWNERS` | The broker answers `shard_owners`: which broker owns each shard of a stream or cache |
 | `0x8_0000` | `FEATURE_ACK_ON_COMMIT` | Offered by a client that wants its acked publishes answered after the write, with their offsets, on this connection only. Advertised by a broker that honours it |
 | `0x10_0000` | `FEATURE_GROUP_CONSUMER` | A `group_poll` may name its `consumer` (per principal, up to 128 bytes); with `reclaim`, a connection's first such poll reserves the claims that member holds from older connections and takes them back ahead of anything else |
+| `0x20_0000` | `FEATURE_SUBSCRIPTION_LAGGED` | The client reads `subscription_lagged`, which ends a durable-stream subscription at its first queue drop |
 
 The full list, with what each depends on, is in
 [`docs/protocol.md`](https://github.com/gabloe/felix/blob/main/docs/protocol.md).

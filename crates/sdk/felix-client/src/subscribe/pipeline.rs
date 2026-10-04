@@ -5,9 +5,7 @@
 //! since it is woken per slice of arriving data; dispatch stays on the
 //! application's runtime.
 
-use std::sync::atomic::AtomicUsize;
-#[cfg(feature = "telemetry")]
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
@@ -17,9 +15,8 @@ use felix_wire::{Frame, Message};
 use quinn::RecvStream;
 use tokio::sync::mpsc;
 
-use super::queue::enqueue_with_policy;
+use super::queue::{Enqueued, enqueue_with_policy};
 use super::{QueuedEvent, ShardMoved, Subscription};
-use crate::SubscriptionLost;
 use crate::config::ClientSubQueuePolicy;
 use crate::connection::StreamLease;
 use crate::frame_io::read_frame_into_with_limit;
@@ -28,6 +25,7 @@ use crate::telemetry::frame_counters;
 use crate::telemetry::log_decode_error;
 #[cfg(feature = "telemetry")]
 use crate::timings;
+use crate::{SubscriptionLagged, SubscriptionLost};
 
 pub(crate) struct SubscriptionPipelineConfig {
     pub(crate) recv: RecvStream,
@@ -58,7 +56,7 @@ impl Subscription {
         let (frame_tx, frame_rx) = mpsc::channel(capacity);
         let (event_tx, event_rx) = mpsc::channel(capacity);
         let shard_moved = Arc::new(OnceLock::new());
-        let broken = Arc::new(Mutex::new(None));
+        let end = Arc::new(End::default());
 
         // The io task is woken per slice of arriving stream data, so it runs
         // colocated with the connection's drivers; dispatch has no
@@ -70,7 +68,7 @@ impl Subscription {
             capacity,
             config.max_frame_bytes,
             config.live_offset,
-            Arc::clone(&broken),
+            Arc::clone(&end),
         ));
         tokio::spawn(run_subscription_dispatch_task(
             frame_rx,
@@ -80,7 +78,7 @@ impl Subscription {
             config.subscription_id,
             Arc::clone(&shard_moved),
             config.live_offset,
-            broken,
+            end,
         ));
 
         Self {
@@ -102,6 +100,44 @@ impl Subscription {
     }
 }
 
+/// Why a subscription's pipeline stopped early, for the dispatch task to
+/// report once the events before it are queued.
+struct End {
+    /// The first offset either queue dropped. Both tasks stop at their first
+    /// drop, so the lower of the two is where to resume.
+    first_dropped: AtomicU64,
+    /// The read failed.
+    broken: Mutex<Option<anyhow::Error>>,
+}
+
+impl Default for End {
+    fn default() -> Self {
+        Self {
+            first_dropped: AtomicU64::new(u64::MAX),
+            broken: Mutex::new(None),
+        }
+    }
+}
+
+impl End {
+    fn dropped(&self, offset: u64) {
+        self.first_dropped.fetch_min(offset, Ordering::AcqRel);
+    }
+
+    fn broke(&self, err: anyhow::Error) {
+        *self.broken.lock().unwrap_or_else(|e| e.into_inner()) = Some(err);
+    }
+
+    /// A drop is reported before a broken stream: the reader stopped at the
+    /// drop, so the break is no news.
+    fn take_error(&self) -> Option<anyhow::Error> {
+        match self.first_dropped.load(Ordering::Acquire) {
+            u64::MAX => self.broken.lock().unwrap_or_else(|e| e.into_inner()).take(),
+            resume_from => Some(anyhow::Error::new(SubscriptionLagged { resume_from })),
+        }
+    }
+}
+
 struct QueuedFrame {
     frame: Frame,
     enqueued_at: Instant,
@@ -114,7 +150,7 @@ async fn run_subscription_io_task(
     queue_capacity: usize,
     max_frame_bytes: usize,
     live_offset: Option<u64>,
-    broken: Arc<Mutex<Option<anyhow::Error>>>,
+    end: Arc<End>,
 ) {
     let mut frame_scratch = BytesMut::with_capacity(64 * 1024);
     #[cfg(feature = "telemetry")]
@@ -150,15 +186,13 @@ async fn run_subscription_io_task(
                     } else {
                         err.context("read subscription stream")
                     };
-                    *broken.lock().unwrap_or_else(|e| e.into_inner()) = Some(err);
+                    end.broke(err);
                     break;
                 }
             };
         let control = first.header.flags == 0;
-        let history = is_history(
-            felix_wire::binary::peek_event_batch_base_offset(&first),
-            live_offset,
-        );
+        let base_offset = felix_wire::binary::peek_event_batch_base_offset(&first);
+        let history = is_history(base_offset, live_offset);
         let queued = QueuedFrame {
             frame: first,
             enqueued_at: Instant::now(),
@@ -167,13 +201,23 @@ async fn run_subscription_io_task(
         // and dropping that would lose where to resume, so it waits for room.
         // So does replayed history: waiting here stops reading the stream,
         // which slows the broker's disk reads to the application's pace.
-        let sent = if control || history {
-            frame_tx.send(queued).await.is_ok()
+        let outcome = if control || history {
+            match frame_tx.send(queued).await {
+                Ok(()) => Enqueued::Queued,
+                Err(_) => Enqueued::Closed,
+            }
         } else {
             enqueue_frame(&frame_tx, queued, queue_policy, queue_capacity).await
         };
-        if !sent {
-            break;
+        match (outcome, base_offset) {
+            (Enqueued::Queued, _) | (Enqueued::Dropped, None) => {}
+            // A durable stream ends at the drop, so the subscriber learns of
+            // it without waiting for a later event.
+            (Enqueued::Dropped, Some(offset)) => {
+                end.dropped(offset);
+                break;
+            }
+            (Enqueued::Closed, _) => break,
         }
     }
 }
@@ -187,9 +231,9 @@ async fn run_subscription_dispatch_task(
     subscription_id: u64,
     shard_moved: Arc<OnceLock<ShardMoved>>,
     live_offset: Option<u64>,
-    broken: Arc<Mutex<Option<anyhow::Error>>>,
+    end: Arc<End>,
 ) {
-    while let Some(queued_frame) = frame_rx.recv().await {
+    'frames: while let Some(queued_frame) = frame_rx.recv().await {
         let queue_wait_ns = queued_frame.enqueued_at.elapsed().as_nanos() as u64;
         #[cfg(feature = "telemetry")]
         {
@@ -370,6 +414,10 @@ async fn run_subscription_dispatch_task(
                         });
                         return;
                     }
+                    Message::SubscriptionLagged { resume_from, .. } => {
+                        end.dropped(resume_from);
+                        break 'frames;
+                    }
                     _ => {
                         let _ = enqueue_event(
                             &event_tx,
@@ -403,7 +451,7 @@ async fn run_subscription_dispatch_task(
             } else {
                 queue_policy
             };
-            if !enqueue_event(
+            let outcome = enqueue_event(
                 &event_tx,
                 // The skip describes the offsets before the batch, so only its
                 // first event carries it.
@@ -411,9 +459,14 @@ async fn run_subscription_dispatch_task(
                 policy,
                 queue_capacity,
             )
-            .await
-            {
-                return;
+            .await;
+            match (outcome, offset) {
+                (Enqueued::Queued, _) | (Enqueued::Dropped, None) => {}
+                (Enqueued::Dropped, Some(offset)) => {
+                    end.dropped(offset);
+                    break 'frames;
+                }
+                (Enqueued::Closed, _) => return,
             }
         }
         #[cfg(feature = "telemetry")]
@@ -423,8 +476,7 @@ async fn run_subscription_dispatch_task(
             t_histogram!("sub_dispatch_ns").record(dispatch_ns as f64);
         }
     }
-    let err = broken.lock().unwrap_or_else(|e| e.into_inner()).take();
-    if let Some(err) = err {
+    if let Some(err) = end.take_error() {
         // Blocking: this is the last thing the reader will see, and dropping it
         // would turn the failure back into a clean end.
         let _ = enqueue_event(
@@ -451,7 +503,7 @@ async fn enqueue_frame(
     item: QueuedFrame,
     policy: ClientSubQueuePolicy,
     queue_capacity: usize,
-) -> bool {
+) -> Enqueued {
     enqueue_with_policy(
         tx,
         item,
@@ -469,7 +521,7 @@ async fn enqueue_event(
     item: QueuedEvent,
     policy: ClientSubQueuePolicy,
     queue_capacity: usize,
-) -> bool {
+) -> Enqueued {
     enqueue_with_policy(
         tx,
         item,

@@ -234,6 +234,29 @@ Sent only to a client that offered `FEATURE_SHARD_MOVED`: any other client sees
 the stream end after its last event, byte for byte as before. See
 [Shard moves](#shard-moves).
 
+### SubscriptionLagged (server -> client)
+```
+{ "type": "subscription_lagged", "subscription_id": <u64>, "resume_from": <u64> }
+```
+
+The last frame on the event stream of a durable-stream subscription whose queue
+on the broker dropped records. `resume_from` is the first offset that queue
+dropped, or where a resumed subscription's catch-up ended when the drops before
+that were filled from disk. Nothing at or above it was sent. Below it, a frame
+can still have been dropped after the queue, by the connection writer's queue
+for this subscription (`felix_sub_queue_dropped_total`), which ends nothing and
+is not reported. So a client resumes after the last event it received, and
+from `resume_from` only when it received none; felix-client's
+`ClusterSubscription` and `ShardedSubscription` do that. The broker sends it as
+soon as the events queued before the drop are written, not when the next
+publish arrives, and finishes the stream after it.
+
+Sent only to a client that offered `FEATURE_SUBSCRIPTION_LAGGED` and negotiated
+`FLAG_EVENT_BATCH_OFFSETS`. Any other client keeps its subscription after a drop
+and sees it only as a jump in offsets on a later event. When the shard also
+moved, this frame is sent rather than `shard_moved`, since resuming where the
+move says would skip the dropped records.
+
 ### CachePut
 ```
 { "type": "cache_put", "key": "<string>", "value": "<base64>", "ttl_ms": <number|null> }
@@ -1230,6 +1253,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x4_0000` | `FEATURE_SHARD_OWNERS` | The broker answers `shard_owners` |
 | `0x8_0000` | `FEATURE_ACK_ON_COMMIT` | Offered by a client that wants this connection's acked publishes answered after the write, with their offsets, as `FELIX_ACK_ON_COMMIT=true` does for every client. Advertised by a broker that honours it. A client offers it only when asked to (`ClientConfig::ack_on_commit`) |
 | `0x10_0000` | `FEATURE_GROUP_CONSUMER` | The broker records which member holds each claim when `group_poll` names a `consumer`, scoped to the principal, and on a connection's first `reclaim` hands that member's claims from older connections back to it first. See [GroupPoll](#grouppoll) |
+| `0x20_0000` | `FEATURE_SUBSCRIPTION_LAGGED` | The client reads `subscription_lagged`, and the broker ends a durable-stream subscription at its first queue drop with it |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:

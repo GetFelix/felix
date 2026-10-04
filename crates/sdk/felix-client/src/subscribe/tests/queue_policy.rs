@@ -1,7 +1,7 @@
 use tokio::sync::mpsc;
 
 use crate::config::ClientSubQueuePolicy;
-use crate::subscribe::queue::enqueue_with_policy;
+use crate::subscribe::queue::{Enqueued, enqueue_with_policy};
 
 const ENQUEUED: &str = "test_enqueued";
 const DROPPED: &str = "test_dropped";
@@ -14,6 +14,7 @@ async fn enqueue(
     capacity: usize,
 ) -> bool {
     enqueue_with_policy(tx, item, policy, capacity, ENQUEUED, DROPPED, DROP_OLD).await
+        != Enqueued::Closed
 }
 
 /// Room in the queue: every policy takes the item and reports success.

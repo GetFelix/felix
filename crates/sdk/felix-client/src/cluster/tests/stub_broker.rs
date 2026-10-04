@@ -8,7 +8,8 @@
 //! [`ClusterClient`](crate::ClusterClient) skips discovery and sends its
 //! publishes as acked binary batches, answered here with coded binary acks.
 //! A subscribe the script answers with `Subscribed` gets an event stream,
-//! held open for the life of the connection.
+//! held open for the life of the connection unless
+//! [`StubBroker::set_events`] ends it.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -17,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use bytes::BytesMut;
 use felix_transport::{QuicConnection, QuicServer, TransportConfig};
-use felix_wire::Message;
+use felix_wire::{Message, StartPosition};
 use rustls::pki_types::CertificateDer;
 
 use crate::frame_io::{read_frame_into, write_message};
@@ -25,6 +26,14 @@ use crate::test_support::build_server_config;
 
 /// The answer to one request, given its request id (0 for a subscribe).
 type Script = Arc<dyn Fn(u64) -> Message + Send + Sync>;
+
+/// What a subscription's event stream carries, given the shard and start it
+/// asked for. A stream that ends with `subscription_lagged` is finished after
+/// it, as a broker does.
+type EventScript = Arc<dyn Fn(Option<u32>, Option<StartPosition>) -> Vec<Message> + Send + Sync>;
+
+/// The shard and start position a subscribe asked for.
+pub(super) type SubscribeStart = (Option<u32>, Option<StartPosition>);
 
 /// An idempotent batch's routing key and sequence.
 pub(super) type Sequenced = (Option<bytes::Bytes>, u64);
@@ -103,6 +112,19 @@ impl StubBroker {
         self.seen.publishes.load(Ordering::SeqCst)
     }
 
+    /// Script what each subscription's event stream sends after its hello.
+    pub(super) fn set_events(
+        &self,
+        events: impl Fn(Option<u32>, Option<StartPosition>) -> Vec<Message> + Send + Sync + 'static,
+    ) {
+        *self.seen.events.lock().unwrap() = Some(Arc::new(events));
+    }
+
+    /// The shard and start position of each subscribe, in arrival order.
+    pub(super) fn subscribe_starts(&self) -> Vec<SubscribeStart> {
+        self.seen.starts.lock().unwrap().clone()
+    }
+
     pub(super) fn subscribes(&self) -> usize {
         self.seen.subscribes.load(Ordering::SeqCst)
     }
@@ -170,6 +192,9 @@ struct Seen {
     subscribes: Arc<AtomicUsize>,
     /// The shard each subscribe asked for.
     shards: Arc<Mutex<Vec<Option<u32>>>>,
+    /// The shard and start of each subscribe.
+    starts: Arc<Mutex<Vec<SubscribeStart>>>,
+    events: Arc<Mutex<Option<EventScript>>>,
     /// The routing key of each idempotent batch and the QUIC stream it came on.
     batch_streams: Arc<Mutex<Vec<Sequenced>>>,
     sequences: Arc<Mutex<Vec<Sequenced>>>,
@@ -268,9 +293,16 @@ async fn serve_stream(
                 };
                 write_message(&mut send, answer).await?;
             }
-            Message::Subscribe { shard, .. } => {
+            Message::Subscribe { shard, start, .. } => {
                 seen.subscribes.fetch_add(1, Ordering::SeqCst);
                 seen.shards.lock().unwrap().push(shard);
+                seen.starts.lock().unwrap().push((shard, start));
+                let scripted = seen
+                    .events
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|events| events(shard, start));
                 let answer = match script(0) {
                     Message::Subscribed {
                         start_offset,
@@ -294,6 +326,15 @@ async fn serve_stream(
                     let mut events = connection.open_uni().await?;
                     write_message(&mut events, Message::EventStreamHello { subscription_id })
                         .await?;
+                    let mut ended = false;
+                    for message in scripted.unwrap_or_default() {
+                        ended = matches!(message, Message::SubscriptionLagged { .. });
+                        write_message(&mut events, message).await?;
+                    }
+                    if ended {
+                        events.finish()?;
+                        continue;
+                    }
                     // Never finished: the subscription stays open until the
                     // connection goes.
                     let held = connection.clone();

@@ -12,6 +12,18 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- A durable-stream subscription that falls behind is told so, even when
+  nothing is published after the drop. A broker ends it with
+  `subscription_lagged` (`FEATURE_SUBSCRIPTION_LAGGED`, `0x20_0000`) naming the
+  first offset its queue for that subscriber dropped, after delivering what was
+  queued before it. felix-client does the same for drops in its own queue, and
+  `Subscription::next_event` returns a `SubscriptionLagged { resume_from }`
+  error. `ClusterSubscription` resubscribes after its last event, which replays
+  the dropped records from the log, and `ShardedSubscription` reports the shard
+  lost and recovers it the same way, also after its last event. Neither resumes
+  at `resume_from`: the broker's connection writer can drop a frame for a slow
+  subscription without reporting it, below that offset. Drops a resume already
+  filled from disk do not count. (#965)
 
 - A client can ask for commit acks, and the offsets they carry, on its own
   connections: `ClientConfig::ack_on_commit` offers `FEATURE_ACK_ON_COMMIT`
@@ -73,6 +85,11 @@ for what the current release guarantees.
   segment write the way a throttled `write()` does. (#909)
 
 ### Changed
+- **Breaking:** a felix-client subscription to a durable stream no longer
+  carries on past a dropped record. Under `DropNew` or `DropOld` it ends with
+  `SubscriptionLagged` at the first drop instead, in this client's queue or
+  the broker's. In-memory streams, which have no offset to resume from, keep
+  dropping as before. (#965)
 
 - Connection ids (`felix_transport::ConnectionId`) count up from 1 per process
   instead of reusing quinn's `stable_id`, which is an address and can repeat

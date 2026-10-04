@@ -231,6 +231,17 @@ pub const FEATURE_ACK_ON_COMMIT: u32 = 0x0008_0000;
 /// a reclaim.
 pub const FEATURE_GROUP_CONSUMER: u32 = 0x0010_0000;
 
+/// The client can read `subscription_lagged` on an event stream.
+///
+/// Offered by a *client*, like `FEATURE_SHARD_MOVED`. A broker that sees it
+/// ends a durable-stream subscription at the first record its queue for that
+/// subscriber dropped, with `subscription_lagged` naming that offset, so a
+/// subscriber learns it fell behind even when nothing is published after the
+/// drop. Any other client keeps the old behaviour: the subscription carries
+/// on and the drop shows only as a jump in offsets. A broker advertises the
+/// bit too, so a client knows whether to expect it.
+pub const FEATURE_SUBSCRIPTION_LAGGED: u32 = 0x0020_0000;
+
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -252,7 +263,8 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_STREAM_PUBLISH_WINDOW
     | FEATURE_SHARD_OWNERS
     | FEATURE_ACK_ON_COMMIT
-    | FEATURE_GROUP_CONSUMER;
+    | FEATURE_GROUP_CONSUMER
+    | FEATURE_SUBSCRIPTION_LAGGED;
 
 /// True if `features` advertises `feature`.
 pub fn supports_feature(features: u32, feature: u32) -> bool {

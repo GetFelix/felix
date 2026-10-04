@@ -243,9 +243,10 @@ for behavior at thousands of subscribers or across a network.
   duplicate. Asking for an offset retention has discarded is a typed error, not
   a silent restart at the tail. A non-durable stream stays tail-only beyond its
   bounded replay ring, because there is nothing older to read.
-- **Slow subscribers drop** under the default policy, and the subscriber is not
-  told. On a durable stream it sees the drop as a gap in the offsets. Publishers
-  never block on subscriber speed.
+- **Slow subscribers drop** under the default policy. On a durable stream the
+  subscription ends at the first drop with the offset to resume from, and the
+  cluster client resumes there from the log; on an in-memory stream the
+  subscriber is not told. Publishers never block on subscriber speed.
 - **Ephemeral by default.** Nothing survives a broker restart unless the stream
   was registered with `durable: true`, which persists each record before
   acknowledging it and replays it afterwards. Durable storage is opt-in per
@@ -365,7 +366,8 @@ retained cache watch delivers current values and then changes with no gap, and a
 watch that falls behind is ended with the offset to re-watch from, which is the
 resynchronization signal. What is left is everything that is not a log-backed
 cache: an in-memory cache or stream still drops under lag with nothing to
-resynchronize from.
+resynchronize from. A durable stream's subscription now gets the same signal a
+cache watch does: it is ended at its first drop with the offset to resume from.
 
 ---
 
