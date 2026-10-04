@@ -943,7 +943,7 @@ impl ReplicaHandler {
         let payloads: Vec<bytes::Bytes> =
             records.into_iter().map(|record| record.payload).collect();
         let end = first_offset + payloads.len() as u64;
-        let batch = ReplicateRecords {
+        let mut batch = ReplicateRecords {
             correlation_id,
             shard: request.shard,
             first_offset,
@@ -956,6 +956,7 @@ impl ReplicaHandler {
                 .then(|| generations_over(&log.generations(), first_offset, end)),
             publishers,
         };
+        crate::ship::carry_marks(&mut batch, log_kind, false);
         match log_kind {
             felix_broker::LogKind::Cache => InternalMessage::ReplicateCacheRecords(batch),
             felix_broker::LogKind::Counters => InternalMessage::ReplicateCounterRecords(batch),

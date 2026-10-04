@@ -163,7 +163,7 @@ pub async fn ship_once_with<R: PeerRequester>(
     let payloads: Vec<Bytes> = records.into_iter().map(|record| record.payload).collect();
     let batch_end = first_offset + payloads.len() as u64;
     let batch_bytes: usize = payloads.iter().map(Bytes::len).sum();
-    let batch = ReplicateRecords {
+    let mut batch = ReplicateRecords {
         // The pool assigns the real id; it owns the connection this lands on.
         correlation_id: 0,
         shard: shard.clone(),
@@ -185,6 +185,7 @@ pub async fn ship_once_with<R: PeerRequester>(
         .then(|| crate::replica::generations_over(&log.generations(), first_offset, batch_end)),
         publishers,
     };
+    carry_marks(&mut batch, log_kind, cursor.legacy_frames);
     // Which log this is belongs in the message kind, not in the shard
     // reference: the bodies are identical, and a follower that guessed wrong
     // would append one of a shard's logs into another.
@@ -352,6 +353,24 @@ fn without_commit(request: InternalMessage) -> InternalMessage {
             InternalMessage::ReplicateCounterRecords(strip(b))
         }
         other => other,
+    }
+}
+
+/// Give a batch whose marks its own kind cannot carry the committed layout,
+/// which can. Only a stream has a marked kind, and a cache shard's logs hold
+/// generation-start records; a commit offset of zero moves no follower's.
+pub(crate) fn carry_marks(
+    batch: &mut ReplicateRecords,
+    log_kind: felix_broker::LogKind,
+    legacy_frames: bool,
+) {
+    if log_kind != felix_broker::LogKind::Stream
+        && !legacy_frames
+        && !batch.marks.is_empty()
+        && batch.commit_offset.is_none()
+        && batch.generations.is_none()
+    {
+        batch.commit_offset = Some(0);
     }
 }
 
