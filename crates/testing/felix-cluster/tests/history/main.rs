@@ -228,6 +228,36 @@ async fn a_power_loss_or_a_control_plane_crash_loses_nothing_acknowledged() {
     }
 }
 
+/// Long enough for [`CacheLeader`] to fault the cache's leader several times.
+const CACHE_PROMOTION_DURATION: Duration = Duration::from_secs(60);
+
+/// **`Quorum` cache puts survive promotions of the cache shard.** Every fault
+/// lands on whichever broker leads the cache, a pause, a kill or a partition
+/// in turn, so its shard is promoted while the clients write to it, with
+/// every lease-free feature finalized, `fenced_caches` included: a promoted
+/// cache shard fences a majority before it serves, and puts are acknowledged
+/// by the followers. The history stays valid, no acknowledged put is lost and
+/// no get is stale, and the cache changes leader at least once.
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quorum_cache_writes_survive_a_promotion_in_a_campaign() {
+    let mut campaign = Campaign::from_env(SEED, CACHE_PROMOTION_DURATION, Mode::LeaseFree)
+        .expect("campaign settings");
+    campaign.duration = CACHE_PROMOTION_DURATION;
+    let (seed, mode) = (campaign.seed, campaign.mode);
+    println!(
+        "cache promotion campaign: seed {seed}, mode {mode}; rerun with \
+         FELIX_HISTORY_SEED={seed} FELIX_HISTORY_MODE={mode}"
+    );
+    let mut nemesis = CacheLeader::default();
+    run_checked(&campaign, &mut nemesis).await;
+    assert!(
+        nemesis.leaders.len() >= 2,
+        "seed {seed}: the cache was never promoted; it was only led by {:?}",
+        nemesis.leaders,
+    );
+}
+
 /// Start a cluster for `nemesis`, run `campaign`, and check the history,
 /// failing on any violation and on a campaign too quiet to prove anything.
 async fn run_checked(campaign: &Campaign, nemesis: &mut impl Nemesis) -> History {
@@ -360,5 +390,32 @@ impl Nemesis for RoundRobin {
 
     fn needs_power_loss(&self) -> bool {
         self.kinds.iter().any(Nemesis::needs_power_loss)
+    }
+}
+
+/// Faults whoever leads the workload's cache, going round a pause, a kill
+/// and a partition, and remembers every broker it saw leading it.
+#[derive(Default)]
+struct CacheLeader {
+    next: usize,
+    leaders: BTreeSet<String>,
+}
+
+impl Nemesis for CacheLeader {
+    fn next_fault(&mut self, _rng: &mut Rng, view: &ClusterView) -> Option<Fault> {
+        let node = view
+            .shards
+            .iter()
+            .find(|shard| shard.kind == "cache")?
+            .leader
+            .clone();
+        self.leaders.insert(node.clone());
+        let fault = match self.next % 3 {
+            0 => Fault::Pause { node },
+            1 => Fault::Kill { node },
+            _ => Fault::Partition { node },
+        };
+        self.next += 1;
+        Some(fault)
     }
 }
