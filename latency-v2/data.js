@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791137244691,
+  "lastUpdate": 1791146816954,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -30360,6 +30360,72 @@ window.BENCHMARK_DATA = {
             "range": "107.19",
             "unit": "us",
             "extra": "trials: 5\nmedian: 593.00\nmean: 638.80\nstdev: 107.19\ncv: 16.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fe73b215c6bf7f0e67fe09bd188b52c5ee67ee63",
+          "message": "feat(replication): fence promoted cache shards on a majority (#933) (#1023)\n\n* feat(storage): forget a cache's index and a counter shard's sums on request (#933)\n\nReplication cuts records from a cache or counter log and appends others at\nthe same offsets. Both indexes only catch up from the tail, so they kept\npointing at the cut records. Broker::reset_log drops whatever was derived\nfrom a shard's log, by log kind.\n\n* feat(replication): fence and read a cache shard's counter log (#933)\n\nA new peer capability, CACHE_FENCE, says a replica answers Fence and\nReplicateFetch for the counter log. The pool never sends either to a peer\nthat did not offer it. A follower that drops a divergent suffix of a cache\nor counter log now resets the index built from it, as it already did for a\nstream's tail.\n\n* feat(replication): fence promoted cache shards and count their marks like streams (#933)\n\nA promoted cache shard fences its cache log and then its counter log on a\nmajority, taking the log furthest ahead by (last generation, length) for\neach, when every replica offers FENCE, TAIL_FETCH and CACHE_FENCE.\nOtherwise it opens on the lease as before. Cache and counter batches carry\ntheir generations to followers that fence caches.\n\nOnce the fleet finalized generation_start a cache leader counts only a\nmajority reaching its own generation, for the cache mark and the counter\nmark. A new fleet feature, fenced_caches, together with majority_ack lets\na Quorum cache acknowledge puts and counter adds on its followers' answers\nwithout the lease, and a promoted cache shard then never opens on the\nlease.\n\n* feat(replication): carry a generation-start mark on cache and counter batches (#933)\n\nThe cache and counter wire kinds have no mark section unless they carry a\ncommit offset or labels, so a generation-start record would arrive as a\ncache op the follower cannot read, under a checksum that refuses it. Such a\nbatch takes the committed layout with a commit offset of zero.\n\n* feat(broker): hold promoted cache shards for the fence and start their generations (#933)\n\nA promoted cache shard waits in Fencing like a stream shard. Once the fleet\nfinalized generation_start, its cache log and its counter log each get a\nrecorded term start and a generation-start record: at open for a shard\ntaken without a promotion, and when the fence opens it otherwise.\n\n* feat(controlplane): keep a Quorum cache's replica set on failover (#933)\n\nA promoted Quorum cache now fences a majority of its set before it serves,\nso placement treats it as it treats a Quorum stream: failover keeps the\nset with the dead leader in it, a move's destination is never promoted,\nand a seated copy must hold what the set held.\n\n* docs(formal): model a cache shard's counter log under the fence (#933)\n\nFelixShard.tla gains a counter log beside the shard's log (Counters),\nshipped, counted and fenced under the same promise, with the fence taking\nthe counter log furthest ahead (CounterCatchUp). FelixShardFencedCache\npasses; its twins lose a put without the fence and a counter update\nwithout the counter catch-up.\n\n* test(cluster): a Quorum cache keeps what it acknowledged across a fenced promotion (#933)\n\nA cluster test partitions a Quorum cache's leader from the control plane\npast its lease and checks the promoted leader holds every acknowledged put\nand counter add. The history campaign gains a case that faults whoever\nleads the cache, and the lease-free mode finalizes fenced_caches.\n\n* docs: cache shards fence on promotion, and the fenced_caches feature (#933)\n\n* test(storage,replication): give the cache fence tests their publisher fields (#933)",
+          "timestamp": "2026-10-04T13:41:15-07:00",
+          "tree_id": "8df8a39b6fe5760b556fcf5fd1c7fc26a2344221",
+          "url": "https://github.com/GetFelix/felix/commit/fe73b215c6bf7f0e67fe09bd188b52c5ee67ee63"
+        },
+        "date": 1791146812006,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 180,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 180.00\nmean: 180.40\nstdev: 1.14\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 245,
+            "range": "8.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 245.00\nmean: 247.80\nstdev: 8.64\ncv: 3.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 301,
+            "range": "16.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 301.00\nmean: 312.00\nstdev: 16.85\ncv: 5.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 217,
+            "range": "1.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 217.00\nmean: 216.80\nstdev: 1.79\ncv: 0.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 436,
+            "range": "3.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 436.00\nmean: 435.00\nstdev: 3.74\ncv: 0.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 579,
+            "range": "67.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 579.00\nmean: 612.60\nstdev: 67.01\ncv: 10.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
