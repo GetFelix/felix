@@ -10,7 +10,7 @@
 
 [package]
 name = "felix-typescript"
-version = "0.6.0-preview"
+version = "0.6.0-preview.2"
 edition = "2024"
 rust-version = "1.97"
 license = "Apache-2.0"
@@ -26,8 +26,8 @@ categories = ["api-bindings", "network-programming"]
 crate-type = ["cdylib"]
 
 [dependencies]
-felix-client = { path = "../felix-client", version = "0.6.0-preview" }
-felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview" }
+felix-client = { path = "../felix-client", version = "0.6.0-preview.2" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.6.0-preview.2" }
 bytes = "1"
 napi = { version = "2", default-features = false, features = ["napi6", "tokio_rt"] }
 napi-derive = "2"

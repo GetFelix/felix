@@ -19,7 +19,7 @@ Starting with 0.6.0-preview, each release publishes felixctl in three forms.
 From crates.io, which puts `felixctl` in `~/.cargo/bin`:
 
 ```bash
-cargo install felixctl --version 0.6.0-preview
+cargo install felixctl --version 0.6.0-preview.2
 ```
 
 A preview has to be named with `--version`, because cargo skips pre-releases
@@ -33,7 +33,7 @@ archive is `felixctl-<tag>-<target>.tar.gz` (`.zip` on Windows) with a
 pages in `man/`:
 
 ```bash
-tag=v0.6.0-preview target=aarch64-apple-darwin
+tag=v0.6.0-preview.2 target=aarch64-apple-darwin
 base=https://github.com/GetFelix/felix/releases/download/$tag
 curl -fsSLO "$base/felixctl-$tag-$target.tar.gz"
 curl -fsSLO "$base/felixctl-$tag-$target.tar.gz.sha256"
@@ -47,10 +47,10 @@ written mode `0600`, so run as your own user to read a mounted one:
 ```bash
 docker run --rm --user "$(id -u):$(id -g)" \
   -v "$HOME/.config/felixctl:/home/felix/.config/felixctl" \
-  ghcr.io/gabloe/felixctl:0.6.0-preview stream ls
+  ghcr.io/getfelix/felixctl:0.6.0-preview.2 stream ls
 ```
 
-0.6.0-preview and earlier releases are under `ghcr.io/gabloe`, the project's previous owner; later releases publish under `ghcr.io/getfelix`.
+Releases before 0.6.0-preview.2 are under `ghcr.io/gabloe`, the project's previous owner.
 
 A preview tag is never `latest`.
 

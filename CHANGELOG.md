@@ -11,6 +11,16 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+## [0.6.0-preview.2] - 2026-10-04
+
+The second preview of 0.6.0, and the first release from the GetFelix
+organization: images are under `ghcr.io/getfelix`, and the crates, npm and
+Python packages point at `GetFelix/felix`. Subscribers learn when they fall
+behind and where to resume, consumer groups report skipped offsets, a slow
+disk or a stalled shard no longer holds up the rest of a broker, and several
+failover and many-subscription delivery bugs are fixed. `pip` will not install
+it without `--pre`.
+
 ### Added
 - A durable-stream subscription that falls behind is told so, even when
   nothing is published after the drop. A broker ends it with
@@ -3081,7 +3091,8 @@ isolation, ephemeral cache, tenant/namespace/stream registries, RBAC and Felix
 token authorization, a control plane with a Postgres-backed store, a Rust client
 SDK, and a protocol conformance runner.
 
-[Unreleased]: https://github.com/GetFelix/felix/compare/v0.6.0-preview...HEAD
+[Unreleased]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.2...HEAD
+[0.6.0-preview.2]: https://github.com/GetFelix/felix/compare/v0.6.0-preview...v0.6.0-preview.2
 [0.6.0-preview]: https://github.com/GetFelix/felix/compare/v0.5.0...v0.6.0-preview
 [0.5.0]: https://github.com/GetFelix/felix/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/GetFelix/felix/compare/v0.4.0...v0.4.1

@@ -6,7 +6,7 @@ shows which broker owns each shard, lists what the control plane knows, and
 runs load tests.
 
 ```bash
-cargo install felixctl --version 0.6.0-preview
+cargo install felixctl --version 0.6.0-preview.2
 
 felixctl context add local --brokers 127.0.0.1:5000 --tenant t1 \
     --token-file token.jwt --ca-file broker-cert.pem
@@ -24,10 +24,10 @@ with shell completions and man pages, to its
 container image:
 
 ```bash
-docker run --rm ghcr.io/gabloe/felixctl:0.6.0-preview --help
+docker run --rm ghcr.io/getfelix/felixctl:0.6.0-preview.2 --help
 ```
 
-0.6.0-preview and earlier releases are under `ghcr.io/gabloe`, the project's previous owner; later releases publish under `ghcr.io/getfelix`.
+Releases before 0.6.0-preview.2 are under `ghcr.io/gabloe`, the project's previous owner.
 
 From a checkout, `cargo install --path crates/tools/felixctl`.
 
