@@ -9,7 +9,10 @@ minutes on sixteen cores, and about half an hour on a four-core CI runner.
 
 Prose about a safety interval is an argument; a model checker either finds the
 interleaving that breaks it or runs out of interleavings to try. This one found
-something the prose had not.
+something the prose had not: an acknowledged `Quorum` record lost when the
+leader died before its last position report. The broker was fixed (#527), and
+the configuration that removes the fix is kept as the proof that it is needed;
+see [The ordering that is load-bearing](#the-ordering-that-is-load-bearing).
 
 ## What is modelled
 
@@ -643,7 +646,8 @@ copy.
 
 ### The ordering that is load-bearing
 
-With `ReportBeforeAck = FALSE`, TLC finds this in a second:
+This is a counterexample with the fix taken out, not a bug in the broker. With
+`ReportBeforeAck = FALSE`, TLC finds this in a second:
 
 1. The leader reports its two followers level with it.
 2. It admits and commits a write, ships it to one follower, and acknowledges it
