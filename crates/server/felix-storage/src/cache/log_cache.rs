@@ -480,6 +480,26 @@ impl LogCache {
             .await
     }
 
+    /// Drop one shard's index, so the next touch replays its log.
+    ///
+    /// For replication after it cut records from the log: the index can
+    /// point at offsets that are gone, or that now hold other records, and
+    /// catching up from the tail never notices. Only while nothing writes to
+    /// the shard, since the commit order restarts at the tail too.
+    pub async fn forget_index(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+    ) -> Result<()> {
+        let shard = self.shard(tenant, namespace, cache, shard)?;
+        let mut state = shard.state.lock().await;
+        state.index = Index::default();
+        state.sequenced_through = None;
+        Ok(())
+    }
+
     /// Flush every open cache. Call once during graceful shutdown.
     ///
     /// Compaction passes stop at their next step first; one cut short leaves
@@ -647,6 +667,16 @@ impl StorageApi for LogCache {
         shard: u32,
     ) -> Result<()> {
         LogCache::close_shard(self, tenant_id, namespace, cache, shard).await
+    }
+
+    async fn forget_index(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+    ) -> Result<()> {
+        LogCache::forget_index(self, tenant_id, namespace, cache, shard).await
     }
 
     fn open_shards(&self) -> Vec<(String, String, String, u32)> {

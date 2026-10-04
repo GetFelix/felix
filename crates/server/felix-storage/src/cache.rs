@@ -111,6 +111,19 @@ pub trait StorageApi: Debug + Send + Sync {
         Ok(())
     }
 
+    /// Drop one shard's index, so the next touch rebuilds it from the log.
+    /// For replication after it cut records from the log. A no-op for a
+    /// store with no log.
+    async fn forget_index(
+        &self,
+        _tenant_id: &str,
+        _namespace: &str,
+        _cache: &str,
+        _shard: u32,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Every shard this store has open, as tenant, namespace, cache, shard.
     /// Empty for a store with no log, whose expiry stays lazy.
     fn open_shards(&self) -> Vec<(String, String, String, u32)> {

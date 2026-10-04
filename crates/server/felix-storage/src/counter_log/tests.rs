@@ -374,3 +374,22 @@ async fn a_shard_left_mid_swap_by_an_older_build_keeps_every_sum() {
         store.shutdown().await.expect("shutdown");
     }
 }
+
+/// **A sum forgotten after the log was cut is folded again from what is
+/// left.** Folding on from the tail would keep the cut delta in the sum.
+#[tokio::test]
+async fn a_forgotten_sum_is_folded_from_the_log_as_it_now_is() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = store(dir.path());
+    store.add(T, NS, C, 0, "k", 5).await.expect("add");
+    let (sum, _) = store.add(T, NS, C, 0, "k", 3).await.expect("add");
+    assert_eq!(sum, 8);
+
+    let log = store.shard_log(T, NS, C, 0).await.expect("log");
+    crate::log::AppendOnlyLog::truncate(&log, 1)
+        .await
+        .expect("truncate");
+    store.forget_index(T, NS, C, 0).await.expect("forget");
+
+    assert_eq!(store.get(T, NS, C, 0, "k").await.expect("get"), Some(5));
+}

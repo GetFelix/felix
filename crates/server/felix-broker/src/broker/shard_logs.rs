@@ -214,4 +214,36 @@ impl Broker {
         handle.state.reset_to(base_offset);
         Ok(())
     }
+
+    /// One of a shard's logs was cut back to `tail` or rebuilt from it; forget
+    /// the state derived from the records that went. A stream's tail, a
+    /// cache's index, or a counter shard's sums. The group logs keep nothing
+    /// here that a cut would leave stale.
+    pub async fn reset_log(
+        &self,
+        kind: LogKind,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+        tail: u64,
+    ) -> Result<()> {
+        match kind {
+            LogKind::Stream => {
+                self.reset_replicated(tenant_id, namespace, name, shard, tail)
+                    .await
+            }
+            LogKind::Cache => Ok(self
+                .cache
+                .forget_index(tenant_id, namespace, name, shard)
+                .await?),
+            LogKind::Counters => match &self.counters {
+                Some(counters) => Ok(counters
+                    .forget_index(tenant_id, namespace, name, shard)
+                    .await?),
+                None => Ok(()),
+            },
+            LogKind::GroupCursors | LogKind::GroupDeadLetters => Ok(()),
+        }
+    }
 }
