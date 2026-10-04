@@ -260,6 +260,19 @@ fn shard_owners_is_a_new_feature_bit_and_disturbs_nothing() {
     assert!(!crate::supports_feature(0, crate::FEATURE_SHARD_OWNERS));
 }
 
+#[test]
+fn group_admin_is_a_new_feature_bit_and_disturbs_nothing() {
+    let others = crate::KNOWN_FEATURES & !crate::FEATURE_GROUP_ADMIN;
+    assert_eq!(crate::FEATURE_GROUP_ADMIN & others, 0);
+    // A broker that serves groups from before these requests does not serve
+    // them.
+    assert!(!crate::supports_feature(
+        crate::FEATURE_CONSUMER_GROUP | crate::FEATURE_GROUP_DEAD_LETTERS,
+        crate::FEATURE_GROUP_ADMIN
+    ));
+    assert!(!crate::supports_feature(0, crate::FEATURE_GROUP_ADMIN));
+}
+
 /// **Every feature bit is its own.** The per-bit tests above mask a bit out of
 /// `KNOWN_FEATURES`, which two constants sharing a value pass. This lists them
 /// all, so a new bit given a value already in use fails here.
@@ -305,6 +318,7 @@ fn every_feature_bit_is_distinct_and_known() {
         ),
         ("FEATURE_GROUP_SKIPPED", crate::FEATURE_GROUP_SKIPPED),
         ("FEATURE_GROUP_PUBLISHER", crate::FEATURE_GROUP_PUBLISHER),
+        ("FEATURE_GROUP_ADMIN", crate::FEATURE_GROUP_ADMIN),
     ];
     let mut seen = 0u32;
     for (name, bit) in bits {

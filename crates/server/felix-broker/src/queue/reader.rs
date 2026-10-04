@@ -11,11 +11,11 @@
 //! structure on disk to say which of the acknowledged offsets were contiguous.
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex as SyncMutex;
-use tokio::sync::{Mutex, Notify, OnceCell};
+use tokio::sync::{Mutex, Notify, OnceCell, OwnedMutexGuard};
 
 use super::cursors::ConsumerGroups;
 use super::dead_letters::DeadLetters;
@@ -192,13 +192,14 @@ impl GroupReader {
         // failed.
         let committed = committed.min(log.poisoned_read_end().unwrap_or(u64::MAX));
         let tail = log_tail.min(committed);
-        let tracker = self.tracker_for(key).await?;
+        let (held, mut locked) = self.current(key).await?;
         let claim = {
-            let mut tracker = tracker.lock().await;
-            tracker.inherit_below(log_tail);
-            tracker.set_max_in_flight(self.max_in_flight());
-            tracker.claim_as(tail, max, now, self.visibility, consumer)
+            locked.inherit_below(log_tail);
+            locked.set_max_in_flight(self.max_in_flight());
+            locked.claim_as(tail, max, now, self.visibility, consumer)
         };
+        drop(locked);
+        let tracker = Arc::clone(&held.tracker);
         if claim.capped {
             self.capped.fetch_add(1, Ordering::Relaxed);
             metrics::counter!("felix_group_polls_capped_total").increment(1);
@@ -215,7 +216,7 @@ impl GroupReader {
                 tracker.lock().await.take_redriven(dead.offset);
             }
             let settled = match recorded {
-                Ok(()) => self.settle(key, &tracker, dead.offset).await,
+                Ok(()) => self.settle(key, &held, dead.offset).await,
                 Err(err) => Err(err),
             };
             if let Err(err) = settled {
@@ -255,7 +256,7 @@ impl GroupReader {
                     // trimmed one; left owed it would stall the group here.
                     Some(record) if record.mark.is_generation_start() => {
                         tracker.lock().await.skip(offset);
-                        self.settle(key, &tracker, offset).await?;
+                        self.settle(key, &held, offset).await?;
                     }
                     Some(record) => {
                         let record = crate::commit::client_record(record);
@@ -285,7 +286,7 @@ impl GroupReader {
                     // that no longer exists anywhere.
                     self.trimmed.fetch_add(1, Ordering::Relaxed);
                     tracker.lock().await.skip(offset);
-                    self.settle(key, &tracker, offset).await?;
+                    self.settle(key, &held, offset).await?;
                 }
                 Err(err) => {
                     // The read failed for a reason that may not repeat. None of
@@ -311,9 +312,10 @@ impl GroupReader {
     /// or past the tail would skip a record before it is written, and wild
     /// offsets would pile up in memory waiting for a run that never closes.
     pub async fn ack(&self, key: &GroupKey, offset: u64) -> Result<()> {
-        let tracker = self.tracker_for(key).await?;
-        check_handed_out(&*tracker.lock().await, offset)?;
-        self.settle(key, &tracker, offset).await
+        let (held, locked) = self.current(key).await?;
+        check_handed_out(&locked, offset)?;
+        drop(locked);
+        self.settle(key, &held, offset).await
     }
 
     /// Tell `key`'s tracker the log tail, if it has not seen one yet: claims a
@@ -322,8 +324,8 @@ impl GroupReader {
     /// it before an [`Self::ack`] or [`Self::nack`] that may be the first
     /// operation on this broker.
     pub async fn inherit_below(&self, key: &GroupKey, tail: u64) -> Result<()> {
-        let tracker = self.tracker_for(key).await?;
-        tracker.lock().await.inherit_below(tail);
+        let (_held, mut locked) = self.current(key).await?;
+        locked.inherit_below(tail);
         Ok(())
     }
 
@@ -333,8 +335,7 @@ impl GroupReader {
     /// owing one that does not exist yet would have every later poll try to
     /// read it.
     pub async fn nack(&self, key: &GroupKey, offset: u64) -> Result<()> {
-        let tracker = self.tracker_for(key).await?;
-        let mut tracker = tracker.lock().await;
+        let (_held, mut tracker) = self.current(key).await?;
         check_handed_out(&tracker, offset)?;
         tracker.nack(offset);
         drop(tracker);
@@ -368,8 +369,7 @@ impl GroupReader {
     /// unlisted and unowed. The group is held across the write so a poll
     /// cannot give up on the record again between the check and the apply.
     pub async fn redrive(&self, key: &GroupKey, offset: u64) -> Result<bool> {
-        let tracker = self.tracker_for(key).await?;
-        let mut tracker = tracker.lock().await;
+        let (_held, mut tracker) = self.current(key).await?;
         if !tracker.can_redrive(offset) {
             return Ok(false);
         }
@@ -381,6 +381,169 @@ impl GroupReader {
         drop(tracker);
         self.wake(key);
         Ok(true)
+    }
+
+    /// Move `group`'s cursor to `offset`, backwards or forwards.
+    ///
+    /// With `if_new`, only a group with no cursor that nothing has been
+    /// handed out from is moved; an existing one is left where it is and its
+    /// position returned. That is how a group is created somewhere other than
+    /// the start.
+    ///
+    /// Every claim standing at the seek is void. The tracker is replaced by
+    /// one at `offset` that inherits nothing, and the old one can no longer
+    /// commit, so a late ack from before the seek cannot move the new cursor
+    /// or mark a record the group now owes as finished. Dead letters are kept.
+    ///
+    /// The caller picks `offset`; this does not check it against the log.
+    pub async fn seek(&self, key: &GroupKey, offset: u64, if_new: bool) -> Result<Seek> {
+        let _shard = self.lock_shard(key).await;
+        let (slot, old) = self.claim_slot(key).await;
+        let committed = self.committed(key).await?;
+        if if_new {
+            let current = match (&committed, &old) {
+                (Some(committed), _) => Some(*committed),
+                (None, Some(tracker)) if handed_out_any(tracker) => Some(tracker.committed()),
+                (None, _) => None,
+            };
+            if let Some(offset) = current {
+                return Ok(Seek {
+                    offset,
+                    moved: false,
+                });
+            }
+        }
+        self.cursors
+            .set_locked(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                &key.group,
+                Some(offset),
+            )
+            .await?;
+        self.replace(key, offset, &slot).await?;
+        drop(old);
+        self.wake(key);
+        Ok(Seek {
+            offset,
+            moved: true,
+        })
+    }
+
+    /// Delete `group` on this shard: its cursor, its dead letters, and
+    /// whatever it has in flight. Returns whether there was anything to
+    /// delete.
+    ///
+    /// A consumer that polls the group again starts it afresh, as if it had
+    /// never existed. Claims standing at the delete are void, as for
+    /// [`Self::seek`].
+    pub async fn delete(&self, key: &GroupKey) -> Result<bool> {
+        let _shard = self.lock_shard(key).await;
+        let (slot, old) = self.claim_slot(key).await;
+        let committed = self.committed(key).await?;
+        self.cursors
+            .set_locked(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                &key.group,
+                None,
+            )
+            .await?;
+        let dead = self.dead_letters.forget_group(key).await?;
+        // Where a group with no cursor starts; see `hydrate`.
+        self.replace(key, 0, &slot).await?;
+        let existed = committed.is_some() || dead > 0 || old.as_deref().is_some_and(handed_out_any);
+        drop(old);
+        self.wake(key);
+        Ok(existed)
+    }
+
+    /// Where `group` stands on this shard. The cursor and dead letters are
+    /// read from disk; the in-flight and owed counts are this broker's memory
+    /// and start again from zero when the shard changes leader.
+    pub async fn describe(&self, key: &GroupKey) -> Result<GroupSnapshot> {
+        let committed = self.committed(key).await?;
+        let dead_letters = self.dead_letters.list(key).await?.len();
+        // Not built for the asking: a group nobody is consuming has nothing
+        // in flight.
+        let tracker = {
+            let trackers = self.trackers.lock();
+            trackers
+                .slots
+                .get(key)
+                .and_then(|slot| slot.cell.get().cloned())
+        };
+        let (in_flight, owed) = match tracker {
+            Some(tracker) => {
+                let mut tracker = tracker.lock().await;
+                tracker.expire(Instant::now());
+                tracker.outstanding()
+            }
+            None => (0, 0),
+        };
+        Ok(GroupSnapshot {
+            committed,
+            in_flight: in_flight as u64,
+            owed: owed as u64,
+            dead_letters: dead_letters as u64,
+        })
+    }
+
+    async fn lock_shard(&self, key: &GroupKey) -> OwnedMutexGuard<()> {
+        self.cursors
+            .lock_shard(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await
+    }
+
+    /// The group's slot, made if missing, and its tracker locked if it has
+    /// one. Held across a seek so an operation already inside the tracker
+    /// finishes first, and one waiting for it finds it retired.
+    async fn claim_slot(
+        &self,
+        key: &GroupKey,
+    ) -> (
+        Arc<OnceCell<Arc<Mutex<GroupTracker>>>>,
+        Option<OwnedMutexGuard<GroupTracker>>,
+    ) {
+        let cell = {
+            let mut trackers = self.trackers.lock();
+            Arc::clone(&trackers.slot(key, Instant::now()).cell)
+        };
+        let old = match cell.get() {
+            Some(tracker) => Some(Arc::clone(tracker).lock_owned().await),
+            None => None,
+        };
+        (cell, old)
+    }
+
+    /// Retire the tracker in `cell` and put one at `committed` in its place.
+    /// The caller holds the shard's cursor lock and has written the cursor.
+    async fn replace(
+        &self,
+        key: &GroupKey,
+        committed: u64,
+        cell: &Arc<OnceCell<Arc<Mutex<GroupTracker>>>>,
+    ) -> Result<()> {
+        let mut tracker = GroupTracker::moved_to(committed, self.max_attempts);
+        for offset in self.dead_letters.redriven(key).await? {
+            tracker.restore_redrive(offset);
+        }
+        let fresh = Arc::new(OnceCell::new_with(Some(Arc::new(Mutex::new(tracker)))));
+        let mut trackers = self.trackers.lock();
+        let slot = trackers.slot(key, Instant::now());
+        // `claim_slot`'s clone keeps the slot from being evicted, so this is
+        // the one it found.
+        debug_assert!(Arc::ptr_eq(&slot.cell, cell));
+        slot.retired.store(true, Ordering::Release);
+        slot.retired = Arc::new(AtomicBool::new(false));
+        // The same notifier, so a poll waiting on the group wakes and finds
+        // the new tracker.
+        slot.cell = fresh;
+        Ok(())
     }
 
     /// Forget what every group has in flight on one shard, so the next
@@ -439,12 +602,8 @@ impl GroupReader {
         self.trackers.lock().slots.len()
     }
 
-    async fn settle(
-        &self,
-        key: &GroupKey,
-        tracker: &Arc<Mutex<GroupTracker>>,
-        offset: u64,
-    ) -> Result<()> {
+    async fn settle(&self, key: &GroupKey, held: &Held, offset: u64) -> Result<()> {
+        let tracker = &held.tracker;
         let (advanced, redriven) = {
             let mut tracker = tracker.lock().await;
             (tracker.ack(offset), tracker.take_redriven(offset))
@@ -461,26 +620,39 @@ impl GroupReader {
         // finished anything the group can resume from.
         if let Some(committed) = advanced {
             self.cursors
-                .commit(
+                .commit_unless(
                     &key.tenant_id,
                     &key.namespace,
                     &key.stream,
                     key.shard,
                     &key.group,
                     committed,
+                    &held.retired,
                 )
                 .await?;
         }
         Ok(())
     }
 
-    async fn tracker_for(&self, key: &GroupKey) -> Result<Arc<Mutex<GroupTracker>>> {
+    /// The group's tracker, locked, and never one a seek or delete has
+    /// replaced: an operation that reached the old one is retried on the new.
+    async fn current(&self, key: &GroupKey) -> Result<(Held, OwnedMutexGuard<GroupTracker>)> {
+        loop {
+            let held = self.tracker_for(key).await?;
+            let locked = Arc::clone(&held.tracker).lock_owned().await;
+            if !held.retired.load(Ordering::Acquire) {
+                return Ok((held, locked));
+            }
+        }
+    }
+
+    async fn tracker_for(&self, key: &GroupKey) -> Result<Held> {
         let now = Instant::now();
-        let (cell, sweep) = {
+        let (cell, retired, sweep) = {
             let mut trackers = self.trackers.lock();
             let sweep = now.saturating_duration_since(trackers.last_sweep) >= SWEEP_EVERY;
             let slot = trackers.slot(key, now);
-            (Arc::clone(&slot.cell), sweep)
+            (Arc::clone(&slot.cell), Arc::clone(&slot.retired), sweep)
         };
         if sweep {
             self.evict_idle(now);
@@ -490,7 +662,10 @@ impl GroupReader {
         // one group would each hand out the same records. A failed read leaves
         // the cell empty for the next caller to retry.
         let tracker = cell.get_or_try_init(|| self.hydrate(key)).await?;
-        Ok(Arc::clone(tracker))
+        Ok(Held {
+            tracker: Arc::clone(tracker),
+            retired,
+        })
     }
 
     /// Wake polls waiting on `key`. Skips creating a slot for a group nobody
@@ -553,6 +728,7 @@ impl Trackers {
     fn slot(&mut self, key: &GroupKey, now: Instant) -> &mut Slot {
         let slot = self.slots.entry(key.clone()).or_insert_with(|| Slot {
             cell: Arc::new(OnceCell::new()),
+            retired: Arc::new(AtomicBool::new(false)),
             changed: Arc::new(Notify::new()),
             last_used: now,
         });
@@ -574,9 +750,25 @@ impl Default for Trackers {
 #[derive(Debug)]
 struct Slot {
     cell: Arc<OnceCell<Arc<Mutex<GroupTracker>>>>,
+    /// Set when a seek or delete replaces this slot's tracker. Whatever still
+    /// holds the old one must not commit from it.
+    retired: Arc<AtomicBool>,
     /// See [`GroupReader::changed`].
     changed: Arc<Notify>,
     last_used: Instant,
+}
+
+/// A group's tracker, and the flag that says it has been replaced.
+#[derive(Debug)]
+struct Held {
+    tracker: Arc<Mutex<GroupTracker>>,
+    retired: Arc<AtomicBool>,
+}
+
+/// Whether a group with no cursor has been consumed here. A tracker that
+/// never handed anything out, such as the one a delete leaves, is no group.
+fn handed_out_any(tracker: &GroupTracker) -> bool {
+    tracker.high_water() > 0
 }
 
 fn check_handed_out(tracker: &GroupTracker, offset: u64) -> Result<()> {
@@ -597,6 +789,28 @@ pub struct GroupKey {
     pub stream: String,
     pub shard: u32,
     pub group: String,
+}
+
+/// What [`GroupReader::seek`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Seek {
+    /// Where the group now resumes on the shard.
+    pub offset: u64,
+    /// False when `if_new` found the group already there and left it alone.
+    pub moved: bool,
+}
+
+/// Where one group stands on one shard. See [`GroupReader::describe`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupSnapshot {
+    /// Everything below this is finished. `None` for a group with no cursor.
+    pub committed: Option<u64>,
+    /// Records handed out and not yet settled.
+    pub in_flight: u64,
+    /// Records owed again after a nack or a lapsed claim.
+    pub owed: u64,
+    /// Records the group gave up on.
+    pub dead_letters: u64,
 }
 
 /// One record handed to a consumer, with the offset it must acknowledge.

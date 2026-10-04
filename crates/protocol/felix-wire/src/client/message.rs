@@ -850,6 +850,80 @@ pub enum Message {
         offset: u64,
         request_id: u64,
     },
+    /// Move a group's cursor on one shard, backwards or forwards. Every claim
+    /// standing when it lands is void. Answered with `group_position`.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_GROUP_ADMIN`.
+    GroupSeek {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+        /// `earliest` is the oldest record the shard still holds, `latest`
+        /// its committed tail when the seek lands, and an offset must lie
+        /// between the two.
+        start: StartPosition,
+        /// Move the group only if it does not exist yet: no cursor, and
+        /// nothing handed out. This is how a group is created at a chosen
+        /// position. Left out when false.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        if_new: bool,
+        request_id: u64,
+    },
+    /// Where a `group_seek` left the group.
+    GroupPosition {
+        /// The offset the group resumes from on the shard.
+        offset: u64,
+        /// False when `if_new` found the group already there.
+        moved: bool,
+        request_id: u64,
+    },
+    /// Where a group stands on one shard. Answered with `group_info`.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_GROUP_ADMIN`.
+    GroupDescribe {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+        request_id: u64,
+    },
+    /// A group's standing on one shard. `in_flight` and `owed` are the
+    /// leader's memory, a snapshot that starts again from zero when the
+    /// shard changes leader.
+    GroupInfo {
+        /// Everything below this is finished. Left out for a group that has
+        /// no cursor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        committed: Option<u64>,
+        /// The shard's committed tail. `tail - committed` is how far behind
+        /// the group is.
+        tail: u64,
+        /// Records handed out and not yet settled.
+        in_flight: u64,
+        /// Records owed again after a nack or a lapsed claim.
+        owed: u64,
+        /// Records the group gave up on.
+        dead_letters: u64,
+        request_id: u64,
+    },
+    /// Delete a group on one shard: its cursor, its dead letters, and its
+    /// claims. Answered with `group_deleted`.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_GROUP_ADMIN`.
+    GroupDelete {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+        request_id: u64,
+    },
+    /// A `group_delete` landed. `existed` is false when there was nothing
+    /// to delete.
+    GroupDeleted { existed: bool, request_id: u64 },
 
     // Last, because serde requires its catch-all to be.
     /// A `type` this build does not know. Never sent, and never produced by

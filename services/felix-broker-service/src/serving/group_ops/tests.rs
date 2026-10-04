@@ -601,3 +601,96 @@ async fn a_restarted_member_reclaims_what_it_held() {
     assert_eq!(back[0].offset, held[0].offset);
     assert_eq!(back[0].attempts, 2);
 }
+
+async fn seek_to(
+    leader: &Leader,
+    publish_ctx: &PublishContext,
+    start: StartPosition,
+    if_new: bool,
+) -> Result<felix_broker::Seek, ClientError> {
+    seek(
+        &leader.broker,
+        publish_ctx,
+        None,
+        TENANT,
+        NAMESPACE,
+        DURABLE,
+        0,
+        GROUP,
+        start,
+        if_new,
+    )
+    .await
+}
+
+/// A seek or a delete writes group state, so the fence refuses it like an
+/// ack.
+#[tokio::test]
+async fn a_seek_or_delete_after_the_fence_is_refused() {
+    let (mut leader, publish_ctx) = claimed_one().await;
+    leader.fence_move(&leader::stream_key(DURABLE));
+
+    assert!(
+        seek_to(&leader, &publish_ctx, StartPosition::Latest, false)
+            .await
+            .is_err(),
+        "a seek landed after the fence closed"
+    );
+    assert!(
+        delete(
+            &leader.broker,
+            &publish_ctx,
+            None,
+            TENANT,
+            NAMESPACE,
+            DURABLE,
+            0,
+            GROUP,
+        )
+        .await
+        .is_err(),
+        "a delete landed after the fence closed"
+    );
+    assert_eq!(committed(&leader).await, None, "the cursor moved");
+}
+
+/// `earliest` and `latest` are the ends of what the shard holds, and an
+/// offset outside them is refused rather than clamped.
+#[tokio::test]
+async fn a_seek_lands_inside_the_log() {
+    let (leader, publish_ctx) = claimed_one().await;
+
+    let latest = seek_to(&leader, &publish_ctx, StartPosition::Latest, false)
+        .await
+        .expect("latest");
+    assert_eq!(latest.offset, 2);
+    let earliest = seek_to(&leader, &publish_ctx, StartPosition::Earliest, false)
+        .await
+        .expect("earliest");
+    assert_eq!(earliest.offset, 0);
+    let past = seek_to(&leader, &publish_ctx, StartPosition::Offset(3), false)
+        .await
+        .expect_err("past the tail");
+    assert_eq!(past.code(), &felix_wire::ErrorCode::InvalidRequest);
+    assert_eq!(committed(&leader).await, Some(0));
+}
+
+#[tokio::test]
+async fn describe_reports_the_tail_and_the_claims() {
+    let (leader, publish_ctx) = claimed_one().await;
+
+    let (snapshot, tail) = describe(
+        &leader.broker,
+        &publish_ctx,
+        TENANT,
+        NAMESPACE,
+        DURABLE,
+        0,
+        GROUP,
+    )
+    .await
+    .expect("describe");
+    assert_eq!(tail, 2);
+    assert_eq!(snapshot.committed, None);
+    assert_eq!(snapshot.in_flight, 1);
+}

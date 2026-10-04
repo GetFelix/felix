@@ -378,6 +378,61 @@ Sent only to a broker that advertised `FEATURE_GROUP_DEAD_LETTERS`.
 { "type": "group_dead_letter_list", "offsets": [<number>], "request_id": <number> }
 ```
 
+### GroupSeek / GroupDescribe / GroupDelete
+```
+{ "type": "group_seek", "tenant_id": "...", "namespace": "...", "stream": "...",
+  "shard": <number>, "group": "<string>",
+  "start": "earliest" | "latest" | { "offset": <number> },
+  "if_new": <bool>?, "request_id": <number> }
+{ "type": "group_describe", ..., "request_id": <number> }
+{ "type": "group_delete", ..., "request_id": <number> }
+```
+
+A group's lifecycle on one shard. Sent only to a broker that advertised
+`FEATURE_GROUP_ADMIN`, and only to the shard's leader. A stream with several
+shards needs one request per shard; nothing cuts across them.
+
+`group_seek` moves the group's cursor, backwards or forwards. `earliest` is the
+oldest record the shard still holds, `latest` its committed tail when the seek
+lands (held to the quorum mark on a `Quorum` stream, as a poll is), and an
+`offset` outside those two is refused with `invalid_request`. With `if_new` the
+group is moved only if it does not exist yet: it has no cursor and nothing has
+been handed out from it. That is how a group is created somewhere other than
+offset 0, and it is safe to send on every start of a consumer. `if_new` is left
+out when false. Answered with `group_position`.
+
+A seek voids every claim standing when it lands. The group's in-flight state is
+replaced, and the new state takes no settle from a claim made before it: an ack
+or nack for an offset at or above the new position is refused with
+`stale_claim`, and the record is delivered again from there. One below it is a
+duplicate and is taken. A seek keeps the group's dead letters.
+
+`group_describe` is answered with `group_info`. `group_delete` removes the
+group's cursor and dead letters and drops its in-flight state, and is answered
+with `group_deleted`. A consumer that polls the group again starts it afresh at
+offset 0, as with any new group.
+
+`group_seek` and `group_delete` need `group.manage`; `group_describe` needs
+`group.consume`, like the dead-letter list. Both writes are made under the
+shard's write fence and acknowledged under the same rule as a group ack, and the
+cursor and dead-letter logs they write ship with the shard.
+
+### GroupPosition / GroupInfo / GroupDeleted (server -> client)
+```
+{ "type": "group_position", "offset": <number>, "moved": <bool>, "request_id": <number> }
+{ "type": "group_info", "committed": <number>?, "tail": <number>,
+  "in_flight": <number>, "owed": <number>, "dead_letters": <number>,
+  "request_id": <number> }
+{ "type": "group_deleted", "existed": <bool>, "request_id": <number> }
+```
+
+`moved` is false when `if_new` found the group already there; `offset` is then
+where it stands. In `group_info`, `committed` is left out for a group with no
+cursor, `tail` is the shard's committed tail, so `tail - committed` is how far
+behind the group is, and `owed` counts records owed again after a nack or a
+lapsed claim. `in_flight` and `owed` are the leader's memory: a snapshot that
+starts again from zero when the shard changes leader.
+
 ### GroupAck / GroupNack
 ```
 { "type": "group_ack",  "tenant_id": "...", "namespace": "...", "stream": "...",
@@ -1283,6 +1338,7 @@ Features are advertised in the same handshake, in an optional field:
 | `0x20_0000` | `FEATURE_SUBSCRIPTION_LAGGED` | The client reads `subscription_lagged`, and the broker ends a durable-stream subscription at its first queue drop with it |
 | `0x40_0000` | `FEATURE_GROUP_SKIPPED` | Offered by a client that reads `skipped_before` on a `GroupRecord`. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |
 | `0x80_0000` | `FEATURE_GROUP_PUBLISHER` | Offered by a client that reads `publisher` on a `GroupRecord`. Advertised by a broker with consumer groups. The field is sent only to a client that offered it. See [Event batch publisher](#event-batch-publisher) |
+| `0x100_0000` | `FEATURE_GROUP_ADMIN` | The broker serves `group_seek`, `group_describe` and `group_delete`. See [GroupSeek](#groupseek--groupdescribe--groupdelete) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -1309,9 +1365,9 @@ Note which features depend on what. `FEATURE_TOPOLOGY` and `FEATURE_REDIRECT`
 describe a cluster, so a standalone broker advertises neither.
 `FEATURE_CACHE_DELETE` works the same on one node as on twenty, and is
 advertised by both, as are `FEATURE_STREAM_SHARDS` and `FEATURE_CACHE_SHARDS`;
-a standalone broker has one shard per stream and per cache and can say so. `FEATURE_CONSUMER_GROUP` and `FEATURE_GROUP_DEAD_LETTERS` depend on durable
+a standalone broker has one shard per stream and per cache and can say so. `FEATURE_CONSUMER_GROUP`, `FEATURE_GROUP_DEAD_LETTERS` and `FEATURE_GROUP_ADMIN` depend on durable
 storage rather than on clustering: without it a group's position is lost on
-every restart, so a broker with none offers neither. `FEATURE_CACHE_WATCH`
+every restart, so a broker with none offers none of them. `FEATURE_CACHE_WATCH`
 depends on the cache being log-backed, for the same shape of reason: a watch's
 contract (resume, duplicate detection, the lag signal) is built on log
 offsets, and a broker whose cache is the in-memory fallback has none to offer.
@@ -1424,8 +1480,9 @@ peer that sends no code, is in `docs/multi-node-client.md` under "Retries".
 
 A subscribe for a shard the broker does not own is answered with `not_leader`,
 naming the broker that does. So is every consumer-group request (`group_poll`,
-`group_ack`, `group_nack`, `group_dead_letters`, `group_discard` and
-`group_redrive`), since only the shard's leader holds its groups. Each group
+`group_ack`, `group_nack`, `group_dead_letters`, `group_discard`,
+`group_redrive`, `group_seek`, `group_describe` and `group_delete`), since only
+the shard's leader holds its groups. Each group
 request has a stream of its own, so the answer needs no `request_id`: it answers
 the one request on that stream.
 

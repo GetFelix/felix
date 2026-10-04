@@ -16,3 +16,25 @@ fn a_named_poll_needs_the_broker_to_record_members() {
     require_member_support(without, None).expect("an unnamed poll is fine");
     require_member_support(felix_wire::KNOWN_FEATURES, Some(&member)).expect("supported");
 }
+
+/// A group with no cursor starts at offset 0, so everything up to the tail is
+/// still ahead of it.
+#[test]
+fn lag_counts_from_the_cursor_or_the_start() {
+    let info = GroupInfo {
+        committed: Some(4),
+        tail: 10,
+        in_flight: 0,
+        owed: 0,
+        dead_letters: 0,
+    };
+    assert_eq!(info.lag(), 6);
+    assert_eq!(
+        GroupInfo {
+            committed: None,
+            ..info
+        }
+        .lag(),
+        10
+    );
+}

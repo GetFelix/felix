@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use felix_broker::{Broker, GroupKey};
-use felix_wire::GroupRecord;
+use felix_wire::{GroupRecord, StartPosition};
 use tokio::sync::Notify;
 use tokio::sync::futures::OwnedNotified;
 
@@ -249,6 +249,111 @@ pub(crate) async fn manage_dead_letter(
     Err(ClientError::invalid(format!(
         "offset {offset} is not a dead letter of {group}"
     )))
+}
+
+/// Move a group to `start` on one shard, or with `if_new` create it there.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn seek(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    mut admitted: Option<FenceGuard>,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    shard: u32,
+    group: &str,
+    start: StartPosition,
+    if_new: bool,
+) -> Result<felix_broker::Seek, ClientError> {
+    let (reader, log, owned) =
+        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
+    let key = group_key(tenant_id, namespace, stream, shard, group);
+    let _fenced = owned.enter(publish_ctx, &mut admitted)?;
+    let earliest = log.base_offset();
+    let latest = read_end(broker, publish_ctx, &owned, &log).await?;
+    let offset = match start {
+        StartPosition::Earliest => earliest,
+        StartPosition::Latest => latest,
+        // Below the head the records are gone, and the group would count each
+        // as dropped work. Past the committed tail the offset may not hold the
+        // record it will after a failover.
+        StartPosition::Offset(offset) if offset < earliest => {
+            return Err(ClientError::invalid(format!(
+                "offset {offset} is below the oldest record shard {shard} holds, {earliest}"
+            )));
+        }
+        StartPosition::Offset(offset) if offset > latest => {
+            return Err(ClientError::invalid(format!(
+                "offset {offset} is past the committed tail of shard {shard}, {latest}"
+            )));
+        }
+        StartPosition::Offset(offset) => offset,
+    };
+    let seek = reader.seek(&key, offset, if_new).await.map_err(storage)?;
+    owned.confirm(publish_ctx).await?;
+    Ok(seek)
+}
+
+/// Where a group stands on one shard, and the shard's committed tail.
+pub(crate) async fn describe(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    shard: u32,
+    group: &str,
+) -> Result<(felix_broker::GroupSnapshot, u64), ClientError> {
+    let (reader, log, owned) =
+        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
+    let key = group_key(tenant_id, namespace, stream, shard, group);
+    let snapshot = reader.describe(&key).await.map_err(storage)?;
+    let tail = read_end(broker, publish_ctx, &owned, &log).await?;
+    Ok((snapshot, tail))
+}
+
+/// Delete a group on one shard. Returns whether there was anything to delete.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn delete(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    mut admitted: Option<FenceGuard>,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    shard: u32,
+    group: &str,
+) -> Result<bool, ClientError> {
+    let (reader, _log, owned) =
+        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
+    let key = group_key(tenant_id, namespace, stream, shard, group);
+    let _fenced = owned.enter(publish_ctx, &mut admitted)?;
+    let existed = reader.delete(&key).await.map_err(storage)?;
+    owned.confirm(publish_ctx).await?;
+    Ok(existed)
+}
+
+/// The end of what a group may be handed on this shard: the tail, held to
+/// the quorum mark on a shard that has one, as a poll is.
+async fn read_end(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    owned: &Owned,
+    log: &felix_broker::StreamLog,
+) -> Result<u64, ClientError> {
+    let key = &owned.key;
+    let committed = felix_replication::quorum::read_bound(
+        broker
+            .stream_consistency(&key.tenant_id, &key.namespace, &key.stream)
+            .await,
+        key,
+        publish_ctx.marks.as_deref(),
+        publish_ctx.ingress.as_deref(),
+    );
+    let tail = log.tail_offset().await.map_err(storage)?;
+    Ok(tail
+        .min(committed.unwrap_or(u64::MAX))
+        .min(log.poisoned_read_end().unwrap_or(u64::MAX)))
 }
 
 /// Finish a record, or hand it back.

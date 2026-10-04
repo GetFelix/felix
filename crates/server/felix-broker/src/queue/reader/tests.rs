@@ -966,3 +966,5 @@ async fn a_group_hands_out_each_records_publisher() {
     assert_eq!(claimed[0].publisher, None);
     assert_eq!(claimed[1].publisher, Some(alice));
 }
+
+mod admin;

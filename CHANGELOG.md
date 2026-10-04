@@ -24,6 +24,18 @@ for what the current release guarantees.
   finalize the `publisher_principal` fleet feature in a cluster, or set
   `FELIX_RECORD_PUBLISHERS=true` on a single broker. Either is one-way for the
   data directory, since an older broker cannot open a v6 segment.
+- A consumer group has a lifecycle. `group_seek` moves a group's cursor on one
+  shard to `earliest`, `latest` or an offset, backwards or forwards; with
+  `if_new` it creates the group there and leaves an existing one alone.
+  `group_describe` reports the committed cursor, the shard's committed tail, and
+  what the group has in flight and owed; `group_delete` removes the cursor and
+  dead letters. Advertised as `FEATURE_GROUP_ADMIN` (`0x100_0000`). Seek and
+  delete need `group.manage`, describe needs `group.consume`. A seek voids the
+  claims standing when it lands, so a late ack cannot move the new cursor or
+  finish a record the group now owes. felix-client adds `group_create`,
+  `group_seek`, `group_describe` and `group_delete` on `Client` and
+  `ClusterClient`, and `ClusterClient::group_*_stream` to make the call on
+  every shard of a stream. (#973)
 
 - Cache shards are fenced on promotion like stream shards. A promoted cache
   leader fences a majority of the replica set on the cache log, then on the

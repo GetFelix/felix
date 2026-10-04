@@ -300,7 +300,7 @@ impl ClusterClient {
 
     /// How many shards a stream has, reconnecting once if the broker in hand
     /// cannot answer.
-    async fn stream_shard_count(
+    pub(crate) async fn stream_shard_count(
         &self,
         tenant_id: &str,
         namespace: &str,

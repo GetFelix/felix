@@ -12,6 +12,7 @@
 //! streams.
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use felix_storage::LogCache;
 use felix_storage::log::LogConfig;
@@ -81,18 +82,92 @@ impl ConsumerGroups {
         group: &str,
         offset: u64,
     ) -> Result<u64> {
+        let live = AtomicBool::new(false);
+        self.commit_unless(tenant_id, namespace, stream, shard, group, offset, &live)
+            .await
+    }
+
+    /// [`Self::commit`], skipped when `retired` is set by the time the shard's
+    /// lock is held. A seek sets it under the same lock, so a commit from the
+    /// tracker it replaced cannot land after it and move the new position.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn commit_unless(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        offset: u64,
+        retired: &AtomicBool,
+    ) -> Result<u64> {
         let lock = self.lock_for(tenant_id, namespace, stream, shard);
         let _guard = lock.lock().await;
 
         let current = self
             .committed(tenant_id, namespace, stream, shard, group)
             .await?;
+        if retired.load(Ordering::Acquire) {
+            return Ok(current.unwrap_or(0));
+        }
         if let Some(current) = current
             && current >= offset
         {
             return Ok(current);
         }
+        self.write(tenant_id, namespace, stream, shard, group, offset)
+            .await?;
+        Ok(offset)
+    }
 
+    /// Hold the shard's commit lock. While it is held no commit lands, so a
+    /// caller can read, move or forget a position without one slipping in.
+    pub(crate) async fn lock_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.lock_for(tenant_id, namespace, stream, shard)
+            .lock_owned()
+            .await
+    }
+
+    /// Put `group` at `offset`, backwards or forwards, or forget it with
+    /// `None`. The caller holds [`Self::lock_shard`].
+    pub(crate) async fn set_locked(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        offset: Option<u64>,
+    ) -> Result<()> {
+        match offset {
+            Some(offset) => {
+                self.write(tenant_id, namespace, stream, shard, group, offset)
+                    .await
+            }
+            None => self
+                .cursors
+                .delete_checked(tenant_id, namespace, stream, shard, group)
+                .await
+                .map(drop)
+                .map_err(BrokerError::from),
+        }
+    }
+
+    async fn write(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        offset: u64,
+    ) -> Result<()> {
         self.cursors
             .put_checked(
                 tenant_id,
@@ -108,8 +183,7 @@ impl ConsumerGroups {
                 None,
             )
             .await
-            .map_err(BrokerError::from)?;
-        Ok(offset)
+            .map_err(BrokerError::from)
     }
 
     /// Forget a group's position on this shard.
