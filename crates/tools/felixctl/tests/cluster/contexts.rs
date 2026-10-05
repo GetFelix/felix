@@ -18,7 +18,7 @@ async fn a_context_carries_the_connection() {
     .expect("start cluster");
     let env = Env::new(&cluster);
     let token_file = env.dir.path().join("token.jwt");
-    std::fs::write(&token_file, &cluster.client_token).expect("write token");
+    std::fs::write(&token_file, cluster.client_token()).expect("write token");
 
     let brokers: Vec<String> = cluster
         .broker_addrs()
@@ -44,7 +44,7 @@ async fn a_context_carries_the_connection() {
             "--controlplane-url",
             cluster.control_plane_url(),
             "--controlplane-token",
-            &cluster.admin_token,
+            &cluster.admin_token(),
         ]),
         &[],
         None,

@@ -170,7 +170,7 @@ async fn cancelling_a_fenced_move_loses_no_acknowledged_write() {
         felix_cluster::client::connect_cluster(
             &[addr(&owner)],
             &cluster.tenant_id,
-            &cluster.client_token,
+            &cluster.client_token(),
         )
         .await
         .expect("reader"),
@@ -188,7 +188,7 @@ async fn cancelling_a_fenced_move_loses_no_acknowledged_write() {
     let writer = felix_cluster::client::connect_cluster(
         &[addr(&other)],
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("writer");

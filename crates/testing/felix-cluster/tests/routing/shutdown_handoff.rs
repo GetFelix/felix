@@ -62,7 +62,7 @@ async fn a_stopping_broker_hands_its_shard_over_under_load() {
         felix_cluster::client::connect_cluster(
             &[addr(&cluster, &owner)],
             &cluster.tenant_id,
-            &cluster.client_token,
+            &cluster.client_token(),
         )
         .await
         .expect("reader"),
@@ -80,7 +80,7 @@ async fn a_stopping_broker_hands_its_shard_over_under_load() {
     let writer = felix_cluster::client::connect_cluster(
         &[addr(&cluster, &other)],
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("writer");
@@ -295,7 +295,7 @@ async fn a_reader_follows_a_moved_shard_off_a_draining_entry_broker() {
         felix_cluster::client::connect_cluster(
             &[cluster.node(&owner).expect("node").client_addr],
             &cluster.tenant_id,
-            &cluster.client_token,
+            &cluster.client_token(),
         )
         .await
         .expect("reader"),
@@ -755,7 +755,7 @@ async fn a_handoff_that_times_out_loses_no_acknowledged_record() {
     }
 
     let writer =
-        felix_cluster::client::connect_cluster(&addrs, &cluster.tenant_id, &cluster.client_token)
+        felix_cluster::client::connect_cluster(&addrs, &cluster.tenant_id, &cluster.client_token())
             .await
             .expect("writer");
     let publisher = Publisher::start(writer, &cluster, 64);
@@ -880,7 +880,7 @@ async fn a_lone_broker_that_stops_keeps_what_it_acknowledged() {
     let writer = felix_cluster::client::connect_cluster(
         &cluster.broker_addrs(),
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("writer");

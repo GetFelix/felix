@@ -23,6 +23,7 @@ use felix_controlplane_service::store::memory::InMemoryStore;
 use felix_controlplane_service::store::{AuthStore, ControlPlaneStore, StoreConfig};
 use tokio_util::sync::CancellationToken;
 
+use crate::credentials::{Credentials, TOKEN_TTL};
 use crate::ports;
 
 /// Liveness tuned for a harness: brokers are local, so a lapsed heartbeat means
@@ -206,141 +207,11 @@ impl ControlPlane {
             .context("seed tenant signing keys")
     }
 
-    /// A credential for one broker: manage its own membership, and read the
-    /// cluster's assignments and node catalog.
+    /// Credentials for `tenant_id`, signed with this control plane's keys.
     ///
-    /// Scoped to `node:{node_id}` on purpose, which is what a real deployment
-    /// would hand it — a broker presenting this for another node is refused.
-    pub fn node_token(&self, tenant_id: &str, node_id: &str) -> Result<String> {
-        felix_controlplane_service::auth::felix_token::mint_token_for(
-            &self.keys,
-            tenant_id,
-            &format!("p:{node_id}"),
-            vec![
-                format!("node.manage:node:{node_id}"),
-                // Assignments and `/v1/nodes` both require this; without it a
-                // broker cannot learn who owns what, or where they are.
-                "node.view:cluster:*".to_string(),
-            ],
-            Duration::from_secs(3600),
-            felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
-        )
-        .context("mint node token")
-    }
-
-    /// A credential for a client publishing and subscribing in `tenant_id`.
-    ///
-    /// Stream permissions only. A broker validates every action in a token it is
-    /// presented, and rejects the whole token if one is not a client-facing
-    /// action — so a cluster-scoped permission here would make this credential
-    /// unusable for its actual purpose.
-    pub fn client_token(&self, tenant_id: &str) -> Result<String> {
-        felix_controlplane_service::auth::felix_token::mint_token(
-            &self.keys,
-            tenant_id,
-            "p:harness-client",
-            vec![
-                format!("stream.publish:stream:{tenant_id}/*/*"),
-                format!("stream.subscribe:stream:{tenant_id}/*/*"),
-                format!("cache.read:cache:{tenant_id}/*/*"),
-                format!("cache.write:cache:{tenant_id}/*/*"),
-            ],
-            Duration::from_secs(3600),
-        )
-        .context("mint client token")
-    }
-
-    /// A credential for the harness itself, against the control plane's HTTP
-    /// API: create metadata, and read membership and ownership.
-    ///
-    /// Separate from [`Self::client_token`] because the two are presented to
-    /// different services, which accept different actions.
-    pub fn admin_token(&self, tenant_id: &str) -> Result<String> {
-        felix_controlplane_service::auth::felix_token::mint_token_for(
-            &self.keys,
-            tenant_id,
-            "p:harness-admin",
-            vec![
-                format!("tenant.manage:tenant:{tenant_id}"),
-                format!("ns.manage:namespace:{tenant_id}/*"),
-                format!("stream.manage:stream:{tenant_id}/*/*"),
-                format!("cache.manage:cache:{tenant_id}/*/*"),
-                "node.view:cluster:*".to_string(),
-            ],
-            Duration::from_secs(3600),
-            felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
-        )
-        .context("mint admin token")
-    }
-
-    /// [`Self::admin_token`], plus listing every tenant, which needs
-    /// `tenant.manage` over the whole cluster rather than one tenant.
-    pub fn cluster_admin_token(&self, tenant_id: &str) -> Result<String> {
-        felix_controlplane_service::auth::felix_token::mint_token_for(
-            &self.keys,
-            tenant_id,
-            "p:harness-cluster-admin",
-            vec![
-                "tenant.manage:cluster:*".to_string(),
-                format!("ns.manage:namespace:{tenant_id}/*"),
-                format!("stream.manage:stream:{tenant_id}/*/*"),
-                format!("cache.manage:cache:{tenant_id}/*/*"),
-                "node.view:cluster:*".to_string(),
-            ],
-            Duration::from_secs(3600),
-            felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
-        )
-        .context("mint cluster admin token")
-    }
-
-    /// A credential that may operate consumer groups: redrive and discard dead
-    /// letters, which a consumer's `stream.subscribe` does not allow.
-    pub fn group_operator_token(&self, tenant_id: &str) -> Result<String> {
-        felix_controlplane_service::auth::felix_token::mint_token(
-            &self.keys,
-            tenant_id,
-            "p:harness-group-operator",
-            vec![format!("group.manage:stream:{tenant_id}/*/*")],
-            Duration::from_secs(3600),
-        )
-        .context("mint group operator token")
-    }
-
-    /// A credential that may subscribe but not publish.
-    ///
-    /// For asserting that a forwarded publish is still authorized: a check done
-    /// only at the ingress broker, or done there and then trusted by the owner,
-    /// would let this through.
-    pub fn subscribe_only_token(&self, tenant_id: &str) -> Result<String> {
-        felix_controlplane_service::auth::felix_token::mint_token(
-            &self.keys,
-            tenant_id,
-            "p:harness-reader",
-            vec![format!("stream.subscribe:stream:{tenant_id}/*/*")],
-            Duration::from_secs(3600),
-        )
-        .context("mint subscribe-only token")
-    }
-
-    /// A credential that can change any node's membership.
-    ///
-    /// Separate from [`Self::admin_token`], which only reads: draining a broker
-    /// is a write, and the control plane requires `node.manage` over a scope
-    /// containing the node. A test that moves a shard needs this; nothing else
-    /// should. It also reads, so a test can list the moves it made.
-    pub fn operator_token(&self, tenant_id: &str) -> Result<String> {
-        felix_controlplane_service::auth::felix_token::mint_token_for(
-            &self.keys,
-            tenant_id,
-            "p:harness-operator",
-            vec![
-                "node.manage:cluster:*".to_string(),
-                "node.view:cluster:*".to_string(),
-            ],
-            Duration::from_secs(3600),
-            felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
-        )
-        .context("mint operator token")
+    /// They stay valid across [`Self::restart`], which keeps the keys.
+    pub fn credentials(&self, tenant_id: &str) -> Credentials {
+        Credentials::new(self.keys.clone(), tenant_id, TOKEN_TTL)
     }
 
     /// Place any unassigned shard onto a live broker.

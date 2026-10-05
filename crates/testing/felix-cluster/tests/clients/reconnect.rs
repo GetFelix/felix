@@ -32,7 +32,7 @@ async fn a_publisher_survives_losing_its_broker() {
     let client = felix_cluster::client::connect_cluster(
         &cluster.broker_addrs(),
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("connect");
@@ -99,7 +99,7 @@ async fn a_publish_in_flight_to_a_killed_leader_fails_over_in_seconds() {
     seeds.retain(|addr| *addr != leader_addr);
     seeds.insert(0, leader_addr);
     let client =
-        felix_cluster::client::connect_cluster(&seeds, &cluster.tenant_id, &cluster.client_token)
+        felix_cluster::client::connect_cluster(&seeds, &cluster.tenant_id, &cluster.client_token())
             .await
             .expect("connect");
     let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
@@ -155,7 +155,7 @@ async fn publish_reports_the_failure_and_leaves_a_usable_client() {
     let client = felix_cluster::client::connect_cluster(
         &cluster.broker_addrs(),
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("connect");
@@ -214,7 +214,7 @@ async fn records_published_across_a_failover_are_all_readable() {
     let client = felix_cluster::client::connect_cluster(
         &cluster.broker_addrs(),
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("connect");
@@ -290,7 +290,7 @@ async fn a_forbidden_publish_fails_fast_instead_of_retrying() {
         &cluster.broker_addrs(),
         &cluster.tenant_id,
         // Good enough to connect and subscribe, and not to publish.
-        &cluster.subscribe_only_token,
+        &cluster.subscribe_only_token(),
     )
     .await
     .expect("connect with a subscribe-only credential");
@@ -359,7 +359,7 @@ async fn a_subscription_resumes_after_its_broker_is_killed() {
     seeds.retain(|addr| *addr != leader_addr);
     seeds.insert(0, leader_addr);
     let client = std::sync::Arc::new(
-        felix_cluster::client::connect_cluster(&seeds, &cluster.tenant_id, &cluster.client_token)
+        felix_cluster::client::connect_cluster(&seeds, &cluster.tenant_id, &cluster.client_token())
             .await
             .expect("connect"),
     );

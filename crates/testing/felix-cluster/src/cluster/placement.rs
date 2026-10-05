@@ -140,6 +140,7 @@ impl Cluster {
         let node = spawn_broker(
             &self.binary,
             control_plane,
+            &self.credentials,
             &self.config,
             self._root.path(),
             index,
@@ -175,7 +176,7 @@ impl Cluster {
         let response = self
             .http
             .patch(&url)
-            .bearer_auth(&self.operator_token)
+            .bearer_auth(self.operator_token())
             .json(&serde_json::json!({ "lifecycle": "live" }))
             .send()
             .await
@@ -364,7 +365,7 @@ impl Cluster {
 
     async fn operator_call(&self, request: reqwest::RequestBuilder) -> Result<serde_json::Value> {
         let response = request
-            .bearer_auth(&self.operator_token)
+            .bearer_auth(self.operator_token())
             .send()
             .await
             .context("call the control plane")?;
@@ -381,7 +382,7 @@ impl Cluster {
         let response = self
             .http
             .post(&url)
-            .bearer_auth(&self.operator_token)
+            .bearer_auth(self.operator_token())
             .json(&serde_json::json!({}))
             .send()
             .await

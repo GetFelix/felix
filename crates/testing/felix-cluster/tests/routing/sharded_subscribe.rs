@@ -42,7 +42,7 @@ async fn cluster_client(cluster: &Cluster) -> Arc<felix_client::ClusterClient> {
         felix_cluster::client::connect_cluster(
             &cluster.broker_addrs(),
             &cluster.tenant_id,
-            &cluster.client_token,
+            &cluster.client_token(),
         )
         .await
         .expect("connect a cluster client"),
@@ -475,7 +475,7 @@ async fn an_unknown_stream_reports_no_shards() {
     let direct = felix_cluster::client::connect_any(
         &cluster.broker_addrs(),
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("connect a plain client");

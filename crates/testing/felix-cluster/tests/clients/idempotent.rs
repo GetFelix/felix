@@ -66,7 +66,7 @@ async fn a_re_sent_batch_lands_once() -> Result<()> {
     let cluster_client = client::connect_cluster(
         &cluster.broker_addrs(),
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await?;
     let producer = cluster_client.idempotent_producer().await?;
@@ -89,7 +89,7 @@ async fn a_re_sent_batch_lands_once() -> Result<()> {
     let direct = client::connect(
         leader.client_addr,
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await?;
     direct
@@ -133,7 +133,7 @@ async fn a_non_leader_names_the_leader() -> Result<()> {
     let direct = client::connect(
         elsewhere.client_addr,
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await?;
     let producer = direct.idempotent_producer().await?;
@@ -165,7 +165,7 @@ async fn a_non_leader_names_the_leader() -> Result<()> {
     let via_leader = client::connect(
         leader.client_addr,
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await?;
     via_leader
@@ -196,7 +196,7 @@ async fn a_gap_is_refused_with_the_expected_sequence() -> Result<()> {
     let direct = client::connect(
         leader.client_addr,
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await?;
     let producer_id = direct.producer_init().await?;
@@ -272,7 +272,7 @@ async fn a_cancelled_publish_stops_the_producer_rather_than_reusing_its_sequence
     let cluster_client = client::connect_cluster(
         &cluster.broker_addrs(),
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await?;
     let producer = cluster_client.idempotent_producer().await?;
@@ -375,8 +375,12 @@ async fn publish_records(
 /// and the leader changed meanwhile.
 async fn re_send(cluster: &Cluster, node_id: &str, producer_id: u64, sequence: u64) -> Result<()> {
     let node = cluster.node(node_id).context("node")?;
-    let direct =
-        client::connect(node.client_addr, &cluster.tenant_id, &cluster.client_token).await?;
+    let direct = client::connect(
+        node.client_addr,
+        &cluster.tenant_id,
+        &cluster.client_token(),
+    )
+    .await?;
     direct
         .publisher()
         .await?
@@ -410,7 +414,7 @@ async fn a_producer_keeps_its_sequence_across_a_planned_move() -> Result<()> {
     let cluster_client = client::connect_cluster(
         &cluster.broker_addrs(),
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await?;
     let producer = cluster_client.idempotent_producer().await?;
@@ -448,7 +452,7 @@ async fn a_producer_keeps_its_sequence_when_its_leader_dies() -> Result<()> {
         .map(|node| node.client_addr)
         .collect();
     let cluster_client =
-        client::connect_cluster(&survivors, &cluster.tenant_id, &cluster.client_token).await?;
+        client::connect_cluster(&survivors, &cluster.tenant_id, &cluster.client_token()).await?;
     let producer = cluster_client.idempotent_producer().await?;
     // Acknowledged only once a majority holds each batch.
     publish_records(&cluster, &producer, 0..5).await?;
@@ -500,7 +504,7 @@ async fn a_producer_publishing_through_its_leaders_death_loses_and_repeats_nothi
     let cluster_client = client::connect_cluster(
         &cluster.broker_addrs(),
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await?;
     let producer = cluster_client.idempotent_producer().await?;
@@ -570,7 +574,7 @@ async fn a_pipelining_producer_loses_and_repeats_nothing_through_its_leaders_dea
     let cluster_client = client::connect_cluster(
         &cluster.broker_addrs(),
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await?;
     let producer = cluster_client.idempotent_producer().await?;

@@ -143,13 +143,16 @@ async fn nothing_answering_reports_every_endpoint() {
         cluster.kill_node(&node).expect("kill");
     }
 
-    let message =
-        match felix_cluster::client::connect_any(&addrs, &cluster.tenant_id, &cluster.client_token)
-            .await
-        {
-            Ok(_) => panic!("a broker answered after every one was killed"),
-            Err(err) => format!("{err:#}"),
-        };
+    let message = match felix_cluster::client::connect_any(
+        &addrs,
+        &cluster.tenant_id,
+        &cluster.client_token(),
+    )
+    .await
+    {
+        Ok(_) => panic!("a broker answered after every one was killed"),
+        Err(err) => format!("{err:#}"),
+    };
     for addr in &addrs {
         assert!(
             message.contains(&addr.to_string()),

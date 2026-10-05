@@ -109,6 +109,7 @@ impl Cluster {
             let node = spawn_broker(
                 &self.binary,
                 control_plane,
+                &self.credentials,
                 &self.config,
                 self._root.path(),
                 index,

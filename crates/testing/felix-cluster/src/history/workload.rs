@@ -102,7 +102,7 @@ impl Workload {
         Self {
             tenant_id: cluster.tenant_id.clone(),
             namespace: cluster.namespace.clone(),
-            token: cluster.client_token.clone(),
+            token: cluster.client_token(),
             cache: campaign.cache.clone(),
             keys: campaign.keys.clone(),
             bases: RwLock::new(Vec::new()),

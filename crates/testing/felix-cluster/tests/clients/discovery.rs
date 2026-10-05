@@ -37,7 +37,7 @@ async fn a_client_given_one_seed_learns_the_other_brokers() {
     let client = felix_cluster::client::connect_cluster(
         &one_seed,
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("connect");
@@ -62,10 +62,13 @@ async fn the_configured_seed_is_never_dropped() {
     let cluster = Cluster::start(config()).await.expect("start cluster");
     let seed = cluster.broker_addrs()[0];
 
-    let client =
-        felix_cluster::client::connect_cluster(&[seed], &cluster.tenant_id, &cluster.client_token)
-            .await
-            .expect("connect");
+    let client = felix_cluster::client::connect_cluster(
+        &[seed],
+        &cluster.tenant_id,
+        &cluster.client_token(),
+    )
+    .await
+    .expect("connect");
 
     client.refresh_topology().await.expect("refresh");
     assert!(
@@ -97,10 +100,13 @@ async fn a_client_given_one_seed_survives_losing_it() {
         .map(|node| node.client_addr)
         .expect("the non-owner's client address");
 
-    let client =
-        felix_cluster::client::connect_cluster(&[seed], &cluster.tenant_id, &cluster.client_token)
-            .await
-            .expect("connect");
+    let client = felix_cluster::client::connect_cluster(
+        &[seed],
+        &cluster.tenant_id,
+        &cluster.client_token(),
+    )
+    .await
+    .expect("connect");
 
     client
         .publish_at_least_once(
@@ -155,7 +161,7 @@ async fn a_non_owner_names_the_shard_owner() {
     let client = felix_cluster::client::connect_cluster(
         &[addr_of(&non_owner)],
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("connect");

@@ -91,6 +91,10 @@ felixctl context add local \
   --controlplane-token "$(jq -r .admin_token "$S")"
 ```
 
+The tokens in the session file last an hour, and `up` rewrites the file with
+fresh ones every half hour. If a context stops authenticating, rerun the commands
+above to pick up the current ones.
+
 The first context you add becomes the current one. Now subscribe in one
 terminal:
 

@@ -7,12 +7,13 @@ use anyhow::{Context, Result, anyhow};
 
 use super::{BrokerNode, clock_fault_file, partition_file, storage_dir, storage_fault_file};
 use crate::proxy::Links;
-use crate::{ClusterConfig, ControlPlane, pki, ports};
+use crate::{ClusterConfig, ControlPlane, Credentials, pki, ports};
 
 /// Start one broker process, behind `links` when the cluster proxies them.
 pub(crate) fn spawn_broker(
     binary: &PathBuf,
     control_plane: &ControlPlane,
+    credentials: &Credentials,
     config: &ClusterConfig,
     root: &Path,
     index: usize,
@@ -42,15 +43,11 @@ pub(crate) fn spawn_broker(
     std::fs::create_dir_all(&storage)
         .with_context(|| format!("create storage dir {}", storage.display()))?;
 
-    let token = control_plane.node_token(&config.tenant_id, &node_id)?;
     // Through a file rather than the environment, which is how a deployment
-    // supplies it -- and what the broker requires of an expiring credential,
-    // since a file is a seam something can rewrite and a value is not. The
-    // harness mints a one-hour token and never rotates it; no test runs that
-    // long, and the point here is to exercise the path production uses.
+    // supplies it, and the seam the broker watches for a rotated credential.
+    // The harness rewrites it before each token expires.
     let node_token_file = data_dir.join("node.token");
-    std::fs::write(&node_token_file, &token)
-        .with_context(|| format!("write node token to {}", node_token_file.display()))?;
+    credentials.write_node_token(&node_id, &node_token_file)?;
     // Its own certificate, issued to its node id by the cluster's CA, so the
     // peer transport runs authenticated the way a deployment does.
     let cert = pki::issue(root, &node_id)?;

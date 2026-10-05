@@ -52,7 +52,7 @@ async fn run_loadgen(cluster: &Cluster, args: &[&str]) -> Result<(String, String
         .arg("--namespace")
         .arg(&cluster.namespace)
         .arg("--token")
-        .arg(&cluster.client_token)
+        .arg(cluster.client_token())
         .arg("--environment")
         .arg("local-harness")
         .args(args)

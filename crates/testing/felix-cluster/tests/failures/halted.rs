@@ -40,7 +40,7 @@ async fn replication(cluster: &Cluster) -> serde_json::Value {
             "{}/v1/placement/replication",
             control_plane.base_url
         ))
-        .bearer_auth(&cluster.admin_token)
+        .bearer_auth(cluster.admin_token())
         .send()
         .await
         .expect("read replication")
