@@ -135,9 +135,10 @@ jobs:
       DRY_RUN: ${{ needs.plan.outputs.dry_run }}
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
+      # The smoke script comes from this workflow's commit, not the built one:
+      # the nightly builds the newest main commit with green CI, which can
+      # predate the script.
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.plan.outputs.sha }}
 
       - name: Registry owner
         run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
