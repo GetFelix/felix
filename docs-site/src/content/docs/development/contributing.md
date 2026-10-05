@@ -119,3 +119,5 @@ A release is cut by pushing a `v*` tag, and `.github/workflows/release.yml`
 builds and publishes it. The workspace, the Python wheel, the npm package and
 the Helm chart each carry their own version, so run
 `task release:check -- v<version>` first to confirm they all match the tag.
+Before tagging, try the latest [nightly build](/development/building/#nightly-builds),
+which is main as of last night, built the way a release is.

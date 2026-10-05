@@ -314,6 +314,23 @@ docker build -t felix-broker -f docker/broker.Dockerfile .
 docker run -p 5000-5003:5000-5003/udp -p 8080:8080 -e FELIX_CONTROLPLANE_URL=... felix-broker
 ```
 
+### Nightly builds
+
+Every night that `main` has changed and its CI passed, the same images are
+published as `nightly` and `nightly-YYYYMMDD`:
+
+```bash
+docker pull ghcr.io/getfelix/felix-broker:nightly
+docker pull ghcr.io/getfelix/felix-controlplane:nightly
+docker pull ghcr.io/getfelix/felixctl:nightly
+```
+
+The binaries, Python wheels and Node addons are on the
+[`nightly` pre-release](https://github.com/GetFelix/felix/releases/tag/nightly),
+which is replaced each time. A nightly has passed CI and one publish and
+subscribe through its images, nothing more. Use it to try what is coming, not
+in production. Dated tags are kept for about two weeks.
+
 ### Control Plane Container
 
 The same, for the control plane:

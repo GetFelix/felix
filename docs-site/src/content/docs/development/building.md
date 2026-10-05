@@ -149,6 +149,8 @@ Other workflows:
   PR run is advisory and never fails a check.
 - `release.yml`: builds and publishes a tagged release. See
   [Releases](#releases).
+- `nightly.yml`: builds main through `release.yml` every night and publishes
+  it to GitHub only. See [Nightly builds](#nightly-builds).
 - `cla.yml`: the CLA Assistant bot.
 
 ## Releases
@@ -205,6 +207,43 @@ gh workflow run release.yml --ref main \
 
 `ref` without `dry_run` fails the run. The felixctl archives are kept as a
 workflow artifact named `felixctl-<tag>-archives`.
+
+### Nightly builds
+
+`nightly.yml` runs at 04:41 UTC. It builds the newest commit on `main` whose
+`ci.yml` push run passed, and does nothing if the `nightly` tag already points
+at that commit. It calls `release.yml` with `nightly` set to the date, which
+builds everything a release builds and changes what gets published:
+
+- images go to GHCR as `nightly` (moves every night) and `nightly-YYYYMMDD`,
+  multi-arch and signed like a release's. Version tags and `latest` are not
+  touched;
+- nothing goes to crates.io, PyPI or npm;
+- after `scripts/ci/nightly_smoke.sh` has run a publish and subscribe through
+  the pulled images, the `nightly` tag moves to the commit and the `nightly`
+  GitHub pre-release is recreated on it with the broker, control plane and
+  felixctl archives, the wheels, the Node addons and one `SHA256SUMS`. Its
+  notes link the commit and the CI run and carry the `[Unreleased]` section of
+  `CHANGELOG.md`. It is never marked latest.
+
+A last step deletes `nightly-YYYYMMDD` image tags older than 14 days. It can
+only delete versions of a package that grants this repository admin access,
+and it does not fail the run when it cannot.
+
+To build one now, or rehearse without publishing:
+
+```bash
+gh workflow run nightly.yml --ref main -f force=true
+gh workflow run nightly.yml --ref main -f dry_run=true
+```
+
+A dispatch from any branch other than `main` is always a dry run. A pull
+request that changes `nightly.yml` or `release.yml` runs it as a dry run too,
+with the smoke test against images built in the runner.
+
+The binaries, wheels and addons carry the version of the last release, so
+`felix-broker --version` does not tell a nightly apart. The GitHub release
+title names the commit.
 
 ## Self-hosted runners
 

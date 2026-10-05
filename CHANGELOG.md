@@ -12,6 +12,12 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- Nightly builds. `nightly.yml` builds the newest green commit on main through
+  `release.yml` once a day, smoke-tests the images with a publish and
+  subscribe, and publishes to GitHub only: images as `nightly` and
+  `nightly-YYYYMMDD` on GHCR, and the binaries, wheels and Node addons on a
+  rolling `nightly` pre-release. `release.yml` can now be called as a reusable
+  workflow.
 - Delivered events can say who published them (#1010). A subscriber that
   offers `FLAG_EVENT_BATCH_PUBLISHER` (`0x2000`) gets the principal (the
   token's `sub`) on each event batch, and a group consumer that offers
