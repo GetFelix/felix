@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791159495480,
+  "lastUpdate": 1791163122625,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -24232,6 +24232,58 @@ window.BENCHMARK_DATA = {
             "range": "25120.78",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 824914.21\nmean: 820049.09\nstdev: 25120.78\ncv: 3.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1b6aa2b39763233ab0cdfcb89a1b50adb44355db",
+          "message": "ci(release): nightly builds of main, published to GitHub only (#1029)\n\nnightly.yml builds the newest main commit whose CI passed through\nrelease.yml (now callable as a reusable workflow), smoke-tests the images\nwith a felixctl publish and subscribe, then pushes nightly and\nnightly-YYYYMMDD images to GHCR and recreates a rolling nightly\npre-release with the binaries, wheels, Node addons and SHA256SUMS.\nNothing goes to crates.io, npm or PyPI. Pull requests that touch the\nworkflow run it as a dry run.",
+          "timestamp": "2026-10-04T18:10:58-07:00",
+          "tree_id": "418f429b140cf874643e18144cc21c9e7b2c173b",
+          "url": "https://github.com/GetFelix/felix/commit/1b6aa2b39763233ab0cdfcb89a1b50adb44355db"
+        },
+        "date": 1791163121824,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 365104.5,
+            "range": "4476.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 365104.50\nmean: 363095.18\nstdev: 4476.53\ncv: 1.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 365104.5,
+            "range": "4476.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 365104.50\nmean: 363095.18\nstdev: 4476.53\ncv: 1.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83050.55,
+            "range": "4110.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83050.55\nmean: 81329.10\nstdev: 4110.81\ncv: 5.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 830505.45,
+            "range": "41108.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 830505.45\nmean: 813290.96\nstdev: 41108.11\ncv: 5.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
