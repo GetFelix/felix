@@ -268,7 +268,7 @@ pub async fn unauthorized_publish_is_refused(
     // about the credential — and this is a question about the credential.
     // Routing is what the publish below exercises.
     cluster
-        .subscribe_on_with_token(&owner, stream, &cluster.subscribe_only_token)
+        .subscribe_on_with_token(&owner, stream, &cluster.subscribe_only_token())
         .await
         .context("the subscribe-only credential could not subscribe, so the publish check below would prove nothing")?;
 
@@ -277,7 +277,7 @@ pub async fn unauthorized_publish_is_refused(
             &via,
             stream,
             b"denied".to_vec(),
-            &cluster.subscribe_only_token,
+            &cluster.subscribe_only_token(),
         )
         .await
     {

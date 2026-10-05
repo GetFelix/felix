@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use crate::node::{BrokerNode, FAILURE_LOG_LINES};
 use crate::proxy::Links;
-use crate::{ClusterConfig, ControlPlane, session};
+use crate::{ClusterConfig, ControlPlane, Credentials, session};
 
 /// How long any single start-up wait may take before the harness gives up.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -37,16 +37,10 @@ pub struct Cluster {
     pub nodes: Vec<BrokerNode>,
     pub tenant_id: String,
     pub namespace: String,
-    /// Presented to brokers over QUIC.
-    pub client_token: String,
-    /// Presented to the control plane's HTTP API for reads.
-    pub admin_token: String,
-    /// Presented for membership writes, which reads alone cannot do.
-    pub operator_token: String,
-    /// May subscribe, may not publish.
-    pub subscribe_only_token: String,
-    /// Presented to brokers to redrive or discard a dead letter.
-    pub group_operator_token: String,
+    /// Mints every token on use, so none expires while the cluster runs.
+    credentials: Credentials,
+    /// Keeps each broker's token file current; stops with the cluster.
+    _node_token_renewal: tokio_util::task::AbortOnDropHandle<()>,
     http: reqwest::Client,
     /// Kept so a broker that loses the port race can be started again.
     binary: PathBuf,
@@ -71,14 +65,45 @@ impl Cluster {
         &self.control_plane().base_url
     }
 
-    /// Everything another process needs to talk to this cluster.
+    /// What the harness mints its tokens with.
+    pub fn credentials(&self) -> &Credentials {
+        &self.credentials
+    }
+
+    /// Presented to brokers over QUIC. See [`Credentials::client_token`].
+    pub fn client_token(&self) -> String {
+        self.credentials.client_token()
+    }
+
+    /// Presented to the control plane's HTTP API for reads.
+    pub fn admin_token(&self) -> String {
+        self.credentials.admin_token()
+    }
+
+    /// Presented for membership writes, which reads alone cannot do.
+    pub fn operator_token(&self) -> String {
+        self.credentials.operator_token()
+    }
+
+    /// May subscribe, may not publish.
+    pub fn subscribe_only_token(&self) -> String {
+        self.credentials.subscribe_only_token()
+    }
+
+    /// Presented to brokers to redrive or discard a dead letter.
+    pub fn group_operator_token(&self) -> String {
+        self.credentials.group_operator_token()
+    }
+
+    /// Everything another process needs to talk to this cluster. Its tokens
+    /// are fresh as of this call; see [`Credentials::renew_interval`].
     pub fn session(&self) -> session::Session {
         session::Session {
             control_plane: self.control_plane_url().to_string(),
             tenant_id: self.tenant_id.clone(),
             namespace: self.namespace.clone(),
-            client_token: self.client_token.clone(),
-            admin_token: self.admin_token.clone(),
+            client_token: self.client_token(),
+            admin_token: self.admin_token(),
             nodes: self
                 .nodes
                 .iter()

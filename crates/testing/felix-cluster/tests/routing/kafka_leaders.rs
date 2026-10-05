@@ -345,7 +345,7 @@ fn sasl(cluster: &Cluster, bootstrap: &str, args: &[&str]) -> Vec<String> {
         "-X".to_string(),
         format!("sasl.username={}", cluster.tenant_id),
         "-X".to_string(),
-        format!("sasl.password={}", cluster.client_token),
+        format!("sasl.password={}", cluster.client_token()),
     ]);
     all.extend(args.iter().map(|arg| arg.to_string()));
     all

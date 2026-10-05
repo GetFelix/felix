@@ -93,6 +93,13 @@ for what the current release guarantees.
 - A log-backed cache's expiry could delete a value a put had just refreshed,
   when the put was waiting on its fsync as the expiry was written. The expiry
   now waits for a write to the key in flight before it checks. (#976)
+- `felix-cluster up` held for more than an hour lost every control-plane call,
+  teardown included, because its tokens and the brokers' node tokens were
+  minted once with a one-hour life. The harness now mints tokens on use,
+  rewrites each broker's node token file and the session file every half hour.
+  `Cluster`'s `client_token`, `admin_token`, `operator_token`,
+  `subscribe_only_token` and `group_operator_token` fields are now methods, and
+  `ControlPlane`'s token methods moved to `felix_cluster::Credentials`.
 
 ### Fixed
 - A cache follower that dropped a divergent suffix of its cache log, or of its

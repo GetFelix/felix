@@ -587,10 +587,13 @@ async fn publish_until(
     stop: &std::sync::atomic::AtomicBool,
 ) -> (Vec<Vec<u8>>, Vec<String>) {
     let node = cluster.node(via).expect("node");
-    let client =
-        felix_cluster::client::connect(node.client_addr, &cluster.tenant_id, &cluster.client_token)
-            .await
-            .expect("connect");
+    let client = felix_cluster::client::connect(
+        node.client_addr,
+        &cluster.tenant_id,
+        &cluster.client_token(),
+    )
+    .await
+    .expect("connect");
     let publisher = client.publisher().await.expect("publisher");
     let mut acknowledged = Vec::new();
     let mut refused = Vec::new();
@@ -1138,9 +1141,12 @@ async fn a_move_onto_a_restarted_broker_does_not_wait_for_the_catalog_tick() {
 /// the same catalog fetch the broker forwards and ships with.
 async fn advertises(cluster: &Cluster, via: &str, addr: std::net::SocketAddr) -> bool {
     let node = cluster.node(via).expect("node");
-    let Ok(client) =
-        felix_cluster::client::connect(node.client_addr, &cluster.tenant_id, &cluster.client_token)
-            .await
+    let Ok(client) = felix_cluster::client::connect(
+        node.client_addr,
+        &cluster.tenant_id,
+        &cluster.client_token(),
+    )
+    .await
     else {
         return false;
     };

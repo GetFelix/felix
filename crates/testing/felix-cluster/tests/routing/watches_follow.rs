@@ -61,7 +61,7 @@ async fn a_cache_watch_follows_its_shard_to_the_new_owner() {
         felix_cluster::client::connect_cluster(
             &[addr(&owner)],
             &cluster.tenant_id,
-            &cluster.client_token,
+            &cluster.client_token(),
         )
         .await
         .expect("reader"),
@@ -80,7 +80,7 @@ async fn a_cache_watch_follows_its_shard_to_the_new_owner() {
     // Writes through the other broker, which forwards to whichever broker
     // leads, for the whole move.
     let writer =
-        felix_cluster::client::connect(addr(&other), &cluster.tenant_id, &cluster.client_token)
+        felix_cluster::client::connect(addr(&other), &cluster.tenant_id, &cluster.client_token())
             .await
             .expect("writer");
     let acknowledged: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
@@ -226,7 +226,7 @@ async fn a_sharded_cache_watch_follows_each_shard_to_its_new_owner() {
         felix_cluster::client::connect_cluster(
             &[addr(&drained)],
             &cluster.tenant_id,
-            &cluster.client_token,
+            &cluster.client_token(),
         )
         .await
         .expect("reader"),
@@ -243,7 +243,7 @@ async fn a_sharded_cache_watch_follows_each_shard_to_its_new_owner() {
         .expect("watch");
 
     let writer =
-        felix_cluster::client::connect(addr(&other), &cluster.tenant_id, &cluster.client_token)
+        felix_cluster::client::connect(addr(&other), &cluster.tenant_id, &cluster.client_token())
             .await
             .expect("writer");
     let acknowledged: Arc<Mutex<Vec<Write>>> = Arc::default();

@@ -188,6 +188,14 @@ A broker validates every action in a token it is given and rejects the whole
 token if one is not a client-facing action, so a single credential carrying
 `node.view` cannot publish at all.
 
+Every token lives one hour, and none is kept: `Cluster::client_token()`,
+`admin_token()` and the rest mint a fresh one on each call, from the
+`Credentials` the cluster holds. Each broker's node token sits in a file that
+the harness rewrites every half hour, and the broker picks up the new one
+through its `FELIX_NODE_TOKEN_FILE` watch. `up` rewrites the session file on the
+same schedule, so a token copied out of it is good for at least half an hour.
+A cluster held longer than an hour keeps working, teardown included.
+
 ## Faults
 
 `stop_node` kills a broker and waits until the control plane no longer considers

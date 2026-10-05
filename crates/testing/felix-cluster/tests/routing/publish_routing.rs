@@ -45,7 +45,7 @@ async fn a_forwarded_publish_teaches_the_client_where_to_send_the_next_one() {
     let client = felix_cluster::client::connect_cluster(
         &[node.client_addr],
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("connect a cluster client to the non-owner");
@@ -133,7 +133,7 @@ async fn keyed_publishes_learn_each_shard_owner() {
     let client = felix_cluster::client::connect_cluster(
         &[node.client_addr],
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("connect");

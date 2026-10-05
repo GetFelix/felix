@@ -36,16 +36,12 @@ impl Cluster {
             .context("build harness HTTP client")?;
 
         let control_plane = ControlPlane::start(&config.tenant_id).await?;
-        let client_token = control_plane.client_token(&config.tenant_id)?;
-        let admin_token = control_plane.admin_token(&config.tenant_id)?;
-        let operator_token = control_plane.operator_token(&config.tenant_id)?;
-        let subscribe_only_token = control_plane.subscribe_only_token(&config.tenant_id)?;
-        let group_operator_token = control_plane.group_operator_token(&config.tenant_id)?;
+        let credentials = control_plane.credentials(&config.tenant_id);
 
         // Metadata first: a broker syncs streams at startup, and one that starts
         // before its streams exist has to wait for the next sync to become
         // useful. Creating them up front means readiness means what it says.
-        seed_metadata(&http, &control_plane, &config, &admin_token).await?;
+        seed_metadata(&http, &control_plane, &config, &credentials.admin_token()).await?;
 
         let root = tempfile::tempdir().context("create cluster data root")?;
         let binary = broker_binary()?;
@@ -60,6 +56,7 @@ impl Cluster {
                 spawn_broker(
                     &binary,
                     &control_plane,
+                    &credentials,
                     &config,
                     root.path(),
                     index,
@@ -74,11 +71,8 @@ impl Cluster {
             nodes,
             tenant_id: config.tenant_id.clone(),
             namespace: config.namespace.clone(),
-            client_token,
-            admin_token,
-            operator_token,
-            subscribe_only_token,
-            group_operator_token,
+            _node_token_renewal: credentials.spawn_node_token_renewal(),
+            credentials,
             http,
             binary: binary.clone(),
             config: config.clone(),
@@ -171,6 +165,7 @@ impl Cluster {
         let replacement = spawn_broker(
             &self.binary,
             control_plane,
+            &self.credentials,
             &self.config,
             self._root.path(),
             index,

@@ -90,13 +90,13 @@ impl Env {
             "--namespace".into(),
             cluster.namespace.clone(),
             "--token".into(),
-            cluster.client_token.clone(),
+            cluster.client_token(),
             "--ca-file".into(),
             self.ca.display().to_string(),
             "--controlplane-url".into(),
             cluster.control_plane_url().to_string(),
             "--controlplane-token".into(),
-            cluster.admin_token.clone(),
+            cluster.admin_token(),
         ]
     }
 

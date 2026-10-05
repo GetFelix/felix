@@ -17,7 +17,7 @@ impl Cluster {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
-        client::connect(node.client_addr, &self.tenant_id, &self.client_token).await
+        client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await
     }
 
     /// How wide a named broker believes `stream` is.
@@ -29,7 +29,8 @@ impl Cluster {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
-        let client = client::connect(node.client_addr, &self.tenant_id, &self.client_token).await?;
+        let client =
+            client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
         client
             .stream_shards(&self.tenant_id, &self.namespace, stream)
             .await
@@ -39,7 +40,7 @@ impl Cluster {
     /// Publish one record through a named broker, whether or not it owns the
     /// shard.
     pub async fn publish_via(&self, node_id: &str, stream: &str, payload: Vec<u8>) -> Result<()> {
-        self.publish_via_token(node_id, stream, payload, &self.client_token)
+        self.publish_via_token(node_id, stream, payload, &self.client_token())
             .await
     }
 
@@ -51,7 +52,7 @@ impl Cluster {
         stream: &str,
         payload: Vec<u8>,
     ) -> Result<Option<u64>> {
-        self.publish_through(node_id, stream, payload, &self.client_token)
+        self.publish_through(node_id, stream, payload, &self.client_token())
             .await
     }
 
@@ -98,7 +99,8 @@ impl Cluster {
     /// application with a seed list would.
     pub async fn publish_via_any(&self, stream: &str, payload: Vec<u8>) -> Result<()> {
         let client =
-            client::connect_any(&self.broker_addrs(), &self.tenant_id, &self.client_token).await?;
+            client::connect_any(&self.broker_addrs(), &self.tenant_id, &self.client_token())
+                .await?;
         let publisher = client.publisher().await.context("open publisher")?;
         publisher
             .publish(
@@ -124,7 +126,8 @@ impl Cluster {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
-        let client = client::connect(node.client_addr, &self.tenant_id, &self.client_token).await?;
+        let client =
+            client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
         let publisher = client.publisher().await.context("open publisher")?;
         publisher
             .publish_keyed(
@@ -211,7 +214,7 @@ impl Cluster {
         node_id: &str,
         stream: &str,
     ) -> Result<(felix_client::Client, felix_client::Subscription)> {
-        self.subscribe_on_with_token(node_id, stream, &self.client_token)
+        self.subscribe_on_with_token(node_id, stream, &self.client_token())
             .await
     }
 
@@ -247,7 +250,8 @@ impl Cluster {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
-        let client = client::connect(node.client_addr, &self.tenant_id, &self.client_token).await?;
+        let client =
+            client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
         let subscription = client
             .subscribe_from(
                 &self.tenant_id,
@@ -270,7 +274,8 @@ impl Cluster {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
-        let client = client::connect(node.client_addr, &self.tenant_id, &self.client_token).await?;
+        let client =
+            client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
         let subscription = client
             .subscribe_shard(
                 &self.tenant_id,

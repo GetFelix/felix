@@ -22,7 +22,8 @@ impl Cluster {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
-        let client = client::connect(node.client_addr, &self.tenant_id, &self.client_token).await?;
+        let client =
+            client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
         client
             .cache_put(
                 &self.tenant_id,
@@ -46,7 +47,8 @@ impl Cluster {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
-        let client = client::connect(node.client_addr, &self.tenant_id, &self.client_token).await?;
+        let client =
+            client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
         let value = client
             .cache_get(&self.tenant_id, &self.namespace, cache, key)
             .await
@@ -69,7 +71,8 @@ impl Cluster {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
-        let client = client::connect(node.client_addr, &self.tenant_id, &self.client_token).await?;
+        let client =
+            client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
         let watch = client
             .watch_cache_retained(
                 &self.tenant_id,
@@ -94,7 +97,8 @@ impl Cluster {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
-        let client = client::connect(node.client_addr, &self.tenant_id, &self.client_token).await?;
+        let client =
+            client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
         client
             .counter_add(&self.tenant_id, &self.namespace, cache, key, delta)
             .await
@@ -111,7 +115,8 @@ impl Cluster {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
-        let client = client::connect(node.client_addr, &self.tenant_id, &self.client_token).await?;
+        let client =
+            client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
         client
             .counter_get(&self.tenant_id, &self.namespace, cache, key)
             .await

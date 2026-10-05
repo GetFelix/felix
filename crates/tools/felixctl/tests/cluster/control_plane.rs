@@ -24,12 +24,7 @@ async fn listing_and_inspecting_the_control_plane() {
     let run = env.felixctl(&cluster, &["tenant", "ls"]).await;
     assert_eq!(run.code, 4, "{}", run.stderr);
 
-    let cluster_admin = cluster
-        .control_plane
-        .as_ref()
-        .expect("control plane")
-        .cluster_admin_token(&tenant)
-        .expect("mint");
+    let cluster_admin = cluster.credentials().cluster_admin_token();
     let run = env
         .felixctl(
             &cluster,

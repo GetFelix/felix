@@ -38,7 +38,7 @@ async fn a_subscribe_to_a_non_owner_is_redirected() {
     let client = felix_cluster::client::connect(
         cluster.node(&non_owner).expect("the non-owner").client_addr,
         &cluster.tenant_id,
-        &cluster.client_token,
+        &cluster.client_token(),
     )
     .await
     .expect("connect to the non-owner");
@@ -83,9 +83,13 @@ async fn a_cluster_client_follows_the_redirect_to_the_owner() {
     // by following the redirect.
     let seed = cluster.node(&non_owner).expect("the non-owner").client_addr;
     let client = Arc::new(
-        felix_cluster::client::connect_cluster(&[seed], &cluster.tenant_id, &cluster.client_token)
-            .await
-            .expect("connect"),
+        felix_cluster::client::connect_cluster(
+            &[seed],
+            &cluster.tenant_id,
+            &cluster.client_token(),
+        )
+        .await
+        .expect("connect"),
     );
 
     let mut subscription = client
