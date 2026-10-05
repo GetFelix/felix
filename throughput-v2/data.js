@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791157999145,
+  "lastUpdate": 1791159495480,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -24180,6 +24180,58 @@ window.BENCHMARK_DATA = {
             "range": "7924.95",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 981770.18\nmean: 982841.61\nstdev: 7924.95\ncv: 0.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "49b9c81734cd6ea3ecc5c2735c19dad0b9fbde61",
+          "message": "fix(felixctl): escape binary payloads on a terminal (#1027)\n\nsub, cache get and cache watch wrote payload bytes straight to stdout.\nBinary payloads, such as bench latency's, garbled the terminal, and\nescape sequences in a payload could drive it. On a terminal, control\ncharacters and invalid UTF-8 are now escaped; piped output is unchanged.",
+          "timestamp": "2026-10-04T17:11:16-07:00",
+          "tree_id": "4c79d69bab447ee4d046c96ccec4e86d278e9645",
+          "url": "https://github.com/GetFelix/felix/commit/49b9c81734cd6ea3ecc5c2735c19dad0b9fbde61"
+        },
+        "date": 1791159494978,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359794.13,
+            "range": "30436.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359794.13\nmean: 342902.17\nstdev: 30436.01\ncv: 8.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359794.13,
+            "range": "30436.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359794.13\nmean: 342902.17\nstdev: 30436.01\ncv: 8.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82491.42,
+            "range": "2512.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82491.42\nmean: 82004.91\nstdev: 2512.08\ncv: 3.06%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 824914.21,
+            "range": "25120.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 824914.21\nmean: 820049.09\nstdev: 25120.78\ncv: 3.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
