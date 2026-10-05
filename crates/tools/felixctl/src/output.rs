@@ -1,7 +1,8 @@
 //! Printing: human-readable text by default, one compact JSON document per
 //! result (or per message, for `sub` and `watch`) with `--json`.
 
-use std::io::Write;
+use std::borrow::Cow;
+use std::io::{IsTerminal, Write};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -40,9 +41,15 @@ impl Output {
     }
 
     /// Write raw bytes and a newline, for payloads printed as they are.
+    /// On a terminal, bytes that are not printable text are escaped; piped
+    /// output stays byte for byte.
     pub(crate) fn raw_line(&self, bytes: &[u8]) -> anyhow::Result<()> {
         let mut stdout = std::io::stdout().lock();
-        stdout.write_all(bytes)?;
+        if stdout.is_terminal() {
+            stdout.write_all(&for_terminal(bytes))?;
+        } else {
+            stdout.write_all(bytes)?;
+        }
         stdout.write_all(b"\n")?;
         stdout.flush()?;
         Ok(())
@@ -79,6 +86,32 @@ pub(crate) fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
         out.push_str(&line(row.iter().map(String::as_str).collect()));
     }
     out
+}
+
+/// `bytes` with control characters (other than tab) and invalid UTF-8
+/// escaped as `\xNN` or `\u{N}`. Binary payloads written to a terminal
+/// otherwise garble it, and escape sequences in them can drive it.
+pub(crate) fn for_terminal(bytes: &[u8]) -> Cow<'_, [u8]> {
+    let clean = |c: char| !c.is_control() || c == '\t';
+    if std::str::from_utf8(bytes).is_ok_and(|text| text.chars().all(clean)) {
+        return Cow::Borrowed(bytes);
+    }
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for chunk in bytes.utf8_chunks() {
+        for c in chunk.valid().chars() {
+            if clean(c) {
+                out.push(c);
+            } else if c.is_ascii() {
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            } else {
+                out.push_str(&format!("\\u{{{:x}}}", c as u32));
+            }
+        }
+        for b in chunk.invalid() {
+            out.push_str(&format!("\\x{b:02x}"));
+        }
+    }
+    Cow::Owned(out.into_bytes())
 }
 
 /// A payload as a JSON field: `payload` holding the text when it is UTF-8,
