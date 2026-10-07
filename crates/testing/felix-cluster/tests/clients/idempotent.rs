@@ -324,6 +324,8 @@ async fn a_cancelled_publish_still_lands_once_and_the_producer_carries_on() -> R
     {
         records.push(event.payload.to_vec());
     }
+    // The harness's own readiness probe may be on the stream too.
+    records.retain(|record| record != b"harness-probe");
     assert_eq!(
         records,
         vec![b"landed".to_vec(), b"cancelled".to_vec(), b"next".to_vec()],
