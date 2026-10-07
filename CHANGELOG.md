@@ -12,6 +12,24 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- Delivered events and group records can carry the record's append time, and
+  a client can look up an offset by time (#975). A subscriber that offers
+  `FLAG_EVENT_BATCH_TIMESTAMPS` (`0x4000`) gets a `u64` of microseconds before
+  each event on batches from a durable stream, the same live and on replay. A
+  broker advertising `FEATURE_RECORD_TIMESTAMPS` (`0x400_0000`) answers
+  `offset_for_time` with `offset_value`: the first offset on a shard appended
+  at or after a time, found by the binary search the Kafka listener's
+  `ListOffsets` now shares through `StreamLog::offset_for_time`. A client that
+  offers the feature gets `timestamp_micros` on group records. Nobody else's
+  frames change, and no storage format changes. In felix-client, set
+  `ClientConfig::timestamps` and read `Event::timestamp_micros`; call
+  `Client::offset_for_time` and subscribe at the answer. Times are the leading
+  broker's clock: a follower stamps the records it replicates with its own, so
+  after a failover they shift by the replication delay. Breaking for callers of
+  felix-broker's `StreamLog::begin_append`, `begin_append_marked` and
+  `continue_batch`, which now take the batch's `timestamp_micros`; felix-wire's
+  `EventBatchMeta`, `EventBatch`, `SharedEventBatch` and `GroupRecord` gain a
+  field.
 - Nightly builds. `nightly.yml` builds the newest green commit on main through
   `release.yml` once a day, smoke-tests the images with a publish and
   subscribe, and publishes to GitHub only: images as `nightly` and

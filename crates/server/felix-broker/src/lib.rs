@@ -80,4 +80,4 @@ pub use queue::{
 };
 
 // Durability.
-pub use durable::{DurableStorage, StreamLog};
+pub use durable::{DurableStorage, StreamLog, append_time_now};

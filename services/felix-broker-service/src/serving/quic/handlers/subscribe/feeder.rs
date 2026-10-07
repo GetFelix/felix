@@ -21,6 +21,7 @@ fn encode_batch(
     base_offset: Option<u64>,
     skipped_before: u64,
     publisher: Option<&Bytes>,
+    timestamps: Option<&[u64]>,
 ) -> felix_wire::Result<Bytes> {
     let base_offset = base_offset.filter(|_| config.offsets_enabled);
     let meta = felix_wire::binary::EventBatchMeta {
@@ -33,6 +34,7 @@ fn encode_batch(
         publisher: publisher
             .filter(|_| config.publisher_enabled)
             .map(Bytes::as_ref),
+        timestamps: timestamps.filter(|_| config.timestamps_enabled),
     };
     felix_wire::binary::encode_shared_event_batch_bytes_with_meta(batch, meta)
 }
@@ -123,12 +125,16 @@ pub(super) async fn run_lane_feeder(
                 } else {
                     0
                 };
+                let times = envelope
+                    .timestamp_micros()
+                    .map(|time| vec![time; batch.len()]);
                 let encoded = encode_batch(
                     &config,
                     batch,
                     envelope.base_offset().map(|base| base + start as u64),
                     skipped,
                     envelope.publisher(),
+                    times.as_deref(),
                 );
                 match encoded {
                     Ok(frame) => {
@@ -167,6 +173,15 @@ pub(super) async fn run_lane_feeder(
         let batch_skipped = envelope.skipped_before();
         // One publisher describes the frame, so a different one ends it.
         let batch_publisher = envelope.publisher().cloned();
+        // Each coalesced publish brings its own time.
+        let mut batch_times = envelope
+            .timestamp_micros()
+            .filter(|_| config.timestamps_enabled)
+            .map(|time| {
+                let mut times = Vec::with_capacity(max_events);
+                times.push(time);
+                times
+            });
         let mut expected_next = batch_base.map(|base| base + envelope.len() as u64);
         // Wait for more only while the previous batch found events already
         // queued behind its first, i.e. arrivals outpace this feeder. Otherwise a
@@ -209,6 +224,11 @@ pub(super) async fn run_lane_feeder(
                 pending = Some(envelope);
                 break;
             }
+            // A frame carries a time for every event or for none.
+            if batch_times.is_some() && envelope.timestamp_micros().is_none() {
+                pending = Some(envelope);
+                break;
+            }
             let payload = envelope.payloads()[0].clone();
             if batch_bytes.saturating_add(payload.len()) > max_bytes {
                 pending = Some(envelope);
@@ -216,6 +236,9 @@ pub(super) async fn run_lane_feeder(
             }
             batch_bytes += payload.len();
             batch.push(payload);
+            if let (Some(times), Some(time)) = (batch_times.as_mut(), envelope.timestamp_micros()) {
+                times.push(time);
+            }
             expected_next = expected_next.map(|next| next + 1);
         }
         busy = found_queued;
@@ -229,6 +252,7 @@ pub(super) async fn run_lane_feeder(
             batch_base,
             batch_skipped,
             batch_publisher.as_ref(),
+            batch_times.as_deref(),
         );
         let frame = match encoded {
             Ok(frame) => frame,

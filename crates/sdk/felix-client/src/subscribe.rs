@@ -115,6 +115,7 @@ impl Subscription {
                 offset,
                 skipped_before,
                 publisher,
+                timestamp_micros,
             } => {
                 record_e2e_latency(
                     &payload,
@@ -129,6 +130,7 @@ impl Subscription {
                     offset,
                     skipped_before,
                     publisher,
+                    timestamp_micros,
                 }))
             }
             QueuedEvent::Error(err) => Err(err),
@@ -202,6 +204,11 @@ pub struct Event {
     /// payload's contents, and a principal allowed to publish can publish
     /// anything.
     pub publisher: Option<Arc<str>>,
+    /// When the broker appended this event's record, in microseconds since
+    /// the Unix epoch, by the clock of the broker that led the shard. `None`
+    /// unless [`crate::ClientConfig::timestamps`] asked for it, and for an
+    /// in-memory stream, which stores no time.
+    pub timestamp_micros: Option<u64>,
 }
 
 /// Where a subscription's shard went, sent by the broker as the last frame
@@ -230,6 +237,7 @@ enum QueuedEvent {
         offset: Option<u64>,
         skipped_before: u64,
         publisher: Option<Arc<str>>,
+        timestamp_micros: Option<u64>,
     },
     Error(anyhow::Error),
 }

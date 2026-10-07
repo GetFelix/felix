@@ -271,6 +271,7 @@ impl GroupReader {
                             attempts,
                             skipped_before,
                             publisher: record.publisher,
+                            timestamp_micros: record.timestamp_micros,
                         })
                     }
                     // The offset is below the tail and yet holds nothing. Give
@@ -828,6 +829,8 @@ pub struct Claimed {
     pub skipped_before: u64,
     /// The principal that published the record, when the log stored one.
     pub publisher: Option<bytes::Bytes>,
+    /// When the record was appended, in microseconds since the Unix epoch.
+    pub timestamp_micros: u64,
 }
 
 #[cfg(test)]

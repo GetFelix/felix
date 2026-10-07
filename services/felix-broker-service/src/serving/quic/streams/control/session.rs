@@ -172,6 +172,9 @@ pub(super) async fn authenticate(
                             // Both cache stores keep versions, so every
                             // broker can answer a conditional write.
                             | felix_wire::FEATURE_CACHE_CONDITIONAL
+                            // Every durable record stores its append time; an
+                            // in-memory stream is answered with an error.
+                            | felix_wire::FEATURE_RECORD_TIMESTAMPS
                             // Codes are sent only to a client that offered
                             // the bit; advertising it tells that client an
                             // error without one is not a gap in this broker.

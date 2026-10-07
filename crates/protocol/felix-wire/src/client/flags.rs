@@ -145,6 +145,16 @@ pub const FLAG_BINARY_PUBLISH_ACK_OFFSET: u16 = 0x1000;
 /// advertised it in `Auth.client_flags`.
 pub const FLAG_EVENT_BATCH_PUBLISHER: u16 = 0x2000;
 
+/// Modifier on either event-batch flag: every event is preceded by the `u64`
+/// time its record was appended, in microseconds since the Unix epoch.
+///
+/// Per event rather than per batch because a batch read from history can
+/// span several publishes. Set only on a batch whose records have stored
+/// times, which in-memory streams do not, so any other batch is
+/// byte-identical to the frame without this bit. Only sent to a client that
+/// advertised it in `Auth.client_flags`.
+pub const FLAG_EVENT_BATCH_TIMESTAMPS: u16 = 0x4000;
+
 /// Every flag bit this version understands.
 ///
 /// Frames carrying bits outside this mask are rejected rather than parsed with
@@ -168,7 +178,8 @@ pub const KNOWN_FLAGS: u16 = FLAG_BINARY_PUBLISH_BATCH
     | FLAG_BINARY_PUBLISH_ACK_DETAIL
     | FLAG_EVENT_BATCH_SKIPPED
     | FLAG_BINARY_PUBLISH_ACK_OFFSET
-    | FLAG_EVENT_BATCH_PUBLISHER;
+    | FLAG_EVENT_BATCH_PUBLISHER
+    | FLAG_EVENT_BATCH_TIMESTAMPS;
 
 /// The flag bits that existed before capability negotiation.
 ///

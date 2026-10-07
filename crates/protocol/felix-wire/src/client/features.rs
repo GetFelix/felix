@@ -278,6 +278,16 @@ pub const FEATURE_GROUP_ADMIN: u32 = 0x0100_0000;
 /// any other client's gets are byte-identical to what they were.
 pub const FEATURE_CACHE_CONDITIONAL: u32 = 0x0200_0000;
 
+/// Record append times: the broker answers `offset_for_time`, and a group
+/// record carries `timestamp_micros`.
+///
+/// Advertised by a *broker*: `offset_for_time` is a request, and an older
+/// broker has no arm for it. Offered by a *client*: the time rides
+/// `group_record` only for a client that offered the bit, so any other
+/// client's records are byte-identical to what they were. The event batch
+/// counterpart is the frame flag `FLAG_EVENT_BATCH_TIMESTAMPS`.
+pub const FEATURE_RECORD_TIMESTAMPS: u32 = 0x0400_0000;
+
 /// Every feature bit this version implements.
 pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_REDIRECT
@@ -304,7 +314,8 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_GROUP_SKIPPED
     | FEATURE_GROUP_PUBLISHER
     | FEATURE_GROUP_ADMIN
-    | FEATURE_CACHE_CONDITIONAL;
+    | FEATURE_CACHE_CONDITIONAL
+    | FEATURE_RECORD_TIMESTAMPS;
 
 /// True if `features` advertises `feature`.
 pub fn supports_feature(features: u32, feature: u32) -> bool {
