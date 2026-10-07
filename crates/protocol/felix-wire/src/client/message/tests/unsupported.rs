@@ -112,3 +112,19 @@ fn stream_shards_view_only_names_a_routing_mode_that_is_not_modulo() {
     let frame = jump.encode().unwrap();
     assert_eq!(Message::decode(frame).unwrap(), jump);
 }
+
+#[test]
+fn an_extension_body_keeps_its_floats_exact() {
+    // The default serde_json float parser can land one ulp off on long
+    // literals, so a body passed on after decoding would carry another number.
+    let frame = Frame::new(
+        0,
+        Bytes::from_static(
+            br#"{"type":"extension","name":"acme.x","body":[44200000000000000000000000000000000000000042444444444]}"#,
+        ),
+    )
+    .unwrap();
+    let message = Message::decode(frame).unwrap();
+    let again = Message::decode(message.encode().unwrap()).unwrap();
+    assert_eq!(again, message);
+}

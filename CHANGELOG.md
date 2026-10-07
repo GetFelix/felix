@@ -87,6 +87,9 @@ for what the current release guarantees.
   `delete_if`, `get_versioned`), and `CacheOp::Put` a `version` field. (#976)
 
 ### Fixed
+- JSON numbers survive a decode and re-encode exactly. serde_json's default
+  float parser could land a long literal one ulp off, so an extension body the
+  broker passed on carried a different number. Nightly fuzzing found it.
 - `felixctl sub`, `cache get` and `cache watch` escape binary payloads on a
   terminal (`\x00`, `\u{85}`) instead of writing raw bytes that garble it;
   piped output is unchanged. `felixctl bench latency` payloads showed it.
