@@ -85,11 +85,23 @@ for what the current release guarantees.
   a cache. Records a client writes are unchanged. (#976)
 - `felix_storage::StorageApi` has three new required methods (`put_if`,
   `delete_if`, `get_versioned`), and `CacheOp::Put` a `version` field. (#976)
+- Breaking, Rust API: `IdempotentProducer` owns its client and has no
+  lifetime parameter. `Client::idempotent_producer` and
+  `ClusterClient::idempotent_producer` take `self: &Arc<Self>`, so wrap the
+  client in an `Arc` first. The producer can now be stored or moved into a
+  task. (#977)
 
 ### Fixed
 - JSON numbers survive a decode and re-encode exactly. serde_json's default
   float parser could land a long literal one ulp off, so an extension body the
   broker passed on carried a different number. Nightly fuzzing found it.
+- Dropping an `IdempotentProducer` publish no longer ends the producer. The
+  producer sends from a task of its own and a call waits on it, so a call
+  dropped by a timeout, a `select!` or a hung-up handler still runs to its
+  answer and the next batch goes out under the next sequence. A batch left in
+  doubt with nobody waiting is re-sent by the producer, under its sequence,
+  before the next batch on that shard. Dropping the producer lets what it was
+  handed finish; `IdempotentProducer::close` waits for it. (#977)
 - `felixctl sub`, `cache get` and `cache watch` escape binary payloads on a
   terminal (`\x00`, `\u{85}`) instead of writing raw bytes that garble it;
   piped output is unchanged. `felixctl bench latency` payloads showed it.

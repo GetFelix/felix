@@ -5,6 +5,7 @@
 //! Through the client-facing API, on a `Quorum` stream replicated three ways,
 //! because that is the case the feature exists for: a `Quorum` publish whose
 //! acknowledgement never arrived, re-sent without a second copy landing.
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -69,6 +70,7 @@ async fn a_re_sent_batch_lands_once() -> Result<()> {
         &cluster.client_token(),
     )
     .await?;
+    let cluster_client = Arc::new(cluster_client);
     let producer = cluster_client.idempotent_producer().await?;
 
     for i in 0..5u32 {
@@ -136,6 +138,7 @@ async fn a_non_leader_names_the_leader() -> Result<()> {
         &cluster.client_token(),
     )
     .await?;
+    let direct = Arc::new(direct);
     let producer = direct.idempotent_producer().await?;
     let err = producer
         .publish(
@@ -275,6 +278,7 @@ async fn a_cancelled_publish_stops_the_producer_rather_than_reusing_its_sequence
         &cluster.client_token(),
     )
     .await?;
+    let cluster_client = Arc::new(cluster_client);
     let producer = cluster_client.idempotent_producer().await?;
 
     // One that lands, so the producer is past its first sequence and the
@@ -353,7 +357,7 @@ async fn a_cancelled_publish_stops_the_producer_rather_than_reusing_its_sequence
 /// Publish `record-0..count` through `producer`, one batch each.
 async fn publish_records(
     cluster: &Cluster,
-    producer: &felix_client::IdempotentProducer<'_>,
+    producer: &felix_client::IdempotentProducer,
     range: std::ops::Range<u32>,
 ) -> Result<()> {
     for i in range {
@@ -417,6 +421,7 @@ async fn a_producer_keeps_its_sequence_across_a_planned_move() -> Result<()> {
         &cluster.client_token(),
     )
     .await?;
+    let cluster_client = Arc::new(cluster_client);
     let producer = cluster_client.idempotent_producer().await?;
     publish_records(&cluster, &producer, 0..5).await?;
 
@@ -453,6 +458,7 @@ async fn a_producer_keeps_its_sequence_when_its_leader_dies() -> Result<()> {
         .collect();
     let cluster_client =
         client::connect_cluster(&survivors, &cluster.tenant_id, &cluster.client_token()).await?;
+    let cluster_client = Arc::new(cluster_client);
     let producer = cluster_client.idempotent_producer().await?;
     // Acknowledged only once a majority holds each batch.
     publish_records(&cluster, &producer, 0..5).await?;
@@ -507,6 +513,7 @@ async fn a_producer_publishing_through_its_leaders_death_loses_and_repeats_nothi
         &cluster.client_token(),
     )
     .await?;
+    let cluster_client = Arc::new(cluster_client);
     let producer = cluster_client.idempotent_producer().await?;
     let tenant = cluster.tenant_id.clone();
     let namespace = cluster.namespace.clone();
@@ -577,6 +584,7 @@ async fn a_pipelining_producer_loses_and_repeats_nothing_through_its_leaders_dea
         &cluster.client_token(),
     )
     .await?;
+    let cluster_client = Arc::new(cluster_client);
     let producer = cluster_client.idempotent_producer().await?;
     let tenant = cluster.tenant_id.clone();
     let namespace = cluster.namespace.clone();

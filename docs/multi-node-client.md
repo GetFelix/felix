@@ -135,8 +135,10 @@ leading next answers the batch in flight, whether it got there by failover or
 by a planned move, and the producer carries on. What it does not cover is a
 producer the shard has forgotten (retention removed all its batches) or an
 in-memory stream's new leader: the broker says `unknown_producer`, and the
-producer ends on that stream with a typed refusal rather than guessing. See
-`docs/protocol.md`, "Idempotent producers".
+producer ends on that stream with a typed refusal rather than guessing. The
+producer holds an `Arc` of its client and sends from a task of its own, so a
+caller that stops waiting does not cancel a publish or leave its sequence in
+doubt. See `docs/protocol.md`, "Idempotent producers".
 
 **A single-shard subscription does not survive a failover.** It is bound to the
 connection it was created on. Record `Event.offset` as you go and resubscribe
