@@ -152,7 +152,16 @@ impl Running {
         let mut config = build_client_config(self.cert.clone())?;
         config.auth_tenant_id = Some("t1".to_string());
         config.auth_token = self.tokens.get(token).cloned();
-        Client::connect(self.addr, "localhost", config).await
+        // The group tests poll straight after an acked publish. By default the
+        // broker acks a publish once it is queued, before the write, and a poll
+        // that lands first misses it. Commit acks make the ack mean written.
+        config.ack_on_commit = true;
+        let client = Client::connect(self.addr, "localhost", config).await?;
+        anyhow::ensure!(
+            client.supports_ack_on_commit(),
+            "the broker did not take commit acks"
+        );
+        Ok(client)
     }
 
     /// Stop serving, the way a process going away does.

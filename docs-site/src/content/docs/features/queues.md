@@ -47,6 +47,13 @@ loop {
 
 An empty batch means nothing was available, not an error.
 
+A poll sees a record once it is written, which is not always when its publish
+was acknowledged. A broker with `ack_on_commit` off (the default) acknowledges
+a `Leader` stream's publish when it is queued, so a poll sent right after the
+ack can come back without it. The next poll gets it. If a consumer has to see
+everything acknowledged so far, publish with commit acks: `ack_on_commit: true`
+in the producer's `ClientConfig`, or `FELIX_ACK_ON_COMMIT=true` on the broker.
+
 ## What the broker guarantees
 
 **A record is held by one consumer at a time.** While a claim stands, no other

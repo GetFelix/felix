@@ -117,6 +117,12 @@ comes back as `shard_unavailable`, and a loss after an ack is counted in
 `felix_broker_acked_publishes_dropped_total`. For an acknowledgement that
 means the record is on disk, set `ack_on_commit: true` or use `Quorum`.
 
+An ack sent on enqueue does not make the record readable yet either. A history
+read, a replay or a consumer-group poll sent right after it can miss the record
+until it is written. A client that has to read what it was told is acknowledged
+can ask for commit acks on its own connections (`ack_on_commit: true` in its
+`ClientConfig`) without changing the broker's default.
+
 Under **`Quorum`**, the leader writes durably, ships the record to its replicas
 concurrently, and answers once a **majority of the replica set, counting
 itself**, holds it. On a set of three that is two, so one unreachable replica

@@ -114,6 +114,12 @@ for what the current release guarantees.
   the control plane's), and that a clock step and `Quorum` with
   `majority_ack` are not exposed. A cluster test pins that a `Leader` stream
   refuses writes on a lapsed lease after `majority_ack` is finalized. (#1008)
+- A publish acknowledged on enqueue (a `Leader` stream with `ack_on_commit`
+  off, the default) is not readable until it is written, so a group poll,
+  history read or replay sent right after the ack can miss it. Stated in the
+  semantics and queues pages and on `Client::group_poll`. The end-to-end group
+  tests in `cache_durability` now publish with commit acks; they assumed
+  otherwise and failed intermittently. (#1025)
 
 ## [0.6.0-preview.2] - 2026-10-04
 
