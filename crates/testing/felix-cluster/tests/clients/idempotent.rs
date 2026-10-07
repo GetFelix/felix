@@ -255,21 +255,17 @@ async fn a_gap_is_refused_with_the_expected_sequence() -> Result<()> {
     Ok(())
 }
 
-/// A cancelled publish stops the producer rather than silently losing records.
+/// A cancelled publish still runs to its answer, and the producer carries on.
 ///
 /// The sequence mechanism makes a re-send safe *because the number does not
-/// move*. That holds only while the client knows whether the number was used.
-/// Drop the publish future mid-flight and it does not: the batch may have
-/// landed under that sequence, and the cursor still points at it.
-///
-/// Without the guard, the next batch goes out under the spent number, the
-/// broker answers a remembered sequence from memory **without appending**, and
-/// the caller is told `Ok` while its records are discarded. This asserts the
-/// producer refuses instead — the loss is not recoverable, so the only honest
-/// answer is to stop.
+/// move*, which holds only while the producer knows whether the number was
+/// used. The producer's own task finishes the send whether or not the caller
+/// still waits, so dropping the future mid-flight neither leaves the sequence
+/// in doubt nor lets the next batch go out under a spent number, where the
+/// broker would answer it from memory without appending it.
 #[tokio::test]
 #[serial]
-async fn a_cancelled_publish_stops_the_producer_rather_than_reusing_its_sequence() -> Result<()> {
+async fn a_cancelled_publish_still_lands_once_and_the_producer_carries_on() -> Result<()> {
     let cluster = Cluster::start(config()).await?;
     let owner = cluster.owner(STREAM).await?;
     let cluster_client = client::connect_cluster(
@@ -300,39 +296,27 @@ async fn a_cancelled_publish_stops_the_producer_rather_than_reusing_its_sequence
             &cluster.tenant_id,
             &cluster.namespace,
             STREAM,
-            b"in-doubt".to_vec(),
+            b"cancelled".to_vec(),
         ),
     )
     .await;
     assert!(cancelled.is_err(), "the publish was meant to be cancelled");
 
-    // Different records under what may be a spent sequence. This is the call
-    // that used to answer `Ok` and drop them.
-    let after = producer
+    // Different records next. Under a reused sequence these would be
+    // answered `Ok` and dropped.
+    producer
         .publish(
             &cluster.tenant_id,
             &cluster.namespace,
             STREAM,
-            b"would-be-lost".to_vec(),
+            b"next".to_vec(),
         )
-        .await;
+        .await
+        .context("the producer must carry on after a cancelled publish")?;
 
-    let err = after.expect_err("publishing after a cancelled batch must not report success");
-    let message = format!("{err:#}");
-    assert!(
-        message.contains("cancelled before the broker answered"),
-        "the refusal must say why the producer stopped: {message}",
-    );
-
-    // And the records that did land are intact: refusing is not the same as
-    // damaging what came before.
-    //
-    // A tolerant drain rather than `replay`, which refuses an extra record.
-    // Here an extra is the expected outcome and half the point: the cancelled
-    // batch usually *does* land, which is precisely why reusing its sequence
-    // would have discarded the next one. Whether it lands is a race with the
-    // cancellation, so neither count is asserted -- only that nothing before it
-    // was disturbed, and that the refused batch is nowhere on the stream.
+    // A tolerant drain rather than `replay`, so a missing cancelled batch
+    // reads as that rather than as a short stream. It is handed to the
+    // producer on the future's first poll, so it should be there.
     let (_client, mut subscription) = cluster.replay_on(&owner, STREAM).await?;
     let mut records: Vec<Vec<u8>> = Vec::new();
     while let Ok(Ok(Some(event))) =
@@ -340,14 +324,10 @@ async fn a_cancelled_publish_stops_the_producer_rather_than_reusing_its_sequence
     {
         records.push(event.payload.to_vec());
     }
-    assert!(
-        records.iter().any(|record| record == b"landed"),
-        "the batch that completed before the cancellation is missing: {records:?}",
-    );
-    assert!(
-        !records.iter().any(|record| record == b"would-be-lost"),
-        "the refused batch reached the stream, so the refusal was not the reason \
-         it did not: {records:?}",
+    assert_eq!(
+        records,
+        vec![b"landed".to_vec(), b"cancelled".to_vec(), b"next".to_vec()],
+        "each batch once, in the order it was handed over",
     );
 
     cluster.shutdown().await;
