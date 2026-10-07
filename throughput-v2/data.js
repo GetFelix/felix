@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791167844418,
+  "lastUpdate": 1791411560776,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -24388,6 +24388,58 @@ window.BENCHMARK_DATA = {
             "range": "5253.74",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 816229.52\nmean: 817679.42\nstdev: 5253.74\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "128fa5e9bf7989bac483aae765b97fcbb7030114",
+          "message": "build(deps): bump clap_mangen from 0.2.33 to 0.3.3 (#1032)\n\nBumps [clap_mangen](https://github.com/clap-rs/clap) from 0.2.33 to 0.3.3.\n- [Release notes](https://github.com/clap-rs/clap/releases)\n- [Changelog](https://github.com/clap-rs/clap/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/clap-rs/clap/compare/clap_mangen-v0.2.33...clap_mangen-v0.3.3)\n\n---\nupdated-dependencies:\n- dependency-name: clap_mangen\n  dependency-version: 0.3.3\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-07T15:05:42-07:00",
+          "tree_id": "f776be1dfb52caa9a4918a4c0dc859c2b5c409f3",
+          "url": "https://github.com/GetFelix/felix/commit/128fa5e9bf7989bac483aae765b97fcbb7030114"
+        },
+        "date": 1791411560176,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 348973.65,
+            "range": "10173.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348973.65\nmean: 344547.07\nstdev: 10173.80\ncv: 2.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 348973.65,
+            "range": "10173.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348973.65\nmean: 344547.07\nstdev: 10173.80\ncv: 2.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80213.24,
+            "range": "443.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80213.24\nmean: 80143.87\nstdev: 443.64\ncv: 0.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 802132.4,
+            "range": "4436.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 802132.40\nmean: 801438.70\nstdev: 4436.41\ncv: 0.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
