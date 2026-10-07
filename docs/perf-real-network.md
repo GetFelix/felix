@@ -163,6 +163,7 @@ scenarios only a real network can ask:
 | Keyed watch: change-to-delivery latency at watcher fanout {1, 50, 500} | T1 | The fanout claim of the composed semantics |
 | Queue drain: enqueue-to-delivery latency and drain throughput through one consumer group | T1 | What the queue semantics cost, with redeliveries counted rather than folded in |
 | Retained join: time-to-complete-state vs roster size {10², 10³, 10⁴} | T1 | What "join and hold the roster" costs |
+| Subscribe-only fanout (`subscribe`) on one generator, fed by `ingest` on another | T1 | Delivered rate, drops and delivery latency with the publishers on a separate machine, so subscribers and publishers do not share a CPU |
 | Leader vs Quorum publish latency, same stream shape | T2 | What the acknowledgement guarantee costs across zones |
 | Failover blackout: kill the leader mid-load, measure publish gap and watch re-establishment | T2 | The ~1s local failover claim, on real infrastructure |
 | Replication lag under sustained load | T2 | The `Leader` loss-window, observed not asserted |
