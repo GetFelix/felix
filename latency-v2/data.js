@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791450610336,
+  "lastUpdate": 1791452639985,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -31680,6 +31680,72 @@ window.BENCHMARK_DATA = {
             "range": "344.12",
             "unit": "us",
             "extra": "trials: 5\nmedian: 391.00\nmean: 527.80\nstdev: 344.12\ncv: 65.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c7b2efbf1171a0599f9e73af1ab717998d4598fb",
+          "message": "feat(wire,broker,client): let a subscriber size its own broker queue (#1019) (#1056)\n\nA subscribe may carry queue_capacity, counted in published batches. A broker\nadvertising FEATURE_SUBSCRIBE_QUEUE (0x4000_0000) clamps it to\n1..=FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX (default 4096) and echoes the grant\non subscribed. Frames without the field are byte-identical to before, and\nORIGINAL_V1_FLAGS is unchanged.\n\nOnly the size is the subscriber's. The overflow policy stays the stream's:\na subscriber that could pick Block could stall every publisher on its shard.\n\n- Broker: Broker::subscribe_sized and subscribe_from_sized; the stream's\n  default capacity and policy apply when none is given.\n- Client: ClientConfig::broker_sub_queue_capacity, sent only to a broker\n  advertising the bit, and Subscription::queue_capacity for the grant.\n- Docs: DropOld is accepted but behaves as DropNew at every stage; the\n  status table and references no longer present it as working.\n\nSpec-Unaffected: the model covers leases, offsets and the quorum mark; a subscriber queue size changes only how much one reader buffers.",
+          "timestamp": "2026-10-08T02:37:02-07:00",
+          "tree_id": "d82e2f85698548d37bca151b95167d2292b52f68",
+          "url": "https://github.com/GetFelix/felix/commit/c7b2efbf1171a0599f9e73af1ab717998d4598fb"
+        },
+        "date": 1791452636185,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 70,
+            "range": "1.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 70.00\nmean: 70.60\nstdev: 1.82\ncv: 2.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 94,
+            "range": "2.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 94.00\nmean: 93.00\nstdev: 2.92\ncv: 3.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 127,
+            "range": "39.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 127.00\nmean: 138.40\nstdev: 39.45\ncv: 28.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 86.80\nstdev: 1.64\ncv: 1.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 206,
+            "range": "6.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 206.00\nmean: 203.40\nstdev: 6.43\ncv: 3.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 295,
+            "range": "366.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 295.00\nmean: 453.20\nstdev: 366.59\ncv: 80.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
