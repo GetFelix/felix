@@ -8,6 +8,7 @@ policies and role assignments, moves shards and drains brokers, and runs load
 tests.
 
 ```bash
+brew install getfelix/tap/felixctl          # macOS or Linux, releases after 0.6.0-preview.2
 cargo install felixctl --version 0.6.0-preview.2
 
 felixctl context add local --brokers 127.0.0.1:5000 --tenant t1 \

@@ -16,14 +16,25 @@ Its data-plane commands use only the public API of the Rust client
 
 ## Install
 
-Starting with 0.6.0-preview, each release publishes felixctl in three forms,
-plus a Homebrew formula.
+Each release publishes felixctl as a crate, prebuilt archives and a
+container image. Releases after 0.6.0-preview.2 also publish a Homebrew
+formula.
 
-With Homebrew, on macOS or Linux, which also installs the shell completions
-and man pages:
+With Homebrew, on macOS or Linux:
 
 ```bash
 brew install getfelix/tap/felixctl
+felixctl --version
+```
+
+The formula lives in [GetFelix/homebrew-tap](https://github.com/GetFelix/homebrew-tap)
+and installs the binary, the man pages (`man felixctl`) and completions for
+bash, zsh and fish, which work once Homebrew's completion setup is in your
+shell profile. Each release updates the formula:
+
+```bash
+brew update && brew upgrade felixctl
+brew uninstall felixctl     # and `brew untap getfelix/tap` to drop the tap
 ```
 
 From crates.io, which puts `felixctl` in `~/.cargo/bin`:

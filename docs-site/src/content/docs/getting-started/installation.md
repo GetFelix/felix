@@ -9,6 +9,11 @@ images (see [Docker](#docker-alternative)). Everything else, including the
 demos, the local cluster tool and the clients, builds from source. That takes
 a Rust toolchain and a few minutes.
 
+To install only the command-line tool, use Homebrew
+(`brew install getfelix/tap/felixctl`), cargo or a release archive; see
+[felixctl](/getting-started/felixctl/#install). The rest of this page builds
+Felix from source.
+
 ## System Requirements
 
 - **Operating System:** Linux, macOS, or Windows (WSL2 recommended)
