@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791416725414,
+  "lastUpdate": 1791419504188,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -24492,6 +24492,58 @@ window.BENCHMARK_DATA = {
             "range": "4678.38",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 815511.68\nmean: 814432.21\nstdev: 4678.38\ncv: 0.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "48ac976cd9228070cd1177f064a163ec37f68c10",
+          "message": "fix(wire): parse JSON floats exactly so a decoded message re-encodes unchanged (#1036)\n\nThe nightly client_message fuzz target found an extension body whose long\nnumber literal came back one ulp off after decode and re-encode. Enable\nserde_json's float_roundtrip workspace-wide.",
+          "timestamp": "2026-10-07T16:35:52-07:00",
+          "tree_id": "da26747f4daf8450ef0a26b304ac717d02dc5fd3",
+          "url": "https://github.com/GetFelix/felix/commit/48ac976cd9228070cd1177f064a163ec37f68c10"
+        },
+        "date": 1791419503171,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 362579.34,
+            "range": "21962.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362579.34\nmean: 357593.44\nstdev: 21962.37\ncv: 6.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 362579.34,
+            "range": "21962.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362579.34\nmean: 357593.44\nstdev: 21962.37\ncv: 6.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83956,
+            "range": "1189.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83956.00\nmean: 84279.05\nstdev: 1189.10\ncv: 1.41%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 839559.97,
+            "range": "11890.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 839559.97\nmean: 842790.48\nstdev: 11890.97\ncv: 1.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
