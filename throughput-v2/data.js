@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791463313607,
+  "lastUpdate": 1791467366100,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -25220,6 +25220,58 @@ window.BENCHMARK_DATA = {
             "range": "4255.29",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 838361.86\nmean: 837953.53\nstdev: 4255.29\ncv: 0.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3635e15fb2b29e6a7ea9088f70ebbd73a474126e",
+          "message": "perf(broker): send commit acks from the task that settles the publish (#926) (#1062)\n\n* perf(broker): send commit acks from the task that settles the publish (#926)\n\nA publish acknowledged on commit is answered by the commit task (or the\nexecutor, for an in-memory write) straight onto the control stream's\nwriter queue. The per-stream ack-waiter task, its oneshot per publish and\nits per-publish timeout are gone; one deadline sweep per stream times out\nowed acks. The writer sends every answer already queued in one write.\n\nAcks still never precede durability, a pipelining client still gets them\nin request order, and a failed, dropped or timed-out publish still gets\nits error. The test-only subscriber event_writer is removed.\n\n* chore: mark the ack hand-off change as outside the model\n\nSpec-Unaffected: changes which task delivers a publish ack, not when; an ack is still sent only after the record commits under the stream's mode, so acked records and the quorum mark are unchanged.",
+          "timestamp": "2026-10-08T06:43:12-07:00",
+          "tree_id": "6dfc0bf6b191452e49b8b9e8ae00d7d4cb811430",
+          "url": "https://github.com/GetFelix/felix/commit/3635e15fb2b29e6a7ea9088f70ebbd73a474126e"
+        },
+        "date": 1791467365451,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 364551.66,
+            "range": "12477.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364551.66\nmean: 362147.50\nstdev: 12477.28\ncv: 3.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 364551.66,
+            "range": "12477.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364551.66\nmean: 362147.50\nstdev: 12477.28\ncv: 3.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82564.61,
+            "range": "1303.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82564.61\nmean: 82570.30\nstdev: 1303.23\ncv: 1.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 825646.08,
+            "range": "13032.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 825646.08\nmean: 825703.00\nstdev: 13032.33\ncv: 1.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
