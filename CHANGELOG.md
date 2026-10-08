@@ -12,6 +12,15 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- `felix-loadgen --scenario subscribe` (#980): subscribers only, at the live
+  tail, counting deliveries for `--duration-secs` while another generator
+  publishes. `--fanout` subscriptions are spread over `--concurrency` cluster
+  clients, every shard of a sharded stream is read, and the run reports
+  delivered events and `delivered_throughput_msg_s`, offset gaps (records
+  dropped) and, with `--stamp-send-time`, delivery latency. It reports no
+  publish throughput, since it publishes nothing. `ingest --stamp-send-time`
+  writes the wall-clock send time into each payload's first 8 bytes for it;
+  that latency compares two machines' clocks, so it needs them in sync.
 - Nightly builds. `nightly.yml` builds the newest green commit on main through
   `release.yml` once a day, smoke-tests the images with a publish and
   subscribe, and publishes to GitHub only: images as `nightly` and

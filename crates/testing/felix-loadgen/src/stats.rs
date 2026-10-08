@@ -55,6 +55,52 @@ impl Samples {
     }
 }
 
+/// A uniform sample of at most `capacity` values from a stream of unknown
+/// length (reservoir sampling), for runs bounded by time rather than count.
+#[derive(Debug)]
+pub(crate) struct Reservoir {
+    samples: Samples,
+    capacity: usize,
+    seen: u64,
+    rng: u64,
+}
+
+impl Reservoir {
+    pub(crate) fn new(capacity: usize, seed: u64) -> Self {
+        Self {
+            samples: Samples::default(),
+            capacity: capacity.max(1),
+            seen: 0,
+            // xorshift must not start at zero.
+            rng: seed | 1,
+        }
+    }
+
+    pub(crate) fn offer(&mut self, elapsed: Duration) {
+        self.seen += 1;
+        if self.samples.len() < self.capacity {
+            self.samples.record(elapsed);
+            return;
+        }
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 7;
+        self.rng ^= self.rng << 17;
+        let slot = self.rng % self.seen;
+        if (slot as usize) < self.capacity {
+            self.samples.micros[slot as usize] = elapsed.as_micros() as u64;
+        }
+    }
+
+    /// How many values were offered, kept or not.
+    pub(crate) fn seen(&self) -> u64 {
+        self.seen
+    }
+
+    pub(crate) fn into_samples(self) -> Samples {
+        self.samples
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Percentiles {
     pub p50_us: u64,

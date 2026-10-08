@@ -401,3 +401,86 @@ async fn ingest_reports_what_it_published() {
         "retries must be reported even when zero: {row}",
     );
 }
+
+/// A subscribe-only run counts what a separate ingest run published.
+///
+/// Both start at the same `--start-at`, as two generators would, and the
+/// subscribers open before it, so they see the whole ingest run. The row must
+/// not claim a publish throughput: this run published nothing.
+#[tokio::test]
+#[serial]
+async fn subscribe_counts_what_another_generator_published() {
+    let cluster = Cluster::start(config()).await.expect("start cluster");
+    let start_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs_f64()
+        + 5.0;
+    let start_at = format!("{start_at:.3}");
+    let subscribe_args = [
+        "--scenario",
+        "subscribe",
+        "--stream",
+        "perf",
+        "--fanout",
+        "4",
+        "--concurrency",
+        "2",
+        "--duration-secs",
+        "6",
+        "--start-at",
+        &start_at,
+        "--stamp-send-time",
+    ];
+    let ingest_args = [
+        "--scenario",
+        "ingest",
+        "--stream",
+        "perf",
+        "--total",
+        "400",
+        "--batch",
+        "8",
+        "--concurrency",
+        "1",
+        "--in-flight",
+        "1",
+        "--payload-bytes",
+        "64",
+        "--start-at",
+        &start_at,
+        "--stamp-send-time",
+    ];
+    let (subscribe, ingest) = tokio::join!(
+        run_loadgen(&cluster, &subscribe_args),
+        run_loadgen(&cluster, &ingest_args),
+    );
+    let (stdout, _) = subscribe.expect("subscribe run");
+    let published = result_json(&ingest.expect("ingest run").0).expect("ingest row")["published"]
+        .as_u64()
+        .unwrap_or(0);
+    assert!(published > 0, "ingest published nothing");
+
+    let row = result_json(&stdout).expect("json row");
+    assert_eq!(row["scenario"], "subscribe");
+    assert_eq!(row["fanout"], 4);
+    assert_eq!(row["clients"], 2);
+    assert!(
+        row.get("throughput_msg_s").is_none() && row.get("publish_throughput_msg_s").is_none(),
+        "a subscribe-only run must not report a publish throughput: {row}",
+    );
+    assert!(
+        row["received"].as_u64().unwrap_or(0) > 0,
+        "nothing was delivered: {row}",
+    );
+    assert!(
+        // Plus ingest's 50 readiness publishes, in case they ran past the start.
+        row["received_per_sub_max"].as_u64().unwrap_or(0) <= published + 50,
+        "a subscriber counted more than was published: {row}",
+    );
+    assert!(row["gaps"].is_u64(), "gaps must be reported: {row}");
+    assert!(
+        row["delivery_latency_us"]["p50"].is_u64(),
+        "stamped records must yield a delivery latency: {row}",
+    );
+}
