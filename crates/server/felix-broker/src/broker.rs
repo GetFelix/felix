@@ -8,6 +8,7 @@
 
 mod backup;
 mod commit;
+mod inspect;
 mod keys;
 mod metadata;
 mod publish;
@@ -19,6 +20,7 @@ mod subscribe;
 
 pub use backup::CommittedOffsets;
 pub use commit::StateRead;
+pub use inspect::SubscriptionPage;
 pub use metadata::{CacheMetadata, ConsistencyLevel, StreamMetadata};
 pub use publish::{
     ClaimedPublish, IdempotentClaim, IdempotentOutcome, PublishOutcome, RECORD_SEQUENCE_WRAP,

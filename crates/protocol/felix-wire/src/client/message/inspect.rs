@@ -1,4 +1,6 @@
-//! What `shard_inspect` answers: one broker's own view of one shard.
+//! What the operator inspection requests answer: one broker's own view of a
+//! shard (`shard_inspect`) or of the subscriptions it serves
+//! (`subscriptions_list`).
 //!
 //! The word-valued fields (`role`, `phase`, `reason`, `state`) are strings
 //! rather than enums, so a broker can add a value without an older felixctl
@@ -117,4 +119,77 @@ pub struct InspectedReplica {
     /// Why replication to it stopped, when `state` is `halted`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub halted: Option<String>,
+}
+
+/// Which subscriptions `subscriptions_list` returns. Every field set narrows
+/// the list; none set lists them all.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriptionFilter {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard: Option<u32>,
+    /// Only subscriptions made under this principal (the token's `sub`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal: Option<String>,
+    /// Only subscriptions whose queue has dropped records.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dropping: bool,
+}
+
+/// Where a page of `subscriptions_list` ended. Subscriptions are listed by
+/// shard and then by subscriber id, and an id is never reused within a shard,
+/// so paging stays in order while subscribers come and go.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriptionCursor {
+    pub tenant_id: String,
+    pub namespace: String,
+    pub stream: String,
+    pub shard: u32,
+    pub subscriber_id: u64,
+}
+
+/// One subscription as the broker serving it sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InspectedSubscription {
+    pub tenant_id: String,
+    pub namespace: String,
+    pub stream: String,
+    pub shard: u32,
+    /// The shard's own id for the subscriber. Not the id the client sees on
+    /// its events; that is `subscription_id`.
+    pub subscriber_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_id: Option<u64>,
+    /// The connection it is delivered on, by the broker's connection id.
+    /// Absent for a subscriber inside the broker, or one still being set up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<u64>,
+    /// The connection's remote address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
+    /// The principal the connection authenticated as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal: Option<String>,
+    /// What a publish does when the queue is full: `block`, `drop_new` or
+    /// `drop_old`.
+    pub policy: String,
+    /// Batches waiting in the queue.
+    pub depth: u64,
+    /// Batches the queue holds at most.
+    pub capacity: u64,
+    /// Records the queue has dropped since the subscription started.
+    pub dropped: u64,
+    /// One past the last offset taken from the queue for delivery. Absent
+    /// on a stream without offsets, and until the first live batch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<u64>,
+    /// The shard's next offset.
+    pub tail: u64,
+    /// How long ago it subscribed.
+    pub age_ms: u64,
 }

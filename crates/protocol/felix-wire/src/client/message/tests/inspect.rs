@@ -1,6 +1,6 @@
 use crate::{
-    InspectedAssignment, InspectedFence, InspectedLease, InspectedReplica, Message,
-    ShardInspection, ShardKind,
+    InspectedAssignment, InspectedFence, InspectedLease, InspectedReplica, InspectedSubscription,
+    Message, ShardInspection, ShardKind, SubscriptionCursor, SubscriptionFilter,
 };
 
 fn fencing_leader() -> ShardInspection {
@@ -158,4 +158,101 @@ fn an_unknown_request_still_names_its_type_and_id() {
     let unknown = Message::unknown_request(&frame).expect("readable");
     assert_eq!(unknown.request_type, "shard_inspect_v2");
     assert_eq!(unknown.request_id, Some(5));
+}
+
+fn dropping_subscriber() -> InspectedSubscription {
+    InspectedSubscription {
+        tenant_id: "acme".to_string(),
+        namespace: "default".to_string(),
+        stream: "orders".to_string(),
+        shard: 3,
+        subscriber_id: 17,
+        subscription_id: Some(9001),
+        connection: Some(42),
+        peer: Some("10.0.0.7:51234".to_string()),
+        principal: Some("p:billing".to_string()),
+        policy: "drop_new".to_string(),
+        depth: 1024,
+        capacity: 1024,
+        dropped: 3812,
+        position: Some(1_040_000),
+        tail: 1_048_576,
+        age_ms: 61_000,
+    }
+}
+
+#[test]
+fn a_subscriptions_list_exchange_round_trips() {
+    let request = Message::SubscriptionsList {
+        filter: Box::new(SubscriptionFilter {
+            tenant_id: Some("acme".to_string()),
+            stream: Some("orders".to_string()),
+            dropping: true,
+            ..SubscriptionFilter::default()
+        }),
+        limit: Some(50),
+        cursor: Some(SubscriptionCursor {
+            tenant_id: "acme".to_string(),
+            namespace: "default".to_string(),
+            stream: "orders".to_string(),
+            shard: 2,
+            subscriber_id: 4,
+        }),
+        request_id: 7,
+    };
+    assert_eq!(
+        Message::decode(request.encode().expect("encode")).expect("decode"),
+        request
+    );
+    let answer = Message::SubscriptionsListInfo {
+        node_id: "broker-a".to_string(),
+        subscriptions: vec![dropping_subscriber()],
+        next_cursor: None,
+        request_id: 7,
+    };
+    assert_eq!(
+        Message::decode(answer.encode().expect("encode")).expect("decode"),
+        answer
+    );
+}
+
+/// A request with no filter, limit or cursor is just its type and id, and a
+/// subscriber with no owner leaves the owner's fields off.
+#[test]
+fn an_unfiltered_list_and_an_unowned_subscriber_stay_small() {
+    let request = Message::SubscriptionsList {
+        filter: Box::default(),
+        limit: None,
+        cursor: None,
+        request_id: 1,
+    };
+    let json: serde_json::Value =
+        serde_json::from_slice(&request.encode().expect("encode").payload).expect("json");
+    assert_eq!(
+        json,
+        serde_json::json!({"type": "subscriptions_list", "filter": {}, "request_id": 1})
+    );
+    let decoded: Message =
+        serde_json::from_value(serde_json::json!({"type": "subscriptions_list", "request_id": 1}))
+            .expect("decode without a filter");
+    assert_eq!(decoded, request);
+
+    let bare = InspectedSubscription {
+        subscription_id: None,
+        connection: None,
+        peer: None,
+        principal: None,
+        position: None,
+        ..dropping_subscriber()
+    };
+    let json = serde_json::to_value(&bare).expect("json");
+    for absent in [
+        "subscription_id",
+        "connection",
+        "peer",
+        "principal",
+        "position",
+    ] {
+        assert!(json.get(absent).is_none(), "{absent} in {json}");
+    }
 }

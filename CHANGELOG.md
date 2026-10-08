@@ -12,6 +12,27 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- `felixctl inspect subs` and the `subscriptions_list` request (part of
+  #1077). A broker advertising `FEATURE_INSPECT` now also answers
+  `subscriptions_list` with `subscriptions_list_info`: one page of the
+  subscriptions it serves, each with its stream and shard, subscriber and
+  subscription ids, connection id, client address and principal, overflow
+  policy, queue depth and capacity in batches, records dropped, position and
+  the shard's tail. The filter narrows by tenant, namespace, stream, shard,
+  principal, or to subscriptions that have dropped records. A page is 100 by
+  default and at most 1000, and a cursor of shard and subscriber id continues
+  it. It needs `node.view:cluster:*`. The broker reads each shard's fanout
+  snapshot and never touches a queue. On the delivery path, a subscriber's
+  receiver now stores one past the offset of each batch it takes (a relaxed
+  store), and a drop adds to a per-subscriber count beside the existing
+  metric. felixctl asks every broker, or only `--node`, and prints one table
+  or one JSON line per broker, with `--principal`, `--dropping`, `--limit` and
+  `--cursor`. felix-broker adds `Broker::list_subscriptions`,
+  `SubscriberStats`, `SubscriberOwner` and `Subscription::set_owner`;
+  felix-client adds `Client::list_subscriptions` and `SubscriptionsPage`, and
+  its inspect calls now report a broker's `unsupported` answer as such.
+  Diagnosing a cluster covers a subscriber missing records and one falling
+  behind.
 - `felixctl inspect shard` and the `shard_inspect` request (part of #1077).
   A broker advertising `FEATURE_INSPECT`, the first bit of the extended
   feature word (`server_features_hi` `0x1`), answers `shard_inspect` with

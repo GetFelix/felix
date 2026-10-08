@@ -218,3 +218,41 @@ fn inspect_refuses_a_malformed_target() {
         "{output:?}"
     );
 }
+
+/// A cursor felixctl did not print, or one without the broker it belongs to,
+/// is a usage error found before anything is dialled.
+#[test]
+fn inspect_subs_refuses_a_cursor_it_cannot_use() {
+    let home = tempfile::tempdir().unwrap();
+    for args in [
+        &[
+            "inspect",
+            "subs",
+            "--cursor",
+            "abc",
+            "--brokers",
+            "127.0.0.1:1",
+        ][..],
+        &[
+            "inspect",
+            "subs",
+            "--node",
+            "broker-a",
+            "--cursor",
+            "abc",
+            "--brokers",
+            "127.0.0.1:1",
+        ][..],
+        &[
+            "inspect",
+            "subs",
+            "--shard",
+            "0",
+            "--brokers",
+            "127.0.0.1:1",
+        ][..],
+    ] {
+        let output = felixctl(home.path(), args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+    }
+}
