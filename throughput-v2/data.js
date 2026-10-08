@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791439611288,
+  "lastUpdate": 1791444940164,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -24804,6 +24804,58 @@ window.BENCHMARK_DATA = {
             "range": "3887.40",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 810320.63\nmean: 809779.87\nstdev: 3887.40\ncv: 0.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f99d73d501dbe49674edccc22552cd6dd21771c0",
+          "message": "feat(wire): a second feature word behind FEATURE_EXTENDED (#1055) (#1058)\n\n* feat(wire): a second feature word behind FEATURE_EXTENDED (#1055)\n\nThe u32 feature set is nearly full. FEATURE_EXTENDED (0x8000_0000) says a\npeer sends and reads client_features_hi / server_features_hi. A peer sends\nthe marker and the word only when it knows a feature there, and a broker\nanswers with its word only to a client that set the marker, so every\nexisting frame is unchanged. No feature uses the word yet.\n\nCloses #1055\n\n* chore: mark the auth feature word as outside the model\n\nSpec-Unaffected: adds an optional second feature word to Auth/AuthOk; no lease, replication, promotion or write-path behaviour changes.",
+          "timestamp": "2026-10-08T00:31:52-07:00",
+          "tree_id": "2702758f664e1417240cac41385df0b9c6233ad3",
+          "url": "https://github.com/GetFelix/felix/commit/f99d73d501dbe49674edccc22552cd6dd21771c0"
+        },
+        "date": 1791444939268,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 352941.94,
+            "range": "7039.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352941.94\nmean: 349301.92\nstdev: 7039.00\ncv: 2.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 352941.94,
+            "range": "7039.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352941.94\nmean: 349301.92\nstdev: 7039.00\ncv: 2.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79156.78,
+            "range": "3916.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79156.78\nmean: 77905.16\nstdev: 3916.81\ncv: 5.03%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 791567.79,
+            "range": "39168.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 791567.79\nmean: 779051.62\nstdev: 39168.08\ncv: 5.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
