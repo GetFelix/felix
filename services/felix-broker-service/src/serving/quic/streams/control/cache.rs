@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
-use felix_authz::Action;
+use felix_authz::{Action, CacheKeys};
 use felix_wire::Message;
 
 use super::authz::authorize_cache;
@@ -51,6 +51,7 @@ pub(super) async fn cache_put(
         Action::CacheWrite,
         &namespace,
         &cache,
+        CacheKeys::Key(&key),
         authz_ctx,
     )
     .await?
@@ -203,6 +204,7 @@ pub(super) async fn cache_get(
         Action::CacheRead,
         &namespace,
         &cache,
+        CacheKeys::Key(&key),
         authz_ctx,
     )
     .await?
@@ -366,6 +368,7 @@ pub(super) async fn cache_delete(
         Action::CacheWrite,
         &namespace,
         &cache,
+        CacheKeys::Key(&key),
         authz_ctx,
     )
     .await?
@@ -518,6 +521,7 @@ pub(super) async fn cache_conditional(
         Action::CacheWrite,
         &namespace,
         &cache,
+        CacheKeys::Key(&key),
         authz_ctx,
     )
     .await?
@@ -612,13 +616,22 @@ pub(super) async fn cache_watch(
         cancel_tx,
         ..
     } = *cx;
-    // A watch is a read of the cache, and is authorized as one.
+    // A watch is a read of the cache, and is authorized as one: a prefix
+    // watch against its prefix, never just the cache, or a short prefix
+    // would read past a key grant. A request naming both or neither is
+    // refused below; until then it is checked as the whole cache.
+    let keys = match (&key, &prefix) {
+        (Some(key), None) => CacheKeys::Key(key),
+        (None, Some(prefix)) => CacheKeys::Prefix(prefix),
+        _ => CacheKeys::Prefix(""),
+    };
     if !authorize_cache(
         session.auth_ctx.as_ref(),
         &tenant_id,
         Action::CacheRead,
         &namespace,
         &cache,
+        keys,
         authz_ctx,
     )
     .await?

@@ -140,6 +140,15 @@ client.cache_put("acme", "prod", "profiles", "user-123", data3, ttl).await?;
 client.cache_put("other-tenant", "prod", "sessions", "user-123", data4, ttl).await?;
 ```
 
+Access follows the same scopes. A token can be granted a whole cache
+(`cache.read:cache:acme/prod/sessions`) or only some of its keys: one key
+(`cache:acme/prod/sessions/user-123`) or every key with a prefix
+(`cache:acme/prod/sessions/room1/*`). So many rooms or users can share one
+cache, each credential limited to its own keys. A prefix is a plain string
+prefix, so end it with a separator when ids share leading characters. A
+prefix watch needs a prefix grant covering the whole watched prefix. See
+[Security](/features/security/#rbac-model-casbin).
+
 ### 4. Request Pipelining
 
 Send multiple cache requests without waiting for responses:

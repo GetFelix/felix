@@ -23,7 +23,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use felix_authz::{
-    Action, CacheScope, Namespace, StreamName, TenantId, cache_resource, stream_resource,
+    Action, CacheKeys, CacheScope, Namespace, PermissionMatcher, StreamName, TenantId,
+    cache_resource, stream_resource,
 };
 use felix_broker::Broker;
 use felix_router::{Resolution, ShardRouter};
@@ -115,6 +116,7 @@ impl ForwardingHandler {
                 &key.tenant_id,
                 Action::StreamPublish,
                 &resource,
+                |matcher| matcher.allows(Action::StreamPublish, &resource),
             )
             .await
         {
@@ -212,13 +214,34 @@ impl ForwardingHandler {
             CacheOpKind::Get | CacheOpKind::CounterGet => Action::CacheRead,
             CacheOpKind::Put | CacheOpKind::Delete | CacheOpKind::CounterAdd => Action::CacheWrite,
         };
-        let resource = cache_resource(
-            &TenantId::new(&key.tenant_id),
-            &Namespace::new(&key.namespace),
-            &CacheScope::new(&key.stream),
+        // Re-checked with the key, so an origin that checked only the cache
+        // cannot widen a key grant here.
+        let (tenant, namespace, cache) = (
+            TenantId::new(&key.tenant_id),
+            Namespace::new(&key.namespace),
+            CacheScope::new(&key.stream),
+        );
+        let resource = format!(
+            "{} key {:?}",
+            cache_resource(&tenant, &namespace, &cache),
+            op.key
         );
         if let Err(detail) = self
-            .authorize(&op.credential, &key.tenant_id, action, &resource)
+            .authorize(
+                &op.credential,
+                &key.tenant_id,
+                action,
+                &resource,
+                |matcher| {
+                    matcher.allows_cache_keys(
+                        action,
+                        &tenant,
+                        &namespace,
+                        &cache,
+                        CacheKeys::Key(&op.key),
+                    )
+                },
+            )
             .await
             .map(drop)
         {
@@ -435,7 +458,9 @@ impl ForwardingHandler {
         })
     }
 
-    /// Whether the client behind a forward may perform `action` on `resource`.
+    /// Whether the client behind a forward may perform `action` on `resource`,
+    /// by `allowed` over its verified grants. `action` and `resource` only
+    /// name the request in a refusal.
     ///
     /// The forwarder already asked this; the answer is not trusted because the
     /// owner cannot tell an honest forwarder from anything else that can reach
@@ -447,6 +472,7 @@ impl ForwardingHandler {
         tenant_id: &str,
         action: Action,
         resource: &str,
+        allowed: impl FnOnce(&PermissionMatcher) -> bool,
     ) -> Result<Option<bytes::Bytes>, String> {
         if credential.is_empty() {
             return Err(
@@ -460,7 +486,7 @@ impl ForwardingHandler {
             .authenticate(tenant_id, credential)
             .await
             .map_err(|err| format!("the publisher's credential was refused: {err}"))?;
-        if ctx.tenant_id != tenant_id || !ctx.matcher.allows(action, resource) {
+        if ctx.tenant_id != tenant_id || !allowed(&ctx.matcher) {
             return Err(format!(
                 "the publisher's credential does not allow {action:?} on {resource}"
             ));

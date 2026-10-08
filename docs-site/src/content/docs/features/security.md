@@ -219,6 +219,7 @@ Canonical RBAC object formats:
 - `namespace:{tenant_id}/{namespace}`
 - `stream:{tenant_id}/{namespace}/{stream_or_*}`
 - `cache:{tenant_id}/{namespace}/{cache_or_*}`
+- `cache:{tenant_id}/{namespace}/{cache}/{key}` or `.../{key_prefix}*`: some keys of one cache
 - `group:{tenant_id}/{namespace}/{stream_or_*}/{group_or_*}`: one consumer group; a `*` only after other `*`s
 - `cluster:*`: the cluster itself, outside the tenant hierarchy
 - `node:{node_id}`: one broker, also outside it
@@ -380,6 +381,7 @@ Casbin is used with domains for tenant scoping. Policies and groupings are store
 - `namespace:{tenant_id}/{namespace}` or `namespace:{tenant_id}/*`
 - `stream:{tenant_id}/{namespace}/{stream}` or `stream:{tenant_id}/{namespace}/*`
 - `cache:{tenant_id}/{namespace}/{cache}` or `cache:{tenant_id}/{namespace}/*`
+- `cache:{tenant_id}/{namespace}/{cache}/{key}` or `cache:{tenant_id}/{namespace}/{cache}/{key_prefix}*`
 - `group:{tenant_id}/{namespace}/{stream}/{group}` or `group:{tenant_id}/{namespace}/{stream}/*`
 
 **Actions**:
@@ -407,11 +409,24 @@ grant for an action on a stream is scoped to those groups there: its stream
 grants stop covering that stream's other groups for that action. Principals
 with no group grants keep the stream-wide behaviour.
 
+Cache access can be granted on some keys of a cache instead of all of it. A
+fourth segment names one key, `cache:t1/ns/rooms/room1/state`, or a prefix
+ending in `*`, `cache:t1/ns/rooms/room1/*`. The prefix is a plain string
+prefix: `user:1*` also covers `user:10`, so end a prefix with a separator when
+ids share leading characters. The broker checks gets, puts, deletes,
+conditional writes, counters and key watches against the key, and a prefix
+watch against its prefix, which only a prefix grant the watch starts with can
+allow. An exact-key grant never allows a prefix watch. A `*` anywhere but the
+end of the key, a bare `*`, or a wildcard namespace or cache in a key object
+is refused when the policy is written. A whole-cache grant still covers every
+key, and a broker that predates key grants refuses requests made with them.
+
 **Permission strings** embedded in Felix tokens:
 
 ```
 stream.publish:stream:t1/payments/orders
 cache.read:cache:t1/payments/session
+cache.write:cache:t1/payments/session/user:42/*
 ns.manage:namespace:t1/payments
 tenant.manage:tenant:t1
 ```

@@ -2,8 +2,8 @@
 //! `?` or character-class syntax. Matching is byte-based and case-sensitive.
 use crate::resource::group_prefix;
 use crate::{
-    Action, AuthzResult, GroupName, Namespace, PermissionPattern, StreamName, TenantId,
-    group_resource, stream_resource,
+    Action, AuthzResult, CacheScope, GroupName, Namespace, PermissionPattern, StreamName, TenantId,
+    cache_resource, group_resource, stream_resource,
 };
 
 /// A set of permission patterns checked against action/resource requests.
@@ -68,9 +68,96 @@ impl PermissionMatcher {
         !narrowed && self.allows(action, &stream_resource(tenant_id, namespace, stream))
     }
 
+    /// Whether `action` is allowed on the keys `keys` names in one cache.
+    ///
+    /// A grant on the whole cache (`cache:{tenant}/{ns}/{cache}`) allows it, as
+    /// it always has. So does a key grant, `cache:{tenant}/{ns}/{cache}/{key}`,
+    /// whose key part is either an exact key or a literal prefix followed by
+    /// one `*`. A prefix is a plain string prefix: `user:1*` covers `user:10`.
+    ///
+    /// Key grants are matched segment by segment, never by [`wildcard_match`]
+    /// over the whole string. A `*` there crosses `/`, so `cache:t/*/c` would
+    /// otherwise reach key `c` of every cache in the tenant.
+    pub fn allows_cache_keys(
+        &self,
+        action: Action,
+        tenant_id: &TenantId,
+        namespace: &Namespace,
+        cache: &CacheScope,
+        keys: CacheKeys<'_>,
+    ) -> bool {
+        if self.allows(action, &cache_resource(tenant_id, namespace, cache)) {
+            return true;
+        }
+        self.patterns.iter().any(|pattern| {
+            action.is_granted_by(pattern.action)
+                && KeyGrant::parse(&pattern.resource_pattern).is_some_and(|grant| {
+                    wildcard_match(grant.tenant, tenant_id.as_str())
+                        && wildcard_match(grant.namespace, namespace.as_str())
+                        && wildcard_match(grant.cache, cache.as_str())
+                        && grant.keys.covers(keys)
+                })
+        })
+    }
+
     /// The parsed patterns, for inspection and tests.
     pub fn patterns(&self) -> &[PermissionPattern] {
         &self.patterns
+    }
+}
+
+/// The keys a cache request touches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheKeys<'a> {
+    /// One key: a get, put, delete, conditional write, counter op, or key watch.
+    Key(&'a str),
+    /// Every key starting with this string: a prefix watch.
+    Prefix(&'a str),
+}
+
+impl CacheKeys<'_> {
+    /// Whether every key in `requested` is also in `self`.
+    fn covers(self, requested: CacheKeys<'_>) -> bool {
+        match (self, requested) {
+            (CacheKeys::Key(granted), CacheKeys::Key(key)) => granted == key,
+            (CacheKeys::Prefix(granted), CacheKeys::Key(key) | CacheKeys::Prefix(key)) => {
+                key.starts_with(granted)
+            }
+            // A prefix watch reads keys past any one exact key.
+            (CacheKeys::Key(_), CacheKeys::Prefix(_)) => false,
+        }
+    }
+}
+
+/// A `cache:{tenant}/{ns}/{cache}/{key}` pattern split into its parts.
+struct KeyGrant<'a> {
+    tenant: &'a str,
+    namespace: &'a str,
+    cache: &'a str,
+    keys: CacheKeys<'a>,
+}
+
+impl<'a> KeyGrant<'a> {
+    /// `None` for anything that is not a key grant, including one whose key
+    /// part has a `*` anywhere but the end: that would make the key a
+    /// pattern, so it matches nothing instead.
+    fn parse(pattern: &'a str) -> Option<Self> {
+        let rest = pattern.strip_prefix("cache:")?;
+        // Tenant, namespace, and cache names cannot hold `/`; a key can.
+        let mut parts = rest.splitn(4, '/');
+        let (tenant, namespace, cache, key) =
+            (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+        let keys = match key.strip_suffix('*') {
+            Some(prefix) if !prefix.contains('*') => CacheKeys::Prefix(prefix),
+            None if !key.is_empty() && !key.contains('*') => CacheKeys::Key(key),
+            _ => return None,
+        };
+        Some(Self {
+            tenant,
+            namespace,
+            cache,
+            keys,
+        })
     }
 }
 

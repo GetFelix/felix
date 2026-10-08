@@ -109,6 +109,10 @@ Objects:
 - Namespace: `namespace:{tenant_id}/{namespace}` or `namespace:{tenant_id}/*`
 - Stream: `stream:{tenant_id}/{namespace}/{stream}`, `stream:{tenant_id}/{namespace}/*`, or `stream:{tenant_id}/*/*`
 - Cache: `cache:{tenant_id}/{namespace}/{cache}`, `cache:{tenant_id}/{namespace}/*`, or `cache:{tenant_id}/*/*`
+- Cache keys: `cache:{tenant_id}/{namespace}/{cache}/{key}` for one key, or
+  `.../{prefix}*` for every key starting with `prefix` (a plain string prefix,
+  so `user:1*` covers `user:10`). `cache.read` and `cache.write` only. See
+  [Granting cache keys](security/rbac.md#granting-cache-keys).
 - Cluster: `cluster:*` (see [Cluster scope](#cluster-scope))
 - Node: `node:{node_id}`, one broker
 
@@ -482,6 +486,8 @@ Bootstrap tokens **never** authorize normal admin endpoints.
    - `exp/nbf`
    - `tid` matches connection tenant
 4) Broker parses `perms` once at connect time and enforces per operation using keyMatch2.
+   A cache request is also checked against its key, or a prefix watch against
+   its prefix, so a key-scoped grant covers only the keys it names.
 
 ## Data Stored Per Tenant
 
@@ -810,6 +816,8 @@ p, role:tenant-admin, tenant-a, tenant:tenant-a, tenant.manage
 p, role:tenant-admin, tenant-a, tenant:tenant-a, rbac.policy.manage
 p, role:payments-admin, tenant-a, namespace:tenant-a/payments, ns.manage
 p, role:publisher, tenant-a, stream:tenant-a/payments/*, stream.publish
+p, role:room1, tenant-a, cache:tenant-a/rooms/state/room1/*, cache.read
+p, role:room1, tenant-a, cache:tenant-a/rooms/state/room1/*, cache.write
 
 # groupings (g)
 # g, <user>, <role>, <tenant>
