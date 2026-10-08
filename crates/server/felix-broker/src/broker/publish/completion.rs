@@ -40,6 +40,7 @@ pub(super) struct Completion {
     handle: StreamHandle,
     payloads: Vec<Bytes>,
     publisher: Option<Bytes>,
+    timestamp_micros: Option<u64>,
     commit: Option<Arc<[StateOp]>>,
     /// Holds the commit turn until the batch is fanned out.
     durable: Option<ClaimedDurable>,
@@ -76,6 +77,7 @@ impl Completion {
             handle,
             payloads,
             publisher,
+            timestamp_micros,
             commit,
             durable,
             sample,
@@ -84,6 +86,7 @@ impl Completion {
             handle,
             payloads,
             publisher,
+            timestamp_micros,
             commit,
             durable,
             sample,
@@ -101,6 +104,7 @@ impl Completion {
             handle,
             payloads: batch.payloads,
             publisher: batch.publisher,
+            timestamp_micros: batch.timestamp_micros,
             commit: batch.commit,
             durable: None,
             sample: false,
@@ -156,6 +160,7 @@ impl Completion {
         let batch = HeldBatch {
             payloads: std::mem::take(&mut self.payloads),
             publisher: self.publisher.take(),
+            timestamp_micros: self.timestamp_micros,
             first_offset,
             commit: self.commit.take(),
         };
@@ -252,6 +257,7 @@ impl Completion {
                 self.log_capacity,
                 self.commit.as_deref(),
                 self.publisher.as_ref(),
+                self.timestamp_micros,
             )
             .ok_or(BrokerError::PublishSuperseded {
                 first_offset: first_offset.unwrap_or_default(),
@@ -270,6 +276,7 @@ impl Completion {
                 first_offset,
                 skipped_before,
                 self.publisher.clone(),
+                self.timestamp_micros,
             ),
             first_offset,
             next: 0,

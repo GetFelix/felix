@@ -160,9 +160,15 @@ impl ClusterClient {
     /// A producer whose publishes land once, however many times they are
     /// sent, re-sent across reconnects like [`Self::publish_at_least_once`]
     /// and without the duplicate. See [`crate::IdempotentProducer`].
-    pub async fn idempotent_producer(&self) -> Result<IdempotentProducer<'_>> {
+    ///
+    /// The producer keeps a handle on this client, so it can be stored or
+    /// moved into a task of its own.
+    pub async fn idempotent_producer(self: &Arc<Self>) -> Result<IdempotentProducer> {
         let producer_id = self.client().await.producer_init().await?;
-        Ok(IdempotentProducer::for_cluster(self, producer_id))
+        Ok(IdempotentProducer::for_cluster(
+            Arc::clone(self),
+            producer_id,
+        ))
     }
 
     /// Wait until every publish already handed to this client has been

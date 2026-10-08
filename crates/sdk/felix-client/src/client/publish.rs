@@ -72,8 +72,14 @@ impl Client {
     /// Bound to this one broker: a batch for a shard led elsewhere is refused
     /// with the leader's address, which a [`crate::ClusterClient`]'s producer
     /// follows and this one reports.
-    pub async fn idempotent_producer(&self) -> Result<IdempotentProducer<'_>> {
+    ///
+    /// The producer keeps a handle on this client, so it can be stored or
+    /// moved into a task of its own.
+    pub async fn idempotent_producer(self: &Arc<Self>) -> Result<IdempotentProducer> {
         let producer_id = self.producer_init().await?;
-        Ok(IdempotentProducer::for_client(self, producer_id))
+        Ok(IdempotentProducer::for_client(
+            Arc::clone(self),
+            producer_id,
+        ))
     }
 }

@@ -153,6 +153,7 @@ async fn poll_rechecking(
                     publisher: claimed
                         .publisher
                         .map(|publisher| String::from_utf8_lossy(&publisher).into_owned()),
+                    timestamp_micros: Some(claimed.timestamp_micros),
                 })
                 .collect());
         }

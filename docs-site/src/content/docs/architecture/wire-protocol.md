@@ -120,7 +120,8 @@ Bit field for optional features:
 | 11  | 0x0800 | Event batch also carries `skipped_before`: offsets just before it that hold no event (modifier on bit 5) |
 | 12  | 0x1000 | A successful ack ends with the offset of the batch's first record; offered by a client, it also adds `offset` to `publish_ok` (modifier on bit 4) |
 | 13  | 0x2000 | Event batch carries the principal that published its events (modifier on bits 1/2) |
-| 14-15| -     | Reserved (must be 0) |
+| 14  | 0x4000 | Each event in the batch is preceded by its record's append time (modifier on bits 1/2) |
+| 15  | -      | Reserved (must be 0) |
 
 Receivers must **reject** a frame carrying a flag bit they do not recognise, rather
 than ignoring the bit. These bits select how the payload is parsed, so ignoring an
@@ -826,6 +827,7 @@ advertised its bit.
 | `0x80_0000` | `FEATURE_GROUP_PUBLISHER` | Offered by a client that reads `publisher` on a group record. Advertised by a broker with consumer groups. The field is sent only to a client that offered it |
 | `0x100_0000` | `FEATURE_GROUP_ADMIN` | The broker serves `group_seek`, `group_describe` and `group_delete`: create a group at a chosen position, move it, read where it stands, delete it |
 | `0x200_0000` | `FEATURE_CACHE_CONDITIONAL` | The broker accepts `cache_put_if` and `cache_delete_if`, answered with `cache_condition_result`. Offered by a client that reads `version` on a `cache_value`; the field is sent only to a client that offered it |
+| `0x400_0000` | `FEATURE_RECORD_TIMESTAMPS` | The broker answers `offset_for_time` with `offset_value`. Offered by a client that reads `timestamp_micros` on a group record; the field is sent only to a client that offered it |
 
 The full list, with what each depends on, is in
 [`docs/protocol.md`](https://github.com/GetFelix/felix/blob/main/docs/protocol.md).
@@ -915,6 +917,20 @@ u64 skipped_before    # 0x0800
 u8  publisher_len     # 0x2000
 u8[publisher_len] publisher
 u32 count
+...
+```
+
+With `0x4000` (`FLAG_EVENT_BATCH_TIMESTAMPS`), each event is preceded by the
+time its record was appended, a `u64` of microseconds since the Unix epoch.
+Per event, because a batch replayed from history can span several publishes.
+The broker sets the bit only on a batch whose records have stored times, so an
+in-memory stream's batches never carry it:
+
+```
+u32 count
+u64 timestamp_micros  # 0x4000, before each event
+u32 payload_len
+u8[payload_len] payload
 ...
 ```
 
@@ -1222,11 +1238,11 @@ Planned protocol enhancements (not in v1):
 - **Compression**: Optional zstd or lz4 compression (negotiated via flags)
 - **Encryption metadata**: End-to-end encryption with key IDs in envelope
 - **Stream filtering**: Server-side filtering to reduce client bandwidth
-- **Replay by timestamp**: `Subscribe` takes an offset today, not a time
 - **Quotas**: per-namespace limits
 
 Since delivered, and no longer on this list: consumer acknowledgements for
-at-least-once delivery (consumer groups), historical replay from an offset,
+at-least-once delivery (consumer groups), historical replay from an offset or
+a time (`offset_for_time`, then subscribe at the answer),
 tenant isolation, a per-tenant publish rate limit, and server-side filtering for the cache, which is what a
 keyed watch is (`cache_watch` delivers one key or prefix, filtered at the
 broker's fanout boundary). Stream filtering above refers to streams, where it

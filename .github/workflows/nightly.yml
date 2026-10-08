@@ -57,6 +57,9 @@ jobs:
       # waits for a green head can go days without building anything, and one
       # that ignores CI ships whatever broke it. Docs-only commits skip CI, so
       # they ride along with the next code change.
+      #
+      # Walk main's commits rather than asking for the newest green run: the
+      # runs API does not reliably order filtered results.
       - name: Pick the commit
         id: pick
         env:
@@ -74,10 +77,14 @@ jobs:
             ci_url="${GITHUB_SERVER_URL}/${REPO}/pull/${{ github.event.pull_request.number }}/checks"
             dry_run=true
           else
-            run=$(gh run list -R "$REPO" --workflow ci.yml --branch main --event push \
-              --status success --limit 1 --json headSha,url --jq '.[0]')
-            if [ -z "$run" ] || [ "$run" = null ]; then
-              echo "::error::no successful CI run on main to build from"
+            run=
+            for candidate in $(gh api "repos/${REPO}/commits?sha=main&per_page=50" --jq '.[].sha'); do
+              run=$(gh api "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${candidate}&event=push&status=success&per_page=1" \
+                --jq '.workflow_runs[0] // empty | {headSha: .head_sha, url: .html_url}')
+              [ -n "$run" ] && break
+            done
+            if [ -z "$run" ]; then
+              echo "::error::none of main's last 50 commits has a successful CI run to build from"
               exit 1
             fi
             sha=$(jq -r .headSha <<< "$run")

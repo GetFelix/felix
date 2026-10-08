@@ -170,6 +170,16 @@ impl StubBroker {
         self.connections.lock().unwrap().len()
     }
 
+    /// Hold every publish answer until [`Self::release_acks`], so a client
+    /// is left waiting with its batch already received.
+    pub(super) fn hold_acks(&self) {
+        self.seen.acks_held.send_replace(true);
+    }
+
+    pub(super) fn release_acks(&self) {
+        self.seen.acks_held.send_replace(false);
+    }
+
     /// Close every client connection, as a broker that lost its network
     /// would, while still accepting new ones.
     pub(super) fn drop_connections(&self) {
@@ -186,7 +196,7 @@ impl Drop for StubBroker {
 }
 
 /// What the stub was sent, shared by every stream it serves.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Seen {
     publishes: Arc<AtomicUsize>,
     subscribes: Arc<AtomicUsize>,
@@ -200,6 +210,25 @@ struct Seen {
     sequences: Arc<Mutex<Vec<Sequenced>>>,
     cache_requests: Arc<AtomicUsize>,
     cache_owners: Arc<Mutex<Vec<felix_wire::ShardOwner>>>,
+    /// True while publish answers are held back.
+    acks_held: Arc<tokio::sync::watch::Sender<bool>>,
+}
+
+impl Default for Seen {
+    fn default() -> Self {
+        Self {
+            publishes: Arc::default(),
+            subscribes: Arc::default(),
+            shards: Arc::default(),
+            starts: Arc::default(),
+            events: Arc::default(),
+            batch_streams: Arc::default(),
+            sequences: Arc::default(),
+            cache_requests: Arc::default(),
+            cache_owners: Arc::default(),
+            acks_held: Arc::new(tokio::sync::watch::channel(false).0),
+        }
+    }
 }
 
 async fn serve_stream(
@@ -225,6 +254,8 @@ async fn serve_stream(
                     .unwrap()
                     .push((batch.batch.key, producer.sequence));
             }
+            let mut held = seen.acks_held.subscribe();
+            held.wait_for(|held| !held).await?;
             send.write_all(&binary_ack(id, script(id))?).await?;
             continue;
         }

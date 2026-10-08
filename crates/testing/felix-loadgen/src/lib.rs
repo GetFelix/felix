@@ -5,9 +5,9 @@
 //! loopback-bound — `latency-demo` runs an in-process broker, `soak` spawns
 //! its own child — so this is the one that dials addresses it is given and
 //! measures what a deployment's client would feel: acknowledgement round
-//! trips, publish-to-delivery latency, cache/counter round trips, and watch
-//! fanout delivery, all through the real routed paths (forwards and
-//! redirects included).
+//! trips, publish-to-delivery latency, cache/counter round trips, watch
+//! fanout delivery, and subscriber-only runs fed by another generator, all
+//! through the real routed paths (forwards and redirects included).
 //!
 //! It measures the cluster; it is not part of it. Brokers and the control
 //! plane under test run release artifacts. This binary may be built from a
@@ -23,5 +23,5 @@ mod scenarios;
 mod stats;
 mod tls;
 
-pub use scenarios::{Common, IngestOptions, Scenario, run};
+pub use scenarios::{Common, IngestOptions, Scenario, SubscribeOptions, run};
 pub use stats::emit_json;

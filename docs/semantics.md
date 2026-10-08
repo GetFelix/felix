@@ -103,6 +103,13 @@ the record is on disk, turn `ack_on_commit` on or declare the stream `Quorum`.
 > `a_batch_admitted_near_lease_expiry_waits_for_the_write`,
 > `an_acked_publish_the_lease_strands_is_counted`.
 
+The same ack does not make the record readable yet. A history read, a
+subscriber's replay or a consumer-group poll sent right after it can come back
+without the record, because nothing reads a record before it is written. A
+client that needs to read what it was told is acknowledged can ask for commit
+acks on its own connections (`ClientConfig::ack_on_commit`) without changing the
+broker's default.
+
 **The `Leader` loss window is bounded by replication lag**, exported as
 `felix_broker_replication_lag_records`. An operator choosing `Leader` is
 choosing that window, and a bound nobody can observe is not a bound.
