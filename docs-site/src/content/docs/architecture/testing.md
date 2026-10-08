@@ -227,6 +227,13 @@ description saying why not. `task tla:pairing` runs that check locally, and
 `scripts/check_spec_evidence.py`, part of `task docs:evidence`, checks that
 every test the spec cites still exists.
 
+The exhaustive configurations stop at a move or two and a promotion or two.
+A nightly job (`tla-walk.yml`, `task tla:walk`) runs TLC in simulation mode
+over `FelixShardWalk*.cfg`, which lift those bounds and sample behaviours a
+few hundred steps long that grow the set, replace followers, move the shard
+and fail over many times. That is sampling, not proof. Each walk has a
+negative twin that must find its violation within the same budget.
+
 Detail, with every configuration and its state count:
 [`docs/formal/README.md`](https://github.com/GetFelix/felix/blob/main/docs/formal/README.md).
 
