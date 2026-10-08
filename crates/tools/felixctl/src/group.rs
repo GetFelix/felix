@@ -15,11 +15,12 @@ use clap::{Args, Subcommand};
 use felix_client::{GroupInfo, GroupPollOptions, GroupPosition, GroupRecord, StartPosition};
 use serde_json::{Value, json};
 
+use crate::cli::Confirm;
 use crate::cli::StartArg;
-use crate::confirm::{Confirm, ask};
 use crate::connect::Broker;
 use crate::context::Settings;
 use crate::error::{Exit, fail};
+use crate::manage::ask;
 use crate::output::{Output, payload_field, table};
 
 #[derive(Debug, Subcommand)]

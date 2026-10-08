@@ -91,7 +91,8 @@ Felix uses QUIC as its sole transport:
 The wire protocol is versioned and explicitly framed to allow forward compatibility.
 
 ### Storage Layer
-- **Ephemeral:** in-memory ring buffers and TTL maps for ultra-low latency
+- **Ephemeral:** in-memory ring buffers and TTL maps, with no disk write on the
+  publish path
 - **Durable:** a segmented, checksummed append-only log on persistent volumes,
   selected per stream by `durable: true`. See
   [Durable Storage](durable-storage.md).

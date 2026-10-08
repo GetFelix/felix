@@ -84,6 +84,9 @@ pub(super) const DEFAULT_PUB_INFLIGHT_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const DEFAULT_PUB_CONN_INFLIGHT_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const DEFAULT_PUBLISH_WINDOW: u32 = 256;
 pub(super) const DEFAULT_SUBSCRIBER_QUEUE_CAPACITY: usize = 512;
+// The most a subscriber may ask for. Each queued envelope pins a published
+// batch in memory, so this bounds what one reader can hold.
+pub(super) const DEFAULT_SUBSCRIBER_QUEUE_CAPACITY_MAX: usize = 4096;
 pub(super) const DEFAULT_MAX_SUBSCRIPTIONS_PER_CONN: usize = 4096;
 pub(super) const DEFAULT_SUBSCRIBER_QUEUE_POLICY: SubQueuePolicy = SubQueuePolicy::DropNew;
 pub(super) const DEFAULT_SUBSCRIBER_WRITER_LANES: usize = 4;

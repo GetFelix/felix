@@ -12,8 +12,8 @@
 //! - `connect`: TLS, addresses and the client configuration.
 //! - `publish`, `subscribe`, `cache`, `topology`: the data-plane commands.
 //! - `group`, `counter`: consumer groups and counters, through the brokers.
-//! - `confirm`: the prompt before a destructive command, and `--yes`.
-//! - `controlplane`: the read-only REST commands.
+//! - `controlplane`: the REST client and the read-only commands.
+//! - `manage`: the control-plane writes, and confirming destructive ones.
 //! - `bench`: the load-test front end.
 //! - `output`, `error`, `help`: printing, exit statuses, completions and man
 //!   pages.
@@ -21,7 +21,6 @@
 mod bench;
 mod cache;
 mod cli;
-mod confirm;
 mod connect;
 mod context;
 mod controlplane;
@@ -29,6 +28,7 @@ mod counter;
 mod error;
 mod group;
 mod help;
+mod manage;
 mod output;
 mod publish;
 mod subscribe;
@@ -96,6 +96,7 @@ async fn run(cli: Cli, out: &Output) -> anyhow::Result<()> {
         Command::Stream(command) => controlplane::stream(command, &settings, out).await,
         Command::Node(command) => controlplane::node(command, &settings, out).await,
         Command::Shard(command) => controlplane::shard(command, &settings, out).await,
+        Command::Placement(command) => manage::placement(command, &settings, out).await,
         Command::Bench(command) => bench::run(command, &settings, out).await,
         Command::Context(_) | Command::Completions(_) | Command::Man(_) => {
             unreachable!("handled above")

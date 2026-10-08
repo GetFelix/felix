@@ -73,8 +73,7 @@ struct Io {
     out_rx: mpsc::Receiver<Outgoing>,
     throttle_tx: watch::Sender<bool>,
     cancel_tx: watch::Sender<bool>,
-    ack_waiter_tx: mpsc::Sender<AckWaiterMessage>,
-    ack_waiter_rx: mpsc::Receiver<AckWaiterMessage>,
+    commit_acks: CommitAcks,
 }
 
 impl Io {
@@ -82,14 +81,13 @@ impl Io {
         let (out_tx, out_rx) = mpsc::channel(4);
         let (throttle_tx, _) = watch::channel(false);
         let (cancel_tx, _) = watch::channel(false);
-        let (ack_waiter_tx, ack_waiter_rx) = mpsc::channel(4);
+        let commit_acks = CommitAcks::for_test(&out_tx, Arc::new(Semaphore::new(1)));
         Self {
             out_tx,
             out_rx,
             throttle_tx,
             cancel_tx,
-            ack_waiter_tx,
-            ack_waiter_rx,
+            commit_acks,
         }
     }
 }
@@ -106,11 +104,11 @@ async fn publish_one(h: &Harness, io: &Io) {
         &io.out_tx,
         &Arc::new(AtomicUsize::new(0)),
         &io.throttle_tx,
-        &Arc::new(Mutex::new(AckTimeoutState::new(Instant::now()))),
+        &Arc::new(parking_lot::Mutex::new(
+            AckTimeoutState::new(Instant::now()),
+        )),
         &io.cancel_tx,
-        &Arc::new(Semaphore::new(1)),
-        &io.ack_waiter_tx,
-        Duration::from_secs(1),
+        &io.commit_acks,
         TENANT.to_string(),
         NAMESPACE.to_string(),
         DURABLE.to_string(),
@@ -138,10 +136,11 @@ async fn publish_batch(h: &Harness, io: &Io) {
         &io.out_tx,
         &Arc::new(AtomicUsize::new(0)),
         &io.throttle_tx,
-        &Arc::new(Mutex::new(AckTimeoutState::new(Instant::now()))),
+        &Arc::new(parking_lot::Mutex::new(
+            AckTimeoutState::new(Instant::now()),
+        )),
         &io.cancel_tx,
-        &Arc::new(Semaphore::new(1)),
-        &io.ack_waiter_tx,
+        &io.commit_acks,
         TENANT.to_string(),
         NAMESPACE.to_string(),
         DURABLE.to_string(),
@@ -160,12 +159,16 @@ async fn publish_batch(h: &Harness, io: &Io) {
     .expect("batch handled");
 }
 
-fn assert_refused_as_fenced(result: anyhow::Result<Option<u64>>) {
-    let err = result.expect_err("a write after the lease lapsed must be refused");
+fn assert_refused_as_fenced(answer: Outgoing) {
+    let code = match &answer {
+        Outgoing::Message(Message::PublishError { code, .. }) => code.clone(),
+        Outgoing::PublishAck { code, .. } => code.as_ref().map(|(code, _)| code.clone()),
+        _ => None,
+    };
     assert_eq!(
-        *crate::serving::quic::client_error::ClientError::from_anyhow(&err).code(),
-        felix_wire::ErrorCode::ShardUnavailable,
-        "{err:#}"
+        code,
+        Some(felix_wire::ErrorCode::ShardUnavailable),
+        "a write after the lease lapsed must be refused: {answer:?}"
     );
 }
 
@@ -182,12 +185,9 @@ async fn a_publish_admitted_near_lease_expiry_waits_for_the_write() {
         io.out_rx.try_recv().is_err(),
         "acknowledged on enqueue with less lease left than the headroom"
     );
-    let Some(AckWaiterMessage::Publish { response_rx, .. }) = io.ack_waiter_rx.recv().await else {
-        panic!("expected the publish to wait for its commit");
-    };
 
     h.lapse_then_release().await;
-    assert_refused_as_fenced(response_rx.await.expect("the worker answers"));
+    assert_refused_as_fenced(io.out_rx.recv().await.expect("the worker answers"));
     assert_eq!(h.leader.tail(DURABLE).await, 0);
 }
 
@@ -203,13 +203,9 @@ async fn a_batch_admitted_near_lease_expiry_waits_for_the_write() {
         io.out_rx.try_recv().is_err(),
         "acknowledged on enqueue with less lease left than the headroom"
     );
-    let Some(AckWaiterMessage::PublishBatch { response_rx, .. }) = io.ack_waiter_rx.recv().await
-    else {
-        panic!("expected the batch to wait for its commit");
-    };
 
     h.lapse_then_release().await;
-    assert_refused_as_fenced(response_rx.await.expect("the worker answers"));
+    assert_refused_as_fenced(io.out_rx.recv().await.expect("the worker answers"));
     assert_eq!(h.leader.tail(DURABLE).await, 0);
 }
 

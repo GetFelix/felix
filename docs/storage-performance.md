@@ -60,8 +60,19 @@ immutable files.
 Appending past end of file makes the filesystem allocate blocks and update the
 inode's block map on the write path, and invites fragmentation as segments from
 different shards interleave. `fallocate(FALLOC_FL_KEEP_SIZE)` on Linux and
-`F_PREALLOCATE` on macOS reserve the blocks up front without changing the file's
-logical length, so recovery's "valid bytes end at EOF" reasoning still holds.
+`F_PREALLOCATE` on macOS reserve the blocks ahead of the writes without changing
+the file's logical length, so recovery's "valid bytes end at EOF" reasoning still
+holds.
+
+A new segment reserves 1 MiB, or a sixteenth of the segment size if that is
+smaller. Each time its records pass half of what is reserved, the reservation
+doubles, up to the segment size. A busy segment reaches the default 256 MiB in
+about nine steps and writes into reserved blocks nearly all the time, while an
+idle stream holds 1 MiB per shard instead of a whole segment. The extension runs
+on a blocking thread after the append that earned it, so no append waits on it.
+It is best effort: one that fails, for example on a full disk, is logged and
+counted in `felix_storage_segment_reserve_failed_total`, and later writes
+allocate their own blocks.
 
 ### 6. Sparse indexes
 
@@ -247,6 +258,34 @@ graph LR
 Roughly four thousand times separates "in the page cache" from "on the device":
 about 1µs against about 4ms. Nothing in the code can close that gap; group
 commit exists to *amortise* it.
+
+### From commit to acknowledgement
+
+Under `ack_on_commit`, the answer leaves from the task that sees the publish
+settle: the commit task for a durable write, the executor for an in-memory
+one. It goes straight onto the control stream's writer queue. There is no
+waiter task in between and no timer per publish.
+
+```mermaid
+graph LR
+    A["commit task<br/><i>flush done, fanned out</i>"] --> B["writer queue"]
+    B --> C["writer<br/><i>takes everything queued</i>"]
+    C --> D["one QUIC write"]
+```
+
+- The writer takes every answer already queued and sends them in one write.
+  It never waits for more, so a lone ack is not held back.
+- The ack timeout is one deadline queue per control stream, swept on a coarse
+  tick while anything is owed. A publish that outlives it is answered with
+  `Unacknowledged`, and its late result is discarded.
+- An answer is never sent before `complete_publish` returns, so it never
+  precedes durability under the stream's fsync mode. A pipelining client still
+  gets its answers in request order (`AckOrder`).
+
+To compare before and after, run `scripts/perf/azure/nats/nats-latency.sh`
+with `LAT_PAIRS="oncommit inmem"` on both builds. The `inmem`
+pair has no fsync, so it isolates the hand-offs. See
+`scripts/perf/azure/README.md` ("Latency").
 
 ## Measured results
 

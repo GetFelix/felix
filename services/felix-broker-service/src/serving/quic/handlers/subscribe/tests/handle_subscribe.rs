@@ -24,7 +24,7 @@ async fn handle_subscribe_message_sends_event_stream_binary_batch() -> Result<()
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
     let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
     let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
@@ -50,6 +50,7 @@ async fn handle_subscribe_message_sends_event_stream_binary_batch() -> Result<()
             "default".to_string(),
             "orders".to_string(),
             Some(7),
+            None,
             None,
             None,
             felix_wire::ORIGINAL_V1_FLAGS,
@@ -130,7 +131,7 @@ async fn handle_subscribe_message_errors_when_stream_missing() -> Result<()> {
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
     let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
     let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
@@ -154,6 +155,7 @@ async fn handle_subscribe_message_errors_when_stream_missing() -> Result<()> {
             "default".to_string(),
             "missing".to_string(),
             Some(11),
+            None,
             None,
             None,
             felix_wire::ORIGINAL_V1_FLAGS,
@@ -202,7 +204,7 @@ async fn handle_subscribe_message_batches_by_bytes() -> Result<()> {
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
     let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
     let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
@@ -233,6 +235,7 @@ async fn handle_subscribe_message_batches_by_bytes() -> Result<()> {
             "default".to_string(),
             "orders".to_string(),
             Some(21),
+            None,
             None,
             None,
             felix_wire::ORIGINAL_V1_FLAGS,
@@ -324,7 +327,7 @@ async fn handle_subscribe_message_hashed_pool_with_generated_id() -> Result<()> 
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
     let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
     let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
@@ -351,6 +354,7 @@ async fn handle_subscribe_message_hashed_pool_with_generated_id() -> Result<()> 
             "t1".to_string(),
             "default".to_string(),
             "orders".to_string(),
+            None,
             None,
             None,
             None,
@@ -426,7 +430,7 @@ async fn handle_subscribe_message_open_uni_failure_sends_error_ack() -> Result<(
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
     let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
     let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
@@ -451,6 +455,7 @@ async fn handle_subscribe_message_open_uni_failure_sends_error_ack() -> Result<(
             "default".to_string(),
             "orders".to_string(),
             Some(900),
+            None,
             None,
             None,
             felix_wire::ORIGINAL_V1_FLAGS,
@@ -500,7 +505,7 @@ async fn frames_of_a_moved_subscription(peer_features: u32) -> Result<Vec<bytes:
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
     let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
     let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
@@ -529,6 +534,7 @@ async fn frames_of_a_moved_subscription(peer_features: u32) -> Result<Vec<bytes:
             "default".to_string(),
             "orders".to_string(),
             Some(7),
+            None,
             None,
             None,
             felix_wire::ORIGINAL_V1_FLAGS,
@@ -662,7 +668,7 @@ async fn frames_across_generation_starts(peer_flags: u16) -> Result<Vec<bytes::B
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
     let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
     let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
@@ -689,6 +695,7 @@ async fn frames_across_generation_starts(peer_flags: u16) -> Result<Vec<bytes::B
             "orders".to_string(),
             Some(7),
             Some(felix_wire::StartPosition::Offset(0)),
+            None,
             None,
             peer_flags,
             0,
@@ -839,7 +846,7 @@ async fn a_subscribe_after_the_readers_were_ended_is_refused() -> Result<()> {
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
     let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-    let ack_timeout_state = Arc::new(tokio::sync::Mutex::new(AckTimeoutState::new(
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
     let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
@@ -865,6 +872,7 @@ async fn a_subscribe_after_the_readers_were_ended_is_refused() -> Result<()> {
             leader::DURABLE.to_string(),
             Some(13),
             Some(StartPosition::Offset(0)),
+            None,
             None,
             felix_wire::ORIGINAL_V1_FLAGS,
             0,

@@ -315,7 +315,7 @@ at once.
 
 | Workload | `event_batch_max_events` | `event_batch_max_delay_us` |
 |----------|--------------------------|----------------------------|
-| Ultra-low latency | 4 | 50 |
+| Latency first | 4 | 50 |
 | Low latency | 8 | 100 |
 | Balanced (default) | 64 | 250 |
 | High throughput | 128 | 1000 |

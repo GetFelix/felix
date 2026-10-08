@@ -95,6 +95,12 @@ pub struct ClientConfig {
     pub client_sub_queue_capacity: usize,
     /// What a subscription does when one of those queues is full.
     pub client_sub_queue_policy: ClientSubQueuePolicy,
+    /// How many published batches each subscription's queue on the broker
+    /// should hold, instead of the stream's default. The broker clamps it to
+    /// its configured maximum, and [`crate::Subscription::queue_capacity`]
+    /// reports what was granted. When it is full the stream's policy applies,
+    /// which by default drops. `None` leaves the stream's default.
+    pub broker_sub_queue_capacity: Option<u32>,
     /// Largest frame the client will read. A bigger one fails the stream
     /// rather than being allocated.
     pub max_frame_bytes: usize,
@@ -158,6 +164,7 @@ impl ClientConfig {
             publishers: false,
             timestamps: false,
             client_sub_queue_policy: ClientSubQueuePolicy::DropNew,
+            broker_sub_queue_capacity: None,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             bench_embed_ts: false,
         }
@@ -207,6 +214,7 @@ impl ClientConfig {
             max_frame_bytes: self.max_frame_bytes,
             client_sub_queue_capacity: self.client_sub_queue_capacity,
             client_sub_queue_policy: self.client_sub_queue_policy,
+            broker_sub_queue_capacity: self.broker_sub_queue_capacity,
             bench_embed_ts: self.bench_embed_ts,
         }
     }
@@ -243,6 +251,7 @@ pub(crate) struct ClientRuntimeConfig {
     pub(crate) max_frame_bytes: usize,
     pub(crate) client_sub_queue_capacity: usize,
     pub(crate) client_sub_queue_policy: ClientSubQueuePolicy,
+    pub(crate) broker_sub_queue_capacity: Option<u32>,
     pub(crate) bench_embed_ts: bool,
 }
 

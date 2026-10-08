@@ -23,7 +23,8 @@ Get started:
 Commands:
   Data plane     pub, sub, cache get|put|del|watch, topology
   Groups         group, counter
-  Control plane  tenant, namespace, stream, cache ls|info, node, shard
+  Control plane  tenant, namespace, stream, cache ls|info|create|set|rm,
+                 node, shard, placement
   Tools          context, bench, completions
 
 Run `felixctl help <command>` or `felixctl <command> --help` for details.
@@ -166,16 +167,18 @@ pub(crate) enum Command {
     )]
     Sub(SubArgs),
 
-    /// Read, write and watch cache keys, or list caches
+    /// Read, write and watch cache keys, or manage caches
     #[command(
         subcommand,
-        long_about = "Read, write and watch cache keys, or list and inspect caches.\n\n\
-                      get, put, del and watch go to the brokers. ls and info ask the \
-                      control plane.",
+        long_about = "Read, write and watch cache keys, or create, change, list, inspect \
+                      and delete caches.\n\n\
+                      get, put, del and watch go to the brokers. ls, info, create, set and \
+                      rm go to the control plane.",
         after_long_help = "Examples:
   felixctl cache put sessions user-1 'logged-in' --ttl-ms 60000
   felixctl cache get sessions user-1
   felixctl cache watch sessions --prefix user-
+  felixctl cache create sessions --shards 4
   felixctl cache ls"
     )]
     Cache(CacheCommand),
@@ -222,60 +225,85 @@ pub(crate) enum Command {
     )]
     Counter(CounterCommand),
 
-    /// List and inspect tenants (control plane)
+    /// Create, list, inspect and delete tenants (control plane)
     #[command(
         subcommand,
-        long_about = "List and inspect tenants. Needs a control-plane token allowed \
-                      tenant.manage on the cluster.",
+        long_about = "Create, list, inspect and delete tenants. Needs a control-plane token \
+                      allowed tenant.manage on the cluster.",
         after_long_help = "Examples:
   felixctl tenant ls
-  felixctl tenant info t1"
+  felixctl tenant info t1
+  felixctl tenant create acme --display-name 'Acme Corp'
+  felixctl tenant rm acme --yes"
     )]
     Tenant(TenantCommand),
 
-    /// List and inspect namespaces (control plane)
+    /// Create, list, inspect and delete namespaces (control plane)
     #[command(
         subcommand,
-        long_about = "List and inspect the namespaces of the current tenant.",
+        long_about = "Create, list, inspect and delete the namespaces of the current tenant.",
         after_long_help = "Examples:
   felixctl namespace ls
-  felixctl namespace info default --tenant t1"
+  felixctl namespace info default --tenant t1
+  felixctl namespace create payments
+  felixctl namespace rm payments --yes"
     )]
     Namespace(NamespaceCommand),
 
-    /// List and inspect streams (control plane)
+    /// Create, change, list, inspect and delete streams (control plane)
     #[command(
         subcommand,
-        long_about = "List and inspect the streams of the current tenant and namespace.",
+        long_about = "Create, change, list, inspect and delete the streams of the current \
+                      tenant and namespace.",
         after_long_help = "Examples:
   felixctl stream ls
   felixctl stream info orders
-  felixctl stream ls -n payments --json"
+  felixctl stream create orders --shards 4 --replication 3 --consistency quorum
+  felixctl stream set orders --retention-secs 86400
+  felixctl stream rm orders --yes"
     )]
     Stream(StreamCommand),
 
-    /// List and inspect brokers (control plane)
+    /// List, inspect, drain and deregister brokers (control plane)
     #[command(
         subcommand,
         long_about = "List and inspect the brokers registered with the control plane, \
-                      with their lifecycle and whether placement may use them.",
+                      with their lifecycle and whether placement may use them, and drain or \
+                      deregister one.",
         after_long_help = "Examples:
   felixctl node ls
-  felixctl node info broker-1 --json"
+  felixctl node info broker-1 --json
+  felixctl node drain broker-2
+  felixctl node deregister broker-2 --yes"
     )]
     Node(NodeCommand),
 
-    /// List shard assignments (control plane)
+    /// List shard assignments and move shards (control plane)
     #[command(
         subcommand,
         long_about = "List which broker leads each shard of every stream and cache, as the \
-                      control plane assigned them.",
+                      control plane assigned them, and move a shard's leadership or cancel \
+                      a move.",
         after_long_help = "Examples:
   felixctl shard ls
   felixctl shard ls --leader broker-2
-  felixctl shard ls --name orders"
+  felixctl shard move orders 2 --to broker-3
+  felixctl shard move cancel orders 2"
     )]
     Shard(ShardCommand),
+
+    /// Pause or resume placement's own moves (control plane)
+    #[command(
+        subcommand,
+        long_about = "Pause or resume the moves placement starts by itself, and give up a \
+                      stranded shard's log. Needs a control-plane token allowed node.manage \
+                      on the cluster.",
+        after_long_help = "Examples:
+  felixctl placement pause
+  felixctl placement resume
+  felixctl placement abandon orders 2 --yes"
+    )]
+    Placement(PlacementCommand),
 
     /// Run a load test against the cluster
     #[command(
@@ -557,6 +585,192 @@ pub(crate) enum CacheCommand {
         /// Cache name
         cache: String,
     },
+    /// Create a cache (control plane)
+    #[command(
+        long_about = "Create a cache in the current tenant and namespace. Creating one that \
+                      already exists with the same settings succeeds; with different \
+                      settings it is refused.",
+        after_long_help = "Examples:
+  felixctl cache create sessions
+  felixctl cache create sessions --shards 4 --replication 3 --consistency quorum"
+    )]
+    Create(CacheCreateArgs),
+    /// Change a cache's display name (control plane)
+    #[command(
+        long_about = "Change a cache's display name, the only setting that can change after \
+                      creation, and print what changed.",
+        after_long_help = "Examples:
+  felixctl cache set sessions --display-name 'Login sessions'"
+    )]
+    Set {
+        /// Cache name
+        cache: String,
+        /// New display name
+        #[arg(long, value_name = "TEXT")]
+        display_name: String,
+    },
+    /// Delete a cache and every key in it (control plane)
+    #[command(
+        long_about = "Delete a cache and every key in it. Asks first on a terminal; \
+                      elsewhere it needs --yes.",
+        after_long_help = "Examples:
+  felixctl cache rm sessions
+  felixctl cache rm sessions --yes"
+    )]
+    Rm {
+        /// Cache name
+        cache: String,
+        #[command(flatten)]
+        confirm: Confirm,
+    },
+}
+
+/// `--yes`, which every destructive command takes.
+#[derive(Debug, Clone, Copy, Args)]
+pub(crate) struct Confirm {
+    /// Do not ask for confirmation. Needed when stdin is not a terminal
+    #[arg(long, short = 'y')]
+    pub(crate) yes: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct CacheCreateArgs {
+    /// Cache name
+    pub(crate) cache: String,
+    /// Display name [default: the cache name]
+    #[arg(long, value_name = "TEXT")]
+    pub(crate) display_name: Option<String>,
+    /// Shards to split the keyspace across
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    pub(crate) shards: u32,
+    /// Brokers holding a copy of each shard, the leader included
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    pub(crate) replication: u32,
+    /// `quorum` acknowledges a write once a majority of the shard's copies
+    /// hold it
+    #[arg(long, value_enum, value_name = "LEVEL", default_value_t = ConsistencyArg::Leader)]
+    pub(crate) consistency: ConsistencyArg,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct StreamCreateArgs {
+    /// Stream name
+    pub(crate) stream: String,
+    /// Shards; fixed at creation
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    pub(crate) shards: u32,
+    /// Brokers holding a copy of each shard, the leader included. `quorum`
+    /// needs at least 3 to mean anything
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    pub(crate) replication: u32,
+    /// The kind the control plane records for the stream
+    #[arg(long, value_enum, value_name = "KIND", default_value_t = KindArg::Stream)]
+    pub(crate) kind: KindArg,
+    /// `quorum` acknowledges a publish once a majority of the shard's copies
+    /// hold it
+    #[arg(long, value_enum, value_name = "LEVEL", default_value_t = ConsistencyArg::Leader)]
+    pub(crate) consistency: ConsistencyArg,
+    /// The delivery guarantee readers get
+    #[arg(long, value_enum, value_name = "GUARANTEE", default_value_t = DeliveryArg::AtLeastOnce)]
+    pub(crate) delivery: DeliveryArg,
+    /// Keep records in an on-disk log. `false` keeps them in memory only
+    #[arg(long, value_name = "BOOL", default_value_t = true, action = clap::ArgAction::Set)]
+    pub(crate) durable: bool,
+    /// Keep records this many seconds [default: the broker's own bound]
+    #[arg(long, value_name = "SECS")]
+    pub(crate) retention_secs: Option<u64>,
+    /// Keep at most this many bytes per shard [default: the broker's own bound]
+    #[arg(long, value_name = "BYTES")]
+    pub(crate) retention_bytes: Option<u64>,
+    /// Region the stream's data must stay in; fixed at creation [default:
+    /// anywhere]
+    #[arg(long, value_name = "REGION")]
+    pub(crate) region: Option<String>,
+    /// How routing keys map to shards; fixed at creation. `jump-hash` needs
+    /// the jump_hash_routing fleet feature finalized
+    #[arg(long, value_enum, value_name = "ROUTING", default_value_t = RoutingArg::Modulo)]
+    pub(crate) routing: RoutingArg,
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    clap::ArgGroup::new("change")
+        .required(true)
+        .multiple(true)
+        .args(["consistency", "delivery", "durable", "retention_secs", "retention_bytes"])
+))]
+pub(crate) struct StreamSetArgs {
+    /// Stream name
+    pub(crate) stream: String,
+    /// New consistency level
+    #[arg(long, value_enum, value_name = "LEVEL")]
+    pub(crate) consistency: Option<ConsistencyArg>,
+    /// New delivery guarantee
+    #[arg(long, value_enum, value_name = "GUARANTEE")]
+    pub(crate) delivery: Option<DeliveryArg>,
+    /// Keep records in an on-disk log, or not
+    #[arg(long, value_name = "BOOL", action = clap::ArgAction::Set)]
+    pub(crate) durable: Option<bool>,
+    /// Keep records this many seconds; `default` for the broker's own bound
+    #[arg(long, value_name = "SECS")]
+    pub(crate) retention_secs: Option<Bound>,
+    /// Keep at most this many bytes per shard; `default` for the broker's own
+    /// bound
+    #[arg(long, value_name = "BYTES")]
+    pub(crate) retention_bytes: Option<Bound>,
+}
+
+/// A retention bound to set: a value, or `default` to clear it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Bound {
+    BrokerDefault,
+    Value(u64),
+}
+
+impl std::str::FromStr for Bound {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value == "default" {
+            return Ok(Self::BrokerDefault);
+        }
+        value
+            .parse()
+            .map(Self::Value)
+            .map_err(|_| format!("expected a number or `default`, not {value:?}"))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum KindArg {
+    /// Recorded as `Stream`
+    Stream,
+    /// Recorded as `Queue`
+    Queue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ConsistencyArg {
+    /// The leader alone acknowledges
+    Leader,
+    /// A majority of the copies acknowledge
+    Quorum,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum DeliveryArg {
+    /// A plain subscription
+    AtMostOnce,
+    /// Consumer groups with acknowledgements
+    AtLeastOnce,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum RoutingArg {
+    /// hash(key) % shards
+    Modulo,
+    /// Jump consistent hashing
+    JumpHash,
 }
 
 #[derive(Debug, Args)]
@@ -590,6 +804,37 @@ pub(crate) enum TenantCommand {
         #[arg(id = "tenant_id", value_name = "TENANT")]
         tenant: String,
     },
+    /// Create a tenant
+    #[command(
+        long_about = "Create a tenant. One that already exists is refused.",
+        after_long_help = "Examples:
+  felixctl tenant create acme
+  felixctl tenant create acme --display-name 'Acme Corp'"
+    )]
+    Create {
+        /// Tenant id
+        #[arg(id = "tenant_id", value_name = "TENANT")]
+        tenant: String,
+        /// Display name [default: the tenant id]
+        #[arg(long, value_name = "TEXT")]
+        display_name: Option<String>,
+    },
+    /// Delete a tenant
+    #[command(
+        long_about = "Delete a tenant with everything in it: namespaces, streams, caches, \
+                      signing keys and RBAC rules. Asks first on a terminal; elsewhere it \
+                      needs --yes.",
+        after_long_help = "Examples:
+  felixctl tenant rm acme
+  felixctl tenant rm acme --yes"
+    )]
+    Rm {
+        /// Tenant id
+        #[arg(id = "tenant_id", value_name = "TENANT")]
+        tenant: String,
+        #[command(flatten)]
+        confirm: Confirm,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -613,6 +858,37 @@ pub(crate) enum NamespaceCommand {
         /// Namespace name
         #[arg(id = "namespace_name", value_name = "NAMESPACE")]
         namespace: String,
+    },
+    /// Create a namespace
+    #[command(
+        long_about = "Create a namespace in the current tenant. One that already exists is \
+                      refused.",
+        after_long_help = "Examples:
+  felixctl namespace create payments
+  felixctl namespace create payments --display-name Payments"
+    )]
+    Create {
+        /// Namespace name
+        #[arg(id = "namespace_name", value_name = "NAMESPACE")]
+        namespace: String,
+        /// Display name [default: the namespace name]
+        #[arg(long, value_name = "TEXT")]
+        display_name: Option<String>,
+    },
+    /// Delete a namespace
+    #[command(
+        long_about = "Delete a namespace of the current tenant, its streams and caches \
+                      included. Asks first on a terminal; elsewhere it needs --yes.",
+        after_long_help = "Examples:
+  felixctl namespace rm payments
+  felixctl namespace rm payments --yes"
+    )]
+    Rm {
+        /// Namespace name
+        #[arg(id = "namespace_name", value_name = "NAMESPACE")]
+        namespace: String,
+        #[command(flatten)]
+        confirm: Confirm,
     },
 }
 
@@ -638,6 +914,43 @@ pub(crate) enum StreamCommand {
         /// Stream name
         stream: String,
     },
+    /// Create a stream
+    #[command(
+        long_about = "Create a stream in the current tenant and namespace. Creating one \
+                      that already exists with the same settings succeeds; with different \
+                      settings it is refused. Shards, replication, region and routing are \
+                      fixed once it exists.",
+        after_long_help = "Examples:
+  felixctl stream create orders
+  felixctl stream create orders --shards 4 --replication 3 --consistency quorum
+  felixctl stream create audit --retention-secs 604800 --region eu-west"
+    )]
+    Create(StreamCreateArgs),
+    /// Change a stream's settings
+    #[command(
+        long_about = "Change a stream's consistency, delivery, durability or retention, and \
+                      print what changed. A retention bound not given keeps its current \
+                      value.",
+        after_long_help = "Examples:
+  felixctl stream set orders --retention-secs 86400
+  felixctl stream set orders --retention-bytes default
+  felixctl stream set orders --consistency quorum"
+    )]
+    Set(StreamSetArgs),
+    /// Delete a stream and its records
+    #[command(
+        long_about = "Delete a stream and its records. Asks first on a terminal; elsewhere \
+                      it needs --yes.",
+        after_long_help = "Examples:
+  felixctl stream rm orders
+  felixctl stream rm orders --yes"
+    )]
+    Rm {
+        /// Stream name
+        stream: String,
+        #[command(flatten)]
+        confirm: Confirm,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -661,6 +974,38 @@ pub(crate) enum NodeCommand {
         /// Node id
         node: String,
     },
+    /// Stop placing shards on a broker and move its shards away
+    #[command(
+        long_about = "Mark a broker draining: placement puts nothing new on it and moves \
+                      the shards it holds to other brokers, while it keeps serving each one \
+                      until the shard is handed off. Draining a node already draining \
+                      succeeds. Asks first on a terminal; elsewhere it needs --yes.",
+        after_long_help = "Examples:
+  felixctl node drain broker-2
+  felixctl node drain broker-2 --yes"
+    )]
+    Drain {
+        /// Node id
+        node: String,
+        #[command(flatten)]
+        confirm: Confirm,
+    },
+    /// Mark a broker as having left the cluster
+    #[command(
+        long_about = "Mark a broker as having left the cluster on purpose. Its shards stay \
+                      put until its lease has run out, then fail over. Drain it first to \
+                      move them without a failover. Asks first on a terminal; elsewhere it \
+                      needs --yes.",
+        after_long_help = "Examples:
+  felixctl node deregister broker-2
+  felixctl node deregister broker-2 --yes"
+    )]
+    Deregister {
+        /// Node id
+        node: String,
+        #[command(flatten)]
+        confirm: Confirm,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -681,6 +1026,110 @@ pub(crate) enum ShardCommand {
         /// Only shards of this stream or cache
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+    },
+    /// Move a shard's leadership to another broker, or cancel a move
+    #[command(
+        long_about = "Move a shard's leadership to the broker --to names. The destination \
+                      copies the log first and the leader keeps serving until it has caught \
+                      up. Prints the step the move is at and the assignment it wrote. \
+                      --dry-run prints what it would write without starting it.\n\n\
+                      `shard move cancel` stops a move that has not cut over yet.",
+        after_long_help = "Examples:
+  felixctl shard move orders 2 --to broker-3
+  felixctl shard move orders 2 --to broker-3 --dry-run
+  felixctl shard move sessions 0 --to broker-1 --cache
+  felixctl shard move cancel orders 2"
+    )]
+    Move(ShardMoveArgs),
+}
+
+/// `shard move NAME SHARD --to NODE`, or `shard move cancel NAME SHARD`.
+#[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
+pub(crate) struct ShardMoveArgs {
+    #[command(subcommand)]
+    pub(crate) cancel: Option<ShardMoveCommand>,
+    /// Stream (or, with --cache, cache) name
+    #[arg(required = true)]
+    pub(crate) name: Option<String>,
+    /// Shard number
+    #[arg(required = true)]
+    pub(crate) shard: Option<u32>,
+    /// Broker to move the leadership to
+    #[arg(long, value_name = "NODE", required = true)]
+    pub(crate) to: Option<String>,
+    /// NAME is a cache, not a stream
+    #[arg(long)]
+    pub(crate) cache: bool,
+    /// Print what the move would write, without starting it
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ShardMoveCommand {
+    /// Cancel a shard's move
+    #[command(
+        long_about = "Cancel a shard's move or follower replacement, whoever started it. \
+                      Before the fence the destination is dropped; after it the old leader \
+                      serves again. A move that has cut over cannot be cancelled; move the \
+                      shard back instead. Placement may choose the same move again, so \
+                      pause it first to keep the shard where it is.",
+        after_long_help = "Examples:
+  felixctl shard move cancel orders 2
+  felixctl shard move cancel sessions 0 --cache"
+    )]
+    Cancel(ShardRef),
+}
+
+/// One shard of a stream or cache in the current tenant and namespace.
+#[derive(Debug, Args)]
+pub(crate) struct ShardRef {
+    /// Stream (or, with --cache, cache) name
+    pub(crate) name: String,
+    /// Shard number
+    pub(crate) shard: u32,
+    /// NAME is a cache, not a stream
+    #[arg(long)]
+    pub(crate) cache: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum PlacementCommand {
+    /// Stop placement starting moves of its own
+    #[command(
+        long_about = "Stop placement starting moves of its own, on every control-plane \
+                      instance. Moves already under way finish; cancel one to stop it. New \
+                      shards are still placed and a failed leader is still replaced, and an \
+                      operator can still move shards.",
+        after_long_help = "Examples:
+  felixctl placement pause"
+    )]
+    Pause,
+    /// Let placement start moves again
+    #[command(
+        long_about = "Let placement start moves of its own again.",
+        after_long_help = "Examples:
+  felixctl placement resume"
+    )]
+    Resume,
+    /// Give up a stranded shard's log and place it afresh. Loses data
+    #[command(
+        long_about = "Give up the log of a durable shard that placement is holding unplaced \
+                      because the only copies of it are out of reach, and place the shard \
+                      afresh. Records only the old leader held are lost, acknowledged ones \
+                      included. The control plane refuses it while the leader serves or a \
+                      replica can take over without loss. Never asks: it always needs \
+                      --yes.",
+        after_long_help = "Examples:
+  felixctl placement abandon orders 2 --yes
+  felixctl placement abandon sessions 0 --cache --yes"
+    )]
+    Abandon {
+        #[command(flatten)]
+        shard: ShardRef,
+        #[command(flatten)]
+        confirm: Confirm,
     },
 }
 

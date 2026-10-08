@@ -11,7 +11,8 @@
 //! - Backpressure is applied via queue depth + throttle signals rather than blocking many tasks.
 //!
 //! Responsibilities:
-//! - Drain `Outgoing` items (either JSON `Message` or binary `Frame` for cache fast-path replies).
+//! - Drain `Outgoing` items (either JSON `Message` or binary `Frame` for cache fast-path replies),
+//!   taking everything already queued and writing it in one call. It never waits for more.
 //! - Maintain per-stream and global ack queue depth gauges.
 //! - Toggle `ack_throttle` when depth crosses high/low watermarks.
 //! - On any write/encode failure, initiate cooperative shutdown by signaling `cancel`.
@@ -26,13 +27,14 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use felix_wire::Message;
+use bytes::Bytes;
+use felix_wire::{Frame, FrameHeader};
 use quinn::SendStream;
 use tokio::sync::{mpsc, watch};
 
 use super::hooks::{
-    encode_cache_message_with_hook, should_reset_throttle, write_frame_with_hook,
-    write_message_with_hook,
+    check_frame_write_hook, encode_cache_message_with_hook, encode_message_with_hook,
+    should_reset_throttle,
 };
 use crate::observability::timings;
 use crate::serving::quic::GLOBAL_ACK_DEPTH;
@@ -44,6 +46,10 @@ use crate::serving::quic::telemetry::{t_counter, t_histogram, t_now_if, t_should
 // limit, and long enough for the broker's own messages ("forbidden",
 // "tenant mismatch", "stream full", decode errors) to survive intact.
 const MAX_ACK_MESSAGE_BYTES: usize = 512;
+
+// Most answers taken off the queue for one write. Only what is already queued
+// is taken, so this bounds a write's size, never adds a wait.
+const WRITE_BATCH_MAX: usize = 64;
 
 // Drains outgoing responses, updates depth counters, and handles shutdown on error.
 #[allow(clippy::too_many_arguments)]
@@ -58,7 +64,8 @@ pub(super) async fn run_writer_loop(
     cancel_tx_writer: watch::Sender<bool>,
     mut cancel_rx_writer: watch::Receiver<bool>,
 ) {
-    let mut ready = Vec::with_capacity(4);
+    let mut ready = Vec::with_capacity(WRITE_BATCH_MAX);
+    let mut chunks = Vec::with_capacity(2 * WRITE_BATCH_MAX);
     loop {
         // Only a pipelining stream holds answers back, and only then can one
         // lost answer strand the rest.
@@ -84,18 +91,27 @@ pub(super) async fn run_writer_loop(
             outgoing = out_ack_rx.recv() => {
                 let Some(outgoing) = outgoing else { break };
                 ack_order.release(outgoing, &mut ready);
-                let mut failed = false;
-                for outgoing in ready.drain(..) {
-                    if !failed && write_outgoing(&mut send, outgoing, &error_codes).await.is_err() {
-                        failed = true;
+                // Everything already queued goes out in the same write.
+                let mut dequeued = 1;
+                while dequeued < WRITE_BATCH_MAX {
+                    let Ok(outgoing) = out_ack_rx.try_recv() else { break };
+                    ack_order.release(outgoing, &mut ready);
+                    dequeued += 1;
+                }
+                let failed = write_ready(&mut send, &mut ready, &mut chunks, &error_codes)
+                    .await
+                    .is_err();
+                // One decrement per dequeue, however many answers it released.
+                let mut depth_update: Option<(usize, usize)> = None;
+                for _ in 0..dequeued {
+                    if let Some((prev, cur)) = decrement_depth(
+                        &out_ack_depth_worker,
+                        &GLOBAL_ACK_DEPTH,
+                        "felix_broker_out_ack_depth",
+                    ) {
+                        depth_update = Some((depth_update.map_or(prev, |(first, _)| first), cur));
                     }
                 }
-                // One dequeue, one decrement, however many answers it released.
-                let depth_update = decrement_depth(
-                    &out_ack_depth_worker,
-                    &GLOBAL_ACK_DEPTH,
-                    "felix_broker_out_ack_depth",
-                );
                 if failed {
                     let _ = ack_throttle_tx_writer.send(false);
                     let _ = cancel_tx_writer.send(true);
@@ -117,32 +133,64 @@ async fn sleep_until_or_never(deadline: Option<tokio::time::Instant>) {
     }
 }
 
-/// Write one response. An error means the stream is unusable.
-async fn write_outgoing(
+/// Encode every ready response and write them in one call. An error means the
+/// stream is unusable.
+async fn write_ready(
     send: &mut SendStream,
-    outgoing: Outgoing,
+    ready: &mut Vec<Outgoing>,
+    chunks: &mut Vec<Bytes>,
     error_codes: &ErrorCodeSupport,
 ) -> Result<(), ()> {
+    if ready.is_empty() {
+        return Ok(());
+    }
+    chunks.clear();
+    let sample = t_should_sample();
+    let mut encoded = Ok(());
+    for outgoing in ready.drain(..) {
+        if encoded.is_ok() {
+            encoded = encode_outgoing(outgoing, error_codes, chunks, sample);
+        }
+    }
+    encoded?;
+    let write_start = t_now_if(sample);
+    if let Err(err) = send.write_all_chunks(chunks.as_mut_slice()).await {
+        tracing::info!(error = %err, "quic response stream closed");
+        return Err(());
+    }
+    if let Some(start) = write_start {
+        let write_ns = start.elapsed().as_nanos() as u64;
+        timings::record_quic_write_ns(write_ns);
+        t_histogram!("felix_broker_quic_write_ns").record(write_ns as f64);
+    }
+    Ok(())
+}
+
+/// Append one response's bytes to `chunks`.
+fn encode_outgoing(
+    outgoing: Outgoing,
+    error_codes: &ErrorCodeSupport,
+    chunks: &mut Vec<Bytes>,
+    sample: bool,
+) -> Result<(), ()> {
+    #[cfg(not(feature = "telemetry"))]
+    let _ = sample;
     match outgoing {
         Outgoing::Message(message) => {
             let message = error_codes.shape(message);
-            let sample = t_should_sample();
+            #[cfg(feature = "telemetry")]
             let is_publish_ack = matches!(
                 message,
-                Message::PublishOk { .. } | Message::PublishError { .. }
+                felix_wire::Message::PublishOk { .. } | felix_wire::Message::PublishError { .. }
             );
-            #[cfg(not(feature = "telemetry"))]
-            let _ = is_publish_ack;
-            let write_start = t_now_if(sample);
-            if let Err(err) = write_message_with_hook(send, message).await {
-                tracing::info!(error = %err, "quic response stream closed");
-                return Err(());
-            }
-            if let Some(start) = write_start {
-                let write_ns = start.elapsed().as_nanos() as u64;
-                timings::record_quic_write_ns(write_ns);
-                t_histogram!("felix_broker_quic_write_ns").record(write_ns as f64);
-            }
+            let frame = match encode_message_with_hook(message) {
+                Ok(frame) => frame,
+                Err(err) => {
+                    tracing::info!(error = %err, "encode response failed");
+                    return Err(());
+                }
+            };
+            push_frame(chunks, frame);
             #[cfg(feature = "telemetry")]
             {
                 let counters = super::super::telemetry::frame_counters();
@@ -160,8 +208,6 @@ async fn write_outgoing(
             forwarded_to,
             offset,
         } => {
-            let sample = t_should_sample();
-            let write_start = t_now_if(sample);
             // The ack's message field is u16-length on the wire. Bound it
             // here so an unusually long internal error can never make the
             // ack unencodable — dropping an ack strands a client that is
@@ -187,15 +233,7 @@ async fn write_outgoing(
                     return Err(());
                 }
             };
-            if let Err(err) = send.write_all(&bytes).await {
-                tracing::info!(error = %err, "quic response stream closed");
-                return Err(());
-            }
-            if let Some(start) = write_start {
-                let write_ns = start.elapsed().as_nanos() as u64;
-                timings::record_quic_write_ns(write_ns);
-                t_histogram!("felix_broker_quic_write_ns").record(write_ns as f64);
-            }
+            chunks.push(bytes);
             #[cfg(feature = "telemetry")]
             {
                 let counters = super::super::telemetry::frame_counters();
@@ -205,7 +243,6 @@ async fn write_outgoing(
         }
         Outgoing::CacheMessage(message) => {
             let message = error_codes.shape(message);
-            let sample = t_should_sample();
             let encode_start = t_now_if(sample);
             let frame = match encode_cache_message_with_hook(message) {
                 Ok(frame) => frame,
@@ -215,18 +252,13 @@ async fn write_outgoing(
                 }
             };
             if let Some(start) = encode_start {
-                let encode_ns = start.elapsed().as_nanos() as u64;
-                timings::record_cache_encode_ns(encode_ns);
+                timings::record_cache_encode_ns(start.elapsed().as_nanos() as u64);
             }
-            let write_start = t_now_if(sample);
-            if let Err(err) = write_frame_with_hook(send, &frame).await {
+            if let Err(err) = check_frame_write_hook() {
                 tracing::info!(error = %err, "quic response stream closed");
                 return Err(());
             }
-            if let Some(start) = write_start {
-                let write_ns = start.elapsed().as_nanos() as u64;
-                timings::record_cache_write_ns(write_ns);
-            }
+            push_frame(chunks, frame);
             #[cfg(feature = "telemetry")]
             {
                 let counters = super::super::telemetry::frame_counters();
@@ -235,6 +267,22 @@ async fn write_outgoing(
         }
     }
     Ok(())
+}
+
+fn push_frame(chunks: &mut Vec<Bytes>, frame: Frame) {
+    let mut header = [0u8; FrameHeader::LEN];
+    frame.header.encode_into(&mut header);
+    #[cfg(feature = "telemetry")]
+    {
+        let counters = super::super::telemetry::frame_counters();
+        counters.frames_out_ok.fetch_add(1, Ordering::Relaxed);
+        counters.bytes_out.fetch_add(
+            (FrameHeader::LEN + frame.payload.len()) as u64,
+            Ordering::Relaxed,
+        );
+    }
+    chunks.push(Bytes::copy_from_slice(&header));
+    chunks.push(frame.payload);
 }
 
 // Truncate on a char boundary so the result stays valid UTF-8.

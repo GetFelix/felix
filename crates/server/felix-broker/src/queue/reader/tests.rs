@@ -950,6 +950,7 @@ async fn a_group_hands_out_each_records_publisher() {
             &[Bytes::from_static(b"from alice")],
             &[],
             &[Some(alice.clone())],
+            &[],
         )
         .await
         .expect("append")

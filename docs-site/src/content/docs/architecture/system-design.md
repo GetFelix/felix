@@ -184,7 +184,7 @@ to disk before it is fanned out or acknowledged.
 
 **Use cases:**
 
-- Ultra-low latency workloads
+- Latency-sensitive workloads that can lose data on restart
 - Development and testing
 - Temporary caching
 - Non-critical event streams

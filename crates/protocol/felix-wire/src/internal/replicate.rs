@@ -54,6 +54,17 @@ pub struct ReplicateRecords {
     /// generation. `Some` travels as `ReplicateLabelledRecords`, sent only to
     /// a peer that advertised `GENERATION_LABELS`.
     pub generations: Option<Vec<GenerationStart>>,
+    /// Each record's append time on the leader, in microseconds since the
+    /// Unix epoch, one per payload. The follower stores them as they are, so
+    /// a replica promoted later reports the times the leader's readers saw.
+    ///
+    /// `None` is a sender that predates them, and the follower stamps the
+    /// records with its own clock. `Some` travels only on a labelled batch,
+    /// as `ReplicateTimedRecords`, sent only to a peer that advertised
+    /// `RECORD_TIMES`; on a batch without generations it is not sent.
+    /// Not covered by the checksum, so an unlabelled batch checksums as it
+    /// always has.
+    pub times: Option<Vec<u64>>,
 }
 
 /// One leadership generation, and the offset of its first record.

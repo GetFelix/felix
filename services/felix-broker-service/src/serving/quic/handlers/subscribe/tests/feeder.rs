@@ -46,6 +46,10 @@ struct Harness {
 }
 
 async fn spawn_feeder(flush_delay: Duration) -> Result<Harness> {
+    spawn_feeder_capped(flush_delay, 64 * 1024).await
+}
+
+async fn spawn_feeder_capped(flush_delay: Duration, max_bytes: usize) -> Result<Harness> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;
@@ -69,7 +73,7 @@ async fn spawn_feeder(flush_delay: Duration) -> Result<Harness> {
         shard_moved_enabled: false,
         subscription_id: 1,
         max_events: 64,
-        max_bytes: 64 * 1024,
+        max_bytes,
         flush_delay,
         single_event_mode: false,
         flush_max_items: 64,
@@ -162,6 +166,30 @@ async fn lane_feeder_coalesces_a_queued_burst() -> Result<()> {
 
     // 64 is the count cap.
     assert_eq!(frames, 2, "{BURST} queued events took {frames} frames");
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn lane_feeder_carries_the_event_past_the_byte_cap_into_the_next_frame() -> Result<()> {
+    // Two five-byte events fit under twelve bytes; a third does not.
+    let Harness {
+        broker,
+        mut lane_rx,
+        feeder,
+        _manager,
+        _guard,
+    } = spawn_feeder_capped(Duration::from_millis(50), 12).await?;
+    for _ in 0..5 {
+        publish(&broker).await?;
+    }
+
+    let mut frames = Vec::new();
+    while frames.iter().sum::<usize>() < 5 {
+        frames.push(item_count(lane_rx.recv().await.expect("lane closed")));
+    }
+    feeder.abort();
+
+    assert_eq!(frames, vec![2, 2, 1]);
     Ok(())
 }
 

@@ -37,6 +37,7 @@ fn a_cache_batch_with_a_start_record_travels_in_a_layout_with_marks() {
         felix_storage::log::RecordMark::GenerationStart,
     )];
     let mut batch = ReplicateRecords {
+        times: None,
         correlation_id: 1,
         shard: ShardRef {
             tenant_id: "t1".to_string(),
