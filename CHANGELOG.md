@@ -21,6 +21,16 @@ for what the current release guarantees.
   reported `unchanged`, so a batch can be sent again after a failure. Under
   Raft this is metadata level 5; the endpoint answers `503` until every
   control-plane member runs a release that has it.
+- Token exchange can narrow by action and resource pairs (#968).
+  `permissions: ["stream.subscribe:stream:t1/ns/a", "stream.publish:stream:t1/ns/b"]`
+  narrows each pair on its own against the grants with exactly that action,
+  where `requested` and `resources` apply every action to every resource. It
+  never widens what RBAC grants. It must be sent with `"requested": []` (a
+  `400` otherwise), so a control plane that predates the field refuses rather
+  than minting full rights, and the refresh record stores the same `[]` for
+  the same reason. Refresh keeps the pairs, and the dev-token route accepts
+  them too. Under the Raft store the field is metadata version 5: an exchange
+  with pairs is a `409` until every member reports it.
 - Delivered events and group records can carry the record's append time, and
   a client can look up an offset by time (#975). A subscriber that offers
   `FLAG_EVENT_BATCH_TIMESTAMPS` (`0x4000`) gets a `u64` of microseconds before
