@@ -333,6 +333,13 @@ for what the current release guarantees.
   doubt with nobody waiting is re-sent by the producer, under its sequence,
   before the next batch on that shard. Dropping the producer lets what it was
   handed finish; `IdempotentProducer::close` waits for it. (#977)
+- The history campaign could report a record delivered past the end of the
+  final log (`lost-delivery`). Since #977 a dropped producer still sends what
+  it was handed, so an append recorded as unknown could land after the final
+  read. A stopping client now closes its producer and finishes its publishes
+  before the final read is taken. `IdempotentProducer::close_within(timeout)`
+  is new: `close`, but the producer's task is stopped at the timeout, so
+  nothing it held is sent later. (#1075)
 - `felixctl sub`, `cache get` and `cache watch` escape binary payloads on a
   terminal (`\x00`, `\u{85}`) instead of writing raw bytes that garble it;
   piped output is unchanged. `felixctl bench latency` payloads showed it.
