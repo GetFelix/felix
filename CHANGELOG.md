@@ -12,6 +12,15 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- felixctl writes to the control plane (part of #1005). `tenant`, `namespace`,
+  `stream` and `cache` gain `create` and `rm`; `stream set` changes
+  consistency, delivery, durability and retention, keeping a retention bound
+  not given, and `cache set` the display name; each prints what changed.
+  `node drain` and `node deregister`, `shard move NAME SHARD --to NODE` (with
+  `--dry-run` and `--cache`) and `shard move cancel`, and `placement pause`,
+  `resume` and `abandon` drive placement. Deletes, drains and deregistrations
+  ask on a terminal and need `--yes` anywhere else, stopping with status 2
+  without it; `placement abandon` never asks and always needs `--yes`.
 - A consumer can manage its own claims on a broker advertising
   `FEATURE_GROUP_CLAIM_CONTROL` (`0x800_0000`) (#974). `group_extend` keeps a
   claim standing while the work goes on, answered with `group_extended`; it
