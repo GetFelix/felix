@@ -21,7 +21,9 @@ trap cleanup EXIT
 cd "$repo"
 cargo build --locked -q -p felix-capi
 # What a static link needs from the system differs per platform; rustc says.
-native="$(cargo rustc --locked -p felix-capi --lib --crate-type staticlib -- --print native-static-libs 2>&1 \
+# Without --color never, CARGO_TERM_COLOR=always leaves an escape code on the
+# last library name.
+native="$(cargo rustc --color never --locked -p felix-capi --lib --crate-type staticlib -- --print native-static-libs 2>&1 \
   | sed -n 's/.*native-static-libs: //p' | tail -n 1)"
 if [ -z "$native" ]; then
   echo "rustc did not report the static library's native dependencies" >&2
