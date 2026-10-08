@@ -427,6 +427,13 @@ for what the current release guarantees.
   task. (#977)
 
 ### Fixed
+- A `Quorum` publish no longer waits out an unreachable follower when the
+  other follower already holds the record but is still answering an earlier
+  replication pass (#1080). The pass waiting for a majority had shipped only to
+  the unreachable one, and the busy follower's answer reached the driver, not
+  that pass, so the mark stayed put until the peer request timed out (5 s by
+  default, past most publish timeouts). The answer now ends that wait and the
+  next pass counts it.
 - `felix_broker_shard_phase` reports `fencing`. The gauge left the phase out,
   so a promoted shard waiting for its fence was counted in no phase.
 - A broker accepts a token carrying `node.view` or `node.manage`. Neither was
