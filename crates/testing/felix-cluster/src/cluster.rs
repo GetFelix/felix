@@ -90,6 +90,11 @@ impl Cluster {
         self.credentials.subscribe_only_token()
     }
 
+    /// Presented to brokers to inspect what they hold.
+    pub fn inspector_token(&self) -> String {
+        self.credentials.inspector_token()
+    }
+
     /// Presented to brokers to redrive or discard a dead letter.
     pub fn group_operator_token(&self) -> String {
         self.credentials.group_operator_token()

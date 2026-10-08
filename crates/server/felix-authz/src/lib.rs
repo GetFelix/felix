@@ -27,7 +27,8 @@ pub use jwks::{Jwk, Jwks, KeyUse};
 pub use matcher::{CacheKeys, PermissionMatcher, wildcard_match};
 pub use permission::{Permission, PermissionPattern};
 pub use resource::{
-    cache_resource, group_resource, namespace_resource, stream_resource, tenant_resource,
+    CLUSTER_RESOURCE, cache_resource, group_resource, namespace_resource, stream_resource,
+    tenant_resource,
 };
 pub use token::{
     FelixClaims, FelixTokenIssuer, FelixTokenVerifier, TenantKeyCache, TenantKeyMaterial,

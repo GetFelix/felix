@@ -32,6 +32,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 APACHE = {
     "felix-wire",
     "felix-client",
+    "felix-capi",
     "felix-transport",
     "felix-common",
 }
@@ -54,6 +55,8 @@ COPYLEFT = {
 # felixctl with the felix-loadgen it links. The server libraries are only ever
 # built into the services, and the rest are service binaries or dev/CI tools.
 NOT_PUBLISHABLE = {
+    # A native library and header; it ships beside the Go and C# packages.
+    "felix-capi",
     "felix-authz",
     "felix-broker",
     "felix-common",

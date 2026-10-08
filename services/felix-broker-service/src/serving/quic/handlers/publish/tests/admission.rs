@@ -31,6 +31,7 @@ async fn publish_admission_try_acquire_fails_when_exhausted() {
 async fn enqueue_publish_drop_sheds_load_when_byte_budget_exhausted() {
     let (scheduler, _tx, _rx) = test_channel(8);
     let ctx = PublishContext {
+        shard_status: None,
         ingress: None,
         client_endpoints: None,
         peers: None,
@@ -65,6 +66,7 @@ async fn enqueue_publish_drop_sheds_load_when_byte_budget_exhausted() {
 async fn enqueue_publish_drop_sheds_load_when_conn_byte_budget_exhausted() {
     let (scheduler, _tx, _rx) = test_channel(8);
     let ctx = PublishContext {
+        shard_status: None,
         ingress: None,
         client_endpoints: None,
         peers: None,
@@ -100,6 +102,7 @@ async fn enqueue_publish_conn_budget_does_not_starve_other_connections() {
     // Two connections sharing one global budget, each with its own conn_admission.
     let admission = Arc::new(PublishAdmission::new(8));
     let ctx_a = PublishContext {
+        shard_status: None,
         ingress: None,
         client_endpoints: None,
         peers: None,

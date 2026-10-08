@@ -182,6 +182,11 @@ rather than passing over them in silence; their pages say which.
 Go, then C#, in that order, because that is where Felix's intended workloads
 live. Each is gated on passing the conformance suite.
 
+Both will bind to `crates/sdk/felix-capi`, a C ABI over the Rust client, through
+cgo and P/Invoke. That crate exists now with connect, publish and a polled
+subscribe, a generated header, and a C test that runs against the conformance
+fixture in CI. Its README describes the calling rules.
+
 If you want to write one sooner, the things you need are all public: the
 [wire protocol](/architecture/wire-protocol/) if you are implementing
 natively, the conformance catalogue either way, and `crates/sdk/felix-python` or

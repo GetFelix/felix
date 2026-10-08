@@ -360,10 +360,17 @@ pub const KNOWN_FEATURES: u32 = FEATURE_TOPOLOGY
     | FEATURE_STREAM_READ
     | FEATURE_SUBSCRIBE_QUEUE;
 
+/// The broker answers `shard_inspect`: its own view of one shard, for an
+/// operator holding `node.view:cluster:*`.
+///
+/// The first bit of the extended word, so it travels in `server_features_hi`.
+/// Advertised by a *broker*, like every request-shaped feature: an older
+/// broker has no arm for the request.
+pub const FEATURE_INSPECT: u32 = 0x0000_0001;
+
 /// Every extended feature bit this version implements: bits that travel in
 /// `client_features_hi` / `server_features_hi` rather than the first word.
-/// None yet.
-pub const KNOWN_FEATURES_HI: u32 = 0;
+pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT;
 
 /// The peer reads the other side's extended feature word.
 ///

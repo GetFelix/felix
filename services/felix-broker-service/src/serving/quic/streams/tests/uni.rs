@@ -109,6 +109,7 @@ async fn uni_loop_breaks_on_enqueue_error() -> Result<()> {
     let (scheduler, _tx, rx) = test_channel(1);
     drop(rx);
     let publish_ctx = PublishContext {
+        shard_status: None,
         ingress: None,
         client_endpoints: None,
         peers: None,

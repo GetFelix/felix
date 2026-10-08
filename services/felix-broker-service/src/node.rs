@@ -151,6 +151,9 @@ where
     // metric is a bare count: a label per shard is a label per stream per
     // tenant, and a halt is useless to act on without knowing which replica.
     let halted_replicas = Arc::new(replication::halted::HaltedReplicas::new());
+    // Each led shard's cursors and fence as replication last left them, for an
+    // operator's `shard_inspect`.
+    let shard_status = Arc::new(replication::status::ShardStatusBoard::new());
     // Empty until the first catalog refresh fills it, which is the honest
     // answer in the meantime: this broker has not yet been told where any
     // client may connect.
@@ -284,6 +287,7 @@ where
             peers: &peers,
             lease: &lease,
             quorum_marks: &quorum_marks,
+            shard_status: &shard_status,
             client_endpoints: &client_endpoints,
             limits: &limits,
         },
@@ -369,6 +373,7 @@ where
         broker: &broker,
         quorum_marks: &quorum_marks,
         halted_replicas: &halted_replicas,
+        shard_status: &shard_status,
         fleet: &fleet,
         sync_shutdown: &sync_shutdown,
     });

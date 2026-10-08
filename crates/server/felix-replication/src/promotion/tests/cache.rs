@@ -185,5 +185,5 @@ async fn without_the_lease_fallback_a_cache_shard_waits_for_a_majority() {
     )
     .await;
 
-    assert!(matches!(outcome, Outcome::Pending(_)), "{outcome:?}");
+    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
 }

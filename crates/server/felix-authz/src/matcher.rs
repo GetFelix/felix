@@ -2,8 +2,8 @@
 //! `?` or character-class syntax. Matching is byte-based and case-sensitive.
 use crate::resource::group_prefix;
 use crate::{
-    Action, AuthzResult, CacheScope, GroupName, Namespace, PermissionPattern, StreamName, TenantId,
-    cache_resource, group_resource, stream_resource,
+    Action, AuthzResult, CLUSTER_RESOURCE, CacheScope, GroupName, Namespace, PermissionPattern,
+    StreamName, TenantId, cache_resource, group_resource, stream_resource,
 };
 
 /// A set of permission patterns checked against action/resource requests.
@@ -36,6 +36,18 @@ impl PermissionMatcher {
         self.patterns.iter().any(|pattern| {
             action.is_granted_by(pattern.action)
                 && wildcard_match(&pattern.resource_pattern, resource)
+        })
+    }
+
+    /// Whether `action` is allowed over the whole cluster.
+    ///
+    /// Only a grant whose resource is exactly `cluster:*` counts, the way the
+    /// control plane reads one. A wildcard such as `node.view:*` would match
+    /// the string, but no tenant scope contains the cluster, so a pattern a
+    /// tenant admin could write for themselves must not reach it.
+    pub fn allows_cluster(&self, action: Action) -> bool {
+        self.patterns.iter().any(|pattern| {
+            action.is_granted_by(pattern.action) && pattern.resource_pattern == CLUSTER_RESOURCE
         })
     }
 

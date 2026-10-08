@@ -174,6 +174,11 @@ expectations=(
   "FelixShardFencedCache pass"
   "FelixShardFencedCacheUnfenced violates AckedHeldByLeader"
   "FelixShardFencedCacheNoCounterCatchUp violates CountersHeldByLeader"
+  "FelixShardElect pass"
+  "FelixShardElectNoBallot violates OneLeaderPerGeneration"
+  "FelixShardElectStaleSet violates AckedHeldByLeader"
+  "FelixShardElectHandoffLeaders pass"
+  "FelixShardElectHandoffUnfenced violates OneLeaderPerGeneration"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
@@ -211,34 +216,40 @@ if [ "$#" -gt 0 ]; then
   done
 fi
 
-# Minutes each of the longer configurations takes on a four-core CI runner;
-# anything not listed is taken as one. Shards are filled longest first, each
+# Minutes each of the longer configurations takes on a four-core CI runner,
+# from the `Finished in` lines of a CI run (a new one is a guess until it has
+# run); anything not listed is taken as one. Shards are filled longest first, each
 # configuration going to the least loaded, so one long run does not land on
 # top of others and push a job past its hour.
 weights=(
-  "FelixShardFencedAckMoveCancelShort 35"
-  "FelixShardFencedAckMoveShort 22"
-  "FelixShardFencedAckStagedMoveShort 20"
-  "FelixShardFencedAckTwoPromotionsStart 20"
-  "FelixShardSessionsGroupRound 14"
-  "FelixShardReadsRound 11"
-  "FelixShardFencedAck 6"
-  "FelixShardFencedCache 10"
-  "FelixShardCancel 5"
-  "FelixShardCancelResend 5"
-  "FelixShardFigure8FollowerAcks 5"
-  "FelixShardFigure8CutOver 5"
-  "FelixShard 4"
-  "FelixShardAckWithoutLease 3"
-  "FelixShardRealMargins 3"
-  "FelixShardFigure8 3"
-  "FelixShardFencedPromotion 3"
-  "FelixShardLogOrder 2"
-  "FelixShardFencedAckSeat 2"
-  "FelixShardRealMarginsLease 2"
-  "FelixShardHandoff 2"
-  "FelixShardIdempotentHandoff 2"
-  "FelixShardStalePlannerCas 2"
+  "FelixShardFencedAckMoveShort 31"
+  "FelixShardFencedAckMoveCancelShort 30"
+  "FelixShardFencedAckStagedMoveShort 26"
+  "FelixShardFencedAckTwoPromotionsStart 24"
+  "FelixShardFencedCache 22"
+  "FelixShardReadsRound 21"
+  "FelixShardSessionsGroupRound 16"
+  "FelixShardFencedAck 12"
+  "FelixShardFigure8CutOver 9"
+  "FelixShard 7"
+  "FelixShardFencedPromotion 7"
+  "FelixShardCancelResend 6"
+  "FelixShardFigure8FollowerAcks 6"
+  "FelixShardCancel 6"
+  "FelixShardReportFloor 5"
+  "FelixShardAckWithoutLease 4"
+  "FelixShardFigure8 4"
+  "FelixShardRealMargins 4"
+  "FelixShardRealMarginsLease 4"
+  "FelixShardFencedAckSeat 3"
+  "FelixShardFollowerLabels 3"
+  "FelixShardHandoff 3"
+  "FelixShardIdempotentHandoff 3"
+  "FelixShardStalePlannerCas 3"
+  "FelixShardLogOrder 3"
+  "FelixShardStagedMove 3"
+  "FelixShardSessionsSubscriber 2"
+  "FelixShardElectHandoffLeaders 10"
 )
 
 weight_of() {

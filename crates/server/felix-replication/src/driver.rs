@@ -24,6 +24,7 @@ use super::promotion::{self, NoGate, Outcome, PromotionGate};
 use super::quorum::QuorumMarks;
 use super::reporter::Reporter;
 use super::reporter::ShardReport;
+use super::status::ShardStatusBoard;
 use super::{MoveThrottle, RebuildPolicy, Rebuilds, metrics};
 use crate::peer::PeerRequester;
 use shard::{AuxCursors, ShardCursors, ShardPass, Stragglers, replicate_shard, watch_key};
@@ -51,6 +52,8 @@ const DRAIN_RETRY: Duration = Duration::from_millis(10);
 pub struct Published {
     pub marks: Arc<QuorumMarks>,
     pub halted: Arc<HaltedReplicas>,
+    /// Each led shard's cursors and fence, for `shard_inspect`.
+    pub status: Arc<ShardStatusBoard>,
 }
 
 /// How soon a pass follows one that left a promoted shard unfenced. The shard
@@ -181,6 +184,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
             fence: &*fence,
             gate: &*gate,
             marks: &published.marks,
+            status: &published.status,
             reporter: reporter.as_ref(),
             rebuilds: &rebuilds,
             throttle: &move_throttle,
@@ -561,7 +565,7 @@ async fn open_fenced(
             metrics::record_promotion_opened(metrics::PATH_LEASE);
             gate.open(&watch_key(key), generation).await
         }
-        Outcome::Pending(why) => {
+        Outcome::Pending { why, .. } => {
             tracing::warn!(
                 stream = %key.stream,
                 shard = key.shard,

@@ -12,6 +12,55 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- `felixctl inspect shard` and the `shard_inspect` request (part of #1077).
+  A broker advertising `FEATURE_INSPECT`, the first bit of the extended
+  feature word (`server_features_hi` `0x1`), answers `shard_inspect` with
+  `shard_inspect_info`: its own view of one shard, with its phase and
+  generation, whether it serves and why not (`opening`, `fencing`, `failed`
+  with the open error, `draining`, `lease_lapsed`, `not_assigned_here`,
+  `behind_generation`), which replicas took a promoted leader's fence and
+  how many attempts it has made, its lease, tail and commit mark, and as
+  leader each follower's next offset, lag and state. It needs
+  `node.view:cluster:*` and may name any tenant. The answer is read from
+  snapshots the lifecycle and the replication driver publish (the new
+  `felix_replication::status::ShardStatusBoard`), so it takes neither's lock
+  and opens no log. felixctl asks the leader and every replica and prints a
+  table, or one JSON line per shard with `--json`; a broker that cannot be
+  reached is listed as unreachable. felix-client adds
+  `Client::inspect_shard` and `Client::supports_inspect`. A new docs page,
+  Diagnosing a cluster, goes through shard, replication, subscriber, auth
+  and startup problems by symptom.
+- `felix-capi`, a C ABI over the Rust client and the base for the Go and C#
+  SDKs (part of #618). It builds `libfelix` as a shared and a static library
+  with a cbindgen header checked in at `crates/sdk/felix-capi/include/felix.h`,
+  and covers connect, publish and a polled subscribe (`felix_client_connect`,
+  `felix_client_publish`, `felix_client_subscribe`,
+  `felix_subscription_next_event`). Handles are opaque with a free function
+  each, every call returns a status code whose classes match the other SDKs,
+  the message for a failure is per thread (`felix_last_error_message`), panics
+  never cross the boundary, and each client owns its Tokio runtime. A test
+  fails while the header is stale, and CI runs a C program against the
+  conformance fixture. Not published to crates.io.
+- Replicas keep a ballot with each accepted generation (part of #1009): the
+  leader they accepted it from, by the node id its `Hello` gave. At that
+  generation a replica refuses a fence, a batch, a bootstrap, a rebuild or a
+  tail fetch from any other node with `FencedEpoch`, and a broker will not
+  lead a generation it already accepted from another node. The ballot is a new
+  `ballot` file in the shard directory, fsynced before anything from that
+  leader is answered and read back on open; builds without ballots ignore it,
+  so rolling back still opens the shard. A new internal capability, `BALLOTS`
+  (`1 << 6`), is offered with the fence, and `FELIX_INTERNAL_FENCE=false`
+  turns ballots off with it. Nothing changes while the control plane names
+  every leader, since it never names two at one generation; this is the
+  safety layer replica elections will need. The TLA+ model gains `Ballots`,
+  `Elections` and `OneLeaderPerGeneration`, with `FelixShardElect.cfg` and
+  two configurations that must fail: `FelixShardElectNoBallot.cfg` (two
+  leaders at one generation) and `FelixShardElectStaleSet.cfg` (a replica
+  standing on a set it has left). Breaking for callers of felix-storage's
+  `DiskLog::accept_generation` and felix-broker's
+  `StreamLog::accept_generation`, which take the leader, of felix-replication's
+  `ReplicaHandler` entry points, which take the sender, and for code matching
+  `GenerationCheck`, which gains `Promised` and is no longer `Copy`.
 - `felixctl group` and `felixctl counter` (#1005). `group create|describe|seek|rm`
   manage a consumer group on every shard of a stream, or on `--shard`.
   `group poll` claims records and prints each with its claim,
@@ -255,6 +304,32 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- `felix_replication::promotion::Outcome::Pending` is a struct variant
+  carrying `why` and `took`, the replicas that took the fence in that
+  attempt, and `driver::Published` gains `status`. `ShardLifecycle::open_failed`
+  takes the error. `felix_wire::KNOWN_FEATURES_HI` is now `FEATURE_INSPECT`,
+  so felix-client sets `FEATURE_EXTENDED` and sends `client_features_hi` in
+  its `auth`; an older broker ignores the field.
+- Every change of a shard's leader is fenced, not only a promotion (part of
+  #1009). A move's cut-over, a failover that names a move's destination, a
+  cancelled move's hand-back, and a generation of a shard its leader serves
+  that skips one (a promotion elsewhere that the broker only saw coalesced
+  away) now wait in `fencing` until a majority of the replica set takes the
+  new generation, and take the answer furthest ahead, before they serve. The
+  generation right after one the leader serves (a move's staging or a
+  follower replacement step) still opens at once: nobody led in between. Each was a generation the control
+  plane picked from its own view, opened at once; a leader it did not know
+  about, from a second planner or a later replica election, could keep
+  writing beside it. A write that reaches the broker while it fences is held,
+  within `FELIX_SHARD_MOVE_HOLD_MS`, rather than refused. The lease fallback
+  is unchanged: when a replica does not offer the fence the shard opens on
+  the lease as before. `felix_broker_promotions_opened_total{path}` now counts
+  every new leadership, not only promotions. The TLA+ model gains `FenceEveryChange`, with
+  `FelixShardElectHandoff.cfg` (passes; an hour, so nightly),
+  `FelixShardElectHandoffLeaders.cfg` (the same without a write, per PR) and
+  `FelixShardElectHandoffUnfenced.cfg` (an unfenced cut-over opens a second
+  leader at an elected generation). The CI model check now runs on seven jobs, filled
+  by each configuration's measured time, to stay under the hour.
 - A publish acknowledged on commit is answered by the task that sees it
   commit (#926). The commit task, or the executor for an in-memory write, puts
   the ack straight onto the control stream's writer queue, instead of
@@ -345,6 +420,11 @@ for what the current release guarantees.
   that pass, so the mark stayed put until the peer request timed out (5 s by
   default, past most publish timeouts). The answer now ends that wait and the
   next pass counts it.
+- `felix_broker_shard_phase` reports `fencing`. The gauge left the phase out,
+  so a promoted shard waiting for its fence was counted in no phase.
+- A broker accepts a token carrying `node.view` or `node.manage`. Neither was
+  an action it knew, so an operator token that also served the control plane
+  failed to authenticate there.
 - The docs no longer list `DropOld` as a working overflow policy (#1019). It is
   accepted at the broker, writer-lane and client stages but behaves as
   `DropNew` at each: the arriving batch is dropped, not the oldest. The status

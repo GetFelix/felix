@@ -314,6 +314,13 @@ Two things soften it, and neither is a rollback path:
   short, or fails its checksum reads as empty rather than failing, which costs
   automatic divergence repair and never a record.
 
+Shard state files beside the segments are not versioned with them. The
+`ballot` file a replica keeps from this release on, naming the leader it
+accepted its generation from, is new: an older build ignores it and opens the
+shard as before, so rolling back is safe. Rolling forward again, the first
+leader to reach a replica at its accepted generation is recorded as the one it
+accepted.
+
 **So before an upgrade that changes `FORMAT_VERSION`: take a backup, and treat
 the rollout as one-way.**
 
