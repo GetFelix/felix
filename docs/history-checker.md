@@ -36,10 +36,11 @@ checked as registers (`history/register.rs`).
   the list. The rest start somewhere in the last 256 records, which keeps a long
   campaign's history small.
 - **The final read** of each list is taken from its leader after every fault is
-  healed and every client has stopped. A stopping client first waits up to 60s
+  healed and every client has stopped. A stopping client first waits up to 15s
   for the publishes it already sent to be answered, the producer's re-sends
-  included, so an unknown append cannot land after the final read. It must
-  reach that tail with no holes, or the campaign retries it.
+  included, and then stops its producer, so an unknown append does not land
+  after the final read. It must reach that tail with no holes, or the campaign
+  retries it.
 - Records below each list's **base** were in the stream before the run (the
   harness's readiness probe), and the checker ignores them.
 - **put(key, value)** stores a unique value under a cache key. It is **ok**
