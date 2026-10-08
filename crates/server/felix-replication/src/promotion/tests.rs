@@ -16,6 +16,7 @@ use super::*;
 use crate::ReplicaHandler;
 
 mod cache;
+mod times;
 
 const TENANT: &str = "t1";
 const NAMESPACE: &str = "ns";
@@ -128,6 +129,7 @@ fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecord
         .map(|v| Bytes::copy_from_slice(v.as_bytes()))
         .collect();
     ReplicateRecords {
+        times: None,
         correlation_id: 1,
         shard: ShardRef {
             tenant_id: TENANT.to_string(),

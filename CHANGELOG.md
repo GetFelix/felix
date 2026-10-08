@@ -142,9 +142,9 @@ for what the current release guarantees.
   offers the feature gets `timestamp_micros` on group records. Nobody else's
   frames change, and no storage format changes. In felix-client, set
   `ClientConfig::timestamps` and read `Event::timestamp_micros`; call
-  `Client::offset_for_time` and subscribe at the answer. Times are the leading
-  broker's clock: a follower stamps the records it replicates with its own, so
-  after a failover they shift by the replication delay. Breaking for callers of
+  `Client::offset_for_time` and subscribe at the answer. Times are the clock of
+  the broker that led when the record was written, and replicas keep them
+  (#1045). Breaking for callers of
   felix-broker's `StreamLog::begin_append`, `begin_append_marked` and
   `continue_batch`, which now take the batch's `timestamp_micros`; felix-wire's
   `EventBatchMeta`, `EventBatch`, `SharedEventBatch` and `GroupRecord` gain a
@@ -218,6 +218,19 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- A follower stores the leader's append time with each record it replicates,
+  instead of stamping it with its own clock, so after a failover the new
+  leader reports the same record times, and `offset_for_time` gives the same
+  answer, as before (#1045). Brokers offer the new `RECORD_TIMES` peer
+  capability (`1 << 5`); a leader sends a follower that offered it
+  `ReplicateTimedRecords` (internal kind 36), a labelled batch with one time
+  per record, and a promoted leader taking a replica's tail asks with
+  `ReplicateTimedFetch` (kind 37). An older follower is sent what it reads,
+  and a newer follower receiving from an older leader uses its own clock, as
+  before. Breaking for callers of felix-broker's
+  `StreamLog::begin_append_marked_at` and `replication::apply`, which take the
+  records' times (empty for this broker's clock), and of felix-wire's
+  `ReplicateRecords` and `ReplicateFetch`, which gain `times` and `timed`.
 - Breaking for Rust callers (#1017): `felix_wire::Message::Commit` has an
   `expected_offset` field, and `PublishRefusalReason` and
   `felix_broker::BrokerError` have new variants, so struct literals and

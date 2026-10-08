@@ -236,14 +236,23 @@ impl StreamLog {
 
     /// [`Self::begin_append_marked`], only if the batch starts at exactly
     /// `first_offset`. `None`, and nothing written, otherwise.
+    ///
+    /// `times` is each record's time, as the leader that appended it stored
+    /// it, or empty to stamp every record with this broker's clock.
     pub async fn begin_append_marked_at(
         &self,
         first_offset: Offset,
         payloads: &[Bytes],
         marks: &[RecordMark],
         publishers: &[Option<Bytes>],
+        times: &[u64],
     ) -> Result<Option<PendingAppend>> {
-        let records = records(payloads, marks, publishers, append_time_now())?;
+        let mut records = records(payloads, marks, publishers, append_time_now())?;
+        if times.len() == records.len() {
+            for (record, time) in records.iter_mut().zip(times) {
+                record.timestamp_micros = *time;
+            }
+        }
         self.log
             .append_pending_at(first_offset, &records)
             .await

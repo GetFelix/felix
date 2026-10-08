@@ -372,9 +372,13 @@ async fn catch_up<R: PeerRequester>(
     let compared_from = next;
     // Taken with the generations that wrote them, so this broker's fence
     // answers and the followers it ships to do not see them as newer.
-    let labelled = requester
-        .recorded_capabilities(from)
-        .is_some_and(|offered| offered.contains(PeerCapabilities::GENERATION_LABELS));
+    let offered = requester.recorded_capabilities(from);
+    let labelled =
+        offered.is_some_and(|offered| offered.contains(PeerCapabilities::GENERATION_LABELS));
+    // And with the times its leader stored, so this broker reports them once
+    // it serves.
+    let timed =
+        labelled && offered.is_some_and(|offered| offered.contains(PeerCapabilities::RECORD_TIMES));
     let mut taken_labels = labelled.then(Vec::new);
     while next < target.log_end {
         let request = InternalMessage::ReplicateFetch(ReplicateFetch {
@@ -384,6 +388,7 @@ async fn catch_up<R: PeerRequester>(
             from_offset: next,
             max_bytes: FETCH_BYTES,
             labelled,
+            timed,
         });
         let batch = match requester.request(from, addr, request).await {
             Ok(
@@ -412,6 +417,7 @@ async fn catch_up<R: PeerRequester>(
             &batch.payloads,
             &batch.marks,
             &batch.publishers,
+            batch.times.as_deref().unwrap_or_default(),
         )
         .await
         .map_err(|err| err.to_string())?;
