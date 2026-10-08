@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791467366100,
+  "lastUpdate": 1791476323251,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -25272,6 +25272,58 @@ window.BENCHMARK_DATA = {
             "range": "13032.33",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 825646.08\nmean: 825703.00\nstdev: 13032.33\ncv: 1.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel Loewen",
+            "username": "gabloe"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "344e119aabdeeb9861a762a295d2afacc270da18",
+          "message": "ci(formal): nightly TLC walks over replica-set changes (#934) (#1060)\n\n* ci(formal): nightly TLC walks over replica-set changes (#934)\n\nThree FelixShardWalk configurations, one per family of set changes\n(spares, moves, handoff), lift the exhaustive bounds to time 40, six\nwrites and six moves, and run in TLC's simulation mode. Each has a\nnegative twin that must find its violation within the budget.\n\ncheck_tla.sh --simulate runs them with a time budget, depth and printed\nseed under the same expectation model; tla-walk.yml runs them nightly\nand on dispatch, and uploads TLC's output on a failure. Tick now\nenumerates clocks over the drift window only, the same states without\n42^4 candidate functions per tick at time 40.\n\nCloses #934\n\n* ci(formal): run the walks on a pull request that changes them (#934)\n\n* fix(formal): let random walks pick among actions, not clock choices (#934)\n\nTLC splits Next into actions only at disjunctions and constant \\E, and its\nsimulation mode picks an action before a successor. Next was one\nconjunction, so a walk picked among successor states and Tick, with up to\n81 clock choices under drift, ran time to its bound within a few dozen\nsteps. With time stopped no lease lapses after a seat, so the spares twin\nnever lost a record. List each action as its own disjunct, the same\nbehaviours, and only grow a set that is short of the factor.\n\n* fix(formal): keep the shard spec total on a log below its mark (#934)\n\nA promoted leader can take a fence answer with a newer but shorter log\nand end up holding less than its old mark. The walk configurations that\ncheck NoTruncationBelowHwm report that state; the spares twin checks only\nAckedHeldByLeader, walked on, and LearnHwm took a SubSeq past the log's\nend. Guard LearnHwm and HoldsPrefix on the leader's length, and give\nOldSetLen a floor when no majority holds anything.",
+          "timestamp": "2026-10-08T09:07:02-07:00",
+          "tree_id": "779d5364037701a73414f6cee1cb557d150701d0",
+          "url": "https://github.com/GetFelix/felix/commit/344e119aabdeeb9861a762a295d2afacc270da18"
+        },
+        "date": 1791476322564,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 599623.51,
+            "range": "61315.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 599623.51\nmean: 606367.62\nstdev: 61315.18\ncv: 10.11%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 599623.51,
+            "range": "61315.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 599623.51\nmean: 606367.62\nstdev: 61315.18\ncv: 10.11%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 166166.58,
+            "range": "4223.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 166166.58\nmean: 165133.98\nstdev: 4223.54\ncv: 2.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1661665.77,
+            "range": "42235.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1661665.77\nmean: 1651339.85\nstdev: 42235.43\ncv: 2.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
