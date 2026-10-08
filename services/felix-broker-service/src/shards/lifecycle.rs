@@ -42,8 +42,9 @@ pub enum Phase {
     /// Ours, but the local log is not ready. Not serving.
     Opening,
     /// Ours and recovered, and waiting for a majority of the replicas to
-    /// take this broker's generation before it serves. Only after a
-    /// promotion, and only when every replica offers the fence.
+    /// take this broker's generation before it serves. After every change
+    /// of leadership on a broker that fences; the shard opens on the lease
+    /// instead when some replica does not offer the fence.
     Fencing,
     /// Ours and ready.
     Active,
@@ -97,7 +98,7 @@ pub struct LocalShard {
 pub enum Opened {
     /// Serving.
     Activated,
-    /// Recovered, and waiting for the promotion fence before it serves.
+    /// Recovered, and waiting for the fence before it serves.
     Fencing,
     /// Recovered but not serving: the assignment is draining.
     Draining,
@@ -116,8 +117,8 @@ pub enum Action {
         /// arrived, so another may have led it since. What it remembers from
         /// serving it before is stale and has to go before it serves again.
         new_term: bool,
-        /// A promotion: the shard waits in `Fencing` once open, and where
-        /// this generation begins is recorded when it serves, not here.
+        /// The shard waits in `Fencing` once open, and where this
+        /// generation begins is recorded when it serves, not here.
         fence: bool,
     },
     /// Stop writes, drain, flush, and close.
@@ -149,10 +150,10 @@ pub struct ShardLifecycle {
     /// this set is what closes a shard's logs: until then a replica or a
     /// move's destination still needs them.
     held: std::collections::HashSet<ShardKey>,
-    /// Whether a promoted shard waits for the fence before it serves. Set
-    /// when a replication driver is there to fence it.
+    /// Whether a shard this broker starts leading waits for the fence
+    /// before it serves. Set when a replication driver is there to fence it.
     fence_promotions: bool,
-    /// Shards opening for a promotion, which go to `Fencing` once open.
+    /// Shards opening to be fenced, which go to `Fencing` once open.
     promoting: std::collections::HashSet<ShardKey>,
 }
 
@@ -177,22 +178,35 @@ impl ShardLifecycle {
         }
     }
 
-    /// Hold a promoted shard, stream or cache, in `Fencing` until
-    /// [`Self::fenced`]. For a broker whose replication driver fences
-    /// promotions.
+    /// Hold every shard, stream or cache, that this broker starts leading at
+    /// a new generation in `Fencing` until [`Self::fenced`]: a promotion, a
+    /// move's cut-over, a cancelled move's hand-back, and a new generation
+    /// of a shard it already leads. For a broker whose replication driver
+    /// fences.
     pub fn fence_promotions(&mut self) {
         self.fence_promotions = true;
     }
 
-    /// The promotion fence for `key` is done at `generation`, or the shard
-    /// opens on the lease: serve it. False if the shard has moved on.
+    /// The fence for `key` is done at `generation`, or the shard opens on
+    /// the lease: serve it. False if the shard has moved on.
     pub fn fenced(&mut self, key: &ShardKey, generation: u64) -> bool {
         match self.shards.get(key) {
             Some(shard) if shard.phase == Phase::Fencing && shard.generation == generation => {
                 self.set(key, Phase::Active, generation, false);
+                self.arrived(key);
                 true
             }
             _ => false,
+        }
+    }
+
+    /// A move toward this broker ends when the shard serves here.
+    fn arrived(&mut self, key: &ShardKey) {
+        if let Some(incoming) = self.incoming.remove(key) {
+            mm::record_move_arrived(
+                incoming.named.elapsed(),
+                incoming.fenced.map(|at| at.elapsed()),
+            );
         }
     }
 
@@ -482,12 +496,7 @@ impl ShardLifecycle {
                     Opened::Fencing
                 } else {
                     self.set(key, Phase::Active, generation, false);
-                    if let Some(incoming) = self.incoming.remove(key) {
-                        mm::record_move_arrived(
-                            incoming.named.elapsed(),
-                            incoming.fenced.map(|at| at.elapsed()),
-                        );
-                    }
+                    self.arrived(key);
                     Opened::Activated
                 }
             }
@@ -545,22 +554,12 @@ impl ShardLifecycle {
         // in between, and a generation gap cannot rule that out: assignments
         // arrive as a coalesced set, not one write at a time.
         let new_term = self.phase(key) != Phase::Active;
-        // A promotion is the one new term the model fences (`FenceOnPromote`):
-        // a move's destination takes over from a leader that drained into it,
-        // and a cancelled move hands the shard back to the leader that had it.
-        // A hand-back is the generation right after the draining one. A later
-        // one may have had another leader in between, as when the move
-        // finished and that leader then failed, and only the fence keeps it
-        // out if it is still writing.
-        let handed_back = self
-            .shards
-            .get(key)
-            .is_some_and(|shard| shard.draining && generation == shard.generation + 1);
-        let fence = self.fence_promotions
-            && new_term
-            && !draining
-            && !self.incoming.contains_key(key)
-            && !handed_back;
+        // Every generation this broker starts leading at is fenced, not only a
+        // promotion (`FenceEveryChange` in the model). A cut-over, a hand-back
+        // or a new generation of a shard it serves is still a generation the
+        // control plane picked from its own view, and a leader this broker
+        // never heard of may have written in between.
+        let fence = self.fence_promotions && !draining;
         if fence {
             self.promoting.insert(key.clone());
         } else {
@@ -624,7 +623,7 @@ pub trait ShardStore: Send + Sync {
     /// where this leadership begins — the one moment that is true, since the
     /// next thing to touch the log is a write under this generation.
     ///
-    /// `begins_here` is false for a promotion that will be fenced: the
+    /// `begins_here` is false for a leadership that will be fenced: the
     /// fence may take a replica's tail first, so where this generation
     /// begins is recorded when the shard serves ([`record_term_start`]).
     async fn open(&self, key: &ShardKey, generation: u64, begins_here: bool) -> anyhow::Result<()>;
@@ -1038,7 +1037,7 @@ impl DurableShardStore {
     ///
     /// Once the fleet finalized `generation_start` each log also gets its
     /// generation-start record, as a stream's does, since the cache and
-    /// counter marks then count only past it. A promotion's are written when
+    /// counter marks then count only past it. A fenced leadership's are written when
     /// its fence opens the shard.
     async fn open_cache(
         &self,
@@ -1117,7 +1116,7 @@ impl ShardStore for DurableShardStore {
         // broker has led at it, a leader older than it is not taken as a
         // follower, even after a restart.
         accept_led_generation(&log, generation, self.ballot.as_deref()).await?;
-        // A promotion's record is written when its fence opens the shard.
+        // A fenced leadership's record is written when its fence opens the shard.
         if begins_here && let Some(starts) = starts {
             start_generation(&starts.broker, &log, key, generation).await?;
         }
@@ -1276,7 +1275,7 @@ pub async fn apply(
                         stream = %key.stream,
                         shard = key.shard,
                         generation,
-                        "shard opened after a promotion; fencing its replicas before it serves",
+                        "shard opened at a new leadership; fencing its replicas before it serves",
                     ),
                     // How a move usually reaches the old leader: every assignment
                     // write bumps the generation, so the fence arrives as a new,
@@ -1485,10 +1484,9 @@ pub async fn write_generation_start(
     Ok(())
 }
 
-/// Write the generation-start record for a leadership that begins without a
-/// promotion's fence: a fresh placement, either end of a move, a cancelled
-/// move handing the shard back, or a promotion on a broker that does not
-/// fence.
+/// Write the generation-start record for a leadership that begins without
+/// the fence: any leadership on a broker that does not fence, and the old
+/// leader's end of a move, which reopens its log only to ship it.
 ///
 /// Skipped when the log holds nothing (there is nothing to inherit) and when
 /// the generation already has records, which is a reopen after a restart or

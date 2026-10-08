@@ -47,44 +47,6 @@ fn a_promotion_waits_in_fencing_until_the_fence_is_done() {
     assert!(own.fence().admit(&key(0), 3).is_ok());
 }
 
-/// A move's destination takes over from a leader that drained into it, which
-/// the model does not fence and neither does the broker.
-#[test]
-fn a_moves_destination_is_not_held_for_the_fence() {
-    let mut own = fencing_lifecycle();
-    own.observe(&key(0), Some(&moving_to("broker-a", 2, "active")));
-
-    assert!(matches!(
-        own.observe(&key(0), Some(&assigned_to("broker-a", 4))),
-        Action::Open { fence: false, .. }
-    ));
-    assert_eq!(own.opened(&key(0), 4), Opened::Activated);
-}
-
-/// A cancelled move hands the shard back to the leader that was draining it,
-/// with its fenced writes; the model's `Retake`, unfenced.
-#[test]
-fn a_cancelled_move_is_not_held_for_the_fence() {
-    let mut own = fencing_lifecycle();
-    own.observe(&key(0), Some(&assigned_to("broker-a", 2)));
-    own.opened(&key(0), 2);
-    own.fenced(&key(0), 2);
-    let draining = ShardAssignment {
-        leader: "broker-a".to_string(),
-        replicas: vec!["broker-b".to_string()],
-        state: "draining".to_string(),
-        successor: Some("broker-b".to_string()),
-        ..assigned_to("broker-a", 3)
-    };
-    own.observe(&key(0), Some(&draining));
-    assert_eq!(own.opened(&key(0), 3), Opened::Draining);
-
-    assert!(matches!(
-        own.observe(&key(0), Some(&assigned_to("broker-a", 4))),
-        Action::Open { fence: false, .. }
-    ));
-}
-
 /// A new generation reaching a shard still fencing starts the fence again at
 /// that generation. Until the reopen finishes the routes still name the old
 /// one, and the shard keeps waiting at it, so replication does not ship the

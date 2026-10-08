@@ -96,8 +96,9 @@ pub const QUORUM_TIMED_OUT: &str = "timed_out";
 /// Leadership moved before the batch reached a majority.
 pub const QUORUM_NOT_LEADING: &str = "not_leading";
 
-/// Promoted shards opened for writes, by `path`: `fenced` once a majority took
-/// the fence, `lease` when some replica did not offer it.
+/// Shards opened for writes at a new leadership, a promotion or any other
+/// change of leader, by `path`: `fenced` once a majority took the fence,
+/// `lease` when some replica did not offer it.
 pub const PROMOTIONS_TOTAL: &str = "felix_broker_promotions_opened_total";
 pub const PATH_FENCED: &str = "fenced";
 pub const PATH_LEASE: &str = "lease";

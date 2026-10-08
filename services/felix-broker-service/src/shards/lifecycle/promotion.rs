@@ -1,8 +1,11 @@
-//! Opening a promoted shard once replication has fenced its replicas.
+//! Opening a shard this broker starts leading once replication has fenced
+//! its replicas.
 //!
-//! The lifecycle holds a promoted shard in `Fencing`; replication runs
-//! the fence and calls [`LifecycleGate::open`] when a majority has taken it,
-//! or when some replica does not offer it and the shard opens on the lease.
+//! The lifecycle holds such a shard in `Fencing`, whether a promotion, a
+//! move's cut-over or hand-back, or a new generation put it there.
+//! Replication runs the fence and calls [`LifecycleGate::open`] when a
+//! majority has taken it, or when some replica does not offer it and the
+//! shard opens on the lease.
 //! See `felix_replication::promotion`.
 
 use std::sync::Arc;
@@ -114,7 +117,7 @@ impl felix_replication::promotion::PromotionGate for LifecycleGate {
                 stream = %key.stream,
                 shard = key.shard,
                 generation,
-                "promoted shard now serving",
+                "shard now serving after its fence",
             );
         }
         true

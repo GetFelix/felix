@@ -172,6 +172,23 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- Every change of a shard's leader is fenced, not only a promotion (part of
+  #1009). A move's cut-over, a failover that names a move's destination, a
+  cancelled move's hand-back, and a new generation of a shard its leader
+  already serves (a move's staging, a follower replacement, or a promotion
+  elsewhere that the broker only saw coalesced away) now wait in `fencing`
+  until a majority of the replica set takes the new generation, and take the
+  answer furthest ahead, before they serve. Each was a generation the control
+  plane picked from its own view, opened at once; a leader it did not know
+  about, from a second planner or a later replica election, could keep
+  writing beside it. A write that reaches the broker while it fences is held,
+  within `FELIX_SHARD_MOVE_HOLD_MS`, rather than refused. The lease fallback
+  is unchanged: when a replica does not offer the fence the shard opens on
+  the lease as before. `felix_broker_promotions_opened_total{path}` now counts
+  every new leadership, not only promotions. The TLA+ model gains `FenceEveryChange`, with
+  `FelixShardElectHandoff.cfg` (passes) and
+  `FelixShardElectHandoffUnfenced.cfg` (an unfenced cut-over opens a second
+  leader at an elected generation).
 - Creating a stream or cache that already exists with the same configuration
   answers `200` with the existing one instead of `409` (#967). A different
   configuration under the same name is still `409`. A stream's `routing` only

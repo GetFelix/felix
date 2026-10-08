@@ -158,6 +158,8 @@ expectations=(
   "FelixShardElect pass"
   "FelixShardElectNoBallot violates OneLeaderPerGeneration"
   "FelixShardElectStaleSet violates AckedHeldByLeader"
+  "FelixShardElectHandoff pass"
+  "FelixShardElectHandoffUnfenced violates OneLeaderPerGeneration"
 )
 
 shard_index=0
@@ -195,6 +197,7 @@ weights=(
   "FelixShardFencedAck 6"
   "FelixShardFencedCache 10"
   "FelixShardElect 10"
+  "FelixShardElectHandoff 10"
   "FelixShardCancel 5"
   "FelixShardCancelResend 5"
   "FelixShardFigure8FollowerAcks 5"

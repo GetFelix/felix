@@ -1,6 +1,7 @@
 //! Ownership transitions: what this broker serves, and when it stops.
 use super::*;
 
+mod every_change;
 mod promotion;
 
 fn key(shard: u32) -> ShardKey {
