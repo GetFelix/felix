@@ -85,6 +85,10 @@ impl Divergence {
 /// records' producer marks (empty when none is marked), stored with them so
 /// this follower knows each idempotent producer's place as the leader does.
 /// `publishers` are the records' publishers, empty when none has one.
+/// `times` are the records' append times on the leader, stored as they are;
+/// empty stamps them with this broker's clock. Times are not compared on a
+/// retry: a copy stored from a leader that did not send them holds this
+/// broker's own.
 /// Returns once the batch is durable.
 pub async fn apply(
     log: &StreamLog,
@@ -93,6 +97,7 @@ pub async fn apply(
     payloads: &[Bytes],
     marks: &[ProducerMark],
     publishers: &[Option<Bytes>],
+    times: &[u64],
 ) -> Result<std::result::Result<Applied, Divergence>> {
     // Everything below is decided from one reading of the tail, and the write
     // is made only if the tail is still there. A resend on a second lane can
@@ -101,8 +106,16 @@ pub async fn apply(
     // is decided again from the new tail, where the other copy is an overlap
     // to verify.
     for _ in 0..MAX_APPLY_RACES {
-        if let Some(applied) =
-            apply_at_tail(log, first_offset, checksum, payloads, marks, publishers).await?
+        if let Some(applied) = apply_at_tail(
+            log,
+            first_offset,
+            checksum,
+            payloads,
+            marks,
+            publishers,
+            times,
+        )
+        .await?
         {
             return Ok(applied);
         }
@@ -126,6 +139,7 @@ async fn apply_at_tail(
     payloads: &[Bytes],
     marks: &[ProducerMark],
     publishers: &[Option<Bytes>],
+    times: &[u64],
 ) -> Result<Option<std::result::Result<Applied, Divergence>>> {
     let tail = log.tail_offset().await?;
 
@@ -203,6 +217,7 @@ async fn apply_at_tail(
             fresh,
             &marks[overlap..],
             publishers.get(overlap..).unwrap_or_default(),
+            times.get(overlap..).unwrap_or_default(),
         )
         .await?
     else {

@@ -1,17 +1,18 @@
-//! Publish streams that each carry one shard, for `ClusterClient`.
+//! Publish streams that each carry one shard.
 //!
-//! Only a caller that names the shard of every publish to a stream may use
-//! them: a keyed publish with no shard goes to the hashed pool, and a stream
-//! split between the two would be on two writers. A plain `Client` does not
-//! know a stream's width, so its publishes all stay on the pool.
+//! Every publish has to name its shard for these to keep order: one shard
+//! split between its own stream and the hashed pool would be on two writers.
+//! A `ClusterClient` knows every shard; a plain `Client` learns a stream's
+//! width before its first keyed publish to it (`widths`).
 //!
 //! The broker answers a pipelining stream's publishes in the order the stream
 //! carried them, and stops reading the stream once its window is full. On a
 //! stream shared by several shards, one shard stuck on a quorum wait holds
 //! back answers the others have already committed, then stops the stream. So
 //! a publish whose shard is known gets a stream for that shard alone, opened
-//! on its first publish on the same connections as the pool. Past the cap,
-//! shards fall back to the hashed pool.
+//! on its first publish on the least-loaded of the pool's connections. That
+//! also spreads one busy stream's shards over the connections, and so over
+//! the broker's listeners. Past the cap, shards fall back to the hashed pool.
 //!
 //! A shard keeps its stream while the writer lives, so its publishes stay in
 //! order. A writer that fails has failed everything it held, so the shard's

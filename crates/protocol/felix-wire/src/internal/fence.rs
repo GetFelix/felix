@@ -41,6 +41,13 @@ impl PeerCapabilities {
     /// labelled with their generations. A promoted cache shard is fenced only
     /// when every replica offers it.
     pub const CACHE_FENCE: Self = Self(1 << 4);
+    /// Reads batches that carry each record's append time on the leader
+    /// ([`ReplicateRecords::times`]) and stores that time, and answers a
+    /// timed [`ReplicateFetch`] with them. A follower without it stamps
+    /// replicated records with its own clock.
+    ///
+    /// [`ReplicateRecords::times`]: super::ReplicateRecords::times
+    pub const RECORD_TIMES: Self = Self(1 << 5);
     /// Keeps a ballot with each accepted generation, naming the leader it was
     /// accepted from by the node id that leader gave in its `Hello`, and
     /// refuses a fence, a batch or a fetch from any other node at that
@@ -118,4 +125,8 @@ pub struct ReplicateFetch {
     /// `ReplicateLabelledFetch`, sent only to a peer that advertised
     /// [`PeerCapabilities::GENERATION_LABELS`].
     pub labelled: bool,
+    /// Answer with the records' append times as well. Only a labelled fetch
+    /// can ask: it travels as `ReplicateTimedFetch`, sent only to a peer that
+    /// advertised [`PeerCapabilities::RECORD_TIMES`].
+    pub timed: bool,
 }

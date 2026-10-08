@@ -245,6 +245,42 @@ publisher
 The Rust client uses this frame for every publish once the broker advertises
 it, so `publish` and `publish_batch` already take this path.
 
+### Conditional Publish
+
+Appends a batch only if it would start at exactly `expected_offset`, the
+shard's next offset. Sent only to a broker that advertised
+`FEATURE_PUBLISH_CONDITIONAL`.
+
+```json
+{
+  "type": "publish_if",
+  "tenant_id": "acme",
+  "namespace": "games",
+  "stream": "match-7",
+  "payloads": ["<base64>"],
+  "expected_offset": 120,
+  "request_id": 9
+}
+```
+
+`key` is optional and routes the batch like `publish_batch`. Written, the
+answer is `publish_ok` with `offset`, once the batch is durable. Refused, it is
+`publish_refused` with `{"offset_mismatch": {"tail": <u64>}}`, and nothing was
+written. A broker that does not lead the shard answers `not_leader`. `commit`
+takes the same optional `expected_offset`.
+
+```rust
+use felix_client::ConditionalWrite;
+
+match client
+    .publish_if("acme", "games", "match-7", None, vec![b"tick".to_vec()], 120)
+    .await?
+{
+    ConditionalWrite::Written { offset } => assert_eq!(offset, 120),
+    ConditionalWrite::Refused { tail } => println!("the shard is at {tail}"),
+}
+```
+
 ### Publish Pipeline Configuration
 
 Broker-side tuning for publish pipeline:
@@ -409,6 +445,33 @@ the broker must advertise `FEATURE_RECORD_TIMESTAMPS`. The lookup is a binary
 search over append times, so if the leader's clock stepped back the answer is
 close to the right record rather than exactly it. See
 [OffsetForTime](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#offsetfortime).
+
+#### Reading a range without subscribing
+
+A subscription has no end: replay runs on into live delivery. To read a slice
+of a durable stream and stop, send `stream_read`:
+
+```json
+{ "type": "stream_read", "tenant_id": "acme", "namespace": "prod",
+  "stream": "events", "shard": 0, "from": 48210, "end": 48300,
+  "max_records": 50, "request_id": 10 }
+```
+
+```json
+{ "type": "stream_records",
+  "records": [{ "offset": 48210, "payload": "eyJ...", "timestamp_micros": 1767225600000000 }],
+  "next_offset": 48260, "request_id": 10 }
+```
+
+Read the next page from `next_offset`. The range is done once it reaches
+`end`. Leave `end` out to read up to what is committed. The broker caps a page
+at `FELIX_DURABLE_MAX_RECORDS_PER_READ` records and 4 MiB of payload, and
+returns only committed records without waiting for more, so a page can come
+back short or empty. A `from` below what retention kept, or past the tail, gets
+a `subscribe_cursor_error`. No subscriber is registered. It needs
+`stream.subscribe`, only the shard's leader answers, and the broker must
+advertise `FEATURE_STREAM_READ`. See
+[StreamRead](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#streamread).
 
 **Event stream lifecycle**:
 

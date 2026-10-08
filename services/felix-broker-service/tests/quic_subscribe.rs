@@ -382,6 +382,7 @@ async fn quic_subscribe_invalid_frame_closes_stream() -> Result<()> {
             // answers with a plain `Ok`.
             client_flags: None,
             client_features: None,
+            client_features_hi: None,
         },
     )
     .await?;
@@ -1018,6 +1019,231 @@ async fn quic_subscribe_reports_record_times_to_a_client_that_asked() -> Result<
     assert_eq!(lookup(after + 1_000_000).await?, None);
 
     drop((told, untold, resumed));
+    server_task.abort();
+    Ok(())
+}
+
+/// A subscriber's requested queue capacity is clamped to the broker's range
+/// and echoed back; one that asks for nothing hears nothing about it.
+#[tokio::test]
+#[serial]
+async fn quic_subscribe_grants_a_clamped_queue_capacity() -> Result<()> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_stream("t1", "default", "orders", StreamMetadata::default())
+        .await?;
+
+    let (server_config, cert) = build_server_config()?;
+    let server = Arc::new(QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?);
+    let addr = server.local_addr()?;
+
+    let mut config = felix_broker_service::config::BrokerConfig::from_env()?;
+    config.subscriber_queue_capacity_max = 64;
+    let auth = auth_fixture(
+        "t1",
+        vec![
+            "stream.publish:stream:t1/*/*".to_string(),
+            "stream.subscribe:stream:t1/*/*".to_string(),
+        ],
+    );
+    let server_task = tokio::spawn(felix_broker_service::serving::quic::serve(
+        Arc::clone(&server),
+        Arc::clone(&broker),
+        config,
+        Arc::clone(&auth.auth),
+    ));
+
+    let subscribe_asking = |capacity: Option<u32>| {
+        let cert = cert.clone();
+        let auth = &auth;
+        async move {
+            let mut client_config = build_client_config(cert, auth)?;
+            client_config.broker_sub_queue_capacity = capacity;
+            let client = Client::connect(addr, "localhost", client_config).await?;
+            let sub = client.subscribe("t1", "default", "orders").await?;
+            Result::<_>::Ok((client, sub))
+        }
+    };
+    let (_big_client, mut big) = subscribe_asking(Some(10_000)).await?;
+    let (_tiny_client, tiny) = subscribe_asking(Some(0)).await?;
+    let (_mid_client, mid) = subscribe_asking(Some(48)).await?;
+    let (plain_client, plain) = subscribe_asking(None).await?;
+    assert_eq!(big.queue_capacity(), Some(64), "clamped to the maximum");
+    assert_eq!(tiny.queue_capacity(), Some(1), "clamped to one");
+    assert_eq!(mid.queue_capacity(), Some(48), "granted as asked");
+    assert_eq!(
+        plain.queue_capacity(),
+        None,
+        "nothing asked, nothing echoed"
+    );
+
+    plain_client
+        .publisher()
+        .await?
+        .publish(
+            "t1",
+            "default",
+            "orders",
+            b"hello".to_vec(),
+            felix_wire::AckMode::PerMessage,
+        )
+        .await?;
+    let event = timeout(Duration::from_secs(2), big.next_event())
+        .await??
+        .expect("event");
+    assert_eq!(event.payload.as_ref(), b"hello");
+
+    server_task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+#[serial]
+async fn quic_stream_read_pages_a_range_without_subscribing() -> Result<()> {
+    unsafe {
+        std::env::set_var("FELIX_ACK_ON_COMMIT", "false");
+    }
+    let dir = tempfile::tempdir()?;
+    let storage = felix_broker::DurableStorage::open(
+        dir.path(),
+        felix_storage::log::LogConfig {
+            fsync_mode: felix_storage::log::FsyncMode::None,
+            preallocate_segments: false,
+            ..Default::default()
+        },
+    )?;
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    for (stream, durable) in [("matches", true), ("chatter", false)] {
+        broker
+            .register_stream(
+                "t1",
+                "default",
+                stream,
+                StreamMetadata {
+                    durable,
+                    shards: 1,
+                    ..Default::default()
+                },
+            )
+            .await?;
+    }
+
+    let (server_config, cert) = build_server_config()?;
+    let server = Arc::new(QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?);
+    let addr = server.local_addr()?;
+    let config = felix_broker_service::config::BrokerConfig::from_env()?;
+    let auth = auth_fixture(
+        "t1",
+        vec![
+            "stream.publish:stream:t1/*/*".to_string(),
+            "stream.subscribe:stream:t1/*/*".to_string(),
+        ],
+    );
+    let server_task = tokio::spawn(felix_broker_service::serving::quic::serve(
+        Arc::clone(&server),
+        Arc::clone(&broker),
+        config,
+        Arc::clone(&auth.auth),
+    ));
+
+    let client =
+        Client::connect(addr, "localhost", build_client_config(cert.clone(), &auth)?).await?;
+    assert!(client.supports_read());
+    let publisher = client.publisher().await?;
+    for i in 0..10 {
+        publisher
+            .publish(
+                "t1",
+                "default",
+                "matches",
+                format!("move-{i}").into_bytes(),
+                felix_wire::AckMode::PerMessage,
+            )
+            .await?;
+    }
+
+    let mut seen = Vec::new();
+    let mut from = 2;
+    while from < 8 {
+        let page = client
+            .read("t1", "default", "matches", 0, from, Some(8), 4)
+            .await?;
+        assert!(page.records.len() <= 4);
+        assert!(page.next_offset > from);
+        for record in &page.records {
+            assert_eq!(
+                record.payload.as_ref(),
+                format!("move-{}", record.offset).as_bytes()
+            );
+            assert!(record.timestamp_micros > 0);
+        }
+        seen.extend(page.records.iter().map(|record| record.offset));
+        from = page.next_offset;
+    }
+    assert_eq!(from, 8);
+    assert_eq!(seen, (2..8).collect::<Vec<_>>());
+    assert_eq!(
+        broker
+            .registered_subscribers("t1", "default", "matches", 0)
+            .await?,
+        0,
+        "a read registered a subscriber"
+    );
+
+    let tail = client
+        .read("t1", "default", "matches", 0, 10, None, 0)
+        .await?;
+    assert!(tail.records.is_empty());
+    assert_eq!(tail.next_offset, 10);
+    let past = client
+        .read("t1", "default", "matches", 0, 11, None, 0)
+        .await
+        .expect_err("past the tail");
+    let cursor = past
+        .downcast_ref::<felix_client::SubscribeCursorError>()
+        .expect("a cursor error");
+    assert_eq!(cursor.reason, felix_wire::CursorErrorReason::InFuture);
+    assert_eq!(cursor.available, 10);
+    assert!(
+        client
+            .read("t1", "default", "chatter", 0, 0, None, 0)
+            .await
+            .is_err(),
+        "an in-memory stream has no log to read"
+    );
+
+    // A grant on another stream, as a narrowed token would carry, is not one
+    // on this stream; nor is publishing to it.
+    for perms in [
+        vec!["stream.subscribe:stream:t1/default/other".to_string()],
+        vec!["stream.publish:stream:t1/*/*".to_string()],
+    ] {
+        let narrow = auth_fixture("t1", perms);
+        let narrow = Client::connect(
+            addr,
+            "localhost",
+            build_client_config(cert.clone(), &narrow)?,
+        )
+        .await?;
+        let refused = narrow
+            .read("t1", "default", "matches", 0, 0, None, 0)
+            .await
+            .expect_err("no subscribe grant on the stream");
+        assert!(refused.to_string().contains("forbidden"), "{refused:#}");
+    }
+
     server_task.abort();
     Ok(())
 }

@@ -99,6 +99,7 @@ async fn answer(
             Message::Auth { .. } => Message::AuthOk {
                 server_flags: felix_wire::KNOWN_FLAGS,
                 server_features: Some(server_features),
+                server_features_hi: None,
                 listener_ports: None,
                 publish_window,
             },
@@ -206,6 +207,30 @@ async fn grows_to_the_ceiling_when_stream_credit_runs_out() -> Result<()> {
     let mut late = tokio::time::timeout(Duration::from_secs(5), queued).await???;
     round_trip(&mut late).await?;
     assert_eq!(broker.accepted(), 3, "the ceiling holds");
+    Ok(())
+}
+
+/// Streams opened after the pool go to the least-loaded connection, so a
+/// stream's per-shard publish streams land on different connections, and
+/// so on different listeners when the broker has several.
+#[tokio::test]
+async fn later_streams_spread_over_a_filled_pool() -> Result<()> {
+    let (broker, endpoint) = EchoBroker::start(1024)?;
+    let node = node(&broker, endpoint, limits(4, 1024));
+    node.fill(4, false).await?;
+    let mut pool = Vec::new();
+    for _ in 0..8 {
+        pool.push(node.open().await?);
+    }
+    let mut later = Vec::new();
+    for _ in 0..4 {
+        later.push(node.open().await?);
+    }
+    let mut slots: Vec<usize> = later.iter().map(|stream| stream.lease.slot()).collect();
+    slots.sort_unstable();
+    slots.dedup();
+    assert_eq!(slots.len(), 4, "four later streams share connections");
+    assert_eq!(broker.accepted(), 4);
     Ok(())
 }
 

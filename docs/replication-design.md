@@ -1097,6 +1097,14 @@ generation, from where the batch appended. That fallback is the overclaim
 above, so a cluster is only as safe as its oldest broker until every one
 offers the capability.
 
+Each record's append time travels the same way, as a time per record on a
+labelled batch, to a follower that offered `RECORD_TIMES`, and a fence's tail
+fetch asks for them too. The follower stores the leader's times rather than
+its own clock's, so a promoted replica reports the times readers already saw
+and answers `offset_for_time` the same. Nothing about safety rests on them:
+they are not compared, and a follower that did not get them stamps the records
+itself, which only shifts those records' times by the replication delay.
+
 Correct labels are not the whole of it. A promoted leader's quorum mark counts
 the records it inherited as it counts its own, so it can acknowledge one on a
 majority that a later leader's fence then replaces with a newer generation's

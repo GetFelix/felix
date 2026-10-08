@@ -100,6 +100,7 @@ fn every_message() -> Vec<InternalMessage> {
             last_generation: 6,
         }),
         InternalMessage::ReplicateFetch(ReplicateFetch {
+            timed: false,
             correlation_id: 42,
             shard: shard(),
             log: ReplicaLog::Stream,
@@ -175,6 +176,7 @@ fn every_message() -> Vec<InternalMessage> {
             detail: "cache scope not found".to_string(),
         }),
         InternalMessage::ReplicateCacheRecords(ReplicateRecords {
+            times: None,
             correlation_id: 42,
             shard: shard(),
             first_offset: 100,
@@ -191,6 +193,7 @@ fn every_message() -> Vec<InternalMessage> {
             base_offset: 5_000,
         }),
         InternalMessage::ReplicateGroupRecords(ReplicateRecords {
+            times: None,
             correlation_id: 42,
             shard: shard(),
             first_offset: 100,
@@ -207,6 +210,7 @@ fn every_message() -> Vec<InternalMessage> {
             base_offset: 5_000,
         }),
         InternalMessage::ReplicateDeadLetterRecords(ReplicateRecords {
+            times: None,
             correlation_id: 42,
             shard: shard(),
             first_offset: 100,
@@ -223,6 +227,7 @@ fn every_message() -> Vec<InternalMessage> {
             base_offset: 5_000,
         }),
         InternalMessage::ReplicateCounterRecords(ReplicateRecords {
+            times: None,
             correlation_id: 42,
             shard: shard(),
             first_offset: 100,
@@ -239,6 +244,7 @@ fn every_message() -> Vec<InternalMessage> {
             base_offset: 5_000,
         }),
         InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
+            times: None,
             correlation_id: 42,
             shard: shard(),
             first_offset: 100,
@@ -262,6 +268,7 @@ fn every_message() -> Vec<InternalMessage> {
             publishers: Vec::new(),
         }),
         InternalMessage::ReplicateRecords(ReplicateRecords {
+            times: None,
             correlation_id: 42,
             shard: shard(),
             first_offset: 100,
@@ -273,6 +280,7 @@ fn every_message() -> Vec<InternalMessage> {
             publishers: Vec::new(),
         }),
         InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
+            times: None,
             correlation_id: 42,
             shard: shard(),
             first_offset: 100,
@@ -288,6 +296,7 @@ fn every_message() -> Vec<InternalMessage> {
             publishers: Vec::new(),
         }),
         InternalMessage::ReplicateCacheRecords(ReplicateRecords {
+            times: None,
             correlation_id: 42,
             shard: shard(),
             first_offset: 7,
@@ -304,6 +313,7 @@ fn every_message() -> Vec<InternalMessage> {
 fn replicate() -> InternalMessage {
     let payloads = vec![Bytes::from_static(b"a"), Bytes::from_static(b"bb")];
     InternalMessage::ReplicateRecords(ReplicateRecords {
+        times: None,
         correlation_id: 42,
         shard: shard(),
         first_offset: 100,

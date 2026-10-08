@@ -49,6 +49,22 @@ impl Broker {
         ops: Vec<StateOp>,
         publisher: Option<&Bytes>,
     ) -> Result<PublishOutcome> {
+        self.commit_to_handle_at(handle, event, ops, None, publisher)
+            .await
+    }
+
+    /// [`Self::commit_to_handle`], only if the commit would land at exactly
+    /// `expected` when there is one: nothing has been appended to the shard
+    /// since its writer read it. Refused, as
+    /// [`Broker::claim_publish_at`] is, with nothing written.
+    pub async fn commit_to_handle_at(
+        &self,
+        handle: &StreamHandle,
+        event: Bytes,
+        ops: Vec<StateOp>,
+        expected: Option<u64>,
+        publisher: Option<&Bytes>,
+    ) -> Result<PublishOutcome> {
         if handle.log().is_none() {
             return Err(BrokerError::CommitNeedsDurableStream);
         }
@@ -59,9 +75,17 @@ impl Broker {
         let stored = record.encode();
         let events = [event];
         let mut claimed = self
-            .claim(handle, &events, Append::Commit(&stored), publisher)
+            .claim(
+                handle,
+                &events,
+                Append::Commit {
+                    record: &stored,
+                    expected,
+                },
+                publisher,
+            )
             .await?
-            .expect("a commit always claims");
+            .expect("a commit claims or is refused");
         claimed.set_commit(Arc::from(record.ops));
         self.complete_publish(claimed).await
     }

@@ -32,6 +32,7 @@ fn client_transport_config_overrides_windows() {
         pub_ingress_wait: false,
         core_shards: 0,
         subscriber_queue_capacity: 128,
+        subscriber_queue_capacity_max: 4096,
         max_subscriptions_per_conn: 4096,
         subscriber_queue_policy: felix_broker::SubQueuePolicy::DropNew,
         subscriber_writer_lanes: 4,

@@ -126,6 +126,47 @@ impl Broker {
             .expect("a plain append always claims"))
     }
 
+    /// [`Broker::claim_publish`], only if the batch would start at exactly
+    /// `expected`: the shard's next offset when it is written.
+    ///
+    /// The check is made where the offsets are assigned, under the log's
+    /// append lock, so of two claims expecting the same offset exactly one is
+    /// written. A refusal is [`BrokerError::OffsetMismatch`] with the tail it
+    /// was checked against; it writes nothing, consumes no offset and claims
+    /// no place in the commit order, so it holds up nothing behind it. A
+    /// stream with no log has no offsets to compare, and is refused with
+    /// [`BrokerError::ExpectedOffsetNeedsDurableStream`].
+    pub async fn claim_publish_at(
+        &self,
+        handle: &StreamHandle,
+        payloads: &[Bytes],
+        expected: u64,
+        publisher: Option<&Bytes>,
+    ) -> Result<ClaimedPublish> {
+        if payloads.is_empty() {
+            return Err(BrokerError::EmptyConditionalPublish);
+        }
+        Ok(self
+            .claim(handle, payloads, Append::At(expected), publisher)
+            .await?
+            .expect("a conditional append claims or is refused"))
+    }
+
+    /// [`Broker::claim_publish_at`] and [`Broker::complete_publish`] back to
+    /// back.
+    pub async fn publish_batch_at(
+        &self,
+        handle: &StreamHandle,
+        payloads: &[Bytes],
+        expected: u64,
+        publisher: Option<&Bytes>,
+    ) -> Result<PublishOutcome> {
+        let claimed = self
+            .claim_publish_at(handle, payloads, expected, publisher)
+            .await?;
+        self.complete_publish(claimed).await
+    }
+
     /// [`Broker::claim_publish`], writing the records as `append` says. `None`
     /// only for [`Append::Continuing`] whose batch is no longer open.
     pub(super) async fn claim(
@@ -157,6 +198,9 @@ impl Broker {
         };
         if payloads.is_empty() {
             return Ok(Some(claimed));
+        }
+        if handle.state.durable.is_none() && append.expected().is_some() {
+            return Err(BrokerError::ExpectedOffsetNeedsDurableStream);
         }
 
         if let Some(durable) = &handle.state.durable {
@@ -190,7 +234,21 @@ impl Broker {
                         .begin_append_marked(payloads, marks, &publishers, timestamp_micros, order)
                         .await?
                 }
-                Append::Commit(record) => {
+                Append::At(expected) => durable
+                    .begin_append_if(
+                        expected,
+                        payloads,
+                        &[],
+                        &publishers,
+                        timestamp_micros,
+                        order,
+                    )
+                    .await?
+                    .map_err(|tail| BrokerError::OffsetMismatch { expected, tail })?,
+                Append::Commit {
+                    record,
+                    expected: None,
+                } => {
                     durable
                         .begin_append_marked(
                             std::slice::from_ref(record),
@@ -201,6 +259,20 @@ impl Broker {
                         )
                         .await?
                 }
+                Append::Commit {
+                    record,
+                    expected: Some(expected),
+                } => durable
+                    .begin_append_if(
+                        expected,
+                        std::slice::from_ref(record),
+                        &[RecordMark::Commit],
+                        &publishers,
+                        timestamp_micros,
+                        order,
+                    )
+                    .await?
+                    .map_err(|tail| BrokerError::OffsetMismatch { expected, tail })?,
                 Append::Continuing {
                     producer_id,
                     sequence,
@@ -489,15 +561,32 @@ impl Broker {
 /// How [`Broker::claim`] writes a batch to a durable log.
 pub(super) enum Append<'a> {
     Plain,
+    /// Only if the batch starts at exactly this offset.
+    At(u64),
     /// With a producer mark per record.
     Marked(&'a [RecordMark]),
-    /// One commit record holding the batch's single event.
-    Commit(&'a Bytes),
+    /// One commit record holding the batch's single event, only at
+    /// `expected` when there is one.
+    Commit {
+        record: &'a Bytes,
+        expected: Option<u64>,
+    },
     /// The rest of a producer batch the log holds the start of.
     Continuing {
         producer_id: u64,
         sequence: u64,
     },
+}
+
+impl Append<'_> {
+    /// The offset this append must start at, if it is conditional.
+    fn expected(&self) -> Option<u64> {
+        match self {
+            Self::At(expected) => Some(*expected),
+            Self::Commit { expected, .. } => *expected,
+            Self::Plain | Self::Marked(_) | Self::Continuing { .. } => None,
+        }
+    }
 }
 
 /// What a publish did.
