@@ -1864,7 +1864,8 @@ longer than `FELIX_SHARD_MOVE_HOLD_MS` (2 s by default), or a burst beyond
 only the `publish_error` text, which names the stream and the reason, such as
 `publish to t1/ns/orders refused: shard is moving to another broker`. Cache
 and counter operations are held and forwarded the same way, under the same
-bounds. A consumer-group operation is held too, and once the move cuts over is
+bounds. A write that reaches the new owner while it is still opening or
+fencing the shard is held the same way until it serves. A consumer-group operation is held too, and once the move cuts over is
 answered with `NotLeader` naming the new owner (an error with code
 `not_leader` to a client without `FEATURE_REDIRECT`), because group operations
 are served only by the shard's leader and never forwarded. A group poll that
