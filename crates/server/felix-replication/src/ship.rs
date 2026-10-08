@@ -160,6 +160,17 @@ pub async fn ship_once_with<R: PeerRequester>(
         Vec::new()
     };
     let publishers = felix_broker::replication::publishers_to_wire(&records);
+    let offered = requester.recorded_capabilities(&cursor.node_id);
+    // Without them the follower stamps the records with its own clock, and a
+    // failover shifts every inherited record's time by the replication delay.
+    let times = offered
+        .is_some_and(|offered| offered.contains(PeerCapabilities::RECORD_TIMES))
+        .then(|| {
+            records
+                .iter()
+                .map(|record| record.timestamp_micros)
+                .collect()
+        });
     let payloads: Vec<Bytes> = records.into_iter().map(|record| record.payload).collect();
     let batch_end = first_offset + payloads.len() as u64;
     let batch_bytes: usize = payloads.iter().map(Bytes::len).sum();
@@ -178,12 +189,13 @@ pub async fn ship_once_with<R: PeerRequester>(
         // the labels of a stream log, and of a cache shard's cache and
         // counter logs; the group logs go without.
         generations: (!cursor.legacy_frames
-            && requester
-                .recorded_capabilities(&cursor.node_id)
+            && offered
                 .zip(labels_needed(log_kind))
                 .is_some_and(|(offered, needed)| offered.contains(needed)))
         .then(|| crate::replica::generations_over(&log.generations(), first_offset, batch_end)),
         publishers,
+        // Sent only on a labelled batch; see `ReplicateRecords::times`.
+        times,
     };
     carry_marks(&mut batch, log_kind, cursor.legacy_frames);
     // Which log this is belongs in the message kind, not in the shard
@@ -211,6 +223,7 @@ pub async fn ship_once_with<R: PeerRequester>(
             request.kind(),
             felix_wire::internal::Kind::ReplicateCommittedRecords
                 | felix_wire::internal::Kind::ReplicateLabelledRecords
+                | felix_wire::internal::Kind::ReplicateTimedRecords
         )
     {
         // A follower from before commit offsets. Nothing was stored; it gets
@@ -333,6 +346,7 @@ fn without_commit(request: InternalMessage) -> InternalMessage {
     let strip = |mut batch: ReplicateRecords| {
         batch.commit_offset = None;
         batch.generations = None;
+        batch.times = None;
         batch
     };
     match request {

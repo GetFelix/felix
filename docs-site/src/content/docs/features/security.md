@@ -231,6 +231,10 @@ Write-time protections:
 
 This blocks privilege escalation when delegating namespace or stream admins.
 
+`felixctl rbac` lists, adds and removes policies and groupings over the same
+API, and checks an object against this grammar before sending it. See
+[felixctl](/getting-started/felixctl/#rbac).
+
 #### Cluster scope
 
 `cluster:*` covers broker membership (which brokers exist, whether they are
@@ -466,6 +470,13 @@ sequenceDiagram
     B->>B: Match action+resource against perms
     B-->>C: Allow or reject operation
 ```
+
+A token is bound to a QUIC stream, not a connection: each stream sends its own
+`Auth` and every request on it is checked against that token. So one client can
+carry several users. The Rust client's `Client::with_identity` opens streams
+under another user's token over the same connections, and the broker still
+checks each user's requests against that user's grants alone. See
+[Acting for many users](/clients/rust/#acting-for-many-users).
 
 ## Not built
 

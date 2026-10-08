@@ -707,10 +707,69 @@ it with its next commit. Applied a part at a time, it fails on one broker
 with no failover at all. Those two are why the record is one record and why
 the state view is updated under the ring's lock.
 
+## Long random walks
+
+The configurations above check every behaviour up to their bounds, and the
+bounds are small: a move or two, a promotion or two, a few ticks. Raising any
+of them costs about an order of magnitude in states, so exhaustive search
+cannot reach a behaviour that grows the set, replaces a follower, fails over
+and moves the shard again. The `FelixShardWalk*.cfg` configurations lift the
+bounds (time to 40, six writes, six moves) and TLC samples behaviours up to
+300 steps long instead, in its simulation mode. They run nightly, not per push
+(`.github/workflows/tla-walk.yml`).
+
+A walk shows less than a check. It is sampling: a pass means the walks found
+nothing in their budget, not that nothing is there, and uniform random choice
+under-samples rare interleavings. What it adds is depth: invariants checked on
+behaviours far longer than any exhaustive configuration reaches. Each family's
+negative twin must find its violation within the same budget, which shows the
+walks are long and varied enough to lose a record at all. A twin checks only
+the invariant it expects, so the first violation it finds is that one.
+
+The spec admits spares only without handoff and cancel, so there is one walk
+per family:
+
+| Configuration | Knobs | Must |
+| --- | --- | --- |
+| `FelixShardWalkSpares.cfg` | `FelixShardFencedAckGrow.cfg` and `FelixShardFencedAckSeat.cfg` together: two replicas and two spares, the set grown to three, then followers replaced and seated; promotion of any replica, start records, `L = 2`, drifting clocks | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` |
+| `FelixShardWalkSparesSeatEarly.cfg` | the same with the seat not waiting (`SeatHoldsCopy = FALSE`) | violate `AckedHeldByLeader` |
+| `FelixShardWalkMoves.cfg` | follower acks with planned moves: the first from a staged destination, any fenced move open to the operator's cancel, failovers that never name the destination; start records, `L = 2`, drifting clocks | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` |
+| `FelixShardWalkMovesDestination.cfg` | the same with a failover free to name the destination | violate `AckedHeldByLeader` |
+| `FelixShardWalkHandoff.cfg` | the broker as built under the lease (`FelixShardFencedPromotion.cfg` with start records) with `FelixShardHandoff.cfg`'s move; `FelixShardRealMargins.cfg`'s margins and drift, writes acknowledged on commit | pass every invariant and `AckedHeldByLeader` |
+| `FelixShardWalkHandoffNoWait.cfg` | the same cutting over without waiting for the drained report | violate `AtMostOneServing` |
+
+The walks carry no `SYMMETRY`: simulation stores no states, so it buys nothing.
+`Tick` draws each clock from its drift window rather than from `0..MaxTime`,
+which gives the same clocks and keeps a tick cheap at time to 40.
+
+`Next` lists every action as its own disjunct. TLC's simulation mode picks an
+enabled action and then one of its successors, but it splits `Next` into
+actions only at disjunctions and constant `\E`. With everything in one
+conjunction, a walk picked uniformly among successor states, and with drift
+`Tick` has up to 81 of them. The walks ticked time to its bound within a few
+dozen steps and spent the rest with time stopped, where no lease lapses after
+a replacement is seated, so the spares twin found nothing.
+
+`GrowSet` only grows a set short of the factor. Without that guard, a walk
+with two spares grew the set to four, and with no spare left it never
+replaced a follower again.
+
+```bash
+TLA_SIM_MINUTES=10 scripts/check_tla.sh --simulate FelixShardWalkSpares
+```
+
+Each walk gets `TLA_SIM_MINUTES` (default 25) of traces up to `TLA_DEPTH`
+steps (default 300). The script prints the seed it used; `TLA_SEED` sets it.
+TLC's whole output for each walk, with any trace, is written to
+`target/tla/walk/`, and the nightly job uploads it when a walk fails. With
+more than one worker a seed need not replay the same trace, so the uploaded
+trace is the record.
+
 ## Running it
 
 ```bash
 task tla:check          # java or docker; fetches the TLA+ tools once, pinned
+task tla:walk           # the long random walks, TLA_SIM_MINUTES each
 ```
 
 To explore a configuration by hand, with the trace when a check fails:

@@ -210,3 +210,46 @@ async fn a_closed_producer_finishes_what_it_was_handed() -> Result<()> {
     assert_eq!(broker.sequences(), vec![(None, 0), (None, 1)]);
     Ok(())
 }
+
+/// **A producer that cannot finish in time is stopped, not left running.**
+/// `close_within` gives up at its timeout and nothing handed to the producer
+/// goes out afterwards.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_producer_closed_within_a_timeout_sends_nothing_after_it() -> Result<()> {
+    let (broker, cert) = StubBroker::start(ok)?;
+    let client = Arc::new(
+        Client::connect(
+            broker.addr,
+            "localhost",
+            build_client_config_with_overrides(cert, 1)?,
+        )
+        .await?,
+    );
+    let producer = client.idempotent_producer().await?;
+
+    broker.hold_acks();
+    drop_once_received(
+        &broker,
+        1,
+        producer.publish("t1", "default", "orders", b"in flight".to_vec()),
+    )
+    .await;
+    let queued = tokio::time::timeout(
+        Duration::from_millis(50),
+        producer.publish("t1", "default", "orders", b"queued".to_vec()),
+    )
+    .await;
+    assert!(queued.is_err(), "answered while the broker held its ack");
+    let closed = producer.close_within(Duration::from_millis(100)).await;
+    assert!(closed.is_err(), "closed while the broker held its ack");
+
+    broker.release_acks();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        broker.sequences(),
+        vec![(None, 0)],
+        "the queued batch went out after the producer was stopped"
+    );
+    Ok(())
+}

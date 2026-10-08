@@ -39,11 +39,14 @@ fn help_works_both_ways_for_every_command() {
         "sub",
         "cache",
         "topology",
+        "group",
+        "counter",
         "tenant",
         "namespace",
         "stream",
         "node",
         "shard",
+        "placement",
         "bench",
         "completions",
     ] {
@@ -53,6 +56,31 @@ fn help_works_both_ways_for_every_command() {
         assert!(by_help.status.success(), "help {command} failed");
         assert_eq!(stdout(&by_flag), stdout(&by_help), "{command}");
         assert!(stdout(&by_flag).contains("Examples:"), "{command}");
+    }
+}
+
+#[test]
+fn a_destructive_group_command_off_a_terminal_needs_yes() {
+    let home = tempfile::tempdir().unwrap();
+    // stdin is not a terminal here, so nothing can be asked. The refusal
+    // comes before any broker is contacted; port 9 would not answer anyway.
+    for args in [
+        &["group", "rm", "orders", "billing"][..],
+        &[
+            "group",
+            "dead-letters",
+            "discard",
+            "orders",
+            "billing",
+            "0:3",
+        ],
+    ] {
+        let mut args = args.to_vec();
+        args.extend(["--brokers", "127.0.0.1:9", "--tenant", "t1", "--token", "x"]);
+        let output = felixctl(home.path(), &args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("--yes"), "{stderr}");
     }
 }
 
@@ -93,6 +121,32 @@ fn an_unreachable_control_plane_exits_3() {
     let error: serde_json::Value =
         serde_json::from_slice(&output.stderr).expect("a JSON error on stderr");
     assert_eq!(error["exit"], 3);
+}
+
+#[test]
+fn a_destructive_command_off_a_terminal_needs_yes() {
+    let home = tempfile::tempdir().unwrap();
+    // The control plane is unreachable, so exit 3 would mean a request was
+    // sent; 2 means it stopped first.
+    let reach = ["--tenant", "t", "--controlplane-url", "http://127.0.0.1:9"];
+    for command in [
+        &["stream", "rm", "orders"][..],
+        &["cache", "rm", "sessions"],
+        &["namespace", "rm", "payments"],
+        &["tenant", "rm", "acme"],
+        &["node", "drain", "broker-2"],
+        &["node", "deregister", "broker-2"],
+        &["placement", "abandon", "orders", "0"],
+    ] {
+        let args: Vec<&str> = command.iter().chain(&reach).copied().collect();
+        let output = felixctl(home.path(), &args);
+        assert_eq!(output.status.code(), Some(2), "{command:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("--yes"), "{command:?}: {stderr}");
+    }
+    let mut args = vec!["stream", "rm", "orders", "--yes"];
+    args.extend(reach);
+    assert_eq!(felixctl(home.path(), &args).status.code(), Some(3));
 }
 
 #[test]

@@ -364,7 +364,7 @@ event_batch_max_delay_us: 250
 ```
 
 **Tuning**:
-- **Ultra-low latency**: `50-100us`
+- **Latency first**: `50-100us`
 - **Balanced**: `250-500us`
 - **High throughput**: `1000-5000us`
 
@@ -412,6 +412,20 @@ high fanout / large payload workloads.
 
 ```yaml
 subscriber_queue_capacity: 512
+```
+
+#### `subscriber_queue_capacity_max`
+
+**Description**: The largest queue capacity a subscriber may ask for on subscribe. A larger request is granted this value. Only the size is the subscriber's to choose; the overflow policy stays `subscriber_queue_policy`.
+
+**Type**: `usize` (count)
+
+**Default**: `4096`
+
+**Environment**: `FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX`
+
+```yaml
+subscriber_queue_capacity_max: 4096
 ```
 
 #### `max_subscriptions_per_conn`
@@ -489,7 +503,7 @@ subscriber_lane_queue_depth: 64
 subscriber_lane_queue_policy: drop_new
 ```
 
-Same semantics as `subscriber_queue_policy`, applied one stage later in the pipeline. Control commands (subscriber register/unregister) always use blocking send regardless of this setting.
+Same semantics as `subscriber_queue_policy`, applied one stage later in the pipeline. `drop_old` behaves as `drop_new` here too. Control commands (subscriber register/unregister) always use blocking send regardless of this setting.
 
 #### `max_subscriber_writer_lanes`
 

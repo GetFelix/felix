@@ -272,6 +272,31 @@ impl DiskLog {
         Ok(written.claimed())
     }
 
+    /// [`DiskLog::append_claimed`], only if the batch would start at exactly
+    /// `first_offset`. `Err` with the log's tail, and nothing written or
+    /// claimed, when it would start anywhere else.
+    ///
+    /// The check is made where offsets are assigned, under the same lock, so
+    /// two writers expecting the same offset cannot both pass it. A refused
+    /// batch consumes no offset and claims no range, so it holds up no later
+    /// append.
+    pub async fn append_claimed_at(
+        &self,
+        first_offset: Offset,
+        records: &[AppendRecord],
+        order: &Arc<CommitSequencer>,
+    ) -> Result<std::result::Result<(PendingAppend, CommitTurn<'static>), Offset>> {
+        let inner = Arc::clone(&self.inner);
+        let written = Self::write_batch(
+            inner,
+            records.to_vec(),
+            append::WriteIf::At(first_offset),
+            Some(order),
+        )
+        .await?;
+        Ok(written.map(append::Written::claimed))
+    }
+
     /// [`DiskLog::append_pending`], only if the batch would start at exactly
     /// `first_offset`. `None`, and nothing written, when the tail is anywhere
     /// else.
@@ -293,7 +318,7 @@ impl DiskLog {
             None,
         )
         .await?;
-        Ok(written.map(|written| written.pending))
+        Ok(written.ok().map(|written| written.pending))
     }
 
     /// Write the rest of `producer_id`'s batch `sequence`, which the log holds
@@ -323,7 +348,7 @@ impl DiskLog {
             Some(order),
         )
         .await?;
-        Ok(written.map(append::Written::claimed))
+        Ok(written.ok().map(append::Written::claimed))
     }
 
     /// Wait until every record below `offset` satisfies the configured fsync
@@ -809,6 +834,12 @@ impl DiskLog {
             #[cfg(test)]
             hold_next_seal: Mutex::new(None),
             #[cfg(test)]
+            hold_next_extension: Mutex::new(None),
+            #[cfg(test)]
+            fail_extensions: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            extensions_done: AtomicU64::new(0),
+            #[cfg(test)]
             fail_next_flush: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_next_rewind_sync: std::sync::atomic::AtomicBool::new(false),
@@ -1152,6 +1183,16 @@ struct LogInner {
     /// until the sender is used or dropped. Taking it is the sign it got there.
     #[cfg(test)]
     hold_next_seal: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    /// Stops the next reservation extension before it reserves anything,
+    /// until the sender is used or dropped.
+    #[cfg(test)]
+    hold_next_extension: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    /// Makes every reservation extension fail as if the disk were full.
+    #[cfg(test)]
+    fail_extensions: std::sync::atomic::AtomicBool,
+    /// Reservation extensions that have finished, whether or not they reserved.
+    #[cfg(test)]
+    extensions_done: AtomicU64,
     /// Makes the next flush report a failed fsync after the real one ran.
     #[cfg(test)]
     fail_next_flush: std::sync::atomic::AtomicBool,

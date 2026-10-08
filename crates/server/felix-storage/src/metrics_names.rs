@@ -53,6 +53,9 @@ pub const SEGMENT_ROLL_TOTAL: &str = "felix_storage_segment_roll_total";
 pub const SEGMENT_ROLL_BACKGROUND_TOTAL: &str = "felix_storage_segment_roll_background_total";
 /// Background rollovers that failed and degraded the log.
 pub const SEGMENT_ROLL_FAILED_TOTAL: &str = "felix_storage_segment_roll_failed_total";
+/// Extensions of an active segment's block reservation that failed. Appends
+/// carry on and allocate as they write.
+pub const SEGMENT_RESERVE_FAILED_TOTAL: &str = "felix_storage_segment_reserve_failed_total";
 /// Prepared segments discarded because the tail moved on before the swap.
 pub const SEGMENT_ROLL_DISCARDED_TOTAL: &str = "felix_storage_segment_roll_discarded_total";
 /// Segments currently on disk for a shard.

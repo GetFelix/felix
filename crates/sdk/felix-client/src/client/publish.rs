@@ -6,35 +6,32 @@ use anyhow::Result;
 use felix_wire::Message;
 
 use super::Client;
-use crate::publish::{IdempotentProducer, Publisher, PublisherInner, ShardStreams};
+use crate::publish::{IdempotentProducer, Publisher, PublisherInner};
 
 impl Client {
     /// A publisher over this client's publish streams.
     ///
     /// Cheap to make: every publisher from one client shares its streams and
     /// its in-flight byte budget.
-    pub async fn publisher(&self) -> Result<crate::publish::Publisher> {
-        Ok(self.publisher_with(None))
-    }
-
-    /// A publisher that puts each shard on a stream of its own, for
-    /// [`crate::ClusterClient`].
     ///
-    /// Only for a caller that names the shard of *every* publish it makes
-    /// to a stream. A keyed publish without one goes to the pool, so mixing
-    /// the two would put one stream on two writers.
-    pub(crate) fn shard_publisher(&self) -> Publisher {
-        self.publisher_with(Some(Arc::clone(&self.publish_shard_streams)))
+    /// Under [`crate::PublishSharding::HashStream`] each shard of a stream
+    /// gets a stream of its own, so one stream's shards spread across the
+    /// client's connections while every publish to one shard keeps one
+    /// writer. A keyed publish learns the stream's width from the broker
+    /// once, on the first keyed publish to it.
+    pub async fn publisher(&self) -> Result<crate::publish::Publisher> {
+        Ok(self.publisher_handle())
     }
 
-    fn publisher_with(&self, shard_streams: Option<Arc<ShardStreams>>) -> Publisher {
+    pub(crate) fn publisher_handle(&self) -> Publisher {
         Publisher {
             inner: Arc::new(PublisherInner::with_runtime_config(
                 Arc::clone(&self.publish_workers),
                 self.publish_sharding,
                 Arc::clone(&self.publish_admission),
                 self.publish_stream_hasher.clone(),
-                shard_streams,
+                Arc::clone(&self.publish_shard_streams),
+                Arc::clone(&self.publish_widths),
                 self.runtime_config.bench_embed_ts,
             )),
         }

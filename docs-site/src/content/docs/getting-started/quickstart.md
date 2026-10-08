@@ -110,7 +110,8 @@ cargo run --release -p felix-cluster -- status       # membership and shard owne
 
 [`felixctl`](/getting-started/felixctl/) works against the same cluster
 and covers more: keyed and idempotent publishes, subscribing from an offset,
-cache reads and watches, shard owners, control-plane listings and benchmarks.
+cache reads and watches, shard owners, creating streams and caches, moving
+shards, draining brokers and benchmarks.
 That page shows how to turn the session file into a `felixctl` context.
 
 ## One process, no cluster

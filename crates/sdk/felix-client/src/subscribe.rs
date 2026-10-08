@@ -45,6 +45,7 @@ pub struct Subscription {
     bench_embed_ts: bool,
     start_offset: Option<u64>,
     live_offset: Option<u64>,
+    queue_capacity: Option<u32>,
     /// Filled by the dispatch task before it closes the event queue.
     shard_moved: Arc<OnceLock<ShardMoved>>,
 }
@@ -54,6 +55,19 @@ impl Subscription {
         self.start_offset = start_offset;
         self.live_offset = live_offset;
         self
+    }
+
+    pub(crate) fn with_queue_capacity(mut self, queue_capacity: Option<u32>) -> Self {
+        self.queue_capacity = queue_capacity;
+        self
+    }
+
+    /// The broker-side queue capacity the broker granted, in published
+    /// batches, when [`crate::ClientConfig::broker_sub_queue_capacity`] asked
+    /// for one. `None` means the stream's default: none was asked for, or the
+    /// broker predates the option.
+    pub fn queue_capacity(&self) -> Option<u32> {
+        self.queue_capacity
     }
 
     /// The first offset this subscription delivers.

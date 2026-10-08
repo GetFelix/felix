@@ -256,9 +256,10 @@ impl LogConfig {
         }
     }
 
-    /// Bytes to reserve for a new segment: the whole segment when
-    /// preallocation is on, nothing when it is off.
-    pub(crate) fn preallocate_bytes(&self) -> u64 {
+    /// The most a segment reserves ahead of its writes: the whole segment
+    /// when preallocation is on, nothing when it is off. A segment starts with
+    /// a small part of it and grows into it (`crate::segment::reservation`).
+    pub(crate) fn reserve_limit_bytes(&self) -> u64 {
         if self.preallocate_segments {
             self.segment_size_bytes
         } else {

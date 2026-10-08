@@ -1,16 +1,18 @@
 ---
 title: "felixctl"
-description: "The felixctl command: publish, subscribe, read caches, see where shards live, list what the control plane knows, and run benchmarks."
+description: "The felixctl command: publish, subscribe, read caches, work consumer groups and counters, see where shards live, manage the control plane, and run benchmarks."
 ---
 
 `felixctl` is Felix's command-line tool. It publishes to and reads from
-streams, reads, writes and watches cache keys, shows which broker owns each
-shard, lists tenants, namespaces, streams, caches, brokers and shard
-assignments, and runs load tests. Every command prints readable text by
-default and JSON with `--json`.
+streams, reads, writes and watches cache keys, claims and settles records for
+consumer groups, reads and adds to counters, shows which broker owns each
+shard, creates, changes and deletes tenants, namespaces, streams and caches,
+manages RBAC policies and role assignments, moves shards, drains brokers,
+and runs load tests. Every command prints readable text by default and JSON
+with `--json`.
 
 Its data-plane commands use only the public API of the Rust client
-(`felix-client`); the listing commands use the control plane's REST API.
+(`felix-client`); the control-plane commands use the control plane's REST API.
 
 ## Install
 
@@ -236,6 +238,80 @@ felixctl cache info users
 not set. `cache put` reads the value from stdin when none is given. A watch
 prints `key<TAB>value`, or `(deleted)`, per change.
 
+## Consumer groups
+
+```bash
+felixctl group create orders billing --from earliest
+felixctl group poll orders billing --max 5
+felixctl group ack orders billing 0:15:1
+felixctl group nack orders billing 0:16:1 --delay-ms 30000
+felixctl group extend orders billing 0:17:1 --for-ms 60000
+felixctl group describe orders billing
+felixctl group seek orders billing latest
+felixctl group rm orders billing --yes
+```
+
+A group keeps a cursor on each shard of its stream, held by that shard's
+leader. `create`, `describe`, `seek` and `rm` act on every shard unless
+`--shard` names one; `poll` asks each shard in turn until it has `--max`
+records, waiting up to `--wait-ms` on each.
+
+`poll` prints each record as `CLAIM<TAB>payload`. The claim is
+`SHARD:OFFSET:ATTEMPTS`, and it is what the settling commands take: `ack`
+finishes a record, `nack` hands it back (after `--delay-ms`, if given), and
+`extend` keeps the claim standing longer. `extend` needs the attempt count,
+because the broker refuses to extend a record that has been handed out again
+since. The others accept `SHARD:OFFSET` as well.
+
+```
+$ felixctl group poll orders billing --max 2
+0:15:1	{"id": 1}
+0:16:1	{"id": 2}
+$ felixctl group describe orders billing
+SHARD  COMMITTED  TAIL  LAG  IN_FLIGHT  OWED  DEAD_LETTERS
+0      15         40    25   2          0     0
+1      -          12    12   0          0     0
+```
+
+`COMMITTED` is `-` on a shard where the group has no cursor yet; a poll there
+starts at the beginning of the log. `IN_FLIGHT` and `OWED` are the leader's
+memory and start from zero after a leader change.
+
+Dead letters are records the group gave up on. The records stay in the log;
+the group lists their offsets.
+
+```bash
+felixctl group dead-letters ls orders billing
+felixctl group dead-letters add orders billing 0:17:2       # give up on a claimed record
+felixctl group dead-letters redrive orders billing 0:17     # deliver it again
+felixctl group dead-letters discard orders billing 0:17 --yes
+```
+
+`create`, `seek`, `rm`, `redrive` and `discard` need a broker token allowed
+`group.manage` (or `stream.manage`) on the stream; the rest need
+`group.consume` (or `stream.subscribe`).
+
+Three commands ask before acting, because they cannot be taken back: `rm`,
+`dead-letters discard`, and a `seek` that moves any shard's cursor back over
+records the group has finished. At a terminal they ask `[y/N]`; anywhere else,
+they need `--yes` and exit with status 2 without it. `seek` reads where the
+group stands to tell; when it cannot, as with a token allowed only
+`group.manage`, it asks for any seek other than `latest`. A seek to an offset needs
+`--shard` on a stream with more than one shard, since offsets are per shard.
+
+## Counters
+
+```bash
+felixctl counter add stats page-views 1
+felixctl counter add stats stock -3
+felixctl counter get stats page-views
+```
+
+A counter lives in a cache, beside its keys. `add` prints the sum including
+the add and is sent once: a failure is not retried, because the broker may
+already have applied it. `get` exits with status 5 for a counter that has
+never been written.
+
 ## Topology
 
 ```bash
@@ -262,6 +338,8 @@ cannot name owners; against one, owners come from the control plane too.
 
 ## The control plane
 
+### Listing and inspecting
+
 ```bash
 felixctl tenant ls
 felixctl tenant info t1
@@ -274,10 +352,130 @@ felixctl shard ls --leader broker-2
 felixctl shard ls --name orders --json
 ```
 
-These are read-only. Listings follow the control plane's `next_cursor` until
-every page is read. `tenant ls` needs a token allowed `tenant.manage` on the
-whole cluster; the rest need the matching manage or view permission for the
-tenant, or `node.view` for nodes and shards.
+Listings follow the control plane's `next_cursor` until every page is read.
+`tenant ls` needs a token allowed `tenant.manage` on the whole cluster; the
+rest need the matching manage or view permission for the tenant, or
+`node.view` for nodes and shards.
+
+### Creating, changing and deleting
+
+```bash
+felixctl tenant create acme --display-name 'Acme Corp'
+felixctl namespace create payments --tenant acme
+felixctl stream create orders --shards 4 --replication 3 --consistency quorum
+felixctl stream set orders --retention-secs 86400
+felixctl cache create sessions --shards 2
+felixctl cache set sessions --display-name 'Login sessions'
+felixctl stream rm orders
+felixctl namespace rm payments --yes
+```
+
+Streams and caches go in the current tenant and namespace, namespaces in the
+current tenant. `stream create` defaults to one shard, a replication factor
+of 1, `leader` consistency, `at-least-once` delivery, a durable log and the
+broker's own retention bounds:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--shards` | 1 | Shard count, fixed at creation |
+| `--replication` | 1 | Brokers holding a copy of each shard, the leader included |
+| `--kind` | `stream` | The kind recorded for the stream, `stream` or `queue` |
+| `--consistency` | `leader` | `quorum` acknowledges once a majority of copies hold a record |
+| `--delivery` | `at-least-once` | or `at-most-once` |
+| `--durable` | `true` | `false` keeps records in memory only |
+| `--retention-secs`, `--retention-bytes` | broker's bound | Age and per-shard size bounds |
+| `--region` | anywhere | Region the stream's data stays in, fixed at creation |
+| `--routing` | `modulo` | `jump-hash` once the `jump_hash_routing` fleet feature is finalized |
+
+`cache create` takes `--shards`, `--replication`, `--consistency` and
+`--display-name`. Creating a stream or cache that already exists with the
+same settings succeeds and says so; with different settings it is refused
+with status 4. A tenant or namespace that already exists is refused too.
+
+`stream set` changes consistency, delivery, durability or retention and prints
+each field that changed. A retention bound not given keeps its value, and
+`default` hands a bound back to the broker. Shards, replication, region and
+routing cannot change. `cache set` changes only the display name.
+
+`rm` deletes, and deleting a namespace or tenant deletes everything in it. A
+tenant takes its signing keys and RBAC rules with it.
+
+### Brokers, shards and placement
+
+```bash
+felixctl node drain broker-2
+felixctl node deregister broker-2 --yes
+felixctl shard move orders 2 --to broker-3 --dry-run
+felixctl shard move orders 2 --to broker-3
+felixctl shard move sessions 0 --to broker-1 --cache
+felixctl shard move cancel orders 2
+felixctl placement pause
+felixctl placement resume
+felixctl placement abandon orders 2 --yes
+```
+
+`node drain` stops placement putting anything new on a broker and moves its
+shards away while it keeps serving them. `node deregister` marks it as having
+left on purpose; its shards fail over once its lease has run out, so drain it
+first to move them without a failover.
+
+`shard move` moves a shard's leadership: the destination copies the log, and
+the old leader serves until it has caught up and cuts over. It prints the step
+the move is at and the assignment it wrote; `--dry-run` prints what it would
+write without starting it. `shard move cancel` stops a move that has not cut
+over. Placement may start the same move again, so `placement pause` first to
+keep a shard where it is. Pausing stops only the moves placement starts by
+itself: new shards are still placed, failed leaders still replaced, and moves
+under way finish.
+
+`placement abandon` gives up the log of a durable shard whose only copies are
+out of reach and places it afresh. Records only the old leader held are lost,
+acknowledged ones included. The control plane refuses it while the leader is
+serving or a replica can take over without loss.
+
+These need `node.manage` on the cluster.
+
+### Confirmation
+
+`tenant rm`, `namespace rm`, `stream rm`, `cache rm`, `node drain` and
+`node deregister` ask before acting when stdin is a terminal, and go ahead
+only on `y` or `yes`. Anywhere else, a script or a pipe, they need `--yes`
+(`-y`) and stop with status 2 without it. `placement abandon` never asks and
+always needs `--yes`.
+
+## RBAC
+
+```bash
+felixctl rbac policy ls
+felixctl rbac policy ls --subject role:reader --json
+felixctl rbac policy add role:reader stream:t1/payments/* stream.subscribe
+felixctl rbac policy add role:alice-session cache:t1/default/sessions/user:alice cache.read
+felixctl rbac policy add role:users cache:t1/default/sessions/user:* cache.write
+felixctl rbac policy rm role:reader stream:t1/payments/* stream.subscribe
+felixctl rbac grouping ls --role role:reader
+felixctl rbac grouping add p:alice role:reader
+felixctl rbac grouping add 'group:https://idp.example#ops' role:reader
+felixctl rbac grouping rm p:alice role:reader --yes
+```
+
+A policy lets a subject, usually a role, take an action on an object. A
+grouping assigns a user, or an IdP group, to a role. The commands act on the
+current tenant and need a control-plane token with `rbac.view`,
+`rbac.policy.manage` or `rbac.assignment.manage` over the objects involved.
+A change reaches brokers in the next token the principal is issued.
+
+`policy add` checks the object against the
+[object grammar](/features/security/#rbac-object-grammar-and-delegation)
+before sending it, and stops with status 2 and the reason when it does not
+fit: an object for another tenant, a `*` over a named stream, a cache key with
+a `*` anywhere but the end, or a key object with an action other than
+`cache.read` or `cache.write`. An object of a kind felixctl does not know is
+sent as is. Action names, and whether the token may grant the rule, are left
+to the control plane, which answers a refusal with status 4 and its message.
+
+`rm` removes one rule, named exactly as `ls` prints it, and exits with status
+5 when there is none. It asks first on a terminal, and needs `--yes`
+anywhere else.
 
 ## Benchmarks
 
@@ -302,7 +500,7 @@ against a cluster you are allowed to load.
 ## Output and exit status
 
 Text is for reading; `--json` is for scripts. With `--json`, single results
-are one JSON object, `sub` and `cache watch` print one object per line, and an
+are one JSON object, `sub`, `cache watch` and `group poll` print one object per line, and an
 error goes to stderr as `{"error": "...", "exit": N}`.
 
 | Status | Meaning |
@@ -328,7 +526,5 @@ felixctl man --out-dir ~/.local/share/man/man1
 
 ## Not yet
 
-Control-plane writes (creating streams and caches, moving shards, draining and
-deregistering brokers, RBAC), consumer groups, counters and state reads are
-planned. Release binaries and packages are not published yet. See
-[issue #872](https://github.com/GetFelix/felix/issues/872).
+State reads are planned, and so is a Homebrew formula. See
+[issue #1005](https://github.com/GetFelix/felix/issues/1005).

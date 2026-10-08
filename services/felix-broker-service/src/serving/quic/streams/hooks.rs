@@ -1,27 +1,24 @@
 //! Test hooks: thin wrappers over the codec functions so tests can force
 //! write/encode failures and throttle resets without touching production code.
 
+use crate::serving::quic::{ACK_HI_WATER, ACK_LO_WATER};
 use anyhow::{Context, Result};
 use felix_wire::{Frame, Message};
-use quinn::SendStream;
 
-use crate::serving::quic::codec::{write_frame, write_message};
-use crate::serving::quic::{ACK_HI_WATER, ACK_LO_WATER};
-
-pub(super) async fn write_message_with_hook(send: &mut SendStream, message: Message) -> Result<()> {
+pub(super) fn encode_message_with_hook(message: Message) -> Result<Frame> {
     #[cfg(test)]
     if test_hooks::force_write_message_error() {
         return Err(anyhow::anyhow!("forced write_message error"));
     }
-    write_message(send, message).await
+    message.encode().context("encode message")
 }
 
-pub(super) async fn write_frame_with_hook(send: &mut SendStream, frame: &Frame) -> Result<()> {
+pub(super) fn check_frame_write_hook() -> Result<()> {
     #[cfg(test)]
     if test_hooks::force_write_frame_error() {
         return Err(anyhow::anyhow!("forced write_frame error"));
     }
-    write_frame(send, frame).await
+    Ok(())
 }
 
 pub(super) fn encode_cache_message_with_hook(message: Message) -> Result<Frame> {

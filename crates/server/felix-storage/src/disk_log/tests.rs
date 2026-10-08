@@ -4,6 +4,7 @@
 
 mod append_and_read;
 mod commit;
+mod conditional;
 mod durability;
 mod generation_start;
 mod offload;
@@ -14,6 +15,7 @@ mod producers;
 mod provider;
 mod publisher;
 mod replica_state;
+mod reservation;
 mod restore;
 mod retention;
 mod rollover;

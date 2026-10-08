@@ -36,7 +36,11 @@ checked as registers (`history/register.rs`).
   the list. The rest start somewhere in the last 256 records, which keeps a long
   campaign's history small.
 - **The final read** of each list is taken from its leader after every fault is
-  healed. It must reach that tail with no holes, or the campaign retries it.
+  healed and every client has stopped. A stopping client first waits up to 15s
+  for the publishes it already sent to be answered, the producer's re-sends
+  included, and then stops its producer, so an unknown append does not land
+  after the final read. It must reach that tail with no holes, or the campaign
+  retries it.
 - Records below each list's **base** were in the stream before the run (the
   harness's readiness probe), and the checker ignores them.
 - **put(key, value)** stores a unique value under a cache key. It is **ok**
@@ -490,8 +494,8 @@ list. It does not fix the interleaving, which depends on the scheduler and the
 brokers. A failing seed makes the failure likely to recur, not certain. Run it
 a few times.
 
-On a small disk, set `FELIX_DURABLE_PREALLOCATE=false` so each broker does not
-reserve full segments up front.
+Each active segment reserves blocks as it fills, up to a full segment. On a
+small disk, set `FELIX_DURABLE_PREALLOCATE=false` to turn that off.
 
 The per-PR run uses the fixed seed and takes about a minute per test, cluster
 start-up included. The nightly workflow (`.github/workflows/history.yml`) runs

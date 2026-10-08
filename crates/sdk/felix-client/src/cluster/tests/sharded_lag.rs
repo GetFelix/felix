@@ -36,6 +36,7 @@ async fn a_lagged_shard_resumes_after_its_last_event() -> Result<()> {
         subscription_id: 0,
         start_offset: Some(0),
         live_offset: Some(0),
+        queue_capacity: None,
     })?;
     stub.set_events(|shard, start| {
         if shard == Some(LAGGING) && start == Some(StartPosition::Offset(0)) {
