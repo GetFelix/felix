@@ -122,6 +122,14 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- A durable stream no longer reserves a whole 256 MiB segment of disk per
+  shard when it is created (#1016). The active segment reserves 1 MiB (or a
+  sixteenth of the segment size, if smaller) and doubles the reservation each
+  time its records pass half of it, up to the segment size. Each extension runs
+  on a blocking thread after the append that earned it and is best effort: a
+  failure is logged, counted in `felix_storage_segment_reserve_failed_total`,
+  and never fails an append. Reserving still leaves the file size alone, so
+  recovery is unchanged. `SegmentWriter::reopen` takes a reservation limit.
 - Breaking, Rust API: `Broker::claim_publish`, `publish_batch_with_outcome`,
   `claim_batch_idempotent` and `commit_to_handle` take the publisher;
   `ResumedSubscription::backlog` is a `Vec<RingRecord>`; `AppendRecord` and

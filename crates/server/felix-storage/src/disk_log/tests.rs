@@ -13,6 +13,7 @@ mod producers;
 mod provider;
 mod publisher;
 mod replica_state;
+mod reservation;
 mod restore;
 mod retention;
 mod rollover;

@@ -98,7 +98,7 @@ impl SegmentSet {
             dir: self.dir.clone(),
             id: self.next_segment_id.fetch_add(1, Ordering::AcqRel),
             previous_active_id: self.active.id(),
-            preallocate_bytes: self.config.preallocate_bytes(),
+            reserve_limit_bytes: self.config.reserve_limit_bytes(),
             index_spacing_bytes: self.config.index_spacing_bytes,
         }
     }
@@ -176,7 +176,7 @@ impl SegmentSet {
             id,
             base_offset,
             now_micros(),
-            self.config.preallocate_bytes(),
+            self.config.reserve_limit_bytes(),
             self.config.index_spacing_bytes,
             version,
         )?;
@@ -253,7 +253,7 @@ pub(crate) struct RollPlan {
     dir: PathBuf,
     id: SegmentId,
     previous_active_id: SegmentId,
-    preallocate_bytes: u64,
+    reserve_limit_bytes: u64,
     index_spacing_bytes: u64,
 }
 
@@ -266,7 +266,7 @@ impl RollPlan {
         let blank = BlankSegment::create(
             &self.dir,
             self.id,
-            self.preallocate_bytes,
+            self.reserve_limit_bytes,
             self.index_spacing_bytes,
         )?;
         Ok(PreparedSegment {
