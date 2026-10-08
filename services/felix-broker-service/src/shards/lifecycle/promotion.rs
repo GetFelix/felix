@@ -2,7 +2,8 @@
 //! its replicas.
 //!
 //! The lifecycle holds such a shard in `Fencing`, whether a promotion, a
-//! move's cut-over or hand-back, or a new generation put it there.
+//! move's cut-over or hand-back, or a generation that skipped one put it
+//! there.
 //! Replication runs the fence and calls [`LifecycleGate::open`] when a
 //! majority has taken it, or when some replica does not offer it and the
 //! shard opens on the lease.

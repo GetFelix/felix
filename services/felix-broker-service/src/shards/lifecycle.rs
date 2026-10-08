@@ -180,9 +180,9 @@ impl ShardLifecycle {
 
     /// Hold every shard, stream or cache, that this broker starts leading at
     /// a new generation in `Fencing` until [`Self::fenced`]: a promotion, a
-    /// move's cut-over, a cancelled move's hand-back, and a new generation
-    /// of a shard it already leads. For a broker whose replication driver
-    /// fences.
+    /// move's cut-over, a cancelled move's hand-back, and a generation of a
+    /// shard it serves that skips one. The generation right after the one it
+    /// serves opens at once. For a broker whose replication driver fences.
     pub fn fence_promotions(&mut self) {
         self.fence_promotions = true;
     }
@@ -554,12 +554,21 @@ impl ShardLifecycle {
         // in between, and a generation gap cannot rule that out: assignments
         // arrive as a coalesced set, not one write at a time.
         let new_term = self.phase(key) != Phase::Active;
-        // Every generation this broker starts leading at is fenced, not only a
-        // promotion (`FenceEveryChange` in the model). A cut-over, a hand-back
-        // or a new generation of a shard it serves is still a generation the
-        // control plane picked from its own view, and a leader this broker
-        // never heard of may have written in between.
-        let fence = self.fence_promotions && !draining;
+        // The generation right after one this broker is serving continues its
+        // leadership: each assignment write raises the generation by one, so
+        // nobody led in between. It opens unfenced, as `Regenerate` does in the
+        // model. Fencing it would close a serving shard at every follower
+        // replacement step, and one that cannot reach a majority of the new
+        // set would stop reporting, which placement needs to finish the step.
+        let continues = self.shards.get(key).is_some_and(|shard| {
+            shard.phase == Phase::Active && !shard.draining && generation == shard.generation + 1
+        });
+        // Every other generation this broker starts leading at is fenced, not
+        // only a promotion (`FenceEveryChange` in the model). A cut-over, a
+        // hand-back or a later generation of a shard it serves is still a
+        // generation the control plane picked from its own view, and a leader
+        // this broker never heard of may have written in between.
+        let fence = self.fence_promotions && !draining && !continues;
         if fence {
             self.promoting.insert(key.clone());
         } else {

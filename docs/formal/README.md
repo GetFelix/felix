@@ -579,10 +579,11 @@ it cannot do at a generation it already promised a candidate, fences a
 majority and takes the answer furthest ahead. A majority that took the
 candidate's ballot refuses it, so it stays closed until a higher generation;
 one that did not has a replica holding whatever the candidate acknowledged.
-The broker fences every leadership it takes this way, including a new
-generation of a shard it already leads, which only a follower replacement
-reaches in the model (`Regenerate`) and is not yet checked with elections:
-`FelixShardElectStaleSet.cfg` fails first on the stale set.
+The broker fences every leadership it takes this way, including a
+generation of a shard it serves that skips one. The generation right after
+the one it serves opens unfenced, as `Regenerate` does in the model, where
+only a follower replacement reaches it; that is not yet checked with
+elections: `FelixShardElectStaleSet.cfg` fails first on the stale set.
 
 ### The round that makes a read linearizable
 

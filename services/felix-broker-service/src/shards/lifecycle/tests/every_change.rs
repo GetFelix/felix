@@ -324,10 +324,10 @@ async fn after_a_hand_back_an_older_leader_is_refused() {
     change.assert_refused(3, 1).await;
 }
 
-/// **A new generation of a shard this broker already serves is fenced**,
-/// whether a follower replacement or a move's staging bumped it, or a
-/// promotion of broker-b at 3 reached this broker coalesced away. broker-b
-/// is refused, and what it wrote at 3 is taken before this broker serves.
+/// **A later generation of a shard this broker serves is fenced** when it
+/// skips one: a promotion of broker-b at 3 reached this broker coalesced
+/// away. broker-b is refused, and what it wrote at 3 is taken before this
+/// broker serves.
 #[tokio::test]
 async fn after_a_new_generation_of_a_served_shard_the_leader_between_is_refused() {
     let mut change = Change::new();
@@ -356,4 +356,31 @@ async fn after_a_new_generation_of_a_served_shard_the_leader_between_is_refused(
         .map(|record| record.payload.clone())
         .collect();
     assert_eq!(held, vec![Bytes::from_static(b"x")]);
+}
+
+/// **The generation right after one this broker serves is not fenced.** No
+/// one can have led in between, and a follower replacement must not close the
+/// shard: a leader that cannot reach a majority of the new set would stop
+/// reporting, and placement waits on that report to finish the step.
+#[tokio::test]
+async fn the_next_generation_of_a_served_shard_serves_at_once() {
+    let mut change = Change::new();
+    change
+        .deliver(led("broker-a", &["broker-b", "broker-c"], 2))
+        .await;
+
+    let next = led("broker-a", &["broker-b", "broker-c"], 3);
+    let action = change.own.observe(&key(0), Some(&next));
+    assert!(
+        matches!(
+            action,
+            Action::Open {
+                generation: 3,
+                fence: false,
+                ..
+            }
+        ),
+        "{action:?}"
+    );
+    assert_eq!(change.own.opened(&key(0), 3), Opened::Activated);
 }

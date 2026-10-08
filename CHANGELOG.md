@@ -249,11 +249,12 @@ for what the current release guarantees.
 ### Changed
 - Every change of a shard's leader is fenced, not only a promotion (part of
   #1009). A move's cut-over, a failover that names a move's destination, a
-  cancelled move's hand-back, and a new generation of a shard its leader
-  already serves (a move's staging, a follower replacement, or a promotion
-  elsewhere that the broker only saw coalesced away) now wait in `fencing`
-  until a majority of the replica set takes the new generation, and take the
-  answer furthest ahead, before they serve. Each was a generation the control
+  cancelled move's hand-back, and a generation of a shard its leader serves
+  that skips one (a promotion elsewhere that the broker only saw coalesced
+  away) now wait in `fencing` until a majority of the replica set takes the
+  new generation, and take the answer furthest ahead, before they serve. The
+  generation right after one the leader serves (a move's staging or a
+  follower replacement step) still opens at once: nobody led in between. Each was a generation the control
   plane picked from its own view, opened at once; a leader it did not know
   about, from a second planner or a later replica election, could keep
   writing beside it. A write that reaches the broker while it fences is held,

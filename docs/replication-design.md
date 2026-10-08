@@ -305,14 +305,19 @@ When the fence applies:
   leading a shard at a generation it was not serving it at, the shard opens
   in `fencing` (`begin_open` in `shards/lifecycle.rs`). That covers a
   promotion, a fresh placement, a move's cut-over, a failover that names a
-  move's destination, a cancelled move's hand-back, and a new generation of
-  a shard the broker already leads, which a move's staging, a follower
-  replacement, or a promotion of someone else that this broker saw only
-  coalesced away gives it. Each of these is a generation the control plane
-  picked from its own view, and the fence is what keeps out a leader it did
-  not know about, while the catch-up takes what that leader acknowledged.
-  Only the old leader's end of a move is not fenced, since it reopens the
-  log to ship it, not to serve. See [Every change of leader](#every-change-of-leader).
+  move's destination, a cancelled move's hand-back, and a generation of a
+  shard the broker serves that skips one, which a promotion of someone else
+  that this broker saw only coalesced away gives it. Each of these is a
+  generation the control plane picked from its own view, and the fence is
+  what keeps out a leader it did not know about, while the catch-up takes
+  what that leader acknowledged. Two opens are not fenced: the old leader's
+  end of a move, which reopens the log to ship it, not to serve, and the
+  generation right after one the broker is serving, which a move's staging or
+  a follower replacement step gives it. Every assignment write raises the
+  generation by one, so nobody led in between, and fencing it would close a
+  serving shard at each step; a leader cut off from a majority of the new set
+  would then stop reporting, and placement waits on that report to finish the
+  step. See [Every change of leader](#every-change-of-leader).
 - For stream shards and cache shards. A cache shard fences its cache log, which
   holds the shard's one promise per replica, then its counter log, and takes
   the furthest ahead of each by the same order
@@ -408,8 +413,8 @@ Evidence: `a_second_leader_at_an_accepted_generation_is_refused`,
 
 Ballots keep one leader per generation only if every leader asks for the
 ballot. Before this, a move's cut-over and a cancel's hand-back opened at
-once at the generation the control plane named, as did a new generation of a
-shard the leader already served. With only the control plane picking
+once at the generation the control plane named, as did a generation of a
+shard the leader served that skipped one. With only the control plane picking
 generations that was safe. With a second source of generations, a candidate
 electing itself or a planner working from an old read, it is not: the
 control plane can name the destination at a generation a candidate already
