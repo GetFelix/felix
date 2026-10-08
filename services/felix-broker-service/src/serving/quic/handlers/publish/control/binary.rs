@@ -9,7 +9,7 @@ use anyhow::{Context, Result, anyhow};
 use felix_authz::{Action, Namespace, StreamName, TenantId, stream_resource};
 use felix_broker::Broker;
 use felix_wire::Frame;
-use tokio::sync::{Mutex, Semaphore, mpsc, watch};
+use tokio::sync::{mpsc, watch};
 use tracing::Instrument;
 
 use super::batch::handle_publish_batch_message;
@@ -17,14 +17,15 @@ use crate::observability::timings;
 use crate::serving::auth::AuthContext;
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::ack::{
-    AckEncoding, AckTimeoutState, AckWaiterMessage, Outgoing, handle_ack_enqueue_result,
-    send_outgoing_critical,
+    AckEncoding, AckTimeoutState, Outgoing, handle_ack_enqueue_result, send_outgoing_critical,
 };
 use crate::serving::quic::handlers::publish::ingress::enqueue_tenant_publish;
 use crate::serving::quic::handlers::publish::route::{
     publish_target, resolve_route, resolve_shard,
 };
-use crate::serving::quic::handlers::publish::{PublishContext, PublishJob, StreamHandleCache};
+use crate::serving::quic::handlers::publish::{
+    CommitAcks, PublishContext, PublishJob, StreamHandleCache,
+};
 use crate::serving::quic::telemetry::{
     count_publish, count_publish_accepted, log_decode_error, payload_len_sum, t_histogram, t_now_if,
 };
@@ -196,10 +197,9 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
     out_ack_tx: &mpsc::Sender<Outgoing>,
     out_ack_depth: &Arc<AtomicUsize>,
     ack_throttle_tx: &watch::Sender<bool>,
-    ack_timeout_state: &Arc<Mutex<AckTimeoutState>>,
+    ack_timeout_state: &Arc<parking_lot::Mutex<AckTimeoutState>>,
     cancel_tx: &watch::Sender<bool>,
-    ack_waiters: &Arc<Semaphore>,
-    ack_waiter_tx: &mpsc::Sender<AckWaiterMessage>,
+    commit_acks: &CommitAcks,
     // Frame-flag bits this client advertised. Read only to decide whether the
     // ack may name a forwarding owner: that sets a flag bit, and a client that
     // did not advertise it rejects the whole frame rather than masking the bit
@@ -302,8 +302,7 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
         ack_throttle_tx,
         ack_timeout_state,
         cancel_tx,
-        ack_waiters,
-        ack_waiter_tx,
+        commit_acks,
         batch.tenant_id,
         batch.namespace,
         batch.stream,

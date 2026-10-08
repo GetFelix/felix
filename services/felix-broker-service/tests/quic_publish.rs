@@ -578,8 +578,8 @@ async fn quic_publish_binary_batch_success() -> Result<()> {
 // Binary acked publish: the frame carries FLAG_BINARY_PUBLISH_ACKED with a
 // request_id prefix, and the broker answers with a binary ack frame rather than
 // a JSON PublishOk. Both ack modes and both ack-on-commit settings are covered,
-// because commit acks are emitted from a different task (the ack waiter) than
-// enqueue acks, and each has to pick the binary encoding independently.
+// because commit acks are emitted by the task that settles the publish, not the
+// control loop that sends enqueue acks, and each has to pick the binary encoding independently.
 #[tokio::test]
 #[serial]
 async fn quic_publish_binary_acked_success() -> Result<()> {

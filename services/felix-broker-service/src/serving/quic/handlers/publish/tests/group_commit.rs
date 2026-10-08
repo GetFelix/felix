@@ -74,7 +74,7 @@ async fn publish_through_workers(publishers: usize) -> (u64, u64) {
                             fenced: None,
                         },
                         payloads: vec![Bytes::from(vec![b'x'; 4096]); 16],
-                        response: Some(response),
+                        response: Some(response.into()),
                         acked_on_enqueue: false,
                         admission_permit: None,
                         fenced: None,

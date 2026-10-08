@@ -55,7 +55,7 @@ pub(crate) struct WatchResponder<'a> {
     pub(crate) out_ack_tx: &'a mpsc::Sender<Outgoing>,
     pub(crate) out_ack_depth: &'a Arc<std::sync::atomic::AtomicUsize>,
     pub(crate) ack_throttle_tx: &'a tokio::sync::watch::Sender<bool>,
-    pub(crate) ack_timeout_state: &'a Arc<tokio::sync::Mutex<super::publish::AckTimeoutState>>,
+    pub(crate) ack_timeout_state: &'a Arc<parking_lot::Mutex<super::publish::AckTimeoutState>>,
     pub(crate) cancel_tx: &'a tokio::sync::watch::Sender<bool>,
 }
 

@@ -39,18 +39,6 @@ where
 }
 
 #[cfg(test)]
-pub(super) async fn write_parts(
-    send: &mut quinn::SendStream,
-    parts: felix_wire::binary::EncodedEventBatchParts,
-) -> Result<()> {
-    let mut segments = parts.into_segments();
-    send.write_all_chunks(segments.as_mut_slice())
-        .await
-        .context("write subscription frame chunks")?;
-    Ok(())
-}
-
-#[cfg(test)]
 pub(super) async fn write_parts_many(
     send: &mut quinn::SendStream,
     frames: Vec<felix_wire::binary::EncodedEventBatchParts>,

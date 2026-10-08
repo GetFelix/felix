@@ -16,7 +16,7 @@
 //! - `ack_on_commit = false` → **enqueue-ack**: an ack means “accepted into the ingress queue”.
 //!   Lowest latency, but does not guarantee the publish ultimately commits.
 //! - `ack_on_commit = true` → **commit-ack**: an ack means “the publish job completed/committed”.
-//!   Higher latency; bounded by `ack_waiters` and `ack_waiter_tx` to avoid unbounded in-flight acks.
+//!   Answered by whoever settles the job (see `commit_ack`), bounded by a per-stream permit pool.
 //!
 //! Backpressure strategy:
 //! - The scheduler queue uses `EnqueuePolicy` (Drop/Fail/Wait/Backpressure) to shed load, wait
@@ -29,7 +29,8 @@
 //! Submodules:
 //! - `admission`: byte-budget admission control and the subscription cap.
 //! - `ingress`: bounded enqueue into the scheduler, and depth accounting.
-//! - `ack`: ack envelopes, waiter protocol, and the ack timeout window.
+//! - `ack`: ack envelopes, outbound queue helpers, and the ack timeout window.
+//! - `commit_ack`: commit acks sent by the task that settles the publish, and their timeouts.
 //! - `order`: request-order answers and the publish window for a pipelining stream.
 //! - `route`: whether a publish is served here, forwarded, or refused.
 //! - `stream_cache`: the per-connection cache of resolved stream handles.
@@ -43,6 +44,7 @@
 
 mod ack;
 mod admission;
+mod commit_ack;
 mod control;
 mod ingress;
 mod order;
@@ -53,10 +55,11 @@ mod uni;
 mod worker;
 
 pub(crate) use ack::{
-    AckEncoding, AckTimeoutState, AckWaiterMessage, AckWaiterResult, Outgoing,
-    handle_ack_enqueue_result, send_outgoing_best_effort, send_outgoing_critical,
+    AckEncoding, AckTimeoutState, Outgoing, handle_ack_enqueue_result, send_outgoing_best_effort,
+    send_outgoing_critical,
 };
 pub(crate) use admission::{PublishAdmission, SubscriptionLimiter};
+pub(crate) use commit_ack::CommitAcks;
 pub(crate) use control::{
     handle_acked_binary_publish_batch_control, handle_binary_publish_batch_control,
     handle_publish_batch_message, handle_publish_message, sequence_reuse,
@@ -79,6 +82,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
+#[cfg(test)]
 use tokio::sync::oneshot;
 
 use super::subscribe::WriterLaneManager;
@@ -247,7 +251,7 @@ pub(crate) struct PublishJob {
     pub(crate) payloads: Vec<Bytes>,
     /// The authenticated principal publishing it.
     pub(crate) publisher: Option<Bytes>,
-    pub(crate) response: Option<oneshot::Sender<PublishResult>>,
+    pub(crate) response: Option<PublishReply>,
     /// The client was told this job succeeded when it was queued. If it then
     /// cannot be written, nobody hears, so it is counted instead.
     pub(crate) acked_on_enqueue: bool,
@@ -257,6 +261,33 @@ pub(crate) struct PublishJob {
     /// The shard's write fence, entered at admission when the publish is
     /// acknowledged before it is written. See `enqueue_publish`.
     pub(crate) fenced: Option<crate::shards::lifecycle::fence::FenceGuard>,
+}
+
+/// Where a settled publish's result goes.
+pub(crate) enum PublishReply {
+    /// Straight to the client, as its ack.
+    Ack(commit_ack::CommitReply),
+    #[cfg(test)]
+    Channel(oneshot::Sender<PublishResult>),
+}
+
+impl PublishReply {
+    pub(crate) fn send(self, result: PublishResult) {
+        match self {
+            PublishReply::Ack(reply) => reply.send(result),
+            #[cfg(test)]
+            PublishReply::Channel(tx) => {
+                let _ = tx.send(result);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+impl From<oneshot::Sender<PublishResult>> for PublishReply {
+    fn from(tx: oneshot::Sender<PublishResult>) -> Self {
+        PublishReply::Channel(tx)
+    }
 }
 
 /// Who is publishing: the token a forward carries for the owner to verify,

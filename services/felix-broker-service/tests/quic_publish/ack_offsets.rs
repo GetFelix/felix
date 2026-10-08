@@ -250,8 +250,13 @@ async fn a_re_sent_idempotent_batch_reports_the_original_offset() -> Result<()> 
 #[serial]
 async fn a_client_can_ask_for_commit_acks_on_its_own_connection() -> Result<()> {
     let dir = tempfile::tempdir()?;
+    // Set here: the config comes from the environment, which other tests in
+    // this binary leave with `FELIX_ACK_ON_COMMIT=true`.
     let (_broker, addr, cert, auth, _config) =
-        serve_orders(dir.path(), FsyncMode::None, |_| {}).await?;
+        serve_orders(dir.path(), FsyncMode::None, |config| {
+            config.ack_on_commit = false;
+        })
+        .await?;
 
     let mut asking = build_client_config(cert.clone(), &auth)?;
     asking.ack_on_commit = true;

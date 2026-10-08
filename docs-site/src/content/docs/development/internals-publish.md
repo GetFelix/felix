@@ -66,8 +66,8 @@ pub async fn publish(
    Both encodings converge on the same handler: the binary path decodes the frame
    and then calls `handle_publish_batch_message` with `AckEncoding::Binary`, so
    admission, authorization, overload shedding and commit-ack semantics are shared
-   and only the reply framing differs. The encoding is carried on the ack-waiter
-   message because a commit ack is emitted from a different task, long after the
+   and only the reply framing differs. The encoding travels with the publish job
+   because a commit ack is sent by the task that settles the job, long after the
    request frame is gone.
 
 3. **Admission.** Before the message is handed to the worker's channel, the

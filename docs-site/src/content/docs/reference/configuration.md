@@ -364,7 +364,7 @@ event_batch_max_delay_us: 250
 ```
 
 **Tuning**:
-- **Ultra-low latency**: `50-100us`
+- **Latency first**: `50-100us`
 - **Balanced**: `250-500us`
 - **High throughput**: `1000-5000us`
 

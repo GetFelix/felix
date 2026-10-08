@@ -152,6 +152,18 @@ for what the current release guarantees.
   `cache_put_if`, `cache_delete_if` and `cache_get_versioned`. (#976)
 
 ### Changed
+- A publish acknowledged on commit is answered by the task that sees it
+  commit (#926). The commit task, or the executor for an in-memory write, puts
+  the ack straight onto the control stream's writer queue, instead of
+  completing a oneshot that a per-stream ack-waiter task awaited under a
+  per-publish timer. The ack timeout is now one deadline sweep per control
+  stream, and the writer sends every answer already queued in one write. An
+  ack is still never sent before the publish is durable under the stream's
+  fsync mode, a pipelining client still gets answers in request order, and a
+  failed, dropped or timed-out publish still gets its error. Not yet measured;
+  numbers come from an Azure `nats-latency.sh` run. The test-only subscriber
+  `event_writer` is removed; its byte-cap test moved onto the lane feeder.
+  `felix_broker_ack_waiter_queue_full_total` is gone with the waiter queue.
 - Creating a stream or cache that already exists with the same configuration
   answers `200` with the existing one instead of `409` (#967). A different
   configuration under the same name is still `409`. A stream's `routing` only
