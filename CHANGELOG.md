@@ -12,6 +12,16 @@ for what the current release guarantees.
 ## [Unreleased]
 
 ### Added
+- Token exchange can narrow by action and resource pairs (#968).
+  `permissions: ["stream.subscribe:stream:t1/ns/a", "stream.publish:stream:t1/ns/b"]`
+  narrows each pair on its own against the grants with exactly that action,
+  where `requested` and `resources` apply every action to every resource. It
+  never widens what RBAC grants. It must be sent with `"requested": []` (a
+  `400` otherwise), so a control plane that predates the field refuses rather
+  than minting full rights, and the refresh record stores the same `[]` for
+  the same reason. Refresh keeps the pairs, and the dev-token route accepts
+  them too. Under the Raft store the field is metadata version 5: an exchange
+  with pairs is a `409` until every member reports it.
 - Nightly builds. `nightly.yml` builds the newest green commit on main through
   `release.yml` once a day, smoke-tests the images with a publish and
   subscribe, and publishes to GitHub only: images as `nightly` and

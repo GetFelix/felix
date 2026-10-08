@@ -185,8 +185,8 @@ curl -sS -X POST http://127.0.0.1:9095/internal/bootstrap/tenants/t1/dev-token \
 ```
 
 The principal is named as RBAC policies and groupings name it, and the token
-carries what RBAC grants it, narrowed by `requested`, `resources` and
-`audience` exactly as on [token exchange](#token-exchange-oidc--felix). The
+carries what RBAC grants it, narrowed by `requested`, `resources`,
+`permissions` and `audience` exactly as on [token exchange](#token-exchange-oidc--felix). The
 answer is the exchange's, refresh token included. The control plane refuses to
 start with the switch on unless bootstrap is enabled on a loopback
 `FELIX_BOOTSTRAP_BIND_ADDR`, and logs a warning that it is on. Anyone holding
@@ -326,7 +326,32 @@ Response:
 ```
 
 The request body can only narrow the permissions RBAC grants. It cannot widen
-them.
+them. `requested` keeps the listed actions and `resources` the listed objects,
+as a cross product: every kept action on every kept resource.
+
+To give one token different actions on different resources, name
+`action:object` pairs in `permissions` and send `requested` as an empty list:
+
+```json
+{
+  "requested": [],
+  "permissions": [
+    "stream.subscribe:stream:t1/rooms/a",
+    "stream.publish:stream:t1/rooms/b"
+  ]
+}
+```
+
+Each pair is narrowed on its own against the grants with exactly its action,
+so the token above can read `a` and write `b` and nothing else. A pair for an
+action the principal lacks, or for a resource outside its grants, adds
+nothing, and a pair broader than a grant keeps the grant as it is. Sending
+`permissions` without `"requested": []`, or with a non-empty `requested` or
+`resources`, is a `400`. The empty `requested` makes a control plane that
+predates `permissions` refuse the exchange instead of ignoring the pairs and
+minting full rights. A refresh keeps the pairs. With the Raft store, pairs are
+refused with `409` until every control-plane member runs a release that
+supports them.
 
 ### Felix Token Claims
 
