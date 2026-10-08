@@ -162,6 +162,11 @@ pub struct GroupRecord {
     /// it always got.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publisher: Option<String>,
+    /// When the record was appended, in microseconds since the Unix epoch.
+    /// Sent only to a client that negotiated `FEATURE_RECORD_TIMESTAMPS`, so
+    /// any other client gets the frame it always got.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp_micros: Option<u64>,
 }
 
 fn is_zero(value: &u64) -> bool {

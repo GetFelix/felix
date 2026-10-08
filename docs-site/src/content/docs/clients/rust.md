@@ -574,6 +574,9 @@ pub struct Event {
     /// Who published it, when `ClientConfig::publishers` asked and the broker
     /// recorded one.
     pub publisher: Option<Arc<str>>,
+    /// When the broker appended it, in microseconds since the Unix epoch,
+    /// when `ClientConfig::timestamps` asked. `None` on an in-memory stream.
+    pub timestamp_micros: Option<u64>,
 }
 ```
 
@@ -603,6 +606,36 @@ durable stream reports it only for records written once the broker stores
 publishers (the `publisher_principal` fleet feature, or
 `FELIX_RECORD_PUBLISHERS=true` on a single broker), and then on replay and to
 consumer groups as well.
+
+### When an event was written, and replaying from a time
+
+Set `timestamps: true` in the `ClientConfig` and each event from a durable
+stream carries `event.timestamp_micros`: when the broker appended it, in
+microseconds since the Unix epoch. Group records carry the same value as
+`timestamp_micros`. Off by default, since it adds eight bytes to every event.
+
+To replay from a time, look up the offset and subscribe there.
+`offset_for_time` works whether or not `timestamps` is set:
+
+```rust
+let start = client
+    .offset_for_time("acme", "prod", "webhooks", 0, since_micros)
+    .await?;
+let position = match start {
+    Some(offset) => StartPosition::Offset(offset),
+    // Nothing that recent yet.
+    None => StartPosition::Latest,
+};
+let mut replay = client
+    .subscribe_from("acme", "prod", "webhooks", Some(position))
+    .await?;
+```
+
+The answer is the first record on that shard appended at or after the time,
+and the oldest record when the time is older than all of them. Times come from
+the leading broker's clock, so the search is exact while that clock only moves
+forward, and close otherwise. `client.supports_offset_for_time()` says whether
+the broker answers it.
 
 ### Offsets are how you notice a drop
 

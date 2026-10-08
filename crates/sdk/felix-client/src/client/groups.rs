@@ -626,6 +626,7 @@ fn group_response_id(message: &Message) -> Option<u64> {
         | Message::ProducerInitOk { request_id, .. }
         | Message::CommitOk { request_id, .. }
         | Message::StateValue { request_id, .. }
+        | Message::OffsetValue { request_id, .. }
         | Message::CacheOk { request_id } => Some(*request_id),
         _ => None,
     }

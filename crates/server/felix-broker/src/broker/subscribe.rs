@@ -367,6 +367,42 @@ impl Broker {
         }
     }
 
+    /// The first offset on a durable stream shard whose record was appended
+    /// at or after `at_micros`, searching only what a subscriber may read.
+    /// `None` when no such record is readable yet, so `latest` is where to
+    /// wait for one. See [`StreamLog::offset_for_time`] for how exact it is.
+    ///
+    /// [`StreamLog::offset_for_time`]: crate::StreamLog::offset_for_time
+    pub async fn offset_for_time(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        at_micros: u64,
+    ) -> Result<Option<u64>> {
+        let handle = self
+            .resolve_stream_handle(tenant_id, namespace, stream, shard)
+            .await?;
+        let Some(log) = &handle.state.durable else {
+            return Err(BrokerError::StreamNotDurable {
+                tenant_id: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                stream: stream.to_string(),
+            });
+        };
+        let until = committed_tail(
+            handle.state.read_bound(),
+            log.settled_tail_offset().await?,
+            stream,
+            shard,
+        )?;
+        Ok(log
+            .offset_for_time(at_micros, until)
+            .await?
+            .map(|(offset, _)| offset))
+    }
+
     /// Number of subscriber slots currently registered for a stream.
     ///
     /// Exposed for tests that need to prove a failed subscribe left nothing
@@ -451,6 +487,9 @@ pub struct RingRecord {
     pub payload: Bytes,
     /// The principal that published it, when one was recorded.
     pub publisher: Option<Bytes>,
+    /// When it was appended, in microseconds since the Unix epoch. `None` on
+    /// an in-memory stream.
+    pub timestamp_micros: Option<u64>,
 }
 
 /// The disk-backed range a resumed subscription must replay before its backlog.

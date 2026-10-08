@@ -224,4 +224,47 @@ impl Client {
         })
         .with_join(start_offset, live_offset))
     }
+
+    /// The first offset on one shard of a durable stream whose record was
+    /// appended at or after `at_micros` (microseconds since the Unix epoch).
+    /// Subscribe at it with [`StartPosition::Offset`] to replay from a time.
+    ///
+    /// `None` when no committed record is that recent yet: subscribe at
+    /// [`StartPosition::Latest`] to wait for one. A time older than every
+    /// record the shard holds answers with the oldest. Times are the leading
+    /// broker's clock at append, so if that clock stepped back the answer is
+    /// near the first such record rather than exactly it. Needs the
+    /// `stream.subscribe` permission, and only the shard's leader answers.
+    pub async fn offset_for_time(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        at_micros: u64,
+    ) -> Result<Option<u64>> {
+        if !self.supports_offset_for_time() {
+            anyhow::bail!("this broker cannot look up an offset by time");
+        }
+        let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
+        let message = Message::OffsetForTime {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+            at_micros,
+            request_id,
+        };
+        match self.group_round_trip(message, request_id).await? {
+            Message::OffsetValue { offset, .. } => Ok(offset),
+            other => Err(anyhow::anyhow!(
+                "unexpected answer to offset_for_time: {other:?}"
+            )),
+        }
+    }
+
+    /// Whether the broker answers [`Client::offset_for_time`].
+    pub fn supports_offset_for_time(&self) -> bool {
+        felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_RECORD_TIMESTAMPS)
+    }
 }

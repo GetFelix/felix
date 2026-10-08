@@ -215,6 +215,7 @@ impl StreamState {
                 seq: record.offset,
                 payload: record.payload,
                 publisher: record.publisher,
+                timestamp_micros: Some(record.timestamp_micros),
             });
         }
         let overflow = state.log.len().saturating_sub(capacity);
@@ -318,6 +319,7 @@ impl StreamState {
     /// `commit` is a commit's state updates. They go to the state view under
     /// the same lock as the event goes to the ring, so no reader sees one
     /// without the other.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn append_batch_at(
         &self,
         payloads: &[Bytes],
@@ -326,6 +328,7 @@ impl StreamState {
         log_capacity: usize,
         commit: Option<&[StateOp]>,
         publisher: Option<&Bytes>,
+        timestamp_micros: Option<u64>,
     ) -> Option<(Arc<Vec<SubscriberEntry>>, u64)> {
         if payloads.is_empty() {
             return Some((self.subscribers_snapshot.load_full(), 0));
@@ -361,6 +364,7 @@ impl StreamState {
                 seq,
                 payload: payload.clone(),
                 publisher: publisher.cloned(),
+                timestamp_micros,
             });
             seq = seq.checked_add(1).expect("log sequence overflow");
         }
@@ -444,7 +448,7 @@ impl StreamState {
     /// exercise the ring without a log behind it.
     #[cfg(test)]
     pub(crate) fn append_batch(&self, payloads: &[Bytes], log_capacity: usize) {
-        self.append_batch_at(payloads, None, None, log_capacity, None, None);
+        self.append_batch_at(payloads, None, None, log_capacity, None, None, None);
     }
 
     pub(crate) fn register_subscriber(&self) -> (u64, SubscriptionReceiver) {
@@ -544,6 +548,7 @@ impl StreamState {
                 offset: entry.seq,
                 payload: entry.payload.clone(),
                 publisher: entry.publisher.clone(),
+                timestamp_micros: entry.timestamp_micros,
             })
             .collect();
         // Where the backlog *actually* begins, which is not `start` when the
@@ -695,6 +700,7 @@ pub(crate) struct LogEntry {
     pub(crate) seq: u64,
     pub(crate) payload: Bytes,
     pub(crate) publisher: Option<Bytes>,
+    pub(crate) timestamp_micros: Option<u64>,
 }
 
 #[cfg(test)]

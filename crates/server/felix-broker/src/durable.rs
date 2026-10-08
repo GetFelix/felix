@@ -179,13 +179,18 @@ impl StreamLog {
     /// whether this one goes on to succeed, fail, or be cancelled. The claim is
     /// made where the offsets are assigned, so even a caller cancelled before
     /// this returns releases its range.
+    ///
+    /// Every record is stamped `timestamp_micros`, which the caller takes from
+    /// [`append_time_now`] so it can report the stored time without reading
+    /// it back.
     pub async fn begin_append(
         &self,
         payloads: &[Bytes],
         publishers: &[Option<Bytes>],
+        timestamp_micros: u64,
         order: &Arc<CommitSequencer>,
     ) -> Result<(PendingAppend, CommitTurn<'static>)> {
-        self.begin_append_marked(payloads, &[], publishers, order)
+        self.begin_append_marked(payloads, &[], publishers, timestamp_micros, order)
             .await
     }
 
@@ -197,9 +202,10 @@ impl StreamLog {
         payloads: &[Bytes],
         marks: &[RecordMark],
         publishers: &[Option<Bytes>],
+        timestamp_micros: u64,
         order: &Arc<CommitSequencer>,
     ) -> Result<(PendingAppend, CommitTurn<'static>)> {
-        let records = records(payloads, marks, publishers)?;
+        let records = records(payloads, marks, publishers, timestamp_micros)?;
         self.log
             .append_claimed(&records, order)
             .await
@@ -215,7 +221,7 @@ impl StreamLog {
         marks: &[RecordMark],
         publishers: &[Option<Bytes>],
     ) -> Result<Option<PendingAppend>> {
-        let records = records(payloads, marks, publishers)?;
+        let records = records(payloads, marks, publishers, append_time_now())?;
         self.log
             .append_pending_at(first_offset, &records)
             .await
@@ -232,10 +238,11 @@ impl StreamLog {
         sequence: u64,
         payloads: &[Bytes],
         publishers: &[Option<Bytes>],
+        timestamp_micros: u64,
         order: &Arc<CommitSequencer>,
     ) -> Result<Option<(PendingAppend, CommitTurn<'static>)>> {
         let marks = vec![RecordMark::Continues; payloads.len()];
-        let records = records(payloads, &marks, publishers)?;
+        let records = records(payloads, &marks, publishers, timestamp_micros)?;
         self.log
             .continue_claimed(producer_id, sequence, &records, order)
             .await
@@ -273,7 +280,7 @@ impl StreamLog {
     /// Returns only once the configured durability policy is satisfied: under
     /// `FsyncMode::OnCommit` the bytes are on the device before this resolves.
     pub async fn append(&self, payloads: &[Bytes]) -> Result<AppendResult> {
-        let records = records(payloads, &[], &[])?;
+        let records = records(payloads, &[], &[], append_time_now())?;
         self.log.append(&records).await.map_err(BrokerError::from)
     }
 
@@ -306,6 +313,46 @@ impl StreamLog {
             }
             start = last + 1;
         }
+    }
+
+    /// The first client record below `until` appended at or after
+    /// `at_micros`, as `(offset, append time)`. `None` when no record below
+    /// `until` is that recent; a time older than the log answers with its
+    /// oldest record.
+    ///
+    /// A binary search, so it relies on append times rising with the offset.
+    /// They are the leader's wall clock: after the clock steps back the answer
+    /// is near the first such record rather than exactly it.
+    pub async fn offset_for_time(
+        &self,
+        at_micros: u64,
+        until: Offset,
+    ) -> Result<Option<(Offset, u64)>> {
+        let (mut low, mut high) = (self.base_offset(), until);
+        while low < high {
+            let mid = low + (high - low) / 2;
+            match self.record_time_at(mid, until).await? {
+                Some((_, time)) if time < at_micros => low = mid + 1,
+                _ => high = mid,
+            }
+        }
+        if low >= until {
+            return Ok(None);
+        }
+        self.record_time_at(low, until).await
+    }
+
+    /// The client record at or just after `offset` and below `until`. Past a
+    /// generation-start record the next one can sit at or above `until`, and
+    /// that is not an answer.
+    async fn record_time_at(&self, offset: Offset, until: Offset) -> Result<Option<(Offset, u64)>> {
+        // One byte asks for a single record; the log returns one whatever its
+        // size.
+        let records = self.read_from(offset, 1).await?;
+        Ok(records
+            .first()
+            .filter(|record| record.offset < until)
+            .map(|record| (record.offset, record.timestamp_micros)))
     }
 
     /// [`Self::read_from`] with every record the log holds, generation-start
@@ -353,7 +400,7 @@ impl StreamLog {
     pub async fn append_generation_start(&self, generation: u64) -> Result<Offset> {
         let record = AppendRecord {
             payload: Bytes::copy_from_slice(&generation.to_be_bytes()),
-            timestamp_micros: now_micros(),
+            timestamp_micros: append_time_now(),
             mark: RecordMark::GenerationStart,
             publisher: None,
         };
@@ -539,13 +586,13 @@ fn records(
     payloads: &[Bytes],
     marks: &[RecordMark],
     publishers: &[Option<Bytes>],
+    timestamp_micros: u64,
 ) -> Result<Vec<AppendRecord>> {
     if payloads.is_empty() {
         return Err(BrokerError::Storage(
             "cannot append an empty publish batch".to_string(),
         ));
     }
-    let timestamp_micros = now_micros();
     let marks = marks
         .iter()
         .copied()
@@ -563,7 +610,9 @@ fn records(
         .collect())
 }
 
-fn now_micros() -> u64 {
+/// The time an append made now stores: microseconds since the Unix epoch on
+/// this broker's clock.
+pub fn append_time_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as u64)

@@ -323,6 +323,10 @@ fn every_feature_bit_is_distinct_and_known() {
             "FEATURE_CACHE_CONDITIONAL",
             crate::FEATURE_CACHE_CONDITIONAL,
         ),
+        (
+            "FEATURE_RECORD_TIMESTAMPS",
+            crate::FEATURE_RECORD_TIMESTAMPS,
+        ),
     ];
     let mut seen = 0u32;
     for (name, bit) in bits {

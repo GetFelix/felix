@@ -117,6 +117,8 @@ pub(crate) async fn handle_subscribe_message(
         offsets_enabled && felix_wire::supports(peer_flags, felix_wire::FLAG_EVENT_BATCH_SKIPPED);
     let publisher_enabled =
         felix_wire::supports(peer_flags, felix_wire::FLAG_EVENT_BATCH_PUBLISHER);
+    let timestamps_enabled =
+        felix_wire::supports(peer_flags, felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS);
     // Subscribe is a control-plane request: acknowledgements/metadata stay on this bi stream.
     // Actual event delivery happens on a fresh uni stream (broker -> client).
     let span = tracing::trace_span!(
@@ -366,6 +368,7 @@ pub(crate) async fn handle_subscribe_message(
                     offsets: offsets_enabled,
                     skips: skip_enabled,
                     publisher: publisher_enabled,
+                    timestamps: timestamps_enabled,
                 },
             )
             .await
@@ -405,6 +408,7 @@ pub(crate) async fn handle_subscribe_message(
             offsets_enabled,
             skip_enabled,
             publisher_enabled,
+            timestamps_enabled,
             shard_moved_enabled: felix_wire::supports_feature(
                 peer_features,
                 felix_wire::FEATURE_SHARD_MOVED,

@@ -39,6 +39,7 @@ mod counter;
 mod discovery;
 mod group;
 mod publish;
+mod record_time;
 mod responder;
 mod session;
 mod subscribe;
@@ -902,7 +903,30 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 )
                 .await?
             }
+            Message::OffsetForTime {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                at_micros,
+                request_id,
+            } => {
+                record_time::offset_for_time(
+                    &cx,
+                    &mut session,
+                    record_time::TimeTarget {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        shard,
+                    },
+                    at_micros,
+                    request_id,
+                )
+                .await?
+            }
             Message::GroupRecords { .. }
+            | Message::OffsetValue { .. }
             | Message::CommitOk { .. }
             | Message::StateValue { .. }
             | Message::Unsupported { .. }

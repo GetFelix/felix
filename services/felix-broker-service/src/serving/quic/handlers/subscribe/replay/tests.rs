@@ -153,6 +153,7 @@ const SKIPS: EventFormat = EventFormat {
     offsets: true,
     skips: true,
     publisher: false,
+    timestamps: false,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -204,6 +205,7 @@ async fn replay_as(
                 offset,
                 payload,
                 publisher: None,
+                timestamp_micros: None,
             })
             .collect(),
         backlog_start,
@@ -459,6 +461,7 @@ async fn a_client_without_the_skip_bit_gets_offsets_only() {
             offsets: true,
             skips: false,
             publisher: false,
+            timestamps: false,
         },
     )
     .await
@@ -750,10 +753,12 @@ mod batching {
     #[test]
     fn a_break_in_the_offsets_closes_the_batch() {
         let mut batch = ReplayBatch::new(64, 1024);
-        assert!(batch.push(0, payload("a"), 0, None).is_none());
-        assert!(batch.push(1, payload("b"), 0, None).is_none());
+        assert!(batch.push(0, payload("a"), 0, None, None).is_none());
+        assert!(batch.push(1, payload("b"), 0, None, None).is_none());
 
-        let closed = batch.push(9, payload("c"), 0, None).expect("the run broke");
+        let closed = batch
+            .push(9, payload("c"), 0, None, None)
+            .expect("the run broke");
 
         assert_eq!(closed.offsets(), vec![0, 1]);
         assert_eq!(batch.take().expect("the new run").offsets(), vec![9]);
@@ -762,10 +767,10 @@ mod batching {
     #[test]
     fn the_byte_limit_closes_a_batch() {
         let mut batch = ReplayBatch::new(64, 4);
-        assert!(batch.push(0, payload("aaa"), 0, None).is_none());
+        assert!(batch.push(0, payload("aaa"), 0, None, None).is_none());
 
         let closed = batch
-            .push(1, payload("bbb"), 0, None)
+            .push(1, payload("bbb"), 0, None, None)
             .expect("over the byte limit");
 
         assert_eq!(closed.payloads.len(), 1);
@@ -778,10 +783,24 @@ mod batching {
         let mut batch = ReplayBatch::new(64, 1);
         assert!(
             batch
-                .push(0, payload("a much larger payload"), 0, None)
+                .push(0, payload("a much larger payload"), 0, None, None)
                 .is_none()
         );
         assert_eq!(batch.take().expect("the record").payloads.len(), 1);
+    }
+
+    /// Records of different publishes share a frame, each with its own time,
+    /// but a frame has a time for every record or for none.
+    #[test]
+    fn each_record_keeps_its_time() {
+        let mut batch = ReplayBatch::new(64, 1024);
+        assert!(batch.push(0, payload("a"), 0, None, Some(10)).is_none());
+        assert!(batch.push(1, payload("b"), 0, None, Some(20)).is_none());
+        let closed = batch
+            .push(2, payload("c"), 0, None, None)
+            .expect("a record without a time");
+        assert_eq!(closed.timestamps, Some(vec![10, 20]));
+        assert_eq!(batch.take().expect("the new run").timestamps, None);
     }
 
     #[test]

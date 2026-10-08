@@ -969,6 +969,30 @@ pub enum Message {
     /// to delete.
     GroupDeleted { existed: bool, request_id: u64 },
 
+    // Record times.
+    /// The first offset on one shard whose record was appended at or after
+    /// `at_micros`. Answered with `offset_value`.
+    ///
+    /// Sent only to a broker that advertised `FEATURE_RECORD_TIMESTAMPS`.
+    OffsetForTime {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        /// Microseconds since the Unix epoch.
+        at_micros: u64,
+        request_id: u64,
+    },
+    /// The answer to `offset_for_time`. `offset` is left out when no record
+    /// that recent is committed yet: subscribe at `latest` to wait for one.
+    /// A time older than every record the shard holds answers with the
+    /// oldest.
+    OffsetValue {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
+        request_id: u64,
+    },
+
     // Last, because serde requires its catch-all to be.
     /// A `type` this build does not know. Never sent, and never produced by
     /// anything but decoding.
